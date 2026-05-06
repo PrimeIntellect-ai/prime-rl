@@ -710,22 +710,26 @@ class DefaultAdvantageConfig(BaseModel):
     length_penalty_completion_weight: Annotated[
         float,
         Field(
+            ge=0,
+            allow_inf_nan=False,
             description=(
                 "Weight on model completion tokens when `length_penalty='tokens'`. "
                 "Effective cost = completion_weight * completion_tokens + tool_response_weight * tool_response_tokens. "
-                "Ignored for other `length_penalty` values."
-            )
+                "Must be a finite, non-negative float. Ignored for other `length_penalty` values."
+            ),
         ),
     ] = 1.0
     length_penalty_tool_response_weight: Annotated[
         float,
         Field(
+            ge=0,
+            allow_inf_nan=False,
             description=(
                 "Weight on tool-response tokens when `length_penalty='tokens'`. "
                 "Tool-response tokens are read from the rollout's harness metric "
                 "`*_total_tool_response_tokens` (e.g. `rlm_total_tool_response_tokens`); 0 if absent. "
-                "Ignored for other `length_penalty` values."
-            )
+                "Must be a finite, non-negative float. Ignored for other `length_penalty` values."
+            ),
         ),
     ] = 0.0
 

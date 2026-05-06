@@ -53,7 +53,7 @@ def default_advantage_fn(
     letting callers shape on model output, tool-response tokens, or any weighted mix.
     `completion_weight` and `tool_response_weight` are ignored for other `length_penalty` values.
     """
-    rewards = torch.tensor([[r["reward"] for r in group] for group in inputs.rollouts])
+    rewards = torch.tensor([[r["reward"] for r in group] for group in inputs.rollouts], dtype=torch.float32)
 
     if length_penalty == "tokens":
         costs = torch.tensor(

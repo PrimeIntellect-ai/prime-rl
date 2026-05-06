@@ -234,6 +234,30 @@ def test_efficiency_tokens_with_tool_response_weight():
     assert torch.allclose(result_tool_only.advantages.mean(dim=1), torch.zeros(1), atol=1e-6)
 
 
+def test_efficiency_fractional_weight_with_int_rewards():
+    """Fractional weights must not truncate when rollout rewards are emitted as ints."""
+    rollouts_int = [
+        [
+            {"reward": 1, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(7))}}]},
+            {"reward": 1, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(11))}}]},
+            {"reward": 0, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(13))}}]},
+        ]
+    ]
+    rollouts_float = [[{**r, "reward": float(r["reward"])} for r in g] for g in rollouts_int]
+
+    int_result = default_advantage_fn(
+        AdvantageInputs(rollouts=rollouts_int),
+        length_penalty="tokens",
+        completion_weight=0.3,
+    )
+    float_result = default_advantage_fn(
+        AdvantageInputs(rollouts=rollouts_float),
+        length_penalty="tokens",
+        completion_weight=0.3,
+    )
+    assert torch.allclose(int_result.advantages, float_result.advantages, atol=1e-6)
+
+
 def test_efficiency_zero_costs_falls_back_to_plain_grpo():
     """When all effective costs are zero, shaping is a no-op (no NaNs from div-by-zero)."""
     # tool-only weights but no harness metric → all costs == 0
