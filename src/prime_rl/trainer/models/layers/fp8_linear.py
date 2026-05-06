@@ -109,6 +109,7 @@ DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
     "lm_head",
     "router",
     "mlp.gate.",
+    "shared_expert_gate",  # Qwen3.5 MoE: nn.Linear(hidden, 1, bias=False)
     "eh_proj",
     "weights_proj",
     "in_proj_a",
@@ -122,10 +123,16 @@ def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: l
 
     The default ignore list covers layers that should never be quantized:
     - lm_head
-    - MoE routers and gates (router, mlp.gate.)
+    - MoE routers and gates (router, mlp.gate., shared_expert_gate)
     - sparse-MLA scalar projection (weights_proj)
     - GLM-5.1 MTP head (eh_proj)
     - hybrid-Mamba projections (in_proj_a, in_proj_b)
+
+    Independently of the name-based ignore list, we also skip any nn.Linear
+    whose in_features or out_features is not a multiple of 128. Float8BlockwiseLinear
+    documents that requirement and DeepGEMM's fp8_gemm_nt crashes at runtime
+    on unaligned dims — better to keep them in BF16 with a clear log line than
+    silently break in the kernel.
 
     Conv1d, layer norms, and embedding tables are not nn.Linear and are
     skipped automatically by the type check; we don't need to list them.
@@ -136,12 +143,16 @@ def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: l
     logger.info(f"Replacing linear layers with FP8 blockwise linear layers (ignore={ignore_modules})")
     replaced_modules = []
     skipped_modules = []
+    skipped_unaligned: list[str] = []
     named_modules = dict(model.named_modules())
     for name, module in named_modules.items():
         if not isinstance(module, nn.Linear):
             continue
         if any(re.search(pattern, name) for pattern in ignore_modules):
             skipped_modules.append(name)
+            continue
+        if module.in_features % 128 != 0 or module.out_features % 128 != 0:
+            skipped_unaligned.append(f"{name}({module.in_features}->{module.out_features})")
             continue
         parent_name, attr_name = name.rsplit(".", 1) if "." in name else ("", name)
         parent = model.get_submodule(parent_name) if parent_name else model
@@ -150,6 +161,9 @@ def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: l
 
     logger.info(
         f"Replaced {len(replaced_modules)} linear layers with FP8 blockwise linear "
-        f"(skipped {len(skipped_modules)}); first replaced={replaced_modules[:3]}, "
-        f"first skipped={skipped_modules[:3]}"
+        f"(skipped {len(skipped_modules)} by name, "
+        f"{len(skipped_unaligned)} by 128-divisibility); "
+        f"first replaced={replaced_modules[:3]}, "
+        f"first skipped(name)={skipped_modules[:3]}, "
+        f"first skipped(unaligned)={skipped_unaligned[:3]}"
     )
