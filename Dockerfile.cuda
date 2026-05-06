@@ -12,7 +12,7 @@ RUN echo "LC_ALL=en_US.UTF-8" >> /etc/environment
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=$PATH:/usr/local/cuda/bin
 
-# Install packages (including Python 3.12 and ninja for fast CUDA kernel compilation)
+# Install build tooling.
 ARG DEBIAN_FRONTEND=noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
@@ -22,12 +22,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends --force-yes \
     sudo \
     git \
     ninja-build \
-    software-properties-common \
-    && add-apt-repository ppa:deadsnakes/ppa \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends python3.12 python3.12-dev python3.12-venv \
-    && ln -sf /usr/bin/python3.12 /usr/bin/python3 \
-    && ln -sf /usr/bin/python3.12 /usr/bin/python \
     && apt-get clean autoclean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Download the latest installer
@@ -48,6 +42,7 @@ COPY pyproject.toml /app/pyproject.toml
 COPY uv.lock /app/uv.lock
 COPY README.md /app/README.md
 COPY src/ /app/src/
+COPY packages/ /app/packages/
 COPY configs /app/configs
 COPY examples /app/examples
 COPY benchmarks/scripts /app/benchmarks/scripts

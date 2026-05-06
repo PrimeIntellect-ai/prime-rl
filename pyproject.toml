@@ -5,21 +5,20 @@ description = "Async RL Training at Scale"
 readme = "README.md"
 requires-python = "~=3.12.0"
 dependencies = [
+    "prime-rl-configs",
     "beartype>=0.21.0",
     "datasets>=4.0.0",
     "jaxtyping>=0.3.2",
     "liger-kernel>=0.5.10",
     "loguru>=0.7.3",
     "pyarrow>=21.0.0",
-    "pydantic>=1.10.13",
-    "pydantic-config",
-    "tomli>=2.2.1",
-    "tomli-w>=1.2.0",
     "numpy>=2.2.6",
     "torch>=2.9.0",
+    "torchvision",
+    "torchaudio",
     "torchdata>=0.11.0",
     "transformers",
-    "vllm>=0.19.0",
+    "vllm>=0.20.1",
     "wandb>=0.26.1",
     "ring-flash-attn>=0.1.8",
     "prime>=0.5.73",
@@ -51,7 +50,7 @@ prime_rl = "prime_rl.inference.patches:transformers_v5_compat"
 
 [project.optional-dependencies]
 flash-attn = [
-    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.10-cp312-cp312-linux_x86_64.whl ; platform_machine == 'x86_64'",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.4/flash_attn-2.8.3+cu128torch2.11-cp312-cp312-linux_x86_64.whl ; platform_machine == 'x86_64'",
 ]
 flash-attn-3 = ["flash_attn_3"]
 
@@ -108,6 +107,9 @@ dev = [
 ]
 
 
+[tool.uv.workspace]
+members = ["packages/*"]
+
 [tool.uv]
 exclude-newer = "7 days"
 preview = true
@@ -125,8 +127,8 @@ override-dependencies = [
 ]
 
 [tool.uv.exclude-newer-package]
-# pytorch-cu128 / pytorch-cu128-test indexes don't publish upload dates
-torch = false
+# we want latest vllm, remove next patch
+vllm = false
 flash_attn_3 = false
 # Self-vendored packages on our primeintellect index
 reverse-text = false
@@ -158,7 +160,10 @@ deep-gemm = false
 nixl-cu12 = false
 
 [tool.uv.sources]
+prime-rl-configs = { workspace = true }
 torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "3b77145" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
@@ -214,6 +219,12 @@ explicit = true
 select = ["F", "I"]
 ignore = ["F722", "F821"] # Need to ignore for jaxtyping (https://docs.kidger.site/jaxtyping/faq/)
 
+[tool.ruff.lint.isort]
+# `prime_rl` is split across two workspace wheels (prime-rl + prime-rl-configs).
+# Without this, ruff classifies prime_rl.configs.* as third-party because it
+# doesn't live under src/.
+known-first-party = ["prime_rl"]
+
 [tool.ruff]
 line-length = 120
 
@@ -227,6 +238,9 @@ markers = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/prime_rl"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
