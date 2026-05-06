@@ -1053,23 +1053,11 @@ class OrchestratorConfig(BaseConfig):
         Field(
             gt=0,
             description=(
-                "Wall-clock cap on a rollout group (minutes). Applies to both train and eval; a group "
-                "whose gather exceeds this limit is cancelled. Train groups that time out are dropped; "
-                "eval groups that time out are still counted (with an empty rollout list) so the batcher's "
-                "expected-count check can resolve. None disables the cap."
-            ),
-        ),
-    ] = None
-
-    straggler_timeout_minutes: Annotated[
-        float | None,
-        Field(
-            gt=0,
-            description=(
-                "Per-group straggler cutoff (minutes). After this much wall-clock time inside a single "
-                "group's rollout, any rollouts still in flight are cancelled and advantages are computed "
-                "on whichever rollouts completed. Lets a group ship without waiting for the slowest "
-                "rollout(s). None waits for all N rollouts to finish (subject to max_rollout_time_minutes)."
+                "Per-group soft cutoff (minutes). After this much wall-clock time inside a single group's "
+                "rollouts, any rollouts still in flight are cancelled and advantages are computed on "
+                "whichever rollouts completed. Lets a group ship without waiting for the slowest rollout(s). "
+                "If all rollouts in a group time out the group ships empty (eval counts it; train drops it). "
+                "None waits for all N rollouts to finish."
             ),
         ),
     ] = None

@@ -50,12 +50,12 @@ class GRPOGroup:
         model: str,
         advantage_cfg: AdvantageConfig,
         rate_limiter: AsyncLimiter | None = None,
-        straggler_timeout_seconds: float | None = None,
+        max_rollout_time_seconds: float | None = None,
     ):
         self.client = client
         self.model = model
         self.rate_limiter = rate_limiter
-        self.straggler_timeout_seconds = straggler_timeout_seconds
+        self.max_rollout_time_seconds = max_rollout_time_seconds
         self._advantage_fn = setup_advantage_fn(advantage_cfg)
 
     async def run(self, task: Task, example: dict) -> list[vf.RolloutOutput]:
@@ -65,14 +65,14 @@ class GRPOGroup:
         return rollouts
 
     async def _gather(self, task: Task, example: dict) -> list[vf.RolloutOutput]:
-        if self.straggler_timeout_seconds is None:
+        if self.max_rollout_time_seconds is None:
             return list(await asyncio.gather(*(self._rollout(task, example) for _ in range(task.rollouts_per_group))))
-        # Race the rollouts against the straggler clock; cancel whoever's still
+        # Race the rollouts against the wall clock; cancel whoever's still
         # running when it fires. Survivors carry the group; advantages are
         # computed on a smaller (noisier) baseline. With zero survivors the
         # group ships empty and is dropped downstream.
         tasks = [asyncio.create_task(self._rollout(task, example)) for _ in range(task.rollouts_per_group)]
-        done, pending = await asyncio.wait(tasks, timeout=self.straggler_timeout_seconds)
+        done, pending = await asyncio.wait(tasks, timeout=self.max_rollout_time_seconds)
         for p in pending:
             p.cancel()
         if pending:
@@ -101,11 +101,11 @@ class GRPOGroup:
 def setup_group(cfg: OrchestratorConfig, *, client: vf.ClientConfig) -> Group:
     """Build the orchestrator's default group implementation from config."""
     rate_limiter = AsyncLimiter(max_rate=cfg.tasks_per_minute, time_period=60) if cfg.tasks_per_minute else None
-    straggler_timeout = cfg.straggler_timeout_minutes * 60.0 if cfg.straggler_timeout_minutes else None
+    max_rollout_time = cfg.max_rollout_time_minutes * 60.0 if cfg.max_rollout_time_minutes else None
     return GRPOGroup(
         client=client,
         model=cfg.model.name,
         advantage_cfg=cfg.advantage,
         rate_limiter=rate_limiter,
-        straggler_timeout_seconds=straggler_timeout,
+        max_rollout_time_seconds=max_rollout_time,
     )

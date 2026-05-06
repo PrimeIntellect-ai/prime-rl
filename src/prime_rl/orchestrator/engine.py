@@ -41,7 +41,6 @@ class EngineInputs:
     group: Group
     max_off_policy: int
     concurrency: int
-    max_rollout_time_seconds: float | None = None
     lora_name: str | None = None
 
 
@@ -56,7 +55,6 @@ class RolloutEngine:
         self.lora_name = inputs.lora_name
         self.max_off_policy = inputs.max_off_policy
         self.concurrency = inputs.concurrency
-        self.max_rollout_time_seconds = inputs.max_rollout_time_seconds
         self.policy_version = 0
         self._inflight: list[Inflight] = []
         self.logger = get_logger()
@@ -82,45 +80,19 @@ class RolloutEngine:
             version = self.policy_version  # snapshot; current version may advance during await
             inflight = Inflight(version=version, kind=task.kind)
             self._inflight.append(inflight)
-
-            timed_out = False
             try:
-                if self.max_rollout_time_seconds is not None:
-                    rollouts = await asyncio.wait_for(
-                        self.group.run(task, example), timeout=self.max_rollout_time_seconds
-                    )
-                else:
-                    rollouts = await self.group.run(task, example)
-            except asyncio.TimeoutError:
-                timed_out = True
-                self.logger.warning(
-                    f"Rollout group timed out after {self.max_rollout_time_seconds}s "
-                    f"(task={task.id}, kind={task.kind}, version={version})"
-                )
+                rollouts = await self.group.run(task, example)
             finally:
                 self._inflight.remove(inflight)
-
-            if timed_out:
-                # Train groups are dropped on timeout. Eval emits an empty-rollouts
-                # group so the batcher's expected-count check can resolve and flush
-                # the partial epoch; otherwise it would wait forever.
-                if task.kind == "eval":
-                    await self.out_q.put(
-                        GroupOutput(
-                            example=example,
-                            env_id=task.id,
-                            kind="eval",
-                            rollouts=[],
-                            policy_version=version,
-                            eval_step=eval_step,
-                        )
-                    )
-                return
 
             # correctness guard: group may have finished just as a new version arrived.
             # Only enforced for train — eval rollouts always ship, they're tagged with
             # the trigger step regardless of which weights produced each rollout.
             if task.kind == "train" and self.policy_version - version > self.max_off_policy:
+                return
+            # Train groups with no surviving rollouts (all timed out) are dropped;
+            # eval groups still ship empty so the batcher's expected-count resolves.
+            if task.kind == "train" and not rollouts:
                 return
 
             await self.out_q.put(
@@ -172,7 +144,6 @@ def setup_rollout_engine(
             group=setup_group(cfg, client=client),
             max_off_policy=cfg.max_off_policy_steps,
             concurrency=concurrency,
-            max_rollout_time_seconds=(cfg.max_rollout_time_minutes * 60.0) if cfg.max_rollout_time_minutes else None,
             lora_name=lora_name,
         )
     )

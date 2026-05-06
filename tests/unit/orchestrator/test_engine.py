@@ -61,7 +61,6 @@ def _build(
     group: _StubGroup | None = None,
     max_off_policy: int = 1,
     concurrency: int = 1,
-    max_rollout_time_seconds: float | None = None,
     lora_name: str | None = None,
 ) -> RolloutEngine:
     return RolloutEngine(
@@ -71,7 +70,6 @@ def _build(
             group=group or _StubGroup(),  # type: ignore[arg-type]
             max_off_policy=max_off_policy,
             concurrency=concurrency,
-            max_rollout_time_seconds=max_rollout_time_seconds,
             lora_name=lora_name,
         )
     )
@@ -210,54 +208,51 @@ def test_run_group_eval_ships_even_when_off_policy():
     assert out.eval_step == 42
 
 
-def test_run_group_train_timeout_drops_silently():
+def test_run_group_train_drops_empty_rollouts():
+    """If GRPOGroup returns [] (all rollouts timed out via its straggler clock),
+    the engine drops train groups silently."""
     out_q: asyncio.Queue = asyncio.Queue()
-    group_impl = _StubGroup(block=True)  # blocks forever
+    group_impl = _StubGroup()
     task = _task()
-    eng = _build(out_q=out_q, group=group_impl, max_rollout_time_seconds=0.05)
+    eng = _build(out_q=out_q, group=group_impl)
 
     async def go():
         sem = asyncio.Semaphore(1)
         await sem.acquire()
+
+        async def empty_run(_task, _example):
+            return []
+
+        group_impl.run = empty_run  # type: ignore[assignment]
         await eng._run_group(task, {"x": 1}, sem, eval_step=None)
 
     _run(go())
     assert out_q.empty()
 
 
-def test_run_group_eval_timeout_emits_empty_group():
-    """Eval timeout emits an empty-rollouts GroupOutput so the batcher's
-    expected-count check resolves and flushes the partial epoch."""
+def test_run_group_eval_ships_empty_rollouts():
+    """Eval still emits a GroupOutput on empty so the batcher's expected-count
+    check resolves and the partial epoch flushes."""
     out_q: asyncio.Queue = asyncio.Queue()
-    group_impl = _StubGroup(block=True)
+    group_impl = _StubGroup()
     task = _task(kind="eval")
-    eng = _build(out_q=out_q, group=group_impl, max_rollout_time_seconds=0.05)
+    eng = _build(out_q=out_q, group=group_impl)
 
     async def go():
         sem = asyncio.Semaphore(1)
         await sem.acquire()
+
+        async def empty_run(_task, _example):
+            return []
+
+        group_impl.run = empty_run  # type: ignore[assignment]
         await eng._run_group(task, {"x": 1}, sem, eval_step=42)
 
     _run(go())
     out = out_q.get_nowait()
     assert out.kind == "eval"
     assert out.eval_step == 42
-    assert out.rollouts == []  # empty
-
-
-def test_run_group_releases_semaphore_on_timeout():
-    group_impl = _StubGroup(block=True)
-    task = _task()
-    eng = _build(group=group_impl, max_rollout_time_seconds=0.05)
-
-    async def go():
-        sem = asyncio.Semaphore(1)
-        await sem.acquire()
-        await eng._run_group(task, {}, sem, eval_step=None)
-        return sem
-
-    sem = _run(go())
-    assert not sem.locked()
+    assert out.rollouts == []
 
 
 def test_run_group_removes_inflight_on_completion():
