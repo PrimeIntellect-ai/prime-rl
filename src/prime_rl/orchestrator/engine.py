@@ -23,8 +23,11 @@ class GroupOutput:
 
 @dataclass
 class Inflight:
+    """Lightweight tracker for the max_off_policy_level metric. Not used for
+    cancellation — once a group is dispatched, it runs to completion or times
+    out, and gets filtered post-hoc by per-sample max_off_policy."""
+
     version: int
-    gather: asyncio.Future
     kind: Kind
 
 
@@ -77,24 +80,23 @@ class RolloutEngine:
     ) -> None:
         try:
             version = self.policy_version  # snapshot; current version may advance during await
-            gather = asyncio.ensure_future(self.group.run(task, example))
-            inflight = Inflight(version=version, gather=gather, kind=task.kind)
+            inflight = Inflight(version=version, kind=task.kind)
             self._inflight.append(inflight)
 
             timed_out = False
             try:
                 if self.max_rollout_time_seconds is not None:
-                    rollouts = await asyncio.wait_for(gather, timeout=self.max_rollout_time_seconds)
+                    rollouts = await asyncio.wait_for(
+                        self.group.run(task, example), timeout=self.max_rollout_time_seconds
+                    )
                 else:
-                    rollouts = await gather
+                    rollouts = await self.group.run(task, example)
             except asyncio.TimeoutError:
                 timed_out = True
                 self.logger.warning(
                     f"Rollout group timed out after {self.max_rollout_time_seconds}s "
                     f"(task={task.id}, kind={task.kind}, version={version})"
                 )
-            except asyncio.CancelledError:
-                return
             finally:
                 self._inflight.remove(inflight)
 
@@ -142,11 +144,6 @@ class RolloutEngine:
         if self.lora_name and self.group.model != self.lora_name:
             self.logger.info(f"Switching rollouts to LoRA adapter '{self.lora_name}' (was '{self.group.model}')")
             self.group.model = self.lora_name
-        for inflight in list(self._inflight):
-            if inflight.kind == "eval":
-                continue  # never cancel eval; it's tagged with its trigger step
-            if step - inflight.version > self.max_off_policy:
-                inflight.gather.cancel()
 
     def max_off_policy_level(self) -> int:
         """Max lag across currently in-flight train groups."""

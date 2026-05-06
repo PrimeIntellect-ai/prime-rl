@@ -1061,6 +1061,19 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = None
 
+    straggler_timeout_minutes: Annotated[
+        float | None,
+        Field(
+            gt=0,
+            description=(
+                "Per-group straggler cutoff (minutes). After this much wall-clock time inside a single "
+                "group's rollout, any rollouts still in flight are cancelled and advantages are computed "
+                "on whichever rollouts completed. Lets a group ship without waiting for the slowest "
+                "rollout(s). None waits for all N rollouts to finish (subject to max_rollout_time_minutes)."
+            ),
+        ),
+    ] = None
+
     max_async_level: Annotated[
         int,
         Field(

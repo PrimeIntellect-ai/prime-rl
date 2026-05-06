@@ -50,17 +50,34 @@ class GRPOGroup:
         model: str,
         advantage_cfg: AdvantageConfig,
         rate_limiter: AsyncLimiter | None = None,
+        straggler_timeout_seconds: float | None = None,
     ):
         self.client = client
         self.model = model
         self.rate_limiter = rate_limiter
+        self.straggler_timeout_seconds = straggler_timeout_seconds
         self._advantage_fn = setup_advantage_fn(advantage_cfg)
 
     async def run(self, task: Task, example: dict) -> list[vf.RolloutOutput]:
-        rollouts = list(await asyncio.gather(*(self._rollout(task, example) for _ in range(task.rollouts_per_group))))
-        if task.kind == "train":
+        rollouts = await self._gather(task, example)
+        if task.kind == "train" and rollouts:
             self._score(rollouts)
         return rollouts
+
+    async def _gather(self, task: Task, example: dict) -> list[vf.RolloutOutput]:
+        if self.straggler_timeout_seconds is None:
+            return list(await asyncio.gather(*(self._rollout(task, example) for _ in range(task.rollouts_per_group))))
+        # Race the rollouts against the straggler clock; cancel whoever's still
+        # running when it fires. Survivors carry the group; advantages are
+        # computed on a smaller (noisier) baseline. With zero survivors the
+        # group ships empty and is dropped downstream.
+        tasks = [asyncio.create_task(self._rollout(task, example)) for _ in range(task.rollouts_per_group)]
+        done, pending = await asyncio.wait(tasks, timeout=self.straggler_timeout_seconds)
+        for p in pending:
+            p.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        return [t.result() for t in done]
 
     async def _rollout(self, task: Task, example: dict) -> vf.RolloutOutput:
         if self.rate_limiter is not None:
@@ -84,9 +101,11 @@ class GRPOGroup:
 def setup_group(cfg: OrchestratorConfig, *, client: vf.ClientConfig) -> Group:
     """Build the orchestrator's default group implementation from config."""
     rate_limiter = AsyncLimiter(max_rate=cfg.tasks_per_minute, time_period=60) if cfg.tasks_per_minute else None
+    straggler_timeout = cfg.straggler_timeout_minutes * 60.0 if cfg.straggler_timeout_minutes else None
     return GRPOGroup(
         client=client,
         model=cfg.model.name,
         advantage_cfg=cfg.advantage,
         rate_limiter=rate_limiter,
+        straggler_timeout_seconds=straggler_timeout,
     )

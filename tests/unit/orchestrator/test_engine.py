@@ -86,29 +86,23 @@ def test_max_off_policy_level_zero_when_no_inflight():
 
 
 def test_max_off_policy_level_max_over_train_inflight():
-    async def go():
-        eng = _build()
-        eng.policy_version = 5
-        eng._inflight = [
-            Inflight(version=2, gather=asyncio.Future(), kind="train"),  # lag 3
-            Inflight(version=4, gather=asyncio.Future(), kind="train"),  # lag 1
-        ]
-        return eng.max_off_policy_level()
-
-    assert _run(go()) == 3
+    eng = _build()
+    eng.policy_version = 5
+    eng._inflight = [
+        Inflight(version=2, kind="train"),  # lag 3
+        Inflight(version=4, kind="train"),  # lag 1
+    ]
+    assert eng.max_off_policy_level() == 3
 
 
 def test_max_off_policy_level_excludes_eval():
-    async def go():
-        eng = _build()
-        eng.policy_version = 10
-        eng._inflight = [
-            Inflight(version=0, gather=asyncio.Future(), kind="eval"),  # lag 10 — ignored
-            Inflight(version=8, gather=asyncio.Future(), kind="train"),  # lag 2
-        ]
-        return eng.max_off_policy_level()
-
-    assert _run(go()) == 2
+    eng = _build()
+    eng.policy_version = 10
+    eng._inflight = [
+        Inflight(version=0, kind="eval"),  # lag 10 — ignored
+        Inflight(version=8, kind="train"),  # lag 2
+    ]
+    assert eng.max_off_policy_level() == 2
 
 
 # --- on_new_version ----------------------------------------------------------
@@ -141,47 +135,6 @@ def test_on_new_version_no_lora_leaves_model_unchanged():
     eng = _build(group=group, lora_name=None)
     _run(eng.on_new_version(1))
     assert eng.group.model == "base-model"
-
-
-def test_on_new_version_cancels_stale_train_inflight():
-    eng = _build(max_off_policy=1)
-
-    async def go():
-        f = asyncio.Future()
-        eng._inflight = [Inflight(version=0, gather=f, kind="train")]
-        await eng.on_new_version(5)  # lag 5 > max_off_policy 1
-        return f
-
-    f = _run(go())
-    assert f.cancelled()
-
-
-def test_on_new_version_does_not_cancel_within_policy_inflight():
-    eng = _build(max_off_policy=2)
-
-    async def go():
-        f = asyncio.Future()
-        eng._inflight = [Inflight(version=3, gather=f, kind="train")]
-        await eng.on_new_version(5)  # lag 2 == max_off_policy
-        return f
-
-    f = _run(go())
-    assert not f.cancelled()
-
-
-def test_on_new_version_never_cancels_eval_inflight():
-    """Eval is always tagged with its trigger step, so it's exempt from
-    off-policy cancellation regardless of how stale it gets."""
-    eng = _build(max_off_policy=1)
-
-    async def go():
-        f = asyncio.Future()
-        eng._inflight = [Inflight(version=0, gather=f, kind="eval")]
-        await eng.on_new_version(99)  # very stale
-        return f
-
-    f = _run(go())
-    assert not f.cancelled()
 
 
 # --- _run_group lifecycle ----------------------------------------------------
