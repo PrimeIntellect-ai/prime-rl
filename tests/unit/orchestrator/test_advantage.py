@@ -1,6 +1,11 @@
 import torch
 
-from prime_rl.configs.orchestrator import CustomAdvantageConfig, DefaultAdvantageConfig
+from prime_rl.configs.orchestrator import (
+    CustomAdvantageConfig,
+    DefaultAdvantageConfig,
+    TokensLengthPenaltyConfig,
+    TurnsLengthPenaltyConfig,
+)
 from prime_rl.orchestrator.advantage import (
     AdvantageInputs,
     AdvantageOutputs,
@@ -38,6 +43,11 @@ def _make_inputs(rewards, completion_lengths=None, num_turns=None) -> AdvantageI
     return AdvantageInputs(rollouts=rollouts)
 
 
+# Helper aliases for readability — completion-only and tool-only token shaping.
+_TOKENS_COMPLETION = TokensLengthPenaltyConfig(completion_weight=1.0, tool_response_weight=0.0)
+_TOKENS_TOOL_ONLY = TokensLengthPenaltyConfig(completion_weight=0.0, tool_response_weight=1.0)
+
+
 def test_default_advantage_fn_simple_mean():
     inputs = _make_inputs(
         rewards=[[1.0, 0.5, 0.8], [0.2, 0.9, 0.1]],
@@ -56,7 +66,7 @@ def test_efficiency_mixed_group():
         rewards=[[1.0, 1.0, 0.0, 1.0]],
         completion_lengths=[[10, 30, 20, 20]],
     )
-    result = default_advantage_fn(inputs, length_penalty="tokens")
+    result = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
 
     # mean_correct_len = (10+30+20)/3 = 20
     # bonus = clamp(1 - [10,30,20,20]/20, 0, 1) = [0.5, 0, 0, 0]
@@ -81,7 +91,7 @@ def test_efficiency_all_correct_group():
         rewards=[[1.0, 1.0, 1.0]],
         completion_lengths=[[10, 20, 40]],
     )
-    result = default_advantage_fn(inputs, length_penalty="tokens")
+    result = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
 
     # mean_len = 70/3 ≈ 23.33
     # bonus = clamp(1 - [10, 20, 40] / (70/3), 0, 1) = [4/7, 1/7, 0]
@@ -106,7 +116,7 @@ def test_efficiency_all_zero_rewards():
         rewards=[[0.0, 0.0, 0.0]],
         completion_lengths=[[10, 20, 15]],
     )
-    result_with = default_advantage_fn(inputs, length_penalty="tokens")
+    result_with = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
     result_without = default_advantage_fn(inputs)
 
     assert torch.allclose(result_with.advantages, result_without.advantages, atol=1e-6)
@@ -118,7 +128,7 @@ def test_efficiency_single_correct():
         rewards=[[1.0, 0.0, 0.0, 0.0]],
         completion_lengths=[[100, 50, 200, 150]],
     )
-    result = default_advantage_fn(inputs, length_penalty="tokens")
+    result = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
 
     expected = torch.tensor([[0.75, -0.25, -0.25, -0.25]])
     assert torch.allclose(result.advantages, expected, atol=1e-6)
@@ -130,7 +140,7 @@ def test_efficiency_shorter_correct_higher_advantage():
         rewards=[[1.0, 1.0, 1.0, 0.0, 0.0]],
         completion_lengths=[[50, 100, 200, 80, 120]],
     )
-    result = default_advantage_fn(inputs, length_penalty="tokens")
+    result = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
 
     advs = result.advantages[0]
     assert advs[0] > advs[1] > advs[2]
@@ -150,7 +160,7 @@ def test_efficiency_zero_mean_per_group():
             [10, 20, 40, 80],
         ],
     )
-    result = default_advantage_fn(inputs, length_penalty="tokens")
+    result = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
 
     assert torch.allclose(result.advantages.mean(dim=1), torch.zeros(2), atol=1e-6)
 
@@ -161,7 +171,7 @@ def test_efficiency_amplification_bounded():
         rewards=[[1.0, 1.0, 0.0]],
         completion_lengths=[[1, 10000, 5000]],
     )
-    result = default_advantage_fn(inputs, length_penalty="tokens")
+    result = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
 
     # Shortest correct gets bonus ≈ 1, so shaped_reward ≈ 2
     # Standard reward = 1, so amplification ≈ 2x
@@ -181,7 +191,7 @@ def test_efficiency_multiple_problems():
             [10, 20, 40],
         ],
     )
-    result = default_advantage_fn(inputs, length_penalty="tokens")
+    result = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
 
     # Row 0: mixed group — shorter correct > longer correct
     assert result.advantages[0, 0] > result.advantages[0, 1]
@@ -195,15 +205,97 @@ def test_efficiency_multiple_problems():
     assert torch.allclose(result.advantages.mean(dim=1), torch.zeros(2), atol=1e-6)
 
 
+def test_efficiency_tokens_with_tool_response_weight():
+    """`tool_response_weight` shifts shaping onto tool-response tokens read from rollout metrics."""
+    rollouts = [
+        [
+            {
+                "reward": 1.0,
+                "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}],
+                "metrics": {"rlm_total_tool_response_tokens": 200},
+            },
+            {
+                "reward": 1.0,
+                "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}],
+                "metrics": {"rlm_total_tool_response_tokens": 0},
+            },
+            {
+                "reward": 1.0,
+                "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}],
+                "metrics": {"rlm_total_tool_response_tokens": 100},
+            },
+        ]
+    ]
+    inputs = AdvantageInputs(rollouts=rollouts)
+
+    # completion tokens identical (10 each) → completion-only shaping is a no-op
+    result_completion_only = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
+    assert torch.allclose(result_completion_only.advantages, torch.zeros(1, 3), atol=1e-6)
+
+    # tool-response only: costs are [200, 0, 100], mean=100, bonus is one-sided
+    # so only the below-mean rollout (idx 1) gets amplified; the at/above-mean tie.
+    result_tool_only = default_advantage_fn(inputs, length_penalty=_TOKENS_TOOL_ONLY)
+    advs = result_tool_only.advantages[0]
+    assert advs[1] > advs[0]
+    assert advs[1] > advs[2]
+    assert torch.allclose(advs[0], advs[2], atol=1e-6)
+    assert torch.allclose(result_tool_only.advantages.mean(dim=1), torch.zeros(1), atol=1e-6)
+
+
+def test_efficiency_fractional_weight_with_int_rewards():
+    """Fractional weights must not truncate when rollout rewards are emitted as ints."""
+    rollouts_int = [
+        [
+            {"reward": 1, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(7))}}]},
+            {"reward": 1, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(11))}}]},
+            {"reward": 0, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(13))}}]},
+        ]
+    ]
+    rollouts_float = [[{**r, "reward": float(r["reward"])} for r in g] for g in rollouts_int]
+
+    fractional = TokensLengthPenaltyConfig(completion_weight=0.3, tool_response_weight=0.0)
+    int_result = default_advantage_fn(AdvantageInputs(rollouts=rollouts_int), length_penalty=fractional)
+    float_result = default_advantage_fn(AdvantageInputs(rollouts=rollouts_float), length_penalty=fractional)
+    assert torch.allclose(int_result.advantages, float_result.advantages, atol=1e-6)
+
+
+def test_efficiency_zero_costs_falls_back_to_plain_grpo():
+    """When all effective costs are zero, shaping is a no-op (no NaNs from div-by-zero)."""
+    # tool-only weights but no harness metric → all costs == 0
+    rollouts = [
+        [
+            {"reward": 1.0, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}]},
+            {"reward": 1.0, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}]},
+            {"reward": 0.0, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}]},
+        ]
+    ]
+    inputs = AdvantageInputs(rollouts=rollouts)
+    result = default_advantage_fn(inputs, length_penalty=_TOKENS_TOOL_ONLY)
+    expected = default_advantage_fn(inputs)  # plain GRPO
+    assert not torch.isnan(result.advantages).any()
+    assert torch.allclose(result.advantages, expected.advantages, atol=1e-6)
+
+
+def test_efficiency_tokens_default_weights_match_completion_when_no_metric():
+    """Default TokensLengthPenaltyConfig (1,1) reduces to completion-only when rollouts lack the metric."""
+    inputs = _make_inputs(
+        rewards=[[1.0, 1.0, 0.0, 1.0]],
+        completion_lengths=[[10, 30, 20, 20]],
+    )
+    result_default = default_advantage_fn(inputs, length_penalty=TokensLengthPenaltyConfig())
+    result_completion = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
+    assert torch.allclose(result_default.advantages, result_completion.advantages, atol=1e-6)
+
+
 def test_efficiency_turns_penalty():
-    """`length_penalty='turns'` shapes by trajectory turn count rather than token count."""
+    """`TurnsLengthPenaltyConfig` shapes by trajectory turn count rather than token count."""
     inputs = _make_inputs(
         rewards=[[1.0, 1.0, 0.0, 1.0]],
         # token counts identical, but turns differ — turns penalty should still differentiate
         completion_lengths=[[100, 100, 100, 100]],
         num_turns=[[1, 3, 2, 2]],
     )
-    result = default_advantage_fn(inputs, length_penalty="turns")
+    result = default_advantage_fn(inputs, length_penalty=TurnsLengthPenaltyConfig())
 
     # mean_correct_turns = (1+3+2)/3 = 2
     # bonus = clamp(1 - [1,3,2,2]/2, 0, 1) = [0.5, 0, 0, 0]

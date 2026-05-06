@@ -689,6 +689,52 @@ class BufferConfig(BaseConfig):
         return self
 
 
+class TokensLengthPenaltyConfig(BaseModel):
+    """Length penalty by weighted token cost.
+
+    Effective cost = completion_weight * model_completion_tokens
+                   + tool_response_weight * tool_response_tokens.
+
+    Tool-response tokens are read from the rollout's harness metric
+    `*_total_tool_response_tokens` (e.g. `rlm_total_tool_response_tokens`); 0 if absent —
+    so for envs without tool accounting, only the completion term contributes regardless of weight.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["tokens"] = "tokens"
+    completion_weight: Annotated[
+        float,
+        Field(
+            ge=0,
+            allow_inf_nan=False,
+            description="Weight on model completion tokens. Finite and non-negative.",
+        ),
+    ] = 1.0
+    tool_response_weight: Annotated[
+        float,
+        Field(
+            ge=0,
+            allow_inf_nan=False,
+            description="Weight on tool-response tokens. Finite and non-negative.",
+        ),
+    ] = 1.0
+
+
+class TurnsLengthPenaltyConfig(BaseModel):
+    """Length penalty by trajectory turn count."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["turns"] = "turns"
+
+
+LengthPenaltyConfig: TypeAlias = Annotated[
+    TokensLengthPenaltyConfig | TurnsLengthPenaltyConfig,
+    Field(discriminator="type"),
+]
+
+
 class DefaultAdvantageConfig(BaseModel):
     """Config for the default advantage."""
 
@@ -696,11 +742,11 @@ class DefaultAdvantageConfig(BaseModel):
 
     type: Literal["default"] = "default"
     length_penalty: Annotated[
-        Literal["tokens", "turns"] | None,
+        LengthPenaltyConfig | None,
         Field(
             description=(
-                "Cost metric for correctness-gated length penalty. `tokens` shapes by completion-token "
-                "count, `turns` shapes by trajectory turn count, `None` disables shaping. In mixed "
+                "Correctness-gated length penalty. `tokens` shapes by weighted token cost, "
+                "`turns` shapes by trajectory turn count, `None` disables shaping. In mixed "
                 "groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct "
                 "rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost "
                 "rollouts get advantage in [0, 1], others get 0."
