@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 
 import torch
@@ -10,11 +11,40 @@ from prime_rl.trainer.models.layers.rotary_emb import rotate_half
 from prime_rl.utils.cp import gather_for_cp
 
 try:
-    from prime_rl.trainer.models.kernels.sparse_mla_bwd import sparse_mla_bwd
-    from prime_rl.trainer.models.kernels.sparse_mla_fwd import sparse_mla_fwd_interface
+    from prime_rl.trainer.models.kernels.sparse_mla_bwd import sparse_mla_bwd as sparse_mla_bwd_tilelang
+    from prime_rl.trainer.models.kernels.sparse_mla_fwd import sparse_mla_fwd_interface as sparse_mla_fwd_tilelang
 except ImportError:
-    sparse_mla_fwd_interface = None  # type: ignore
-    sparse_mla_bwd = None  # type: ignore
+    sparse_mla_fwd_tilelang = None  # type: ignore
+    sparse_mla_bwd_tilelang = None  # type: ignore
+
+try:
+    from prime_rl.trainer.models.kernels.sparse_mla_bucketed import sparse_mla_bwd_bucketed, sparse_mla_fwd_bucketed
+except ImportError:
+    sparse_mla_fwd_bucketed = None  # type: ignore
+    sparse_mla_bwd_bucketed = None  # type: ignore
+
+
+def _experimental_bucketed_enabled() -> bool:
+    """Opt-in switch for the experimental bucketed sparse-MLA fwd/bwd kernels.
+
+    Set ``PRIME_RL_EXPERIMENTAL_MLA_BWD=1`` (or ``true``/``yes``) to route
+    forward and backward through the bucketed implementation. The default
+    (unset) keeps the existing TileLang single-kernel path.
+    """
+    val = os.environ.get("PRIME_RL_EXPERIMENTAL_MLA_BWD", "")
+    return val.lower() in {"1", "true", "yes", "on"}
+
+
+def _select_sparse_mla_kernel():
+    if _experimental_bucketed_enabled():
+        if sparse_mla_fwd_bucketed is None or sparse_mla_bwd_bucketed is None:
+            raise ImportError(
+                "PRIME_RL_EXPERIMENTAL_MLA_BWD is set but bucketed TileLang sparse MLA kernels are unavailable"
+            )
+        return sparse_mla_fwd_bucketed, sparse_mla_bwd_bucketed
+    if sparse_mla_fwd_tilelang is None or sparse_mla_bwd_tilelang is None:
+        raise ImportError("TileLang sparse MLA kernels are unavailable")
+    return sparse_mla_fwd_tilelang, sparse_mla_bwd_tilelang
 
 
 @dataclass(frozen=True)
@@ -35,18 +65,21 @@ class SparseMlaAttentionArgs:
 
 
 class _SparseMLA(torch.autograd.Function):
-    """Autograd wrapper for tilelang sparse MLA forward/backward kernels."""
+    """Autograd wrapper for sparse MLA forward/backward kernels."""
 
     @staticmethod
     def forward(ctx, q, kv, indices, sm_scale):
+        sparse_mla_fwd_interface, sparse_mla_bwd = _select_sparse_mla_kernel()
         out, lse = sparse_mla_fwd_interface(q, kv, indices, sm_scale=sm_scale)
         ctx.save_for_backward(q, kv, out, indices, lse)
         ctx.sm_scale = sm_scale
+        ctx.sparse_mla_bwd = sparse_mla_bwd
         return out
 
     @staticmethod
     def backward(ctx, do):
         q, kv, out, indices, lse = ctx.saved_tensors
+        sparse_mla_bwd = ctx.sparse_mla_bwd
         dq, dkv = sparse_mla_bwd(q, kv, out, do.contiguous(), indices, lse, sm_scale=ctx.sm_scale)
         return dq, dkv, None, None
 

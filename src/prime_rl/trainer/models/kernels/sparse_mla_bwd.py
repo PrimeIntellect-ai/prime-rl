@@ -1,5 +1,14 @@
 # Vendored from tile-ai/tilelang (Apache 2.0), modified for dynamic shapes.
 
+# TileLang ships a libcudart stub that proxies to the real CUDA runtime via
+# dlsym(RTLD_DEFAULT, ...).  If the stub's own symbols are the first ones found
+# (because nothing loaded the real libcudart globally yet), the self-check fails
+# and the stub calls abort().  Pre-loading the real library with RTLD_GLOBAL
+# ensures dlsym finds it before the stub's own exports.
+import ctypes as _ctypes
+
+_ctypes.CDLL("libcudart.so", mode=_ctypes.RTLD_GLOBAL)
+
 import tilelang
 import torch
 from tilelang import language as T
@@ -92,15 +101,24 @@ def bwd(
     block_size=32,
     num_stages=0,
     threads=256,
+    split_store=2,
+    gemm_policy=T.GemmWarpPolicy.FullCol,
+    use_gemm_v1=False,
+    mask_invalid_stores=False,
+    skip_invalid_blocks=False,
     indices_dtype=T.int32,
     dtype=T.bfloat16,
     accum_dtype=T.float32,
+    compute_dq=True,
+    compute_dkv=True,
 ):
     assert is_causal is True, "non-casual is not supported now"
     assert topk % block_size == 0, "otherwise will load some index=0 thus causing wrong kv to be loaded"
     assert dtype == T.bfloat16
     assert accum_dtype == T.float32
     assert indices_dtype == T.int32
+    assert compute_dq or compute_dkv
+    assert block_size % split_store == 0
 
     if sm_scale is None:
         sm_scale = (D + D_tail) ** (-0.5)
@@ -125,8 +143,7 @@ def bwd(
     NH = padded_H // block_H
     BS = block_size
     NS = tilelang.cdiv(topk, block_size)
-
-    split_store = 2
+    gemm = T.gemm_v1 if use_gemm_v1 else T.gemm
 
     @T.prim_func
     def sparse_mla_bwd_kernel(
@@ -154,12 +171,14 @@ def bwd(
 
             acc_p = T.alloc_fragment([block_H, BS], accum_dtype)
             acc_dp = T.alloc_fragment([block_H, BS], accum_dtype)
-            acc_dq = T.alloc_fragment([block_H, D], accum_dtype)
-            acc_dq_tail = T.alloc_fragment([block_H, D_tail], accum_dtype)
-            acc_dkv = T.alloc_fragment([BS, D], accum_dtype)
-            acc_dkv_tail = T.alloc_fragment([BS, D_tail], accum_dtype)
-            acc_dkv_shared = T.alloc_shared([BS // split_store, D], accum_dtype)
-            acc_dkv_tail_shared = T.alloc_shared([BS // split_store, D_tail], accum_dtype)
+            if compute_dq:
+                acc_dq = T.alloc_fragment([block_H, D], accum_dtype)
+                acc_dq_tail = T.alloc_fragment([block_H, D_tail], accum_dtype)
+            if compute_dkv:
+                acc_dkv = T.alloc_fragment([BS, D], accum_dtype)
+                acc_dkv_tail = T.alloc_fragment([BS, D_tail], accum_dtype)
+                acc_dkv_shared = T.alloc_shared([BS // split_store, D], accum_dtype)
+                acc_dkv_tail_shared = T.alloc_shared([BS // split_store, D_tail], accum_dtype)
 
             # See sparse_mla_fwd: sentinel is at index S_kv - 1 (zero KV), valid indices
             # live in [0, S_kv - 1). Using this single bound makes the kernel work for
@@ -170,10 +189,223 @@ def bwd(
             T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, D:], Q_tail_shared)
             T.copy(dO[by, s_i, bz * block_H : (bz + 1) * block_H, :D], dO_shared)
 
-            T.clear(acc_dq)
-            T.clear(acc_dq_tail)
+            if compute_dq:
+                T.clear(acc_dq)
+                T.clear(acc_dq_tail)
 
             for i_i in T.Pipelined(NS, num_stages=num_stages):
+                if (not skip_invalid_blocks) or (Indices[by, s_i, bz // NH, i_i * BS] <= max_kv_i):
+                    for bi_i in T.Parallel(BS):
+                        mask[bi_i] = Indices[by, s_i, bz // NH, i_i * BS + bi_i] <= max_kv_i
+
+                    for h_i, bi_i in T.Parallel(block_H, BS):
+                        acc_p[h_i, bi_i] = T.if_then_else(mask[bi_i], 0, -T.infinity(acc_p.dtype))
+
+                    for bi_i, d_i in T.Parallel(BS, D):
+                        KV_shared[bi_i, d_i] = KV[by, Indices[by, s_i, bz // NH, i_i * BS + bi_i], bz // NH, d_i]
+
+                    gemm(Q_shared, KV_shared, acc_p, transpose_B=True, policy=gemm_policy)
+
+                    for bi_i, d_i in T.Parallel(BS, D_tail):
+                        KV_tail_shared[bi_i, d_i] = KV[
+                            by, Indices[by, s_i, bz // NH, i_i * BS + bi_i], bz // NH, D + d_i
+                        ]
+                    gemm(Q_tail_shared, KV_tail_shared, acc_p, transpose_B=True, policy=gemm_policy)
+
+                    for h_i, bi_i in T.Parallel(block_H, BS):
+                        acc_p[h_i, bi_i] = T.exp2(
+                            acc_p[h_i, bi_i] * sm_scale_mul_reciprocal_log2 - Lse[by, s_i, bz * block_H + h_i]
+                        )
+
+                    T.copy(acc_p, P_shared_cast)
+
+                    gemm(dO_shared, KV_shared, acc_dp, transpose_B=True, policy=gemm_policy, clear_accum=True)
+
+                    for h_i, bi_i in T.Parallel(block_H, BS):
+                        acc_dp[h_i, bi_i] = (
+                            acc_p[h_i, bi_i] * (acc_dp[h_i, bi_i] - Delta[by, s_i, bz * block_H + h_i]) * sm_scale
+                        )
+
+                    if compute_dq or compute_dkv:
+                        T.copy(acc_dp, dP_shared_cast)
+
+                    if compute_dq:
+                        gemm(dP_shared_cast, KV_shared, acc_dq, policy=gemm_policy)
+                        gemm(dP_shared_cast, KV_tail_shared, acc_dq_tail, policy=gemm_policy)
+
+                    if compute_dkv:
+                        gemm(
+                            dP_shared_cast,
+                            Q_shared,
+                            acc_dkv,
+                            transpose_A=True,
+                            policy=gemm_policy,
+                            clear_accum=True,
+                        )
+                        gemm(P_shared_cast, dO_shared, acc_dkv, transpose_A=True, policy=gemm_policy)
+
+                        T.clear(acc_dkv_tail)
+                        gemm(dP_shared_cast, Q_tail_shared, acc_dkv_tail, transpose_A=True, policy=gemm_policy)
+
+                        for s in range(split_store):
+                            for bi_i, d_i in T.Parallel(BS, D):
+                                if bi_i < BS // split_store:
+                                    acc_dkv_shared[bi_i, d_i] = acc_dkv[bi_i + s * (BS // split_store), d_i]
+
+                            for bi_i, d_i in T.Parallel(BS, D_tail):
+                                if bi_i < BS // split_store:
+                                    acc_dkv_tail_shared[bi_i, d_i] = acc_dkv_tail[bi_i + s * (BS // split_store), d_i]
+
+                            for bi_i, d_i in T.Parallel(BS // split_store, D // 4):
+                                if mask_invalid_stores:
+                                    if mask[bi_i + s * (BS // split_store)]:
+                                        T.atomic_addx4(
+                                            dKV[
+                                                by,
+                                                Indices[by, s_i, bz // NH, i_i * BS + bi_i + s * (BS // split_store)],
+                                                bz // NH,
+                                                d_i * 4,
+                                            ],
+                                            acc_dkv_shared[bi_i, d_i * 4],
+                                        )
+                                else:
+                                    T.atomic_addx4(
+                                        dKV[
+                                            by,
+                                            Indices[by, s_i, bz // NH, i_i * BS + bi_i + s * (BS // split_store)],
+                                            bz // NH,
+                                            d_i * 4,
+                                        ],
+                                        acc_dkv_shared[bi_i, d_i * 4],
+                                    )
+
+                            for bi_i, d_i in T.Parallel(BS // split_store, D_tail // 4):
+                                if mask_invalid_stores:
+                                    if mask[bi_i + s * (BS // split_store)]:
+                                        T.atomic_addx4(
+                                            dKV[
+                                                by,
+                                                Indices[by, s_i, bz // NH, i_i * BS + bi_i + s * (BS // split_store)],
+                                                bz // NH,
+                                                D + d_i * 4,
+                                            ],
+                                            acc_dkv_tail_shared[bi_i, d_i * 4],
+                                        )
+                                else:
+                                    T.atomic_addx4(
+                                        dKV[
+                                            by,
+                                            Indices[by, s_i, bz // NH, i_i * BS + bi_i + s * (BS // split_store)],
+                                            bz // NH,
+                                            D + d_i * 4,
+                                        ],
+                                        acc_dkv_tail_shared[bi_i, d_i * 4],
+                                    )
+
+            if compute_dq:
+                T.copy(acc_dq, dQ_shared)
+                T.copy(acc_dq_tail, dQ_tail_shared)
+
+                T.copy(dQ_shared, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, :D])
+                T.copy(dQ_tail_shared, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, D:])
+
+    return sparse_mla_bwd_kernel
+
+
+@tilelang.jit(
+    out_idx=[],
+    pass_configs={
+        tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
+        tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
+        tilelang.PassConfigKey.TL_ENABLE_AGGRESSIVE_SHARED_MEMORY_MERGE: True,
+    },
+)
+def bwd_dkv_split_topk(
+    H,
+    D,
+    D_tail,
+    topk,
+    kv_group=1,
+    sm_scale=None,
+    block_size=64,
+    chunk_topk=512,
+    num_stages=0,
+    threads=256,
+    indices_dtype=T.int32,
+    dtype=T.bfloat16,
+    accum_dtype=T.float32,
+):
+    assert topk % block_size == 0
+    assert chunk_topk % block_size == 0
+    assert topk % chunk_topk == 0
+    assert dtype == T.bfloat16
+    assert accum_dtype == T.float32
+    assert indices_dtype == T.int32
+
+    if sm_scale is None:
+        sm_scale = (D + D_tail) ** (-0.5)
+    sm_scale_mul_reciprocal_log2 = sm_scale * 1.44269504
+
+    B = T.dynamic("B")
+    S = T.dynamic("S")
+    S_kv = T.dynamic("S_kv")
+
+    H_kv = H // kv_group
+    q_shape = [B, S, H, D + D_tail]
+    k_shape = [B, S_kv, kv_group, D + D_tail]
+    o_shape = [B, S, H, D]
+    indices_shape = [B, S, kv_group, topk]
+    delta_shape = [B, S, H]
+    lse_shape = [B, S, H]
+
+    H = H_kv
+    padded_H = max(tilelang.math.next_power_of_2(H_kv), 16)
+    block_H = min(64, padded_H)
+    assert padded_H % block_H == 0
+    NH = padded_H // block_H
+    BS = block_size
+    split_store = 2
+    chunk_blocks = chunk_topk // block_size
+    num_chunks = topk // chunk_topk
+
+    @T.prim_func
+    def sparse_mla_bwd_dkv_split_topk_kernel(
+        Q: T.Tensor(q_shape, dtype),
+        KV: T.Tensor(k_shape, dtype),
+        dO: T.Tensor(o_shape, dtype),
+        Indices: T.Tensor(indices_shape, indices_dtype),
+        Lse: T.Tensor(lse_shape, accum_dtype),
+        Delta: T.Tensor(delta_shape, accum_dtype),
+        dKV: T.Tensor(k_shape, accum_dtype),
+    ):
+        with T.Kernel(S * num_chunks, B, kv_group * NH, threads=threads) as (bx, by, bz):
+            s_i = bx // num_chunks
+            chunk_i = bx % num_chunks
+            Q_shared = T.alloc_shared([block_H, D], dtype)
+            Q_tail_shared = T.alloc_shared([block_H, D_tail], dtype)
+            KV_shared = T.alloc_shared([BS, D], dtype)
+            KV_tail_shared = T.alloc_shared([BS, D_tail], dtype)
+            dO_shared = T.alloc_shared([block_H, D], dtype)
+            mask = T.alloc_fragment([BS], "bool")
+
+            P_shared_cast = T.alloc_shared([block_H, BS], dtype)
+            dP_shared_cast = T.alloc_shared([block_H, BS], dtype)
+
+            acc_p = T.alloc_fragment([block_H, BS], accum_dtype)
+            acc_dp = T.alloc_fragment([block_H, BS], accum_dtype)
+            acc_dkv = T.alloc_fragment([BS, D], accum_dtype)
+            acc_dkv_tail = T.alloc_fragment([BS, D_tail], accum_dtype)
+            acc_dkv_shared = T.alloc_shared([BS // split_store, D], accum_dtype)
+            acc_dkv_tail_shared = T.alloc_shared([BS // split_store, D_tail], accum_dtype)
+
+            max_kv_i = S_kv - 2
+
+            T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, :D], Q_shared)
+            T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, D:], Q_tail_shared)
+            T.copy(dO[by, s_i, bz * block_H : (bz + 1) * block_H, :D], dO_shared)
+
+            for local_i in T.Pipelined(chunk_blocks, num_stages=num_stages):
+                i_i = chunk_i * chunk_blocks + local_i
                 for bi_i in T.Parallel(BS):
                     mask[bi_i] = Indices[by, s_i, bz // NH, i_i * BS + bi_i] <= max_kv_i
 
@@ -195,20 +427,15 @@ def bwd(
                     )
 
                 T.copy(acc_p, P_shared_cast)
-
                 T.gemm(
                     dO_shared, KV_shared, acc_dp, transpose_B=True, policy=T.GemmWarpPolicy.FullCol, clear_accum=True
                 )
-
                 for h_i, bi_i in T.Parallel(block_H, BS):
                     acc_dp[h_i, bi_i] = (
                         acc_p[h_i, bi_i] * (acc_dp[h_i, bi_i] - Delta[by, s_i, bz * block_H + h_i]) * sm_scale
                     )
 
                 T.copy(acc_dp, dP_shared_cast)
-                T.gemm(dP_shared_cast, KV_shared, acc_dq, policy=T.GemmWarpPolicy.FullCol)
-                T.gemm(dP_shared_cast, KV_tail_shared, acc_dq_tail, policy=T.GemmWarpPolicy.FullCol)
-
                 T.gemm(
                     dP_shared_cast,
                     Q_shared,
@@ -232,37 +459,46 @@ def bwd(
                             acc_dkv_tail_shared[bi_i, d_i] = acc_dkv_tail[bi_i + s * (BS // split_store), d_i]
 
                     for bi_i, d_i in T.Parallel(BS // split_store, D // 4):
-                        T.atomic_addx4(
-                            dKV[
-                                by,
-                                Indices[by, s_i, bz // NH, i_i * BS + bi_i + s * (BS // split_store)],
-                                bz // NH,
-                                d_i * 4,
-                            ],
-                            acc_dkv_shared[bi_i, d_i * 4],
-                        )
+                        if mask[bi_i + s * (BS // split_store)]:
+                            T.atomic_addx4(
+                                dKV[
+                                    by,
+                                    Indices[by, s_i, bz // NH, i_i * BS + bi_i + s * (BS // split_store)],
+                                    bz // NH,
+                                    d_i * 4,
+                                ],
+                                acc_dkv_shared[bi_i, d_i * 4],
+                            )
 
                     for bi_i, d_i in T.Parallel(BS // split_store, D_tail // 4):
-                        T.atomic_addx4(
-                            dKV[
-                                by,
-                                Indices[by, s_i, bz // NH, i_i * BS + bi_i + s * (BS // split_store)],
-                                bz // NH,
-                                D + d_i * 4,
-                            ],
-                            acc_dkv_tail_shared[bi_i, d_i * 4],
-                        )
+                        if mask[bi_i + s * (BS // split_store)]:
+                            T.atomic_addx4(
+                                dKV[
+                                    by,
+                                    Indices[by, s_i, bz // NH, i_i * BS + bi_i + s * (BS // split_store)],
+                                    bz // NH,
+                                    D + d_i * 4,
+                                ],
+                                acc_dkv_tail_shared[bi_i, d_i * 4],
+                            )
 
-            T.copy(acc_dq, dQ_shared)
-            T.copy(acc_dq_tail, dQ_tail_shared)
-
-            T.copy(dQ_shared, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, :D])
-            T.copy(dQ_tail_shared, dQ[by, s_i, bz * block_H : (bz + 1) * block_H, D:])
-
-    return sparse_mla_bwd_kernel
+    return sparse_mla_bwd_dkv_split_topk_kernel
 
 
-def sparse_mla_bwd(q, kv, o, do, indices, lse, sm_scale=None):
+def sparse_mla_bwd(
+    q,
+    kv,
+    o,
+    do,
+    indices,
+    lse,
+    sm_scale=None,
+    block_size=32,
+    split_store=2,
+    use_gemm_v1=False,
+    mask_invalid_stores=False,
+    skip_invalid_blocks=False,
+):
     assert q.is_contiguous()
     assert kv.is_contiguous()
     assert indices.is_contiguous()
@@ -278,12 +514,138 @@ def sparse_mla_bwd(q, kv, o, do, indices, lse, sm_scale=None):
     assert lse.shape == (B, S, H)
 
     preprocess_kernel = preprocess(H, D)
-    bwd_kernel = bwd(H, D, D_tail, topk, kv_group, sm_scale, True)
+    bwd_kernel = bwd(
+        H,
+        D,
+        D_tail,
+        topk,
+        kv_group,
+        sm_scale,
+        True,
+        block_size=block_size,
+        split_store=split_store,
+        use_gemm_v1=use_gemm_v1,
+        mask_invalid_stores=mask_invalid_stores,
+        skip_invalid_blocks=skip_invalid_blocks,
+    )
     postprocess_kernel = postprocess(D, D_tail, kv_group)
 
     delta = preprocess_kernel(o, do)
     dkv = torch.zeros_like(kv, dtype=torch.float32)
     dq = bwd_kernel(q, kv, do, indices, lse, delta, dkv)
+    dkv = postprocess_kernel(dkv)
+
+    return dq, dkv
+
+
+def sparse_mla_bwd_split(q, kv, o, do, indices, lse, sm_scale=None, block_size=64, overlap=False):
+    assert q.is_contiguous()
+    assert kv.is_contiguous()
+    assert indices.is_contiguous()
+    assert lse.is_contiguous()
+    B, S, H, dim_plus_tail_dim = q.shape
+    _, S_kv, kv_group, _ = kv.shape
+    assert kv.shape[-1] == dim_plus_tail_dim
+    assert kv.shape[0] == B
+    D = 512
+    D_tail = dim_plus_tail_dim - D
+    topk = indices.shape[-1]
+    assert indices.shape == (B, S, kv_group, topk)
+    assert lse.shape == (B, S, H)
+
+    preprocess_kernel = preprocess(H, D)
+    dq_kernel = bwd(
+        H,
+        D,
+        D_tail,
+        topk,
+        kv_group,
+        sm_scale,
+        True,
+        block_size=block_size,
+        compute_dq=True,
+        compute_dkv=False,
+    )
+    dkv_kernel = bwd(
+        H,
+        D,
+        D_tail,
+        topk,
+        kv_group,
+        sm_scale,
+        True,
+        block_size=block_size,
+        compute_dq=False,
+        compute_dkv=True,
+    )
+    postprocess_kernel = postprocess(D, D_tail, kv_group)
+
+    delta = preprocess_kernel(o, do)
+    dkv = torch.zeros_like(kv, dtype=torch.float32)
+    if not overlap:
+        dq = dq_kernel(q, kv, do, indices, lse, delta, dkv)
+        dkv_kernel(q, kv, do, indices, lse, delta, dkv)
+    else:
+        current_stream = torch.cuda.current_stream(q.device)
+        dq_stream = torch.cuda.Stream(device=q.device)
+        dkv_stream = torch.cuda.Stream(device=q.device)
+        dq_stream.wait_stream(current_stream)
+        dkv_stream.wait_stream(current_stream)
+        with torch.cuda.stream(dq_stream):
+            dq = dq_kernel(q, kv, do, indices, lse, delta, dkv)
+        with torch.cuda.stream(dkv_stream):
+            dkv_kernel(q, kv, do, indices, lse, delta, dkv)
+        current_stream.wait_stream(dq_stream)
+        current_stream.wait_stream(dkv_stream)
+    dkv = postprocess_kernel(dkv)
+
+    return dq, dkv
+
+
+def sparse_mla_bwd_split_topk(q, kv, o, do, indices, lse, sm_scale=None, block_size=64, chunk_topk=512):
+    assert q.is_contiguous()
+    assert kv.is_contiguous()
+    assert indices.is_contiguous()
+    assert lse.is_contiguous()
+    B, S, H, dim_plus_tail_dim = q.shape
+    _, S_kv, kv_group, _ = kv.shape
+    assert kv.shape[-1] == dim_plus_tail_dim
+    assert kv.shape[0] == B
+    D = 512
+    D_tail = dim_plus_tail_dim - D
+    topk = indices.shape[-1]
+    assert indices.shape == (B, S, kv_group, topk)
+    assert lse.shape == (B, S, H)
+
+    preprocess_kernel = preprocess(H, D)
+    dq_kernel = bwd(
+        H,
+        D,
+        D_tail,
+        topk,
+        kv_group,
+        sm_scale,
+        True,
+        block_size=block_size,
+        compute_dq=True,
+        compute_dkv=False,
+    )
+    dkv_kernel = bwd_dkv_split_topk(
+        H,
+        D,
+        D_tail,
+        topk,
+        kv_group,
+        sm_scale,
+        block_size=block_size,
+        chunk_topk=chunk_topk,
+    )
+    postprocess_kernel = postprocess(D, D_tail, kv_group)
+
+    delta = preprocess_kernel(o, do)
+    dkv = torch.zeros_like(kv, dtype=torch.float32)
+    dq = dq_kernel(q, kv, do, indices, lse, delta, dkv)
+    dkv_kernel(q, kv, do, indices, lse, delta, dkv)
     dkv = postprocess_kernel(dkv)
 
     return dq, dkv
