@@ -1,4 +1,5 @@
 import math
+import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -17,7 +18,6 @@ from prime_rl.configs.shared import (
 )
 from prime_rl.configs.trainer import TokenizerConfig
 from prime_rl.utils.config import BaseConfig
-from prime_rl.utils.logger import get_logger
 
 
 class OptimizerConfig(BaseConfig):
@@ -149,9 +149,11 @@ class TrainSamplingConfig(BaseConfig):
     @classmethod
     def _deprecate_max_tokens(cls, data: Any) -> Any:
         if isinstance(data, dict) and "max_tokens" in data and "max_completion_tokens" not in data:
-            get_logger().warning(
+            warnings.warn(
                 "'max_tokens' is deprecated, use 'max_completion_tokens' instead. "
-                "Auto-translating for now, but this will be removed in a future release."
+                "Auto-translating for now, but this will be removed in a future release.",
+                DeprecationWarning,
+                stacklevel=2,
             )
         return data
 
@@ -248,9 +250,11 @@ class EvalSamplingConfig(BaseConfig):
     @classmethod
     def _deprecate_max_tokens(cls, data: Any) -> Any:
         if isinstance(data, dict) and "max_tokens" in data and "max_completion_tokens" not in data:
-            get_logger().warning(
+            warnings.warn(
                 "'max_tokens' is deprecated, use 'max_completion_tokens' instead. "
-                "Auto-translating for now, but this will be removed in a future release."
+                "Auto-translating for now, but this will be removed in a future release.",
+                DeprecationWarning,
+                stacklevel=2,
             )
         return data
 
@@ -1103,15 +1107,19 @@ class OrchestratorConfig(BaseConfig):
             train = data.setdefault("train", {})
             if isinstance(train, dict):
                 if "env" in data:
-                    get_logger().warning(
+                    warnings.warn(
                         "'[[orchestrator.env]]' is deprecated, use '[[orchestrator.train.env]]' instead. "
-                        "Auto-translating for now, but this will be removed in a future release."
+                        "Auto-translating for now, but this will be removed in a future release.",
+                        DeprecationWarning,
+                        stacklevel=2,
                     )
                     train.setdefault("env", data.pop("env"))
                 if "sampling" in data:
-                    get_logger().warning(
+                    warnings.warn(
                         "'[orchestrator.sampling]' is deprecated, use '[orchestrator.train.sampling]' instead. "
-                        "Auto-translating for now, but this will be removed in a future release."
+                        "Auto-translating for now, but this will be removed in a future release.",
+                        DeprecationWarning,
+                        stacklevel=2,
                     )
                     train.setdefault("sampling", data.pop("sampling"))
         return data
