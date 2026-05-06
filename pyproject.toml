@@ -186,12 +186,9 @@ aime2025 = { index = "primeintellect" }
 deepdive = { index = "primeintellect" }
 mini_swe_agent_plus = { index = "primeintellect" }
 deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+73b6ea4-cp312-cp312-linux_x86_64.whl" }
-# DeepGEMM bumped from 477618c (v0.5.0 release) to d30fc36 because the FP8
-# grouped-GEMM training path needs the newer kernel APIs. The wheel under
-# tools/wheels/ must be uploaded to the next prime-rl GitHub release alongside
-# deep-ep / nixl-cu12. After that, swap this back to a release URL of the form
-#   https://github.com/PrimeIntellect-ai/prime-rl/releases/download/<tag>/deep_gemm-2.3.0+d30fc36-cp312-cp312-linux_x86_64.whl
-deep-gemm = { path = "tools/wheels/deep_gemm-2.3.0+d30fc36-cp312-cp312-linux_x86_64.whl" }
+# DeepGEMM bumped from 477618c to d30fc36 (newer kernel APIs needed by the
+# FP8 grouped-GEMM training path). Rebuild via scripts/install_deep_gemm.sh.
+deep-gemm = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.3.0+d30fc36-cp312-cp312-linux_x86_64.whl" }
 nixl-cu12 = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
 flash_attn_3 = { index = "pytorch-cu128-test" }

@@ -11,7 +11,7 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-04-29T22:02:38.080794009Z"
+exclude-newer = "2026-04-29T22:09:49.355713533Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -705,9 +705,9 @@ wheels = [
 [[package]]
 name = "deep-gemm"
 version = "2.3.0+d30fc36"
-source = { path = "tools/wheels/deep_gemm-2.3.0+d30fc36-cp312-cp312-linux_x86_64.whl" }
+source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.3.0+d30fc36-cp312-cp312-linux_x86_64.whl" }
 wheels = [
-    { filename = "deep_gemm-2.3.0+d30fc36-cp312-cp312-linux_x86_64.whl", hash = "sha256:dfa8dbeff3d820193f4f94b75f12734c7d73650495e9e8bbdb276953316db6f9" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.3.0+d30fc36-cp312-cp312-linux_x86_64.whl", hash = "sha256:dfa8dbeff3d820193f4f94b75f12734c7d73650495e9e8bbdb276953316db6f9" },
 ]
 
 [[package]]
@@ -2856,7 +2856,7 @@ requires-dist = [
     { name = "color-codeword", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "deep-ep", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+73b6ea4-cp312-cp312-linux_x86_64.whl" },
-    { name = "deep-gemm", marker = "platform_machine == 'x86_64' and extra == 'disagg'", path = "tools/wheels/deep_gemm-2.3.0+d30fc36-cp312-cp312-linux_x86_64.whl" },
+    { name = "deep-gemm", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.3.0+d30fc36-cp312-cp312-linux_x86_64.whl" },
     { name = "deepdive", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=d891eeb" },
     { name = "flash-attn", marker = "platform_machine == 'x86_64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.4/flash_attn-2.8.3+cu128torch2.11-cp312-cp312-linux_x86_64.whl" },
