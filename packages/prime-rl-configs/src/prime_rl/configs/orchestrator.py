@@ -152,7 +152,7 @@ class TrainSamplingConfig(BaseConfig):
             warnings.warn(
                 "'max_tokens' is deprecated, use 'max_completion_tokens' instead. "
                 "Auto-translating for now, but this will be removed in a future release.",
-                DeprecationWarning,
+                FutureWarning,
                 stacklevel=2,
             )
         return data
@@ -253,7 +253,7 @@ class EvalSamplingConfig(BaseConfig):
             warnings.warn(
                 "'max_tokens' is deprecated, use 'max_completion_tokens' instead. "
                 "Auto-translating for now, but this will be removed in a future release.",
-                DeprecationWarning,
+                FutureWarning,
                 stacklevel=2,
             )
         return data
@@ -1110,7 +1110,7 @@ class OrchestratorConfig(BaseConfig):
                     warnings.warn(
                         "'[[orchestrator.env]]' is deprecated, use '[[orchestrator.train.env]]' instead. "
                         "Auto-translating for now, but this will be removed in a future release.",
-                        DeprecationWarning,
+                        FutureWarning,
                         stacklevel=2,
                     )
                     train.setdefault("env", data.pop("env"))
@@ -1118,7 +1118,7 @@ class OrchestratorConfig(BaseConfig):
                     warnings.warn(
                         "'[orchestrator.sampling]' is deprecated, use '[orchestrator.train.sampling]' instead. "
                         "Auto-translating for now, but this will be removed in a future release.",
-                        DeprecationWarning,
+                        FutureWarning,
                         stacklevel=2,
                     )
                     train.setdefault("sampling", data.pop("sampling"))
