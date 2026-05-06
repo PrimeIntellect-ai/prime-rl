@@ -143,17 +143,10 @@ srun bash -c '
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
 
 {% if disaggregated -%}
-    # NVSHMEM libs for DeepEP — the wheel's deep_ep_cpp.so has DT_RUNPATH baked
-    # to /tmp/deepep_build/nvshmem/lib (see scripts/install_ep_kernels.sh).
-    # Symlink the user's actual NVSHMEM install at that path on each node.
-    if [ ! -d /tmp/deepep_build/nvshmem/lib ]; then
-        for nvshmem_src in "$OUTPUT_DIR/nvshmem/lib" "$PROJECT_DIR/ep_kernels_workspace/nvshmem/lib"; do
-            if [ -d "$nvshmem_src" ]; then
-                mkdir -p /tmp/deepep_build/nvshmem
-                ln -sfn "$nvshmem_src" /tmp/deepep_build/nvshmem/lib
-                break
-            fi
-        done
+    # NVSHMEM libs for DeepEP — ensure the rpath target exists on all nodes
+    if [ ! -d /tmp/deepep_build/nvshmem/lib ] && [ -d "$OUTPUT_DIR/nvshmem/lib" ]; then
+        mkdir -p /tmp/deepep_build/nvshmem
+        ln -sfn "$OUTPUT_DIR/nvshmem/lib" /tmp/deepep_build/nvshmem/lib
     fi
 
     # Reconstruct hostnames array
