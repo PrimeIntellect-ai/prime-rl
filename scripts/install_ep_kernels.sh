@@ -53,32 +53,15 @@ CUDA_MAJOR=$(echo "$CUDA_MAJOR_MINOR" | cut -d. -f1)
 
 CUDA_HOME="/usr/local/cuda-${CUDA_MAJOR_MINOR}"
 if [ ! -x "$CUDA_HOME/bin/nvcc" ]; then
-    # Fall back to /usr/local/cuda-${MAJOR} (e.g. torch reports 13.0 but the
-    # cluster has cuda-13 → 13.1 installed). Same major is ABI-compatible.
-    CUDA_HOME="/usr/local/cuda-${CUDA_MAJOR}"
-fi
-if [ ! -x "$CUDA_HOME/bin/nvcc" ]; then
-    echo "ERROR: Could not find CUDA toolkit matching torch (cuda ${TORCH_CUDA_VER}) at /usr/local/cuda-${CUDA_MAJOR_MINOR} or /usr/local/cuda-${CUDA_MAJOR}" >&2
+    echo "ERROR: Could not find CUDA toolkit matching torch (cuda ${TORCH_CUDA_VER}) at ${CUDA_HOME}" >&2
     echo "Install it with: sudo apt install cuda-toolkit-${CUDA_MAJOR_MINOR//./-}" >&2
     exit 1
 fi
 export CUDA_HOME
 
-# Verify the toolkit major version matches torch
+# Verify versions actually match
 NVCC_VER=$("$CUDA_HOME/bin/nvcc" --version | grep -oP 'release \K[\d.]+')
-NVCC_MAJOR="${NVCC_VER%%.*}"
-if [ "$NVCC_MAJOR" != "$CUDA_MAJOR" ]; then
-    echo "ERROR: nvcc major (${NVCC_MAJOR}) at ${CUDA_HOME} does not match torch CUDA major (${CUDA_MAJOR})" >&2
-    exit 1
-fi
 echo "Torch CUDA: ${TORCH_CUDA_VER}, nvcc: ${NVCC_VER} (${CUDA_HOME})"
-
-# CUDA 13 relocated CCCL headers from include/cuda/ to include/cccl/cuda/
-# (e.g. <cuda/std/tuple>). Add cccl to the compiler include path so NVSHMEM
-# headers pulled in by DeepEP find them.
-if [ "$CUDA_MAJOR" -ge 13 ] && [ -d "$CUDA_HOME/include/cccl" ]; then
-    export CPATH="$CUDA_HOME/include/cccl:${CPATH:-}"
-fi
 
 # ── Auto-detect GPU architecture ──────────────────────────────────────────────
 GPU_NAME=$(nvidia-smi --query-gpu=gpu_name --format=csv,noheader,nounits -i 0 2>/dev/null)
@@ -157,20 +140,6 @@ git checkout "$DEEPEP_COMMIT_HASH"
 WHEEL_DIR="$REPO_ROOT/deps"
 mkdir -p "$WHEEL_DIR"
 python setup.py bdist_wheel --dist-dir "$WHEEL_DIR"
-
-# Post-build wheel surgery:
-#   - --set-runpath: setup.py bakes the build-time NVSHMEM path into
-#     deep_ep_cpp.so as DT_RUNPATH; rewrite it to the canonical
-#     /tmp/deepep_build/nvshmem/lib that templates symlink at job startup.
-#     This matches the convention of the prior cu12 wheel.
-#   - --cu cuXX: stamp the local version so cu12/cu13 builds at the same source
-#     commit don't share a wheel filename when uploaded to the same release.
-BUILT_WHEEL=$(ls "$WHEEL_DIR"/deep_ep-*-cp*.whl | grep -v '\.cu[0-9]\+-' | head -1 || true)
-if [ -n "$BUILT_WHEEL" ]; then
-    python "$SCRIPT_DIR/wheel_add_cu_suffix.py" "$BUILT_WHEEL" \
-        --set-runpath /tmp/deepep_build/nvshmem/lib --cu "cu${CUDA_MAJOR}" \
-        --out-dir "$WHEEL_DIR" --replace
-fi
 
 WHEEL=$(ls "$WHEEL_DIR"/deep_ep*.whl | head -1)
 echo ""
