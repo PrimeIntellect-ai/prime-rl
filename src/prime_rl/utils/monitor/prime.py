@@ -456,13 +456,30 @@ class PrimeMonitor(Monitor):
                 f"dropping oldest queued step {dropped_step}"
             )
 
+        await self._drain_sample_backlog()
+
+    async def _drain_sample_backlog(self, *, ignore_cooldown: bool = False) -> None:
+        """Drain the sample backlog under the upload lock. Used by the regular
+        log_samples path and by close()/_flush() for a final shutdown attempt.
+        With ignore_cooldown=True, retries the head even if the retryable cooldown
+        is currently armed — last-chance attempt before the loop stops.
+        """
+        if self._sample_upload_lock is None:
+            self._sample_upload_lock = asyncio.Lock()
+        if ignore_cooldown:
+            self._retryable_cooldown_until = None
+
         async with self._sample_upload_lock:
             while self._sample_upload_queue:
                 # If a previous drain just hit a retryable failure, every coroutine
                 # queued on this lock would otherwise pop the same head and burn
                 # another full tenacity budget. Bail out and let a later tick (after
                 # the cooldown elapses) pick up the backlog.
-                if self._retryable_cooldown_until is not None and time.monotonic() < self._retryable_cooldown_until:
+                if (
+                    not ignore_cooldown
+                    and self._retryable_cooldown_until is not None
+                    and time.monotonic() < self._retryable_cooldown_until
+                ):
                     return
 
                 # Pop the in-flight item out of the queue entirely before awaiting,
@@ -715,21 +732,41 @@ class PrimeMonitor(Monitor):
         self._loop.run_forever()
 
     def _flush(self, timeout: float = 30.0) -> None:
-        """Wait for all pending async requests to complete."""
+        """Wait for all pending async requests to complete and make a last-chance
+        attempt to drain any sample uploads still queued in the backlog. Without
+        this final drain, a retryable failure on the last log_samples tick would
+        leave its parquet bytes parked in the queue and lost on close.
+        """
         if not self.enabled or not hasattr(self, "_loop"):
             return
 
-        if not self._pending_futures:
-            return
+        if self._pending_futures:
+            self.logger.debug(f"Flushing {len(self._pending_futures)} pending request(s)")
+            for future in self._pending_futures:
+                try:
+                    future.result(timeout=timeout)
+                except Exception as e:
+                    self.logger.debug(f"Pending request completed with error: {e}")
+            self._pending_futures.clear()
 
-        self.logger.debug(f"Flushing {len(self._pending_futures)} pending request(s)")
-        for future in self._pending_futures:
+        # Final shutdown drain of the sample backlog. Bypass the cooldown — this
+        # is our last chance before the loop stops.
+        if hasattr(self, "_sample_upload_queue") and self._sample_upload_queue:
+            backlog_size = len(self._sample_upload_queue)
+            self.logger.info(f"Final sample-upload drain on close ({backlog_size} step(s) queued)")
             try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._drain_sample_backlog(ignore_cooldown=True),
+                    self._loop,
+                )
                 future.result(timeout=timeout)
             except Exception as e:
-                self.logger.debug(f"Pending request completed with error: {e}")
-
-        self._pending_futures.clear()
+                self.logger.warning(f"Final sample-upload drain failed: {type(e).__name__}: {e}")
+            remaining = len(self._sample_upload_queue)
+            if remaining:
+                self.logger.warning(
+                    f"{remaining} sample upload(s) still in backlog at close — these samples will be lost"
+                )
 
     async def _make_request_async(self, endpoint: str, data: dict[str, Any], max_retries: int = 3) -> None:
         """Make an async POST request to the Prime Intellect API with retries."""
