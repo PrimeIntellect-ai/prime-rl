@@ -17,6 +17,8 @@ dependencies = [
     "tomli-w>=1.2.0",
     "numpy>=2.2.6",
     "torch>=2.9.0",
+    "torchvision",
+    "torchaudio",
     "torchdata>=0.11.0",
     "transformers",
     "vllm>=0.20.1",
@@ -109,6 +111,7 @@ dev = [
 
 
 [tool.uv]
+exclude-newer = "7 days"
 preview = true
 no-build-isolation-package = ["flash-attn"]
 environments = [
@@ -124,8 +127,8 @@ override-dependencies = [
 ]
 
 [tool.uv.exclude-newer-package]
-# pytorch-cu128 / pytorch-cu128-test indexes don't publish upload dates
-torch = false
+# we want latest vllm, remove next patch
+vllm = false
 flash_attn_3 = false
 # Self-vendored packages on our primeintellect index
 reverse-text = false
@@ -158,6 +161,8 @@ nixl-cu12 = false
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
 verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "3b77145" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
