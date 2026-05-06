@@ -55,6 +55,7 @@ class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
             top_k=config.num_experts_per_tok,
             use_grouped_mm=config.use_grouped_mm,
             load_balance_coeff=1e-3 if config.use_routing_bias else None,
+            fp8=getattr(config, "fp8", False),
         )
         self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.intermediate_size)
 

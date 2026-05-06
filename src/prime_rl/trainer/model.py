@@ -43,6 +43,7 @@ from prime_rl.trainer.models.layers.checkpointing import (
     set_selective_activation_checkpointing,
     supports_selective_activation_checkpointing,
 )
+from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import LatentMoE, MoE
 from prime_rl.trainer.parallel_dims import ParallelDims
@@ -470,6 +471,7 @@ def get_model(
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
+    model_config.fp8 = config.fp8
 
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
     # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
@@ -1039,6 +1041,9 @@ def setup_model(
         lm_head_chunk_size = config.fused_lm_head_token_chunk_size
 
     inject_prime_lm_head(model, chunk_size=lm_head_chunk_size, fused_cross_entropy=fused_cross_entropy)
+
+    if config.fp8:
+        replace_linear_with_fp8_blockwise_linear(model)
 
     # Apply LoRA before FSDP setup
     if config.lora is not None:

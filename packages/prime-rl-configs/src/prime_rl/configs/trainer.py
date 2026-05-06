@@ -330,6 +330,14 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = True
 
+    fp8: Annotated[
+        bool,
+        Field(
+            description="Whether to use FP8 training via DeepGEMM. Replaces nn.Linear layers with FP8 blockwise linear "
+            "and uses FP8 grouped GEMM for MoE experts. Requires SM90 (Hopper) GPUs and model.impl='custom'.",
+        ),
+    ] = False
+
     freeze_moe_router: Annotated[
         bool,
         Field(
@@ -415,6 +423,12 @@ class ModelConfig(BaseModelConfig):
     def flash_attention_4_only_with_custom_impl(self):
         if self.attn == "fa4" and self.impl != "custom":
             raise ValueError("Flash attention 4 is only supported with the custom implementation")
+        return self
+
+    @model_validator(mode="after")
+    def fp8_only_with_custom_impl(self):
+        if self.fp8 and self.impl not in ("custom", "auto"):
+            raise ValueError("FP8 training is only supported with model.impl='custom' or 'auto'.")
         return self
 
     @model_validator(mode="after")

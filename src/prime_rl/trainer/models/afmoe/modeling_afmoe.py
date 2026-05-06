@@ -353,6 +353,7 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
             top_k=config.num_experts_per_tok,
             use_grouped_mm=getattr(config, "use_grouped_mm", True),
             load_balance_coeff=getattr(config, "load_balance_coeff", None),
+            fp8=getattr(config, "fp8", False),
         )
         if self.moe_enabled:
             self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
