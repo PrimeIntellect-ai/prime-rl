@@ -106,12 +106,15 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
 
 def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutputs:
     """
-    IcePop (https://arxiv.org/abs/2512.16144) with a Kimi-K2.5 KL term
-    (https://arxiv.org/pdf/2602.02276) added on the kept tokens.
+    IPO+KL loss, combining:
+    - DPPO-Binary TV Loss (https://arxiv.org/pdf/2602.04879)
+    - Kimi-K2.5 KL Loss (https://arxiv.org/pdf/2602.02276)
 
-    Tokens whose importance ratio falls outside [α, β] are dropped from both
-    the policy-gradient and the KL terms, so the KL is only applied to tokens
-    that also contribute to the PG.
+    Two modifications vs the original DPPO+KL:
+    - Double-sided importance-ratio masking (advantage-sign-agnostic): tokens
+      whose ratio π_train/π_infer falls outside [α, β] are dropped.
+    - The KL penalty is applied only on kept (unmasked) tokens — masked tokens
+      contribute nothing to either the PG or the KL term.
     """
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
