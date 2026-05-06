@@ -684,11 +684,13 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
+            from prime_rl.configs.orchestrator import SamplesBatching
+
             self.trainer.bench = BenchConfig()
             self.orchestrator.bench = True
-            self.trainer.data.fake = FakeDataLoaderConfig(
-                batch_size=self.orchestrator.batch_size or 32,
-            )
+            bs = self.orchestrator.batch_size
+            fake_bs = bs.size if isinstance(bs, SamplesBatching) else 32
+            self.trainer.data.fake = FakeDataLoaderConfig(batch_size=fake_bs)
 
         trainer_bench_enabled = self.trainer.bench is not None
         if trainer_bench_enabled != self.orchestrator.bench:

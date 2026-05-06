@@ -1,169 +1,115 @@
-import asyncio
-import time
-from concurrent.futures import ThreadPoolExecutor
-from itertools import cycle
-from pathlib import Path
-from typing import Any
+"""Setup helpers for the orchestrator entrypoint.
 
-import pandas as pd
+These are the cross-cutting concerns kept out of `orchestrator.run()`:
+config dump, env install, resume restoration, queue sizing, client mode
+selection. Pure translation — no behavior beyond what the comments in
+each helper describe."""
+
+import asyncio
+
+import tomli_w
 import verifiers as vf
-from rich.console import Console
-from rich.table import Table
-from verifiers.utils.client_utils import setup_openai_client
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.transport import TrainingSample
+from prime_rl.orchestrator.ckpt import CkptManager
+from prime_rl.orchestrator.engine import GroupOutput, RolloutEngine
+from prime_rl.orchestrator.inference_admin import InferenceAdmin
+from prime_rl.orchestrator.scheduler import Scheduler
+from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import (
-    format_time,
-    get_broadcast_dir,
-    get_ckpt_dir,
-    get_step_path,
-)
+from prime_rl.utils.utils import get_env_ids_to_install, install_env
 
 
-def set_default_executor(max_workers: int = 64) -> None:
-    """Scale the default asyncio thread pool so asyncio.to_thread has enough capacity."""
-    get_logger().info(f"Setting default executor to ThreadPoolExecutor(max_workers={max_workers})")
-    asyncio.get_event_loop().set_default_executor(ThreadPoolExecutor(max_workers=max_workers))
+def install_envs(cfg: OrchestratorConfig) -> None:
+    """Install all train + eval verifiers envs referenced by the config."""
+    env_ids = set(get_env_ids_to_install(cfg.train.env))
+    if cfg.eval is not None:
+        env_ids.update(get_env_ids_to_install(cfg.eval.env))
+    for env_id in env_ids:
+        install_env(env_id, prerelease=cfg.env_install_prerelease)
 
 
-def print_benchmark(history: dict[str, list[Any]]) -> None:
-    """
-    Print benchmark results as rich table. Shows formatted step time values.
-    First N rows show the per-step values, and the last row shows the mean,
-    std, min, and max values.
-    """
-    history.pop("step")
-    assert all(len(v) for v in history.values()), "All metrics must have logged the same number of steps"
-
-    # Turn metric history into pd.DataFrame
-    df = pd.DataFrame(dict(history.items()))
-    columns = {
-        "time/step": "Step Time",
-    }
-    df = df.rename(columns=columns)
-    df = df[list(columns.values())]
-    df = df.iloc[1:]  # Exclude first row
-
-    # Setup console
-    console = Console()
-    table = Table(title="Benchmark")
-
-    # Add columns
-    table.add_column("Step", justify="right")
-    for col in df.columns:
-        table.add_column(col, justify="center", style="magenta")
-
-    # Add formatted rows
-    formatted_df = pd.DataFrame(columns=df.columns)
-    formatted_df["Step Time"] = df["Step Time"].apply(format_time)
-    for step, row in formatted_df.iterrows():
-        table.add_row(*([str(step)] + [str(x) for x in row]))
-
-    # Separator
-    num_table_columns = 1 + len(df.columns)
-    table.add_row(*([""] * num_table_columns))
-
-    # Add row for formatted, aggregated statistics
-    mean_df = df.describe().loc[["mean", "std", "min", "max"], :]
-    formatted_mean_df = pd.DataFrame(columns=mean_df.columns)
-    formatted_mean_df["Step Time"] = mean_df["Step Time"].apply(format_time)
-    mean_row = ["Overall"] + formatted_mean_df.T.apply(
-        lambda row: f"{row['mean']} ± {row['std']} [{row['min']}, {row['max']}]", axis=1
-    ).tolist()
-    table.add_row(*mean_row)
-
-    # Display table
-    console.print(table)
+def write_orch_config(cfg: OrchestratorConfig) -> None:
+    """Trainer reads this from `output_dir/control/orch.toml` at startup
+    (see prime_rl.trainer.runs.RunManager.get_orchestrator_config)."""
+    control_dir = cfg.output_dir / "control"
+    control_dir.mkdir(parents=True, exist_ok=True)
+    with open(control_dir / "orch.toml", "wb") as f:
+        tomli_w.dump(cfg.model_dump(exclude_none=True, mode="json"), f)
 
 
-async def compute_teacher_logprobs(
-    clients: list[vf.ClientConfig],
-    model_name: str,
-    samples: list[TrainingSample],
-) -> list[list[float]]:
-    """Compute teacher model logprobs for a batch of training samples via prefill."""
-    from prime_rl.inference.vllm.serving_generate import GenerateResponse
-
-    async def _compute_single(client_config: vf.ClientConfig, sample: TrainingSample) -> list[float]:
-        client = setup_openai_client(client_config)
-
-        response = await client.post(
-            "/generate",
-            cast_to=GenerateResponse,
-            body={
-                "model": model_name,
-                "prompt_token_ids": sample.prompt_ids + sample.completion_ids,
-                "max_tokens": 1,
-                "temperature": 1.0,
-                "top_p": 1.0,
-                "prompt_logprobs": True,
-            },
-        )
-        return [0.0 if lp is None else float(lp) for lp in response.prompt_logprobs or []]
-
-    return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
-
-
-def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_timeout: int | None = None) -> Path:
-    """Get the weight directory for a given checkpoint step.
-
-    Args:
-        output_dir: The output directory for the run.
-        step: The checkpoint step.
-        check_exists: If True, raises FileNotFoundError if no weight directory exists.
-            If False, returns the broadcast directory path without checking existence
-            (useful for NCCL mode where weights are broadcasted, not stored on disk).
-        wait_timeout: Maximum time in seconds to wait for a stable directory to appear.
-            If None, no waiting is performed.
-    """
-    ckpt_weight_dir = get_step_path(get_ckpt_dir(output_dir), step) / "weight"
-    broadcast_weight_dir = get_step_path(get_broadcast_dir(output_dir), step)
-
-    def find_stable_dir() -> Path | None:
-        # For checkpoint weights, check STABLE file in parent directory (checkpoints/step_{step}/STABLE)
-        ckpt_step_dir = get_step_path(get_ckpt_dir(output_dir), step)
-        if (ckpt_step_dir / "STABLE").exists() and ckpt_weight_dir.exists():
-            return ckpt_weight_dir
-
-        # For broadcast weights, check STABLE file in the broadcast directory itself
-        if (broadcast_weight_dir / "STABLE").exists() and broadcast_weight_dir.exists():
-            return broadcast_weight_dir
-
+def resolve_resume_step(cfg: OrchestratorConfig, ckpt_manager: CkptManager | None) -> int | None:
+    """Resolve `cfg.ckpt.resume_step` against on-disk checkpoints.
+    `-1` → latest available; missing checkpoints → log a warning + None
+    (start fresh)."""
+    if not (cfg.ckpt and cfg.ckpt.resume_step is not None and ckpt_manager is not None):
         return None
-
-    # Check immediately, then wait if needed
-    result = find_stable_dir()
-    if result is None and wait_timeout:
-        start_time = time.time()
-        while time.time() - start_time < wait_timeout:
-            time.sleep(1)
-            result = find_stable_dir()
-            if result:
-                break
-
-    if result:
-        return result
-    if not check_exists:
-        return broadcast_weight_dir
-
-    raise FileNotFoundError(f"No weight directory found for checkpoint step {step}")
+    if cfg.ckpt.resume_step != -1:
+        return cfg.ckpt.resume_step
+    latest = ckpt_manager.latest_step()
+    if latest is None:
+        get_logger().warning("ckpt.resume_step=-1 set but no orch checkpoints found; starting fresh")
+    return latest
 
 
-def setup_external_rollout_model(config: OrchestratorConfig, logger) -> tuple[Any, str, bool]:
-    """Resolve rollout client/model and whether policy updates should be enabled."""
-    rollout_client_config = config.client
-    rollout_model_name = config.model.name
-    enable_policy_updates = True
+def make_groups_queue(cfg: OrchestratorConfig, scheduler: Scheduler) -> tuple[asyncio.Queue[GroupOutput], int]:
+    """Engine concurrency cap + bounded queue between engine and batcher.
+    Concurrency is in *groups*; max_inflight_rollouts is the legacy per-rollout
+    figure, so divide. Queue is sized so the batcher's async-level barrier
+    cascades backpressure into the engine's semaphore (rather than letting
+    in-flight rollouts pile up unbounded)."""
+    assert cfg.max_inflight_rollouts is not None
+    concurrency = max(1, cfg.max_inflight_rollouts // cfg.rollouts_per_example)
+    get_logger().info(f"Engine concurrency: {concurrency} groups across {len(scheduler.tasks)} task(s)")
+    return asyncio.Queue(maxsize=concurrency * (cfg.max_async_level + 1)), concurrency
 
-    if config.teacher_rollout_model is not None:
-        rollout_client_config = config.teacher_rollout_model.client
-        rollout_model_name = config.teacher_rollout_model.model.name
-        enable_policy_updates = False
-        logger.info(
-            f"Using external teacher rollout model (base_url={', '.join(rollout_client_config.base_url)}, "
-            f"model={rollout_model_name})"
+
+def make_client(cfg: OrchestratorConfig) -> vf.ClientConfig:
+    """Verifiers ClientConfig for the rollout engine. TITO (token-in-token-out)
+    bypasses server-side chat templating — only safe for linear-history envs."""
+    client_type = "openai_chat_completions_token" if cfg.use_token_client else "openai_chat_completions"
+    if cfg.use_token_client:
+        get_logger().warning(
+            "Token-in-token-out (TITO) client is enabled. Only use this if your environment has a "
+            "linear history and the chat template has the extension property."
         )
+    return vf.ClientConfig(
+        client_type=client_type,
+        api_base_url=cfg.client.base_url[0],
+        api_key_var=cfg.client.api_key_var,
+        timeout=cfg.client.timeout,
+        connect_timeout=cfg.client.connect_timeout,
+    )
 
-    return rollout_client_config, rollout_model_name, enable_policy_updates
+
+async def maybe_resume(
+    cfg: OrchestratorConfig,
+    resume_step: int | None,
+    ckpt_manager: CkptManager | None,
+    *,
+    scheduler: Scheduler,
+    engine: RolloutEngine,
+    batcher,
+    admin: InferenceAdmin,
+    watcher: WeightWatcher,
+    buffer,
+) -> None:
+    """Restore state from the last orch checkpoint and prime each component
+    with the resumed step so rollouts produced after this point are tagged
+    correctly."""
+    if resume_step is None or ckpt_manager is None:
+        return
+    state = ckpt_manager.load(resume_step)
+    batcher.step = state.step
+    scheduler.last_eval_step = state.last_eval_step
+    if buffer is not None and state.buffer_state and not (cfg.ckpt and cfg.ckpt.skip_buffer):
+        buffer.load_state_dict(state.buffer_state)
+    if cfg.eval and cfg.eval.skip_eval_on_resume:
+        # bump last_eval_step past current so the next interval boundary is
+        # the first eval the resumed run sees
+        scheduler.last_eval_step = state.step
+        get_logger().info(f"Skipping next eval on resume (last_eval_step={state.step})")
+    await admin.on_new_version(state.step)
+    await engine.on_new_version(state.step)
+    watcher.current_step = state.step
+    get_logger().success(f"Resumed orch from step {state.step} (eval cursor at {scheduler.last_eval_step})")

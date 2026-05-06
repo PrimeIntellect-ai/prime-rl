@@ -2,7 +2,7 @@ import math
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -663,13 +663,6 @@ class BufferConfig(BaseConfig):
         ),
     ] = 0.0
 
-    online_difficulty_filtering: Annotated[
-        bool,
-        Field(
-            description="Whether to filter rollouts based on difficulty. If True, rollouts with average reward 0.0 or 1.0 are not added to the buffer.",
-        ),
-    ] = False
-
     hash_keys: Annotated[
         list[str],
         Field(
@@ -789,6 +782,36 @@ class ZeroAdvantageFilterConfig(BaseModel):
 
 FilterConfig: TypeAlias = Annotated[
     GibberishFilterConfig | RepetitionFilterConfig | ZeroAdvantageFilterConfig,
+    Field(discriminator="type"),
+]
+
+
+class SamplesBatching(BaseConfig):
+    """Ship a batch every `size` trainable samples."""
+
+    type: Literal["samples"] = "samples"
+    size: Annotated[int, Field(ge=1, description="Trainable samples to ship per batch.")] = 128
+
+
+class TokensBatching(BaseConfig):
+    """Ship a batch every `size` trainable completion tokens."""
+
+    type: Literal["tokens"] = "tokens"
+    size: Annotated[int, Field(ge=1, description="Trainable completion tokens to ship per batch.")]
+
+
+class StepBatching(BaseConfig):
+    """Ship the first `size` rollouts the engine produced, pre-filter. Filtered
+    rollouts count toward `size` but don't reach the trainer — the trainer gets
+    the trainable subset (≤ `size`). Matches orch1 semantics: fixed engine
+    cost per batch, variable trainer batch size."""
+
+    type: Literal["step"] = "step"
+    size: Annotated[int, Field(ge=1, description="Pre-filter rollouts per batch.")] = 128
+
+
+BatchingConfig: TypeAlias = Annotated[
+    SamplesBatching | TokensBatching | StepBatching,
     Field(discriminator="type"),
 ]
 
@@ -914,7 +937,8 @@ class OrchestratorConfig(BaseConfig):
     # The evaluation configuration
     eval: EvalConfig | None = None
 
-    # Data buffer configuration
+    # Difficulty-based example pool tracking. Train groups whose mean reward
+    # crosses easy_threshold / hard_threshold are evicted from sampling.
     buffer: BufferConfig = BufferConfig()
 
     # The advantage configuration
@@ -932,7 +956,7 @@ class OrchestratorConfig(BaseConfig):
     # The prime monitor configuration
     prime_monitor: PrimeMonitorConfig | None = None
 
-    # Whether to collect inference server metrics (requires wandb)
+    # Whether to scrape vLLM /metrics each step and forward to monitor under inference/*
     collect_inference_metrics: bool = True
 
     # The checkpoint configuration
@@ -958,27 +982,21 @@ class OrchestratorConfig(BaseConfig):
     ] = None
 
     batch_size: Annotated[
-        int | None,
+        BatchingConfig,
         Field(
-            ge=1,
-            description="Number of samples to train on per step (rollout-based batching). Set this OR token_batch_size.",
+            description=(
+                "Batching policy: `step` (N pre-filter rollouts — orch1 semantics), `samples` "
+                "(N trainable samples post-filter), or `tokens` (N trainable completion tokens)."
+            ),
         ),
-    ] = None
-
-    token_batch_size: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description="Number of tokens to train on per step (token-based batching). Set this OR batch_size.",
-        ),
-    ] = None
+    ] = StepBatching()
 
     oversampling_factor: Annotated[
         float | None,
         Field(
             ge=1,
             description=(
-                "Rollout-mode batching only. Multiplier used to derive max_inflight_rollouts from batch_size "
+                "Samples-mode only. Multiplier used to derive max_inflight_rollouts from batch_size.size "
                 "when max_inflight_rollouts is unset."
             ),
         ),
@@ -989,9 +1007,9 @@ class OrchestratorConfig(BaseConfig):
         Field(
             ge=1,
             description=(
-                "Maximum number of rollouts to keep in-flight. Required for token-based batching. "
-                "If batch_size is set and this is unset, defaults to batch_size * oversampling_factor "
-                "(or batch_size when oversampling_factor is unset)."
+                "Maximum number of rollouts to keep in-flight. Required for `tokens` and `step` batching. "
+                "In `samples` mode, if unset, defaults to batch_size.size * oversampling_factor "
+                "(or batch_size.size when oversampling_factor is unset)."
             ),
         ),
     ] = None
@@ -1032,6 +1050,19 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = 8
 
+    max_rollout_time_minutes: Annotated[
+        float | None,
+        Field(
+            gt=0,
+            description=(
+                "Wall-clock cap on a rollout group (minutes). Applies to both train and eval; a group "
+                "whose gather exceeds this limit is cancelled. Train groups that time out are dropped; "
+                "eval groups that time out are still counted (with an empty rollout list) so the batcher's "
+                "expected-count check can resolve. None disables the cap."
+            ),
+        ),
+    ] = None
+
     max_async_level: Annotated[
         int,
         Field(
@@ -1057,7 +1088,8 @@ class OrchestratorConfig(BaseConfig):
     seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = 42
 
     heartbeat: Annotated[
-        HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
+        HeartbeatConfig | None,
+        Field(description="Heartbeat config for monitoring training progress (BetterStack)."),
     ] = None
 
     use_token_client: Annotated[
@@ -1131,6 +1163,15 @@ class OrchestratorConfig(BaseConfig):
             raise ValueError(f"Duplicate filter types: {types}. Each filter type may only appear once.")
         return self
 
+    @field_validator("batch_size", mode="before")
+    @classmethod
+    def _coerce_batch_size(cls, v):
+        # Sugar: `batch_size = N` is shorthand for `[batch_size] type="step" size=N`
+        # — matches orch1 semantics (N pre-filter rollouts per batch).
+        if isinstance(v, int):
+            return {"type": "step", "size": v}
+        return v
+
     @model_validator(mode="after")
     def validate_sft_distill_mode(self):
         """Enforce the SFT hard distill invariants that involve only orchestrator fields.
@@ -1174,6 +1215,48 @@ class OrchestratorConfig(BaseConfig):
                 "Pick one: token client (TITO, server-side templating) or renderer client (client-side "
                 "tokenization)."
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_single_endpoint(self):
+        """The async orchestrator supports a single inference endpoint;
+        multi-endpoint config from orch1 is dropped (use an upstream load
+        balancer if you need it)."""
+        if len(self.client.base_url) != 1:
+            raise ValueError(
+                f"orchestrator.client.base_url must contain exactly one endpoint, got {len(self.client.base_url)}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_renderer_not_implemented(self):
+        """The async orchestrator doesn't yet support per-model client-side
+        renderers (the `[orchestrator.renderer]` block + ``/v1/generate`` path).
+        Raise up front so users don't get a confusing failure later."""
+        if self.use_renderer:
+            raise ValueError(
+                "orchestrator.use_renderer is not yet supported by the new async orchestrator. "
+                "Set use_renderer=false (use_token_client=true for TITO, both false for MITO)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_teacher_not_implemented(self):
+        """The async orchestrator doesn't yet support teacher-model rollouts."""
+        if self.teacher_rollout_model is not None:
+            raise ValueError(
+                "orchestrator.teacher_rollout_model is not yet supported by the new async orchestrator. "
+                "Remove the teacher_rollout_model field to proceed."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_lora_not_with_nccl(self):
+        """LoRA hot-swap goes through ``/load_lora_adapter`` (filesystem-only on
+        the inference side). NCCL broadcast pushes full-model weights, which
+        doesn't apply to adapters."""
+        if self.model.lora and self.weight_broadcast.type == "nccl":
+            raise ValueError("NCCL weight broadcast does not support LoRA — use filesystem broadcast")
         return self
 
     @model_validator(mode="after")
@@ -1224,34 +1307,24 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_batching(self):
-        has_rollout_batch = self.batch_size is not None
-        has_token_batch = self.token_batch_size is not None
-
-        if has_rollout_batch and has_token_batch:
-            raise ValueError("Set exactly one of batch_size or token_batch_size")
-
-        if not has_rollout_batch and not has_token_batch:
-            self.batch_size = 128
-
-        if has_token_batch:
-            if self.oversampling_factor is not None:
-                raise ValueError("oversampling_factor can only be set when batch_size is set")
-            if self.max_inflight_rollouts is None:
-                raise ValueError("max_inflight_rollouts must be set when token_batch_size is set")
-        else:
-            assert self.batch_size is not None
-            if self.batch_size % self.rollouts_per_example != 0:
-                raise ValueError("Batch size must be divisible by the number of samples per problem")
+        if isinstance(self.batch_size, (SamplesBatching, StepBatching)):
+            if self.batch_size.size % self.rollouts_per_example != 0:
+                raise ValueError("batch_size.size must be divisible by rollouts_per_example")
             if self.max_inflight_rollouts is not None and self.oversampling_factor is not None:
-                expected_max_inflight_rollouts = int(self.batch_size * self.oversampling_factor)
-                if self.max_inflight_rollouts != expected_max_inflight_rollouts:
-                    raise ValueError("max_inflight_rollouts conflicts with oversampling_factor * batch_size")
+                expected = int(self.batch_size.size * self.oversampling_factor)
+                if self.max_inflight_rollouts != expected:
+                    raise ValueError("max_inflight_rollouts conflicts with oversampling_factor * batch_size.size")
             if self.max_inflight_rollouts is None:
-                oversampling_factor = self.oversampling_factor if self.oversampling_factor is not None else 1.0
-                self.max_inflight_rollouts = int(self.batch_size * oversampling_factor)
+                factor = self.oversampling_factor if self.oversampling_factor is not None else 1.0
+                self.max_inflight_rollouts = int(self.batch_size.size * factor)
+        else:  # TokensBatching
+            if self.oversampling_factor is not None:
+                raise ValueError("oversampling_factor only applies to sample-counting batching")
+            if self.max_inflight_rollouts is None:
+                raise ValueError("max_inflight_rollouts must be set for `tokens` batching")
 
         if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.rollouts_per_example:
-            raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")
+            raise ValueError("max_inflight_rollouts must be at least rollouts_per_example")
 
         # Resolve train env num_workers from max_inflight_rollouts
         for env_cfg in self.train.env:

@@ -1,0 +1,13 @@
+batch_size = 16
+rollouts_per_example = 4
+max_inflight_rollouts = 16
+max_off_policy_steps = 8
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[[train.env]]
+id = "reverse-text"
+
+[train.sampling]
+max_completion_tokens = 128

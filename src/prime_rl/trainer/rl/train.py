@@ -311,6 +311,20 @@ def train(config: TrainerConfig):
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
 
         batch_size = len(micro_batches)
+
+        if batch_size == 0:
+            # Orchestrator shipped a fully-filtered cohort (legit in step-mode
+            # batching with strict filters). Skip forward/backward but still
+            # advance progress.step so the orch's policy_version moves; the
+            # next iteration will re-broadcast the unchanged weights.
+            logger.warning(f"Step {progress.step}: empty batch — no-op step")
+            monitor.log({"empty_batch": 1, "step": progress.step}, step=progress.step)
+            progress.step += 1
+            is_first_step = False
+            if heart is not None:
+                heart.beat()
+            continue
+
         memory_profiler = None
         if config.memory_profiler_path is not None:
             memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)
