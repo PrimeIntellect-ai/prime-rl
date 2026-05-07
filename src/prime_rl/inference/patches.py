@@ -1086,3 +1086,90 @@ def monkey_patch_no_moe_lora():
         self.is_lora_enabled = False
 
     FusedMoEConfig.__post_init__ = _patched__post_init__
+
+
+def monkey_patch_fp32_lm_head():
+    """Run the lm_head projection in fp32.
+
+    Casts both hidden_states and lm_head.weight to float32 before the matmul,
+    so logits are computed in fp32 instead of the model dtype (bf16). The
+    sampler already promotes to fp32 for softmax/sampling, so the head matmul
+    itself is the only step where precision is lost — promoting it closes the
+    gap that bites RL importance-sampling under FP8/bf16 inference (cf.
+    MiniMax-M1 §7.6, ScaleRL, Meta arxiv:2510.13786). SGLang exposes the same
+    knob as `--enable-fp32-lm-head`.
+
+    Activated by setting ``additional_config["fp32_lm_head"] = True`` on the
+    vLLM namespace; the launcher does this when ``inference.enable_fp32_lm_head``
+    is set. Reading from ``get_current_vllm_config().additional_config`` keeps
+    the wiring config-driven (no env vars) and survives multiprocess spawns
+    because vLLM serializes its config across worker processes.
+
+    The fp32 weight is materialized lazily on the first call and cached on the
+    layer (``_fp32_lm_head_weight``) so it isn't recomputed each forward.
+
+    Limitation: tied embeddings would require duplicating the embedding table
+    in fp32; we don't try to handle that here. Equivalent of
+    vllm-project/vllm#24567 restricted to the untied case; intended to be
+    removed once that PR (or follow-up) lands upstream.
+    """
+    import torch
+    import torch.nn.functional as F
+    from vllm.config import get_current_vllm_config
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.logits_processor import LogitsProcessor
+
+    logger = init_logger(__name__)
+
+    _original_init = LogitsProcessor.__init__
+    _original_get_logits = LogitsProcessor._get_logits
+
+    # Capture the flag once, when the LogitsProcessor is constructed during model
+    # init — that's the one place vLLM guarantees a set_current_vllm_config()
+    # context. Reading additional_config inside _get_logits doesn't work because
+    # vLLM doesn't keep the context set during serving forwards.
+    def _patched_init(self, *args, **kwargs):
+        _original_init(self, *args, **kwargs)
+        vllm_config = get_current_vllm_config()
+        # `or {}` defends against downstream code overriding additional_config to None
+        # (default is an empty dict, but defensive copying is cheap).
+        additional_config = vllm_config.additional_config or {}
+        self._fp32_lm_head_enabled = additional_config.get("fp32_lm_head", False)
+        if self._fp32_lm_head_enabled:
+            if getattr(vllm_config.model_config.hf_config, "tie_word_embeddings", False):
+                raise NotImplementedError(
+                    "fp32_lm_head is not supported for models with tie_word_embeddings=True; "
+                    "casting lm_head.weight in place would also cast embed_tokens. Use a model "
+                    "with untied embeddings, or extend this patch to keep a separate fp32 copy."
+                )
+            logger.warning("fp32 lm_head ENABLED for this LogitsProcessor instance.")
+
+    def _patched_get_logits(self, hidden_states, lm_head, embedding_bias):
+        if not getattr(self, "_fp32_lm_head_enabled", False):
+            return _original_get_logits(self, hidden_states, lm_head, embedding_bias)
+
+        # Cache the fp32 weight, but invalidate it whenever lm_head.weight has
+        # been mutated. RL weight broadcasts (NCCL / filesystem) update params
+        # in place via param.copy_(...), which bumps Tensor._version. Detect
+        # that and rebuild — otherwise we'd serve stale step-0 weights forever.
+        weight = lm_head.weight
+        cur_version = weight._version
+        cached = getattr(lm_head, "_fp32_lm_head_weight", None)
+        cached_version = getattr(lm_head, "_fp32_lm_head_weight_version", None)
+        if cached is None or cached_version != cur_version:
+            with torch.no_grad():
+                cached = weight.detach().to(torch.float32)
+            lm_head._fp32_lm_head_weight = cached
+            lm_head._fp32_lm_head_weight_version = cur_version
+
+        bias_fp32 = embedding_bias.to(torch.float32) if embedding_bias is not None else None
+        logits = F.linear(hidden_states.to(torch.float32), cached, bias_fp32)
+
+        logits = self._gather_logits(logits)
+        if logits is not None:
+            logits = logits[..., : self.org_vocab_size]
+        return logits
+
+    LogitsProcessor.__init__ = _patched_init
+    LogitsProcessor._get_logits = _patched_get_logits
+    logger.info("Installed fp32 lm_head patch; activates per-instance based on additional_config.fp32_lm_head.")
