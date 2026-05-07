@@ -682,15 +682,20 @@ class CheckpointConfig(BaseConfig):
 
 
 class DefaultLossConfig(BaseModel):
-    """Config for the default loss."""
+    """Config for the default loss (DPPO-Binary TV / arXiv:2602.04879)."""
 
     type: Literal["default"] = "default"
 
-    dppo_mask_low: Annotated[float, Field(ge=0, description="The low threshold for masking tokens.")] = 0.2
-    dppo_mask_high: Annotated[float, Field(ge=0, description="The high threshold for masking tokens.")] = 0.2
+    dppo_diff_low: Annotated[
+        float,
+        Field(ge=0, description="Lower bound on (π_train - π_infer). Tokens below -dppo_diff_low are dropped."),
+    ] = 0.2
+    dppo_diff_high: Annotated[
+        float,
+        Field(ge=0, description="Upper bound on (π_train - π_infer). Tokens above dppo_diff_high are dropped."),
+    ] = 0.2
     adv_tau: Annotated[float, Field(ge=0, description="The tau for advantages.")] = 1.0
     teacher_tau: Annotated[float, Field(ge=0, description="The tau for teacher logprobs.")] = 0.0
-    kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 1e-3
 
 
 class SFTLossConfig(BaseModel):
