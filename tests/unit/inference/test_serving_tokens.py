@@ -6,10 +6,12 @@ deltas here:
     * ``_encode_routed_experts`` round-trips a numpy array as expected.
     * ``PrimeRlGenerateResponseChoice`` accepts the optional field.
     * The subclass attaches its overrides without monkey-patching the parent.
+    * ``_client_set_max_tokens`` distinguishes raw-body shapes correctly.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 
 import numpy as np
@@ -18,8 +20,20 @@ from prime_rl.inference.vllm.serving_tokens import (
     PrimeRlGenerateResponse,
     PrimeRlGenerateResponseChoice,
     PrimeRlServingTokens,
+    _client_set_max_tokens,
     _encode_routed_experts,
 )
+
+
+class _FakeRawRequest:
+    def __init__(self, body):
+        self._body = body
+        self._raise = isinstance(body, Exception)
+
+    async def json(self):
+        if self._raise:
+            raise self._body
+        return self._body
 
 
 def test_encode_routed_experts_roundtrip():
@@ -66,3 +80,28 @@ def test_subclass_inherits_serve_tokens_full_generator():
         is not PrimeRlServingTokens.__mro__[1].serve_tokens_full_generator
     )
     assert PrimeRlServingTokens.serve_tokens is not PrimeRlServingTokens.__mro__[1].serve_tokens
+
+
+def test_client_set_max_tokens_recognizes_explicit_value():
+    body = {"token_ids": [1, 2, 3], "sampling_params": {"max_tokens": 256}}
+    assert asyncio.run(_client_set_max_tokens(_FakeRawRequest(body))) is True
+
+
+def test_client_set_max_tokens_detects_unset():
+    body = {"token_ids": [1, 2, 3], "sampling_params": {}}
+    assert asyncio.run(_client_set_max_tokens(_FakeRawRequest(body))) is False
+
+    body_without_sp = {"token_ids": [1, 2, 3]}
+    assert asyncio.run(_client_set_max_tokens(_FakeRawRequest(body_without_sp))) is False
+
+
+def test_client_set_max_tokens_assumes_set_when_body_unreadable():
+    # No raw_request → can't tell, don't override.
+    assert asyncio.run(_client_set_max_tokens(None)) is True
+
+    # body read raises → can't tell, don't override.
+    err = ValueError("bad json")
+    assert asyncio.run(_client_set_max_tokens(_FakeRawRequest(err))) is True
+
+    # non-dict body → can't tell, don't override.
+    assert asyncio.run(_client_set_max_tokens(_FakeRawRequest([1, 2, 3]))) is True
