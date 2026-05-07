@@ -106,15 +106,13 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
 
 def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutputs:
     """
-    DPPO+KL loss, combining:
-    - DPPO-Binary TV Loss (https://arxiv.org/pdf/2602.04879)
-    - Kimi-K2.5 KL Loss (https://arxiv.org/pdf/2602.02276)
+    DPPO-Binary TV loss (https://arxiv.org/pdf/2602.04879), symmetric variant.
 
-    The mask is conditioned on the advantage sign: for positive advantages,
-    we mask tokens whose probability increased too much (trust region violation
-    in the upweight direction); for negative advantages, we mask tokens whose
-    probability decreased too much (trust region violation in the downweight
-    direction).
+    Token-level masked importance sampling: tokens whose probability
+    difference π_train - π_infer falls outside [-dppo_diff_low, dppo_diff_high]
+    are dropped (gradient set to 0), not clipped. The mask is symmetric
+    (not advantage-conditioned). No KL penalty — the double-sided
+    difference mask is what keeps the update inside the trust region.
     """
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
@@ -122,21 +120,15 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     advantages = inputs.advantages
     loss_mask = inputs.loss_mask
 
-    trainer_probs = torch.exp(trainer_logprobs)
-    inference_probs = torch.exp(inference_logprobs)
-    probs_diff = trainer_probs - inference_probs
-    dppo_invalid_mask_high = probs_diff > loss_config.dppo_mask_high
-    dppo_invalid_mask_low = probs_diff < -loss_config.dppo_mask_low
-    dppo_invalid_mask = torch.where(advantages > 0, dppo_invalid_mask_high, dppo_invalid_mask_low)
-
-    is_masked = dppo_invalid_mask
-    is_masked_high = (advantages > 0) & dppo_invalid_mask_high
-    is_masked_low = (advantages < 0) & dppo_invalid_mask_low
-    keep_mask = loss_mask & ~is_masked
-
     log_importance_ratio = trainer_logprobs - inference_logprobs
     importance_ratio = torch.exp(log_importance_ratio)
     mismatch_kl = importance_ratio - log_importance_ratio - 1
+
+    probs_diff = (torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)).detach()
+    is_masked_low = probs_diff < -loss_config.dppo_diff_low
+    is_masked_high = probs_diff > loss_config.dppo_diff_high
+    is_masked = is_masked_low | is_masked_high
+    keep_mask = loss_mask & ~is_masked
 
     advantages = loss_config.adv_tau * advantages
     if teacher_logprobs is not None:
@@ -146,8 +138,7 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
         teacher_kl = None
 
     pg_loss = keep_mask * advantages * importance_ratio
-    kl_loss = loss_mask * log_importance_ratio**2
-    loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
+    loss = (-pg_loss).sum()
 
     metrics = {
         "mismatch_kl": _safe_mean(mismatch_kl, loss_mask),  # all trainable tokens
