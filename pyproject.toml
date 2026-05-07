@@ -169,11 +169,7 @@ deep-gemm = false
 torch = { index = "pytorch-cu130" }
 torchvision = { index = "pytorch-cu130" }
 torchaudio = { index = "pytorch-cu130" }
-# 8e56263 = verifiers PR #1298 (rebased on main): forward
-# preserve_*_thinking config flags.
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "8e562634" }
-# fe67f9f = renderers main: PR #4 squash-merge — construction-time
-# preserve_*_thinking flags on create_renderer / create_renderer_pool.
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "a7516a16" }
 renderers = { git = "https://github.com/PrimeIntellect-ai/renderers.git", rev = "fe67f9f" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
