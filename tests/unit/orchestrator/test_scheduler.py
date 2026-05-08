@@ -1,4 +1,5 @@
 import asyncio
+from collections import Counter, defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,10 +22,17 @@ def make_scheduler() -> Scheduler:
     scheduler.checkpoint_ready.set()
     scheduler.lora_name = None
     scheduler.model_name = "test-model"
+    scheduler.inference_pool = SimpleNamespace(get_metrics=lambda: {})
     scheduler.update_weights_time = 0
     scheduler.wait_for_ckpt_time = 0
     scheduler.inflight_requests = {}
     scheduler.groups = {}
+    scheduler.empty_rollouts_by_env = defaultdict(int)
+    scheduler.errored_rollouts_by_env = defaultdict(int)
+    scheduler.rejected_rollouts_by_env = defaultdict(int)
+    scheduler.error_reasons_by_env = defaultdict(Counter)
+    scheduler.error_origins_by_env = defaultdict(Counter)
+    scheduler.total_rollouts_by_env = defaultdict(int)
     scheduler.max_off_policy_steps = 1
     scheduler.cancelled_rollouts_count = 0
     scheduler.policy_update_lock = asyncio.Lock()
@@ -196,3 +204,80 @@ def test_log_group_created_includes_example_mapping():
     assert "example_id=2332" in message
     assert "instance_id=brazilian-utils__brutils-python-126" in message
     assert "env_name=opencode-swe" in message
+
+
+def test_rejected_rollout_structured_failure_metrics():
+    scheduler = make_scheduler()
+    scheduler.total_rollouts_by_env["opencode-swe"] = 2
+    rollout = {
+        "error": {"error_chain_repr": "AgentPollError('read failed')"},
+        "failure": {
+            "reason": "agent_poll_failed",
+            "origin": "agent",
+            "error_type": "AgentPollError",
+            "root_error_type": "AgentPollError",
+            "message": "read failed",
+            "logs": {},
+        },
+        "trajectory": [],
+    }
+    reason, origin = scheduler._classify_rejected_rollout(rollout)
+
+    scheduler._record_rejected_rollout("opencode-swe", reason, origin)
+    metrics = scheduler.get_metrics()
+
+    assert metrics["errored_rollouts/opencode-swe"] == 0.5
+    assert metrics["errored_rollouts/all"] == 0.5
+    assert metrics["error/opencode-swe/mean"] == 0.5
+    assert metrics["error/all/mean"] == 0.5
+    assert metrics["error_reason/opencode-swe/agent_poll_failed"] == 0.5
+    assert metrics["error_reason/all/agent_poll_failed"] == 0.5
+    assert metrics["error_origin/opencode-swe/agent"] == 0.5
+    assert metrics["error_origin/all/agent"] == 0.5
+
+
+def test_legacy_rollout_error_fallback_metrics():
+    scheduler = make_scheduler()
+    scheduler.total_rollouts_by_env["legacy-env"] = 1
+    rollout = {
+        "error": {
+            "error_chain_str": "SandboxSetupError -> CommandTimeoutError",
+            "error_chain_repr": "SandboxSetupError('setup failed')",
+        },
+        "trajectory": [],
+    }
+
+    reason, origin = scheduler._classify_rejected_rollout(rollout)
+    scheduler._record_rejected_rollout("legacy-env", reason, origin)
+    metrics = scheduler.get_metrics()
+
+    assert metrics["error_reason/legacy-env/sandbox_setup_failed"] == 1.0
+    assert metrics["error_origin/legacy-env/sandbox"] == 1.0
+
+
+def test_empty_trajectory_records_rejected_error_but_not_compat_error_metric():
+    scheduler = make_scheduler()
+    scheduler.total_rollouts_by_env["opencode-swe"] = 1
+    rollout = {"error": None, "trajectory": []}
+
+    reason, origin = scheduler._classify_rejected_rollout(rollout)
+    scheduler.empty_rollouts_by_env["opencode-swe"] += 1
+    scheduler._record_rejected_rollout("opencode-swe", reason, origin, compatibility_error=False)
+    metrics = scheduler.get_metrics()
+
+    assert metrics["empty_rollouts/opencode-swe"] == 1.0
+    assert metrics["errored_rollouts/opencode-swe"] == 0.0
+    assert metrics["error/opencode-swe/mean"] == 1.0
+    assert metrics["error_reason/opencode-swe/agent_empty_trajectory"] == 1.0
+
+
+def test_env_server_exception_records_env_server_error_metrics():
+    scheduler = make_scheduler()
+
+    scheduler._record_env_server_error("opencode-swe", count=2)
+    metrics = scheduler.get_metrics()
+
+    assert metrics["errored_rollouts/opencode-swe"] == 1.0
+    assert metrics["error/opencode-swe/mean"] == 1.0
+    assert metrics["error_reason/opencode-swe/env_server_error"] == 1.0
+    assert metrics["error_origin/opencode-swe/env_server"] == 1.0
