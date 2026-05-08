@@ -1082,6 +1082,14 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = 8
 
+    max_error_reschedule_attempts: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Maximum number of times the scheduler will reschedule a group whose rollouts errored or returned empty trajectories. After this many consecutive failed attempts, the group is dropped from the current step's batch (the trainer proceeds with the rollouts from other groups). `None` means retry indefinitely (legacy behavior). Useful for unblocking single-example hangs in agent envs.",
+        ),
+    ] = None
+
     max_async_level: Annotated[
         int,
         Field(
