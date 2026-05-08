@@ -89,6 +89,18 @@ def test_setup_clients_assigns_renderer_model_name():
     assert clients[0].renderer_model_name == "Qwen/Qwen3-VL-4B-Instruct"
 
 
+def test_setup_clients_uses_dynamo_transport_for_dynamo_renderer():
+    client_config = ClientConfig(
+        base_url=["http://worker-a:8000/v1"],
+        api_key_var="PRIME_API_KEY",
+        backend="dynamo",
+    )
+
+    clients = setup_clients(client_config, client_type="renderer")
+
+    assert clients[0].renderer_transport == "dynamo_chat_nvext"
+
+
 def test_setup_clients_preserves_chat_client_defaults():
     client_config = ClientConfig(
         base_url=["http://worker-a:8000/v1"],
