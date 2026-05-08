@@ -74,6 +74,23 @@ CLI uses kebab-case (`--model.max-model-len`), TOML uses snake_case (`max_model_
 
 ## Important patterns
 
+### Single-node inference routing
+
+For `InferenceConfig` with `deployment.type = "single_node"`:
+
+- `server.port` is the public API port exposed by `vllm-router`
+- `deployment.router.port` defaults to `server.port`
+- `deployment.router.policy` controls the router policy shared across single-node, multi-node, and disaggregated inference
+- `deployment.backend_port` defaults to `server.port + 100`
+- When launching more than one local single-node inference server from the same base config, set `server.port`, `deployment.router.port`, `deployment.backend_port`, and `data_parallel_rpc_port` explicitly for each instance instead of relying on `--server.port` alone.
+- When launching more than one local single-node inference server from the same base config, set `server.port`, `deployment.router.port`, `deployment.backend_port`, and `data_parallel_rpc_port` explicitly for each instance instead of relying on `--server.port` alone.
+
+When the RL entrypoint auto-manages local inference, it routes generation traffic through `orchestrator.client.base_url` and sends admin traffic (health checks, weight updates, pause/resume) to `orchestrator.client.admin_base_url`.
+
+If single-node RL auto-configures `teacher_inference` from the primary inference config, it also assigns a distinct teacher router/backend pair (`teacher_inference.server.port + 100` for the backend by default) so the teacher server does not reuse the rollout inference ports.
+
+Single-node RL only supports `inference.deployment.type = "single_node"`. If you need disaggregated or multi-node inference, use `deployment.type = "multi_node"` for the RL run instead of mixing it into the local single-node launcher path.
+
 ### Boolean fields
 
 ```bash

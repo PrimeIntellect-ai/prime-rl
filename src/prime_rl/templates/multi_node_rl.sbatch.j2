@@ -29,6 +29,7 @@ export NUM_INFER_REPLICAS={{ num_infer_replicas }}
 export GPUS_PER_NODE={{ gpus_per_node }}
 {% if num_infer_nodes > 0 -%}
 export ROUTER_PORT={{ router_port }}
+export ROUTER_POLICY="{{ router_policy }}"
 export INFERENCE_TP={{ inference_tp }}
 export INFERENCE_DP_LOCAL=$((GPUS_PER_NODE / INFERENCE_TP))
 export INFERENCE_DATA_PARALLEL_RPC_PORT={{ inference_data_parallel_rpc_port }}
@@ -67,6 +68,7 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
 export TRITON_CACHE_DIR=/tmp/triton-cache-$USER-$SLURM_JOB_ID
+export PRIME_LOG_LEVEL="{{ prime_log_level }}"
 
 {% if wandb_shared -%}
 export WANDB_SHARED_MODE=1
@@ -293,17 +295,18 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
 
         vllm-router \
-            --policy consistent_hash \
+            --policy "$ROUTER_POLICY" \
             --vllm-pd-disaggregation \
             $REPLICA_ROUTER_ARGS \
             --host 0.0.0.0 \
             --port $ROUTER_PORT \
             --intra-node-data-parallel-size {{ dp_per_node }} \
             --worker-startup-timeout-secs 4200 \
+            --log-level "$PRIME_LOG_LEVEL" \
             >> $ROUTER_LOG 2>&1 &
     fi
 
-    uv run inference \
+    PRIME_RL_INFERENCE_BACKEND_ONLY=1 uv run inference \
         @ $CONFIG_DIR/inference.toml \
         --server.host 0.0.0.0 \
         --server.port $PORT \
@@ -320,12 +323,13 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
 
         vllm-router \
-            --policy consistent_hash \
+            --policy "$ROUTER_POLICY" \
             --worker-urls $REPLICA_ROUTER_ARGS \
             --host 0.0.0.0 \
             --port $ROUTER_PORT \
             --intra-node-data-parallel-size {{ dp_per_node }} \
             --worker-startup-timeout-secs 4200 \
+            --log-level "$PRIME_LOG_LEVEL" \
             >> $ROUTER_LOG 2>&1 &
     fi
 
@@ -340,7 +344,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             VLLM_EXTRA="{\"data_parallel_address\": \"$REPLICA_HEAD_HOST\", \"data_parallel_start_rank\": $INFER_DP_START_RANK}"
         fi
 
-        uv run inference \
+        PRIME_RL_INFERENCE_BACKEND_ONLY=1 uv run inference \
             @ $CONFIG_DIR/inference.toml \
             --server.host 0.0.0.0 \
             --server.port $BACKEND_PORT \
@@ -348,7 +352,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             --vllm-extra "$VLLM_EXTRA" \
             2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
     else
-        uv run inference \
+        PRIME_RL_INFERENCE_BACKEND_ONLY=1 uv run inference \
             @ $CONFIG_DIR/inference.toml \
             --server.host 0.0.0.0 \
             --server.port $BACKEND_PORT \

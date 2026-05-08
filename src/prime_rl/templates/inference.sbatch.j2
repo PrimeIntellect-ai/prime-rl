@@ -54,6 +54,7 @@ export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
 export TRITON_CACHE_DIR=/tmp/triton-cache-$USER-$SLURM_JOB_ID
 export VLLM_CACHE_ROOT=/tmp/.vllm_cache_$(whoami)
+export PRIME_LOG_LEVEL="{{ prime_log_level }}"
 
 # Setup environment
 cd $PROJECT_DIR
@@ -241,18 +242,18 @@ srun bash -c '
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
 
         vllm-router \
-            --policy {{ router_policy }} \
+            --policy "{{ router_policy }}" \
             --vllm-pd-disaggregation \
             $REPLICA_ROUTER_ARGS \
             --host 0.0.0.0 \
             --port $ROUTER_PORT \
             --intra-node-data-parallel-size {{ dp_per_node }} \
             --worker-startup-timeout-secs 4200 \
-            --log-level debug \
+            --log-level "$PRIME_LOG_LEVEL" \
             >> $ROUTER_LOG 2>&1 &
     fi
 
-    uv run inference \
+    PRIME_RL_INFERENCE_BACKEND_ONLY=1 uv run inference \
         @ $CONFIG_PATH \
         --server.host 0.0.0.0 \
         --server.port $PORT \
@@ -272,17 +273,17 @@ srun bash -c '
         echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT" | tee $ROUTER_LOG
 
         vllm-router \
-            --policy {{ router_policy }} \
+            --policy "{{ router_policy }}" \
             --worker-urls $ROUTER_ARGS \
             --host 0.0.0.0 \
             --port $ROUTER_PORT \
             --intra-node-data-parallel-size {{ dp_per_node }} \
             --worker-startup-timeout-secs 4200 \
-            --log-level debug \
+            --log-level "$PRIME_LOG_LEVEL" \
             >> $ROUTER_LOG 2>&1 &
     fi
 
-    uv run inference \
+    PRIME_RL_INFERENCE_BACKEND_ONLY=1 uv run inference \
         @ $CONFIG_PATH \
         --server.host 0.0.0.0 \
         --server.port $BACKEND_PORT \

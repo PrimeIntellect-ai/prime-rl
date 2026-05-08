@@ -47,7 +47,14 @@ class WandbMonitor(Monitor):
         self.logger.info(f"Initializing {self.__class__.__name__} ({config})")
         self._maybe_overwrite_wandb_command()
 
-        shared_mode = os.environ.get("WANDB_SHARED_MODE") == "1"
+        env_wandb_mode = os.environ.get("WANDB_MODE", "").lower()
+        offline = config.offline or env_wandb_mode == "offline"
+        shared_mode_requested = os.environ.get("WANDB_SHARED_MODE") == "1"
+        shared_mode = shared_mode_requested and not offline
+
+        if shared_mode_requested and offline:
+            self.logger.info("WANDB_MODE=offline set; disabling shared W&B mode for this run")
+
         if shared_mode:
             run_id = os.environ.get("WANDB_SHARED_RUN_ID")
             label = os.environ.get("WANDB_SHARED_LABEL")
@@ -66,7 +73,7 @@ class WandbMonitor(Monitor):
             run_id = None
             primary = False
             settings = wandb.Settings(
-                mode="offline" if config.offline else "online",
+                mode="offline" if offline else "online",
             )
 
         def init_wandb(max_retries: int):

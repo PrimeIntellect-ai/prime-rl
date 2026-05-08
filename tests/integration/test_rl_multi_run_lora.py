@@ -92,6 +92,8 @@ def wandb_name(branch_name: str) -> str:
 
 
 INFERENCE_PORTS = [8000, 8001]
+INFERENCE_BACKEND_PORTS = [8100, 8101]
+INFERENCE_RPC_PORTS = [13345, 13346]
 INFERENCE_BASE_URLS = [f"http://localhost:{port}/v1" for port in INFERENCE_PORTS]
 
 
@@ -114,6 +116,12 @@ def start_inference_and_trainer(
                     "configs/ci/integration/rl_multi_run/inference.toml",
                     "--server.port",
                     str(port),
+                    "--deployment.router.port",
+                    str(port),
+                    "--deployment.backend_port",
+                    str(INFERENCE_BACKEND_PORTS[i]),
+                    "--data_parallel_rpc_port",
+                    str(INFERENCE_RPC_PORTS[i]),
                 ],
                 stdout=f,
                 stderr=f,

@@ -1,3 +1,4 @@
+import warnings
 from argparse import Namespace
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
@@ -131,11 +132,86 @@ class BaseInferenceDeploymentConfig(BaseModel):
 
     gpus_per_node: Annotated[int, Field(description="Number of GPUs per node.")] = 8
 
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_flat_router_fields(cls, data: Any):
+        if not isinstance(data, dict):
+            return data
+
+        payload = dict(data)
+        router_payload = payload.get("router")
+        if isinstance(router_payload, BaseModel):
+            router = router_payload.model_dump(exclude_none=True)
+        else:
+            router = dict(router_payload or {})
+
+        flat_to_nested = {
+            "router_port": "port",
+            "router_policy": "policy",
+        }
+        deprecated_fields = []
+        for flat_key, router_key in flat_to_nested.items():
+            if flat_key not in payload:
+                continue
+            flat_value = payload.pop(flat_key)
+            deprecated_fields.append(flat_key)
+            if router_key in router and router[router_key] != flat_value:
+                raise ValueError(
+                    f"Received both deployment.{flat_key} and deployment.router.{router_key} with different values."
+                )
+            router[router_key] = flat_value
+
+        if deprecated_fields:
+            fields = ", ".join(f"deployment.{field}" for field in deprecated_fields)
+            warnings.warn(
+                f"{fields} {'is' if len(deprecated_fields) == 1 else 'are'} deprecated, use "
+                f"deployment.router.{', deployment.router.'.join(flat_to_nested[field] for field in deprecated_fields)} "
+                "instead. Auto-translating for now, but this will be removed in a future release.",
+                FutureWarning,
+                stacklevel=2,
+            )
+
+        if router:
+            payload["router"] = router
+
+        return payload
+
+
+class RouterConfig(BaseModel):
+    """Configures the public vllm-router process for an inference deployment."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    port: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            le=65535,
+            description="Public port for the vllm-router. Defaults depend on the deployment type.",
+        ),
+    ] = None
+    policy: Annotated[
+        str, Field(description="Routing policy for the vllm-router (e.g. 'consistent_hash', 'round_robin').")
+    ] = "consistent_hash"
+
 
 class SingleNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     """Configures a single-node inference deployment."""
 
     type: Literal["single_node"] = "single_node"
+
+    router: Annotated[
+        RouterConfig,
+        Field(description="vllm-router configuration for the single-node public endpoint."),
+    ] = Field(default_factory=RouterConfig)
+    backend_port: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            le=65535,
+            description="Internal port for the local vLLM backend behind the single-node router.",
+        ),
+    ] = None
 
 
 class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
@@ -145,11 +221,17 @@ class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
 
     num_nodes: Annotated[int, Field(ge=1, description="Number of inference nodes.")] = 2
 
-    router_port: Annotated[int, Field(description="Port for the vllm-router.")] = 8000
+    router: Annotated[
+        RouterConfig,
+        Field(description="vllm-router configuration for each inference replica."),
+    ] = Field(default_factory=lambda: RouterConfig(port=8000))
     backend_port: Annotated[int, Field(description="Port for vLLM backend instances.")] = 8100
-    router_policy: Annotated[
-        str, Field(description="Routing policy for the vllm-router (e.g. 'consistent_hash', 'round_robin').")
-    ] = "consistent_hash"
+
+    @model_validator(mode="after")
+    def auto_setup_router_port(self):
+        if self.router.port is None:
+            self.router.port = 8000
+        return self
 
 
 class KVCacheOffloadConfig(BaseModel):
@@ -198,12 +280,12 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
         ),
     ] = 1
 
-    router_port: Annotated[int, Field(description="Port for the vllm-router on each replica.")] = 8000
+    router: Annotated[
+        RouterConfig,
+        Field(description="vllm-router configuration for each disaggregated replica."),
+    ] = Field(default_factory=lambda: RouterConfig(port=8000))
     prefill_port: Annotated[int, Field(description="Port for prefill vLLM instances.")] = 8100
     decode_port: Annotated[int, Field(description="Port for decode vLLM instances.")] = 8200
-    router_policy: Annotated[
-        str, Field(description="Routing policy for the vllm-router (e.g. 'consistent_hash', 'round_robin').")
-    ] = "consistent_hash"
 
     prefill_env_overrides: Annotated[
         dict[str, str],
@@ -222,6 +304,12 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     @property
     def num_nodes(self) -> int:
         return self.num_prefill_nodes + self.num_decode_nodes
+
+    @model_validator(mode="after")
+    def auto_setup_router_port(self):
+        if self.router.port is None:
+            self.router.port = 8000
+        return self
 
     @model_validator(mode="after")
     def validate_replicas_divide_nodes(self):
@@ -426,6 +514,68 @@ class InferenceConfig(BaseConfig):
     def validate_multi_node_requires_slurm(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_single_node_router(self):
+        if self.deployment.type != "single_node":
+            return self
+
+        default_router_port = 8000
+        default_backend_port = default_router_port + 100
+        default_rpc_port = 13345
+        server_port_explicit = "port" in self.server.model_fields_set
+        stale_default_router_port = (
+            server_port_explicit
+            and self.server.port != default_router_port
+            and self.deployment.router.port == default_router_port
+        )
+
+        if self.deployment.router.port is None:
+            self.deployment.router.port = self.server.port
+        elif stale_default_router_port:
+            self.deployment.router.port = self.server.port
+        elif not server_port_explicit:
+            self.server.port = self.deployment.router.port
+        elif self.server.port != self.deployment.router.port:
+            raise ValueError(
+                f"server.port ({self.server.port}) must match deployment.router.port "
+                f"({self.deployment.router.port}) for single-node deployments."
+            )
+
+        stale_default_backend_port = (
+            self.deployment.router.port != default_router_port and self.deployment.backend_port == default_backend_port
+        )
+        if self.deployment.backend_port is None or stale_default_backend_port:
+            backend_port = self.deployment.router.port + 100
+            if backend_port > 65535:
+                raise ValueError(
+                    f"deployment.backend_port was not set and deployment.router.port ({self.deployment.router.port}) "
+                    "does not allow choosing a default backend port within the valid range."
+                )
+            self.deployment.backend_port = backend_port
+
+        if self.deployment.backend_port == self.deployment.router.port:
+            raise ValueError("deployment.backend_port must differ from deployment.router.port for single-node.")
+
+        stale_default_rpc_port = (
+            self.deployment.router.port != default_router_port and self.data_parallel_rpc_port == default_rpc_port
+        )
+        if "data_parallel_rpc_port" not in self.model_fields_set or stale_default_rpc_port:
+            rpc_port = default_rpc_port + (self.deployment.router.port - default_router_port)
+            if not (1 <= rpc_port <= 65535):
+                raise ValueError(
+                    "data_parallel_rpc_port was not set and deployment.router.port "
+                    f"({self.deployment.router.port}) does not allow choosing a default RPC port within the valid range."
+                )
+            self.data_parallel_rpc_port = rpc_port
+
+        if self.data_parallel_rpc_port in {self.deployment.router.port, self.deployment.backend_port}:
+            raise ValueError(
+                "data_parallel_rpc_port must differ from deployment.router.port and deployment.backend_port "
+                "for single-node deployments."
+            )
+
         return self
 
     @model_validator(mode="after")

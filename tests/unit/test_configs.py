@@ -6,7 +6,11 @@ import tomli_w
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
 
-from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.inference import (
+    DisaggregatedInferenceDeploymentConfig,
+    InferenceConfig,
+    MultiNodeInferenceDeploymentConfig,
+)
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
@@ -159,3 +163,182 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
+
+
+def test_single_node_inference_defaults_to_router_frontend():
+    config = InferenceConfig()
+    assert config.deployment.type == "single_node"
+    assert config.server.port == 8000
+    assert config.deployment.router.port == 8000
+    assert config.deployment.router.policy == "consistent_hash"
+    assert config.deployment.backend_port == 8100
+
+
+def test_single_node_inference_custom_public_port_updates_router_port():
+    config = InferenceConfig.model_validate({"server": {"port": 9000}})
+    assert config.server.port == 9000
+    assert config.deployment.router.port == 9000
+    assert config.deployment.backend_port == 9100
+
+
+def test_single_node_inference_offsets_rpc_port_for_multiple_local_servers():
+    config_a = InferenceConfig.model_validate({"server": {"port": 8000}})
+    config_b = InferenceConfig.model_validate({"server": {"port": 8001}})
+
+    assert config_a.data_parallel_rpc_port == 13345
+    assert config_b.data_parallel_rpc_port == 13346
+
+
+def test_single_node_inference_cli_accepts_explicit_port_tuple():
+    config = cli(
+        InferenceConfig,
+        args=[
+            "@",
+            "configs/ci/integration/rl_multi_run/inference.toml",
+            "--server.port",
+            "8001",
+            "--deployment.router.port",
+            "8001",
+            "--deployment.backend_port",
+            "8101",
+            "--data_parallel_rpc_port",
+            "13346",
+        ],
+    )
+
+    assert config.server.port == 8001
+    assert config.deployment.router.port == 8001
+    assert config.deployment.backend_port == 8101
+    assert config.data_parallel_rpc_port == 13346
+
+
+def test_single_node_inference_preserves_explicit_non_default_ports():
+    config = InferenceConfig.model_validate(
+        {
+            "server": {"port": 8001},
+            "deployment": {"router": {"port": 8001}, "backend_port": 8200},
+            "data_parallel_rpc_port": 14345,
+        }
+    )
+
+    assert config.server.port == 8001
+    assert config.deployment.router.port == 8001
+    assert config.deployment.backend_port == 8200
+    assert config.data_parallel_rpc_port == 14345
+
+
+def test_single_node_inference_cli_override_rejects_explicit_mismatched_router_port():
+    with pytest.raises(ValidationError, match="must match deployment.router.port"):
+        cli(
+            InferenceConfig,
+            args=[
+                "@",
+                "configs/ci/integration/rl_multi_run/inference.toml",
+                "--server.port",
+                "8001",
+                "--deployment.router.port",
+                "9000",
+            ],
+        )
+
+
+def test_single_node_inference_rejects_mismatched_public_and_router_ports():
+    with pytest.raises(ValidationError, match="must match deployment.router.port"):
+        InferenceConfig.model_validate(
+            {
+                "server": {"port": 9000},
+                "deployment": {"type": "single_node", "router": {"port": 9001}},
+            }
+        )
+
+
+def test_single_node_inference_accepts_flat_router_fields_for_backwards_compatibility():
+    config = InferenceConfig.model_validate(
+        {
+            "deployment": {
+                "type": "single_node",
+                "router_port": 9000,
+                "router_policy": "round_robin",
+            }
+        }
+    )
+
+    assert config.deployment.router.port == 9000
+    assert config.deployment.router.policy == "round_robin"
+
+
+def test_multi_node_inference_router_defaults_port_when_only_policy_is_set():
+    deployment = MultiNodeInferenceDeploymentConfig.model_validate({"router": {"policy": "round_robin"}})
+
+    assert deployment.router.port == 8000
+    assert deployment.router.policy == "round_robin"
+
+
+def test_disaggregated_inference_router_defaults_port_when_only_policy_is_set():
+    deployment = DisaggregatedInferenceDeploymentConfig.model_validate({"router": {"policy": "round_robin"}})
+
+    assert deployment.router.port == 8000
+    assert deployment.router.policy == "round_robin"
+
+
+def test_rl_config_auto_sets_single_node_router_and_admin_urls():
+    config = cli(
+        RLConfig,
+        args=["@", "configs/ci/integration/rl/start.toml", "--inference.server.port", "9000"],
+    )
+    assert config.orchestrator.client.base_url == ["http://localhost:9000/v1"]
+    assert config.orchestrator.client.admin_base_url == ["http://localhost:9100/v1"]
+
+
+def test_rl_config_auto_sets_non_conflicting_teacher_inference_ports():
+    config = cli(
+        RLConfig,
+        args=[
+            "@",
+            "configs/ci/integration/rl/start.toml",
+            "--inference.server.port",
+            "9000",
+            "--deployment.num_teacher_gpus",
+            "1",
+        ],
+    )
+
+    assert config.teacher_inference is not None
+    assert config.teacher_inference.server.port == 9001
+    assert config.teacher_inference.deployment.router.port == 9001
+    assert config.teacher_inference.deployment.backend_port == 9101
+    assert config.teacher_inference.data_parallel_rpc_port == config.inference.data_parallel_rpc_port + 1
+    assert config.orchestrator.teacher_model is not None
+    assert config.orchestrator.teacher_model.client.base_url == ["http://localhost:9001/v1"]
+
+
+def test_rl_config_rejects_teacher_inference_backend_port_collisions():
+    with pytest.raises(ValidationError, match=r"must not reuse inference router/backend(?:/RPC)? ports"):
+        cli(
+            RLConfig,
+            args=[
+                "@",
+                "configs/ci/integration/rl/start.toml",
+                "--inference.server.port",
+                "9000",
+                "--deployment.num_teacher_gpus",
+                "1",
+                "--teacher_inference.server.port",
+                "9001",
+                "--teacher_inference.deployment.backend_port",
+                "9100",
+            ],
+        )
+
+
+def test_rl_config_rejects_disaggregated_inference_for_single_node_deployment():
+    with pytest.raises(ConfigFileError, match="single-node RL only supports inference.deployment.type = 'single_node'"):
+        cli(
+            RLConfig,
+            args=[
+                "@",
+                "configs/ci/integration/rl/start.toml",
+                "--inference.deployment.type",
+                "disaggregated",
+            ],
+        )
