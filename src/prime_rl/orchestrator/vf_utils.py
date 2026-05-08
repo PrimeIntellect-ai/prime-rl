@@ -56,6 +56,11 @@ def get_model_completion_len(output: vf.RolloutOutput) -> int:
     Unlike get_completion_len, this excludes environment responses injected
     between turns in multi-turn rollouts.
     """
+    token_usage = output.get("token_usage") or {}
+    for key in ("final_output_tokens", "output_tokens"):
+        value = token_usage.get(key)
+        if isinstance(value, (int, float)):
+            return int(value)
     return sum(len(step["tokens"]["completion_ids"]) for step in output["trajectory"] if step.get("tokens"))
 
 

@@ -1,0 +1,21 @@
+[project]
+name = "concision-gemma"
+description = "Verifiers concision reward environment for Gemma 3 270M ES experiments."
+tags = ["concision", "train", "eval", "gemma"]
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "datasets>=3.3.0",
+    "verifiers>=0.1.12",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["concision_gemma.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 8
+rollouts_per_example = 20

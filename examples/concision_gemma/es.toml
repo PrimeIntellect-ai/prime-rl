@@ -1,0 +1,54 @@
+max_steps = 50
+output_dir = "outputs/concision_gemma/es"
+clean_output_dir = true
+
+[model]
+name = "OpenKing/Gemma-270m-it-non-gated"
+attn = "flash_attention_2"
+optimization_dtype = "bfloat16"
+
+[model.lora]
+rank = 8
+alpha = 16
+target_modules = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+]
+
+[tokenizer]
+name = "OpenKing/Gemma-270m-it-non-gated"
+
+[algorithm]
+population_size = 4
+candidate_chunk_size = 4
+mirrored = true
+sigma = 0.05
+lr = 0.0000005
+reward_normalization = "none"
+
+[train]
+examples_per_env = 2
+rollouts_per_example = 1
+max_concurrent_rollouts_per_rank = 8
+
+[train.sampling]
+temperature = 0.0
+max_completion_tokens = 64
+
+[[train.env]]
+id = "concision-gemma"
+name = "concision-gemma"
+num_workers = 1
+
+[deployment]
+num_gpus = 1
+gpus_per_node = 1
+
+[ckpt]
+interval = 10
+keep_last = 2

@@ -1,0 +1,13 @@
+enable_lora = true
+max_loras = 4
+max_cpu_loras = 8
+max_lora_rank = 8
+gpu_memory_utilization = 0.6
+
+[model]
+name = "OpenKing/Gemma-270m-it-non-gated"
+enforce_eager = true
+max_model_len = 2048
+
+[server]
+port = 8000
