@@ -4,6 +4,8 @@ from torch.nn import Module
 from vllm.model_executor.model_loader import DefaultModelLoader, get_model_loader
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
+from prime_rl.inference.vllm.worker.es_lora_slots import ESLoRASlotWorkerMixin
+
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
     from vllm.v1.worker.gpu_worker import Worker
@@ -13,7 +15,7 @@ else:
     Worker = object
 
 
-class FileSystemWeightUpdateWorker(Worker):
+class FileSystemWeightUpdateWorker(ESLoRASlotWorkerMixin, Worker):
     """vLLM worker extension for updating weights in-place using shared filesystem."""
 
     def init_broadcaster(self) -> None:

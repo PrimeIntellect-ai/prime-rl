@@ -3,6 +3,7 @@ import gc
 import json
 import shutil
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
 
@@ -20,11 +21,14 @@ from prime_rl.trainer.es.rollout import (
     build_clients,
     close_admin_clients,
     evaluate_candidate_chunk,
+    init_lora_slots,
     load_candidate_adapters,
+    materialize_lora_slots,
     sample_examples,
     shutdown_train_envs,
     start_train_envs,
     unload_candidate_adapters,
+    update_lora_slot_theta,
 )
 from prime_rl.trainer.runs import Progress
 from prime_rl.trainer.utils import GarbageCollection, setup_torch_distributed
@@ -55,6 +59,73 @@ def all_reduce_float(value: float, op: dist.ReduceOp) -> float:
     return float(tensor.item())
 
 
+def es_compute_device() -> torch.device:
+    if torch.cuda.is_available():
+        return torch.device("cuda", torch.cuda.current_device())
+    return torch.device("cpu")
+
+
+def write_candidate_adapters(
+    chunk,
+    step_chunk_root: Path,
+    template,
+    theta: torch.Tensor,
+    sigma: float,
+    max_workers: int,
+) -> dict[int, Path]:
+    candidate_paths: dict[int, Path] = {}
+    pending: list[Future[None]] = []
+    worker_count = max(1, min(max_workers, len(chunk)))
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        for candidate in chunk:
+            candidate_theta = theta + candidate.sign * sigma * noise_like(theta, candidate.seed)
+            adapter_dir = step_chunk_root / candidate.name_suffix
+            candidate_paths[candidate.idx] = adapter_dir
+            pending.append(executor.submit(write_adapter_from_theta, adapter_dir, template, candidate_theta))
+            if len(pending) >= worker_count:
+                pending.pop(0).result()
+        for future in pending:
+            future.result()
+
+    return candidate_paths
+
+
+def serialize_specs(template) -> list[dict]:
+    return [
+        {
+            "name": spec.name,
+            "shape": list(spec.shape),
+            "dtype": str(spec.dtype),
+            "numel": spec.numel,
+        }
+        for spec in template.specs
+    ]
+
+
+def slot_definitions(chunk_size: int) -> list[dict]:
+    return [{"lora_name": f"es_slot_{idx}", "lora_int_id": 10_000 + idx, "slot": idx} for idx in range(chunk_size)]
+
+
+def slot_payload_for_chunk(chunk, slots: list[dict]) -> list[dict]:
+    payload = []
+    for slot, candidate in zip(slots, chunk, strict=True):
+        payload.append(
+            {
+                "lora_name": slot["lora_name"],
+                "lora_int_id": slot["lora_int_id"],
+                "candidate_idx": candidate.idx,
+                "seed": candidate.seed,
+                "sign": candidate.sign,
+            }
+        )
+    return payload
+
+
+def candidate_payload(candidates) -> list[dict]:
+    return [{"idx": candidate.idx, "seed": candidate.seed, "sign": candidate.sign} for candidate in candidates]
+
+
 async def train_async(config: ESConfig) -> None:
     world = get_world()
     logger = setup_logger(config.log.level, json_logging=config.log.json_logging)
@@ -81,7 +152,8 @@ async def train_async(config: ESConfig) -> None:
     template = None
     theta = None
     if world.is_master:
-        template = build_adapter_template(config.output_dir, config.model)
+        device = es_compute_device()
+        template = build_adapter_template(config.output_dir, config.model, device=device)
         theta = template.theta
 
         if config.ckpt and config.ckpt.resume_step is not None:
@@ -90,7 +162,7 @@ async def train_async(config: ESConfig) -> None:
             )
             if resume_step is not None:
                 state = load_es_state(config.output_dir, resume_step)
-                theta = state["theta"].to(torch.float32)
+                theta = state["theta"].to(device=device, dtype=torch.float32)
                 progress = Progress(step=int(state["step"]))
                 logger.info(f"Resumed ES state from step {progress.step}")
             else:
@@ -112,6 +184,17 @@ async def train_async(config: ESConfig) -> None:
     adapter_root = config.output_dir / "adapters"
     candidate_root = adapter_root / "candidates_tmp"
     final_adapter = config.output_dir / "adapter"
+    use_lora_slots = config.algorithm.adapter_transport == "slots"
+    slots: list[dict] = []
+    if world.is_master and use_lora_slots:
+        assert template is not None and theta is not None
+        slots = slot_definitions(config.algorithm.candidate_chunk_size)
+        theta_init_path = config.output_dir / "es_lora_theta_init.pt"
+        torch.save({"theta": theta.detach().cpu()}, theta_init_path)
+        t0 = time.perf_counter()
+        await init_lora_slots(admin_clients, theta_init_path, serialize_specs(template), template.adapter_config, slots)
+        logger.info(f"Initialized {len(slots)} persistent ES LoRA slots in {time.perf_counter() - t0:.2f}s")
+        theta_init_path.unlink(missing_ok=True)
 
     try:
         while config.max_steps is None or progress.step < config.max_steps:
@@ -136,31 +219,49 @@ async def train_async(config: ESConfig) -> None:
             adapter_write_s = 0.0
             adapter_load_s = 0.0
             adapter_unload_s = 0.0
+            adapter_slot_update_s = 0.0
             generation_s = 0.0
 
             for chunk_start in range(0, len(candidates), chunk_size):
                 chunk = candidates[chunk_start : chunk_start + chunk_size]
                 step_chunk_root = candidate_root / f"step_{step:06d}" / f"chunk_{chunk_start:04d}"
                 candidate_paths: dict[int, Path] = {}
-                candidate_names = {candidate.idx: f"es_step_{step}_cand_{candidate.idx}" for candidate in chunk}
+                if use_lora_slots:
+                    chunk_slots = slots[: len(chunk)] if world.is_master else []
+                    candidate_names = {
+                        candidate.idx: chunk_slots[i]["lora_name"] if world.is_master else ""
+                        for i, candidate in enumerate(chunk)
+                    }
+                else:
+                    candidate_names = {candidate.idx: f"es_step_{step}_cand_{candidate.idx}" for candidate in chunk}
 
                 if world.is_master:
                     assert template is not None and theta is not None and config.model.lora is not None
-                    if step_chunk_root.exists():
-                        shutil.rmtree(step_chunk_root)
-                    t0 = time.perf_counter()
-                    for candidate in chunk:
-                        candidate_theta = theta + candidate.sign * config.algorithm.sigma * noise_like(
-                            theta, candidate.seed
+                    if use_lora_slots:
+                        t0 = time.perf_counter()
+                        await materialize_lora_slots(
+                            admin_clients,
+                            slot_payload_for_chunk(chunk, slots[: len(chunk)]),
+                            config.algorithm.sigma,
                         )
-                        adapter_dir = step_chunk_root / candidate.name_suffix
-                        write_adapter_from_theta(adapter_dir, template, config.model.lora, candidate_theta)
-                        candidate_paths[candidate.idx] = adapter_dir
-                    adapter_write_s += time.perf_counter() - t0
+                        adapter_slot_update_s += time.perf_counter() - t0
+                    else:
+                        if step_chunk_root.exists():
+                            shutil.rmtree(step_chunk_root)
+                        t0 = time.perf_counter()
+                        candidate_paths = write_candidate_adapters(
+                            chunk,
+                            step_chunk_root,
+                            template,
+                            theta,
+                            config.algorithm.sigma,
+                            config.algorithm.adapter_write_workers,
+                        )
+                        adapter_write_s += time.perf_counter() - t0
 
-                    t0 = time.perf_counter()
-                    await load_candidate_adapters(admin_clients, candidate_paths, candidate_names)
-                    adapter_load_s += time.perf_counter() - t0
+                        t0 = time.perf_counter()
+                        await load_candidate_adapters(admin_clients, candidate_paths, candidate_names)
+                        adapter_load_s += time.perf_counter() - t0
 
                 names_box = [candidate_names]
                 dist.broadcast_object_list(names_box, src=0)
@@ -186,11 +287,12 @@ async def train_async(config: ESConfig) -> None:
                 if world.is_master:
                     for rank_results in gathered:
                         all_results.extend(rank_results)
-                    t0 = time.perf_counter()
-                    await unload_candidate_adapters(admin_clients, candidate_names)
-                    adapter_unload_s += time.perf_counter() - t0
-                    if not config.algorithm.keep_candidate_adapters:
-                        shutil.rmtree(step_chunk_root, ignore_errors=True)
+                    if not use_lora_slots:
+                        t0 = time.perf_counter()
+                        await unload_candidate_adapters(admin_clients, candidate_names)
+                        adapter_unload_s += time.perf_counter() - t0
+                        if not config.algorithm.keep_candidate_adapters:
+                            shutil.rmtree(step_chunk_root, ignore_errors=True)
                 dist.barrier()
 
             update_s = 0.0
@@ -208,7 +310,22 @@ async def train_async(config: ESConfig) -> None:
                     config.algorithm.mirrored,
                 )
                 theta = theta + config.algorithm.lr * grad
+                if theta.device.type == "cuda":
+                    torch.cuda.synchronize(theta.device)
                 update_s = time.perf_counter() - t0
+                if use_lora_slots:
+                    ordered_rewards = [rewards[candidate.idx] for candidate in candidates]
+                    t0 = time.perf_counter()
+                    await update_lora_slot_theta(
+                        admin_clients,
+                        candidate_payload(candidates),
+                        ordered_rewards,
+                        config.algorithm.lr,
+                        config.algorithm.reward_normalization,
+                        config.algorithm.mirrored,
+                        config.algorithm.sigma,
+                    )
+                    adapter_slot_update_s += time.perf_counter() - t0
 
                 progress.step = step
                 progress.total_samples += sum(result.num_rollouts for result in all_results)
@@ -235,9 +352,12 @@ async def train_async(config: ESConfig) -> None:
                     "failed_rollouts": int(failed_rollouts),
                     "generation_s": generation_s,
                     "adapter_write_s": adapter_write_s,
+                    "adapter_write_workers": config.algorithm.adapter_write_workers,
                     "adapter_load_s": adapter_load_s,
                     "adapter_unload_s": adapter_unload_s,
+                    "adapter_slot_update_s": adapter_slot_update_s,
                     "update_s": update_s,
+                    "adapter_transport": config.algorithm.adapter_transport,
                     "iteration_wall_clock_s": step_s,
                     "grad_norm": grad_norm,
                     "step_norm": step_norm,
@@ -248,7 +368,8 @@ async def train_async(config: ESConfig) -> None:
                     f"Step {step} | reward={payload['candidate_reward_mean']:.4f} "
                     f"| tok/s={payload['tokens_per_second']:.0f} | gen={generation_s:.2f}s "
                     f"| write={adapter_write_s:.2f}s | load={adapter_load_s:.2f}s "
-                    f"| unload={adapter_unload_s:.2f}s | update={update_s:.2f}s"
+                    f"| unload={adapter_unload_s:.2f}s | slot={adapter_slot_update_s:.2f}s "
+                    f"| update={update_s:.2f}s"
                 )
 
                 should_ckpt = config.ckpt is not None and (
@@ -256,7 +377,7 @@ async def train_async(config: ESConfig) -> None:
                 )
                 if should_ckpt:
                     save_es_state(config.output_dir, step, theta, template.specs, payload)
-                    write_adapter_from_theta(final_adapter, template, config.model.lora, theta)
+                    write_adapter_from_theta(final_adapter, template, theta)
                     maybe_clean_es_checkpoints(config.output_dir, step, config.ckpt.keep_last)
 
                 if heart is not None:

@@ -1,15 +1,15 @@
-max_steps = 50
-output_dir = "outputs/concision_gemma/es"
+max_steps = 100
+output_dir = "outputs/alphabet_sort/es"
 clean_output_dir = true
 
 [model]
-name = "OpenKing/Gemma-270m-it-non-gated"
+name = "Qwen/Qwen3-4B-Instruct-2507"
 attn = "flash_attention_2"
 optimization_dtype = "bfloat16"
 
 [model.lora]
-rank = 8
-alpha = 16
+rank = 32
+alpha = 64
 target_modules = [
     "q_proj",
     "k_proj",
@@ -21,30 +21,33 @@ target_modules = [
 ]
 
 [tokenizer]
-name = "OpenKing/Gemma-270m-it-non-gated"
+name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [algorithm]
-population_size = 32
+population_size = 128
 candidate_chunk_size = 32
+adapter_transport = "slots"
 mirrored = false
 sigma = 0.012
 lr = 0.01
 reward_normalization = "zscore"
 
 [train]
-examples_per_env = 8
+examples_per_env = 16
 rollouts_per_example = 1
 max_concurrent_rollouts_per_rank = 512
 
 [train.sampling]
 temperature = 0.0
-max_completion_tokens = 64
+max_completion_tokens = 768
 logprobs = false
+extra_body = { top_k = -1, chat_template_kwargs = { enable_thinking = false } }
 
 [[train.env]]
-id = "concision-gemma"
-name = "concision-gemma"
+id = "alphabet-sort"
+name = "alphabet-sort"
 num_workers = 1
+args = { min_turns = 3, max_turns = 5, min_names_per_turn = 1, max_names_per_turn = 5, similarity_power = 4, power_per_turn = false }
 
 [deployment]
 num_gpus = 1

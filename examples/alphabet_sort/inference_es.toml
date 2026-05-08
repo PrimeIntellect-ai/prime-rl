@@ -1,0 +1,13 @@
+enable_lora = true
+max_loras = 32
+max_cpu_loras = 32
+max_lora_rank = 32
+gpu_memory_utilization = 0.7
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+max_model_len = 4096
+trust_remote_code = true
+
+[server]
+port = 8000

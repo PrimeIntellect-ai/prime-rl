@@ -51,6 +51,27 @@ class ESAlgorithmConfig(BaseConfig):
         Field(description="Keep per-candidate adapter directories instead of deleting them after each chunk."),
     ] = False
 
+    adapter_transport: Annotated[
+        Literal["disk", "slots"],
+        Field(
+            description=(
+                "How candidate LoRA adapters are presented to inference. 'disk' writes PEFT adapters and uses "
+                "vLLM's load endpoint; 'slots' keeps fixed vLLM LoRA slots resident and overwrites them in-place."
+            ),
+        ),
+    ] = "disk"
+
+    adapter_write_workers: Annotated[
+        int,
+        Field(
+            ge=1,
+            description=(
+                "Number of bounded worker threads used to serialize candidate LoRA adapters. Higher values can "
+                "overlap CPU tensor conversion and safetensors writes, but may increase filesystem pressure."
+            ),
+        ),
+    ] = 4
+
     @model_validator(mode="after")
     def validate_mirrored_population(self):
         if self.mirrored and self.population_size % 2 != 0:

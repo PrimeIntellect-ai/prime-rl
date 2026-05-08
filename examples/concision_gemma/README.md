@@ -10,6 +10,8 @@ reward = -abs(len(completion) - len(answer))
 ```
 
 It is useful as a small, fast environment for ES trainer smoke runs and timing breakdowns.
+The ES config deliberately samples the two training rows with replacement so each
+candidate evaluates enough rollouts to keep vLLM batched.
 
 ```bash
 PYTHONPATH=environments/concision_gemma uv run inference @ examples/concision_gemma/inference.toml

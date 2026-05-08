@@ -18,6 +18,7 @@ from vllm.entrypoints.openai.utils import validate_json_request
 from vllm.entrypoints.serve.lora.protocol import LoadLoRAAdapterRequest
 from vllm.entrypoints.utils import load_aware_call, with_cancellation
 from vllm.logger import init_logger
+from vllm.lora.request import LoRARequest
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.configs.inference import InferenceConfig
@@ -263,6 +264,53 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
     response = await handler.load_lora_adapter(lora_request)
     if isinstance(response, ErrorResponse):
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
+    return {"status": "ok"}
+
+
+@router.post("/es/init_lora_slots")
+async def es_init_lora_slots(request: Request):
+    data = await request.json()
+    await engine_client(request).collective_rpc(
+        "es_init_lora_slots",
+        args=(data["theta_path"], data["specs"], data["adapter_config"], data["slots"]),
+    )
+    model_handler = models(request)
+    for slot in data["slots"]:
+        lora_name = str(slot["lora_name"])
+        model_handler.lora_requests[lora_name] = LoRARequest(
+            lora_name=lora_name,
+            lora_int_id=int(slot["lora_int_id"]),
+            lora_path="/prime_rl_es_slot",
+        )
+    await engine_client(request).reset_prefix_cache(reset_running_requests=True)
+    return {"status": "ok"}
+
+
+@router.post("/es/materialize_lora_slots")
+async def es_materialize_lora_slots(request: Request):
+    data = await request.json()
+    await engine_client(request).collective_rpc(
+        "es_materialize_lora_slots",
+        args=(data["slots"], float(data["sigma"])),
+    )
+    await engine_client(request).reset_prefix_cache(reset_running_requests=True)
+    return {"status": "ok"}
+
+
+@router.post("/es/update_lora_theta")
+async def es_update_lora_theta(request: Request):
+    data = await request.json()
+    await engine_client(request).collective_rpc(
+        "es_update_lora_theta",
+        args=(
+            data["candidates"],
+            data["rewards"],
+            float(data["lr"]),
+            data["normalization"],
+            bool(data["mirrored"]),
+            float(data["sigma"]),
+        ),
+    )
     return {"status": "ok"}
 
 

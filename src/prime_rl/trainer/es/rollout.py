@@ -1,4 +1,5 @@
 import asyncio
+import random
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,11 +28,16 @@ def sample_examples(env: TrainEnv, count: int, seed: int) -> list[dict]:
     dataset = env.get_dataset(seed=seed)
     if hasattr(dataset, "shuffle"):
         dataset = dataset.shuffle(seed=seed)
-    if hasattr(dataset, "select"):
-        dataset = dataset.select(range(min(count, len(dataset))))
     if hasattr(dataset, "to_list"):
-        return dataset.to_list()
-    return list(dataset)[:count]
+        rows = dataset.to_list()
+    else:
+        rows = list(dataset)
+    if not rows:
+        return []
+    if count <= len(rows):
+        return rows[:count]
+    rng = random.Random(seed)
+    return [rng.choice(rows) for _ in range(count)]
 
 
 async def start_train_envs(config: ESConfig) -> list[TrainEnv]:
@@ -78,6 +84,61 @@ async def unload_candidate_adapters(
     candidate_names: dict[int, str],
 ) -> None:
     await asyncio.gather(*[unload_lora_adapter(admin_clients, name) for name in candidate_names.values()])
+
+
+async def init_lora_slots(
+    admin_clients: list[httpx.AsyncClient],
+    theta_path: Path,
+    specs: list[dict],
+    adapter_config: dict,
+    slots: list[dict],
+) -> None:
+    payload = {
+        "theta_path": theta_path.resolve().as_posix(),
+        "specs": specs,
+        "adapter_config": adapter_config,
+        "slots": slots,
+    }
+    responses = await asyncio.gather(*[client.post("/es/init_lora_slots", json=payload) for client in admin_clients])
+    for response in responses:
+        response.raise_for_status()
+
+
+async def materialize_lora_slots(
+    admin_clients: list[httpx.AsyncClient],
+    slots: list[dict],
+    sigma: float,
+) -> None:
+    payload = {"slots": slots, "sigma": sigma}
+    responses = await asyncio.gather(
+        *[client.post("/es/materialize_lora_slots", json=payload, timeout=None) for client in admin_clients]
+    )
+    for response in responses:
+        response.raise_for_status()
+
+
+async def update_lora_slot_theta(
+    admin_clients: list[httpx.AsyncClient],
+    candidates: list[dict],
+    rewards: list[float],
+    lr: float,
+    normalization: str,
+    mirrored: bool,
+    sigma: float,
+) -> None:
+    payload = {
+        "candidates": candidates,
+        "rewards": rewards,
+        "lr": lr,
+        "normalization": normalization,
+        "mirrored": mirrored,
+        "sigma": sigma,
+    }
+    responses = await asyncio.gather(
+        *[client.post("/es/update_lora_theta", json=payload, timeout=None) for client in admin_clients]
+    )
+    for response in responses:
+        response.raise_for_status()
 
 
 async def evaluate_candidate(

@@ -13,6 +13,7 @@ from prime_rl.inference.vllm.worker.weight_transfer import (
     postprocess_weights_checkpoint,
     postprocess_weights_kernel,
 )
+from prime_rl.inference.vllm.worker.es_lora_slots import ESLoRASlotWorkerMixin
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
@@ -90,7 +91,7 @@ class NCCLWeightBroadcastReceiver:
                 yield key, value
 
 
-class NCCLWeightUpdateWorker(Worker):
+class NCCLWeightUpdateWorker(ESLoRASlotWorkerMixin, Worker):
     """vLLM worker extension for updating weights in-place using NCCL."""
 
     def init_broadcaster(

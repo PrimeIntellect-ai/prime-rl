@@ -112,6 +112,13 @@ class TrainSamplingConfig(BaseConfig):
         ),
     ] = None
 
+    logprobs: Annotated[
+        bool,
+        Field(
+            description="Whether to request per-token logprobs from the inference server.",
+        ),
+    ] = True
+
     # Strictly speaking, extra_body is not a sampling parameter, but it is the
     # easiest way to pass arbitrary extra parameters to the server via verifiers
     extra_body: Annotated[
@@ -127,7 +134,7 @@ class TrainSamplingConfig(BaseConfig):
         args: dict[str, Any] = {
             "temperature": self.temperature,
             "top_p": 1.0,
-            "logprobs": True,
+            "logprobs": self.logprobs,
         }
         if self.max_completion_tokens is not None:
             args["max_completion_tokens"] = self.max_completion_tokens
