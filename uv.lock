@@ -2819,7 +2819,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "quack-kernels", marker = "extra == 'quack'", specifier = ">=0.3.3" },
-    { name = "renderers", git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=1f3de65" },
+    { name = "renderers", git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=7ca1ab3" },
     { name = "reverse-text", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ring-flash-attn", specifier = ">=0.1.8" },
@@ -2832,7 +2832,7 @@ requires-dist = [
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=f6f82245" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=1c7c35f0" },
     { name = "vllm", specifier = ">=0.19.0" },
     { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "wandb", specifier = ">=0.26.1" },
@@ -3302,7 +3302,7 @@ wheels = [
 [[package]]
 name = "renderers"
 version = "0.1.7"
-source = { git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=1f3de65#1f3de6506208233217f61671ebe81a00b0f5082a" }
+source = { git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=7ca1ab3#7ca1ab357f3ae2262ad10ffe757670739a8ec2c5" }
 dependencies = [
     { name = "jinja2", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "numpy", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -4102,7 +4102,7 @@ wheels = [
 [[package]]
 name = "verifiers"
 version = "0.1.14"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=f6f82245#f6f82245113149e7e9244b2b1f52ac9a6f4d38d0" }
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=1c7c35f0#1c7c35f059b814b01072158ecf683448fe7fffd1" }
 dependencies = [
     { name = "aiolimiter", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "anthropic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
