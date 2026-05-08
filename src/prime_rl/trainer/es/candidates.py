@@ -79,7 +79,9 @@ def estimate_gradient(
     ordered_rewards = [rewards[c.idx] for c in candidates]
     scores = normalize_rewards(ordered_rewards, normalization)
     for candidate, score in zip(candidates, scores, strict=True):
-        grad.add_(noise_like(theta, candidate.seed), alpha=float(score) / sigma)
+        # Matches the prior Alphabet Sort ES runner: sigma controls candidate
+        # perturbation scale, while the update averages score-weighted noise.
+        grad.add_(noise_like(theta, candidate.seed), alpha=float(score))
     if candidates:
         grad.div_(float(len(candidates)))
     return grad

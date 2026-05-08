@@ -12,7 +12,7 @@ def test_one_sided_gradient_without_reward_normalization():
 
     grad = estimate_gradient(theta, candidates, rewards, sigma=0.1, normalization="none", mirrored=False)
 
-    expected = ((2.0 / 0.1) * noise_like(theta, 11) - (1.0 / 0.1) * noise_like(theta, 13)) / 2.0
+    expected = (2.0 * noise_like(theta, 11) - 1.0 * noise_like(theta, 13)) / 2.0
     assert torch.allclose(grad, expected)
 
 

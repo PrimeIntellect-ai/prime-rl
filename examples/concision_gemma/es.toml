@@ -26,10 +26,10 @@ name = "OpenKing/Gemma-270m-it-non-gated"
 [algorithm]
 population_size = 4
 candidate_chunk_size = 4
-mirrored = true
-sigma = 0.05
-lr = 0.0000005
-reward_normalization = "none"
+mirrored = false
+sigma = 0.012
+lr = 0.01
+reward_normalization = "zscore"
 
 [train]
 examples_per_env = 2
