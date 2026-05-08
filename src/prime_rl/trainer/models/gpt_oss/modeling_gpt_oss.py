@@ -307,6 +307,10 @@ class GptOssForCausalLM(GptOssPreTrainedModel, GenerationMixin):
         temperature: torch.Tensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
+        r"""
+        temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Per-token temperatures for logprobs/entropy computation when `labels` are provided.
+        """
         assert use_cache is None or not use_cache, "use_cache is not supported for custom GPT-OSS"
         assert past_key_values is None, "past_key_values is not supported for custom GPT-OSS"
 
