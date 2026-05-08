@@ -6,6 +6,7 @@ import tomli_w
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
 
+from prime_rl.configs.es import ESConfig
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
@@ -19,6 +20,7 @@ CONFIG_CLASSES = [
     RLConfig,
     TrainerConfig,
     SFTConfig,
+    ESConfig,
     OrchestratorConfig,
     InferenceConfig,
 ]
