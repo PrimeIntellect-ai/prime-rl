@@ -310,6 +310,19 @@ class ClientConfig(BaseConfig):
         ),
     ] = None
 
+    backend: Annotated[
+        Literal["vllm", "dynamo"],
+        Field(
+            description=(
+                "Inference backend selector. Picks the AdminAPI implementation used for "
+                "pause/resume/update_weights/load_lora_adapter/list_models. Default 'vllm' "
+                "matches prime-rl's bundled vLLM frontend. 'dynamo' targets NVIDIA Dynamo's "
+                "native /v1/rl/* admin routes (DYN_ENABLE_RL=true) and routes /v1/models to "
+                "the OpenAI-compat root rather than under /v1/rl/."
+            ),
+        ),
+    ] = "vllm"
+
     elastic: Annotated[
         ElasticConfig | None,
         Field(
