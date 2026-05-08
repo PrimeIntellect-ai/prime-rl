@@ -56,7 +56,7 @@ jobs:
         needs: discover-experiments
         runs-on: research-cluster
         container:
-            image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
+            image: nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
             # --shm-size: vLLM V1's DP engine/API-server IPC uses POSIX shm-backed
             # MessageQueue (~160MB per queue); Docker's default 64MB /dev/shm triggers
             # SIGBUS in DP engine cores on VLM runs (mm data overflows tmpfs).
