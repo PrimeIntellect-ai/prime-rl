@@ -160,7 +160,6 @@ logger = init_logger("vllm.entrypoints.openai.api_server")
 
 # Create our own router for custom endpoints
 router = APIRouter()
-DEFAULT_LIVENESS_TIMEOUT_SECONDS = 30.0
 
 
 def engine_client(request: Request) -> EngineClient:
@@ -269,11 +268,10 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
 @router.get("/liveness")
 async def liveness(raw_request: Request):
     """Check that the engine event loop can service a no-op worker RPC."""
-    timeout = getattr(raw_request.app.state, "liveness_timeout_seconds", DEFAULT_LIVENESS_TIMEOUT_SECONDS)
     try:
         await asyncio.wait_for(
             engine_client(raw_request).collective_rpc("liveness_probe"),
-            timeout=timeout,
+            timeout=raw_request.app.state.liveness_timeout_seconds,
         )
     except asyncio.TimeoutError:
         return JSONResponse({"status": "engine_unresponsive"}, status_code=503)
@@ -313,7 +311,7 @@ async def custom_init_app_state(
     await init_app_state(engine_client, state, args, supported_tasks)
 
     state.reset_prefix_cache_after_update = getattr(args, "reset_prefix_cache_after_update", True)
-    state.liveness_timeout_seconds = getattr(args, "liveness_timeout_seconds", DEFAULT_LIVENESS_TIMEOUT_SECONDS)
+    state.liveness_timeout_seconds = args.liveness_timeout_seconds
 
     # TITO: server-side chat templating + token IDs.
     if "generate" in supported_tasks and state.openai_serving_chat is not None:
