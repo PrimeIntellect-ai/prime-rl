@@ -1086,3 +1086,65 @@ def monkey_patch_no_moe_lora():
         self.is_lora_enabled = False
 
     FusedMoEConfig.__post_init__ = _patched__post_init__
+
+
+def monkey_patch_fp32_lm_head():
+    """Run the lm_head projection in fp32, via a native bf16xbf16 -> fp32 GEMM.
+
+    Uses ``torch.mm(..., out_dtype=torch.float32)`` (PyTorch >= 2.10) so the
+    matmul accumulates and emits fp32 directly without zero-padding the bf16
+    operands or maintaining a separate fp32 weight copy. This avoids the
+    epilogue truncation to bf16 that `F.linear(bf16, bf16)` does, which is
+    where lm_head precision actually leaks before the sampler's softmax.
+
+    Activated by setting ``additional_config["fp32_lm_head"] = True`` on the
+    vLLM namespace; the launcher does this when ``inference.enable_fp32_lm_head``
+    is set. The flag is captured once on ``LogitsProcessor.__init__`` (where
+    vLLM guarantees a ``set_current_vllm_config()`` context) and stored on the
+    instance — reading it from ``_get_logits`` during serving doesn't work
+    because vLLM doesn't keep the context set during forwards.
+
+    Tracks vllm-project/vllm#24567 (which uses the operand-upcast approach).
+    Per @Jackmin801 on PR #2438, native ``out_dtype=fp32`` mm is more efficient
+    and just as correct.
+    """
+    import torch
+    from vllm.config import get_current_vllm_config
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.logits_processor import LogitsProcessor
+
+    logger = init_logger(__name__)
+
+    _original_init = LogitsProcessor.__init__
+    _original_get_logits = LogitsProcessor._get_logits
+
+    def _patched_init(self, *args, **kwargs):
+        _original_init(self, *args, **kwargs)
+        vllm_config = get_current_vllm_config()
+        additional_config = vllm_config.additional_config or {}
+        self._fp32_lm_head_enabled = additional_config.get("fp32_lm_head", False)
+        if self._fp32_lm_head_enabled:
+            logger.warning("fp32 lm_head ENABLED for this LogitsProcessor instance.")
+
+    def _patched_get_logits(self, hidden_states, lm_head, embedding_bias):
+        if not getattr(self, "_fp32_lm_head_enabled", False):
+            return _original_get_logits(self, hidden_states, lm_head, embedding_bias)
+
+        # Native bf16xbf16 -> fp32 GEMM. torch.mm requires 2D inputs; vLLM v1's
+        # generative path passes 2D [num_tokens, hidden_size] hidden_states, but
+        # flatten defensively in case some future caller passes 3D.
+        flat = hidden_states.reshape(-1, hidden_states.shape[-1])
+        logits = torch.mm(flat, lm_head.weight.t(), out_dtype=torch.float32)
+        if embedding_bias is not None:
+            logits = logits + embedding_bias.to(torch.float32)
+        if hidden_states.dim() > 2:
+            logits = logits.reshape(*hidden_states.shape[:-1], -1)
+
+        logits = self._gather_logits(logits)
+        if logits is not None:
+            logits = logits[..., : self.org_vocab_size]
+        return logits
+
+    LogitsProcessor.__init__ = _patched_init
+    LogitsProcessor._get_logits = _patched_get_logits
+    logger.info("Installed fp32 lm_head patch (native out_dtype=fp32 mm).")

@@ -390,6 +390,13 @@ class InferenceConfig(BaseConfig):
         ),
     ] = False
 
+    enable_fp32_lm_head: Annotated[
+        bool,
+        Field(
+            description="Run the lm_head projection in fp32 via a native bf16xbf16 -> fp32 GEMM (`torch.mm` with `out_dtype=torch.float32`). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's `--enable-fp32-lm-head`. Implemented as a monkey-patch over vLLM's LogitsProcessor, activated by setting `additional_config[\"fp32_lm_head\"] = True` on the vLLM config.",
+        ),
+    ] = False
+
     vllm_extra: Annotated[
         dict[str, Any],
         Field(
@@ -534,6 +541,13 @@ class InferenceConfig(BaseConfig):
 
         # Set `logprobs_mode` to `processed_logprobs` by default
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")
+
+        # Pass prime-rl-specific flags through vLLM's additional_config dict;
+        # workers read these via get_current_vllm_config().additional_config.
+        if self.enable_fp32_lm_head:
+            existing = getattr(namespace, "additional_config", None) or {}
+            existing["fp32_lm_head"] = True
+            rsetattr(namespace, "additional_config", existing)
 
         # Remove chat_template if not set (vLLM doesn't accept None)
         if namespace.chat_template is None:
