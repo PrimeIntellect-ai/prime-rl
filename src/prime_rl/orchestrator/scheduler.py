@@ -42,6 +42,10 @@ class GroupState:
     rollouts_to_schedule: int
     completed_rollouts: list[vf.RolloutOutput] = field(default_factory=list)
     pinned_client: vf.ClientConfig | None = None
+    # Number of rollout attempts in this group that returned errored or empty
+    # trajectories. Compared against config.max_error_reschedule_attempts to
+    # decide when to drop a permanently-stuck group.
+    failed_attempts: int = 0
 
 
 class Scheduler:
@@ -114,6 +118,7 @@ class Scheduler:
         self.empty_rollouts_by_env: dict[str, int] = defaultdict(int)
         self.errored_rollouts_by_env: dict[str, int] = defaultdict(int)
         self.total_rollouts_by_env: dict[str, int] = defaultdict(int)
+        self.dropped_groups_by_env: dict[str, int] = defaultdict(int)
         self.last_batch_generation_time = 0.0
 
     @property
@@ -453,6 +458,24 @@ class Scheduler:
                         else:
                             rollout["env_name"] = env_name
                             valid_rollouts.append(rollout)
+
+                    if has_failures:
+                        group.failed_attempts += 1
+                        max_attempts = self.config.max_error_reschedule_attempts
+                        if max_attempts is not None and group.failed_attempts >= max_attempts:
+                            # Permanently-stuck group: drop it from this step and let the
+                            # rest of the batch proceed. Avoids a single bad example (e.g.
+                            # an agent rollout whose sandbox poll keeps timing out)
+                            # blocking step progress forever.
+                            self.dropped_groups_by_env[env_name] += 1
+                            self.logger.warning(
+                                f"Dropping group {group_id} ({env_name}) after {group.failed_attempts} "
+                                f"failed attempts ({len(group.completed_rollouts)}/{self.rollouts_per_example} "
+                                f"complete). Set orchestrator.max_error_reschedule_attempts higher (or to None) "
+                                f"to retry more aggressively."
+                            )
+                            await self.drop_group(group_id)
+                            continue
 
                     if has_failures and env.requires_group_scoring:
                         # Group scoring requires all rollouts — discard partial results, reschedule full group
