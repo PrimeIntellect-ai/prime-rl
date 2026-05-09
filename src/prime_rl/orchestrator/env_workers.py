@@ -36,12 +36,6 @@ def _pick_free_port() -> int:
         return s.getsockname()[1]
 
 
-def _resolve_num_workers(env_config: EnvConfig) -> int:
-    """`auto` resolves to 1 here — the EnvServerConfig validator does the
-    same. Keep them in sync."""
-    return 1 if env_config.num_workers == "auto" else int(env_config.num_workers)
-
-
 @dataclass
 class EnvWorker:
     name: str
@@ -91,7 +85,7 @@ def spawn_env_worker(env_config: EnvConfig, *, output_dir: Path, log_level: str 
             "name": env_config.resolved_name,
             "args": env_config.args,
             "extra_env_kwargs": env_config.extra_env_kwargs,
-            "num_workers": _resolve_num_workers(env_config),
+            "num_workers": env_config.num_workers,
             "address": address,
         },
         "log": {"level": log_level},

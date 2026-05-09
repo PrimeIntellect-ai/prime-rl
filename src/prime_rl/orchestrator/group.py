@@ -139,7 +139,7 @@ class GRPOGroup:
         self._rows = [dict(r) for r in self.env.get_dataset()]
         self._cycle = self._cycle_forever()
 
-        log_level = self.config.log.level or "info"
+        log_level = self.config.log.level
         self._worker = spawn_env_worker(self.env_config, output_dir=self.config.output_dir, log_level=log_level)
         self._env_client = await attach_env_client(self.env, self._worker.address)
         await self._worker.wait_healthy(self._env_client)
@@ -154,17 +154,13 @@ class GRPOGroup:
             self._worker = None
 
     async def do_work(self) -> list[Trajectory]:
-        assert self._cycle is not None, "Group.do_work() called before start()"
-        try:
-            example = next(self._cycle)
-        except StopIteration:
-            return []
-
+        example = next(self._cycle)
         version = self.policy.version
         rollouts = await self._gather(example)
         if not rollouts:
+            # Every rollout timed out — drop the group so _observe doesn't
+            # divide by zero and the batcher doesn't see an empty cohort.
             return []
-
         self._score(rollouts)
         self._observe(example, rollouts)
         return [
@@ -193,7 +189,6 @@ class GRPOGroup:
         return [t.result() for t in done]
 
     async def _rollout(self, example: dict) -> vf.RolloutOutput:
-        assert self.env is not None
         if self.rate_limiter is not None:
             await self.rate_limiter.acquire()
         return await self.env.run_rollout(
@@ -364,13 +359,14 @@ class EvalGroup:
         self._expected: dict[int, int] = {}
 
     @property
-    def interval(self) -> int | None:
-        return self.config.eval.interval if self.config.eval is not None else None
+    def interval(self) -> int:
+        # ctor asserts config.eval is set, so this is always the configured int
+        return self.config.eval.interval  # type: ignore[union-attr]
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
     async def start(self) -> None:
-        log_level = self.config.log.level or "info"
+        log_level = self.config.log.level
         for h in self._envs:
             h.env = vf.load_environment(h.config.stripped_id, **h.config.args)
             ds = h.env.get_eval_dataset() if hasattr(h.env, "get_eval_dataset") else h.env.get_dataset()
@@ -384,7 +380,7 @@ class EvalGroup:
             await h.worker.wait_healthy(h.env_client)
             get_logger().info(f"[eval/{h.name}] env worker healthy at {h.worker.address}")
 
-        if self._eval_at_zero and self._envs:
+        if self._eval_at_zero:
             self._start_epoch(0)
 
     async def stop(self) -> None:
@@ -413,8 +409,6 @@ class EvalGroup:
         self._expected[step] = len(entries)
 
     def _maybe_trigger(self) -> None:
-        if not self._envs or self.interval is None:
-            return
         if self.policy.version < self.last_eval_step + self.interval:
             return
         if self._dispatching_step is not None:
@@ -433,10 +427,7 @@ class EvalGroup:
         h = self._envs[env_idx]
         version = self.policy.version
 
-        rollouts = await asyncio.gather(
-            *(self._rollout(h, example) for _ in range(h.config.rollouts_per_example)),
-            return_exceptions=False,
-        )
+        rollouts = await asyncio.gather(*(self._rollout(h, example) for _ in range(h.config.rollouts_per_example)))
         return [
             Trajectory(
                 example=example,
@@ -449,7 +440,6 @@ class EvalGroup:
         ]
 
     async def _rollout(self, h: _EvalEnvHandle, example: dict) -> vf.RolloutOutput:
-        assert h.env is not None
         return await h.env.run_rollout(
             vf.RolloutInput(**example),
             client=self.client,

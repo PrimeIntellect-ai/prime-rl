@@ -249,11 +249,9 @@ class PostProcessor:
         return samples
 
     def _max_off_policy(self, rollouts: list[vf.RolloutOutput]) -> int:
-        versions = [r.get(_POLICY_VERSION_KEY) for r in rollouts]
-        versions = [v for v in versions if v is not None]
-        if not versions:
+        if not rollouts:
             return 0
-        return max(self.policy.version - v for v in versions)
+        return max(self.policy.version - r[_POLICY_VERSION_KEY] for r in rollouts)
 
     def _log(
         self,
