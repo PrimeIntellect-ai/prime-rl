@@ -171,6 +171,10 @@ transformers = { git = "https://github.com/huggingface/transformers.git", rev = 
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "96bd151" }
 pydantic-config = { git = "https://github.com/samsja/pydantic_config.git", branch = "main" }
 vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl" }
+vllm = [
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.1/vllm-0.20.1+cu129-cp38-abi3-manylinux_2_31_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.1/vllm-0.20.1+cu129-cp38-abi3-manylinux_2_31_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+]
 reverse-text = { index = "primeintellect" }
 alphabet-sort = { index = "primeintellect" }
 wiki-search = { index = "primeintellect" }
@@ -185,10 +189,8 @@ aime2024 = { index = "primeintellect" }
 aime2025 = { index = "primeintellect" }
 deepdive = { index = "primeintellect" }
 mini_swe_agent_plus = { index = "primeintellect" }
-deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+73b6ea4-cp312-cp312-linux_x86_64.whl" }
-# DeepGEMM bumped from 477618c to d30fc36 (newer kernel APIs needed by the
-# FP8 grouped-GEMM training path). Rebuild via scripts/install_deep_gemm.sh.
-deep-gemm = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.3.0+d30fc36-cp312-cp312-linux_x86_64.whl" }
+deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }
+deep-gemm = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }
 nixl-cu12 = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
 flash_attn_3 = { index = "pytorch-cu128-test" }

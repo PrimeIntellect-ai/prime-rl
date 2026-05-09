@@ -16,6 +16,16 @@ class ServerConfig(BaseConfig):
 
     host: Annotated[str | None, Field(description="The host to bind to.")] = None
     port: Annotated[int, Field(description="The port to bind to.")] = 8000
+    liveness_timeout_seconds: Annotated[
+        float,
+        Field(
+            gt=0,
+            description=(
+                "Timeout in seconds for the /liveness endpoint's internal vLLM worker RPC. "
+                "If Kubernetes liveness probes are enabled, keep the probe timeoutSeconds at least this high."
+            ),
+        ),
+    ] = 30.0
 
 
 class ParallelConfig(BaseConfig):
@@ -506,6 +516,7 @@ class InferenceConfig(BaseConfig):
         to_vllm = {
             "server.host": "host",
             "server.port": "port",
+            "server.liveness_timeout_seconds": "liveness_timeout_seconds",
             "model.name": "model",
             "model.dtype": "dtype",
             "model.max_model_len": "max_model_len",
