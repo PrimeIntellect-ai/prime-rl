@@ -167,6 +167,15 @@ class SharedWeightBroadcastConfig(BaseConfig):
             ),
         ),
     ] = False
+    layerwise: Annotated[
+        bool,
+        Field(
+            description=(
+                "Use vLLM's checkpoint-format layerwise reload path for weight updates. "
+                "Automatically enabled when inference.quantization is set."
+            ),
+        ),
+    ] = False
 
 
 class BaseDeploymentConfig(BaseModel):
@@ -410,6 +419,14 @@ class RLConfig(BaseConfig):
     def validate_quantize_in_weight_transfer(self):
         if self.weight_broadcast is None or not self.weight_broadcast.quantize_in_weight_transfer:
             return self
+
+        if self.inference is not None and self.inference.quantization is not None:
+            raise ValueError(
+                "weight_broadcast.quantize_in_weight_transfer cannot be combined with inference.quantization."
+            )
+
+        if self.weight_broadcast.layerwise:
+            raise ValueError("weight_broadcast.quantize_in_weight_transfer cannot be combined with layerwise reload.")
 
         if self.weight_broadcast.type != "nccl":
             raise ValueError("weight_broadcast.quantize_in_weight_transfer requires weight_broadcast.type = 'nccl'.")
@@ -655,6 +672,9 @@ class RLConfig(BaseConfig):
     def auto_setup_weight_broadcast(self):
         """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference."""
         if self.weight_broadcast is not None:
+            if self.inference is not None and self.inference.quantization is not None:
+                self.weight_broadcast.layerwise = True
+
             if self.weight_broadcast.type == "nccl":
                 inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
                 self.trainer.weight_broadcast = TrainerNCCLWeightBroadcastConfig(
@@ -663,6 +683,7 @@ class RLConfig(BaseConfig):
                     port=self.weight_broadcast.port,
                     timeout=self.weight_broadcast.timeout,
                     quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
+                    layerwise=self.weight_broadcast.layerwise,
                 )
                 self.orchestrator.weight_broadcast = OrchestratorNCCLWeightBroadcastConfig(
                     type=self.weight_broadcast.type,
@@ -670,12 +691,20 @@ class RLConfig(BaseConfig):
                     timeout=self.weight_broadcast.timeout,
                     inference_world_size=inference_world_size,
                     quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
+                    layerwise=self.weight_broadcast.layerwise,
                 )
             elif self.weight_broadcast.type == "filesystem":
-                self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
-                self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
+                self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig(
+                    layerwise=self.weight_broadcast.layerwise
+                )
+                self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig(
+                    layerwise=self.weight_broadcast.layerwise
+                )
             if self.inference is not None:
-                self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
+                self.inference.weight_broadcast = InferenceWeightBroadcastConfig(
+                    type=self.weight_broadcast.type,
+                    layerwise=self.weight_broadcast.layerwise,
+                )
 
         validate_shared_weight_broadcast(self.trainer, self.orchestrator, self.inference)
 
@@ -686,12 +715,13 @@ class RLConfig(BaseConfig):
         if self.inference is None or not self.inference.enable_eplb:
             return self
 
-        # TODO(matej): check if weight reloading works itself before supporting EPLB without quantized transfer.
         trainer_weight_broadcast = self.trainer.weight_broadcast
-        if trainer_weight_broadcast.type != "nccl" or not trainer_weight_broadcast.quantize_in_weight_transfer:
+        if trainer_weight_broadcast.type != "nccl" or not (
+            trainer_weight_broadcast.quantize_in_weight_transfer or trainer_weight_broadcast.layerwise
+        ):
             raise ValueError(
                 "inference.enable_eplb requires weight_broadcast.type = 'nccl' and "
-                "weight_broadcast.quantize_in_weight_transfer = true."
+                "either weight_broadcast.quantize_in_weight_transfer = true or layerwise reload."
             )
 
         return self

@@ -2,7 +2,8 @@ from typing import TYPE_CHECKING
 
 from torch.nn import Module
 from vllm.model_executor.model_loader import DefaultModelLoader, get_model_loader
-from vllm.model_executor.model_loader.utils import process_weights_after_loading
+
+from prime_rl.inference.vllm.worker.weight_transfer import load_weights_checkpoint_or_layerwise
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
@@ -24,7 +25,7 @@ class FileSystemWeightUpdateWorker(Worker):
         """No-op RPC used by the API server liveness endpoint."""
         return None
 
-    def update_weights_from_path(self, weight_path: str) -> None:
+    def update_weights_from_path(self, weight_path: str, layerwise: bool) -> None:
         """Update weights from a specified path in shared filesystem containing a HF-compatible checkpoint."""
         # Get vLLM model runner and model
         # When enforce_eager=True, model isn't wrapped by torch.compile so no .runnable attr
@@ -46,8 +47,11 @@ class FileSystemWeightUpdateWorker(Worker):
             allow_patterns_overrides=getattr(model, "allow_patterns_overrides", None),
         )
         weights_iterator = model_loader._get_weights_iterator(local_source)
-        model.load_weights(weights_iterator)  # type: ignore
 
-        # Process weights after loading (important for some models)
-        device = next(model.parameters()).device
-        process_weights_after_loading(model, self.model_runner.model_config, device)
+        load_weights_checkpoint_or_layerwise(
+            model,
+            weights_iterator,
+            self.model_runner.model_config,
+            layerwise,
+            self.vllm_config,
+        )

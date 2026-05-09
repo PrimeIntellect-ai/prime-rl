@@ -1,19 +1,73 @@
-from typing import Generator
+from contextlib import contextmanager
+from typing import Generator, Iterable
 
 import torch
 from torch.nn import Module
 from vllm.logger import init_logger
+from vllm.model_executor.model_loader.reload import finalize_layerwise_reload, initialize_layerwise_reload
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
 logger = init_logger("vllm.inference.vllm.worker_weight_transfer")
+
+
+@contextmanager
+def eager_online_fp8_conversion(model_config):
+    if model_config.quantization != "fp8_per_block":
+        yield
+        return
+
+    from vllm.model_executor.layers.quantization.online import fp8
+
+    original = fp8.per_block_cast_to_fp8
+    eager = getattr(original, "__wrapped__", None)
+    if eager is None:
+        yield
+        return
+
+    logger.info("Running online FP8 layerwise conversion without torch.compile")
+    fp8.per_block_cast_to_fp8 = eager
+    try:
+        yield
+    finally:
+        fp8.per_block_cast_to_fp8 = original
+
+
+@contextmanager
+def current_vllm_config(vllm_config):
+    from vllm.config import set_current_vllm_config
+
+    with set_current_vllm_config(vllm_config):
+        yield
 
 
 def load_weights_checkpoint(model: Module, state_iter: Generator[tuple[str, torch.Tensor], None, None]) -> None:
     model.load_weights(state_iter)  # type: ignore
 
 
-def postprocess_weights_checkpoint(model: Module, model_config, device: torch.device) -> None:
+def postprocess_weights_checkpoint(model: Module, model_config) -> None:
+    device = next(model.parameters()).device
     process_weights_after_loading(model, model_config, device)
+
+
+def load_weights_checkpoint_or_layerwise(
+    model: Module,
+    state_iter: Iterable[tuple[str, torch.Tensor]],
+    model_config,
+    layerwise: bool,
+    vllm_config,
+) -> None:
+    """Reload checkpoint-format weights, optionally through vLLM layerwise processing."""
+    if layerwise:
+        logger.info("Reloading checkpoint-format weights with vLLM layerwise processing")
+        device = next(model.parameters()).device
+        with torch.device(device), current_vllm_config(vllm_config), eager_online_fp8_conversion(model_config):
+            initialize_layerwise_reload(model)
+            model.load_weights(state_iter)  # type: ignore
+            finalize_layerwise_reload(model, model_config)
+        return
+
+    load_weights_checkpoint(model, state_iter)
+    postprocess_weights_checkpoint(model, model_config)
 
 
 def _invert_logical_to_physical_map(logical_to_physical_map: torch.Tensor, num_physical_experts: int) -> torch.Tensor:
@@ -145,5 +199,5 @@ def update_mla_absorbed_weights(model: Module) -> None:
         logger.debug(f"Updated MLA absorbed weights for module {name}")
 
 
-def postprocess_weights_kernel(model: Module, _model_config, _device: torch.device) -> None:
+def postprocess_weights_kernel(model: Module) -> None:
     update_mla_absorbed_weights(model)

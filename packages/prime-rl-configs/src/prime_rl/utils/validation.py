@@ -144,3 +144,9 @@ def validate_shared_weight_broadcast(
         raise ValueError(
             f"Trainer weight broadcast type ({trainer.weight_broadcast.type}) and orchestrator weight broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for both."
         )
+
+    trainer_layerwise = getattr(trainer.weight_broadcast, "layerwise", False)
+    orchestrator_layerwise = getattr(orchestrator.weight_broadcast, "layerwise", False)
+    inference_layerwise = getattr(inference.weight_broadcast, "layerwise", False) if inference else trainer_layerwise
+    if len({trainer_layerwise, orchestrator_layerwise, inference_layerwise}) > 1:
+        raise ValueError("Trainer, orchestrator, and inference weight_broadcast.layerwise values must match.")

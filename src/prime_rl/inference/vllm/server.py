@@ -251,7 +251,10 @@ async def resume(request: Request):
 @router.post("/update_weights")
 async def update_weights(request: Request):
     data = await request.json()
-    await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+    await engine_client(request).collective_rpc(
+        "update_weights_from_path",
+        args=(data.get("weight_dir"), request.app.state.weight_broadcast_layerwise),
+    )
     return {"status": "ok"}
 
 
@@ -287,9 +290,10 @@ async def init_broadcaster(request: Request):
     rank_offset = data.get("rank_offset")
     inference_world_size = data.get("inference_world_size")
     quantize_in_weight_transfer = data.get("quantize_in_weight_transfer", False)
+    layerwise = data.get("layerwise", False)
     await engine_client(request).collective_rpc(
         "init_broadcaster",
-        args=(host, port, rank_offset, inference_world_size, timeout, quantize_in_weight_transfer),
+        args=(host, port, rank_offset, inference_world_size, timeout, quantize_in_weight_transfer, layerwise),
     )
     return {"status": "ok"}
 
@@ -312,6 +316,7 @@ async def custom_init_app_state(
 
     state.reset_prefix_cache_after_update = getattr(args, "reset_prefix_cache_after_update", True)
     state.liveness_timeout_seconds = args.liveness_timeout_seconds
+    state.weight_broadcast_layerwise = getattr(args, "weight_broadcast_layerwise", False)
 
     # TITO: server-side chat templating + token IDs.
     if "generate" in supported_tasks and state.openai_serving_chat is not None:
@@ -391,6 +396,7 @@ def server(config: InferenceConfig, vllm_extra: dict[str, Any] | None = None):
 
     # Set the worker extension class based on the broadcast backend
     args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
+    args.weight_broadcast_layerwise = config.weight_broadcast.layerwise
 
     if args.headless or args.api_server_count < 1:
         run_headless(args)

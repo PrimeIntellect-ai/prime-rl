@@ -118,6 +118,15 @@ class WeightBroadcastConfig(BaseConfig):
     type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
         "filesystem"
     )
+    layerwise: Annotated[
+        bool,
+        Field(
+            description=(
+                "Use vLLM's checkpoint-format layerwise reload path for weight updates. "
+                "Automatically enabled when inference.quantization is set."
+            ),
+        ),
+    ] = False
 
 
 class KVCacheOffloadConfig(BaseModel):
@@ -380,6 +389,16 @@ class InferenceConfig(BaseConfig):
         ),
     ] = False
 
+    quantization: Annotated[
+        Literal["fp8_per_block"] | None,
+        Field(
+            description=(
+                "Online quantization scheme passed to vLLM as `--quantization`. "
+                "Currently only `fp8_per_block` is supported."
+            ),
+        ),
+    ] = None
+
     weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
         WeightBroadcastConfig()
     )
@@ -455,6 +474,12 @@ class InferenceConfig(BaseConfig):
             if "enable_prefix_caching" not in self.model_fields_set:
                 self.enable_prefix_caching = True
 
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_quantized_layerwise_reload(self):
+        if self.quantization is not None:
+            self.weight_broadcast.layerwise = True
         return self
 
     @model_validator(mode="after")
@@ -555,6 +580,7 @@ class InferenceConfig(BaseConfig):
             "all2all_backend": "all2all_backend",
             "enable_eplb": "enable_eplb",
             "enable_dbo": "enable_dbo",
+            "quantization": "quantization",
             "seed": "seed",
         }
 

@@ -729,7 +729,15 @@ class DataLoaderConfig(BaseConfig):
 class BaseWeightBroadcastConfig(BaseModel):
     """Configures the base weight broadcast."""
 
-    pass
+    layerwise: Annotated[
+        bool,
+        Field(
+            description=(
+                "Use vLLM's checkpoint-format layerwise reload path for inference weight updates. "
+                "This is consumed by inference/orchestrator; trainer still emits checkpoint-format weights."
+            ),
+        ),
+    ] = False
 
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
