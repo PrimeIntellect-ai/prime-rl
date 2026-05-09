@@ -561,13 +561,6 @@ class EvalConfig(BaseConfig):
         ),
     ] = True
 
-    cancel_inflight_rollouts_on_eval: Annotated[
-        bool,
-        Field(
-            description="Whether to cancel in-flight training rollouts before starting online evals. This is useful to avoid congestion (e.g. do not have training + eval rollouts happening at the same time) but leads to slower training steps as rollouts get cancelled and the pipeline has to fill up after each eval",
-        ),
-    ] = False
-
 
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the orchestrator."""
@@ -605,13 +598,6 @@ class CheckpointConfig(BaseConfig):
             description="Keep checkpoints at every N steps permanently (e.g., keep_interval=100 keeps step 100, 200, ...). If None, no interval-based keeping.",
         ),
     ] = None
-
-    skip_progress: Annotated[
-        bool,
-        Field(
-            description="Whether to skip loading the progress from checkpoint.",
-        ),
-    ] = False
 
     skip_buffer: Annotated[
         bool,
@@ -845,10 +831,6 @@ class NCCLWeightBroadcastConfig(BaseModel):
 WeightBroadcastConfig: TypeAlias = Annotated[
     FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
 ]
-
-
-class OrchestratorExperimentalConfig(BaseConfig):
-    """Experimental features for the orchestrator."""
 
 
 class TeacherModelConfig(BaseConfig):
@@ -1118,11 +1100,6 @@ class OrchestratorConfig(BaseConfig):
             description="Allow pre-release versions when installing environments (e.g. verifiers>=0.1.12.dev5). Passes --prerelease to prime env install."
         ),
     ] = False
-
-    experimental: Annotated[
-        OrchestratorExperimentalConfig,
-        Field(description="Experimental features for the orchestrator."),
-    ] = OrchestratorExperimentalConfig()
 
     @model_validator(mode="before")
     @classmethod
