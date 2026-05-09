@@ -132,6 +132,18 @@ On the CLI, pass as a JSON string:
 uv run inference --vllm-extra '{"key1": "value1", "key2": 123}'
 ```
 
+SGLang uses a parallel `sglang_extra` dict:
+
+```toml
+[inference]
+backend = "sglang"
+
+[inference.sglang_extra]
+attention_backend = "triton"
+```
+
+SGLang support currently covers single-node inference with filesystem weight broadcast. The RL config auto-switches rollouts from the vLLM-only token client to the standard OpenAI chat-completions client when `inference.backend = "sglang"`.
+
 ### Discriminated unions
 
 Some config fields use discriminated unions (e.g. loss type, data type). Set the `type` field to select the variant:

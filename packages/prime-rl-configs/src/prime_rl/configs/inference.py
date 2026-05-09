@@ -10,6 +10,8 @@ from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
 
 # TODO: Set thinking/ solution budget
 
+InferenceBackend: TypeAlias = Literal["vllm", "sglang"]
+
 
 class ServerConfig(BaseConfig):
     """Configures the inference server."""
@@ -252,6 +254,13 @@ class InferenceExperimentalConfig(BaseConfig):
 class InferenceConfig(BaseConfig):
     """Configures inference."""
 
+    backend: Annotated[
+        InferenceBackend,
+        Field(
+            description="Inference server backend to launch. vLLM is the default; SGLang supports filesystem weight updates."
+        ),
+    ] = "vllm"
+
     # The server configuration
     server: ServerConfig = ServerConfig()
 
@@ -416,6 +425,13 @@ class InferenceConfig(BaseConfig):
         ),
     ] = {}
 
+    sglang_extra: Annotated[
+        dict[str, Any],
+        Field(
+            description="Extra arguments to pass to SGLang. These are translated to CLI flags after config translation.",
+        ),
+    ] = {}
+
     # Launcher-only fields
 
     deployment: Annotated[
@@ -445,6 +461,21 @@ class InferenceConfig(BaseConfig):
     def validate_multi_node_requires_slurm(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_backend_support(self):
+        if self.backend != "sglang":
+            return self
+
+        if self.deployment.type != "single_node":
+            raise ValueError("inference.backend='sglang' currently supports only single_node deployment.")
+        if self.weight_broadcast.type != "filesystem":
+            raise ValueError("inference.backend='sglang' currently supports only filesystem weight broadcast.")
+        if self.kv_cache_offload is not None:
+            raise ValueError("inference.backend='sglang' does not support prime-rl kv_cache_offload plumbing yet.")
+        if self.enable_return_routed_experts:
+            raise ValueError("inference.backend='sglang' does not support return routed experts yet.")
         return self
 
     @model_validator(mode="after")
@@ -601,5 +632,66 @@ class InferenceConfig(BaseConfig):
         if hasattr(namespace, "rope_scaling"):
             if namespace.rope_scaling is None:
                 delattr(namespace, "rope_scaling")
+
+        return namespace
+
+    def to_sglang(self) -> Namespace:
+        """Convert InferenceConfig to SGLang-compatible CLI namespace."""
+        namespace = Namespace()
+        to_sglang = {
+            "server.host": "host",
+            "server.port": "port",
+            "model.name": "model_path",
+            "model.dtype": "dtype",
+            "model.max_model_len": "context_length",
+            "model.trust_remote_code": "trust_remote_code",
+            "model.chat_template": "chat_template",
+            "model.tool_call_parser": "tool_call_parser",
+            "model.reasoning_parser": "reasoning_parser",
+            "parallel.tp": "tensor_parallel_size",
+            "parallel.dp": "data_parallel_size",
+            "enable_lora": "enable_lora",
+            "max_loras": "max_loras_per_batch",
+            "max_lora_rank": "max_lora_rank",
+            "lora_target_modules": "lora_target_modules",
+            "gpu_memory_utilization": "mem_fraction_static",
+            "enable_eplb": "enable_eplb",
+            "enable_fp32_lm_head": "enable_fp32_lm_head",
+            "seed": "random_seed",
+        }
+
+        for config_key, sglang_key in to_sglang.items():
+            value = rgetattr(self, config_key.replace("-", "_"))
+            rsetattr(namespace, sglang_key, value)
+
+        namespace.served_model_name = self.model.name
+        namespace.disable_cuda_graph = self.model.enforce_eager
+        namespace.disable_radix_cache = self.enable_prefix_caching is False
+        namespace.enable_two_batch_overlap = self.enable_dbo
+
+        if self.enable_expert_parallel:
+            namespace.expert_parallel_size = self.parallel.tp
+
+        if self.model.rope_scaling is not None:
+            namespace.json_model_override_args = {"rope_scaling": self.model.rope_scaling}
+
+        for key, value in self.sglang_extra.items():
+            setattr(namespace, key, value)
+
+        for optional_key in (
+            "chat_template",
+            "reasoning_parser",
+            "tool_call_parser",
+            "context_length",
+            "max_lora_rank",
+            "lora_target_modules",
+            "json_model_override_args",
+        ):
+            if not hasattr(namespace, optional_key):
+                continue
+
+            value = getattr(namespace, optional_key)
+            if value is None or (optional_key in {"reasoning_parser", "tool_call_parser"} and value == "auto"):
+                delattr(namespace, optional_key)
 
         return namespace

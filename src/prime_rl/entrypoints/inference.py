@@ -117,7 +117,7 @@ def inference_slurm(config: InferenceConfig):
 
 def inference_local(config: InferenceConfig):
     """Run inference locally."""
-    from prime_rl.inference.server import setup_vllm_env
+    from prime_rl.inference.server import setup_inference_env
 
     logger = setup_logger("info")
 
@@ -129,11 +129,18 @@ def inference_local(config: InferenceConfig):
     port = config.server.port
     logger.info(f"Starting inference on http://{host}:{port}/v1\n")
 
-    setup_vllm_env(config)
+    setup_inference_env(config)
 
-    from prime_rl.inference.vllm.server import server  # pyright: ignore
+    if config.backend == "vllm":
+        from prime_rl.inference.vllm.server import server  # pyright: ignore
 
-    server(config, vllm_extra=config.vllm_extra)
+        server(config, vllm_extra=config.vllm_extra)
+    elif config.backend == "sglang":
+        from prime_rl.inference.sglang.server import server
+
+        server(config)
+    else:
+        raise ValueError(f"Unsupported inference backend: {config.backend}")
 
 
 def inference(config: InferenceConfig):

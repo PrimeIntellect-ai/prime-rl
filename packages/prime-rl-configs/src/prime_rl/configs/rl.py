@@ -682,6 +682,33 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_sglang_backend(self):
+        """Configure orchestrator compatibility when the local inference backend is SGLang."""
+        if self.inference is None or self.inference.backend != "sglang":
+            return self
+
+        if self.weight_broadcast is not None and self.weight_broadcast.type != "filesystem":
+            raise ValueError("inference.backend='sglang' currently supports only filesystem weight broadcast.")
+
+        self.orchestrator.client.admin_backend = "sglang"
+
+        if self.orchestrator.use_renderer:
+            raise ValueError(
+                "inference.backend='sglang' does not support orchestrator.use_renderer because prime-rl's "
+                "renderer client targets the vLLM-only /v1/generate endpoint."
+            )
+
+        if self.orchestrator.use_token_client:
+            if "use_token_client" in self.orchestrator.model_fields_set:
+                raise ValueError(
+                    "inference.backend='sglang' does not support orchestrator.use_token_client because SGLang "
+                    "does not expose prime-rl's vLLM-only /v1/chat/completions/tokens endpoint."
+                )
+            self.orchestrator.use_token_client = False
+
+        return self
+
+    @model_validator(mode="after")
     def validate_eplb_requires_quantized_weight_transfer(self):
         if self.inference is None or not self.inference.enable_eplb:
             return self

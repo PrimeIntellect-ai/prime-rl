@@ -6,7 +6,14 @@ import httpx
 import verifiers as vf
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.client import _is_retryable_lora_error, load_lora_adapter, setup_clients
+from prime_rl.utils.client import (
+    _is_retryable_lora_error,
+    get_admin_backend,
+    load_lora_adapter,
+    setup_admin_clients,
+    setup_clients,
+    update_weights,
+)
 
 
 def test_is_retryable_lora_error_returns_true_for_404():
@@ -47,6 +54,40 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
         json={"lora_name": "test-lora", "lora_path": "/test/path"},
         timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
     )
+
+
+def test_setup_admin_clients_tags_backend():
+    client_config = ClientConfig(
+        base_url=["http://worker-a:8000/v1"],
+        api_key_var="PRIME_API_KEY",
+        admin_backend="sglang",
+    )
+
+    clients = setup_admin_clients(client_config)
+
+    assert len(clients) == 1
+    assert str(clients[0].base_url) == "http://worker-a:8000"
+    assert get_admin_backend(clients[0]) == "sglang"
+    asyncio.run(clients[0].aclose())
+
+
+def test_update_weights_uses_sglang_reload_endpoint(tmp_path):
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/update_weights_from_disk":
+            return httpx.Response(200, json={"success": True, "message": "ok"})
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(base_url="http://worker-a:8000", transport=httpx.MockTransport(handler))
+    setattr(client, "prime_rl_admin_backend", "sglang")
+
+    asyncio.run(update_weights([client], tmp_path / "step_1"))
+    asyncio.run(client.aclose())
+
+    assert [request.url.path for request in requests] == ["/update_weights_from_disk"]
+    assert requests[0].content == b'{"model_path":"' + (tmp_path / "step_1").as_posix().encode() + b'"}'
 
 
 def test_setup_clients_assigns_renderer_and_dp_rank_headers():

@@ -156,6 +156,60 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+def test_inference_config_translates_sglang_args():
+    config = InferenceConfig.model_validate(
+        {
+            "backend": "sglang",
+            "server": {"host": "0.0.0.0", "port": 9000},
+            "model": {
+                "name": "Qwen/Qwen3-0.6B",
+                "max_model_len": 4096,
+                "enforce_eager": True,
+                "chat_template": "qwen3",
+            },
+            "parallel": {"tp": 2, "dp": 1},
+            "enable_prefix_caching": False,
+            "enable_fp32_lm_head": True,
+            "gpu_memory_utilization": 0.8,
+            "sglang_extra": {"attention_backend": "triton"},
+        }
+    )
+
+    namespace = config.to_sglang()
+
+    assert namespace.model_path == "Qwen/Qwen3-0.6B"
+    assert namespace.served_model_name == "Qwen/Qwen3-0.6B"
+    assert namespace.host == "0.0.0.0"
+    assert namespace.port == 9000
+    assert namespace.context_length == 4096
+    assert namespace.tensor_parallel_size == 2
+    assert namespace.data_parallel_size == 1
+    assert namespace.disable_cuda_graph is True
+    assert namespace.disable_radix_cache is True
+    assert namespace.enable_fp32_lm_head is True
+    assert namespace.mem_fraction_static == 0.8
+    assert namespace.attention_backend == "triton"
+    assert not hasattr(namespace, "tool_call_parser")
+
+
+def test_rl_config_auto_selects_openai_client_for_sglang():
+    config = RLConfig.model_validate({"trainer": {}, "orchestrator": {}, "inference": {"backend": "sglang"}})
+
+    assert config.orchestrator.use_token_client is False
+    assert config.orchestrator.client.admin_backend == "sglang"
+
+
+def test_rl_config_rejects_sglang_with_explicit_token_client():
+    with pytest.raises(ValidationError, match="does not support orchestrator.use_token_client"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {"use_token_client": True},
+                "inference": {"backend": "sglang"},
+            }
+        )
+
+
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})

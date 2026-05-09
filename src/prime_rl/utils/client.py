@@ -15,6 +15,8 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, stop_after_d
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
 
+ADMIN_BACKEND_ATTR = "prime_rl_admin_backend"
+
 
 @runtime_checkable
 class InferencePool(Protocol):
@@ -229,14 +231,20 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
         # Strip /v1 suffix since admin endpoints are at root level
         base_url = base_url.rstrip("/").removesuffix("/v1")
 
-        return AsyncClient(
+        client = AsyncClient(
             base_url=base_url,
             headers=headers,
             limits=httpx.Limits(max_connections=4, max_keepalive_connections=1),
             timeout=httpx.Timeout(None),
         )
+        setattr(client, ADMIN_BACKEND_ATTR, client_config.admin_backend)
+        return client
 
     return [_setup_admin_client(base_url) for base_url in urls]
+
+
+def get_admin_backend(admin_client: AsyncClient) -> str:
+    return getattr(admin_client, ADMIN_BACKEND_ATTR, "vllm")
 
 
 async def maybe_check_has_model(
@@ -332,19 +340,34 @@ async def update_weights(
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
     if lora_name is not None and weight_dir is not None:
+        sglang_clients = [client for client in admin_clients if get_admin_backend(client) == "sglang"]
+        if sglang_clients:
+            raise ValueError("SGLang backend does not support prime-rl LoRA adapter weight updates yet.")
         await load_lora_adapter(admin_clients, lora_name, weight_dir)
     else:
 
         async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
+            backend = get_admin_backend(admin_client)
+            if backend == "sglang":
+                response = await admin_client.post("/update_weights_from_disk", json={"model_path": weight_dir})
+                response.raise_for_status()
+                result = response.json()
+                if result.get("success") is False:
+                    raise RuntimeError(result.get("message", "SGLang weight update failed"))
+                return
+
             response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
             response.raise_for_status()
 
-        # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
-        await _pause_engines(admin_clients)
+        vllm_clients = [client for client in admin_clients if get_admin_backend(client) == "vllm"]
+
+        # Pause vLLM engines so all DP workers drain in-flight work and can join the NCCL broadcast.
+        if vllm_clients:
+            await _pause_engines(vllm_clients)
 
         try:
             # Create ready marker before servers enter receive path (used by NCCL broadcast)
-            if weight_dir is not None:
+            if weight_dir is not None and vllm_clients:
                 nccl_ready_file = weight_dir / NCCL_READY_MARKER
                 nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
                 nccl_ready_file.touch()
@@ -352,7 +375,8 @@ async def update_weights(
 
             await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
         finally:
-            await _resume_engines(admin_clients)
+            if vllm_clients:
+                await _resume_engines(vllm_clients)
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:
@@ -452,6 +476,9 @@ async def init_nccl_broadcast(
     )
 
     async def _init_nccl_broadcast(admin_client: AsyncClient, rank_offset: int) -> None:
+        if get_admin_backend(admin_client) == "sglang":
+            raise ValueError("SGLang backend does not support NCCL weight broadcast yet.")
+
         try:
             response = await admin_client.post(
                 "/init_broadcaster",
