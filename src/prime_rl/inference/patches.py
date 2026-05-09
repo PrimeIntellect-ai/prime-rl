@@ -16,6 +16,7 @@ def transformers_v5_compat():
     _patch_qwen35_lora()
     _patch_lora_key_prefix()
     monkey_patch_deep_gemm_ep_scatter()
+    monkey_patch_deep_gemm_silu_mul_quant_int64()
     monkey_patch_dp_engine_core_pause_resume_deadlock()
 
 
@@ -171,6 +172,146 @@ def monkey_patch_deep_gemm_ep_scatter():
 
     deep_gemm_utils.ep_scatter = torch.no_grad()(_triton_ep_scatter_int64)
     logger.warning("Enabled int64-addressing Triton patch for vLLM DeepGEMM ep_scatter.")
+
+
+@triton.jit
+def _silu_mul_per_token_group_quant_fp8_colmajor_int64_kernel(
+    y_ptr,
+    y_q_ptr,
+    y_s_ptr,
+    M: tl.int64,
+    N: tl.int64,
+    y_s_col_stride: tl.int64,
+    eps,
+    fp8_min: tl.constexpr,
+    fp8_max: tl.constexpr,
+    use_ue8m0: tl.constexpr,
+    GROUP_SIZE: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+    N_2 = N // 2
+
+    m_offset = (pid_m * BLOCK_M).to(tl.int64)
+    n_offset = (pid_n * BLOCK_N).to(tl.int64)
+    if m_offset >= M:
+        return
+
+    offs_n = tl.arange(0, BLOCK_N).to(tl.int64)
+    offs_m = tl.arange(0, BLOCK_M).to(tl.int64)
+
+    base_y_ptr = y_ptr + m_offset * N + n_offset
+    act_in_ptrs = base_y_ptr + offs_m[:, None] * N + offs_n[None, :]
+
+    act_in = tl.load(act_in_ptrs)
+    mul_in = tl.load(act_in_ptrs + N_2)
+
+    act_in = act_in.to(tl.float32)
+    one_f32 = tl.cast(1, tl.float32)
+    silu_out = (act_in / (one_f32 + tl.exp(-act_in))).to(y_ptr.dtype.element_ty)
+    y = (silu_out * mul_in).to(tl.float32)
+
+    absmax = tl.maximum(tl.max(tl.abs(y), axis=1), eps)
+    scale_raw = absmax * (1.0 / fp8_max)
+    y_s = tl.math.exp2(tl.ceil(tl.log2(scale_raw))) if use_ue8m0 else scale_raw
+    y_s = tl.reshape(y_s, (BLOCK_M, 1))
+    y_q = tl.clamp(y / y_s, fp8_min, fp8_max).to(y_q_ptr.dtype.element_ty)
+
+    base_y_q_ptr = y_q_ptr + m_offset * N_2 + n_offset
+    y_q_ptrs = base_y_q_ptr + offs_m[:, None] * N_2 + offs_n[None, :]
+    tl.store(y_q_ptrs, y_q)
+
+    group_id = n_offset // GROUP_SIZE
+    base_y_s_ptr = y_s_ptr + group_id * y_s_col_stride + m_offset
+    y_s_ptrs = base_y_s_ptr + offs_m
+    y_s = tl.reshape(y_s, (BLOCK_M,))
+    tl.store(y_s_ptrs, y_s)
+
+
+def _silu_mul_per_token_group_quant_fp8_colmajor_int64(
+    input: torch.Tensor,
+    output: torch.Tensor | None = None,
+    use_ue8m0: bool | None = None,
+    eps: float = 1e-10,
+):
+    from vllm.platforms import current_platform
+    from vllm.utils.deep_gemm import is_deep_gemm_e8m0_used
+
+    group_size = 128
+    assert input.ndim == 2
+    if output is not None:
+        assert output.ndim == 2
+    assert input.size(0) % group_size == 0
+    assert input.size(1) % (group_size * 2) == 0
+
+    if use_ue8m0 is None:
+        use_ue8m0 = is_deep_gemm_e8m0_used()
+
+    M, N = input.size()
+    N_2 = N // 2
+
+    fp8_dtype = current_platform.fp8_dtype()
+    if output is None:
+        output = torch.empty((M, N_2), dtype=fp8_dtype, device=input.device)
+
+    output_scales = torch.empty(
+        ((N_2 // group_size), M), dtype=torch.float32, device=input.device
+    ).transpose(0, 1)
+
+    block_m = 8
+    block_n = group_size
+    assert M % block_m == 0
+    assert N_2 % block_n == 0
+
+    finfo = torch.finfo(fp8_dtype)
+    fp8_min = -224.0 if current_platform.is_fp8_fnuz() else finfo.min
+    fp8_max = 224.0 if current_platform.is_fp8_fnuz() else finfo.max
+
+    grid = (M // block_m, N_2 // block_n)
+    _silu_mul_per_token_group_quant_fp8_colmajor_int64_kernel[grid](
+        input,
+        output,
+        output_scales,
+        M,
+        N,
+        output_scales.stride(-1),
+        eps,
+        fp8_min,
+        fp8_max,
+        use_ue8m0,
+        group_size,
+        block_m,
+        block_n,
+    )
+
+    return output, output_scales
+
+
+def monkey_patch_deep_gemm_silu_mul_quant_int64():
+    # Temporary local carry for large DeepGEMM profile shapes whose row offsets
+    # exceed signed int32 address arithmetic in vLLM's Triton kernel.
+    import sys
+
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.quantization.utils import fp8_utils
+
+    logger = init_logger(__name__)
+
+    fp8_utils.silu_mul_per_token_group_quant_fp8_colmajor = (
+        _silu_mul_per_token_group_quant_fp8_colmajor_int64
+    )
+
+    deep_gemm_moe_module = sys.modules.get(
+        "vllm.model_executor.layers.fused_moe.experts.deep_gemm_moe"
+    )
+    if deep_gemm_moe_module is not None:
+        deep_gemm_moe_module.silu_mul_per_token_group_quant_fp8_colmajor = (
+            _silu_mul_per_token_group_quant_fp8_colmajor_int64
+        )
+
+    logger.warning("Enabled int64-addressing Triton patch for vLLM DeepGEMM SiLU/mul FP8 quant.")
 
 
 def _patch_qwen35_lora():
