@@ -1,0 +1,17 @@
+enable_lora = true
+max_loras = 32
+max_cpu_loras = 32
+max_lora_rank = 16
+enable_prefix_caching = false
+gpu_memory_utilization = 0.85
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B"
+max_model_len = 4096
+
+[server]
+port = 8000
+
+[vllm_extra]
+max_num_seqs = 512
+max_num_batched_tokens = 65536
