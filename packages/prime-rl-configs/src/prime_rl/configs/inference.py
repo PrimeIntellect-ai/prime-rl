@@ -110,6 +110,16 @@ class WeightBroadcastConfig(BaseConfig):
     )
 
 
+class KVCacheOffloadConfig(BaseModel):
+    """CPU KV cache offloading for vLLM inference workers."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cpu_bytes: Annotated[int, Field(gt=0, description="CPU bytes available for KV cache offloading per worker.")] = (
+        1_000_000_000
+    )
+
+
 # Valid vLLM max_lora_rank values (from vllm/config/lora.py)
 # TODO: on newer vLLM, can import via `get_args(vllm.config.lora.MaxLoRARanks)`
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
@@ -150,20 +160,6 @@ class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     router_policy: Annotated[
         str, Field(description="Routing policy for the vllm-router (e.g. 'consistent_hash', 'round_robin').")
     ] = "consistent_hash"
-
-
-class KVCacheOffloadConfig(BaseModel):
-    """CPU KV cache offloading for disaggregated serving.
-
-    When configured, both prefill and decode nodes use
-    MultiConnector (NixlConnector + OffloadingConnector).
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    cpu_bytes: Annotated[int, Field(ge=0, description="CPU bytes available for KV cache offloading per worker.")] = (
-        1_000_000_000
-    )
 
 
 class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
@@ -213,11 +209,6 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
         dict[str, str],
         Field(description="Extra environment variables exported only on decode nodes."),
     ] = {}
-
-    kv_cache_offload: Annotated[
-        KVCacheOffloadConfig | None,
-        Field(description="CPU KV cache offload config for prefill nodes. None = disabled (NixlConnector only)."),
-    ] = None
 
     @property
     def num_nodes(self) -> int:
@@ -383,6 +374,17 @@ class InferenceConfig(BaseConfig):
         WeightBroadcastConfig()
     )
 
+    kv_cache_offload: Annotated[
+        KVCacheOffloadConfig | None,
+        Field(
+            description=(
+                "CPU KV cache offload config for inference workers. Standard inference uses vLLM's "
+                "OffloadingConnector. Disaggregated P/D deployments combine it with NIXL through "
+                "MultiConnector in the SLURM launcher."
+            ),
+        ),
+    ] = None
+
     enable_return_routed_experts: Annotated[
         bool,
         Field(
@@ -433,6 +435,16 @@ class InferenceConfig(BaseConfig):
     def validate_multi_node_requires_slurm(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_kv_cache_offload(self):
+        if self.kv_cache_offload is not None:
+            if self.enable_prefix_caching is False:
+                raise ValueError("KV cache offloading requires inference.enable_prefix_caching to be true.")
+            if "enable_prefix_caching" not in self.model_fields_set:
+                self.enable_prefix_caching = True
+
         return self
 
     @model_validator(mode="after")
@@ -541,6 +553,19 @@ class InferenceConfig(BaseConfig):
 
         # Set `logprobs_mode` to `processed_logprobs` by default
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")
+
+        if self.kv_cache_offload is not None:
+            rsetattr(
+                namespace,
+                "kv_transfer_config",
+                {
+                    "kv_connector": "OffloadingConnector",
+                    "kv_role": "kv_both",
+                    "kv_connector_extra_config": {
+                        "cpu_bytes_to_use": int(self.kv_cache_offload.cpu_bytes),
+                    },
+                },
+            )
 
         # Pass prime-rl-specific flags through vLLM's additional_config dict;
         # workers read these via get_current_vllm_config().additional_config.
