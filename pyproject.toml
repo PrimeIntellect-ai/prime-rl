@@ -181,10 +181,8 @@ aime2024 = { index = "primeintellect" }
 aime2025 = { index = "primeintellect" }
 deepdive = { index = "primeintellect" }
 mini_swe_agent_plus = { index = "primeintellect" }
-deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+73b6ea4-cp312-cp312-linux_x86_64.whl" }
-# DeepGEMM bumped from 477618c to d30fc36 (newer kernel APIs needed by the
-# FP8 grouped-GEMM training path). Rebuild via scripts/install_deep_gemm.sh.
-deep-gemm = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.3.0+d30fc36-cp312-cp312-linux_x86_64.whl" }
+deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }
+deep-gemm = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }
 nixl-cu12 = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
 flash_attn_3 = { index = "pytorch-cu128-test" }
