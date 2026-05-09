@@ -29,7 +29,7 @@ from prime_rl.orchestrator.utils import (
     resolve_resume_step,
     write_orch_config,
 )
-from prime_rl.orchestrator.watcher import setup_watcher
+from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import get_logger, setup_logger
@@ -64,54 +64,54 @@ async def _stop_groups(groups: list[Group]) -> None:
             logger.warning(f"[{g.name}] stop() failed: {exc}")
 
 
-async def run(cfg: OrchestratorConfig) -> None:
+async def run(config: OrchestratorConfig) -> None:
     logger = get_logger()
-    logger.info(f"Output dir: {cfg.output_dir} | Model: {cfg.model.name}")
+    logger.info(f"Output dir: {config.output_dir} | Model: {config.model.name}")
 
-    install_envs(cfg)
-    write_orch_config(cfg)
-    tokenizer = setup_tokenizer(cfg.tokenizer)
+    install_envs(config)
+    write_orch_config(config)
+    tokenizer = setup_tokenizer(config.tokenizer)
     setup_monitor(
-        wandb_config=cfg.wandb,
-        output_dir=cfg.output_dir,
+        wandb_config=config.wandb,
+        output_dir=config.output_dir,
         tokenizer=tokenizer,
-        run_config=cfg,
-        prime_config=cfg.prime_monitor,
-        keep_full_history=cfg.bench,
+        run_config=config,
+        prime_config=config.prime_monitor,
+        keep_full_history=config.bench,
     )
 
-    ckpt_manager = setup_ckpt_manager(cfg.output_dir, cfg.ckpt)
-    resume_step = resolve_resume_step(cfg, ckpt_manager)
-    lora_name = cfg.model.lora.name if cfg.model.lora else None
+    ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
+    resume_step = resolve_resume_step(config, ckpt_manager)
+    lora_name = config.model.lora.name if config.model.lora else None
 
     # Shared mutable state. Watcher writes; Groups read. Initial model_name
     # is the base model since no LoRA adapter is loaded yet.
-    policy = Policy(version=0, model_name=cfg.model.name)
-    client = make_client(cfg)
+    policy = Policy(version=0, model_name=config.model.name)
+    client = make_client(config)
 
     # Build Groups (no env loaded / no worker spawned yet — that happens in start()).
-    dispatch_groups, train_groups = setup_train_groups(cfg, client=client, policy=policy)
-    eval_group = setup_eval_group(cfg, client=client, policy=policy, resume_step=resume_step)
+    dispatch_groups, train_groups = setup_train_groups(config, client=client, policy=policy)
+    eval_group = setup_eval_group(config, client=client, policy=policy, resume_step=resume_step)
     groups: list[Group] = list(dispatch_groups) + ([eval_group] if eval_group is not None else [])
 
-    out_q, concurrency = make_groups_queue(cfg, num_groups=len(groups))
+    out_q, concurrency = make_groups_queue(config, num_groups=len(groups))
 
-    admin = setup_admin(cfg, lora_name=lora_name)
+    admin = setup_admin(config, lora_name=lora_name)
     batcher = setup_batcher(
-        cfg,
+        config,
         in_q=out_q,
         tokenizer=tokenizer,
         policy=policy,
         eval_group=eval_group,
         train_groups=train_groups,
         ckpt_manager=ckpt_manager,
-        inference_metrics=InferenceMetricsCollector(admin.client) if cfg.collect_inference_metrics else None,
+        inference_metrics=InferenceMetricsCollector(admin.client) if config.collect_inference_metrics else None,
     )
-    watcher = setup_watcher(cfg, observers=[admin], policy=policy, lora_name=lora_name)
+    watcher = WeightWatcher(config, observers=[admin], policy=policy, lora_name=lora_name)
 
-    await admin.start(cfg)
+    await admin.start(config)
     await maybe_resume(
-        cfg,
+        config,
         resume_step,
         ckpt_manager,
         policy=policy,
@@ -132,19 +132,19 @@ async def run(cfg: OrchestratorConfig) -> None:
             tg.create_task(watcher.run())
             tg.create_task(admin.watch_health())
     except* Done:
-        logger.success(f"Orchestrator finished: reached max_steps={cfg.max_steps}")
+        logger.success(f"Orchestrator finished: reached max_steps={config.max_steps}")
     finally:
         await _stop_groups(groups)
 
 
 def main() -> None:
     os.environ.setdefault("VLLM_API_KEY", "EMPTY")
-    cfg = cli(OrchestratorConfig)
+    config = cli(OrchestratorConfig)
     setup_logger(
-        log_level=cfg.log.level or os.environ.get("PRIME_LOG_LEVEL", "info"),
-        json_logging=cfg.log.json_logging,
+        log_level=config.log.level or os.environ.get("PRIME_LOG_LEVEL", "info"),
+        json_logging=config.log.json_logging,
     )
-    asyncio.run(run(cfg))
+    asyncio.run(run(config))
 
 
 if __name__ == "__main__":

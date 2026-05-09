@@ -16,56 +16,56 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_env_ids_to_install, install_env
 
 
-def install_envs(cfg: OrchestratorConfig) -> None:
+def install_envs(config: OrchestratorConfig) -> None:
     """Install all train + eval verifiers envs referenced by the config."""
-    env_ids = set(get_env_ids_to_install(cfg.train.env))
-    if cfg.eval is not None:
-        env_ids.update(get_env_ids_to_install(cfg.eval.env))
+    env_ids = set(get_env_ids_to_install(config.train.env))
+    if config.eval is not None:
+        env_ids.update(get_env_ids_to_install(config.eval.env))
     for env_id in env_ids:
-        install_env(env_id, prerelease=cfg.env_install_prerelease)
+        install_env(env_id, prerelease=config.env_install_prerelease)
 
 
-def write_orch_config(cfg: OrchestratorConfig) -> None:
+def write_orch_config(config: OrchestratorConfig) -> None:
     """Trainer reads this from `output_dir/control/orch.toml` at startup
     (see prime_rl.trainer.runs.RunManager.get_orchestrator_config)."""
-    control_dir = cfg.output_dir / "control"
+    control_dir = config.output_dir / "control"
     control_dir.mkdir(parents=True, exist_ok=True)
     with open(control_dir / "orch.toml", "wb") as f:
-        tomli_w.dump(cfg.model_dump(exclude_none=True, mode="json"), f)
+        tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
 
 
-def resolve_resume_step(cfg: OrchestratorConfig, ckpt_manager: CkptManager | None) -> int | None:
-    """Resolve `cfg.ckpt.resume_step` against on-disk checkpoints."""
-    if not (cfg.ckpt and cfg.ckpt.resume_step is not None and ckpt_manager is not None):
+def resolve_resume_step(config: OrchestratorConfig, ckpt_manager: CkptManager | None) -> int | None:
+    """Resolve `config.ckpt.resume_step` against on-disk checkpoints."""
+    if not (config.ckpt and config.ckpt.resume_step is not None and ckpt_manager is not None):
         return None
-    if cfg.ckpt.resume_step != -1:
-        return cfg.ckpt.resume_step
+    if config.ckpt.resume_step != -1:
+        return config.ckpt.resume_step
     latest = ckpt_manager.latest_step()
     if latest is None:
         get_logger().warning("ckpt.resume_step=-1 set but no orch checkpoints found; starting fresh")
     return latest
 
 
-def make_client(cfg: OrchestratorConfig) -> vf.ClientConfig:
+def make_client(config: OrchestratorConfig) -> vf.ClientConfig:
     """Verifiers ClientConfig for rollouts. TITO bypasses server-side chat
     templating — only safe for linear-history envs."""
-    client_type = "openai_chat_completions_token" if cfg.use_token_client else "openai_chat_completions"
-    if cfg.use_token_client:
+    client_type = "openai_chat_completions_token" if config.use_token_client else "openai_chat_completions"
+    if config.use_token_client:
         get_logger().warning(
             "Token-in-token-out (TITO) client is enabled. Only use this if your environment has a "
             "linear history and the chat template has the extension property."
         )
     return vf.ClientConfig(
         client_type=client_type,
-        api_base_url=cfg.client.base_url[0],
-        api_key_var=cfg.client.api_key_var,
-        timeout=cfg.client.timeout,
-        connect_timeout=cfg.client.connect_timeout,
+        api_base_url=config.client.base_url[0],
+        api_key_var=config.client.api_key_var,
+        timeout=config.client.timeout,
+        connect_timeout=config.client.connect_timeout,
     )
 
 
 async def maybe_resume(
-    cfg: OrchestratorConfig,
+    config: OrchestratorConfig,
     resume_step: int | None,
     ckpt_manager: CkptManager | None,
     *,
@@ -84,10 +84,10 @@ async def maybe_resume(
     batcher.step = state.step
     if eval_group is not None:
         eval_group.last_eval_step = state.last_eval_step
-    if not (cfg.ckpt and cfg.ckpt.skip_buffer):
+    if not (config.ckpt and config.ckpt.skip_buffer):
         for g in train_groups:
             g.load_state_dict(state.group_states.get(g.name, {}))
-    if cfg.eval and cfg.eval.skip_eval_on_resume and eval_group is not None:
+    if config.eval and config.eval.skip_eval_on_resume and eval_group is not None:
         eval_group.last_eval_step = state.step
         get_logger().info(f"Skipping next eval on resume (last_eval_step={state.step})")
     await admin.on_new_version(state.step)

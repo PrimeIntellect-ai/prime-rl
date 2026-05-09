@@ -1303,10 +1303,10 @@ class OrchestratorConfig(BaseConfig):
             raise ValueError("max_inflight_rollouts must be at least rollouts_per_example")
 
         # Resolve train env num_workers from max_inflight_rollouts
-        for env_cfg in self.train.env:
-            if env_cfg.num_workers == "auto":
+        for env_config in self.train.env:
+            if env_config.num_workers == "auto":
                 assert self.max_inflight_rollouts is not None
-                env_cfg.num_workers = max(1, math.ceil(self.max_inflight_rollouts / 256))
+                env_config.num_workers = max(1, math.ceil(self.max_inflight_rollouts / 256))
 
         return self
 

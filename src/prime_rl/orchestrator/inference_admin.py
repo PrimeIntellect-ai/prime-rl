@@ -67,32 +67,32 @@ class InferenceAdmin:
         )
         self.logger = get_logger()
 
-    async def start(self, cfg: OrchestratorConfig) -> None:
+    async def start(self, config: OrchestratorConfig) -> None:
         """Bring the inference server online: wait for /health, verify the
         configured model is loaded, init the NCCL broadcaster if applicable.
         Called once from `orchestrator.run()` before the engine starts."""
         self.logger.info(
-            f"Waiting for inference server to be healthy (timeout={cfg.client.wait_for_ready_timeout}s)..."
+            f"Waiting for inference server to be healthy (timeout={config.client.wait_for_ready_timeout}s)..."
         )
         t0 = time.perf_counter()
-        await self.wait_healthy(timeout=cfg.client.wait_for_ready_timeout)
+        await self.wait_healthy(timeout=config.client.wait_for_ready_timeout)
         self.logger.success(f"Inference server ready ({time.perf_counter() - t0:.1f}s)")
 
-        await self.check_model(cfg.model.name)
-        self.logger.success(f"Model '{cfg.model.name}' loaded on inference server")
+        await self.check_model(config.model.name)
+        self.logger.success(f"Model '{config.model.name}' loaded on inference server")
 
-        if cfg.weight_broadcast.type == "nccl":
+        if config.weight_broadcast.type == "nccl":
             await self.init_nccl_broadcaster(
-                host=cfg.weight_broadcast.host,
-                port=cfg.weight_broadcast.port,
-                timeout=cfg.weight_broadcast.timeout,
-                inference_world_size=cfg.weight_broadcast.inference_world_size,
-                quantize_in_weight_transfer=cfg.weight_broadcast.quantize_in_weight_transfer,
+                host=config.weight_broadcast.host,
+                port=config.weight_broadcast.port,
+                timeout=config.weight_broadcast.timeout,
+                inference_world_size=config.weight_broadcast.inference_world_size,
+                quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
             )
             self.logger.success(
-                f"NCCL broadcast initialized (host={cfg.weight_broadcast.host}, "
-                f"port={cfg.weight_broadcast.port}, "
-                f"inference_world_size={cfg.weight_broadcast.inference_world_size})"
+                f"NCCL broadcast initialized (host={config.weight_broadcast.host}, "
+                f"port={config.weight_broadcast.port}, "
+                f"inference_world_size={config.weight_broadcast.inference_world_size})"
             )
 
     async def wait_healthy(self, timeout: float = 1800.0, interval: float = 1.0) -> None:
@@ -197,13 +197,13 @@ class InferenceAdmin:
             (await self.client.post("/resume")).raise_for_status()
 
 
-def setup_admin(cfg: OrchestratorConfig, *, lora_name: str | None = None) -> InferenceAdmin:
-    """Translate config → InferenceAdmin. Call `await admin.start(cfg)` to
+def setup_admin(config: OrchestratorConfig, *, lora_name: str | None = None) -> InferenceAdmin:
+    """Translate config → InferenceAdmin. Call `await admin.start(config)` to
     bring the server online before launching the engine."""
     return InferenceAdmin(
-        cfg.client.base_url[0],
-        os.getenv(cfg.client.api_key_var, "EMPTY"),
-        get_broadcast_dir(cfg.output_dir),
-        mode=cfg.weight_broadcast.type,
+        config.client.base_url[0],
+        os.getenv(config.client.api_key_var, "EMPTY"),
+        get_broadcast_dir(config.output_dir),
+        mode=config.weight_broadcast.type,
         lora_name=lora_name,
     )

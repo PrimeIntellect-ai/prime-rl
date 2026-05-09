@@ -1,7 +1,6 @@
 import asyncio
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
 from typing import Any
 
 import verifiers as vf
@@ -30,9 +29,8 @@ class Done(Exception):
     """Raised by the batcher when max_steps has been reached. Caught by run()."""
 
 
-# Per-rollout policy version is stamped into the rollout dict at receipt so
-# PostProcessor can compute lag metrics after the BatchingStrategy unpacks
-# Trajectories into flat rollout lists.
+# Per-rollout policy version stamped at receipt so PostProcessor can compute
+# lag metrics after BatchingStrategy unpacks Trajectories into flat lists.
 _POLICY_VERSION_KEY = "_policy_version"
 
 
@@ -51,9 +49,7 @@ class BatchingStrategy:
 
 
 class StepStrategy:
-    """Ship the first `size` rollouts produced, pre-filter. The trainer
-    receives the trainable subset (filtered ones counted toward `size` but
-    dropped at ship). Matches orch1 semantics."""
+    """Ship the first `size` rollouts produced, pre-filter."""
 
     def __init__(self, size: int):
         self.size = size
@@ -130,14 +126,14 @@ class TokensStrategy:
         return trainable, filtered
 
 
-def build_strategy(cfg: BatchingConfig) -> BatchingStrategy:
-    if isinstance(cfg, StepBatching):
-        return StepStrategy(cfg.size)
-    if isinstance(cfg, SamplesBatching):
-        return SamplesStrategy(cfg.size)
-    if isinstance(cfg, TokensBatching):
-        return TokensStrategy(cfg.size)
-    raise ValueError(f"Unknown batching config: {cfg!r}")
+def build_strategy(config: BatchingConfig) -> BatchingStrategy:
+    if isinstance(config, StepBatching):
+        return StepStrategy(config.size)
+    if isinstance(config, SamplesBatching):
+        return SamplesStrategy(config.size)
+    if isinstance(config, TokensBatching):
+        return TokensStrategy(config.size)
+    raise ValueError(f"Unknown batching config: {config!r}")
 
 
 def _key(prefix: str, name: str) -> str:
@@ -302,71 +298,60 @@ class PostProcessor:
         )
 
 
-@dataclass
-class BatcherInputs:
-    """Pre-built inputs for the TrainBatcher."""
-
-    in_q: asyncio.Queue[Trajectory]
-    post: "PostProcessor"
-    policy: Policy
-    strategy: BatchingStrategy
-    filters: list[RolloutFilter] = field(default_factory=list)
-    max_steps: int | None = None
-    max_training_batches_ahead: int = 1
-    strict_async_level: bool = False
-    eval_group: EvalGroup | None = None
-    train_groups: list[GRPOGroup] = field(default_factory=list)
-    ckpt_manager: CkptManager | None = None
-    ckpt_interval: int | None = None
-    heartbeat: Heartbeat | None = None
-    inference_metrics: InferenceMetricsCollector | None = None
-
-
 class TrainBatcher:
     """Wires the stages: annotate (filters) → accumulate (BatchingStrategy) →
-    post-process (PostProcessor). Trajectories arrive pre-scored; this stage
-    no longer computes advantages. Eval Trajectories are routed into an
-    aggregator keyed by eval_step."""
+    post-process (PostProcessor). Trajectories arrive pre-scored; eval ones
+    are routed into an aggregator keyed by eval_step."""
 
-    def __init__(self, inputs: BatcherInputs):
-        self.in_q = inputs.in_q
-        self.policy = inputs.policy
-        self.strategy = inputs.strategy
-        self.filters = inputs.filters
-        self.post = inputs.post
-        self.max_steps = inputs.max_steps
-        self.max_training_batches_ahead = inputs.max_training_batches_ahead
-        self.strict = inputs.strict_async_level
+    def __init__(
+        self,
+        config: OrchestratorConfig,
+        *,
+        in_q: asyncio.Queue[Trajectory],
+        tokenizer: Any,
+        sender: TrainingBatchSender,
+        policy: Policy,
+        eval_group: EvalGroup | None = None,
+        train_groups: list[GRPOGroup] | None = None,
+        ckpt_manager: CkptManager | None = None,
+        inference_metrics: InferenceMetricsCollector | None = None,
+    ):
+        self.config = config
+        self.in_q = in_q
+        self.policy = policy
+        self.strategy = build_strategy(config.batch_size)
+        self.filters: list[RolloutFilter] = setup_filters(config.filters, vocab_size=tokenizer.vocab_size)
+        self.post = PostProcessor(tokenizer, sender, policy)
+        self.heartbeat = Heartbeat(config.heartbeat.url) if config.heartbeat else None
+        self.eval_group = eval_group
+        self.train_groups = train_groups or []
+        self.ckpt_manager = ckpt_manager
+        self.inference_metrics = inference_metrics
         self.step = 0
-        self.eval_group = inputs.eval_group
-        self.train_groups = inputs.train_groups
         self._eval_buf: dict[int, list[Trajectory]] = defaultdict(list)
-        self.ckpt_manager = inputs.ckpt_manager
-        self.ckpt_interval = inputs.ckpt_interval
-        self.heartbeat = inputs.heartbeat
-        self.inference_metrics = inputs.inference_metrics
         self.logger = get_logger()
 
     async def _wait_barrier(self) -> None:
-        # Don't ship more than max_training_batches_ahead of the latest policy
-        # version. Stalling here cascades backpressure through the queue into
-        # the run_groups semaphore.
+        # Don't ship more than max_async_level of the latest policy version.
+        # Stalling here cascades backpressure through the queue into the
+        # run_groups semaphore.
+        target = self.config.max_async_level
+        strict = self.config.strict_async_level
         t0 = time.perf_counter()
         next_warn = 30.0
         while True:
             lead = self.step - self.policy.version
-            if self.strict:
-                if lead == self.max_training_batches_ahead:
+            if strict:
+                if lead == target:
                     return
-            elif lead <= self.max_training_batches_ahead:
+            elif lead <= target:
                 return
             elapsed = time.perf_counter() - t0
             if elapsed >= next_warn:
                 self.logger.warning(
                     f"Batcher stalled at barrier for {int(elapsed)}s: step={self.step}, "
                     f"policy_version={self.policy.version}, lead={lead} "
-                    f"(max_async_level={self.max_training_batches_ahead}). "
-                    f"Trainer may be stuck or down."
+                    f"(max_async_level={target}). Trainer may be stuck or down."
                 )
                 next_warn = elapsed + 60.0
             await asyncio.sleep(0.1)
@@ -420,11 +405,12 @@ class TrainBatcher:
         )
 
     async def _maybe_save_ckpt(self) -> None:
-        if not self.ckpt_manager or not self.ckpt_interval:
+        ckpt_interval = self.config.ckpt.interval if self.config.ckpt else None
+        if not self.ckpt_manager or not ckpt_interval:
             return
-        if self.step <= 0 or self.step % self.ckpt_interval != 0:
+        if self.step <= 0 or self.step % ckpt_interval != 0:
             return
-        if self.max_steps is not None and self.step >= self.max_steps:
+        if self.config.max_steps is not None and self.step >= self.config.max_steps:
             return
         last_eval = self.eval_group.last_eval_step if self.eval_group is not None else 0
         group_states = {g.name: g.state_dict() for g in self.train_groups}
@@ -432,6 +418,7 @@ class TrainBatcher:
         await asyncio.to_thread(self.ckpt_manager.save, state, self.step)
 
     async def run(self) -> None:
+        max_steps = self.config.max_steps
         while True:
             traj = await self.in_q.get()
             self._stamp_version(traj)
@@ -457,12 +444,12 @@ class TrainBatcher:
                     self.heartbeat.beat()
                 self.step += 1
                 await self._maybe_save_ckpt()
-                if self.max_steps is not None and self.step >= self.max_steps:
+                if max_steps is not None and self.step >= max_steps:
                     raise Done()
 
 
 def setup_batcher(
-    cfg: OrchestratorConfig,
+    config: OrchestratorConfig,
     *,
     in_q: asyncio.Queue[Trajectory],
     tokenizer: Any,
@@ -472,27 +459,16 @@ def setup_batcher(
     ckpt_manager: CkptManager | None = None,
     inference_metrics: InferenceMetricsCollector | None = None,
 ) -> TrainBatcher:
-    """Translate config → TrainBatcher."""
-    sender = setup_training_batch_sender(cfg.output_dir, cfg.rollout_transport)
-    filters = setup_filters(cfg.filters, vocab_size=tokenizer.vocab_size)
-    strategy = build_strategy(cfg.batch_size)
-    heartbeat = Heartbeat(cfg.heartbeat.url) if cfg.heartbeat else None
-    post = PostProcessor(tokenizer, sender, policy)
+    """Thin wrapper around `TrainBatcher` that builds the transport sender."""
+    sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
     return TrainBatcher(
-        BatcherInputs(
-            in_q=in_q,
-            post=post,
-            policy=policy,
-            strategy=strategy,
-            filters=filters,
-            max_steps=cfg.max_steps,
-            max_training_batches_ahead=cfg.max_async_level,
-            strict_async_level=cfg.strict_async_level,
-            eval_group=eval_group,
-            train_groups=train_groups or [],
-            ckpt_manager=ckpt_manager,
-            ckpt_interval=cfg.ckpt.interval if cfg.ckpt else None,
-            heartbeat=heartbeat,
-            inference_metrics=inference_metrics,
-        )
+        config,
+        in_q=in_q,
+        tokenizer=tokenizer,
+        sender=sender,
+        policy=policy,
+        eval_group=eval_group,
+        train_groups=train_groups,
+        ckpt_manager=ckpt_manager,
+        inference_metrics=inference_metrics,
     )

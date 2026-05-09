@@ -36,10 +36,10 @@ def _pick_free_port() -> int:
         return s.getsockname()[1]
 
 
-def _resolve_num_workers(env_cfg: EnvConfig) -> int:
+def _resolve_num_workers(env_config: EnvConfig) -> int:
     """`auto` resolves to 1 here — the EnvServerConfig validator does the
     same. Keep them in sync."""
-    return 1 if env_cfg.num_workers == "auto" else int(env_cfg.num_workers)
+    return 1 if env_config.num_workers == "auto" else int(env_config.num_workers)
 
 
 @dataclass
@@ -76,22 +76,22 @@ class EnvWorker:
             self.process.wait(timeout=2.0)
 
 
-def spawn_env_worker(env_cfg: EnvConfig, *, output_dir: Path, log_level: str = "info") -> EnvWorker:
+def spawn_env_worker(env_config: EnvConfig, *, output_dir: Path, log_level: str = "info") -> EnvWorker:
     """Start (or attach to) the env-server for one env config. Returns an
     `EnvWorker` handle. Caller is responsible for calling
     `wait_healthy()` before issuing rollouts and `terminate()` on shutdown.
     """
-    if env_cfg.address is not None:
-        return EnvWorker(name=env_cfg.resolved_name, address=env_cfg.address, process=None)
+    if env_config.address is not None:
+        return EnvWorker(name=env_config.resolved_name, address=env_config.address, process=None)
 
     address = f"tcp://127.0.0.1:{_pick_free_port()}"
     config_payload: dict = {
         "env": {
-            "id": env_cfg.id,
-            "name": env_cfg.resolved_name,
-            "args": env_cfg.args,
-            "extra_env_kwargs": env_cfg.extra_env_kwargs,
-            "num_workers": _resolve_num_workers(env_cfg),
+            "id": env_config.id,
+            "name": env_config.resolved_name,
+            "args": env_config.args,
+            "extra_env_kwargs": env_config.extra_env_kwargs,
+            "num_workers": _resolve_num_workers(env_config),
             "address": address,
         },
         "log": {"level": log_level},
@@ -99,15 +99,15 @@ def spawn_env_worker(env_cfg: EnvConfig, *, output_dir: Path, log_level: str = "
     }
 
     cfg_file = tempfile.NamedTemporaryFile(
-        mode="wb", suffix=".toml", prefix=f"env_server_{env_cfg.resolved_name}_", delete=False
+        mode="wb", suffix=".toml", prefix=f"env_server_{env_config.resolved_name}_", delete=False
     )
     tomli_w.dump(config_payload, cfg_file)
     cfg_file.close()
 
     cmd = [sys.executable, "-m", "prime_rl.orchestrator.env_server.env_server", "@" + cfg_file.name]
-    get_logger().info(f"Spawning env worker {env_cfg.resolved_name!r} on {address} ({cmd!r})")
+    get_logger().info(f"Spawning env worker {env_config.resolved_name!r} on {address} ({cmd!r})")
     proc = subprocess.Popen(cmd)
-    return EnvWorker(name=env_cfg.resolved_name, address=address, process=proc)
+    return EnvWorker(name=env_config.resolved_name, address=address, process=proc)
 
 
 async def attach_env_client(env: vf.Environment, address: str) -> ZMQEnvClient:

@@ -1,7 +1,5 @@
 import asyncio
 import time
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Protocol
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
@@ -15,18 +13,6 @@ class VersionObserver(Protocol):
     async def on_new_version(self, step: int) -> None: ...
 
 
-@dataclass
-class WatcherInputs:
-    """Pre-built inputs for the WeightWatcher. `setup_watcher` produces this
-    from config; tests construct it directly with a tmp_path + stub observers."""
-
-    broadcast_dir: Path
-    observers: list[VersionObserver]
-    policy: Policy
-    lora_name: str | None = None
-    poll_interval: float = 0.5
-
-
 class WeightWatcher:
     """Polls a broadcast directory for new trainer checkpoints.
 
@@ -36,12 +22,20 @@ class WeightWatcher:
     loaded for the first time). Groups read those fields at dispatch time.
     """
 
-    def __init__(self, inputs: WatcherInputs):
-        self.broadcast_dir = inputs.broadcast_dir
-        self.observers = inputs.observers
-        self.policy = inputs.policy
-        self.lora_name = inputs.lora_name
-        self.poll_interval = inputs.poll_interval
+    def __init__(
+        self,
+        config: OrchestratorConfig,
+        *,
+        observers: list[VersionObserver],
+        policy: Policy,
+        lora_name: str | None = None,
+        poll_interval: float = 0.5,
+    ):
+        self.broadcast_dir = get_broadcast_dir(config.output_dir)
+        self.observers = observers
+        self.policy = policy
+        self.lora_name = lora_name
+        self.poll_interval = poll_interval
         self.current_step = 0
         self.logger = get_logger()
 
@@ -51,7 +45,6 @@ class WeightWatcher:
             await self.tick()
 
     async def tick(self) -> None:
-        """One poll iteration. Extracted so tests can drive it without a loop."""
         if not self.broadcast_dir.exists():
             return
         latest = get_latest_ckpt_step(self.broadcast_dir)
@@ -66,7 +59,7 @@ class WeightWatcher:
             self.policy.version = latest
             # LoRA adapter exists on vLLM only after admin's first successful
             # /load_lora_adapter call. Until then `policy.model_name` is the
-            # base model so step-0 rollouts still target a real served model.
+            # base model.
             if self.lora_name and self.policy.model_name != self.lora_name:
                 self.logger.info(f"Switching rollouts to LoRA adapter '{self.lora_name}'")
                 self.policy.model_name = self.lora_name
@@ -75,22 +68,3 @@ class WeightWatcher:
         except Exception as exc:
             self.logger.warning(f"Weight update for step {latest} failed: {exc}. Skipping.")
             self.current_step = latest
-
-
-def setup_watcher(
-    cfg: OrchestratorConfig,
-    *,
-    observers: list[VersionObserver],
-    policy: Policy,
-    lora_name: str | None = None,
-) -> WeightWatcher:
-    """Translate config → WeightWatcher. Tests should construct
-    `WeightWatcher(WatcherInputs(...))` directly."""
-    return WeightWatcher(
-        WatcherInputs(
-            broadcast_dir=get_broadcast_dir(cfg.output_dir),
-            observers=observers,
-            policy=policy,
-            lora_name=lora_name,
-        )
-    )
