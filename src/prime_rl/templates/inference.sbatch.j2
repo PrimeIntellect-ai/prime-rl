@@ -142,6 +142,10 @@ srun bash -c '
     INFER_NODE_RANK=$SLURM_PROCID
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
 
+{%- if kv_offload %}
+    ulimit -l unlimited
+{%- endif %}
+
 {% if disaggregated -%}
     # NVSHMEM libs for DeepEP — ensure the rpath target exists on all nodes
     if [ ! -d /tmp/deepep_build/nvshmem/lib ] && [ -d "$OUTPUT_DIR/nvshmem/lib" ]; then
@@ -167,7 +171,6 @@ srun bash -c '
     export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
 
 {%- if kv_offload %}
-    ulimit -l unlimited
     PREFILL_KV_CFG='"'"'{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}},{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":{{ kv_offload_cpu_bytes }}}}]}}'"'"'
 {%- else %}
     PREFILL_KV_CFG='"'"'{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}}'"'"'
