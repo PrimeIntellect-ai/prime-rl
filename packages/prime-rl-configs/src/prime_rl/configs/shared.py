@@ -186,6 +186,34 @@ class RendererConfig(BaseConfig):
         ),
     ] = None
 
+    preserve_all_thinking: Annotated[
+        bool,
+        Field(
+            description=(
+                "If True, the renderer keeps `<think>...</think>` blocks for ALL "
+                "assistant turns when re-rendering the prompt for the next request. "
+                "By default the GLM/Qwen renderers strip thinking from older turns "
+                "(only the most recent assistant keeps it). Stripping breaks the "
+                "trajectory-step prefix property at every turn-rebuild — re-rendered "
+                "tokens no longer extend the streamed tokens, so the splitter opens "
+                "extra training samples (e.g. 1 + 2*compactions instead of 1 + "
+                "compactions). Turn this on for RL with multi-turn agents that "
+                "compact context."
+            ),
+        ),
+    ] = False
+
+    preserve_thinking_between_tool_calls: Annotated[
+        bool,
+        Field(
+            description=(
+                "Narrower variant of preserve_all_thinking: keep thinking only "
+                "between consecutive tool-call assistant turns. See "
+                "renderers.Renderer.render for exact semantics."
+            ),
+        ),
+    ] = False
+
 
 class ElasticConfig(BaseConfig):
     """Configures elastic inference pool with DNS-based service discovery.
