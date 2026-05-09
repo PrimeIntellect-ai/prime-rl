@@ -41,6 +41,7 @@ max_concurrent_rollouts_per_rank = 512
 temperature = 1.0
 max_completion_tokens = 2048
 logprobs = false
+extra_body = { top_k = -1 }
 
 [[train.env]]
 id = "math-env"
