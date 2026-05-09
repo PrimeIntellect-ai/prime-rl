@@ -3,7 +3,7 @@ output_dir = "outputs/gsm8k/es_qwen3_0_6b"
 clean_output_dir = false
 
 [model]
-name = "PrimeIntellect/Qwen3-0.6B"
+name = "Qwen/Qwen3-0.6B-Base"
 attn = "flash_attention_2"
 optimization_dtype = "bfloat16"
 
@@ -21,7 +21,7 @@ target_modules = [
 ]
 
 [tokenizer]
-name = "PrimeIntellect/Qwen3-0.6B"
+name = "Qwen/Qwen3-0.6B-Base"
 
 [algorithm]
 population_size = 64

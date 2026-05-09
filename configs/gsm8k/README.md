@@ -30,7 +30,7 @@ Start the inference server:
 
 ```bash
 # In the `Inference` pane
-uv run inference --model.name PrimeIntellect/Qwen3-0.6B
+uv run inference --model.name Qwen/Qwen3-0.6B-Base
 ```
 
 Evaluate the base model:
@@ -39,7 +39,7 @@ Evaluate the base model:
 # In the `Trainer` pane
 uv run vf-eval math-env \
   -a '{"dataset_name": "openai/gsm8k", "dataset_subset": "main"}' \
-  -m PrimeIntellect/Qwen3-0.6B \
+  -m Qwen/Qwen3-0.6B-Base \
   -b http://localhost:8000/v1 \
   -n 20 \
   -t 2048
