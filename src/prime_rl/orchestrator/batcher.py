@@ -2,7 +2,7 @@ import asyncio
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any
 
 import verifiers as vf
 
@@ -13,10 +13,9 @@ from prime_rl.configs.orchestrator import (
     StepBatching,
     TokensBatching,
 )
-from prime_rl.orchestrator.buffer import DifficultyBuffer
 from prime_rl.orchestrator.ckpt import CkptManager, OrchState
-from prime_rl.orchestrator.engine import GroupOutput
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters, setup_filters
+from prime_rl.orchestrator.group import EvalGroup, GRPOGroup, Policy, Trajectory
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.trajectories import interleave_rollout, pretokenize_rollout_trajectory
 from prime_rl.orchestrator.vf_utils import get_completion_len
@@ -31,22 +30,10 @@ class Done(Exception):
     """Raised by the batcher when max_steps has been reached. Caught by run()."""
 
 
-class PolicyState(Protocol):
-    """Read-only policy state the batcher needs for throttling + logging."""
-
-    policy_version: int
-
-    def max_off_policy_level(self) -> int: ...
-
-
-class EvalCounter(Protocol):
-    """Small surface the batcher needs from the scheduler: how many eval
-    groups to expect for a given trigger step, plus the most recent eval
-    trigger step for ckpt persistence."""
-
-    last_eval_step: int
-
-    def expected_eval_count(self, step: int) -> int | None: ...
+# Per-rollout policy version is stamped into the rollout dict at receipt so
+# PostProcessor can compute lag metrics after the BatchingStrategy unpacks
+# Trajectories into flat rollout lists.
+_POLICY_VERSION_KEY = "_policy_version"
 
 
 def _split(rollouts: list[vf.RolloutOutput]) -> tuple[list[vf.RolloutOutput], list[vf.RolloutOutput]]:
@@ -57,19 +44,16 @@ def _split(rollouts: list[vf.RolloutOutput]) -> tuple[list[vf.RolloutOutput], li
     return trainable, filtered
 
 
-class BatchingStrategy(Protocol):
-    """Decides when a batch is ready to ship. Implementations maintain their own
-    buffer and flush predicate."""
-
+class BatchingStrategy:
     def add(self, rollouts: list[vf.RolloutOutput]) -> None: ...
     def has_batch(self) -> bool: ...
     def pop(self) -> tuple[list[vf.RolloutOutput], list[vf.RolloutOutput]]: ...
 
 
 class StepStrategy:
-    """Ship the first `size` rollouts produced by the engine, pre-filter. The
-    trainer receives the trainable subset (filtered ones are counted toward
-    `size` but dropped at ship). Matches orch1 semantics."""
+    """Ship the first `size` rollouts produced, pre-filter. The trainer
+    receives the trainable subset (filtered ones counted toward `size` but
+    dropped at ship). Matches orch1 semantics."""
 
     def __init__(self, size: int):
         self.size = size
@@ -87,9 +71,7 @@ class StepStrategy:
 
 
 class SamplesStrategy:
-    """Ship when `size` trainable rollouts (post-filter) have accumulated.
-    Oversamples the engine: filtered rollouts are kept in the buffer for
-    metric aggregation but don't count toward `size`."""
+    """Ship when `size` trainable rollouts (post-filter) accumulate."""
 
     def __init__(self, size: int):
         self.size = size
@@ -166,9 +148,6 @@ _TIMING_FIELDS = ("total", "setup", "generation", "model", "env", "scoring", "ov
 
 
 def _rollout_timing(r: vf.RolloutOutput) -> dict[str, float]:
-    """Pull a flat {field: seconds} dict out of one rollout's TimeSpan-shaped
-    timing block. `total`/`overhead` are scalars; the rest carry a `duration`
-    derived from start/end timestamps."""
     t = r.get("timing")
     if not t:
         return {}
@@ -183,10 +162,6 @@ def _rollout_timing(r: vf.RolloutOutput) -> dict[str, float]:
 
 
 def _rollout_metrics(prefix: str, rollouts: list[vf.RolloutOutput]) -> dict:
-    """Flat per-rollout stats, keyed under `prefix` (empty for top-level).
-    Shared by train (trainable + cohort views) and eval (per-env + overall
-    views). Filter rates + drop rate only emitted when filter annotations are
-    present. Timing keys come out as `timing/{field}/mean`."""
     if not rollouts:
         return {}
     rewards = [r.get("reward", 0.0) for r in rollouts]
@@ -207,21 +182,20 @@ def _rollout_metrics(prefix: str, rollouts: list[vf.RolloutOutput]) -> dict:
     timings = [_rollout_timing(r) for r in rollouts]
     timings = [t for t in timings if t]
     if timings:
-        for field in _TIMING_FIELDS:
-            vals = [t[field] for t in timings if field in t]
+        for field_name in _TIMING_FIELDS:
+            vals = [t[field_name] for t in timings if field_name in t]
             if vals:
-                m[_key(prefix, f"timing/{field}/mean")] = sum(vals) / len(vals)
+                m[_key(prefix, f"timing/{field_name}/mean")] = sum(vals) / len(vals)
     return m
 
 
-def _eval_metrics(prefix: str, groups: list[GroupOutput]) -> dict:
-    """Eval-only per-example stats: pass_at_k (any rollout passed), avg_at_k
-    (mean of per-example mean rewards), n_examples."""
-    non_empty = [g for g in groups if g.rollouts]
+def _eval_metrics(prefix: str, trajs: list[Trajectory]) -> dict:
+    """Eval-only per-example stats: pass_at_k, avg_at_k, n_examples."""
+    non_empty = [t for t in trajs if t.rollouts]
     if not non_empty:
         return {}
-    passed = sum(1 for g in non_empty if any(r.get("reward", 0.0) > 0 for r in g.rollouts))
-    per_ex_means = [sum(r.get("reward", 0.0) for r in g.rollouts) / len(g.rollouts) for g in non_empty]
+    passed = sum(1 for t in non_empty if any(r.get("reward", 0.0) > 0 for r in t.rollouts))
+    per_ex_means = [sum(r.get("reward", 0.0) for r in t.rollouts) / len(t.rollouts) for t in non_empty]
     return {
         _key(prefix, "pass_at_k"): passed / len(non_empty),
         _key(prefix, "avg_at_k"): sum(per_ex_means) / len(per_ex_means),
@@ -230,9 +204,9 @@ def _eval_metrics(prefix: str, groups: list[GroupOutput]) -> dict:
 
 
 class PostProcessor:
-    """Converts rollouts -> TrainingSamples, sends the batch, and emits per-step logs/metrics."""
+    """Converts rollouts -> TrainingSamples, sends the batch, emits per-step logs/metrics."""
 
-    def __init__(self, tokenizer, sender: TrainingBatchSender, policy: PolicyState):
+    def __init__(self, tokenizer, sender: TrainingBatchSender, policy: Policy):
         self.tokenizer = tokenizer
         self.sender = sender
         self.policy = policy
@@ -249,8 +223,6 @@ class PostProcessor:
         samples = await asyncio.to_thread(self._convert, trainable)
         convert_time = time.perf_counter() - t0
         if not samples:
-            # Trainer needs at least one sample per step. Step-mode can produce
-            # fully-filtered cohorts on small models; surface clearly.
             self.logger.warning(
                 f"Step {step}: shipping empty batch ({len(filtered)} filtered, 0 trainable). "
                 f"Trainer may fail on this step — consider relaxing filters or batch_size."
@@ -280,6 +252,13 @@ class PostProcessor:
             samples.extend(out)
         return samples
 
+    def _max_off_policy(self, rollouts: list[vf.RolloutOutput]) -> int:
+        versions = [r.get(_POLICY_VERSION_KEY) for r in rollouts]
+        versions = [v for v in versions if v is not None]
+        if not versions:
+            return 0
+        return max(self.policy.version - v for v in versions)
+
     def _log(
         self,
         trainable: list[vf.RolloutOutput],
@@ -293,17 +272,15 @@ class PostProcessor:
         cohort = trainable + filtered
         advs_t = [r.get("advantage") or 0.0 for r in trainable]
         adv_abs = sum(abs(a) for a in advs_t) / len(trainable) if trainable else 0.0
-        async_level = step - self.policy.policy_version
-        max_off_policy_level = self.policy.max_off_policy_level()
+        async_level = step - self.policy.version
+        max_off_policy_level = self._max_off_policy(cohort)
 
         metrics: dict = {
-            # Trainable subset (post-filter) — top level, no kind prefix.
             **_rollout_metrics("", trainable),
-            # Full pre-filter cohort — grouped under rollouts/.
             **_rollout_metrics("rollouts", cohort),
             "advantage/abs_mean": adv_abs,
             "batch_size": len(samples),
-            "policy_version": self.policy.policy_version,
+            "policy_version": self.policy.version,
             "scheduler/async_level": async_level,
             "scheduler/max_off_policy_level": max_off_policy_level,
             "time/step": step_time,
@@ -312,9 +289,6 @@ class PostProcessor:
         }
         get_monitor().log(metrics, step=step)
 
-        # reward/mean and seq_len/mean are only present when trainable is
-        # non-empty (see _rollout_metrics short-circuit). Step-mode batches can
-        # come out fully filtered — log placeholders instead of crashing.
         reward_str = f"{metrics['reward/mean']:.4f}" if "reward/mean" in metrics else "n/a"
         seqlen_str = f"{metrics['seq_len/mean']:.1f} tokens/sample" if "seq_len/mean" in metrics else "n/a"
         self.logger.success(
@@ -330,30 +304,29 @@ class PostProcessor:
 
 @dataclass
 class BatcherInputs:
-    """Pre-built inputs for the TrainBatcher. `setup_batcher` produces this
-    from config; tests construct it directly with stub policy/eval/post."""
+    """Pre-built inputs for the TrainBatcher."""
 
-    in_q: asyncio.Queue[GroupOutput]
+    in_q: asyncio.Queue[Trajectory]
     post: "PostProcessor"
-    policy: PolicyState
+    policy: Policy
     strategy: BatchingStrategy
     filters: list[RolloutFilter] = field(default_factory=list)
     max_steps: int | None = None
     max_training_batches_ahead: int = 1
     strict_async_level: bool = False
-    eval_counter: EvalCounter | None = None
+    eval_group: EvalGroup | None = None
+    train_groups: list[GRPOGroup] = field(default_factory=list)
     ckpt_manager: CkptManager | None = None
     ckpt_interval: int | None = None
-    buffer: DifficultyBuffer | None = None
     heartbeat: Heartbeat | None = None
     inference_metrics: InferenceMetricsCollector | None = None
 
 
 class TrainBatcher:
     """Wires the stages: annotate (filters) → accumulate (BatchingStrategy) →
-    post-process (PostProcessor). Rollouts arrive pre-scored by the engine's
-    Group, so this stage no longer computes advantages. Also routes
-    eval groups into an eval aggregator keyed by the eval trigger step."""
+    post-process (PostProcessor). Trajectories arrive pre-scored; this stage
+    no longer computes advantages. Eval Trajectories are routed into an
+    aggregator keyed by eval_step."""
 
     def __init__(self, inputs: BatcherInputs):
         self.in_q = inputs.in_q
@@ -365,29 +338,23 @@ class TrainBatcher:
         self.max_training_batches_ahead = inputs.max_training_batches_ahead
         self.strict = inputs.strict_async_level
         self.step = 0
-        self.eval_counter = inputs.eval_counter
-        self._eval_buf: dict[int, list[GroupOutput]] = defaultdict(list)
+        self.eval_group = inputs.eval_group
+        self.train_groups = inputs.train_groups
+        self._eval_buf: dict[int, list[Trajectory]] = defaultdict(list)
         self.ckpt_manager = inputs.ckpt_manager
         self.ckpt_interval = inputs.ckpt_interval
-        self.buffer = inputs.buffer
         self.heartbeat = inputs.heartbeat
         self.inference_metrics = inputs.inference_metrics
         self.logger = get_logger()
 
     async def _wait_barrier(self) -> None:
         # Don't ship more than max_training_batches_ahead of the latest policy
-        # version. Stalling here cascades backpressure: the groups queue fills,
-        # the engine's semaphore stops releasing. Set to a huge value to
-        # benchmark orch alone (no trainer, no blocking).
-        # Strict mode: wait until lead EQUALS the target (not just <=).
-        # If we block here for an unusually long time the trainer is likely
-        # gone or stuck. We re-warn every 60s so the stall stays visible in
-        # logs; the launcher's process supervision is what hard-fails on
-        # actual trainer subprocess exit.
+        # version. Stalling here cascades backpressure through the queue into
+        # the run_groups semaphore.
         t0 = time.perf_counter()
         next_warn = 30.0
         while True:
-            lead = self.step - self.policy.policy_version
+            lead = self.step - self.policy.version
             if self.strict:
                 if lead == self.max_training_batches_ahead:
                     return
@@ -397,43 +364,45 @@ class TrainBatcher:
             if elapsed >= next_warn:
                 self.logger.warning(
                     f"Batcher stalled at barrier for {int(elapsed)}s: step={self.step}, "
-                    f"policy_version={self.policy.policy_version}, lead={lead} "
+                    f"policy_version={self.policy.version}, lead={lead} "
                     f"(max_async_level={self.max_training_batches_ahead}). "
                     f"Trainer may be stuck or down."
                 )
                 next_warn = elapsed + 60.0
             await asyncio.sleep(0.1)
 
-    def _handle_eval(self, group: GroupOutput) -> None:
-        if group.eval_step is None or self.eval_counter is None:
+    def _stamp_version(self, traj: Trajectory) -> None:
+        for r in traj.rollouts:
+            r[_POLICY_VERSION_KEY] = traj.policy_version
+
+    def _handle_eval(self, traj: Trajectory) -> None:
+        if traj.eval_step is None or self.eval_group is None:
             return
-        # Annotate (never drop) so we can report per-filter rates on eval. The
-        # zero-advantage filter is a no-op here since eval has no advantages.
-        if self.filters and group.rollouts:
-            apply_filters(self.filters, group.rollouts)
-        buf = self._eval_buf[group.eval_step]
-        buf.append(group)
-        expected = self.eval_counter.expected_eval_count(group.eval_step)
+        if self.filters and traj.rollouts:
+            apply_filters(self.filters, traj.rollouts)
+        buf = self._eval_buf[traj.eval_step]
+        buf.append(traj)
+        expected = self.eval_group.expected_eval_count(traj.eval_step)
         if expected is None or len(buf) < expected:
             return
-        self._flush_eval(group.eval_step, self._eval_buf.pop(group.eval_step))
+        self._flush_eval(traj.eval_step, self._eval_buf.pop(traj.eval_step))
 
-    def _flush_eval(self, step: int, groups: list[GroupOutput]) -> None:
-        per_env: dict[str, list[GroupOutput]] = defaultdict(list)
-        for g in groups:
-            per_env[g.env_id].append(g)
+    def _flush_eval(self, step: int, trajs: list[Trajectory]) -> None:
+        per_env: dict[str, list[Trajectory]] = defaultdict(list)
+        for t in trajs:
+            per_env[t.env_id].append(t)
         metrics: dict = {}
-        for env_id, env_groups in per_env.items():
-            flat = [r for g in env_groups for r in g.rollouts]
+        for env_id, env_trajs in per_env.items():
+            flat = [r for t in env_trajs for r in t.rollouts]
             metrics.update(_rollout_metrics(f"eval/{env_id}", flat))
-            metrics.update(_eval_metrics(f"eval/{env_id}", env_groups))
-        all_rollouts = [r for g in groups for r in g.rollouts]
+            metrics.update(_eval_metrics(f"eval/{env_id}", env_trajs))
+        all_rollouts = [r for t in trajs for r in t.rollouts]
         metrics.update(_rollout_metrics("eval", all_rollouts))
-        metrics.update(_eval_metrics("eval", groups))
+        metrics.update(_eval_metrics("eval", trajs))
         if "eval/reward/mean" not in metrics:
-            self.logger.warning(f"Eval @ step {step}: all {len(groups)} groups timed out, skipping log")
+            self.logger.warning(f"Eval @ step {step}: all {len(trajs)} groups timed out, skipping log")
             return
-        n_timed_out = sum(1 for g in groups if not g.rollouts)
+        n_timed_out = sum(1 for t in trajs if not t.rollouts)
         if n_timed_out:
             metrics["eval/timed_out"] = n_timed_out
         get_monitor().log(metrics, step=step)
@@ -456,28 +425,30 @@ class TrainBatcher:
         if self.step <= 0 or self.step % self.ckpt_interval != 0:
             return
         if self.max_steps is not None and self.step >= self.max_steps:
-            return  # don't bother saving on the final step — exit follows immediately
-        last_eval = self.eval_counter.last_eval_step if self.eval_counter is not None else 0
-        buffer_state = self.buffer.state_dict() if self.buffer is not None else {}
-        state = OrchState(step=self.step, last_eval_step=last_eval, buffer_state=buffer_state)
+            return
+        last_eval = self.eval_group.last_eval_step if self.eval_group is not None else 0
+        group_states = {g.name: g.state_dict() for g in self.train_groups}
+        state = OrchState(step=self.step, last_eval_step=last_eval, group_states=group_states)
         await asyncio.to_thread(self.ckpt_manager.save, state, self.step)
 
     async def run(self) -> None:
         while True:
-            group = await self.in_q.get()
-            if group.kind == "eval":
-                self._handle_eval(group)
+            traj = await self.in_q.get()
+            self._stamp_version(traj)
+            if traj.kind == "eval":
+                self._handle_eval(traj)
                 continue
-            if self.buffer is not None:
-                self.buffer.observe(group)
-            apply_filters(self.filters, group.rollouts)
-            self.strategy.add(group.rollouts)
+            apply_filters(self.filters, traj.rollouts)
+            self.strategy.add(traj.rollouts)
             while self.strategy.has_batch():
                 await self._wait_barrier()
                 trainable, filtered = self.strategy.pop()
                 await self.post.process(trainable, filtered, self.step)
-                if self.buffer is not None:
-                    get_monitor().log(self.buffer.metrics(), step=self.step)
+                group_metrics: dict = {}
+                for g in self.train_groups:
+                    group_metrics.update(g.metrics())
+                if group_metrics:
+                    get_monitor().log(group_metrics, step=self.step)
                 if self.inference_metrics is not None:
                     inf_metrics = await self.inference_metrics.collect()
                     if inf_metrics:
@@ -493,17 +464,15 @@ class TrainBatcher:
 def setup_batcher(
     cfg: OrchestratorConfig,
     *,
-    in_q: asyncio.Queue[GroupOutput],
+    in_q: asyncio.Queue[Trajectory],
     tokenizer: Any,
-    policy: PolicyState,
-    eval_counter: EvalCounter | None = None,
+    policy: Policy,
+    eval_group: EvalGroup | None = None,
+    train_groups: list[GRPOGroup] | None = None,
     ckpt_manager: CkptManager | None = None,
-    buffer: DifficultyBuffer | None = None,
     inference_metrics: InferenceMetricsCollector | None = None,
 ) -> TrainBatcher:
-    """Translate config → TrainBatcher. Builds the batch sender, filters,
-    strategy, heartbeat, and PostProcessor internally. Tests should construct
-    `TrainBatcher(BatcherInputs(...))` directly."""
+    """Translate config → TrainBatcher."""
     sender = setup_training_batch_sender(cfg.output_dir, cfg.rollout_transport)
     filters = setup_filters(cfg.filters, vocab_size=tokenizer.vocab_size)
     strategy = build_strategy(cfg.batch_size)
@@ -519,10 +488,10 @@ def setup_batcher(
             max_steps=cfg.max_steps,
             max_training_batches_ahead=cfg.max_async_level,
             strict_async_level=cfg.strict_async_level,
-            eval_counter=eval_counter,
+            eval_group=eval_group,
+            train_groups=train_groups or [],
             ckpt_manager=ckpt_manager,
             ckpt_interval=cfg.ckpt.interval if cfg.ckpt else None,
-            buffer=buffer,
             heartbeat=heartbeat,
             inference_metrics=inference_metrics,
         )

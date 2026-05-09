@@ -1,9 +1,9 @@
 """Async-pipelined RL orchestrator.
 
-The interesting story lives in `run()`: five long-lived coroutines
-(scheduler, admin, engine, batcher, watcher) cooperating through one
-asyncio.Queue and a weight-rotation observer chain. Setup helpers live
-in `utils.py`; config invariants live in `OrchestratorConfig` validators.
+`run()` wires three long-lived coroutines: a metronome (`run_groups`) that
+calls Groups under a shared concurrency cap, a batcher that ships trainable
+cohorts to the trainer, and a watcher that mutates the shared Policy when
+fresh weights arrive. Setup helpers live in `utils.py` and `group.py`.
 """
 
 import asyncio
@@ -11,16 +11,19 @@ import os
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.batcher import Done, setup_batcher
-from prime_rl.orchestrator.buffer import setup_buffer
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
-from prime_rl.orchestrator.engine import setup_rollout_engine
+from prime_rl.orchestrator.group import (
+    Policy,
+    make_groups_queue,
+    run_groups,
+    setup_eval_group,
+    setup_train_groups,
+)
 from prime_rl.orchestrator.inference_admin import setup_admin
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
-from prime_rl.orchestrator.scheduler import setup_scheduler
 from prime_rl.orchestrator.utils import (
     install_envs,
     make_client,
-    make_groups_queue,
     maybe_resume,
     resolve_resume_step,
     write_orch_config,
@@ -50,50 +53,50 @@ async def run(cfg: OrchestratorConfig) -> None:
 
     ckpt_manager = setup_ckpt_manager(cfg.output_dir, cfg.ckpt)
     resume_step = resolve_resume_step(cfg, ckpt_manager)
-    buffer = setup_buffer(cfg.buffer, [e.resolved_name for e in cfg.train.env], seed=cfg.seed)
     lora_name = cfg.model.lora.name if cfg.model.lora else None
 
-    # ── The five long-lived coroutines ──
-    scheduler = setup_scheduler(cfg, buffer=buffer, resume_step=resume_step)
+    # Shared mutable state. Watcher writes; Groups read. Initial model_name
+    # is the base model since no LoRA adapter is loaded yet.
+    policy = Policy(version=0, model_name=cfg.model.name)
+    client = make_client(cfg)
+
+    # Build Groups: one (or one weighted-wrapper) for train, plus eval.
+    dispatch_groups, train_groups = setup_train_groups(cfg, client=client, policy=policy)
+    eval_group = setup_eval_group(cfg, client=client, policy=policy, resume_step=resume_step)
+    groups = list(dispatch_groups) + ([eval_group] if eval_group is not None else [])
+
+    out_q, concurrency = make_groups_queue(cfg, num_groups=len(groups))
+
     admin = setup_admin(cfg, lora_name=lora_name)
-    groups_q, concurrency = make_groups_queue(cfg, scheduler)
-    engine = setup_rollout_engine(
-        cfg,
-        scheduler=scheduler,
-        out_q=groups_q,
-        client=make_client(cfg),
-        concurrency=concurrency,
-        lora_name=lora_name,
-    )
     batcher = setup_batcher(
         cfg,
-        in_q=groups_q,
+        in_q=out_q,
         tokenizer=tokenizer,
-        policy=engine,
-        eval_counter=scheduler,
+        policy=policy,
+        eval_group=eval_group,
+        train_groups=train_groups,
         ckpt_manager=ckpt_manager,
-        buffer=buffer,
         inference_metrics=InferenceMetricsCollector(admin.client) if cfg.collect_inference_metrics else None,
     )
-    watcher = setup_watcher(cfg, observers=[admin, engine, scheduler])
+    watcher = setup_watcher(cfg, observers=[admin], policy=policy, lora_name=lora_name)
 
     await admin.start(cfg)
     await maybe_resume(
         cfg,
         resume_step,
         ckpt_manager,
-        scheduler=scheduler,
-        engine=engine,
+        policy=policy,
+        train_groups=train_groups,
+        eval_group=eval_group,
         batcher=batcher,
         admin=admin,
         watcher=watcher,
-        buffer=buffer,
     )
 
     logger.success("Orchestrator starting — producing rollouts")
     try:
         async with asyncio.TaskGroup() as tg:
-            tg.create_task(engine.run())
+            tg.create_task(run_groups(groups, out_q, concurrency))
             tg.create_task(batcher.run())
             tg.create_task(watcher.run())
             tg.create_task(admin.watch_health())

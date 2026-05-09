@@ -13,14 +13,18 @@ from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_step_pa
 
 @dataclass
 class OrchState:
-    """Minimal orchestrator state needed to resume cleanly. Engine version +
+    """Minimal orchestrator state needed to resume cleanly. Policy version +
     watcher cursor are recoverable from disk on the next watcher tick, so we
-    don't persist them. Round-robin scheduler index resets to 0 on resume —
-    minor reordering, no correctness loss."""
+    don't persist them. Round-robin worker order resets on resume — minor
+    reordering, no correctness loss.
+
+    `group_states` is keyed by Group `name` (e.g. env-id for GRPOGroups);
+    each Group serializes whatever data-side state it owns (difficulty
+    pools, dataset cursors, …)."""
 
     step: int = 0
     last_eval_step: int = 0
-    buffer_state: dict[str, Any] = field(default_factory=dict)
+    group_states: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class CkptManager:

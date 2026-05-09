@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Protocol
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.orchestrator.group import Policy
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_broadcast_dir, get_step_path
 from prime_rl.utils.utils import get_latest_ckpt_step
@@ -21,6 +22,8 @@ class WatcherInputs:
 
     broadcast_dir: Path
     observers: list[VersionObserver]
+    policy: Policy
+    lora_name: str | None = None
     poll_interval: float = 0.5
 
 
@@ -28,14 +31,16 @@ class WeightWatcher:
     """Polls a broadcast directory for new trainer checkpoints.
 
     Each tick jumps straight to the LATEST step on disk, skipping intermediates
-    the trainer's cleanup may have pruned. Observers are notified in order; if
-    any one raises (e.g. dir disappears mid-update), we log and pick up the
-    next fresher step on the next tick.
+    the trainer's cleanup may have pruned. After observers (admin) succeed, we
+    mutate `policy.version` (and `policy.model_name` once the LoRA adapter is
+    loaded for the first time). Groups read those fields at dispatch time.
     """
 
     def __init__(self, inputs: WatcherInputs):
         self.broadcast_dir = inputs.broadcast_dir
         self.observers = inputs.observers
+        self.policy = inputs.policy
+        self.lora_name = inputs.lora_name
         self.poll_interval = inputs.poll_interval
         self.current_step = 0
         self.logger = get_logger()
@@ -58,6 +63,13 @@ class WeightWatcher:
             t0 = time.perf_counter()
             for obs in self.observers:
                 await obs.on_new_version(latest)
+            self.policy.version = latest
+            # LoRA adapter exists on vLLM only after admin's first successful
+            # /load_lora_adapter call. Until then `policy.model_name` is the
+            # base model so step-0 rollouts still target a real served model.
+            if self.lora_name and self.policy.model_name != self.lora_name:
+                self.logger.info(f"Switching rollouts to LoRA adapter '{self.lora_name}'")
+                self.policy.model_name = self.lora_name
             self.logger.success(f"Weights updated to step {latest} in {time.perf_counter() - t0:.2f}s")
             self.current_step = latest
         except Exception as exc:
@@ -65,12 +77,20 @@ class WeightWatcher:
             self.current_step = latest
 
 
-def setup_watcher(cfg: OrchestratorConfig, *, observers: list[VersionObserver]) -> WeightWatcher:
+def setup_watcher(
+    cfg: OrchestratorConfig,
+    *,
+    observers: list[VersionObserver],
+    policy: Policy,
+    lora_name: str | None = None,
+) -> WeightWatcher:
     """Translate config → WeightWatcher. Tests should construct
     `WeightWatcher(WatcherInputs(...))` directly."""
     return WeightWatcher(
         WatcherInputs(
             broadcast_dir=get_broadcast_dir(cfg.output_dir),
             observers=observers,
+            policy=policy,
+            lora_name=lora_name,
         )
     )
