@@ -109,7 +109,6 @@ class NCCLWeightUpdateWorker(Worker):
             inference_world_size: Total number of inference GPUs across all servers.
         """
         self.quantize_in_weight_transfer = quantize_in_weight_transfer
-        self.layerwise = layerwise
         # Use the worker's device index directly as the local rank.
         # The previous dp_group-based computation broke in vLLM v1 multiprocess
         # DP mode where each worker is a separate process with a singleton
