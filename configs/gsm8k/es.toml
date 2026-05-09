@@ -1,0 +1,57 @@
+max_steps = 100
+output_dir = "outputs/gsm8k/es_qwen3_0_6b"
+clean_output_dir = true
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B"
+attn = "flash_attention_2"
+optimization_dtype = "bfloat16"
+
+[model.lora]
+rank = 16
+alpha = 32
+target_modules = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+]
+
+[tokenizer]
+name = "PrimeIntellect/Qwen3-0.6B"
+
+[algorithm]
+population_size = 64
+candidate_chunk_size = 32
+adapter_transport = "slots"
+mirrored = false
+sigma = 0.012
+lr = 0.01
+reward_normalization = "zscore"
+
+[train]
+examples_per_env = 16
+rollouts_per_example = 1
+max_concurrent_rollouts_per_rank = 512
+
+[train.sampling]
+temperature = 1.0
+max_completion_tokens = 2048
+logprobs = false
+
+[[train.env]]
+id = "math-env"
+name = "gsm8k"
+num_workers = 1
+args = { dataset_name = "openai/gsm8k", dataset_subset = "main", math_verify_max_workers = 128, math_verify_timeout = 60 }
+
+[deployment]
+num_gpus = 1
+gpus_per_node = 1
+
+[ckpt]
+interval = 10
+keep_last = 2
