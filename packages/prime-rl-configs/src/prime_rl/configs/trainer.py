@@ -696,6 +696,13 @@ class DefaultLossConfig(BaseModel):
     ] = 0.2
     adv_tau: Annotated[float, Field(ge=0, description="The tau for advantages.")] = 1.0
     teacher_tau: Annotated[float, Field(ge=0, description="The tau for teacher logprobs.")] = 0.0
+    kl_tau: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="The tau for the KL penalty (squared log importance ratio), applied only over unmasked tokens.",
+        ),
+    ] = 0.0
 
 
 class SFTLossConfig(BaseModel):
