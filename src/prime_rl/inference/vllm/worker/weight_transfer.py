@@ -16,9 +16,7 @@ def postprocess_weights_checkpoint(model: Module, model_config, device: torch.de
     process_weights_after_loading(model, model_config, device)
 
 
-def _invert_logical_to_physical_map(
-    logical_to_physical_map: torch.Tensor, num_physical_experts: int
-) -> torch.Tensor:
+def _invert_logical_to_physical_map(logical_to_physical_map: torch.Tensor, num_physical_experts: int) -> torch.Tensor:
     """Build a physical expert -> logical expert map from vLLM EPLB state."""
     physical_to_logical = torch.full(
         (num_physical_experts,),
@@ -32,7 +30,12 @@ def _invert_logical_to_physical_map(
         device=logical_to_physical_map.device,
     )[:, None].expand_as(logical_to_physical_map)
     physical_indices = logical_to_physical_map.to(torch.long)
-    valid = (physical_indices >= 0) & (physical_indices < num_physical_experts)
+    invalid = (physical_indices < -1) | (physical_indices >= num_physical_experts)
+    if invalid.any():
+        invalid_indices = physical_indices[invalid].unique().tolist()
+        raise ValueError(f"EPLB maps to invalid physical experts: {invalid_indices}")
+
+    valid = physical_indices >= 0
     physical_to_logical[physical_indices[valid]] = logical_indices[valid]
     return physical_to_logical
 
