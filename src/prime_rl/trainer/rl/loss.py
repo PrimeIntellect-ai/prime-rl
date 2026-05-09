@@ -111,8 +111,14 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     Token-level masked importance sampling: tokens whose probability
     difference π_train - π_infer falls outside [-dppo_diff_low, dppo_diff_high]
     are dropped (gradient set to 0), not clipped. The mask is symmetric
-    (not advantage-conditioned). No KL penalty — the double-sided
-    difference mask is what keeps the update inside the trust region.
+    (not advantage-conditioned). The double-sided difference mask is what
+    keeps the update inside the trust region.
+
+    An optional Kimi-K2.5-style KL penalty (https://arxiv.org/pdf/2602.02276),
+    scaled by `kl_tau`, is applied only over unmasked (kept) tokens — the
+    masked tokens are already dropped from the policy gradient and including
+    them in the KL would push gradient through positions we explicitly chose
+    to ignore.
     """
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
@@ -138,7 +144,8 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
         teacher_kl = None
 
     pg_loss = keep_mask * advantages * importance_ratio
-    loss = (-pg_loss).sum()
+    kl_loss = keep_mask * log_importance_ratio**2
+    loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
 
     metrics = {
         "mismatch_kl": _safe_mean(mismatch_kl, loss_mask),  # all trainable tokens
@@ -147,6 +154,7 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
         "is_masked": _safe_mean(is_masked, loss_mask),
         "is_masked_low": _safe_mean(is_masked_low, loss_mask),
         "is_masked_high": _safe_mean(is_masked_high, loss_mask),
+        "kl_penalty": _safe_mean(log_importance_ratio**2, keep_mask),
     }
     if teacher_kl is not None:
         metrics["teacher_kl"] = _safe_mean(teacher_kl, loss_mask)
