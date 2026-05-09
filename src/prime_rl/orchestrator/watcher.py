@@ -3,7 +3,7 @@ import time
 from typing import Protocol
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.group import Policy
+from prime_rl.orchestrator.env_sampler import Policy
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_broadcast_dir, get_step_path
 from prime_rl.utils.utils import get_latest_ckpt_step

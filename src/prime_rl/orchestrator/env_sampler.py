@@ -1,10 +1,10 @@
-"""Group: the user-facing seam.
+"""EnvSampler: the user-facing seam.
 
-A Group owns its dataset, env, sampling, scoring, and any data-side state
+An EnvSampler owns its dataset, env, sampling, scoring, and any data-side state
 (difficulty pools, etc.) — every semantic decision. It also owns the env
 **worker** lifecycle: `start()` spawns the subprocess env-server (or
 attaches to an external one) and `stop()` tears it down. The orchestrator
-calls them around `run_groups`.
+calls them around `run_samplers`.
 
 The shared mutable state is `Policy`: the watcher mutates `policy.version`
 and `policy.model_name`; Groups read them at dispatch time and stamp the
@@ -45,7 +45,7 @@ _POOLS: tuple[Pool, ...] = ("easy", "normal", "hard")
 @dataclass
 class Policy:
     """Mutable shared view of the current policy. Written by the watcher,
-    read by Groups. Passed by reference — never copied."""
+    read by EnvSamplers. Passed by reference — never copied."""
 
     version: int = 0
     model_name: str = ""
@@ -53,7 +53,7 @@ class Policy:
 
 @dataclass
 class Trajectory:
-    """One unit of work emitted by a Group. Carries the rollouts, their
+    """One unit of work emitted by an EnvSampler. Carries the rollouts, their
     common metadata, and the policy version they were dispatched against."""
 
     example: dict
@@ -64,9 +64,9 @@ class Trajectory:
     eval_step: int | None = None  # set for eval Trajectories; None for train
 
 
-class Group(Protocol):
+class EnvSampler(Protocol):
     """The only seam. Owns dataset + env + worker lifecycle + scoring.
-    `do_work()` returns zero or more Trajectories — empty means the Group
+    `do_work()` returns zero or more Trajectories — empty means the EnvSampler
     has no work right now (idle backoff is the caller's job)."""
 
     name: str
@@ -85,8 +85,8 @@ def _difficulty_active(config: BufferConfig | None) -> bool:
 # ── Default implementations ────────────────────────────────────────────────
 
 
-class GRPOGroup:
-    """Train Group: one example × N parallel rollouts × group-relative GRPO.
+class GRPOEnvSampler:
+    """Train EnvSampler: one example × N parallel rollouts × group-relative GRPO.
 
     Owns its own dataset iteration, its own difficulty-pool state, and its
     own env worker subprocess. Reads `policy.version` + `policy.model_name`
@@ -158,7 +158,7 @@ class GRPOGroup:
         version = self.policy.version
         rollouts = await self._gather(example)
         if not rollouts:
-            # Every rollout timed out — drop the group so _observe doesn't
+            # Every rollout timed out — drop these so _observe doesn't
             # divide by zero and the batcher doesn't see an empty cohort.
             return []
         self._score(rollouts)
@@ -333,10 +333,10 @@ class _EvalEnvHandle:
         return self.config.resolved_name
 
 
-class EvalGroup:
-    """Eval Group: triggers an epoch every `interval` policy versions, then
+class EvalEnvSampler:
+    """Eval EnvSampler: triggers an epoch every `interval` policy versions, then
     drains it one example at a time. `do_work()` returns [] when no epoch is
-    active (run_groups idle-backs off). Owns one env worker per eval env."""
+    active (run_samplers idle-backs off). Owns one env worker per eval env."""
 
     def __init__(
         self,
@@ -346,7 +346,7 @@ class EvalGroup:
         policy: Policy,
         resume_step: int | None = None,
     ):
-        assert config.eval is not None and config.eval.env, "EvalGroup needs at least one eval env"
+        assert config.eval is not None and config.eval.env, "EvalEnvSampler needs at least one eval env"
         self.name = "eval"
         self.config = config
         self.client = client
@@ -449,30 +449,30 @@ class EvalGroup:
         )
 
 
-class WeightedGroup:
-    """Composes multiple Groups; each `do_work()` picks one weighted-randomly
-    and delegates. Forwards start/stop to all sub-Groups."""
+class WeightedEnvSampler:
+    """Composes multiple EnvSamplers; each `do_work()` picks one weighted-
+    randomly and delegates. Forwards start/stop to all sub-samplers."""
 
-    def __init__(self, *, groups: list[Group], weights: list[float], seed: int | None = None):
-        assert len(groups) == len(weights)
+    def __init__(self, *, samplers: list[EnvSampler], weights: list[float], seed: int | None = None):
+        assert len(samplers) == len(weights)
         self.name = "weighted"
-        self._groups = groups
+        self._samplers = samplers
         self._weights = weights
         self._rng = random.Random(seed)
 
     async def start(self) -> None:
-        await asyncio.gather(*(g.start() for g in self._groups))
+        await asyncio.gather(*(s.start() for s in self._samplers))
 
     async def stop(self) -> None:
-        for g in reversed(self._groups):
+        for s in reversed(self._samplers):
             try:
-                await g.stop()
+                await s.stop()
             except Exception as exc:
-                get_logger().warning(f"[{g.name}] stop() failed: {exc}")
+                get_logger().warning(f"[{s.name}] stop() failed: {exc}")
 
     async def do_work(self) -> list[Trajectory]:
-        g = self._rng.choices(self._groups, weights=self._weights, k=1)[0]
-        return await g.do_work()
+        s = self._rng.choices(self._samplers, weights=self._weights, k=1)[0]
+        return await s.do_work()
 
 
 # ── Driver ─────────────────────────────────────────────────────────────────
@@ -481,73 +481,75 @@ class WeightedGroup:
 _IDLE_BACKOFF_SECONDS = 0.1
 
 
-async def run_groups(
-    groups: list[Group],
+async def run_samplers(
+    samplers: list[EnvSampler],
     out_q: asyncio.Queue[Trajectory],
     max_concurrency: int,
 ) -> None:
-    """The metronome. One worker per Group; all share a global semaphore so
+    """The metronome. One worker per EnvSampler; all share a global semaphore so
     total in-flight `do_work()` calls never exceed `max_concurrency`. Empty
-    returns trigger an idle backoff so EvalGroups (which return [] between
+    returns trigger an idle backoff so EvalEnvSamplers (which return [] between
     epochs) don't busy-spin. Caller is responsible for `start()`/`stop()`."""
     sem = asyncio.Semaphore(max_concurrency)
-    get_logger().debug(f"run_groups starting with {len(groups)} group(s), concurrency={max_concurrency}")
+    get_logger().debug(f"run_samplers starting with {len(samplers)} sampler(s), concurrency={max_concurrency}")
 
-    async def _worker(g: Group) -> None:
+    async def _worker(s: EnvSampler) -> None:
         while True:
             async with sem:
-                trajs = await g.do_work()
+                trajs = await s.do_work()
             if not trajs:
                 await asyncio.sleep(_IDLE_BACKOFF_SECONDS)
                 continue
             for t in trajs:
                 await out_q.put(t)
 
-    await asyncio.gather(*(_worker(g) for g in groups))
+    await asyncio.gather(*(_worker(s) for s in samplers))
 
 
 # ── Setup ──────────────────────────────────────────────────────────────────
 
 
-def setup_train_groups(
+def setup_train_samplers(
     config: OrchestratorConfig,
     *,
     client: vf.ClientConfig,
     policy: Policy,
-) -> tuple[list[Group], list[GRPOGroup]]:
-    """Build one GRPOGroup per train env. Returns `(dispatch_groups,
-    train_groups)`. `start()` hasn't been called yet — env load + worker
+) -> tuple[list[EnvSampler], list[GRPOEnvSampler]]:
+    """Build one GRPOEnvSampler per train env. Returns `(dispatch_samplers,
+    train_samplers)`. `start()` hasn't been called yet — env load + worker
     spawn happens there."""
     rate_limiter = AsyncLimiter(max_rate=config.tasks_per_minute, time_period=60) if config.tasks_per_minute else None
-    train_groups = [
-        GRPOGroup(config, env_config, client=client, policy=policy, rate_limiter=rate_limiter)
+    train_samplers = [
+        GRPOEnvSampler(config, env_config, client=client, policy=policy, rate_limiter=rate_limiter)
         for env_config in config.train.env
     ]
 
     ratios = [env_config.ratio for env_config in config.train.env]
-    if all(r is not None for r in ratios) and len(train_groups) > 1:
+    if all(r is not None for r in ratios) and len(train_samplers) > 1:
         named = ", ".join(f"{e.resolved_name}={e.ratio:.2f}" for e in config.train.env)
         get_logger().info(f"Sampling train envs by ratio ({named})")
-        return [WeightedGroup(groups=list(train_groups), weights=list(ratios), seed=config.seed)], train_groups
-    get_logger().info(f"Sampling train envs round-robin ({len(train_groups)} env(s))")
-    return list(train_groups), train_groups
+        return [
+            WeightedEnvSampler(samplers=list(train_samplers), weights=list(ratios), seed=config.seed)
+        ], train_samplers
+    get_logger().info(f"Sampling train envs round-robin ({len(train_samplers)} env(s))")
+    return list(train_samplers), train_samplers
 
 
-def setup_eval_group(
+def setup_eval_sampler(
     config: OrchestratorConfig,
     *,
     client: vf.ClientConfig,
     policy: Policy,
     resume_step: int | None,
-) -> EvalGroup | None:
+) -> EvalEnvSampler | None:
     if config.eval is None or not config.eval.env:
         return None
-    return EvalGroup(config, client=client, policy=policy, resume_step=resume_step)
+    return EvalEnvSampler(config, client=client, policy=policy, resume_step=resume_step)
 
 
-def make_groups_queue(config: OrchestratorConfig, num_groups: int) -> tuple[asyncio.Queue[Trajectory], int]:
+def make_samplers_queue(config: OrchestratorConfig, num_samplers: int) -> tuple[asyncio.Queue[Trajectory], int]:
     assert config.max_inflight_rollouts is not None
     concurrency = max(1, config.max_inflight_rollouts // config.rollouts_per_example)
-    get_logger().info(f"run_groups concurrency: {concurrency} across {num_groups} group(s)")
+    get_logger().info(f"run_samplers concurrency: {concurrency} across {num_samplers} sampler(s)")
     queue: asyncio.Queue[Trajectory] = asyncio.Queue(maxsize=concurrency * (config.max_async_level + 1))
     return queue, concurrency

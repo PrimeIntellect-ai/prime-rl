@@ -13,8 +13,8 @@ from prime_rl.configs.orchestrator import (
     TokensBatching,
 )
 from prime_rl.orchestrator.ckpt import CkptManager, OrchState
+from prime_rl.orchestrator.env_sampler import EvalEnvSampler, GRPOEnvSampler, Policy, Trajectory
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters, setup_filters
-from prime_rl.orchestrator.group import EvalGroup, GRPOGroup, Policy, Trajectory
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.trajectories import interleave_rollout, pretokenize_rollout_trajectory
 from prime_rl.orchestrator.vf_utils import get_completion_len
@@ -309,8 +309,8 @@ class TrainBatcher:
         tokenizer: Any,
         sender: TrainingBatchSender,
         policy: Policy,
-        eval_group: EvalGroup | None = None,
-        train_groups: list[GRPOGroup] | None = None,
+        eval_sampler: EvalEnvSampler | None = None,
+        train_samplers: list[GRPOEnvSampler] | None = None,
         ckpt_manager: CkptManager | None = None,
         inference_metrics: InferenceMetricsCollector | None = None,
     ):
@@ -321,8 +321,8 @@ class TrainBatcher:
         self.filters: list[RolloutFilter] = setup_filters(config.filters, vocab_size=tokenizer.vocab_size)
         self.post = PostProcessor(tokenizer, sender, policy)
         self.heartbeat = Heartbeat(config.heartbeat.url) if config.heartbeat else None
-        self.eval_group = eval_group
-        self.train_groups = train_groups or []
+        self.eval_sampler = eval_sampler
+        self.train_samplers = train_samplers or []
         self.ckpt_manager = ckpt_manager
         self.inference_metrics = inference_metrics
         self.step = 0
@@ -332,7 +332,7 @@ class TrainBatcher:
     async def _wait_barrier(self) -> None:
         # Don't ship more than max_async_level of the latest policy version.
         # Stalling here cascades backpressure through the queue into the
-        # run_groups semaphore.
+        # run_samplers semaphore.
         target = self.config.max_async_level
         strict = self.config.strict_async_level
         t0 = time.perf_counter()
@@ -359,13 +359,13 @@ class TrainBatcher:
             r[_POLICY_VERSION_KEY] = traj.policy_version
 
     def _handle_eval(self, traj: Trajectory) -> None:
-        if traj.eval_step is None or self.eval_group is None:
+        if traj.eval_step is None or self.eval_sampler is None:
             return
         if self.filters and traj.rollouts:
             apply_filters(self.filters, traj.rollouts)
         buf = self._eval_buf[traj.eval_step]
         buf.append(traj)
-        expected = self.eval_group.expected_eval_count(traj.eval_step)
+        expected = self.eval_sampler.expected_eval_count(traj.eval_step)
         if expected is None or len(buf) < expected:
             return
         self._flush_eval(traj.eval_step, self._eval_buf.pop(traj.eval_step))
@@ -383,7 +383,7 @@ class TrainBatcher:
         metrics.update(_rollout_metrics("eval", all_rollouts))
         metrics.update(_eval_metrics("eval", trajs))
         if "eval/reward/mean" not in metrics:
-            self.logger.warning(f"Eval @ step {step}: all {len(trajs)} groups timed out, skipping log")
+            self.logger.warning(f"Eval @ step {step}: all {len(trajs)} samplers timed out, skipping log")
             return
         n_timed_out = sum(1 for t in trajs if not t.rollouts)
         if n_timed_out:
@@ -410,9 +410,9 @@ class TrainBatcher:
             return
         if self.config.max_steps is not None and self.step >= self.config.max_steps:
             return
-        last_eval = self.eval_group.last_eval_step if self.eval_group is not None else 0
-        group_states = {g.name: g.state_dict() for g in self.train_groups}
-        state = OrchState(step=self.step, last_eval_step=last_eval, group_states=group_states)
+        last_eval = self.eval_sampler.last_eval_step if self.eval_sampler is not None else 0
+        sampler_states = {g.name: g.state_dict() for g in self.train_samplers}
+        state = OrchState(step=self.step, last_eval_step=last_eval, sampler_states=sampler_states)
         await asyncio.to_thread(self.ckpt_manager.save, state, self.step)
 
     async def run(self) -> None:
@@ -429,11 +429,11 @@ class TrainBatcher:
                 await self._wait_barrier()
                 trainable, filtered = self.strategy.pop()
                 await self.post.process(trainable, filtered, self.step)
-                group_metrics: dict = {}
-                for g in self.train_groups:
-                    group_metrics.update(g.metrics())
-                if group_metrics:
-                    get_monitor().log(group_metrics, step=self.step)
+                sampler_metrics: dict = {}
+                for g in self.train_samplers:
+                    sampler_metrics.update(g.metrics())
+                if sampler_metrics:
+                    get_monitor().log(sampler_metrics, step=self.step)
                 if self.inference_metrics is not None:
                     inf_metrics = await self.inference_metrics.collect()
                     if inf_metrics:
@@ -452,8 +452,8 @@ def setup_batcher(
     in_q: asyncio.Queue[Trajectory],
     tokenizer: Any,
     policy: Policy,
-    eval_group: EvalGroup | None = None,
-    train_groups: list[GRPOGroup] | None = None,
+    eval_sampler: EvalEnvSampler | None = None,
+    train_samplers: list[GRPOEnvSampler] | None = None,
     ckpt_manager: CkptManager | None = None,
     inference_metrics: InferenceMetricsCollector | None = None,
 ) -> TrainBatcher:
@@ -465,8 +465,8 @@ def setup_batcher(
         tokenizer=tokenizer,
         sender=sender,
         policy=policy,
-        eval_group=eval_group,
-        train_groups=train_groups,
+        eval_sampler=eval_sampler,
+        train_samplers=train_samplers,
         ckpt_manager=ckpt_manager,
         inference_metrics=inference_metrics,
     )

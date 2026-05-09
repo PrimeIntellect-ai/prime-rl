@@ -18,13 +18,13 @@ class OrchState:
     don't persist them. Round-robin worker order resets on resume — minor
     reordering, no correctness loss.
 
-    `group_states` is keyed by Group `name` (e.g. env-id for GRPOGroups);
-    each Group serializes whatever data-side state it owns (difficulty
+    `sampler_states` is keyed by EnvSampler `name` (e.g. env-id for GRPOGroups);
+    each EnvSampler serializes whatever data-side state it owns (difficulty
     pools, dataset cursors, …)."""
 
     step: int = 0
     last_eval_step: int = 0
-    group_states: dict[str, dict[str, Any]] = field(default_factory=dict)
+    sampler_states: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class CkptManager:

@@ -9,7 +9,7 @@ import verifiers as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import CkptManager
-from prime_rl.orchestrator.group import EvalGroup, GRPOGroup, Policy
+from prime_rl.orchestrator.env_sampler import EvalEnvSampler, GRPOEnvSampler, Policy
 from prime_rl.orchestrator.inference_admin import InferenceAdmin
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.utils.logger import get_logger
@@ -70,8 +70,8 @@ async def maybe_resume(
     ckpt_manager: CkptManager | None,
     *,
     policy: Policy,
-    train_groups: list[GRPOGroup],
-    eval_group: EvalGroup | None,
+    train_samplers: list[GRPOEnvSampler],
+    eval_sampler: EvalEnvSampler | None,
     batcher,
     admin: InferenceAdmin,
     watcher: WeightWatcher,
@@ -82,18 +82,18 @@ async def maybe_resume(
         return
     state = ckpt_manager.load(resume_step)
     batcher.step = state.step
-    if eval_group is not None:
-        eval_group.last_eval_step = state.last_eval_step
+    if eval_sampler is not None:
+        eval_sampler.last_eval_step = state.last_eval_step
     if not (config.ckpt and config.ckpt.skip_buffer):
-        for g in train_groups:
-            g.load_state_dict(state.group_states.get(g.name, {}))
-    if config.eval and config.eval.skip_eval_on_resume and eval_group is not None:
-        eval_group.last_eval_step = state.step
+        for g in train_samplers:
+            g.load_state_dict(state.sampler_states.get(g.name, {}))
+    if config.eval and config.eval.skip_eval_on_resume and eval_sampler is not None:
+        eval_sampler.last_eval_step = state.step
         get_logger().info(f"Skipping next eval on resume (last_eval_step={state.step})")
     await admin.on_new_version(state.step)
     policy.version = state.step
     if watcher.lora_name and policy.model_name != watcher.lora_name:
         policy.model_name = watcher.lora_name
     watcher.current_step = state.step
-    last_eval = eval_group.last_eval_step if eval_group is not None else 0
+    last_eval = eval_sampler.last_eval_step if eval_sampler is not None else 0
     get_logger().success(f"Resumed orch from step {state.step} (eval cursor at {last_eval})")
