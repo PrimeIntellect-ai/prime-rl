@@ -13,6 +13,8 @@ import torch.distributed as dist
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
 from prime_rl.configs.es import ESConfig
+from prime_rl.orchestrator.envs import EvalEnv, EvalEnvs
+from prime_rl.orchestrator.vf_utils import get_model_completion_len
 from prime_rl.trainer.es.candidates import estimate_gradient, make_candidates, noise_like
 from prime_rl.trainer.es.ckpt import latest_es_step, load_es_state, maybe_clean_es_checkpoints, save_es_state
 from prime_rl.trainer.es.lora_materialize import build_adapter_template, write_adapter_from_theta
@@ -126,6 +128,114 @@ def candidate_payload(candidates) -> list[dict]:
     return [{"idx": candidate.idx, "seed": candidate.seed, "sign": candidate.sign} for candidate in candidates]
 
 
+def eval_slot_payload(slot: dict) -> list[dict]:
+    return [
+        {
+            "lora_name": slot["lora_name"],
+            "lora_int_id": slot["lora_int_id"],
+            "candidate_idx": -1,
+            "seed": 0,
+            "sign": 1,
+        }
+    ]
+
+
+def make_client_getter(clients):
+    cursor = 0
+
+    async def get_client():
+        nonlocal cursor
+        client = clients[cursor % len(clients)]
+        cursor += 1
+        return client
+
+    return get_client
+
+
+def eval_metric_payload(outputs, env: EvalEnv, step: int, eval_s: float, baseline: bool, model_name: str) -> dict:
+    total_rollouts = len(env.examples) * env.config.rollouts_per_example
+    failed_rollouts = max(0, total_rollouts - len(outputs))
+    rewards = [float(output.get("reward") or 0.0) for output in outputs]
+    completion_lens = [get_model_completion_len(output) for output in outputs]
+    generated_tokens = sum(completion_lens)
+    return {
+        "phase": "eval",
+        "step": step,
+        "env": env.name,
+        "baseline": baseline,
+        "model_name": model_name,
+        "num_examples": len(env.examples),
+        "rollouts_per_example": env.config.rollouts_per_example,
+        "valid_rollouts": len(outputs),
+        "failed_rollouts": failed_rollouts,
+        "reward_mean": float(sum(rewards) / len(rewards)) if rewards else 0.0,
+        "reward_min": float(min(rewards)) if rewards else 0.0,
+        "reward_max": float(max(rewards)) if rewards else 0.0,
+        "generated_tokens": int(generated_tokens),
+        "tokens_per_second": float(generated_tokens / eval_s) if eval_s > 0 else 0.0,
+        "eval_s": eval_s,
+    }
+
+
+async def evaluate_mean_policy(
+    *,
+    eval_envs,
+    clients,
+    admin_clients,
+    metrics_path: Path,
+    monitor,
+    logger,
+    config: ESConfig,
+    template,
+    theta: torch.Tensor,
+    use_lora_slots: bool,
+    slots: list[dict],
+    step: int,
+    baseline: bool,
+) -> None:
+    eval_adapter_name = "es_eval_mean"
+    eval_adapter_dir = config.output_dir / "adapters" / "eval_mean"
+    eval_adapter_s = 0.0
+
+    if use_lora_slots:
+        eval_adapter_name = slots[0]["lora_name"]
+        t0 = time.perf_counter()
+        await materialize_lora_slots(admin_clients, eval_slot_payload(slots[0]), 0.0)
+        eval_adapter_s = time.perf_counter() - t0
+    else:
+        if eval_adapter_dir.exists():
+            shutil.rmtree(eval_adapter_dir)
+        t0 = time.perf_counter()
+        write_adapter_from_theta(eval_adapter_dir, template, theta)
+        await load_candidate_adapters(admin_clients, {-1: eval_adapter_dir}, {-1: eval_adapter_name})
+        eval_adapter_s = time.perf_counter() - t0
+
+    try:
+        for env in eval_envs:
+            t0 = time.perf_counter()
+            outputs = await env.evaluate(
+                model_name=eval_adapter_name,
+                get_client=make_client_getter(clients),
+                ckpt_step=step,
+                step=step,
+                cache_salt=f"es-eval-{step}-{env.name}",
+            )
+            eval_s = time.perf_counter() - t0
+            payload = eval_metric_payload(outputs, env, step, eval_s, baseline, eval_adapter_name)
+            payload["eval_adapter_s"] = eval_adapter_s
+            append_jsonl(metrics_path, payload)
+            monitor.log(payload, step=step)
+            logger.success(
+                f"Eval step {step} | {env.name} | reward={payload['reward_mean']:.4f} "
+                f"| tok/s={payload['tokens_per_second']:.0f} | eval={eval_s:.2f}s "
+                f"| adapter={eval_adapter_s:.2f}s"
+            )
+    finally:
+        if not use_lora_slots:
+            await unload_candidate_adapters(admin_clients, {-1: eval_adapter_name})
+            shutil.rmtree(eval_adapter_dir, ignore_errors=True)
+
+
 async def train_async(config: ESConfig) -> None:
     world = get_world()
     logger = setup_logger(config.log.level, json_logging=config.log.json_logging)
@@ -177,6 +287,13 @@ async def train_async(config: ESConfig) -> None:
     progress = progress_box[0]
 
     envs = await start_train_envs(config)
+    eval_envs = EvalEnvs(config.eval.env) if config.eval is not None else None
+    if eval_envs is not None:
+        await eval_envs.start(
+            log_dir=config.output_dir / "logs" / "eval_envs",
+            log_level=config.log.level,
+            json_logging=config.log.json_logging,
+        )
     clients = build_clients(config)
     admin_clients = build_admin_clients(config) if world.is_master else []
 
@@ -197,6 +314,31 @@ async def train_async(config: ESConfig) -> None:
         theta_init_path.unlink(missing_ok=True)
 
     try:
+        if (
+            world.is_master
+            and eval_envs is not None
+            and config.eval is not None
+            and config.eval.eval_base_model
+            and progress.step == 0
+        ):
+            assert template is not None and theta is not None
+            await evaluate_mean_policy(
+                eval_envs=eval_envs,
+                clients=clients,
+                admin_clients=admin_clients,
+                metrics_path=metrics_path,
+                monitor=monitor,
+                logger=logger,
+                config=config,
+                template=template,
+                theta=theta,
+                use_lora_slots=use_lora_slots,
+                slots=slots,
+                step=0,
+                baseline=True,
+            )
+        dist.barrier()
+
         while config.max_steps is None or progress.step < config.max_steps:
             step = progress.step + 1
             if gc_handler is not None:
@@ -372,6 +514,25 @@ async def train_async(config: ESConfig) -> None:
                     f"| update={update_s:.2f}s"
                 )
 
+                if eval_envs is not None:
+                    eval_due = [env for env in eval_envs if step % env.config.interval == 0]
+                    if eval_due:
+                        await evaluate_mean_policy(
+                            eval_envs=eval_due,
+                            clients=clients,
+                            admin_clients=admin_clients,
+                            metrics_path=metrics_path,
+                            monitor=monitor,
+                            logger=logger,
+                            config=config,
+                            template=template,
+                            theta=theta,
+                            use_lora_slots=use_lora_slots,
+                            slots=slots,
+                            step=step,
+                            baseline=False,
+                        )
+
                 should_ckpt = config.ckpt is not None and (
                     config.ckpt.interval is None or step % config.ckpt.interval == 0 or step == config.max_steps
                 )
@@ -392,6 +553,8 @@ async def train_async(config: ESConfig) -> None:
         if admin_clients:
             await close_admin_clients(admin_clients)
         shutdown_train_envs(envs)
+        if eval_envs is not None:
+            eval_envs.shutdown()
         if world.is_master and candidate_root.exists() and not config.algorithm.keep_candidate_adapters:
             shutil.rmtree(candidate_root, ignore_errors=True)
         if dist.is_initialized():

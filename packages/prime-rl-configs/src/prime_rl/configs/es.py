@@ -3,7 +3,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from prime_rl.configs.orchestrator import TrainEnvConfig, TrainSamplingConfig
+from prime_rl.configs.orchestrator import EvalConfig, TrainEnvConfig, TrainSamplingConfig
 from prime_rl.configs.shared import ClientConfig, HeartbeatConfig, SlurmConfig, TrainerLogConfig, WandbConfig
 from prime_rl.configs.trainer import GCConfig, LoRAConfig, ModelConfig, TokenizerConfig
 from prime_rl.utils.config import BaseConfig
@@ -184,6 +184,8 @@ class ESConfig(BaseConfig):
     client: ClientConfig = ClientConfig()
 
     train: ESTrainConfig = ESTrainConfig()
+
+    eval: EvalConfig | None = None
 
     algorithm: ESAlgorithmConfig = ESAlgorithmConfig()
 

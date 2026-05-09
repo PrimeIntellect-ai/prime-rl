@@ -33,7 +33,7 @@ lr = 0.01
 reward_normalization = "zscore"
 
 [train]
-examples_per_env = 16
+examples_per_env = 8
 rollouts_per_example = 1
 max_concurrent_rollouts_per_rank = 512
 
@@ -45,6 +45,23 @@ logprobs = false
 [[train.env]]
 id = "math-env"
 name = "gsm8k"
+num_workers = 1
+args = { dataset_name = "openai/gsm8k", dataset_subset = "main", math_verify_max_workers = 128, math_verify_timeout = 60 }
+
+[eval]
+interval = 5
+num_examples = 128
+rollouts_per_example = 1
+eval_base_model = true
+
+[eval.sampling]
+temperature = 0.0
+max_completion_tokens = 2048
+extra_body = { top_k = -1 }
+
+[[eval.env]]
+id = "math-env"
+name = "gsm8k_eval"
 num_workers = 1
 args = { dataset_name = "openai/gsm8k", dataset_subset = "main", math_verify_max_workers = 128, math_verify_timeout = 60 }
 
