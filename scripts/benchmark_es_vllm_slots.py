@@ -8,6 +8,7 @@ from pathlib import Path
 
 import httpx
 import torch
+import torch.distributed as dist
 from datasets import load_dataset
 
 from prime_rl.configs.es import ESConfig
@@ -46,6 +47,10 @@ async def wait_ready(client: httpx.AsyncClient, timeout_s: float) -> None:
 
 
 async def init_slots(client: httpx.AsyncClient, config: ESConfig, slots: list[dict], work_dir: Path) -> None:
+    if not dist.is_initialized():
+        init_path = work_dir / "bench_dist_init"
+        init_path.unlink(missing_ok=True)
+        dist.init_process_group("gloo", init_method=f"file://{init_path}", rank=0, world_size=1)
     template = build_adapter_template(work_dir, config.model, device=torch.device("cpu"))
     theta_path = work_dir / "bench_theta_init.pt"
     torch.save({"theta": template.theta.detach().cpu()}, theta_path)
