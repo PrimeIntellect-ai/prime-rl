@@ -139,17 +139,18 @@ def _unpack_grouped_rows_kernel(
     actual_m = tl.load(actual_ms_ptr + pid_g)
     row_offsets = (pid_blk - block_start) * GROUP_BLOCK_M + pid_sub * BLOCK_M + tl.arange(0, BLOCK_M)
     col_offsets = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    src_rows_i64 = (pid_blk * GROUP_BLOCK_M + pid_sub * BLOCK_M + tl.arange(0, BLOCK_M)).to(tl.int64)
+    dst_rows_i64 = (dst_start + row_offsets).to(tl.int64)
+    col_offsets_i64 = col_offsets.to(tl.int64)
     valid_rows = row_offsets < actual_m
     valid_cols = col_offsets < cols
     x = tl.load(
-        x_ptr
-        + (pid_blk * GROUP_BLOCK_M + pid_sub * BLOCK_M + tl.arange(0, BLOCK_M))[:, None] * stride_xm
-        + col_offsets[None, :] * stride_xn,
+        x_ptr + src_rows_i64[:, None] * stride_xm + col_offsets_i64[None, :] * stride_xn,
         mask=valid_rows[:, None] & valid_cols[None, :],
         other=0.0,
     )
     tl.store(
-        out_ptr + (dst_start + row_offsets)[:, None] * stride_ym + col_offsets[None, :] * stride_yn,
+        out_ptr + dst_rows_i64[:, None] * stride_ym + col_offsets_i64[None, :] * stride_yn,
         x,
         mask=valid_rows[:, None] & valid_cols[None, :],
     )
@@ -176,9 +177,11 @@ def _per_token_fp8_kernel(
     pid_k = tl.program_id(axis=1)
     row_offsets = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
     col_offsets = pid_k * BLOCK_K + tl.arange(0, BLOCK_K)
+    row_offsets_i64 = row_offsets.to(tl.int64)
+    col_offsets_i64 = col_offsets.to(tl.int64)
     mask = (row_offsets[:, None] < rows) & (col_offsets[None, :] < cols)
     x = tl.load(
-        x_ptr + row_offsets[:, None] * stride_xm + col_offsets[None, :] * stride_xn,
+        x_ptr + row_offsets_i64[:, None] * stride_xm + col_offsets_i64[None, :] * stride_xn,
         mask=mask,
         other=0.0,
     ).to(tl.float32)
@@ -226,12 +229,13 @@ def _grouped_per_token_fp8_kernel(
     local_block = pid_blk - block_start
     row_offsets = local_block * GROUP_BLOCK_M + pid_sub * BLOCK_M + tl.arange(0, BLOCK_M)
     col_offsets = pid_k * BLOCK_K + tl.arange(0, BLOCK_K)
+    src_rows_i64 = (src_start + row_offsets).to(tl.int64)
+    dst_rows_i64 = (pid_blk * GROUP_BLOCK_M + pid_sub * BLOCK_M + tl.arange(0, BLOCK_M)).to(tl.int64)
+    col_offsets_i64 = col_offsets.to(tl.int64)
     valid_rows = row_offsets < actual_m
     valid_cols = col_offsets < cols
-    src_rows = src_start + row_offsets
-    dst_rows = pid_blk * GROUP_BLOCK_M + pid_sub * BLOCK_M + tl.arange(0, BLOCK_M)
     x = tl.load(
-        x_ptr + src_rows[:, None] * stride_xm + col_offsets[None, :] * stride_xn,
+        x_ptr + src_rows_i64[:, None] * stride_xm + col_offsets_i64[None, :] * stride_xn,
         mask=valid_rows[:, None] & valid_cols[None, :],
         other=0.0,
     ).to(tl.float32)
@@ -241,11 +245,11 @@ def _grouped_per_token_fp8_kernel(
         scale = tl.exp2(tl.ceil(tl.log2(scale)))
     y = x / scale[:, None]
     tl.store(
-        out_ptr + dst_rows[:, None] * stride_ym + col_offsets[None, :] * stride_yn,
+        out_ptr + dst_rows_i64[:, None] * stride_ym + col_offsets_i64[None, :] * stride_yn,
         y.to(tl.float8e4nv),
         mask=valid_rows[:, None] & valid_cols[None, :],
     )
-    tl.store(sf_ptr + dst_rows * stride_sm + pid_k * stride_sk, scale, mask=valid_rows)
+    tl.store(sf_ptr + dst_rows_i64 * stride_sm + pid_k * stride_sk, scale, mask=valid_rows)
 
 
 @triton.jit
@@ -277,11 +281,13 @@ def _grouped_per_channel_fp8_sm90_kmajor_kernel(
     local_block = pid_blk - block_start
     row_offsets = local_block * BLOCK_K + tl.arange(0, BLOCK_K)
     col_offsets = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    src_rows_i64 = (src_start + row_offsets).to(tl.int64)
+    row_offsets_i64 = row_offsets.to(tl.int64)
+    col_offsets_i64 = col_offsets.to(tl.int64)
     valid_rows = row_offsets < actual_m
     valid_cols = col_offsets < cols
-    src_rows = src_start + row_offsets
     x = tl.load(
-        x_ptr + src_rows[:, None] * stride_xm + col_offsets[None, :] * stride_xn,
+        x_ptr + src_rows_i64[:, None] * stride_xm + col_offsets_i64[None, :] * stride_xn,
         mask=valid_rows[:, None] & valid_cols[None, :],
         other=0.0,
     ).to(tl.float32)
@@ -290,11 +296,11 @@ def _grouped_per_channel_fp8_sm90_kmajor_kernel(
     if USE_UE8M0:
         scale = tl.exp2(tl.ceil(tl.log2(scale)))
     y = x / scale[None, :]
-    flat_base = block_start * BLOCK_K * cols
-    out_ptrs = out_ptr + flat_base + col_offsets[:, None] * aligned_m + row_offsets[None, :]
+    flat_base = block_start.to(tl.int64) * BLOCK_K * cols
+    out_ptrs = out_ptr + flat_base + col_offsets_i64[:, None] * aligned_m + row_offsets_i64[None, :]
     tl.store(out_ptrs, tl.trans(y).to(tl.float8e4nv), mask=valid_cols[:, None] & (row_offsets[None, :] < aligned_m))
     tl.store(
-        sf_ptr + pid_blk * stride_sf0 + col_offsets * stride_sf1,
+        sf_ptr + pid_blk * stride_sf0 + col_offsets_i64 * stride_sf1,
         scale,
         mask=valid_cols,
     )
