@@ -8,9 +8,8 @@ from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import (
-    load_weights_checkpoint,
+    load_weights_checkpoint_or_layerwise,
     load_weights_kernel,
-    postprocess_weights_checkpoint,
     postprocess_weights_kernel,
 )
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
@@ -101,6 +100,7 @@ class NCCLWeightUpdateWorker(Worker):
         inference_world_size: int,
         timeout: int,
         quantize_in_weight_transfer: bool = False,
+        layerwise: bool = False,
     ) -> None:
         """Initialize the NCCL broadcast receiver.
 
@@ -109,6 +109,7 @@ class NCCLWeightUpdateWorker(Worker):
             inference_world_size: Total number of inference GPUs across all servers.
         """
         self.quantize_in_weight_transfer = quantize_in_weight_transfer
+        self.layerwise = layerwise
         # Use the worker's device index directly as the local rank.
         # The previous dp_group-based computation broke in vLLM v1 multiprocess
         # DP mode where each worker is a separate process with a singleton
@@ -134,7 +135,7 @@ class NCCLWeightUpdateWorker(Worker):
         """No-op RPC used by the API server liveness endpoint."""
         return None
 
-    def update_weights_from_path(self, weight_dir: str) -> None:
+    def update_weights_from_path(self, weight_dir: str, layerwise: bool | None = None) -> None:
         """Update weights with the nccl communicator."""
         model_runner = self.model_runner
         if hasattr(model_runner.model, "runnable"):
@@ -150,9 +151,16 @@ class NCCLWeightUpdateWorker(Worker):
         if self.quantize_in_weight_transfer:
             loader_fn = load_weights_kernel
             postprocess_fn = postprocess_weights_kernel
-        else:
-            loader_fn = load_weights_checkpoint
-            postprocess_fn = postprocess_weights_checkpoint
 
-        loader_fn(model, state_iter)
-        postprocess_fn(model, self.model_runner.model_config, device)
+            loader_fn(model, state_iter)
+            postprocess_fn(model, self.model_runner.model_config, device)
+            return
+
+        load_weights_checkpoint_or_layerwise(
+            model,
+            state_iter,
+            self.model_runner.model_config,
+            device,
+            getattr(self, "layerwise", False) if layerwise is None else layerwise,
+            getattr(self, "vllm_config", getattr(model_runner, "vllm_config", None)),
+        )

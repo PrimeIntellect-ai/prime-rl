@@ -847,6 +847,10 @@ class FileSystemWeightBroadcastConfig(BaseModel):
     """Configures the filesystem weight broadcast."""
 
     type: Literal["filesystem"] = "filesystem"
+    layerwise: Annotated[
+        bool,
+        Field(description="Use vLLM's checkpoint-format layerwise reload path for inference weight updates."),
+    ] = False
 
 
 class NCCLWeightBroadcastConfig(BaseModel):
@@ -860,6 +864,10 @@ class NCCLWeightBroadcastConfig(BaseModel):
     quantize_in_weight_transfer: Annotated[
         bool,
         Field(description="Use kernel-format FP8 quantized NCCL transfer for weight updates."),
+    ] = False
+    layerwise: Annotated[
+        bool,
+        Field(description="Use vLLM's checkpoint-format layerwise reload path for inference weight updates."),
     ] = False
 
     inference_world_size: Annotated[

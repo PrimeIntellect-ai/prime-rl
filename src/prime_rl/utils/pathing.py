@@ -150,7 +150,7 @@ def validate_output_dir(output_dir: Path, *, resuming: bool, clean: bool, ckpt_o
 
 
 def clean_future_steps(output_dir: Path, resume_step: int) -> None:
-    """Remove stale rollouts and broadcasts past ``resume_step``.
+    """Remove stale rollouts, broadcasts, and fresh-run control markers.
 
     Pass ``resume_step=-1`` to wipe every step directory (fresh runs).
     """
@@ -170,6 +170,12 @@ def clean_future_steps(output_dir: Path, resume_step: int) -> None:
         )
         for step in steps_to_delete:
             shutil.rmtree(get_step_path(directory, step))
+
+    if resume_step < 0:
+        for evicted_path in [output_dir / "control" / "evicted.txt", run_default / "control" / "evicted.txt"]:
+            if evicted_path.exists():
+                get_logger().info(f"Deleting stale eviction marker {evicted_path}")
+                evicted_path.unlink()
 
 
 def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
