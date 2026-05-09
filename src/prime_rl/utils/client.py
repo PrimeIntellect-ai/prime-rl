@@ -14,6 +14,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, stop_after_d
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.weight_broadcast import NCCL_BROADCAST_MARKER, NCCL_READY_MARKER
 
 ADMIN_BACKEND_ATTR = "prime_rl_admin_backend"
 
@@ -292,9 +293,6 @@ async def check_health(
     await asyncio.gather(*[_check_health(admin_client) for admin_client in admin_clients])
 
 
-NCCL_READY_MARKER = "NCCL_READY"
-
-
 async def _pause_engines(admin_clients: list[AsyncClient]) -> None:
     """Pause all inference engines, waiting for in-flight requests to drain."""
     logger = get_logger()
@@ -345,10 +343,22 @@ async def update_weights(
             raise ValueError("SGLang backend does not support prime-rl LoRA adapter weight updates yet.")
         await load_lora_adapter(admin_clients, lora_name, weight_dir)
     else:
+        sglang_clients = [client for client in admin_clients if get_admin_backend(client) == "sglang"]
+        vllm_clients = [client for client in admin_clients if get_admin_backend(client) == "vllm"]
+
+        sglang_uses_nccl = weight_dir is not None and (weight_dir / NCCL_BROADCAST_MARKER).exists()
 
         async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
             backend = get_admin_backend(admin_client)
             if backend == "sglang":
+                if sglang_uses_nccl:
+                    response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
+                    response.raise_for_status()
+                    result = response.json()
+                    if result.get("success") is False:
+                        raise RuntimeError(result.get("message", "SGLang NCCL weight update failed"))
+                    return
+
                 response = await admin_client.post("/update_weights_from_disk", json={"model_path": weight_dir})
                 response.raise_for_status()
                 result = response.json()
@@ -359,8 +369,6 @@ async def update_weights(
             response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
             response.raise_for_status()
 
-        vllm_clients = [client for client in admin_clients if get_admin_backend(client) == "vllm"]
-
         # Pause vLLM engines so all DP workers drain in-flight work and can join the NCCL broadcast.
         if vllm_clients:
             await _pause_engines(vllm_clients)
@@ -368,6 +376,11 @@ async def update_weights(
         try:
             # Create ready marker before servers enter receive path (used by NCCL broadcast)
             if weight_dir is not None and vllm_clients:
+                nccl_ready_file = weight_dir / NCCL_READY_MARKER
+                nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
+                nccl_ready_file.touch()
+                logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
+            if weight_dir is not None and sglang_uses_nccl:
                 nccl_ready_file = weight_dir / NCCL_READY_MARKER
                 nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
                 nccl_ready_file.touch()
@@ -477,7 +490,21 @@ async def init_nccl_broadcast(
 
     async def _init_nccl_broadcast(admin_client: AsyncClient, rank_offset: int) -> None:
         if get_admin_backend(admin_client) == "sglang":
-            raise ValueError("SGLang backend does not support NCCL weight broadcast yet.")
+            response = await admin_client.post(
+                "/init_broadcaster",
+                json={
+                    "host": host,
+                    "port": port,
+                    "rank_offset": rank_offset,
+                    "inference_world_size": inference_world_size,
+                    "timeout": timeout,
+                },
+            )
+            response.raise_for_status()
+            result = response.json()
+            if result.get("success") is False:
+                raise RuntimeError(result.get("message", "SGLang NCCL initialization failed"))
+            return
 
         try:
             response = await admin_client.post(

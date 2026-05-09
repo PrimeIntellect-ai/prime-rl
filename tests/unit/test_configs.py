@@ -199,6 +199,46 @@ def test_rl_config_auto_selects_openai_client_for_sglang():
     assert config.orchestrator.client.admin_backend == "sglang"
 
 
+def test_rl_config_selects_sglang_nccl_trainer_backend():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {"backend": "sglang"},
+            "weight_broadcast": {"type": "nccl"},
+        }
+    )
+
+    assert config.trainer.weight_broadcast.type == "nccl"
+    assert config.trainer.weight_broadcast.target_backend == "sglang"
+    assert config.orchestrator.client.admin_backend == "sglang"
+
+
+def test_rl_config_rejects_sglang_nccl_dp():
+    with pytest.raises(ValidationError, match="requires inference.parallel.dp = 1"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {},
+                "deployment": {"type": "single_node", "num_train_gpus": 1, "num_infer_gpus": 2},
+                "inference": {"backend": "sglang", "parallel": {"tp": 1}},
+                "weight_broadcast": {"type": "nccl"},
+            }
+        )
+
+
+def test_rl_config_rejects_sglang_quantized_nccl():
+    with pytest.raises(ValidationError, match="does not support quantize_in_weight_transfer"):
+        RLConfig.model_validate(
+            {
+                "trainer": {"model": {"impl": "custom"}},
+                "orchestrator": {},
+                "inference": {"backend": "sglang"},
+                "weight_broadcast": {"type": "nccl", "quantize_in_weight_transfer": True},
+            }
+        )
+
+
 def test_rl_config_rejects_sglang_with_explicit_token_client():
     with pytest.raises(ValidationError, match="does not support orchestrator.use_token_client"):
         RLConfig.model_validate(

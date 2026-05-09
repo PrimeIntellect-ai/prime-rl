@@ -23,7 +23,9 @@ uv lock
 uv lock --project packages/prime-rl-sglang
 ```
 
-Use `inference.backend = "sglang"` for single-node filesystem-broadcast runs. NCCL broadcast and multi-node SGLang deployment are not wired yet.
+Use `inference.backend = "sglang"` for single-node filesystem-broadcast runs or single-node NCCL broadcast runs. Multi-node SGLang deployment is not wired yet.
+
+SGLang NCCL broadcast uses custom `prime_rl_sglang` routes (`/init_broadcaster` and `/update_weights`) and a byte-based PyNccl bootstrap so the isolated SGLang runtime does not need to import vLLM. The SGLang launcher passes the root environment's `libnccl.so.2` via `SGLANG_NCCL_SO_PATH` and applies the same `NCCL_P2P_DISABLE` / `NCCL_SHM_DISABLE` fallback as the trainer when NVLink is unavailable. Keep these envs aligned when debugging manual launches.
 
 The launcher also sets `FLASHINFER_WORKSPACE_BASE=packages/prime-rl-sglang` so FlashInfer JIT artifacts are tied to the SGLang project env. This avoids stale JIT cache entries that can contain include paths from uv temp environments.
 

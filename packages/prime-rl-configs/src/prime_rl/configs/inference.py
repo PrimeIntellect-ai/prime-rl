@@ -470,8 +470,6 @@ class InferenceConfig(BaseConfig):
 
         if self.deployment.type != "single_node":
             raise ValueError("inference.backend='sglang' currently supports only single_node deployment.")
-        if self.weight_broadcast.type != "filesystem":
-            raise ValueError("inference.backend='sglang' currently supports only filesystem weight broadcast.")
         if self.kv_cache_offload is not None:
             raise ValueError("inference.backend='sglang' does not support prime-rl kv_cache_offload plumbing yet.")
         if self.enable_return_routed_experts:

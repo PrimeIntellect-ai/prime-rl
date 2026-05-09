@@ -9,11 +9,13 @@ from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.client import (
     _is_retryable_lora_error,
     get_admin_backend,
+    init_nccl_broadcast,
     load_lora_adapter,
     setup_admin_clients,
     setup_clients,
     update_weights,
 )
+from prime_rl.utils.weight_broadcast import NCCL_BROADCAST_MARKER, NCCL_READY_MARKER
 
 
 def test_is_retryable_lora_error_returns_true_for_404():
@@ -88,6 +90,47 @@ def test_update_weights_uses_sglang_reload_endpoint(tmp_path):
 
     assert [request.url.path for request in requests] == ["/update_weights_from_disk"]
     assert requests[0].content == b'{"model_path":"' + (tmp_path / "step_1").as_posix().encode() + b'"}'
+
+
+def test_update_weights_uses_sglang_nccl_endpoint_when_marker_exists(tmp_path):
+    requests: list[httpx.Request] = []
+    (tmp_path / NCCL_BROADCAST_MARKER).touch()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/update_weights":
+            return httpx.Response(200, json={"success": True, "message": "ok"})
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(base_url="http://worker-a:8000", transport=httpx.MockTransport(handler))
+    setattr(client, "prime_rl_admin_backend", "sglang")
+
+    asyncio.run(update_weights([client], tmp_path, step=7))
+    asyncio.run(client.aclose())
+
+    assert (tmp_path / NCCL_READY_MARKER).exists()
+    assert [request.url.path for request in requests] == ["/update_weights"]
+    assert requests[0].content == b'{"weight_dir":"' + tmp_path.as_posix().encode() + b'"}'
+
+
+def test_init_nccl_broadcast_uses_sglang_broadcaster_endpoint():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/init_broadcaster":
+            return httpx.Response(200, json={"success": True, "message": "ok"})
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(base_url="http://worker-a:8000", transport=httpx.MockTransport(handler))
+    setattr(client, "prime_rl_admin_backend", "sglang")
+
+    asyncio.run(init_nccl_broadcast([client], "localhost", 29501, 120, inference_world_size=2))
+    asyncio.run(client.aclose())
+
+    assert [request.url.path for request in requests] == ["/init_broadcaster"]
+    payload = requests[0].content
+    assert payload == (b'{"host":"localhost","port":29501,"rank_offset":0,"inference_world_size":2,"timeout":120}')
 
 
 def test_setup_clients_assigns_renderer_and_dp_rank_headers():

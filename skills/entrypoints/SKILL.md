@@ -39,7 +39,7 @@ The entrypoint launches torchrun internally — no need to call torchrun directl
 
 ## `inference` — Standalone inference server
 
-Launches a vLLM-based inference server with OpenAI-compatible API.
+Launches an OpenAI-compatible inference server. vLLM is the default backend; SGLang is available with `--backend sglang` or `inference.backend = "sglang"`.
 
 ```bash
 uv run inference @ configs/debug/infer.toml
@@ -48,11 +48,16 @@ uv run inference --model.name Qwen/Qwen3-0.6B --model.enforce-eager
 
 Always use the `inference` entrypoint — never `vllm serve` directly.
 
-Custom endpoints beyond standard OpenAI API:
+vLLM custom endpoints beyond standard OpenAI API:
 - `/v1/chat/completions/tokens` — accepts token IDs as prompt input
 - `/update_weights` — hot-reload model weights from the trainer
 - `/load_lora_adapter` — load LoRA adapters at runtime
 - `/init_broadcaster` — initialize weight broadcast for distributed training
+
+SGLang custom endpoints used by prime-rl:
+- `/update_weights_from_disk` — filesystem weight reload
+- `/init_broadcaster` — initialize SGLang NCCL receiver
+- `/update_weights` — receive an NCCL weight broadcast
 
 Check health with:
 ```bash

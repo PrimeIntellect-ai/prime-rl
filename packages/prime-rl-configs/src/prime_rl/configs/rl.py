@@ -687,10 +687,13 @@ class RLConfig(BaseConfig):
         if self.inference is None or self.inference.backend != "sglang":
             return self
 
-        if self.weight_broadcast is not None and self.weight_broadcast.type != "filesystem":
-            raise ValueError("inference.backend='sglang' currently supports only filesystem weight broadcast.")
-
         self.orchestrator.client.admin_backend = "sglang"
+        if self.trainer.weight_broadcast.type == "nccl":
+            self.trainer.weight_broadcast.target_backend = "sglang"
+            if self.trainer.weight_broadcast.quantize_in_weight_transfer:
+                raise ValueError(
+                    "inference.backend='sglang' does not support quantize_in_weight_transfer for NCCL yet."
+                )
 
         if self.orchestrator.use_renderer:
             raise ValueError(
@@ -914,6 +917,19 @@ class RLConfig(BaseConfig):
                 self.trainer.weight_broadcast.inference_world_size = total_infer_workers
                 assert self.orchestrator.weight_broadcast.type == "nccl"
                 self.orchestrator.weight_broadcast.inference_world_size = total_infer_workers
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_sglang_nccl_deployment(self):
+        if self.inference is None or self.inference.backend != "sglang" or self.trainer.weight_broadcast.type != "nccl":
+            return self
+
+        if self.inference.parallel.dp != 1:
+            raise ValueError(
+                "inference.backend='sglang' with NCCL currently requires inference.parallel.dp = 1. "
+                "Use tensor parallelism for multi-GPU SGLang NCCL updates."
+            )
 
         return self
 
