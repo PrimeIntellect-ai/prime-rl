@@ -13,6 +13,7 @@ from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.batcher import Done, setup_batcher
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.group import (
+    Group,
     Policy,
     make_groups_queue,
     run_groups,
@@ -33,6 +34,34 @@ from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
+
+
+async def _start_groups(groups: list[Group]) -> None:
+    """Start groups serially. On failure, tear down whatever already started
+    so we don't strand subprocess workers."""
+    logger = get_logger()
+    started: list[Group] = []
+    try:
+        for g in groups:
+            logger.info(f"Starting group {g.name!r}")
+            await g.start()
+            started.append(g)
+    except BaseException:
+        for g in reversed(started):
+            try:
+                await g.stop()
+            except Exception as exc:
+                logger.warning(f"[{g.name}] stop() during startup-rollback failed: {exc}")
+        raise
+
+
+async def _stop_groups(groups: list[Group]) -> None:
+    logger = get_logger()
+    for g in reversed(groups):
+        try:
+            await g.stop()
+        except Exception as exc:
+            logger.warning(f"[{g.name}] stop() failed: {exc}")
 
 
 async def run(cfg: OrchestratorConfig) -> None:
@@ -60,10 +89,10 @@ async def run(cfg: OrchestratorConfig) -> None:
     policy = Policy(version=0, model_name=cfg.model.name)
     client = make_client(cfg)
 
-    # Build Groups: one (or one weighted-wrapper) for train, plus eval.
+    # Build Groups (no env loaded / no worker spawned yet — that happens in start()).
     dispatch_groups, train_groups = setup_train_groups(cfg, client=client, policy=policy)
     eval_group = setup_eval_group(cfg, client=client, policy=policy, resume_step=resume_step)
-    groups = list(dispatch_groups) + ([eval_group] if eval_group is not None else [])
+    groups: list[Group] = list(dispatch_groups) + ([eval_group] if eval_group is not None else [])
 
     out_q, concurrency = make_groups_queue(cfg, num_groups=len(groups))
 
@@ -93,8 +122,10 @@ async def run(cfg: OrchestratorConfig) -> None:
         watcher=watcher,
     )
 
-    logger.success("Orchestrator starting — producing rollouts")
+    # Spawn env workers + materialize datasets.
+    await _start_groups(groups)
     try:
+        logger.success("Orchestrator starting — producing rollouts")
         async with asyncio.TaskGroup() as tg:
             tg.create_task(run_groups(groups, out_q, concurrency))
             tg.create_task(batcher.run())
@@ -102,6 +133,8 @@ async def run(cfg: OrchestratorConfig) -> None:
             tg.create_task(admin.watch_health())
     except* Done:
         logger.success(f"Orchestrator finished: reached max_steps={cfg.max_steps}")
+    finally:
+        await _stop_groups(groups)
 
 
 def main() -> None:

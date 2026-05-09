@@ -1,10 +1,10 @@
 """Group: the user-facing seam.
 
 A Group owns its dataset, env, sampling, scoring, and any data-side state
-(difficulty pools, etc.) — every semantic decision. It exposes one method:
-`do_work() -> list[Trajectory]`. The orchestrator's job collapses to a
-metronome (`run_groups`) that calls Groups under a shared concurrency cap
-and ships their output to the batcher.
+(difficulty pools, etc.) — every semantic decision. It also owns the env
+**worker** lifecycle: `start()` spawns the subprocess env-server (or
+attaches to an external one) and `stop()` tears it down. The orchestrator
+calls them around `run_groups`.
 
 The shared mutable state is `Policy`: the watcher mutates `policy.version`
 and `policy.model_name`; Groups read them at dispatch time and stamp the
@@ -19,14 +19,23 @@ import json
 import random
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterator, Literal, Protocol, TypeAlias
 
 import torch
 import verifiers as vf
 from aiolimiter import AsyncLimiter
+from verifiers.serve import ZMQEnvClient
 
-from prime_rl.configs.orchestrator import AdvantageConfig, BufferConfig, OrchestratorConfig
+from prime_rl.configs.orchestrator import (
+    AdvantageConfig,
+    BufferConfig,
+    EvalEnvConfig,
+    OrchestratorConfig,
+    TrainEnvConfig,
+)
 from prime_rl.orchestrator.advantage import AdvantageInputs, setup_advantage_fn
+from prime_rl.orchestrator.env_workers import EnvWorker, attach_env_client, spawn_env_worker
 from prime_rl.orchestrator.vf_utils import get_completion_len
 from prime_rl.utils.logger import get_logger
 
@@ -58,12 +67,14 @@ class Trajectory:
 
 
 class Group(Protocol):
-    """The only seam. Owns dataset + env + scoring + lifecycle for its slice
-    of work. `do_work()` returns zero or more Trajectories — empty means the
-    Group has no work right now (idle backoff is the caller's job)."""
+    """The only seam. Owns dataset + env + worker lifecycle + scoring.
+    `do_work()` returns zero or more Trajectories — empty means the Group
+    has no work right now (idle backoff is the caller's job)."""
 
     name: str
 
+    async def start(self) -> None: ...
+    async def stop(self) -> None: ...
     async def do_work(self) -> list[Trajectory]: ...
 
 
@@ -73,57 +84,75 @@ class Group(Protocol):
 class GRPOGroup:
     """Train Group: one example × N parallel rollouts × group-relative GRPO.
 
-    Owns its own dataset iteration AND its own difficulty-pool state — when
-    a `BufferConfig` is passed and at least one threshold is set, completed
-    rollouts whose mean reward crosses easy_threshold / hard_threshold are
-    classified and evicted from sampling on subsequent passes.
-
-    Reads `policy.version` + `policy.model_name` at dispatch time and
-    stamps the snapshot into the emitted Trajectory.
+    Owns its own dataset iteration, its own difficulty-pool state, and its
+    own env worker subprocess. Reads `policy.version` + `policy.model_name`
+    at dispatch time and stamps the snapshot into the emitted Trajectory.
     """
 
     def __init__(
         self,
         *,
-        name: str,
-        env: vf.Environment,
-        dataset: list[dict] | Iterator[dict],
+        env_cfg: TrainEnvConfig,
+        output_dir: Path,
+        log_level: str,
         client: vf.ClientConfig,
         policy: Policy,
         rollouts_per_example: int,
-        sampling_args: dict,
         advantage_cfg: AdvantageConfig,
         rate_limiter: AsyncLimiter | None = None,
         max_rollout_time_seconds: float | None = None,
         difficulty: BufferConfig | None = None,
         seed: int | None = None,
     ):
-        self.name = name
-        self.env = env
+        self.name = env_cfg.resolved_name
+        self.env_cfg = env_cfg
+        self.output_dir = output_dir
+        self.log_level = log_level
         self.client = client
         self.policy = policy
         self.rollouts_per_example = rollouts_per_example
-        self.sampling_args = sampling_args
+        self.sampling_args = env_cfg.sampling.to_sampling_args()
         self.rate_limiter = rate_limiter
         self.max_rollout_time_seconds = max_rollout_time_seconds
         self._advantage_fn = setup_advantage_fn(advantage_cfg)
 
         self._difficulty = difficulty
         self._diff_rng = random.Random(difficulty.seed if (difficulty and difficulty.seed is not None) else seed)
-        # hash -> stored example (for resume re-derivation)
         self._evicted: dict[str, dict] = {}
-        # hash -> "easy" | "hard"
         self._pool_of: dict[str, Pool] = {}
         self._step_pool_counts: dict[Pool, int] = {p: 0 for p in _POOLS}
 
-        # Materialize dataset rows once so we can iterate forever and skip
-        # evicted examples without consuming the source iterator.
-        self._rows: list[dict] = [dict(r) for r in dataset]
-        self._cycle: Iterator[dict] = self._cycle_forever()
+        # Built in start(); None until then.
+        self.env: vf.Environment | None = None
+        self._worker: EnvWorker | None = None
+        self._env_client: ZMQEnvClient | None = None
+        self._rows: list[dict] = []
+        self._cycle: Iterator[dict] | None = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
+    async def start(self) -> None:
+        # Load env in-process so we can read its dataset, then point
+        # `env.run_rollout` at the spawned (or external) worker.
+        self.env = vf.load_environment(self.env_cfg.stripped_id, **self.env_cfg.args)
+        self._rows = [dict(r) for r in self.env.get_dataset()]
+        self._cycle = self._cycle_forever()
+
+        self._worker = spawn_env_worker(self.env_cfg, output_dir=self.output_dir, log_level=self.log_level)
+        self._env_client = await attach_env_client(self.env, self._worker.address)
+        await self._worker.wait_healthy(self._env_client)
+        get_logger().info(f"[{self.name}] env worker healthy at {self._worker.address}")
+
+    async def stop(self) -> None:
+        if self._env_client is not None:
+            await self._env_client.close()
+            self._env_client = None
+        if self._worker is not None:
+            self._worker.terminate()
+            self._worker = None
+
     async def do_work(self) -> list[Trajectory]:
+        assert self._cycle is not None, "Group.do_work() called before start()"
         try:
             example = next(self._cycle)
         except StopIteration:
@@ -160,6 +189,7 @@ class GRPOGroup:
         return [t.result() for t in done]
 
     async def _rollout(self, example: dict) -> vf.RolloutOutput:
+        assert self.env is not None
         if self.rate_limiter is not None:
             await self.rate_limiter.acquire()
         return await self.env.run_rollout(
@@ -212,8 +242,6 @@ class GRPOGroup:
         return self._difficulty.easy_threshold is not None or self._difficulty.hard_threshold is not None
 
     def _example_hash(self, example: dict) -> str:
-        """Stable hash across runs — depends only on the configured hash_keys
-        plus self.name (so the same prompt under different envs is distinct)."""
         assert self._difficulty is not None
         keys = [k for k in self._difficulty.hash_keys if k in example]
         if not keys:
@@ -253,10 +281,7 @@ class GRPOGroup:
     def state_dict(self) -> dict[str, Any]:
         if not self._difficulty_active:
             return {}
-        return {
-            "evicted": dict(self._evicted),
-            "pool_of": dict(self._pool_of),
-        }
+        return {"evicted": dict(self._evicted), "pool_of": dict(self._pool_of)}
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
         if not self._difficulty_active or not state:
@@ -269,8 +294,6 @@ class GRPOGroup:
         self._apply_resume_fractions()
 
     def _apply_resume_fractions(self) -> None:
-        """Optionally release a fraction of easy/hard examples back to normal
-        on resume — useful for periodic re-evaluation of classifications."""
         assert self._difficulty is not None
         for pool, fraction in (
             ("easy", self._difficulty.easy_fraction),
@@ -305,49 +328,94 @@ class GRPOGroup:
 
 
 @dataclass
-class _EvalEnv:
-    """One eval env's static config + rolled-out examples."""
+class _EvalEnvHandle:
+    """One eval env, plus its worker handle (built in EvalGroup.start())."""
 
+    cfg: EvalEnvConfig
     name: str
-    env: vf.Environment
-    examples: list[dict]
-    sampling_args: dict
     rollouts_per_example: int
+    sampling_args: dict
+    examples: list[dict]
+    env: vf.Environment | None = None
+    worker: EnvWorker | None = None
+    env_client: ZMQEnvClient | None = None
 
 
 class EvalGroup:
     """Eval Group: triggers an epoch every `interval` policy versions, then
     drains it one example at a time. `do_work()` returns [] when no epoch is
-    active (run_groups idle-backs off)."""
+    active (run_groups idle-backs off). Owns one env worker per eval env."""
 
     def __init__(
         self,
         *,
-        envs: list[_EvalEnv],
+        env_cfgs: list[EvalEnvConfig],
+        output_dir: Path,
+        log_level: str,
         client: vf.ClientConfig,
         policy: Policy,
         interval: int | None,
         eval_at_zero: bool = False,
     ):
         self.name = "eval"
-        self.envs = envs
+        self.output_dir = output_dir
+        self.log_level = log_level
         self.client = client
         self.policy = policy
         self.interval = interval
         self.last_eval_step = 0
+        self._eval_at_zero = eval_at_zero
+        self._envs: list[_EvalEnvHandle] = [
+            _EvalEnvHandle(
+                cfg=ec,
+                name=ec.resolved_name,
+                rollouts_per_example=ec.rollouts_per_example,
+                sampling_args=ec.sampling.to_sampling_args(),
+                examples=[],
+            )
+            for ec in env_cfgs
+        ]
         self._pending: deque[tuple[int, dict, int]] = deque()
         self._dispatching_step: int | None = None
         self._expected: dict[int, int] = {}
-        if eval_at_zero and self.envs:
+
+    # ── lifecycle ──────────────────────────────────────────────────────────
+
+    async def start(self) -> None:
+        for h in self._envs:
+            h.env = vf.load_environment(h.cfg.stripped_id, **h.cfg.args)
+            ds = h.env.get_eval_dataset() if hasattr(h.env, "get_eval_dataset") else h.env.get_dataset()
+            rows = list(ds)
+            if h.cfg.num_examples != -1:
+                rows = rows[: h.cfg.num_examples]
+            h.examples = [dict(r) for r in rows]
+
+            h.worker = spawn_env_worker(h.cfg, output_dir=self.output_dir, log_level=self.log_level)
+            h.env_client = await attach_env_client(h.env, h.worker.address)
+            await h.worker.wait_healthy(h.env_client)
+            get_logger().info(f"[eval/{h.name}] env worker healthy at {h.worker.address}")
+
+        if self._eval_at_zero and self._envs:
             self._start_epoch(0)
+
+    async def stop(self) -> None:
+        for h in self._envs:
+            if h.env_client is not None:
+                await h.env_client.close()
+                h.env_client = None
+            if h.worker is not None:
+                h.worker.terminate()
+                h.worker = None
+
+    # ── epoch + drain ──────────────────────────────────────────────────────
 
     def expected_eval_count(self, step: int) -> int | None:
         return self._expected.get(step)
 
     def _start_epoch(self, step: int) -> None:
         entries: list[tuple[int, dict, int]] = []
-        for i, ev in enumerate(self.envs):
-            for j, row in enumerate(ev.examples):
+        for i, h in enumerate(self._envs):
+            for j, row in enumerate(h.examples):
                 ex = dict(row)
                 ex["example_id"] = j
                 entries.append((i, ex, step))
@@ -356,7 +424,7 @@ class EvalGroup:
         self._expected[step] = len(entries)
 
     def _maybe_trigger(self) -> None:
-        if not self.envs or self.interval is None:
+        if not self._envs or self.interval is None:
             return
         if self.policy.version < self.last_eval_step + self.interval:
             return
@@ -373,17 +441,17 @@ class EvalGroup:
         env_idx, example, eval_step = self._pending.popleft()
         if not self._pending:
             self._dispatching_step = None
-        ev = self.envs[env_idx]
+        h = self._envs[env_idx]
         version = self.policy.version
 
         rollouts = await asyncio.gather(
-            *(self._rollout(ev, example) for _ in range(ev.rollouts_per_example)),
+            *(self._rollout(h, example) for _ in range(h.rollouts_per_example)),
             return_exceptions=False,
         )
         return [
             Trajectory(
                 example=example,
-                env_id=ev.name,
+                env_id=h.name,
                 kind="eval",
                 rollouts=list(rollouts),
                 policy_version=version,
@@ -391,20 +459,20 @@ class EvalGroup:
             )
         ]
 
-    async def _rollout(self, ev: _EvalEnv, example: dict) -> vf.RolloutOutput:
-        return await ev.env.run_rollout(
+    async def _rollout(self, h: _EvalEnvHandle, example: dict) -> vf.RolloutOutput:
+        assert h.env is not None
+        return await h.env.run_rollout(
             vf.RolloutInput(**example),
             client=self.client,
             model=self.policy.model_name,
-            sampling_args=ev.sampling_args,
+            sampling_args=h.sampling_args,
             state_columns=["trajectory", "sampling_args"],
         )
 
 
 class WeightedGroup:
     """Composes multiple Groups; each `do_work()` picks one weighted-randomly
-    and delegates. Use this to preserve env-ratio sampling when you have
-    multiple GRPOGroups."""
+    and delegates. Forwards start/stop to all sub-Groups."""
 
     def __init__(self, *, groups: list[Group], weights: list[float], seed: int | None = None):
         assert len(groups) == len(weights)
@@ -412,6 +480,18 @@ class WeightedGroup:
         self._groups = groups
         self._weights = weights
         self._rng = random.Random(seed)
+
+    async def start(self) -> None:
+        await asyncio.gather(*(g.start() for g in self._groups))
+
+    async def stop(self) -> None:
+        # Stop in reverse order; tolerate per-group failures so one bad
+        # teardown doesn't strand the others.
+        for g in reversed(self._groups):
+            try:
+                await g.stop()
+            except Exception as exc:
+                get_logger().warning(f"[{g.name}] stop() failed: {exc}")
 
     async def do_work(self) -> list[Trajectory]:
         g = self._rng.choices(self._groups, weights=self._weights, k=1)[0]
@@ -432,7 +512,8 @@ async def run_groups(
     """The metronome. One worker per Group; all share a global semaphore so
     total in-flight `do_work()` calls never exceed `max_concurrency`. Empty
     returns trigger an idle backoff so EvalGroups (which return [] between
-    epochs) don't busy-spin."""
+    epochs) don't busy-spin. Caller is responsible for `start()`/`stop()` —
+    this function only drives `do_work()`."""
     sem = asyncio.Semaphore(max_concurrency)
     logger = get_logger()
     logger.debug(f"run_groups starting with {len(groups)} group(s), concurrency={max_concurrency}")
@@ -466,33 +547,30 @@ def setup_train_groups(
     policy: Policy,
 ) -> tuple[list[Group], list[GRPOGroup]]:
     """Build one GRPOGroup per train env. Returns `(dispatch_groups,
-    train_groups)` — the first goes to `run_groups` (possibly wrapped in a
-    WeightedGroup); the second is the flat list used for ckpt-state and
-    per-step metric aggregation."""
+    train_groups)`. `start()` hasn't been called yet — env load + worker
+    spawn happens there."""
     logger = get_logger()
     rate_limiter = AsyncLimiter(max_rate=cfg.tasks_per_minute, time_period=60) if cfg.tasks_per_minute else None
     max_rollout_time = cfg.max_rollout_time_minutes * 60.0 if cfg.max_rollout_time_minutes else None
     difficulty = cfg.buffer if _difficulty_active(cfg.buffer) else None
+    log_level = cfg.log.level or "info"
 
-    train_groups: list[GRPOGroup] = []
-    for env_cfg in cfg.train.env:
-        env = vf.load_environment(env_cfg.stripped_id, **env_cfg.args)
-        train_groups.append(
-            GRPOGroup(
-                name=env_cfg.resolved_name,
-                env=env,
-                dataset=list(env.get_dataset()),
-                client=client,
-                policy=policy,
-                rollouts_per_example=cfg.rollouts_per_example,
-                sampling_args=env_cfg.sampling.to_sampling_args(),
-                advantage_cfg=cfg.advantage,
-                rate_limiter=rate_limiter,
-                max_rollout_time_seconds=max_rollout_time,
-                difficulty=difficulty,
-                seed=cfg.seed,
-            )
+    train_groups: list[GRPOGroup] = [
+        GRPOGroup(
+            env_cfg=env_cfg,
+            output_dir=cfg.output_dir,
+            log_level=log_level,
+            client=client,
+            policy=policy,
+            rollouts_per_example=cfg.rollouts_per_example,
+            advantage_cfg=cfg.advantage,
+            rate_limiter=rate_limiter,
+            max_rollout_time_seconds=max_rollout_time,
+            difficulty=difficulty,
+            seed=cfg.seed,
         )
+        for env_cfg in cfg.train.env
+    ]
 
     ratios = [env_cfg.ratio for env_cfg in cfg.train.env]
     if all(r is not None for r in ratios) and len(train_groups) > 1:
@@ -512,29 +590,13 @@ def setup_eval_group(
     policy: Policy,
     resume_step: int | None,
 ) -> EvalGroup | None:
-    """Build the eval Group from config. Returns None when eval is not
-    configured (cfg.eval is None or has no envs)."""
     if cfg.eval is None or not cfg.eval.env:
         return None
-    envs: list[_EvalEnv] = []
-    for env_cfg in cfg.eval.env:
-        env = vf.load_environment(env_cfg.stripped_id, **env_cfg.args)
-        ds = env.get_eval_dataset() if hasattr(env, "get_eval_dataset") else env.get_dataset()
-        rows = list(ds)
-        if env_cfg.num_examples != -1:
-            rows = rows[: env_cfg.num_examples]
-        envs.append(
-            _EvalEnv(
-                name=env_cfg.resolved_name,
-                env=env,
-                examples=[dict(r) for r in rows],
-                sampling_args=env_cfg.sampling.to_sampling_args(),
-                rollouts_per_example=env_cfg.rollouts_per_example,
-            )
-        )
     eval_at_zero = cfg.eval.eval_base_model and resume_step is None
     return EvalGroup(
-        envs=envs,
+        env_cfgs=list(cfg.eval.env),
+        output_dir=cfg.output_dir,
+        log_level=cfg.log.level or "info",
         client=client,
         policy=policy,
         interval=cfg.eval.interval,
@@ -543,9 +605,6 @@ def setup_eval_group(
 
 
 def make_groups_queue(cfg: OrchestratorConfig, num_groups: int) -> tuple[asyncio.Queue[Trajectory], int]:
-    """Sized so the batcher's async-level barrier cascades backpressure into
-    the run_groups semaphore. Concurrency is in `do_work()` calls (one
-    example × N rollouts per call), not raw rollouts — divide accordingly."""
     assert cfg.max_inflight_rollouts is not None
     concurrency = max(1, cfg.max_inflight_rollouts // cfg.rollouts_per_example)
     get_logger().info(f"run_groups concurrency: {concurrency} across {num_groups} group(s)")
