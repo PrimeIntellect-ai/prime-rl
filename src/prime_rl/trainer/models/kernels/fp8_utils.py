@@ -191,11 +191,11 @@ def _per_token_fp8_kernel(
         scale = tl.exp2(tl.ceil(tl.log2(scale)))
     y = x / scale[:, None]
     tl.store(
-        out_ptr + row_offsets[:, None] * stride_ym + col_offsets[None, :] * stride_yn,
+        out_ptr + row_offsets_i64[:, None] * stride_ym + col_offsets_i64[None, :] * stride_yn,
         y.to(tl.float8e4nv),
         mask=mask,
     )
-    tl.store(sf_ptr + row_offsets * stride_sm + pid_k * stride_sk, scale, mask=row_offsets < rows)
+    tl.store(sf_ptr + row_offsets_i64 * stride_sm + pid_k * stride_sk, scale, mask=row_offsets < rows)
 
 
 @triton.jit
