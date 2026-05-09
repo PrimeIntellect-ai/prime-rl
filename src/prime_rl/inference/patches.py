@@ -256,9 +256,7 @@ def _silu_mul_per_token_group_quant_fp8_colmajor_int64(
     if output is None:
         output = torch.empty((M, N_2), dtype=fp8_dtype, device=input.device)
 
-    output_scales = torch.empty(
-        ((N_2 // group_size), M), dtype=torch.float32, device=input.device
-    ).transpose(0, 1)
+    output_scales = torch.empty(((N_2 // group_size), M), dtype=torch.float32, device=input.device).transpose(0, 1)
 
     block_m = 8
     block_n = group_size
@@ -299,13 +297,9 @@ def monkey_patch_deep_gemm_silu_mul_quant_int64():
 
     logger = init_logger(__name__)
 
-    fp8_utils.silu_mul_per_token_group_quant_fp8_colmajor = (
-        _silu_mul_per_token_group_quant_fp8_colmajor_int64
-    )
+    fp8_utils.silu_mul_per_token_group_quant_fp8_colmajor = _silu_mul_per_token_group_quant_fp8_colmajor_int64
 
-    deep_gemm_moe_module = sys.modules.get(
-        "vllm.model_executor.layers.fused_moe.experts.deep_gemm_moe"
-    )
+    deep_gemm_moe_module = sys.modules.get("vllm.model_executor.layers.fused_moe.experts.deep_gemm_moe")
     if deep_gemm_moe_module is not None:
         deep_gemm_moe_module.silu_mul_per_token_group_quant_fp8_colmajor = (
             _silu_mul_per_token_group_quant_fp8_colmajor_int64
