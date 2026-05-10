@@ -179,7 +179,9 @@ srun bash -c '
     cd $PROJECT_DIR
     [ -f .env ] && source .env
     source .venv/bin/activate
-    # Do not sync to avoid conflicts with lockfile
+    # Do not sync from runtime processes; the environment was synced once above.
+    # Concurrent uv syncs mutate the shared .venv and can race console-script
+    # entrypoints while SLURM workers are starting.
 
     # Higher ulimit
     ulimit -n 65536
@@ -306,7 +308,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             >> $ROUTER_LOG 2>&1 &
     fi
 
-    uv run inference \
+    uv run --no-sync inference \
         @ $CONFIG_DIR/inference.toml \
         --server.host 0.0.0.0 \
         --server.port $PORT \
@@ -343,7 +345,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             VLLM_EXTRA="{\"data_parallel_address\": \"$REPLICA_HEAD_HOST\", \"data_parallel_start_rank\": $INFER_DP_START_RANK, \"data_parallel_hybrid_lb\": true}"
         fi
 
-        uv run inference \
+        uv run --no-sync inference \
             @ $CONFIG_DIR/inference.toml \
             --server.host 0.0.0.0 \
             --server.port $BACKEND_PORT \
@@ -351,7 +353,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             --vllm-extra "$VLLM_EXTRA" \
             2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
     else
-        uv run inference \
+        uv run --no-sync inference \
             @ $CONFIG_DIR/inference.toml \
             --server.host 0.0.0.0 \
             --server.port $BACKEND_PORT \
@@ -367,7 +369,7 @@ else
         ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --client.base-url $INFER_URLS"
         ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --client.admin-base-url $ADMIN_URLS"
         {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
-        {% endif %}{% if wandb_shared %}WANDB_SHARED_LABEL=orchestrator {% endif %}uv run orchestrator $ORCHESTRATOR_ARGS \
+        {% endif %}{% if wandb_shared %}WANDB_SHARED_LABEL=orchestrator {% endif %}uv run --no-sync orchestrator $ORCHESTRATOR_ARGS \
             2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &
     fi
 {%- else %}
@@ -381,7 +383,7 @@ else
 
     echo $HOSTNAMES_STR | tee $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
 
-    {% if wandb_shared %}WANDB_SHARED_LABEL=trainer {% endif %}uv run torchrun \
+    {% if wandb_shared %}WANDB_SHARED_LABEL=trainer {% endif %}uv run --no-sync torchrun \
         --role=trainer \
         --nnodes=$NUM_TRAIN_NODES \
         --nproc-per-node=$GPUS_PER_NODE \
