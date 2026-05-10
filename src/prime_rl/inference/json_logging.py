@@ -66,10 +66,7 @@ def build_dict_config(level: str = "info") -> dict[str, Any]:
         "handlers": {"stdout_json": handler},
         "loggers": {
             "": {"handlers": ["stdout_json"], "level": upper},
-            **{
-                name: {"handlers": ["stdout_json"], "level": upper, "propagate": False}
-                for name in named
-            },
+            **{name: {"handlers": ["stdout_json"], "level": upper, "propagate": False} for name in named},
         },
     }
 
