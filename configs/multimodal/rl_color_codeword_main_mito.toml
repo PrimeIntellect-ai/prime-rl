@@ -1,0 +1,61 @@
+# 20-step Qwen3-VL-4B RL run on color-codeword using the existing MITO
+# (chat-completions) inference path — baseline for the renderer A/B.
+#
+# Mirrors rl_color_codeword_feat_renderer.toml exactly except for the
+# orchestrator client flags: this run goes through TITO/MITO so the
+# inference server applies the chat template, runs the image processor
+# server-side, and the orchestrator re-tokenizes locally.
+#
+# Run on ``main`` (renderers, verifiers, primerlmain). Compare metrics in
+# W&B project ``multimodal-renderer`` against the feat run.
+
+max_steps = 20
+seq_len = 4096
+output_dir = "outputs/rl_color_codeword_main_mito"
+clean_output_dir = true
+
+[model]
+name = "Qwen/Qwen3-VL-4B-Instruct"
+
+[model.vlm]
+vision_encoder_attr = "model.visual"
+language_model_attr = "model.language_model"
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+gpus_per_node = 2
+
+[orchestrator]
+batch_size = 16
+rollouts_per_example = 4
+# MITO baseline: server-side chat templating + image processing.
+use_renderer = false
+use_token_client = true
+
+[orchestrator.train.sampling]
+max_completion_tokens = 64
+
+[[orchestrator.train.env]]
+id = "color-codeword"
+args = { images_per_turn = 1, max_turns = 2, num_examples = 100, seed = 42 }
+
+[trainer]
+
+[trainer.model]
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[trainer.optim]
+lr = 3e-6
+
+[inference]
+
+[inference.parallel]
+dp = 1
+tp = 1
+
+[wandb]
+project = "multimodal-renderer"
+name = "main-mito-20step"
+tags = ["qwen3vl-4b", "color-codeword", "mito", "main-branch"]

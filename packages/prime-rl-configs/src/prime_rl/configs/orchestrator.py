@@ -1231,20 +1231,6 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_renderer_vs_vlm(self):
-        """The renderer client takes plain message dicts and tokenizes
-        them client-side. VLMs need server-side image preprocessing and
-        chat templating, so they must use the token client (TITO) — fail
-        loudly when both are set."""
-        if self.use_renderer and self.model.vlm is not None:
-            raise ValueError(
-                "orchestrator.use_renderer is not supported for VLMs. Use the token client "
-                "(``use_token_client=true``, the default) so image preprocessing and chat "
-                "templating stay on the inference server."
-            )
-        return self
-
-    @model_validator(mode="after")
     def validate_renderer_args(self):
         """``[orchestrator.renderer]`` knobs are only meaningful when
         ``use_renderer=True``. Reject otherwise so callers don't silently

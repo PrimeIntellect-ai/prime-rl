@@ -1,0 +1,69 @@
+# 20-step Qwen3-VL-4B RL run on color-codeword using the renderer multimodal path.
+#
+# Pair with rl_color_codeword_main_mito.toml for an A/B comparison: same env,
+# same hyperparameters, same step count — only difference is the inference
+# client. The feat-branch run uses the new RendererClient + Qwen3VLRenderer
+# (renderers package with multimodal support); the main-branch baseline uses
+# the existing TITO chat-completions path through the inference server.
+#
+# Compare in W&B project ``multimodal-renderer``:
+#   - ``kl/sampler_vs_trainer`` should be ~0 on this branch (the renderer
+#     produces byte-identical tokens to what the trainer re-tokenizes) and
+#     can spike on main when BPE drifts mid-rollout.
+#   - ``reward`` and ``loss`` should track within noise — same model, same
+#     env, same hyperparameters.
+#   - ``bridge_break_rate`` is renderer-only; surfaces multi-turn extension
+#     failures.
+
+max_steps = 20
+seq_len = 4096
+output_dir = "outputs/rl_color_codeword_feat_renderer"
+clean_output_dir = true
+
+[model]
+name = "Qwen/Qwen3-VL-4B-Instruct"
+
+[model.vlm]
+vision_encoder_attr = "model.visual"
+language_model_attr = "model.language_model"
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+gpus_per_node = 2
+
+[orchestrator]
+batch_size = 16
+rollouts_per_example = 4
+use_renderer = true
+use_token_client = false
+
+[orchestrator.train.sampling]
+max_completion_tokens = 64
+
+[[orchestrator.train.env]]
+id = "color-codeword"
+args = { images_per_turn = 1, max_turns = 2, num_examples = 100, seed = 42 }
+
+[orchestrator.renderer]
+name = "auto"
+
+[trainer]
+
+[trainer.model]
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[trainer.optim]
+lr = 3e-6
+
+[inference]
+
+[inference.parallel]
+dp = 1
+tp = 1
+
+[wandb]
+project = "multimodal-renderer"
+name = "feat-renderer-20step"
+tags = ["qwen3vl-4b", "color-codeword", "renderer", "feat-branch"]

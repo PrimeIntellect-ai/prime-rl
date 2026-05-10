@@ -303,6 +303,12 @@ def interleave_rollout(
                 "completion_mask": [bool(i) for i in tokens["completion_mask"]],
                 "completion_logprobs": list(tokens["completion_logprobs"]),
                 "routed_experts": tokens.get("routed_experts"),
+                # Renderer-emitted multimodal sidecar (placeholders + per-item
+                # processed tensors). Populated when the rollout went through
+                # a multimodal-aware renderer (e.g. Qwen3VLRenderer); absent
+                # for text-only or VLM-via-MITO rollouts (those fall back to
+                # the vlm_cache path below).
+                "multi_modal_data": tokens.get("multi_modal_data"),
             }
 
         logger.warning(f"Missing rollout tokens for example {output['example_id']} step {step_idx}.")
@@ -406,22 +412,71 @@ def interleave_rollout(
             new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
             active_samples.append((new_prefix, make_sample(tokens), step_idx))
 
-    # Attach images once per sample using only the last merged step. Prompt
-    # tokens already contain fully expanded <|image_pad|> placeholders because
-    # VLMs go through MITO (chat completions), which runs apply_chat_template
-    # server-side; the orchestrator re-tokenizes via the same processor in the
-    # fallback path so features and tokens stay 1:1.
-    if vlm_cache is not None:
-        key = output["example_id"] if cache_key is None else cache_key
-        for _, sample, last_step_idx in active_samples:
+    # Attach images once per sample using only the last merged step. Two
+    # sources, in priority order:
+    #
+    # 1. **Renderer-emitted mm_data.** When the rollout client uses a
+    #    multimodal-aware Renderer (e.g. Qwen3VLRenderer via RendererClient),
+    #    each step's ``multi_modal_data`` carries the cumulative per-image
+    #    ``pixel_values`` + ``image_grid_thw`` tensors plus placeholder
+    #    offsets. The bridge merges previous-turn images into the new turn's
+    #    mm_data, so the last merged step's sidecar covers every image in
+    #    the sample. We pack those tensors into the bytes-shaped contract
+    #    TrainingSample expects.
+    #
+    # 2. **VLMImageCache fallback.** For VLMs that go through MITO (chat
+    #    completions), the renderer never sees the images — vLLM applies
+    #    the chat template server-side and the orchestrator re-extracts
+    #    PIL images from the rollout's data-URLs in a separate pass.
+    #    Prompt tokens still contain fully expanded ``<|image_pad|>``
+    #    placeholders because the orchestrator re-tokenizes through the
+    #    same processor.
+    #
+    # ``mm_token_type_ids`` is computed identically in both branches once
+    # the sample's prompt+completion ids are known.
+    def _pack_pixel_values_from_renderer(
+        mm_data: Any,
+    ) -> tuple[bytes | None, list[int] | None, list[list[int]] | None]:
+        items = (mm_data.mm_items or {}).get("image") or []
+        if not items:
+            return None, None, None
+        pv_tensors = [it["pixel_values"] for it in items]
+        thw_tensors = [it["image_grid_thw"] for it in items]
+        pv = torch.cat(pv_tensors, dim=0)
+        thw = torch.cat(thw_tensors, dim=0)
+        # TrainingSample wants raw float32 bytes; the trainer-side decoder
+        # reads them back into a tensor of pixel_values_shape on load.
+        return (
+            pv.to(torch.float32).contiguous().numpy().tobytes(),
+            list(pv.shape),
+            thw.to(torch.int64).tolist(),
+        )
+
+    def _apply_mm_token_type_ids(sample: TrainingSample) -> None:
+        if mm_token_type_ids_mapping is None:
+            return
+        sample.mm_token_type_ids = [
+            mm_token_type_ids_mapping.get(token_id, 0) for token_id in sample.prompt_ids + sample.completion_ids
+        ]
+
+    for _, sample, last_step_idx in active_samples:
+        renderer_mm = prepared_steps[last_step_idx].get("multi_modal_data")
+        if renderer_mm is not None:
+            pv, shape, grids = _pack_pixel_values_from_renderer(renderer_mm)
+            if pv is not None:
+                sample.pixel_values = pv
+                sample.pixel_values_shape = shape
+                sample.image_grid_thw = grids
+                _apply_mm_token_type_ids(sample)
+                continue
+
+        if vlm_cache is not None:
+            key = output["example_id"] if cache_key is None else cache_key
             pv, shape, grids = vlm_cache.get_for_step(key, last_step_idx)
             sample.pixel_values = pv
             sample.pixel_values_shape = shape
             sample.image_grid_thw = grids
-            if mm_token_type_ids_mapping is not None:
-                sample.mm_token_type_ids = [
-                    mm_token_type_ids_mapping.get(token_id, 0) for token_id in sample.prompt_ids + sample.completion_ids
-                ]
+            _apply_mm_token_type_ids(sample)
 
     return [sample for _, sample, _ in active_samples]
 

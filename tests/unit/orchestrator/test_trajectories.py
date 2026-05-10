@@ -2188,3 +2188,171 @@ def test_build_vlm_image_cache_uses_store():
     assert pv is not None
     assert shape == [1, 1]
     assert grid == [[1, 1, 1]]
+
+
+# ── Renderer-emitted multimodal data ───────────────────────────────────
+
+
+def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
+    """When the rollout's trajectory step carries renderer-emitted
+    ``multi_modal_data`` (e.g. from Qwen3VLRenderer via RendererClient),
+    ``interleave_rollout`` packs pixel_values / image_grid_thw /
+    mm_token_type_ids onto the TrainingSample from that sidecar — no
+    VLMImageCache lookup required.
+
+    The bridge in the renderer merges previous-turn images into the new
+    turn's mm_data, so the last merged step's sidecar covers every image
+    in the sample (cumulative semantics, matching VLMImageCache).
+    """
+    import torch as _torch
+    from renderers.base import MultiModalData, PlaceholderRange
+
+    # Two synthetic single-image items — values are arbitrary, what
+    # matters is that the packer concatenates them correctly.
+    item1_pv = _torch.tensor([[1.0, 2.0]], dtype=_torch.float32)
+    item2_pv = _torch.tensor([[3.0, 4.0]], dtype=_torch.float32)
+    item1_thw = _torch.tensor([[1, 2, 3]], dtype=_torch.int64)
+    item2_thw = _torch.tensor([[1, 4, 4]], dtype=_torch.int64)
+
+    mm_step_0 = MultiModalData(
+        mm_hashes={"image": ["h1"]},
+        mm_placeholders={"image": [PlaceholderRange(offset=1, length=1)]},
+        mm_items={"image": [{"pixel_values": item1_pv, "image_grid_thw": item1_thw}]},
+    )
+    mm_step_1 = MultiModalData(
+        mm_hashes={"image": ["h1", "h2"]},
+        mm_placeholders={
+            "image": [
+                PlaceholderRange(offset=1, length=1),
+                PlaceholderRange(offset=4, length=1),
+            ]
+        },
+        mm_items={
+            "image": [
+                {"pixel_values": item1_pv, "image_grid_thw": item1_thw},
+                {"pixel_values": item2_pv, "image_grid_thw": item2_thw},
+            ]
+        },
+    )
+
+    output = vf.RolloutOutput(
+        example_id=1,
+        trajectory=[
+            vf.TrajectoryStep(
+                prompt=[{"role": "user", "content": "Turn 1"}],
+                completion=[{"role": "assistant", "content": "Response 1"}],
+                response=MagicMock(),
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2],
+                    prompt_mask=[0, 0],
+                    completion_ids=[3, 4],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.1, -0.2],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                    multi_modal_data=mm_step_0,
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            ),
+            vf.TrajectoryStep(
+                prompt=[{"role": "user", "content": "Turn 2"}],
+                completion=[{"role": "assistant", "content": "Response 2"}],
+                response=MagicMock(),
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2, 3, 4, 5],
+                    prompt_mask=[0, 0, 0, 0, 0],
+                    completion_ids=[6, 7],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.3, -0.4],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                    multi_modal_data=mm_step_1,
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            ),
+        ],
+        sampling_args={"temperature": 1.0},
+        error=None,
+    )
+
+    # Token 2 is the image placeholder, token 5 is the video placeholder.
+    mm_mapping = {2: 1, 5: 2}
+    # No vlm_cache — the renderer sidecar should fully cover the path.
+    rollouts = interleave_rollout(output, vlm_cache=None, mm_token_type_ids_mapping=mm_mapping)
+
+    assert rollouts is not None and len(rollouts) == 1
+    sample = rollouts[0]
+    # Extension holds; both steps merge into one sample with the last
+    # step's cumulative mm_data.
+    assert sample.prompt_ids == [1, 2]
+    assert sample.completion_ids == [3, 4, 5, 6, 7]
+    # Pixel values packed from step 1's two items, concatenated.
+    assert _decode_pixels(sample.pixel_values, sample.pixel_values_shape) == [
+        [1.0, 2.0],
+        [3.0, 4.0],
+    ]
+    assert sample.image_grid_thw == [[1, 2, 3], [1, 4, 4]]
+    # mm_token_type_ids: image at token 2, video at token 5, rest 0.
+    assert sample.mm_token_type_ids == [0, 1, 0, 0, 2, 0, 0]
+
+
+def test_interleave_rollout_renderer_mm_data_wins_over_vlm_cache():
+    """When both renderer mm_data AND vlm_cache are present, renderer
+    mm_data wins — the rollout came through a multimodal-aware renderer
+    so the placeholder offsets and processed tensors are authoritative."""
+    import torch as _torch
+    from renderers.base import MultiModalData, PlaceholderRange
+
+    renderer_pv = _torch.tensor([[7.0]], dtype=_torch.float32)
+    renderer_thw = _torch.tensor([[1, 9, 9]], dtype=_torch.int64)
+    mm = MultiModalData(
+        mm_hashes={"image": ["render"]},
+        mm_placeholders={"image": [PlaceholderRange(offset=1, length=1)]},
+        mm_items={"image": [{"pixel_values": renderer_pv, "image_grid_thw": renderer_thw}]},
+    )
+
+    # VLM cache populated with a DIFFERENT image — we shouldn't see this.
+    cache_data = {1: [(*_pixels([[99.0]]), [[1, 2, 2]])]}
+    cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
+
+    output = vf.RolloutOutput(
+        example_id=1,
+        trajectory=[
+            vf.TrajectoryStep(
+                prompt=[{"role": "user", "content": "Turn 1"}],
+                completion=[{"role": "assistant", "content": "Response 1"}],
+                response=MagicMock(),
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2],
+                    prompt_mask=[0, 0],
+                    completion_ids=[3, 4],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.1, -0.2],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                    multi_modal_data=mm,
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            ),
+        ],
+        sampling_args={"temperature": 1.0},
+        error=None,
+    )
+
+    rollouts = interleave_rollout(output, vlm_cache=cache, mm_token_type_ids_mapping={2: 1})
+
+    assert rollouts is not None and len(rollouts) == 1
+    assert _decode_pixels(rollouts[0].pixel_values, rollouts[0].pixel_values_shape) == [[7.0]]
+    assert rollouts[0].image_grid_thw == [[1, 9, 9]]
