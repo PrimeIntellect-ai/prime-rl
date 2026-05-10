@@ -197,6 +197,10 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
 
+{%- if kv_offload %}
+    ulimit -l unlimited
+{%- endif %}
+
     REPLICA_IDX=$((INFER_NODE_RANK / NODES_PER_INFER_REPLICA))
     RANK_IN_REPLICA=$((INFER_NODE_RANK % NODES_PER_INFER_REPLICA))
 
@@ -219,7 +223,6 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
 
 {%- if kv_offload %}
-    ulimit -l unlimited
     PREFILL_KV_CFG='"'"'{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}},{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":{{ kv_offload_cpu_bytes }}}}]}}'"'"'
 {%- else %}
     PREFILL_KV_CFG='"'"'{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}}'"'"'
@@ -335,9 +338,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         INFER_DP_START_RANK=$((RANK_IN_REPLICA * INFERENCE_DP_LOCAL))
 
         if [ "$RANK_IN_REPLICA" -eq 0 ]; then
-            VLLM_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\"}"
+            VLLM_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\", \"data_parallel_hybrid_lb\": true}"
         else
-            VLLM_EXTRA="{\"data_parallel_address\": \"$REPLICA_HEAD_HOST\", \"data_parallel_start_rank\": $INFER_DP_START_RANK}"
+            VLLM_EXTRA="{\"data_parallel_address\": \"$REPLICA_HEAD_HOST\", \"data_parallel_start_rank\": $INFER_DP_START_RANK, \"data_parallel_hybrid_lb\": true}"
         fi
 
         uv run inference \

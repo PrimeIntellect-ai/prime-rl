@@ -16,29 +16,72 @@ def postprocess_weights_checkpoint(model: Module, model_config, device: torch.de
     process_weights_after_loading(model, model_config, device)
 
 
+def _invert_logical_to_physical_map(logical_to_physical_map: torch.Tensor, num_physical_experts: int) -> torch.Tensor:
+    """Build a physical expert -> logical expert map from vLLM EPLB state."""
+    physical_to_logical = torch.full(
+        (num_physical_experts,),
+        -1,
+        dtype=torch.long,
+        device=logical_to_physical_map.device,
+    )
+    logical_indices = torch.arange(
+        logical_to_physical_map.shape[0],
+        dtype=torch.long,
+        device=logical_to_physical_map.device,
+    )[:, None].expand_as(logical_to_physical_map)
+    physical_indices = logical_to_physical_map.to(torch.long)
+    invalid = (physical_indices < -1) | (physical_indices >= num_physical_experts)
+    if invalid.any():
+        invalid_indices = physical_indices[invalid].unique().tolist()
+        raise ValueError(f"EPLB maps to invalid physical experts: {invalid_indices}")
+
+    valid = physical_indices >= 0
+    physical_to_logical[physical_indices[valid]] = logical_indices[valid]
+    return physical_to_logical
+
+
+def _build_expert_source_indices(module) -> torch.Tensor | None:
+    if module._expert_map is None:
+        return None
+
+    physical_indices = torch.where(module._expert_map >= 0)[0]
+    local_indices = module._expert_map[physical_indices]
+    physical_indices = physical_indices[local_indices.argsort()]
+
+    eplb_layer_state = getattr(module, "eplb_state", None)
+    logical_to_physical_map = getattr(eplb_layer_state, "logical_to_physical_map", None)
+    if logical_to_physical_map is None:
+        return physical_indices
+
+    physical_to_logical = _invert_logical_to_physical_map(logical_to_physical_map, module.global_num_experts)
+    logical_indices = physical_to_logical[physical_indices.to(physical_to_logical.device)]
+    if (logical_indices < 0).any():
+        missing = physical_indices[(logical_indices < 0).to(physical_indices.device)].tolist()
+        raise ValueError(f"EPLB has no logical mapping for local physical experts: {missing}")
+
+    return logical_indices.to(physical_indices.device)
+
+
 def build_expert_map(model: Module) -> dict[str, torch.Tensor]:
-    """Map FusedMoE module names to global expert indices local to this worker."""
+    """Map FusedMoE module names to source expert indices local to this worker."""
     from vllm.model_executor.layers.fused_moe.layer import FusedMoE
 
-    expert_slices: dict[str, torch.Tensor] = {}
+    source_indices_by_module: dict[str, torch.Tensor] = {}
     for module_name, module in model.named_modules():
         if not isinstance(module, FusedMoE):
             continue
-        if module._expert_map is None:
+        source_indices = _build_expert_source_indices(module)
+        if source_indices is None:
             continue
-
-        global_indices = torch.where(module._expert_map >= 0)[0]
-        local_indices = module._expert_map[global_indices]
-        global_indices = global_indices[local_indices.argsort()]
-        expert_slices[module_name] = global_indices
-    return expert_slices
+        source_indices_by_module[module_name] = source_indices
+    return source_indices_by_module
 
 
 @torch.no_grad()
 def load_weights_kernel(model: Module, state_iter: Generator[tuple[str, torch.Tensor], None, None]) -> None:
     """Load vLLM kernel-format tensors using in-place copy_ updates."""
     params = dict(model.named_parameters())
-    expert_slices = build_expert_map(model)
+    expert_source_indices = build_expert_map(model)
 
     loaded = 0
     skipped: list[str] = []
@@ -51,15 +94,13 @@ def load_weights_kernel(model: Module, state_iter: Generator[tuple[str, torch.Te
 
         param = params[name]
         if param.shape != tensor.shape:
-            sliced = False
-            for module_name, global_indices in expert_slices.items():
+            for module_name, source_indices in expert_source_indices.items():
                 if not name.startswith(f"{module_name}."):
                     continue
-                tensor = tensor[global_indices.to(tensor.device)]
-                sliced = True
+                tensor = tensor[source_indices.to(tensor.device)]
                 break
 
-            if not sliced or param.shape != tensor.shape:
+            if param.shape != tensor.shape:
                 shape_mismatches.append(f"{name}: param={list(param.shape)} != received={list(tensor.shape)}")
                 continue
 

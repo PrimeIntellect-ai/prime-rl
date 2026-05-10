@@ -682,6 +682,21 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_eplb_requires_quantized_weight_transfer(self):
+        if self.inference is None or not self.inference.enable_eplb:
+            return self
+
+        # TODO(matej): check if weight reloading works itself before supporting EPLB without quantized transfer.
+        trainer_weight_broadcast = self.trainer.weight_broadcast
+        if trainer_weight_broadcast.type != "nccl" or not trainer_weight_broadcast.quantize_in_weight_transfer:
+            raise ValueError(
+                "inference.enable_eplb requires weight_broadcast.type = 'nccl' and "
+                "weight_broadcast.quantize_in_weight_transfer = true."
+            )
+
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
             self.trainer.bench = BenchConfig()

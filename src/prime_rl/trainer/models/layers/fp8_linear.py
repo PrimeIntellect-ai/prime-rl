@@ -113,7 +113,12 @@ class Float8BlockwiseLinear(nn.Linear):
 DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
     "lm_head",
     "router",
-    "mlp.gate.",
+    # Use escaped dots — re.search treats `.` as any-char, so the previous
+    # "mlp.gate." pattern was also matching dense MLP `mlp.gate_proj` (the
+    # trailing `.` was matching `_`). That left the dense MLP gate projection
+    # in BF16 on the trainer while inference quantized it to FP8, causing
+    # hidden-state drift before the MoE router.
+    r"mlp\.gate\.",
     "shared_expert_gate",  # Qwen3.5 MoE: nn.Linear(hidden, 1, bias=False)
     "eh_proj",
     "weights_proj",
