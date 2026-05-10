@@ -71,18 +71,11 @@ def encode_routed_experts(arr: np.ndarray) -> dict:
     }
 
 
-class _RoutedExpertsCapture:
-    """Mirrors ``serving_chat_with_tokens._RoutedExpertsCapture`` for the
-    ``/inference/v1/generate`` path. Wraps the engine result generator,
-    captures ``routed_experts`` per output as it streams, then rebuilds
-    the response with ``PrimeRlGenerateResponseChoice`` so the encoded
-    array makes it into the JSON.
-
-    The chat path attaches ``routed_experts`` in-place because
-    ``ChatCompletionResponseChoice`` is configured ``extra='allow'``.
-    Upstream's ``GenerateResponseChoice`` isn't, so we have to rebuild
-    the response into our subclass instead.
-    """
+class _RoutedExpertsCaptureBase:
+    """Wraps the engine result generator and accumulates a
+    ``{output_index: encoded_experts}`` map as outputs stream. Subclasses
+    implement ``post_process`` to fold the captured map into the response
+    in whatever shape the endpoint returns (in-place vs rebuilt)."""
 
     def __init__(self, generator: AsyncGenerator[RequestOutput, None]):
         self._generator = generator
@@ -94,6 +87,13 @@ class _RoutedExpertsCapture:
                 if output.routed_experts is not None:
                     self.routed_experts[output.index] = encode_routed_experts(output.routed_experts)
             yield request_output
+
+
+class _RoutedExpertsCapture(_RoutedExpertsCaptureBase):
+    """Generate-endpoint variant: rebuilds the response with
+    ``PrimeRlGenerateResponseChoice`` because upstream's
+    ``GenerateResponseChoice`` isn't ``extra='allow'``, so an attribute
+    set after construction wouldn't survive serialization."""
 
     def post_process(self, response: GenerateResponse) -> PrimeRlGenerateResponse:
         new_choices = [

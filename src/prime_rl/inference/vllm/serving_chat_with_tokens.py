@@ -14,24 +14,17 @@ from vllm.outputs import RequestOutput
 from vllm.reasoning import ReasoningParser
 from vllm.sampling_params import BeamSearchParams, SamplingParams
 
-from prime_rl.inference.vllm.serving_tokens import encode_routed_experts
+from prime_rl.inference.vllm.serving_tokens import _RoutedExpertsCaptureBase
 
 logger = init_logger(__name__)
 
 
-class _RoutedExpertsCapture:
-    def __init__(self, generator: AsyncGenerator[RequestOutput, None]):
-        self._generator = generator
-        self.routed_experts: dict[int, dict] = {}
+class _RoutedExpertsCapture(_RoutedExpertsCaptureBase):
+    """Chat-endpoint variant: mutates choices in-place because
+    ``ChatCompletionResponseChoice`` is ``extra='allow'``, so an extra
+    ``routed_experts`` attribute survives serialization."""
 
-    async def __aiter__(self):
-        async for request_output in self._generator:
-            for output in request_output.outputs:
-                if output.routed_experts is not None:
-                    self.routed_experts[output.index] = encode_routed_experts(output.routed_experts)
-            yield request_output
-
-    def post_process(self, response: ChatCompletionResponse):
+    def post_process(self, response: ChatCompletionResponse) -> None:
         for choice in response.choices:
             if choice.index in self.routed_experts:
                 choice.routed_experts = self.routed_experts[choice.index]
