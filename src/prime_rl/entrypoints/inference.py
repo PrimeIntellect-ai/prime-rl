@@ -139,6 +139,10 @@ def inference_local(config: InferenceConfig):
         from prime_rl.inference.sglang.server import server
 
         server(config)
+    elif config.backend == "dynamo":
+        from prime_rl.inference.dynamo.server import server
+
+        server(config)
     else:
         raise ValueError(f"Unsupported inference backend: {config.backend}")
 

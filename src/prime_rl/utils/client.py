@@ -9,7 +9,6 @@ from typing import Protocol, runtime_checkable
 import httpx
 import verifiers as vf
 from httpx import AsyncClient
-from openai import NotFoundError
 from tenacity import retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
 
 from prime_rl.configs.shared import ClientConfig
@@ -270,14 +269,19 @@ async def check_health(
 
     async def _check_health(admin_client: AsyncClient) -> None:
         wait_time = 0
-        logger.debug("Starting pinging /health to check health")
+        admin_backend = get_admin_backend(admin_client)
+        logger.debug("Starting pinging health endpoint to check health")
         while wait_time < timeout:
             try:
-                await admin_client.get("/health")
+                if admin_backend == "dynamo":
+                    response = await admin_client.post("/engine/liveness", json={})
+                else:
+                    response = await admin_client.get("/health")
+                    if response.status_code == 404:
+                        logger.warning("The route /health does not exist. Skipping health check.")
+                        return
+                response.raise_for_status()
                 logger.debug(f"Inference pool is ready after {wait_time} seconds")
-                return
-            except NotFoundError:
-                logger.warning("The route /health does not exist. Skipping health check.")
                 return
             except Exception as e:
                 if wait_time % log_interval == 0 and wait_time > 0:
@@ -341,12 +345,19 @@ async def update_weights(
         sglang_clients = [client for client in admin_clients if get_admin_backend(client) == "sglang"]
         if sglang_clients:
             raise ValueError("SGLang backend does not support prime-rl LoRA adapter weight updates yet.")
+        dynamo_clients = [client for client in admin_clients if get_admin_backend(client) == "dynamo"]
+        if dynamo_clients:
+            raise ValueError("Dynamo backend does not support prime-rl LoRA adapter weight updates yet.")
         await load_lora_adapter(admin_clients, lora_name, weight_dir)
     else:
         sglang_clients = [client for client in admin_clients if get_admin_backend(client) == "sglang"]
         vllm_clients = [client for client in admin_clients if get_admin_backend(client) == "vllm"]
+        dynamo_clients = [client for client in admin_clients if get_admin_backend(client) == "dynamo"]
 
         sglang_uses_nccl = weight_dir is not None and (weight_dir / NCCL_BROADCAST_MARKER).exists()
+        dynamo_uses_nccl = bool(
+            weight_dir is not None and dynamo_clients and (weight_dir / NCCL_BROADCAST_MARKER).exists()
+        )
 
         async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
             backend = get_admin_backend(admin_client)
@@ -365,6 +376,13 @@ async def update_weights(
                 if result.get("success") is False:
                     raise RuntimeError(result.get("message", "SGLang weight update failed"))
                 return
+            if backend == "dynamo":
+                response = await admin_client.post("/engine/update_weights", json={"weight_dir": weight_dir})
+                response.raise_for_status()
+                result = response.json()
+                if result.get("status") == "error":
+                    raise RuntimeError(result.get("message", "Dynamo weight update failed"))
+                return
 
             response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
             response.raise_for_status()
@@ -381,6 +399,11 @@ async def update_weights(
                 nccl_ready_file.touch()
                 logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
             if weight_dir is not None and sglang_uses_nccl:
+                nccl_ready_file = weight_dir / NCCL_READY_MARKER
+                nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
+                nccl_ready_file.touch()
+                logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
+            if weight_dir is not None and dynamo_uses_nccl:
                 nccl_ready_file = weight_dir / NCCL_READY_MARKER
                 nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
                 nccl_ready_file.touch()
@@ -489,7 +512,8 @@ async def init_nccl_broadcast(
     )
 
     async def _init_nccl_broadcast(admin_client: AsyncClient, rank_offset: int) -> None:
-        if get_admin_backend(admin_client) == "sglang":
+        backend = get_admin_backend(admin_client)
+        if backend == "sglang":
             response = await admin_client.post(
                 "/init_broadcaster",
                 json={
@@ -504,6 +528,23 @@ async def init_nccl_broadcast(
             result = response.json()
             if result.get("success") is False:
                 raise RuntimeError(result.get("message", "SGLang NCCL initialization failed"))
+            return
+        if backend == "dynamo":
+            response = await admin_client.post(
+                "/engine/init_broadcaster",
+                json={
+                    "host": host,
+                    "port": port,
+                    "rank_offset": rank_offset,
+                    "inference_world_size": inference_world_size,
+                    "timeout": timeout,
+                    "quantize_in_weight_transfer": quantize_in_weight_transfer,
+                },
+            )
+            response.raise_for_status()
+            result = response.json()
+            if result.get("status") == "error":
+                raise RuntimeError(result.get("message", "Dynamo NCCL initialization failed"))
             return
 
         try:

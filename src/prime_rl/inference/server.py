@@ -15,7 +15,7 @@ def setup_vllm_env(config: InferenceConfig):
 
 
 def setup_inference_env(config: InferenceConfig):
-    if config.backend == "vllm":
+    if config.backend in ("vllm", "dynamo"):
         setup_vllm_env(config)
 
 
@@ -30,6 +30,10 @@ def main():
         server(config, vllm_extra=config.vllm_extra)
     elif config.backend == "sglang":
         from prime_rl.inference.sglang.server import server
+
+        server(config)
+    elif config.backend == "dynamo":
+        from prime_rl.inference.dynamo.server import server
 
         server(config)
     else:

@@ -132,7 +132,7 @@ On the CLI, pass as a JSON string:
 uv run inference --vllm-extra '{"key1": "value1", "key2": 123}'
 ```
 
-SGLang uses a parallel `sglang_extra` dict:
+Dynamo and SGLang use backend-specific extra dicts:
 
 ```toml
 [inference]
@@ -143,6 +143,20 @@ attention_backend = "triton"
 ```
 
 SGLang support currently covers single-node inference with filesystem or NCCL weight broadcast. The RL config auto-switches rollouts from the vLLM-only token client to the standard OpenAI chat-completions client when `inference.backend = "sglang"`.
+
+Dynamo support currently covers single-node aggregated Dynamo + vLLM inference with filesystem or NCCL weight broadcast. The launcher starts an internal Dynamo frontend, a Dynamo vLLM worker in token-in/token-out mode, and a prime-rl OpenAI proxy on `inference.server.port`. The proxy strips Dynamo-unsupported vLLM-only request fields like `return_token_ids`, tokenizes chat prompts, and calls the worker system route that returns `prompt_token_ids`, completion `token_ids`, and completion logprobs for verifiers. The RL config auto-switches rollouts from the vLLM-only token client to the standard OpenAI chat-completions client and uses the Dynamo worker system server for admin calls:
+
+```toml
+[inference]
+backend = "dynamo"
+
+[inference.dynamo]
+system_port = 8081
+discovery_backend = "file"
+
+[inference.dynamo.worker_extra]
+block_size = 64
+```
 
 For SGLang NCCL broadcast:
 

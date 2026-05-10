@@ -39,7 +39,7 @@ The entrypoint launches torchrun internally — no need to call torchrun directl
 
 ## `inference` — Standalone inference server
 
-Launches an OpenAI-compatible inference server. vLLM is the default backend; SGLang is available with `--backend sglang` or `inference.backend = "sglang"`.
+Launches an OpenAI-compatible inference server. vLLM is the default backend; SGLang is available with `--backend sglang` or `inference.backend = "sglang"`, and Dynamo+vLLM is available with `--backend dynamo` or `inference.backend = "dynamo"`.
 
 ```bash
 uv run inference @ configs/debug/infer.toml
@@ -58,6 +58,12 @@ SGLang custom endpoints used by prime-rl:
 - `/update_weights_from_disk` — filesystem weight reload
 - `/init_broadcaster` — initialize SGLang NCCL receiver
 - `/update_weights` — receive an NCCL weight broadcast
+
+Dynamo launches a public prime-rl OpenAI proxy on `server.port`; the native Dynamo frontend runs on an internal port. Dynamo custom endpoints used by prime-rl run on the worker system server (`inference.dynamo.system_port`, default `8081`):
+- `/engine/update_weights` — hot-reload model weights from the trainer
+- `/engine/init_broadcaster` — initialize weight broadcast for distributed training
+- `/engine/pause` and `/engine/resume` — pause/resume vLLM generation
+- `/engine/chat_completions` — proxy target for OpenAI chat completions with prompt/completion token IDs and logprobs
 
 Check health with:
 ```bash
