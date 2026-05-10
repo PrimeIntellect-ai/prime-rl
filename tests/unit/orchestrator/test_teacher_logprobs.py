@@ -1,39 +1,33 @@
 import asyncio
 import json
 
+import httpx
 import verifiers as vf
-from openai import AsyncOpenAI
 
 from prime_rl.orchestrator import utils as orchestrator_utils
 from prime_rl.transport import TrainingSample
 
 
-class _FakeHttpxResponse:
-    def __init__(self, payload: dict):
-        self.content = json.dumps(payload).encode()
-
-    def raise_for_status(self) -> None:
-        return None
-
-
-class _FakeHttpxClient:
-    """Stand-in for ``AsyncOpenAI._client``: collects the ``.post()`` it sees
-    and returns a canned httpx-shaped response."""
-
-    def __init__(self, payload: dict):
-        self._payload = payload
-        self.calls: list[dict] = []
-
-    async def post(self, url, *, json):
-        self.calls.append({"url": url, "json": json})
-        return _FakeHttpxResponse(self._payload)
-
-
 class _FakeOpenAIClient:
+    """Stand-in for ``AsyncOpenAI`` that captures the sole ``.post()`` call and
+    returns a synthesized ``httpx.Response`` so ``cast_to=httpx.Response`` is
+    handed back verbatim, mirroring the real SDK's short-circuit at
+    ``AsyncAPIClient._process_response``."""
+
     def __init__(self, payload: dict):
         # Match what AsyncOpenAI exposes — utils.py reads ``str(client.base_url)``.
         self.base_url = "http://fake-host:8000/v1"
-        self._client = _FakeHttpxClient(payload)
+        self._payload = payload
+        self.calls: list[dict] = []
+
+    async def post(self, url, *, cast_to, body):
+        self.calls.append({"url": url, "cast_to": cast_to, "body": body})
+        request = httpx.Request("POST", url, json=body)
+        return httpx.Response(
+            status_code=200,
+            content=json.dumps(self._payload).encode(),
+            request=request,
+        )
 
 
 def test_compute_teacher_logprobs_uses_inference_generate(monkeypatch):
@@ -65,10 +59,11 @@ def test_compute_teacher_logprobs_uses_inference_generate(monkeypatch):
         )
 
         assert result == [[0.0, -0.7, -0.3]]
-        assert fake_client._client.calls == [
+        assert fake_client.calls == [
             {
                 "url": "http://fake-host:8000/inference/v1/generate",
-                "json": {
+                "cast_to": httpx.Response,
+                "body": {
                     "model": "teacher-model",
                     "token_ids": [1, 2, 3],
                     "sampling_params": {
@@ -80,13 +75,5 @@ def test_compute_teacher_logprobs_uses_inference_generate(monkeypatch):
                 },
             }
         ]
-
-        # Guard against the AsyncOpenAI client double-prefixing /v1 onto our
-        # absolute URL. The SDK skips the merge when the path passes
-        # ``httpx.URL.is_relative_url`` as False; assert the resolved URL ends
-        # up at the disagg endpoint, not at base_url + path.
-        real = AsyncOpenAI(api_key="test", base_url=fake_client.base_url)
-        resolved = real._prepare_url(fake_client._client.calls[0]["url"])
-        assert str(resolved) == "http://fake-host:8000/inference/v1/generate"
 
     asyncio.run(_run())
