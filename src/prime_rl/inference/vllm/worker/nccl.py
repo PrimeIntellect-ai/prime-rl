@@ -10,7 +10,7 @@ from vllm.logger import init_logger
 from prime_rl.inference.vllm.worker.weight_transfer import (
     load_weights_checkpoint_layerwise,
     load_weights_kernel,
-    postprocess_weights_kernel,
+    update_mla_absorbed_weights,
 )
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
 
@@ -144,9 +144,8 @@ class NCCLWeightUpdateWorker(Worker):
 
         state_iter = self.nccl_broadcast_receiver.receive_state_dict()
         if self.quantize_in_weight_transfer:
-            device = next(model.parameters()).device
             load_weights_kernel(model, state_iter)
-            postprocess_weights_kernel(model, self.model_runner.model_config, device)
+            update_mla_absorbed_weights(model)
             return
 
         load_weights_checkpoint_layerwise(
