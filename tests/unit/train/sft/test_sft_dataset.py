@@ -199,6 +199,30 @@ def test_multiturn_loss_mask():
     print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
 
 
+def test_multiturn_loss_mask_use_renderer():
+    """Renderer path handles position-dependent chat templates that break build_incremental_token_mask."""
+    from renderers.base import create_renderer
+
+    dataset = Dataset.from_list(
+        [
+            {
+                "prompt": [{"role": "system", "content": "System"}, {"role": "user", "content": "Prompt 0"}],
+                "completion": [
+                    {"role": "assistant", "content": "Reply 0"},
+                    {"role": "user", "content": "Prompt 1"},
+                    {"role": "assistant", "content": "Reply 1"},
+                ],
+            }
+        ]
+    )
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")  # Directly tests non PrimeIntellect Qwen3
+    renderer = create_renderer(tokenizer)
+    sft_dataset = SFTDataset(dataset, tokenizer=tokenizer, renderer=renderer, max_examples=1)
+    sample = next(iter(sft_dataset))
+    assert sum(sample["loss_mask"]) > 0
+    print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
+
+
 def test_multiturn_loss_mask_with_tools():
     tool_example = {
         "prompt": [
