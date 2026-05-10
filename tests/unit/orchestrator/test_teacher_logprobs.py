@@ -1,6 +1,7 @@
 import asyncio
 
 import verifiers as vf
+from openai import AsyncOpenAI
 from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
 from vllm.logprobs import Logprob
 
@@ -61,5 +62,13 @@ def test_compute_teacher_logprobs_uses_inference_generate(monkeypatch):
                 },
             }
         ]
+
+        # Guard against the AsyncOpenAI client double-prefixing /v1 onto our
+        # absolute URL. The SDK skips the merge when the path passes
+        # ``httpx.URL.is_relative_url`` as False; assert the resolved URL ends
+        # up at the disagg endpoint, not at base_url + path.
+        real = AsyncOpenAI(api_key="test", base_url=fake_client.base_url)
+        resolved = real._prepare_url(fake_client.calls[0]["path"])
+        assert str(resolved) == "http://fake-host:8000/inference/v1/generate"
 
     asyncio.run(_run())
