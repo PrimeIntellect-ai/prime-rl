@@ -157,6 +157,18 @@ def train(config: SFTConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
 
+    renderer = None
+    if config.use_renderer:
+        from renderers.base import create_renderer
+
+        renderer = create_renderer(
+            tokenizer,
+            renderer=config.renderer.name,
+            tool_parser=config.renderer.tool_parser,
+            reasoning_parser=config.renderer.reasoning_parser,
+        )
+        logger.info(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
+
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
     optimizer = setup_optimizer(
@@ -175,7 +187,7 @@ def train(config: SFTConfig):
 
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
-    dataset = setup_dataset(tokenizer, config.data, config.model.cp)
+    dataset = setup_dataset(tokenizer, config.data, config.model.cp, renderer=renderer)
     dataloader = setup_dataloader(dataset, config.data)
     dataiter = iter(dataloader)
 
@@ -283,7 +295,12 @@ def train(config: SFTConfig):
 
     def run_validation(step: int) -> None:
         val_dataset = setup_dataset(
-            tokenizer, config.val.data, config.model.cp, max_epochs=1, raw_dataset=val_raw_dataset
+            tokenizer,
+            config.val.data,
+            config.model.cp,
+            max_epochs=1,
+            raw_dataset=val_raw_dataset,
+            renderer=renderer,
         )
         val_dataloader = setup_dataloader(val_dataset, config.val.data)
 

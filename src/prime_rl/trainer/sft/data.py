@@ -127,6 +127,7 @@ class SFTDataset(StatefulIterableDataset):
         loss_mask_config: LossMaskConfig = LossMaskConfig(),
         max_examples: int | None = None,
         max_epochs: int | None = None,
+        renderer=None,
     ):
         super().__init__()
         self.logger = get_logger()
@@ -139,6 +140,7 @@ class SFTDataset(StatefulIterableDataset):
         self.loss_mask_config = loss_mask_config
         self.max_examples = max_examples
         self.max_epochs = max_epochs
+        self.renderer = renderer
 
         if self.tokenizer is None:
             self.logger.warning("No tokenizer provided, will not process examples")
@@ -206,18 +208,28 @@ class SFTDataset(StatefulIterableDataset):
                 case _:
                     raise ValueError(f"Invalid message role: {message['role']}")
 
-        try:
-            input_ids, loss_mask = build_incremental_token_mask(
-                self.tokenizer,
+        if self.renderer is not None:
+            from renderers.base import build_training_sample
+
+            input_ids, loss_mask = build_training_sample(
+                self.renderer,
                 messages,
                 role_to_mask=should_mask,
                 tools=tools,
-                chat_template_kwargs=example.get("chat_template_kwargs", {}),
-                collapse_consecutive_tool_messages=True,
             )
-        except IncrementalTokenizationError as e:
-            self.logger.warning(f"Skipping example {example.get('__index', '')}: {e}")
-            return None
+        else:
+            try:
+                input_ids, loss_mask = build_incremental_token_mask(
+                    self.tokenizer,
+                    messages,
+                    role_to_mask=should_mask,
+                    tools=tools,
+                    chat_template_kwargs=example.get("chat_template_kwargs", {}),
+                    collapse_consecutive_tool_messages=True,
+                )
+            except IncrementalTokenizationError as e:
+                self.logger.warning(f"Skipping example {example.get('__index', '')}: {e}")
+                return None
 
         # If EOS token is not found, manually append it
         if not self.tokenizer.eos_token_id in input_ids:
@@ -537,6 +549,7 @@ def setup_dataset(
     *,
     max_epochs: int | None = None,
     raw_dataset: Dataset | None = None,
+    renderer=None,
 ) -> StatefulIterableDataset:
     if config.type == "fake":
         return FakeDataset(
@@ -554,6 +567,7 @@ def setup_dataset(
             loss_mask_config=config.loss_mask,
             non_dp_size=non_dp_size,
             max_epochs=max_epochs,
+            renderer=renderer,
         )
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")

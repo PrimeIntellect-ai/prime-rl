@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from prime_rl.configs.shared import (
     HeartbeatConfig,
+    RendererConfig,
     SlurmConfig,
     TrainerLogConfig,
     WandbConfig,
@@ -171,6 +172,21 @@ class SFTConfig(BaseConfig):
 
     # The tokenizer configuration
     tokenizer: TokenizerConfig = TokenizerConfig()
+
+    # The renderer configuration (only used when use_renderer=True)
+    renderer: RendererConfig = RendererConfig()
+
+    use_renderer: Annotated[
+        bool,
+        Field(
+            description=(
+                "If True, tokenize SFT samples through the `renderers` library "
+                "(single render() + message_indices mask) instead of the default "
+                "`build_incremental_token_mask` path. Required for chat templates "
+                "that render position-dependently (e.g. Qwen3, Qwen3.5)."
+            ),
+        ),
+    ] = False
 
     # The data configuration
     data: DataConfig = SFTDataConfig()
