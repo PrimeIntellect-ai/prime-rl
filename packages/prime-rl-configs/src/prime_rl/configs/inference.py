@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_config import BaseConfig
 
-from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
+from prime_rl.configs.shared import BaseModelConfig, LogConfig, SlurmConfig
 from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
 
 # TODO: Set thinking/ solution budget
@@ -260,6 +260,9 @@ class InferenceConfig(BaseConfig):
 
     # The parallel configuration
     parallel: ParallelConfig = ParallelConfig()
+
+    # The log configuration
+    log: LogConfig = LogConfig()
 
     enable_lora: Annotated[
         bool,

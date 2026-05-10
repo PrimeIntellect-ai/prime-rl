@@ -83,7 +83,7 @@ def inference_slurm(config: InferenceConfig):
     """Run inference via SLURM."""
     assert config.slurm is not None
 
-    logger = setup_logger("info")
+    logger = setup_logger(config.log.level, json_logging=config.log.json_logging)
 
     config_dir = get_config_dir(config.output_dir)
     exclude = (
@@ -119,7 +119,7 @@ def inference_local(config: InferenceConfig):
     """Run inference locally."""
     from prime_rl.inference.server import setup_vllm_env
 
-    logger = setup_logger("info")
+    logger = setup_logger(config.log.level, json_logging=config.log.json_logging)
 
     if config.dry_run:
         logger.success("Dry run complete. To start inference locally, remove --dry-run from your command.")
