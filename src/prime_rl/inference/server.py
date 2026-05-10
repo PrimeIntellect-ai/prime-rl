@@ -21,6 +21,11 @@ def setup_vllm_env(config: InferenceConfig):
         from prime_rl.inference.json_logging import build_dict_config, write_logging_config
 
         config_path = write_logging_config(config.log.level)
+        # vLLM raises if VLLM_LOGGING_CONFIG_PATH is set while
+        # VLLM_CONFIGURE_LOGGING=0 (its supported way to disable logger
+        # setup). Force it on — opting into JSON logging is an explicit
+        # request to configure vLLM's logger.
+        os.environ["VLLM_CONFIGURE_LOGGING"] = "1"
         os.environ["VLLM_LOGGING_CONFIG_PATH"] = str(config_path)
         logging.config.dictConfig(build_dict_config(config.log.level))
 
