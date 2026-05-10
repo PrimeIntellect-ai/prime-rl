@@ -30,22 +30,14 @@ delegates to upstream so we track future vLLM changes for free.
 
 from __future__ import annotations
 
-import asyncio
 import base64
-import time
 from collections.abc import AsyncGenerator
 from functools import cached_property
 
 import numpy as np
 from fastapi import Request
 from pydantic import Field
-from vllm.entrypoints.openai.engine.protocol import (
-    ErrorResponse,
-    PromptTokenUsageInfo,
-    RequestResponseMetadata,
-    UsageInfo,
-)
-from vllm.entrypoints.openai.engine.serving import clamp_prompt_logprobs
+from vllm.entrypoints.openai.engine.protocol import ErrorResponse, RequestResponseMetadata
 from vllm.entrypoints.serve.disagg.protocol import (
     GenerateRequest,
     GenerateResponse,
@@ -55,7 +47,6 @@ from vllm.entrypoints.serve.disagg.serving import ServingTokens
 from vllm.entrypoints.utils import get_max_tokens
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import RequestOutputKind, SamplingParams
-from vllm.utils.collection_utils import as_list
 
 
 class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
@@ -73,11 +64,51 @@ class PrimeRlGenerateResponse(GenerateResponse):
     choices: list[PrimeRlGenerateResponseChoice]
 
 
-def _encode_routed_experts(arr: np.ndarray) -> dict:
+def encode_routed_experts(arr: np.ndarray) -> dict:
     return {
         "data": base64.b85encode(arr.tobytes()).decode("ascii"),
         "shape": list(arr.shape),
     }
+
+
+class _RoutedExpertsCapture:
+    """Mirrors ``serving_chat_with_tokens._RoutedExpertsCapture`` for the
+    ``/inference/v1/generate`` path. Wraps the engine result generator,
+    captures ``routed_experts`` per output as it streams, then rebuilds
+    the response with ``PrimeRlGenerateResponseChoice`` so the encoded
+    array makes it into the JSON.
+
+    The chat path attaches ``routed_experts`` in-place because
+    ``ChatCompletionResponseChoice`` is configured ``extra='allow'``.
+    Upstream's ``GenerateResponseChoice`` isn't, so we have to rebuild
+    the response into our subclass instead.
+    """
+
+    def __init__(self, generator: AsyncGenerator[RequestOutput, None]):
+        self._generator = generator
+        self.routed_experts: dict[int, dict] = {}
+
+    async def __aiter__(self):
+        async for request_output in self._generator:
+            for output in request_output.outputs:
+                if output.routed_experts is not None:
+                    self.routed_experts[output.index] = encode_routed_experts(output.routed_experts)
+            yield request_output
+
+    def post_process(self, response: GenerateResponse) -> PrimeRlGenerateResponse:
+        new_choices = [
+            PrimeRlGenerateResponseChoice(
+                **choice.model_dump(),
+                routed_experts=self.routed_experts.get(choice.index),
+            )
+            for choice in response.choices
+        ]
+        return PrimeRlGenerateResponse(
+            request_id=response.request_id,
+            choices=new_choices,
+            prompt_logprobs=response.prompt_logprobs,
+            kv_transfer_params=response.kv_transfer_params,
+        )
 
 
 async def _client_set_max_tokens(raw_request: Request | None) -> bool:
@@ -248,74 +279,23 @@ class PrimeRlServingTokens(ServingTokens):
         request_id: str,
         model_name: str,
         request_metadata: RequestResponseMetadata,
-    ) -> ErrorResponse | PrimeRlGenerateResponse:
-        # Same shape as upstream's full generator — the only diff is we lift
-        # ``routed_experts`` off each completion output into the choice.
-        sampling_params: SamplingParams = request.sampling_params
-        final_res: RequestOutput | None = None
+    ) -> ErrorResponse | GenerateResponse:
+        # Mirror serving_chat_with_tokens: wrap the result generator to capture
+        # routed_experts as it streams, defer the rest to upstream, then post-
+        # process the response into our PrimeRlGenerateResponse subclass so the
+        # encoded experts surface in the JSON. Skipping the wrapper when the
+        # engine isn't producing routed experts keeps us a no-op subclass on
+        # the common path.
+        capture: _RoutedExpertsCapture | None = None
+        if self.model_config.enable_return_routed_experts:
+            capture = _RoutedExpertsCapture(result_generator)
+            result_generator = capture  # type: ignore[assignment]
 
-        try:
-            async for res in result_generator:
-                final_res = res
-        except asyncio.CancelledError:
-            return self.create_error_response("Client disconnected")
-
-        assert final_res is not None
-
-        choices: list[PrimeRlGenerateResponseChoice] = []
-        num_generated_tokens = 0
-        for output in final_res.outputs:
-            token_ids = output.token_ids
-            out_logprobs = output.logprobs
-
-            if sampling_params.logprobs is not None:
-                assert out_logprobs is not None, "Did not output logprobs"
-                logprobs = self._create_tokens_logprobs(
-                    token_ids=token_ids,
-                    top_logprobs=out_logprobs,
-                    num_output_top_logprobs=sampling_params.logprobs,
-                )
-            else:
-                logprobs = None
-
-            routed_experts = None
-            re_arr = getattr(output, "routed_experts", None)
-            if re_arr is not None:
-                routed_experts = _encode_routed_experts(re_arr)
-
-            choices.append(
-                PrimeRlGenerateResponseChoice(
-                    index=output.index,
-                    logprobs=logprobs,
-                    finish_reason=output.finish_reason if output.finish_reason else "stop",
-                    token_ids=as_list(output.token_ids),
-                    routed_experts=routed_experts,
-                )
-            )
-            num_generated_tokens += len(output.token_ids)
-
-        assert final_res.prompt_token_ids is not None
-        num_prompt_tokens = len(final_res.prompt_token_ids)
-        if final_res.encoder_prompt_token_ids is not None:
-            num_prompt_tokens += len(final_res.encoder_prompt_token_ids)
-
-        usage = UsageInfo(
-            prompt_tokens=num_prompt_tokens,
-            completion_tokens=num_generated_tokens,
-            total_tokens=num_prompt_tokens + num_generated_tokens,
+        response = await super().serve_tokens_full_generator(
+            request, result_generator, request_id, model_name, request_metadata
         )
-        if self.enable_prompt_tokens_details and final_res.num_cached_tokens:
-            usage.prompt_tokens_details = PromptTokenUsageInfo(cached_tokens=final_res.num_cached_tokens)
 
-        request_metadata.final_usage_info = usage
+        if capture is not None and isinstance(response, GenerateResponse):
+            response = capture.post_process(response)
 
-        # Upstream constructs GenerateResponse with id=/created=/model=/usage=
-        # which Pydantic silently drops (they're not declared on the model).
-        # We only set the declared fields plus the request_id for traceability.
-        _ = (model_name, time.time())  # touched for symmetry with upstream call site
-        return PrimeRlGenerateResponse(
-            request_id=request_id,
-            choices=choices,
-            prompt_logprobs=clamp_prompt_logprobs(final_res.prompt_logprobs),
-            kv_transfer_params=final_res.kv_transfer_params,
-        )
+        return response

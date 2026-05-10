@@ -3,7 +3,7 @@
 The full happy-path is owned upstream by vLLM 0.20's
 ``vllm/entrypoints/serve/disagg`` test suite. We only cover the prime-RL
 deltas here:
-    * ``_encode_routed_experts`` round-trips a numpy array as expected.
+    * ``encode_routed_experts`` round-trips a numpy array as expected.
     * ``PrimeRlGenerateResponseChoice`` accepts the optional field.
     * The subclass attaches its overrides without monkey-patching the parent.
     * ``_client_set_max_tokens`` distinguishes raw-body shapes correctly.
@@ -21,7 +21,7 @@ from prime_rl.inference.vllm.serving_tokens import (
     PrimeRlGenerateResponseChoice,
     PrimeRlServingTokens,
     _client_set_max_tokens,
-    _encode_routed_experts,
+    encode_routed_experts,
 )
 
 
@@ -38,7 +38,7 @@ class _FakeRawRequest:
 
 def test_encode_routed_experts_roundtrip():
     arr = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.int32)
-    encoded = _encode_routed_experts(arr)
+    encoded = encode_routed_experts(arr)
 
     assert encoded["shape"] == [2, 3]
     decoded = np.frombuffer(base64.b85decode(encoded["data"]), dtype=np.int32).reshape(encoded["shape"])
@@ -49,7 +49,7 @@ def test_routed_experts_choice_accepts_none_and_dict():
     no_re = PrimeRlGenerateResponseChoice(index=0, finish_reason="stop", token_ids=[1, 2])
     assert no_re.routed_experts is None
 
-    encoded = _encode_routed_experts(np.zeros((1, 1), dtype=np.int32))
+    encoded = encode_routed_experts(np.zeros((1, 1), dtype=np.int32))
     with_re = PrimeRlGenerateResponseChoice(index=0, finish_reason="stop", token_ids=[1], routed_experts=encoded)
     assert with_re.routed_experts == encoded
 

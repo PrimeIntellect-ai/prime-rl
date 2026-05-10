@@ -1,8 +1,6 @@
-import base64
 from collections.abc import AsyncGenerator, AsyncIterator
 from typing import ClassVar, Optional, Union
 
-import numpy as np
 from fastapi import Request
 from pydantic import Field
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest, ChatCompletionResponse
@@ -16,6 +14,8 @@ from vllm.outputs import RequestOutput
 from vllm.reasoning import ReasoningParser
 from vllm.sampling_params import BeamSearchParams, SamplingParams
 
+from prime_rl.inference.vllm.serving_tokens import encode_routed_experts
+
 logger = init_logger(__name__)
 
 
@@ -24,17 +24,11 @@ class _RoutedExpertsCapture:
         self._generator = generator
         self.routed_experts: dict[int, dict] = {}
 
-    def _encode_routed_experts(self, arr: np.ndarray) -> dict:
-        return {
-            "data": base64.b85encode(arr.tobytes()).decode("ascii"),
-            "shape": list(arr.shape),
-        }
-
     async def __aiter__(self):
         async for request_output in self._generator:
             for output in request_output.outputs:
                 if output.routed_experts is not None:
-                    self.routed_experts[output.index] = self._encode_routed_experts(output.routed_experts)
+                    self.routed_experts[output.index] = encode_routed_experts(output.routed_experts)
             yield request_output
 
     def post_process(self, response: ChatCompletionResponse):
