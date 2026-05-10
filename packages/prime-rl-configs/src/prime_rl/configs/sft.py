@@ -374,6 +374,15 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_renderer_vs_vlm(self):
+        if self.use_renderer and self.model.vlm is not None:
+            raise ValueError(
+                "use_renderer is not supported for VLMs. The renderer tokenizes "
+                "text-only message dicts client-side and cannot handle image inputs."
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_lora_adapter_saving(self):
         if self.ckpt and self.ckpt.weights and self.ckpt.weights.save_adapter_separately:
             lora_enabled = self.model and self.model.lora
