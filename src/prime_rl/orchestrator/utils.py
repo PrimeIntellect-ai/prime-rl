@@ -89,14 +89,22 @@ async def compute_teacher_logprobs(
     async def _compute_single(client_config: vf.ClientConfig, sample: TrainingSample) -> list[float]:
         client = setup_openai_client(client_config)
 
-        # /inference/v1/generate is mounted at the server root, not under /v1
-        # like the OpenAI-compatible endpoints. Build an absolute URL so the
-        # AsyncOpenAI client doesn't prefix the configured /v1 onto the path.
+        # ``/inference/v1/generate`` is mounted at the server root, not under
+        # ``/v1`` like the OpenAI-compatible endpoints. We need two escape
+        # hatches from ``AsyncOpenAI.post`` here:
+        #   1. URL: build an absolute URL so the SDK skips its base-url merge
+        #      (``BaseClient._prepare_url`` short-circuits when the URL passes
+        #      ``httpx.URL.is_relative_url`` as False).
+        #   2. Parse: the SDK's ``cast_to`` requires ``openai.BaseModel``;
+        #      vLLM's ``GenerateResponse`` is a vanilla ``pydantic.BaseModel``
+        #      and the SDK's parse layer rejects it with ``TypeError``. Send
+        #      the request through the underlying httpx client (kept on
+        #      ``AsyncOpenAI._client`` with auth + connection pool already
+        #      wired up) and validate the JSON ourselves.
         base = str(client.base_url).rstrip("/").removesuffix("/v1")
-        response = await client.post(
+        http_response = await client._client.post(
             f"{base}/inference/v1/generate",
-            cast_to=GenerateResponse,
-            body={
+            json={
                 "model": model_name,
                 "token_ids": list(sample.prompt_ids) + list(sample.completion_ids),
                 "sampling_params": {
@@ -107,8 +115,12 @@ async def compute_teacher_logprobs(
                 },
             },
         )
-        # Upstream's prompt_logprobs is list[dict[token_id, Logprob] | None];
-        # legacy /v1/generate flattened to list[float | None]. Re-flatten here.
+        http_response.raise_for_status()
+        response = GenerateResponse.model_validate_json(http_response.content)
+        # ``prompt_logprobs[i]`` is a ``{token_id: Logprob}`` dict for tokens
+        # the engine could score, or ``None`` for the leading token which has
+        # no preceding context. Flatten to ``list[float]`` with 0.0 in the
+        # unscored slot.
         flat: list[float] = []
         for entry in response.prompt_logprobs or []:
             if not entry:
