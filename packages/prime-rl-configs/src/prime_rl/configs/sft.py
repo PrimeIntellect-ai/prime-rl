@@ -383,6 +383,28 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_renderer_args(self):
+        if self.use_renderer:
+            return self
+
+        renderer_args_set = []
+        if self.renderer.name != "auto":
+            renderer_args_set.append(f"renderer.name={self.renderer.name!r}")
+        if self.renderer.tool_parser is not None:
+            renderer_args_set.append(f"renderer.tool_parser={self.renderer.tool_parser!r}")
+        if self.renderer.reasoning_parser is not None:
+            renderer_args_set.append(f"renderer.reasoning_parser={self.renderer.reasoning_parser!r}")
+        if self.renderer.pool_size is not None:
+            renderer_args_set.append(f"renderer.pool_size={self.renderer.pool_size!r}")
+
+        if renderer_args_set:
+            raise ValueError(
+                "Renderer-specific args set without use_renderer=True: "
+                f"{', '.join(renderer_args_set)}. Either enable the renderer or remove these knobs."
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_lora_adapter_saving(self):
         if self.ckpt and self.ckpt.weights and self.ckpt.weights.save_adapter_separately:
             lora_enabled = self.model and self.model.lora
