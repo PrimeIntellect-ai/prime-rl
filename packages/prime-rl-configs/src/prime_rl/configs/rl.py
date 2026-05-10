@@ -467,10 +467,12 @@ class RLConfig(BaseConfig):
             if self.log.level is not None:
                 self.trainer.log.level = self.log.level
                 self.orchestrator.log.level = self.log.level
-                self.inference.log.level = self.log.level
+                if self.inference is not None:
+                    self.inference.log.level = self.log.level
             self.trainer.log.json_logging = self.log.json_logging
             self.orchestrator.log.json_logging = self.log.json_logging
-            self.inference.log.json_logging = self.log.json_logging
+            if self.inference is not None:
+                self.inference.log.json_logging = self.log.json_logging
 
         return self
 
