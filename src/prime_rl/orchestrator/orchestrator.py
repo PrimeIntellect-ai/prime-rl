@@ -616,20 +616,32 @@ async def orchestrate(config: OrchestratorConfig):
         # to avoid column name collisions
         metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
         filter_df = pd.DataFrame([rollout["filters"] for rollout in train_rollouts])
-        timing_df = pd.DataFrame(
-            [
-                {
-                    "total": rollout["timing"]["total"],
-                    "setup": rollout["timing"]["setup"]["duration"],
-                    "generation": rollout["timing"]["generation"]["duration"],
-                    "model": rollout["timing"]["model"]["duration"],
-                    "env": rollout["timing"]["env"]["duration"],
-                    "scoring": rollout["timing"]["scoring"]["duration"],
-                    "overhead": rollout["timing"]["overhead"],
-                }
-                for rollout in train_rollouts
-            ]
-        )
+        def get_timing_value(timing, key, *, fallback_ms_key=None):
+            value = timing.get(key)
+            if isinstance(value, dict):
+                value = value.get("duration")
+            if value is None and fallback_ms_key is not None:
+                value = timing.get(fallback_ms_key)
+                if value is not None:
+                    value = float(value) / 1000.0
+            return 0.0 if value is None else float(value)
+
+        def get_timing_metrics(rollout):
+            timing = rollout.get("timing") or {}
+            if hasattr(timing, "model_dump"):
+                timing = timing.model_dump()
+
+            return {
+                "total": get_timing_value(timing, "total", fallback_ms_key="total_ms"),
+                "setup": get_timing_value(timing, "setup"),
+                "generation": get_timing_value(timing, "generation", fallback_ms_key="generation_ms"),
+                "model": get_timing_value(timing, "model"),
+                "env": get_timing_value(timing, "env"),
+                "scoring": get_timing_value(timing, "scoring", fallback_ms_key="scoring_ms"),
+                "overhead": get_timing_value(timing, "overhead"),
+            }
+
+        timing_df = pd.DataFrame([get_timing_metrics(rollout) for rollout in train_rollouts])
 
         # Update progress metrics
         num_tokens = int(results_df.seq_len.sum())
