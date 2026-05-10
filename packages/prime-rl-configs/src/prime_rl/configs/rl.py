@@ -462,13 +462,15 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_logs(self):
-        """Auto-setup shared log config for trainer and orchestrator."""
+        """Auto-setup shared log config for trainer, orchestrator, and inference."""
         if self.log is not None:
             if self.log.level is not None:
                 self.trainer.log.level = self.log.level
                 self.orchestrator.log.level = self.log.level
+                self.inference.log.level = self.log.level
             self.trainer.log.json_logging = self.log.json_logging
             self.orchestrator.log.json_logging = self.log.json_logging
+            self.inference.log.json_logging = self.log.json_logging
 
         return self
 
