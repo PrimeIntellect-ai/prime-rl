@@ -199,6 +199,47 @@ def test_rl_config_auto_selects_openai_client_for_sglang():
     assert config.orchestrator.client.admin_backend == "sglang"
 
 
+def test_inference_config_translates_dynamo_args():
+    config = InferenceConfig.model_validate(
+        {
+            "backend": "dynamo",
+            "server": {"host": "0.0.0.0", "port": 9000},
+            "model": {"name": "Qwen/Qwen3-0.6B", "max_model_len": 4096, "enforce_eager": True},
+            "parallel": {"tp": 2, "dp": 1},
+            "gpu_memory_utilization": 0.8,
+            "dynamo": {"system_port": 9001, "discovery_backend": "file", "worker_extra": {"block_size": 64}},
+        }
+    )
+
+    frontend = config.to_dynamo_frontend()
+    worker = config.to_dynamo_vllm()
+
+    assert frontend.http_host == "0.0.0.0"
+    assert frontend.http_port == 9000
+    assert frontend.namespace == "dynamo"
+    assert frontend.discovery_backend == "file"
+    assert frontend.model_name == "Qwen/Qwen3-0.6B"
+    assert frontend.dyn_chat_processor == "vllm"
+    assert worker.model == "Qwen/Qwen3-0.6B"
+    assert worker.served_model_name == "Qwen/Qwen3-0.6B"
+    assert worker.max_model_len == 4096
+    assert worker.tensor_parallel_size == 2
+    assert worker.enforce_eager is True
+    assert worker.gpu_memory_utilization == 0.8
+    assert worker.use_vllm_tokenizer is False
+    assert worker.block_size == 64
+
+
+def test_rl_config_auto_selects_openai_client_for_dynamo():
+    config = RLConfig.model_validate({"trainer": {}, "orchestrator": {}, "inference": {"backend": "dynamo"}})
+
+    assert config.orchestrator.use_token_client is False
+    assert config.orchestrator.client.admin_backend == "dynamo"
+    assert config.orchestrator.client.admin_base_url == ["http://localhost:8081"]
+    assert config.orchestrator.client.skip_model_check is True
+    assert all("return_token_ids" not in env.sampling.extra_body for env in config.orchestrator.train.env)
+
+
 def test_rl_config_selects_sglang_nccl_trainer_backend():
     config = RLConfig.model_validate(
         {

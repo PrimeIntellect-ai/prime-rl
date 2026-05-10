@@ -79,7 +79,7 @@ class SlurmConfig(BaseConfig):
 
 
 ServerType = Literal["vllm", "sglang", "openai"]
-AdminBackend = Literal["vllm", "sglang"]
+AdminBackend = Literal["vllm", "sglang", "dynamo"]
 
 
 class VLMConfig(BaseConfig):
