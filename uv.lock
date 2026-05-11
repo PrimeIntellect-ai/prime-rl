@@ -11,7 +11,7 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+exclude-newer = "2026-05-04T22:33:38.153203392Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -2890,7 +2890,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "quack-kernels", marker = "extra == 'quack'", specifier = ">=0.3.3" },
-    { name = "renderers", specifier = "==0.1.6" },
+    { name = "renderers", git = "https://github.com/PrimeIntellect-ai/renderers.git?branch=feat%2Fmultimodal-vlm" },
     { name = "reverse-text", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ring-flash-attn", specifier = ">=0.1.8" },
@@ -2905,7 +2905,7 @@ requires-dist = [
     { name = "torchvision", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=aa428f3" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?branch=feat%2Frenderer-multimodal-passthrough" },
     { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'", specifier = ">=0.20.2" },
     { name = "vllm", marker = "platform_machine == 'aarch64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl" },
     { name = "vllm", marker = "platform_machine == 'x86_64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_x86_64.whl" },
@@ -3376,8 +3376,8 @@ wheels = [
 
 [[package]]
 name = "renderers"
-version = "0.1.6"
-source = { registry = "https://pypi.org/simple" }
+version = "0.1.7"
+source = { git = "https://github.com/PrimeIntellect-ai/renderers.git?branch=feat%2Fmultimodal-vlm#28fd8a122409143f84efce156d7917cdb55d8d0f" }
 dependencies = [
     { name = "jinja2", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "numpy", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -3385,10 +3385,6 @@ dependencies = [
     { name = "openai-harmony", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tiktoken", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "transformers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/7c/a7/26162494dab2d7740ff02191cb87c30b68450fb154363c7f0a434e7f3ea9/renderers-0.1.6.tar.gz", hash = "sha256:b74bc3dc870bea3c37ff5b47826ace9b8dd608a4c1f56554c39be1b20b2c63dc", size = 163768, upload-time = "2026-05-07T14:12:36.634Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/5e/ad/2cf218b9fafe2333fb3e80e123e3e2022d4923d9a61fa73ee6d79f39b563/renderers-0.1.6-py3-none-any.whl", hash = "sha256:90c626713239ec108716b7c9d194ba81ffcebe94dc003324f14fbd70e6793e89", size = 83348, upload-time = "2026-05-07T14:12:35.218Z" },
 ]
 
 [[package]]
@@ -4168,7 +4164,7 @@ wheels = [
 [[package]]
 name = "verifiers"
 version = "0.1.14"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=aa428f3#aa428f3941ae35a7cf7c0dad7e60c7eca525bac6" }
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?branch=feat%2Frenderer-multimodal-passthrough#810a7275e189cfcb9ce99382877bd6d259427d3d" }
 dependencies = [
     { name = "aiolimiter", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "anthropic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },

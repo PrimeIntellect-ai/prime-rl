@@ -29,7 +29,12 @@ def test_forward_adds_qwen3_vl_mm_token_type_ids():
     pixel_values = torch.ones(2, 3)
     image_grid_thw = torch.tensor([[1, 1, 2]])
 
-    forward(model, input_ids, position_ids, pixel_values=pixel_values, image_grid_thw=image_grid_thw)
+    forward(
+        model,
+        input_ids,
+        position_ids,
+        mm_kwargs={"pixel_values": pixel_values, "image_grid_thw": image_grid_thw},
+    )
 
     assert model.kwargs is not None
     assert "position_ids" not in model.kwargs
@@ -43,7 +48,12 @@ def test_forward_skips_mm_token_type_ids_for_other_vlm_models():
     input_ids = torch.tensor([[1, 10, 10, 2]])
     position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0)
 
-    forward(model, input_ids, position_ids, pixel_values=torch.ones(2, 3), image_grid_thw=torch.tensor([[1, 1, 2]]))
+    forward(
+        model,
+        input_ids,
+        position_ids,
+        mm_kwargs={"pixel_values": torch.ones(2, 3), "image_grid_thw": torch.tensor([[1, 1, 2]])},
+    )
 
     assert model.kwargs is not None
     assert "position_ids" not in model.kwargs
