@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import multiprocessing as mp
+import os
 import time
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from multiprocessing.process import BaseProcess
@@ -22,6 +23,16 @@ from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize
 
 REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
+
+
+def _run_env_server_with_request_dump(*args, request_dump_dir: str | None = None, **kwargs) -> None:
+    if request_dump_dir is not None:
+        os.environ["PRIME_RL_CHAT_REQUEST_DUMP_DIR"] = request_dump_dir
+
+    from prime_rl.orchestrator.request_dump import install_chat_request_dump_patch
+
+    install_chat_request_dump_patch()
+    ZMQEnvServer.run_server(*args, **kwargs)
 
 
 class Env:
@@ -84,7 +95,7 @@ class Env:
         address = f"tcp://127.0.0.1:{get_free_port()}"
         get_logger().debug(f"Spawning env server {self.name} ({address=}, {num_workers=})")
         process = mp.get_context("spawn").Process(
-            target=ZMQEnvServer.run_server,
+            target=_run_env_server_with_request_dump,
             args=(
                 self.config.stripped_id,
                 self.config.args,
@@ -97,6 +108,7 @@ class Env:
                 json_logging=json_logging,
                 console_logging=False,
                 num_workers=num_workers,
+                request_dump_dir=(log_dir / self.name / "request_dumps").as_posix(),
             ),
             daemon=False,
         )

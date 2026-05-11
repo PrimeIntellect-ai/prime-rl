@@ -8,6 +8,8 @@ Default settings target the local Nemotron Super math NaN repro artifacts:
   model:    nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
   mode:     MITO chat completions only; no trainer, orchestrator, env, or weight broadcast.
 
+The input can also be one of the failed request JSON files dumped by
+prime_rl.orchestrator.request_dump, or a directory containing those files.
 Start an inference server separately, then run this script from the prime-rl
 checkout with `uv run python scripts/replay_chat_rollouts.py`.
 """
@@ -50,15 +52,44 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_rollouts(path: Path, limit: int | None) -> list[dict[str, Any]]:
+def _add_source(
+    row: dict[str, Any], *, path: Path, line_no: int | None = None
+) -> dict[str, Any]:
+    row["_source"] = path.as_posix()
+    if line_no is not None:
+        row["_line_no"] = line_no
+    return row
+
+
+def _load_json_file(path: Path) -> list[dict[str, Any]]:
+    with path.open() as f:
+        data = json.load(f)
+    if isinstance(data, list):
+        return [_add_source(row, path=path) for row in data]
+    if isinstance(data, dict):
+        return [_add_source(data, path=path)]
+    raise ValueError(f"Unsupported JSON input in {path}: {type(data)}")
+
+
+def load_rows(path: Path, limit: int | None) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+
+    if path.is_dir():
+        for item in sorted(path.rglob("*.json")):
+            rows.extend(_load_json_file(item))
+            if limit is not None and len(rows) >= limit:
+                break
+        return rows[:limit]
+
+    if path.suffix == ".json":
+        rows = _load_json_file(path)
+        return rows[:limit]
+
     with path.open() as f:
         for line_no, line in enumerate(f, start=1):
             if not line.strip():
                 continue
-            row = json.loads(line)
-            row["_line_no"] = line_no
-            rows.append(row)
+            rows.append(_add_source(json.loads(line), path=path, line_no=line_no))
             if limit is not None and len(rows) >= limit:
                 break
     return rows
@@ -75,6 +106,13 @@ def chat_completions_url(base_url: str) -> str:
 
 
 def build_request(row: dict[str, Any], model: str) -> dict[str, Any]:
+    dumped_request = row.get("request")
+    if isinstance(dumped_request, dict) and "messages" in dumped_request:
+        body = copy.deepcopy(dumped_request)
+        body.setdefault("model", model)
+        body.pop("extra_headers", None)
+        return body
+
     sampling_args = copy.deepcopy(row.get("sampling_args") or {})
     extra_body = sampling_args.pop("extra_body", None) or {}
 
@@ -85,6 +123,8 @@ def build_request(row: dict[str, Any], model: str) -> dict[str, Any]:
     }
     body.update(sampling_args)
     body.update(extra_body)
+    if "max_tokens" in body:
+        body["max_completion_tokens"] = body.pop("max_tokens")
     return body
 
 
@@ -94,6 +134,15 @@ def request_headers(row: dict[str, Any], api_key_var: str) -> dict[str, str]:
         # Match orchestrator.client.extra_headers_from_state for this run.
         "X-Session-ID": str(row.get("example_id", "")),
     }
+    dumped_headers = row.get("headers")
+    if isinstance(dumped_headers, dict):
+        headers.update(
+            {
+                str(key): str(value)
+                for key, value in dumped_headers.items()
+                if value is not None
+            }
+        )
     api_key = os.environ.get(api_key_var)
     if api_key:
         headers["authorization"] = f"Bearer {api_key}"
@@ -139,6 +188,8 @@ async def replay_one(
     result: dict[str, Any] = {
         "repeat": repeat_idx,
         "line_no": row.get("_line_no"),
+        "source": row.get("_source"),
+        "request_id": row.get("request_id"),
         "example_id": row.get("example_id"),
         "env_name": row.get("env_name"),
         "request": request,
@@ -177,7 +228,7 @@ async def replay_one(
 
 async def run() -> int:
     args = parse_args()
-    rows = load_rollouts(args.rollouts, args.limit)
+    rows = load_rows(args.rollouts, args.limit)
     requests = list(iter_repeated(rows, args.repeat))
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
