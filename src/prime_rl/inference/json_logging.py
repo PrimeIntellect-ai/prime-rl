@@ -37,6 +37,11 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(entry, default=str)
 
 
+# Loguru-only level names that stdlib `logging` doesn't recognize.
+# Mapped to the nearest stdlib level so `dictConfig` accepts them.
+_LOGURU_TO_STDLIB = {"TRACE": "DEBUG", "SUCCESS": "INFO"}
+
+
 def build_dict_config(level: str = "info") -> dict[str, Any]:
     """`logging.config.dictConfig` payload that routes vLLM, uvicorn,
     fastapi, and the root logger through `JsonFormatter` to stdout.
@@ -44,7 +49,7 @@ def build_dict_config(level: str = "info") -> dict[str, Any]:
     Used inline for the parent process and serialized to disk for vLLM
     workers (via `VLLM_LOGGING_CONFIG_PATH`).
     """
-    upper = level.upper()
+    upper = _LOGURU_TO_STDLIB.get(level.upper(), level.upper())
     handler = {
         "class": "logging.StreamHandler",
         "formatter": "prime_rl_json",
