@@ -78,7 +78,8 @@ class SlurmConfig(BaseConfig):
         return self
 
 
-ServerType = Literal["vllm", "openai"]
+ServerType = Literal["vllm", "sglang", "openai"]
+AdminBackend = Literal["vllm", "sglang"]
 
 
 class VLMConfig(BaseConfig):
@@ -309,6 +310,17 @@ class ClientConfig(BaseConfig):
             "P/D deployments where the inference router should not handle admin traffic.",
         ),
     ] = None
+
+    admin_backend: Annotated[
+        AdminBackend,
+        Field(
+            description=(
+                "Inference backend used for admin operations such as weight updates. "
+                "The RL entrypoint auto-sets this from inference.backend when it starts "
+                "the inference server."
+            ),
+        ),
+    ] = "vllm"
 
     elastic: Annotated[
         ElasticConfig | None,

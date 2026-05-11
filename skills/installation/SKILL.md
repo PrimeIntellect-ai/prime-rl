@@ -14,6 +14,21 @@ uv sync --all-extras # recommended: includes flash-attn, flash-attn-cute, etc.
 
 ## Advanced
 
+### SGLang inference backend
+
+SGLang is isolated in `packages/prime-rl-sglang` because its transitive dependencies conflict with vLLM and the root workspace pins Transformers 5. The launcher uses `uv run --frozen --project packages/prime-rl-sglang ...` so it uses that package's own locked environment instead of mutating the main `.venv` while trainer/orchestrator run. After dependency changes, refresh both locks through uv:
+
+```bash
+uv lock
+uv lock --project packages/prime-rl-sglang
+```
+
+Use `inference.backend = "sglang"` for single-node filesystem-broadcast runs or single-node NCCL broadcast runs. Multi-node SGLang deployment is not wired yet.
+
+SGLang NCCL broadcast uses custom `prime_rl_sglang` routes (`/init_broadcaster` and `/update_weights`) and a byte-based PyNccl bootstrap so the isolated SGLang runtime does not need to import vLLM. The SGLang launcher passes the root environment's `libnccl.so.2` via `SGLANG_NCCL_SO_PATH` and applies the same `NCCL_P2P_DISABLE` / `NCCL_SHM_DISABLE` fallback as the trainer when NVLink is unavailable. Keep these envs aligned when debugging manual launches.
+
+The launcher also sets `FLASHINFER_WORKSPACE_BASE=packages/prime-rl-sglang` so FlashInfer JIT artifacts are tied to the SGLang project env. This avoids stale JIT cache entries that can contain include paths from uv temp environments.
+
 ### Mamba-SSM (NemotronH models)
 
 For NemotronH (hybrid Mamba-Transformer-MoE) models, install `mamba-ssm` for Triton-based SSD kernels that match vLLM's precision:
@@ -71,3 +86,4 @@ Installs pytest, ruff, pre-commit, and other development tools.
 
 - `pyproject.toml` — all dependencies, extras, and dependency groups
 - `uv.lock` — pinned lockfile (update with `uv sync --all-extras`)
+- `packages/prime-rl-sglang/pyproject.toml` and `packages/prime-rl-sglang/uv.lock` — isolated SGLang runtime

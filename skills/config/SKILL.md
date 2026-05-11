@@ -132,6 +132,26 @@ On the CLI, pass as a JSON string:
 uv run inference --vllm-extra '{"key1": "value1", "key2": 123}'
 ```
 
+SGLang uses a parallel `sglang_extra` dict:
+
+```toml
+[inference]
+backend = "sglang"
+
+[inference.sglang_extra]
+attention_backend = "triton"
+```
+
+SGLang support currently covers single-node inference with filesystem or NCCL weight broadcast. The RL config auto-switches rollouts from the vLLM-only token client to the standard OpenAI chat-completions client when `inference.backend = "sglang"`.
+
+For SGLang NCCL broadcast:
+
+- Set `inference.backend = "sglang"` and `weight_broadcast.type = "nccl"`.
+- The RL config sets `weight_broadcast.target_backend = "sglang"` automatically.
+- `inference.parallel.dp` must be `1`; SGLang DP attention is not exposed through prime-rl yet.
+- `weight_broadcast.quantize_in_weight_transfer` is not supported.
+- LoRA is not part of the SGLang NCCL path yet.
+
 ### Discriminated unions
 
 Some config fields use discriminated unions (e.g. loss type, data type). Set the `type` field to select the variant:

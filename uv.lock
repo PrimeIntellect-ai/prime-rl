@@ -11,7 +11,7 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+exclude-newer = "2026-05-02T18:28:04.946859534Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -32,6 +32,7 @@ prime-evals = false
 deepdive = false
 prime = false
 reverse-text = false
+sglang = false
 code-env = false
 mini-swe-agent-plus = false
 deep-ep = false
@@ -1164,17 +1165,17 @@ wheels = [
 
 [[package]]
 name = "grpcio"
-version = "1.78.0rc2"
+version = "1.80.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "typing-extensions", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0b/bb/d89b2f8ed062af360e872746cab9d5a98acf80f9fec537536203695cce63/grpcio-1.78.0rc2.tar.gz", hash = "sha256:d624592c82a19a5898c5576fbda43c28d7062bac04ea6f33bbd8871bc0639e64", size = 12831859, upload-time = "2026-01-16T07:30:23.727Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b7/48/af6173dbca4454f4637a4678b67f52ca7e0c1ed7d5894d89d434fecede05/grpcio-1.80.0.tar.gz", hash = "sha256:29aca15edd0688c22ba01d7cc01cb000d72b2033f4a3c72a81a19b56fd143257", size = 12978905, upload-time = "2026-03-30T08:49:10.502Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2e/e7/94e4c7ae7fdbaf7adc8af47eb6e3b53166c184b281a470210df8bf0dcb96/grpcio-1.78.0rc2-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:7fe343a2ccaa3ca48a933e81f4c0a9de37057cf5bc5567864a98775cce570456", size = 6476173, upload-time = "2026-01-16T07:28:38.599Z" },
-    { url = "https://files.pythonhosted.org/packages/c4/d7/60e821443c044365222a7fcd6630344016ea3e31bf4903f3a22f93e5b3a1/grpcio-1.78.0rc2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:e7bde54ad7bee2d4dbc6d4a351d5b62cc2bfa87c58e9db911ed8a0489192ca9a", size = 6690812, upload-time = "2026-01-16T07:28:43.887Z" },
-    { url = "https://files.pythonhosted.org/packages/80/47/b19c67ca6e0622fccb88558452e6f7458551ef365456585968dcd84a1db3/grpcio-1.78.0rc2-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:4e99bbce4f509eb6af4b523109152258043b92bbb945950456a9318eca71ef2e", size = 7266122, upload-time = "2026-01-16T07:28:46.109Z" },
-    { url = "https://files.pythonhosted.org/packages/df/81/dcf11b5915a39024d4a98ef14b16cb0c636a4f2f26ef657982d3144c6544/grpcio-1.78.0rc2-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:ea66e360e5ea032a1f6dde926915ba683edca811ed6f0e0620c52e264ba364e4", size = 7698266, upload-time = "2026-01-16T07:28:51.342Z" },
+    { url = "https://files.pythonhosted.org/packages/6e/5e/d319c6e997b50c155ac5a8cb12f5173d5b42677510e886d250d50264949d/grpcio-1.80.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:d334591df610ab94714048e0d5b4f3dd5ad1bee74dfec11eee344220077a79de", size = 6563866, upload-time = "2026-03-30T08:47:18.588Z" },
+    { url = "https://files.pythonhosted.org/packages/db/f0/a3deb5feba60d9538a962913e37bd2e69a195f1c3376a3dd44fe0427e996/grpcio-1.80.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:4e78c4ac0d97dc2e569b2f4bcbbb447491167cb358d1a389fc4af71ab6f70411", size = 6782121, upload-time = "2026-03-30T08:47:23.827Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/84/36c6dcfddc093e108141f757c407902a05085e0c328007cb090d56646cdf/grpcio-1.80.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:2ed770b4c06984f3b47eb0517b1c69ad0b84ef3f40128f51448433be904634cd", size = 7383811, upload-time = "2026-03-30T08:47:26.517Z" },
+    { url = "https://files.pythonhosted.org/packages/9b/8d/9d4d27ed7f33d109c50d6b5ce578a9914aa68edab75d65869a17e630a8d1/grpcio-1.80.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:9a6284a5d907c37db53350645567c522be314bac859a64a7a5ca63b77bb7958f", size = 7830132, upload-time = "2026-03-30T08:47:33.254Z" },
 ]
 
 [[package]]

@@ -1,0 +1,27 @@
+[project]
+name = "prime-rl-sglang"
+version = "0.4.0"
+description = "Isolated SGLang runner for prime-rl"
+requires-python = "~=3.12.0"
+dependencies = [
+    "sglang>=0.5.9,<0.5.10",
+    "transformers<5",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/prime_rl_sglang"]
+
+[tool.uv]
+exclude-newer = "7 days"
+preview = true
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]
+
+[tool.uv.exclude-newer-package]
+sglang = false

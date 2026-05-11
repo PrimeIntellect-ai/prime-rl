@@ -1,3 +1,4 @@
+import ctypes
 import pickle
 import time
 from pathlib import Path
@@ -8,7 +9,16 @@ import torch.nn as nn
 from torch import Tensor
 from torch.distributed.tensor import DTensor
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
+from vllm.distributed.device_communicators.pynccl_wrapper import (
+    NCCLLibrary,
+    buffer_type,
+    cudaStream_t,
+    ncclComm_t,
+    ncclDataTypeEnum,
+    ncclUniqueId,
+)
 from vllm.distributed.utils import StatelessProcessGroup
+from vllm.utils.torch_utils import current_stream
 
 from prime_rl.configs.trainer import NCCLWeightBroadcastConfig
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
@@ -21,8 +31,85 @@ from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
 from prime_rl.utils.pathing import sync_wait_for_path
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 from prime_rl.utils.vlm import get_layer_prefix
+from prime_rl.utils.weight_broadcast import NCCL_BROADCAST_MARKER, NCCL_READY_MARKER
 
-NCCL_READY_MARKER = "NCCL_READY"
+
+def _unique_id_to_bytes(unique_id: ncclUniqueId) -> bytes:
+    return ctypes.string_at(ctypes.addressof(unique_id), ctypes.sizeof(unique_id))
+
+
+def _unique_id_from_bytes(data: bytes) -> ncclUniqueId:
+    if len(data) != ctypes.sizeof(ncclUniqueId):
+        raise ValueError(f"Expected NCCL unique id with {ctypes.sizeof(ncclUniqueId)} bytes, got {len(data)}")
+
+    unique_id = ncclUniqueId()
+    ctypes.memmove(ctypes.addressof(unique_id), data, len(data))
+    return unique_id
+
+
+class NeutralNCCLCommunicator:
+    """vLLM-compatible NCCL communicator that broadcasts a plain-byte unique id."""
+
+    def __init__(
+        self,
+        group: StatelessProcessGroup,
+        device: int | str | torch.device,
+        library_path: str | None = None,
+    ):
+        self.rank = group.rank
+        self.world_size = group.world_size
+        self.group = group
+
+        if self.world_size == 1:
+            self.available = False
+            self.disabled = True
+            return
+
+        self.nccl = NCCLLibrary(library_path)
+        self.available = True
+        self.disabled = False
+        self.nccl_version = self.nccl.ncclGetRawVersion()
+
+        if self.rank == 0:
+            unique_id = self.nccl.ncclGetUniqueId()
+            self.unique_id = group.broadcast_obj(_unique_id_to_bytes(unique_id), src=0)
+        else:
+            self.unique_id = group.broadcast_obj(None, src=0)
+        self.unique_id = _unique_id_from_bytes(self.unique_id)
+
+        if isinstance(device, int):
+            device = torch.device(f"cuda:{device}")
+        elif isinstance(device, str):
+            device = torch.device(device)
+        self.device = device
+
+        with torch.accelerator.device_index(device.index):
+            self.comm: ncclComm_t = self.nccl.ncclCommInitRank(self.world_size, self.unique_id, self.rank)
+
+    def broadcast(self, tensor: torch.Tensor, src: int, stream=None):
+        if self.disabled:
+            return
+        assert tensor.device == self.device, (
+            f"this nccl communicator is created to work on {self.device}, but the input tensor is on {tensor.device}"
+        )
+        if stream is None:
+            stream = current_stream()
+
+        if src == self.rank:
+            sendbuff = buffer_type(tensor.data_ptr())
+            recvbuff = buffer_type(tensor.data_ptr())
+        else:
+            sendbuff = buffer_type()
+            recvbuff = buffer_type(tensor.data_ptr())
+        self.nccl.ncclBroadcast(
+            sendbuff,
+            recvbuff,
+            tensor.numel(),
+            ncclDataTypeEnum.from_torch(tensor.dtype),
+            src,
+            self.comm,
+            cudaStream_t(stream.cuda_stream),
+        )
 
 
 def broadcast_integer(integer: int, communicator: PyNcclCommunicator) -> None:
@@ -168,6 +255,34 @@ class NCCLWeightBroadcastSender:
         return state_dict
 
 
+class SGLangNCCLWeightBroadcastSender(NCCLWeightBroadcastSender):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        rank: int,
+        world_size: int,
+        device: int | str | torch.device,
+        timeout: int,
+        dtype: torch.dtype = torch.bfloat16,
+        quantize_in_weight_transfer: bool = False,
+    ):
+        self.logger = get_logger()
+        self.world = get_world()
+        self.dtype = dtype
+        self.quantize_in_weight_transfer = quantize_in_weight_transfer
+
+        if self.world.is_master:
+            disable_nccl_p2p_if_unavailable()
+            pg = StatelessProcessGroup.create(
+                host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout
+            )
+            self.communicator = NeutralNCCLCommunicator(pg, device=device)
+            self.logger.debug("SGLang NCCL broadcast initialized on master rank")
+        else:
+            self.logger.debug("SGLang NCCL broadcast initialized on non-master rank (no communicator)")
+
+
 class NCCLWeightBroadcast(WeightBroadcast):
     """Broadcast weights into the inference engine using NCCL."""
 
@@ -182,7 +297,8 @@ class NCCLWeightBroadcast(WeightBroadcast):
         self.logger = get_logger()
         self.world = get_world()
         self.multi_run_manager = get_multi_run_manager()
-        self.nccl_broadcast_sender = NCCLWeightBroadcastSender(
+        sender_cls = SGLangNCCLWeightBroadcastSender if config.target_backend == "sglang" else NCCLWeightBroadcastSender
+        self.nccl_broadcast_sender = sender_cls(
             config.host,
             config.port,
             0,
@@ -245,6 +361,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
         for idx, save_dir in notified_runs:
             try:
                 save_dir.mkdir(parents=True, exist_ok=True)
+                (save_dir / NCCL_BROADCAST_MARKER).touch()
                 stable_file = save_dir / "STABLE"
                 stable_file.touch()
             except FileNotFoundError:

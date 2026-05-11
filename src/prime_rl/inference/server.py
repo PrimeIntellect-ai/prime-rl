@@ -14,14 +14,26 @@ def setup_vllm_env(config: InferenceConfig):
         os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
 
 
+def setup_inference_env(config: InferenceConfig):
+    if config.backend == "vllm":
+        setup_vllm_env(config)
+
+
 def main():
     config = cli(InferenceConfig)
-    setup_vllm_env(config)
+    setup_inference_env(config)
 
-    # We import here to be able to set environment variables before importing vLLM
-    from prime_rl.inference.vllm.server import server  # pyright: ignore
+    if config.backend == "vllm":
+        # We import here to be able to set environment variables before importing vLLM
+        from prime_rl.inference.vllm.server import server  # pyright: ignore
 
-    server(config, vllm_extra=config.vllm_extra)
+        server(config, vllm_extra=config.vllm_extra)
+    elif config.backend == "sglang":
+        from prime_rl.inference.sglang.server import server
+
+        server(config)
+    else:
+        raise ValueError(f"Unsupported inference backend: {config.backend}")
 
 
 if __name__ == "__main__":

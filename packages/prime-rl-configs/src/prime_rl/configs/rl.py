@@ -682,6 +682,36 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_sglang_backend(self):
+        """Configure orchestrator compatibility when the local inference backend is SGLang."""
+        if self.inference is None or self.inference.backend != "sglang":
+            return self
+
+        self.orchestrator.client.admin_backend = "sglang"
+        if self.trainer.weight_broadcast.type == "nccl":
+            self.trainer.weight_broadcast.target_backend = "sglang"
+            if self.trainer.weight_broadcast.quantize_in_weight_transfer:
+                raise ValueError(
+                    "inference.backend='sglang' does not support quantize_in_weight_transfer for NCCL yet."
+                )
+
+        if self.orchestrator.use_renderer:
+            raise ValueError(
+                "inference.backend='sglang' does not support orchestrator.use_renderer because prime-rl's "
+                "renderer client targets the vLLM-only /v1/generate endpoint."
+            )
+
+        if self.orchestrator.use_token_client:
+            if "use_token_client" in self.orchestrator.model_fields_set:
+                raise ValueError(
+                    "inference.backend='sglang' does not support orchestrator.use_token_client because SGLang "
+                    "does not expose prime-rl's vLLM-only /v1/chat/completions/tokens endpoint."
+                )
+            self.orchestrator.use_token_client = False
+
+        return self
+
+    @model_validator(mode="after")
     def validate_eplb_requires_quantized_weight_transfer(self):
         if self.inference is None or not self.inference.enable_eplb:
             return self
@@ -887,6 +917,19 @@ class RLConfig(BaseConfig):
                 self.trainer.weight_broadcast.inference_world_size = total_infer_workers
                 assert self.orchestrator.weight_broadcast.type == "nccl"
                 self.orchestrator.weight_broadcast.inference_world_size = total_infer_workers
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_sglang_nccl_deployment(self):
+        if self.inference is None or self.inference.backend != "sglang" or self.trainer.weight_broadcast.type != "nccl":
+            return self
+
+        if self.inference.parallel.dp != 1:
+            raise ValueError(
+                "inference.backend='sglang' with NCCL currently requires inference.parallel.dp = 1. "
+                "Use tensor parallelism for multi-GPU SGLang NCCL updates."
+            )
 
         return self
 
