@@ -15,6 +15,8 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, stop_after_d
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
 
+ADMIN_BACKEND_ATTR = "prime_rl_admin_backend"
+
 
 @runtime_checkable
 class InferencePool(Protocol):
@@ -81,6 +83,11 @@ class StaticInferencePool:
         )
         self._eval_clients = setup_clients(client_config, client_type=eval_client_type)
         self._admin_clients = setup_admin_clients(client_config)
+        self._model_clients = (
+            setup_admin_clients(client_config, use_admin_base_url=False)
+            if client_config.admin_base_url
+            else self._admin_clients
+        )
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
         self._eval_cycle = cycle(self._eval_clients)
@@ -105,10 +112,14 @@ class StaticInferencePool:
         return next(self._eval_cycle)
 
     async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
-        await check_health(
-            self._admin_clients, timeout=timeout if timeout is not None else self._wait_for_ready_timeout
+        wait_timeout = timeout if timeout is not None else self._wait_for_ready_timeout
+        await check_health(self._admin_clients, timeout=wait_timeout)
+        await maybe_check_has_model(
+            self._model_clients,
+            model_name,
+            skip_model_check=self._skip_model_check,
+            timeout=wait_timeout,
         )
-        await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
 
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
         await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
@@ -211,14 +222,19 @@ def setup_clients(
     return clients
 
 
-def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
+def setup_admin_clients(client_config: ClientConfig, *, use_admin_base_url: bool = True) -> list[AsyncClient]:
     """Create dedicated admin clients for weight update operations.
 
     Uses a separate connection pool to avoid queueing behind streaming requests.
-    When admin_base_url is set, uses those URLs instead of base_url, allowing
-    weight updates to bypass routers in disaggregated P/D deployments.
+    When admin_base_url is set and use_admin_base_url is true, uses those URLs
+    instead of base_url, allowing weight updates to bypass routers in
+    disaggregated P/D deployments.
     """
-    urls = client_config.admin_base_url if client_config.admin_base_url else client_config.base_url
+    urls = (
+        client_config.admin_base_url
+        if use_admin_base_url and client_config.admin_base_url
+        else client_config.base_url
+    )
 
     def _setup_admin_client(base_url: str) -> httpx.AsyncClient:
         headers = client_config.headers.copy()  # avoid mutating config
@@ -229,29 +245,62 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
         # Strip /v1 suffix since admin endpoints are at root level
         base_url = base_url.rstrip("/").removesuffix("/v1")
 
-        return AsyncClient(
+        client = AsyncClient(
             base_url=base_url,
             headers=headers,
             limits=httpx.Limits(max_connections=4, max_keepalive_connections=1),
             timeout=httpx.Timeout(None),
         )
+        setattr(client, ADMIN_BACKEND_ATTR, client_config.admin_backend)
+        return client
 
     return [_setup_admin_client(base_url) for base_url in urls]
 
 
+def get_admin_backend(admin_client: AsyncClient) -> str:
+    return getattr(admin_client, ADMIN_BACKEND_ATTR, "vllm")
+
+
 async def maybe_check_has_model(
-    admin_clients: list[AsyncClient], model_name: str, skip_model_check: bool = False
+    admin_clients: list[AsyncClient],
+    model_name: str,
+    skip_model_check: bool = False,
+    interval: int = 1,
+    log_interval: int = 10,
+    timeout: int = 1800,
 ) -> None:
     if skip_model_check:
         return
     logger = get_logger()
     logger.debug(f"Checking if model {model_name} is in the inference pool")
-    results = await asyncio.gather(*[admin_client.get("/v1/models") for admin_client in admin_clients])
-    for admin_client, result in zip(admin_clients, results):
-        models = result.json()["data"]
-        if not any(model["id"] == model_name for model in models):
-            raise ValueError(f"Model {model_name} was not found in the inference pool on {admin_client.base_url}")
-    logger.debug(f"Model {model_name} was found in the inference pool")
+    wait_time = 0
+    last_error: Exception | None = None
+    while wait_time < timeout:
+        try:
+            results = await asyncio.gather(*[admin_client.get("/v1/models") for admin_client in admin_clients])
+            missing_urls = []
+            for admin_client, result in zip(admin_clients, results):
+                result.raise_for_status()
+                models = result.json()["data"]
+                if not any(model["id"] == model_name for model in models):
+                    missing_urls.append(str(admin_client.base_url))
+            if not missing_urls:
+                logger.debug(f"Model {model_name} was found in the inference pool")
+                return
+            last_error = ValueError(f"Model {model_name} was not found on {', '.join(missing_urls)}")
+        except Exception as e:
+            last_error = e
+
+        if wait_time % log_interval == 0 and wait_time > 0:
+            logger.warning(
+                f"Model {model_name} was not found in the inference pool after {wait_time} seconds "
+                f"(Error: {last_error})"
+            )
+        await asyncio.sleep(interval)
+        wait_time += interval
+
+    msg = f"Model {model_name} was not found in the inference pool after {wait_time} (>{timeout}) seconds."
+    raise TimeoutError(msg) from last_error
 
 
 async def check_health(
@@ -261,10 +310,18 @@ async def check_health(
 
     async def _check_health(admin_client: AsyncClient) -> None:
         wait_time = 0
-        logger.debug("Starting pinging /health to check health")
+        admin_backend = get_admin_backend(admin_client)
+        logger.debug("Starting pinging health endpoint to check health")
         while wait_time < timeout:
             try:
-                await admin_client.get("/health")
+                if admin_backend == "dynamo":
+                    response = await admin_client.post("/engine/liveness", json={})
+                else:
+                    response = await admin_client.get("/health")
+                    if response.status_code == 404:
+                        logger.warning("The route /health does not exist. Skipping health check.")
+                        return
+                response.raise_for_status()
                 logger.debug(f"Inference pool is ready after {wait_time} seconds")
                 return
             except NotFoundError:
@@ -332,15 +389,29 @@ async def update_weights(
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
     if lora_name is not None and weight_dir is not None:
+        dynamo_clients = [client for client in admin_clients if get_admin_backend(client) == "dynamo"]
+        if dynamo_clients:
+            raise ValueError("Dynamo backend does not support prime-rl LoRA adapter weight updates yet.")
         await load_lora_adapter(admin_clients, lora_name, weight_dir)
     else:
+        vllm_clients = [client for client in admin_clients if get_admin_backend(client) == "vllm"]
 
         async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
+            if get_admin_backend(admin_client) == "dynamo":
+                response = await admin_client.post("/engine/update_weights", json={"weight_dir": weight_dir})
+                response.raise_for_status()
+                result = response.json()
+                if result.get("status") == "error":
+                    raise RuntimeError(result.get("message", "Dynamo weight update failed"))
+                return
+
             response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
             response.raise_for_status()
 
-        # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
-        await _pause_engines(admin_clients)
+        # Pause vLLM engines so all DP workers drain in-flight work and can join the NCCL broadcast.
+        # Dynamo's update route pauses/resumes its engine internally.
+        if vllm_clients:
+            await _pause_engines(vllm_clients)
 
         try:
             # Create ready marker before servers enter receive path (used by NCCL broadcast)
@@ -352,7 +423,8 @@ async def update_weights(
 
             await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
         finally:
-            await _resume_engines(admin_clients)
+            if vllm_clients:
+                await _resume_engines(vllm_clients)
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:
@@ -452,6 +524,24 @@ async def init_nccl_broadcast(
     )
 
     async def _init_nccl_broadcast(admin_client: AsyncClient, rank_offset: int) -> None:
+        if get_admin_backend(admin_client) == "dynamo":
+            response = await admin_client.post(
+                "/engine/init_broadcaster",
+                json={
+                    "host": host,
+                    "port": port,
+                    "rank_offset": rank_offset,
+                    "inference_world_size": inference_world_size,
+                    "timeout": timeout,
+                    "quantize_in_weight_transfer": quantize_in_weight_transfer,
+                },
+            )
+            response.raise_for_status()
+            result = response.json()
+            if result.get("status") == "error":
+                raise RuntimeError(result.get("message", "Dynamo NCCL initialization failed"))
+            return
+
         try:
             response = await admin_client.post(
                 "/init_broadcaster",

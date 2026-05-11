@@ -132,6 +132,25 @@ On the CLI, pass as a JSON string:
 uv run inference --vllm-extra '{"key1": "value1", "key2": 123}'
 ```
 
+### Experimental Dynamo backend
+
+Dynamo support is intentionally isolated behind `inference.backend = "dynamo"` and requires installing the optional Dynamo extra. The launcher starts Dynamo's frontend/router and a Dynamo vLLM worker from `prime_rl.experimental.dynamo`:
+
+```toml
+[inference]
+backend = "dynamo"
+
+[inference.dynamo]
+deploy_router = true
+router_mode = "round-robin"
+system_port = 8081
+discovery_backend = "file"
+```
+
+The public rollout endpoint is Dynamo's OpenAI-compatible frontend on `inference.server.port`. Admin calls for health, NCCL setup, and weight updates use the worker system server on `inference.dynamo.system_port`. The RL config switches rollout training to the standard OpenAI chat-completions client and points admin weight updates at the Dynamo worker system server.
+
+Set `inference.dynamo.deploy_router = false` only when an external Dynamo frontend/router is already deployed and `orchestrator.client.base_url` points at it. With `discovery_backend = "file"`, also set `DYN_FILE_KV` to a discovery directory shared by the external router and worker.
+
 ### Discriminated unions
 
 Some config fields use discriminated unions (e.g. loss type, data type). Set the `type` field to select the variant:

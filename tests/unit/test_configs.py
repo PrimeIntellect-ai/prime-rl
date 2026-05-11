@@ -159,3 +159,50 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
+
+
+def test_inference_config_translates_dynamo_args():
+    config = InferenceConfig.model_validate(
+        {
+            "backend": "dynamo",
+            "server": {"host": "127.0.0.1", "port": 8123},
+            "model": {"name": "Qwen/Qwen3-4B", "dtype": "bfloat16", "max_model_len": 2048},
+            "parallel": {"tp": 2, "dp": 1},
+            "dynamo": {
+                "system_port": 9001,
+                "discovery_backend": "file",
+                "router_mode": "least-loaded",
+                "min_initial_workers": 1,
+                "worker_extra": {"block_size": 64},
+            },
+            "vllm_extra": {"max_num_seqs": 32},
+        }
+    )
+
+    frontend = config.to_dynamo_frontend()
+    worker = config.to_dynamo_vllm()
+
+    assert frontend.http_host == "127.0.0.1"
+    assert frontend.http_port == 8123
+    assert frontend.namespace == "dynamo"
+    assert frontend.discovery_backend == "file"
+    assert frontend.router_mode == "least-loaded"
+    assert frontend.min_initial_workers == 1
+    assert frontend.dyn_chat_processor == "vllm"
+
+    assert worker.model == "Qwen/Qwen3-4B"
+    assert worker.dtype == "bfloat16"
+    assert worker.max_model_len == 2048
+    assert worker.tensor_parallel_size == 2
+    assert worker.block_size == 64
+    assert worker.max_num_seqs == 32
+    assert worker.logprobs_mode == "processed_logprobs"
+
+
+def test_rl_config_auto_selects_openai_client_for_dynamo():
+    config = RLConfig.model_validate({"trainer": {}, "orchestrator": {}, "inference": {"backend": "dynamo"}})
+
+    assert config.orchestrator.use_token_client is False
+    assert config.orchestrator.client.admin_backend == "dynamo"
+    assert config.orchestrator.client.admin_base_url == ["http://localhost:8081"]
+    assert config.orchestrator.client.skip_model_check is False

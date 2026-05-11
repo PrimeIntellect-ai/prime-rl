@@ -682,6 +682,35 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_dynamo_backend(self):
+        """Configure orchestrator compatibility for the experimental Dynamo backend."""
+        if self.inference is None or self.inference.backend != "dynamo":
+            return self
+
+        self.orchestrator.client.admin_backend = "dynamo"
+        if self.orchestrator.client.admin_base_url is None:
+            self.orchestrator.client.admin_base_url = [f"http://localhost:{self.inference.dynamo.system_port}"]
+
+        if self.orchestrator.use_renderer:
+            raise ValueError(
+                "inference.backend='dynamo' does not support orchestrator.use_renderer because prime-rl's "
+                "renderer client targets the vLLM-only /v1/generate endpoint."
+            )
+
+        if self.orchestrator.use_token_client:
+            if "use_token_client" in self.orchestrator.model_fields_set:
+                raise ValueError(
+                    "inference.backend='dynamo' does not support orchestrator.use_token_client because Dynamo "
+                    "does not expose prime-rl's vLLM-only /v1/chat/completions/tokens endpoint."
+                )
+            self.orchestrator.use_token_client = False
+
+        for env in self.orchestrator.train.env:
+            env.sampling.extra_body.pop("return_token_ids", None)
+
+        return self
+
+    @model_validator(mode="after")
     def validate_eplb_requires_quantized_weight_transfer(self):
         if self.inference is None or not self.inference.enable_eplb:
             return self

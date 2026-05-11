@@ -79,6 +79,7 @@ class SlurmConfig(BaseConfig):
 
 
 ServerType = Literal["vllm", "openai"]
+AdminBackend = Literal["vllm", "dynamo"]
 
 
 class VLMConfig(BaseConfig):
@@ -309,6 +310,11 @@ class ClientConfig(BaseConfig):
             "P/D deployments where the inference router should not handle admin traffic.",
         ),
     ] = None
+
+    admin_backend: Annotated[
+        AdminBackend,
+        Field(description="Backend API exposed by admin_base_url/base_url for weight updates and health checks."),
+    ] = "vllm"
 
     elastic: Annotated[
         ElasticConfig | None,

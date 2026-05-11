@@ -88,6 +88,7 @@ class Scheduler:
         self.lora_name = lora_name
         self.model_name = self.config.model.name
         self.json_logging = config.log.json_logging
+        self.supports_cache_salt = config.client.admin_backend != "dynamo"
 
         # Inference pool - used for admin operations (adapter sync) and metrics
         self.inference_pool = inference_pool
@@ -199,7 +200,7 @@ class Scheduler:
         env_name = group.example["env_name"]
         env = self.train_envs.get(env_name)
 
-        cache_salt = str(self.ckpt_step)
+        cache_salt = str(self.ckpt_step) if self.supports_cache_salt else None
         if env.requires_group_scoring:
             rollout_count = group.rollouts_to_schedule
             group.rollouts_to_schedule = 0

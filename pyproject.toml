@@ -86,6 +86,10 @@ gpt-oss = [
 quack = [
     "quack-kernels>=0.3.3",
 ]
+dynamo = [
+    "ai-dynamo==1.1.1",
+    "blake3>=1.0.0,<2.0.0",
+]
 all = [
     "prime-rl[flash-attn]",
     "prime-rl[disagg]",
@@ -129,6 +133,8 @@ override-dependencies = [
 [tool.uv.exclude-newer-package]
 # we want latest vllm, remove next patch
 vllm = false
+ai-dynamo = false
+ai-dynamo-runtime = false
 flash_attn_3 = false
 # Self-vendored packages on our primeintellect index
 reverse-text = false
