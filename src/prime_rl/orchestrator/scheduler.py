@@ -68,6 +68,7 @@ class Scheduler:
         tasks_per_minute: int | None,
         enable_policy_updates: bool = True,
         lora_name: str | None = None,
+        eval_inference_pool: InferencePool | None = None,
     ):
         self.logger = get_logger()
         if tasks_per_minute is not None:
@@ -89,8 +90,11 @@ class Scheduler:
         self.model_name = self.config.model.name
         self.json_logging = config.log.json_logging
 
-        # Inference pool - used for admin operations (adapter sync) and metrics
+        # Inference pool - used for rollout client selection and metrics
         self.inference_pool = inference_pool
+        # Eval inference pool - receives weight updates and serves evals.
+        # Defaults to inference_pool (standard RL where one pool does both).
+        self.eval_inference_pool = eval_inference_pool or inference_pool
 
         group_scoring_envs = [env.name for env in train_envs if env.requires_group_scoring]
         if group_scoring_envs:
@@ -303,14 +307,14 @@ class Scheduler:
 
         update_weights_start_time = time.perf_counter()
         weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
-        await self.inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
+        await self.eval_inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
         self.update_weights_time = time.perf_counter() - update_weights_start_time
         self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
         self.ckpt_step = next_ckpt_step
         if self.lora_name is not None:
             self.model_name = self.lora_name
-            self.inference_pool.update_model_name(self.model_name)
+            self.eval_inference_pool.update_model_name(self.model_name)
 
         self.checkpoint_ready.set()
         await self._update_off_policy()

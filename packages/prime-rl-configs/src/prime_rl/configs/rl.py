@@ -433,21 +433,6 @@ class RLConfig(BaseConfig):
             )
         return self
 
-    @model_validator(mode="after")
-    def validate_external_rollout_inference(self):
-        """Forbid configuring a local inference server when rollouts come from an external teacher.
-
-        Orchestrator-only invariants (``use_sft_loss`` paired with ``teacher_rollout_model``,
-        and ``use_token_client`` coupling) live on ``OrchestratorConfig`` so the hosted
-        orchestrator entrypoint also enforces them.
-        """
-        if self.orchestrator.teacher_rollout_model is not None and self.inference is not None:
-            raise ValueError(
-                "inference must be omitted when orchestrator.teacher_rollout_model is configured. "
-                "External rollout mode does not use the local inference server."
-            )
-        return self
-
     ### Auto-setup and validate shared configs
 
     @model_validator(mode="after")

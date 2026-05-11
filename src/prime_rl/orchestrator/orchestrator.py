@@ -156,6 +156,24 @@ async def orchestrate(config: OrchestratorConfig):
         logger=logger,
     )
 
+    # When using an external teacher for rollouts, set up a separate student
+    # inference pool for online evals and weight sync.  The student URL comes
+    # from the orchestrator's default client config (config.client).
+    if config.teacher_rollout_model is not None:
+        student_model_name = config.model.name
+        logger.info(
+            f"Initializing student eval inference pool (base_url={', '.join(config.client.base_url)}, "
+            f"model={student_model_name})"
+        )
+        eval_inference_pool = await setup_inference_pool(
+            config.client,
+            model_name=student_model_name,
+            eval_client_type="openai_chat_completions",
+        )
+        enable_policy_updates = True
+    else:
+        eval_inference_pool = inference_pool
+
     # Setup monitor (may register the run and set RUN_ID in the environment)
     logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
     monitor = setup_monitor(
@@ -236,6 +254,7 @@ async def orchestrate(config: OrchestratorConfig):
         train_envs=train_envs,
         buffer=buffer,
         inference_pool=inference_pool,
+        eval_inference_pool=eval_inference_pool,
         max_inflight_rollouts=config.max_inflight_rollouts,
         max_async_level=config.max_async_level,
         max_off_policy_steps=config.max_off_policy_steps,
@@ -254,8 +273,14 @@ async def orchestrate(config: OrchestratorConfig):
     # Check health of the inference pool
     logger.info("Waiting for inference pool to be ready")
     await inference_pool.wait_for_ready(rollout_model_name)
-
     logger.success("Inference pool ready")
+
+    # Check health of student eval inference pool if separate from rollout pool
+    if eval_inference_pool is not inference_pool:
+        student_model_name = config.model.name
+        logger.info("Waiting for student eval inference pool to be ready")
+        await eval_inference_pool.wait_for_ready(student_model_name)
+        logger.success("Student eval inference pool ready")
 
     # Start inference metrics collector (requires W&B)
     inference_metrics_collector = None
@@ -274,7 +299,7 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
         if config.weight_broadcast.type == "nccl":
             await init_nccl_broadcast(
-                inference_pool.admin_clients,
+                eval_inference_pool.admin_clients,
                 config.weight_broadcast.host,
                 config.weight_broadcast.port,
                 config.weight_broadcast.timeout,
@@ -316,7 +341,7 @@ async def orchestrate(config: OrchestratorConfig):
                 config.output_dir, scheduler.ckpt_step, check_exists=check_exists, wait_timeout=wait_timeout
             )
             lora_name = config.model.lora.name if config.model.lora else None
-            await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
+            await eval_inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
     else:
         logger.info("Training from scratch")
 
@@ -390,8 +415,8 @@ async def orchestrate(config: OrchestratorConfig):
             eval_results = await asyncio.gather(
                 *[
                     eval_env.evaluate(
-                        model_name=scheduler.model_name,
-                        get_client=inference_pool.get_eval_client,
+                        model_name=eval_inference_pool.model_name,
+                        get_client=eval_inference_pool.get_eval_client,
                         ckpt_step=ckpt_step,
                         step=progress.step,
                         cache_salt=str(ckpt_step),
@@ -809,8 +834,8 @@ async def orchestrate(config: OrchestratorConfig):
         eval_results = await asyncio.gather(
             *[
                 eval_env.evaluate(
-                    model_name=scheduler.model_name,
-                    get_client=inference_pool.get_eval_client,
+                    model_name=eval_inference_pool.model_name,
+                    get_client=eval_inference_pool.get_eval_client,
                     ckpt_step=ckpt_step,
                     step=progress.step,
                     cache_salt=str(ckpt_step),
@@ -847,6 +872,8 @@ async def orchestrate(config: OrchestratorConfig):
         if inference_metrics_collector is not None:
             await inference_metrics_collector.stop()
         await inference_pool.stop()
+        if eval_inference_pool is not inference_pool:
+            await eval_inference_pool.stop()
         if teacher_inference_pool is not None:
             await teacher_inference_pool.stop()
         event_loop_lag_monitor_task.cancel()
