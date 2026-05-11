@@ -18,7 +18,6 @@ see plan §"render.py 接口" for why those two are not the same.
 from __future__ import annotations
 
 import logging
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -26,9 +25,8 @@ import torch
 import verifiers as vf
 from PIL import Image
 
+from .artifact_manager import ArtifactManager
 from .schema import require_rollout
-from .trajectory_writer import write_trajectory_artifacts
-
 
 logger = logging.getLogger(__name__)
 
@@ -87,17 +85,14 @@ class BlenderGymRubric(vf.Rubric):
         clip_model_name: str = DEFAULT_CLIP_MODEL,
         clip_pretrained: str = DEFAULT_CLIP_PRETRAINED,
         parser: vf.Parser | None = None,
-        keep_failed_only: bool = False,
+        artifact_manager: ArtifactManager | None = None,
     ) -> None:
+        if artifact_manager is None:
+            raise TypeError("artifact_manager is required")
         super().__init__(parser=parser)
         self.clip_model_name = clip_model_name
         self.clip_pretrained = clip_pretrained
-        # Cleanup policy lives on the rubric (not the env) so its handler runs
-        # *after* score_rollout — see verifiers Environment.run_rollout:
-        # rollout → score_rollout → rubric.cleanup. If rmtree ran on the env,
-        # the rubric's reward function would race with the deletion and read
-        # a missing render image.
-        self.keep_failed_only = keep_failed_only
+        self.artifact_manager = artifact_manager
 
         self._clip_model = None
         self._clip_preprocess = None
@@ -152,12 +147,9 @@ class BlenderGymRubric(vf.Rubric):
         except RuntimeError:
             return 0.0
 
-        last_render = rollout.last_render_path
+        last_render = self.artifact_manager.last_render_path(rollout)
         goal = rollout.task.goal_image
-        if last_render is None:
-            rollout.final_reward = 0.0
-            return 0.0
-        if not last_render.is_file() or not goal.is_file():
+        if last_render is None or not goal.is_file():
             rollout.final_reward = 0.0
             return 0.0
 
@@ -196,23 +188,22 @@ class BlenderGymRubric(vf.Rubric):
 
     @vf.cleanup
     async def write_artifacts_handler(self, state: vf.State) -> None:
-        """Write meta.json / trajectory.json / trajectory.md and (optionally) rmtree.
+        """Write trajectory artifacts and apply retention policy.
 
         Runs *after* ``score_rollout``, so ``rollout.final_reward`` and
-        ``state["metrics"]`` are already populated. Deletion of successful
-        runs (when ``keep_failed_only=True``) also lives here, after artifacts
-        are persisted, so post-mortem still has a footprint.
+        ``state["metrics"]`` are already populated.
         """
         try:
             rollout = require_rollout(state)
         except RuntimeError:
             return
+
+        mgr = self.artifact_manager
         try:
-            write_trajectory_artifacts(rollout, metrics=state.get("metrics"))
+            mgr.save_trajectory(rollout, metrics=state.get("metrics"))
         except Exception:
             logger.exception(
-                "write_trajectory_artifacts failed for work_dir=%s", rollout.work_dir
+                "save_trajectory failed for work_dir=%s", rollout.work_dir
             )
-
-        if self.keep_failed_only and rollout.xml_parsed and rollout.render_success:
-            shutil.rmtree(rollout.work_dir, ignore_errors=True)
+        mgr.cleanup_rollout(rollout)
+        mgr.prune_old_rollouts(rollout)

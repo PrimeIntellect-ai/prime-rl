@@ -32,6 +32,10 @@ import time
 from dataclasses import dataclass, field
 from importlib.resources import files as _resource_files
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .artifact_manager import TurnPaths
 
 DEFAULT_BLENDER_BIN = Path(
     "_reference_codes/VIGA/utils/third_party/infinigen/blender/blender"
@@ -92,6 +96,7 @@ def run_blender(
     render_script: str | Path | None = None,
     gpu_id: int = 0,
     timeout: int = DEFAULT_TIMEOUT_S,
+    paths: "TurnPaths | None" = None,
 ) -> RenderResult:
     """Run one Blender background render and capture all artifacts.
 
@@ -125,14 +130,21 @@ def run_blender(
 
     out_dir = Path(output_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    blender_user_dir = out_dir / "blender_user"
-    blender_user_dir.mkdir(parents=True, exist_ok=True)
 
-    code_path = out_dir / CODE_FILENAME
-    code_path.write_text(code, encoding="utf-8")
+    if paths is not None:
+        _code_path = paths.code
+        _render_path = paths.render
+        _log_path = paths.log
+        _blender_user = paths.blender_user
+    else:
+        _code_path = out_dir / CODE_FILENAME
+        _render_path = out_dir / RENDER1_FILENAME
+        _log_path = out_dir / LOG_FILENAME
+        _blender_user = out_dir / "blender_user"
 
-    log_path = out_dir / LOG_FILENAME
-    image_path = out_dir / RENDER1_FILENAME
+    _blender_user.mkdir(parents=True, exist_ok=True)
+    _code_path.write_text(code, encoding="utf-8")
+    image_path = _render_path
     if image_path.exists():
         # Stale artifact from a prior invocation would cause a false success
         # signal if the new invocation crashes before re-rendering.
@@ -145,10 +157,10 @@ def run_blender(
         "--python",
         str(script_path),
         "--",
-        str(code_path),
+        str(_code_path),
         str(out_dir),
     ]
-    env = _build_subprocess_env(gpu_id=gpu_id, blender_user_dir=blender_user_dir)
+    env = _build_subprocess_env(gpu_id=gpu_id, blender_user_dir=_blender_user)
 
     started = time.monotonic()
     timed_out = False
@@ -184,16 +196,17 @@ def run_blender(
 
     duration = time.monotonic() - started
 
-    log_path.write_text(
-        "$ "
-        + " ".join(shlex.quote(part) for part in cmd)
-        + "\n\n"
-        + "=== STDOUT ===\n"
-        + stdout_text
-        + "\n=== STDERR ===\n"
-        + stderr_text,
-        encoding="utf-8",
-    )
+    if _log_path is not None:
+        _log_path.write_text(
+            "$ "
+            + " ".join(shlex.quote(part) for part in cmd)
+            + "\n\n"
+            + "=== STDOUT ===\n"
+            + stdout_text
+            + "\n=== STDERR ===\n"
+            + stderr_text,
+            encoding="utf-8",
+        )
 
     image_paths = [image_path] if image_path.is_file() else []
 
@@ -203,8 +216,8 @@ def run_blender(
         stderr=stderr_text,
         duration_s=duration,
         returncode=returncode,
-        code_path=code_path,
-        log_path=log_path,
+        code_path=_code_path,
+        log_path=_log_path,
         timed_out=timed_out,
     )
 

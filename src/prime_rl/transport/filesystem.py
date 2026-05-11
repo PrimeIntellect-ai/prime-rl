@@ -97,8 +97,8 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
                         batch: TrainingBatch = self.decoder.decode(f.read())
                     batch.run_idx = idx
                     batches.append(batch)
-                    # Increment received step to avoid reading the same file again
                     self._received_steps[idx] = self._get_received_step(idx) + 1
+                    batch_path.unlink(missing_ok=True)
                 except Exception as e:
                     self.logger.error(f"Error loading rollouts for run {idx}: {e}")
         return batches
@@ -161,7 +161,9 @@ class FileSystemMicroBatchReceiver(MicroBatchReceiver):
 
     def receive(self) -> list[MicroBatch]:
         """Read and return the micro batches from disk."""
-        with open(self._get_micro_batch_path(), "rb") as f:
+        micro_batch_path = self._get_micro_batch_path()
+        with open(micro_batch_path, "rb") as f:
             micro_batches: list[MicroBatch] = self.decoder.decode(f.read())
+        micro_batch_path.unlink(missing_ok=True)
         self.current_step += 1
         return micro_batches

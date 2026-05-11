@@ -107,7 +107,7 @@ def test_make_work_dir_falls_back_to_legacy_layout(tmp_path, split, example_id):
         gpu_id_pool=(0,),
         max_turns=1,
     )
-    work_dir = env._make_work_dir(
+    work_dir = env.artifact_manager.make_rollout_dir(
         traj_id="abcdef1234567890",
         task_id="placement1",
         split=split,
@@ -124,7 +124,7 @@ def test_make_work_dir_uses_structured_layout_when_metadata_present(tmp_path):
         gpu_id_pool=(0,),
         max_turns=1,
     )
-    work_dir = env._make_work_dir(
+    work_dir = env.artifact_manager.make_rollout_dir(
         traj_id="deadbeefcafef00d",
         task_id="placement42",
         split="eval",

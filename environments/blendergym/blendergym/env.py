@@ -37,13 +37,13 @@ from typing import Any
 
 import verifiers as vf
 
+from .artifact_manager import ArtifactManager, ArtifactPolicy
 from .dataset import build_dataset
 from .prompts import REFINE_INSTRUCTION, SYSTEM_PROMPT, TASK_INSTRUCTION
-from .render import RenderResult, run_blender
+from .render import RenderResult
 from .rubric import BlenderGymRubric
-from .schema import Rollout, Task, TurnRecord, require_rollout
+from .schema import Rollout, Task, require_rollout
 from .trajectory_writer import completion_to_text
-
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,13 @@ class BlenderGymEnv(vf.MultiTurnEnv):
         cycles_compute_device: str = "OPTIX",
         clip_model_name: str = "ViT-B-32",
         clip_pretrained: str = "openai",
+        # -- artifact policy --
+        save_blender_log: bool = True,
+        save_response_txt: bool = True,
+        save_meta_json: bool = True,
+        save_trajectory_html: bool = True,
+        remove_intermediate_turns: bool = False,
+        max_rollouts_per_example: int = 0,
         **kwargs: Any,
     ) -> None:
         if max_turns < 1:
@@ -108,7 +115,17 @@ class BlenderGymEnv(vf.MultiTurnEnv):
         self.gpu_id_pool = tuple(gpu_id_pool)
         self.work_root = Path(work_root).expanduser().resolve()
         self.work_root.mkdir(parents=True, exist_ok=True)
-        self.keep_failed_only = keep_failed_only
+
+        policy = ArtifactPolicy(
+            save_blender_log=save_blender_log,
+            save_response_txt=save_response_txt,
+            save_meta_json=save_meta_json,
+            save_trajectory_html=save_trajectory_html,
+            keep_failed_only=keep_failed_only,
+            remove_intermediate_turns=remove_intermediate_turns,
+            max_rollouts_per_example=max_rollouts_per_example,
+        )
+        self.artifact_manager = ArtifactManager(self.work_root, policy)
         # ``env_name`` mirrors the orchestrator's resolved env name so that
         # local metadata matches wandb sample tables (e.g. ``"blendergym"`` for
         # train, ``"blendergym-eval"`` for eval). Should be set per-env in the
@@ -135,7 +152,7 @@ class BlenderGymEnv(vf.MultiTurnEnv):
             clip_model_name=clip_model_name,
             clip_pretrained=clip_pretrained,
             parser=self.parser,
-            keep_failed_only=self.keep_failed_only,
+            artifact_manager=self.artifact_manager,
         )
 
         def _train_dataset_builder():
@@ -229,7 +246,8 @@ class BlenderGymEnv(vf.MultiTurnEnv):
             "task_type": task.task_type,
             "trajectory_id": state["trajectory_id"],
         }
-        work_dir = self._make_work_dir(
+        mgr = self.artifact_manager
+        work_dir = mgr.make_rollout_dir(
             traj_id=state["trajectory_id"],
             task_id=task.task_id,
             split=split,
@@ -247,42 +265,9 @@ class BlenderGymEnv(vf.MultiTurnEnv):
             goal_image_data_url=_png_to_data_url(task.goal_image),
             init_image_data_url=_png_to_data_url(task.init_image),
         )
-        self._populate_inputs_symlinks(rollout)
+        mgr.populate_input_symlinks(rollout)
         state["rollout"] = rollout
         return state
-
-    def _make_work_dir(
-        self,
-        traj_id: str,
-        task_id: str,
-        split: str | None = None,
-        example_id: object | None = None,
-    ) -> Path:
-        if split is not None and isinstance(example_id, int):
-            work_dir = (
-                self.work_root
-                / split
-                / f"example_{example_id:04d}__{task_id}"
-                / traj_id[:8]
-            )
-        else:
-            work_dir = self.work_root / f"{task_id}__{traj_id[:8]}"
-        work_dir.mkdir(parents=True, exist_ok=True)
-        return work_dir
-
-    def _populate_inputs_symlinks(self, rollout: Rollout) -> None:
-        """Populate rollout ``inputs/`` symlinks without copying dataset assets."""
-        inputs_dir = rollout.work_dir / "inputs"
-        inputs_dir.mkdir(exist_ok=True)
-        for src, link_name in (
-            (rollout.task.goal_image, "goal.png"),
-            (rollout.task.init_image, "init.png"),
-            (rollout.task.start_code_path, "start.py"),
-        ):
-            link = inputs_dir / link_name
-            if link.is_symlink() or link.exists():
-                link.unlink()
-            os.symlink(os.path.abspath(src), link)
 
     async def get_prompt_messages(self, state: vf.State) -> vf.Messages:
         rollout = require_rollout(state)
@@ -305,9 +290,9 @@ class BlenderGymEnv(vf.MultiTurnEnv):
         prev_completion = list(prev_step["completion"])
         messages: list[Any] = prev_prompt + prev_completion
 
-        last_render = rollout.last_render_path
+        last_render = self.artifact_manager.last_render_path(rollout)
         turn_idx = rollout.render_count
-        if last_render and last_render.is_file():
+        if last_render is not None:
             render_url = _png_to_data_url(last_render)
             messages.append(
                 self._build_refine_user_message(
@@ -352,19 +337,14 @@ class BlenderGymEnv(vf.MultiTurnEnv):
         rollout = require_rollout(state)
         if not state.get("trajectory"):
             return
-        last_step = state["trajectory"][-1]
-        completion = last_step["completion"]
+        completion = state["trajectory"][-1]["completion"]
 
-        # 2. Always persist the raw model response.txt — including XML parse
-        # failure paths — so post-mortem can see what the model emitted.
+        mgr = self.artifact_manager
         turn_idx = rollout.render_count
-        turn_dir = rollout.work_dir / f"turn_{turn_idx}"
-        turn_dir.mkdir(parents=True, exist_ok=True)
-        (turn_dir / "response.txt").write_text(
-            completion_to_text(completion), encoding="utf-8"
-        )
+        paths = mgr.begin_turn(rollout.work_dir, turn_idx)
+        mgr.write_response(paths, completion_to_text(completion))
 
-        record = TurnRecord.for_turn(turn_idx)
+        record = mgr.init_record(turn_idx)
         code = self.parser.parse_answer(completion)
 
         if not code or not str(code).strip():
@@ -372,20 +352,16 @@ class BlenderGymEnv(vf.MultiTurnEnv):
         else:
             try:
                 result: RenderResult = await asyncio.to_thread(
-                    run_blender,
+                    mgr.run_render, paths,
                     blend_file=rollout.task.blend_file,
                     code=str(code),
-                    output_dir=turn_dir,
                     blender_bin=self.blender_bin,
                     gpu_id=rollout.gpu_id,
                     timeout=self.render_timeout_s,
                 )
             except FileNotFoundError:
-                # Operator-side misconfiguration (missing Blender / .blend) —
-                # let it propagate so vf.Error path can mark the rollout as
-                # errored.
                 raise
-            record.fill_from_render(result)
+            mgr.fill_record(record, result)
 
         rollout.turns.append(record)
 

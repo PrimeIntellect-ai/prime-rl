@@ -32,9 +32,12 @@ import logging
 import os
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .schema import SCHEMA_VERSION, Rollout, TurnRecord
+
+if TYPE_CHECKING:
+    from .artifact_manager import RolloutPaths
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +167,10 @@ def _content_block_text(block: object) -> str | None:
 
 
 def write_trajectory_artifacts(
-    rollout: Rollout, *, metrics: dict[str, Any] | None = None
+    rollout: Rollout,
+    *,
+    metrics: dict[str, Any] | None = None,
+    paths: "RolloutPaths | None" = None,
 ) -> None:
     """Emit ``meta.json`` + ``trajectory.json`` + ``trajectory.html`` from a Rollout.
 
@@ -210,13 +216,15 @@ def write_trajectory_artifacts(
         "runtime": {"gpu_id": rollout.gpu_id},
     }
 
-    _atomic_write_text(
-        work_dir / "meta.json", json.dumps(meta, indent=2, default=str)
-    )
-    _atomic_write_text(
-        work_dir / "trajectory.json", json.dumps(trajectory, indent=2, default=str)
-    )
-    _atomic_write_text(work_dir / "trajectory.html", _render_html(rollout))
+    meta_path = paths.meta_json if paths else work_dir / "meta.json"
+    traj_path = paths.trajectory_json if paths else work_dir / "trajectory.json"
+    html_path = paths.trajectory_html if paths else work_dir / "trajectory.html"
+
+    if meta_path is not None:
+        _atomic_write_text(meta_path, json.dumps(meta, indent=2, default=str))
+    _atomic_write_text(traj_path, json.dumps(trajectory, indent=2, default=str))
+    if html_path is not None:
+        _atomic_write_text(html_path, _render_html(rollout))
 
     (work_dir / "trajectory.md").unlink(missing_ok=True)
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from .render import RenderResult
@@ -60,23 +60,39 @@ class TurnRecord:
         return self.exit_status == "timeout"
 
     @classmethod
-    def for_turn(cls, turn: int) -> "TurnRecord":
-        return cls(turn=turn, response_path=f"turn_{turn}/response.txt")
+    def for_turn(cls, turn: int, *, response_path: str | None = None) -> "TurnRecord":
+        if response_path is None:
+            response_path = f"turn_{turn}/response.txt"
+        return cls(turn=turn, response_path=response_path)
 
     def fill_xml_parse_failure(self) -> None:
         self.exit_status = "xml_parse_failed"
         self.error_hint = "XMLParser could not find <code>...</code>"
 
-    def fill_from_render(self, result: "RenderResult") -> None:
-        """Populate fields from one Blender subprocess run."""
+    def fill_from_render(
+        self,
+        result: "RenderResult",
+        *,
+        rel_code: str | None = None,
+        rel_log: str | None = None,
+        rel_render: str | None = None,
+    ) -> None:
+        """Populate fields from one Blender subprocess run.
+
+        When called via ArtifactManager, relative paths are supplied
+        explicitly. When called directly (tests, scripts), falls back
+        to the original hardcoded paths.
+        """
         t = self.turn
         self.action = "execute_blender_code"
-        self.code_path = f"turn_{t}/code.py"
-        self.log_path = f"turn_{t}/blender.log"
+        self.code_path = rel_code if rel_code is not None else f"turn_{t}/code.py"
+        self.log_path = rel_log if rel_log is not None else f"turn_{t}/blender.log"
         self.duration_s = round(result.duration_s, 3)
 
         if result.image_paths:
-            self.render_path = f"turn_{t}/render1.png"
+            self.render_path = (
+                rel_render if rel_render is not None else f"turn_{t}/render1.png"
+            )
 
         if result.timed_out:
             self.exit_status = "timeout"
