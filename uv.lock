@@ -2780,8 +2780,8 @@ dependencies = [
     { name = "transformers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "uvloop", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "vllm", version = "0.20.1+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.1/vllm-0.20.1+cu129-cp38-abi3-manylinux_2_31_aarch64.whl" }, marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
-    { name = "vllm", version = "0.20.1+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.1/vllm-0.20.1+cu129-cp38-abi3-manylinux_2_31_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm", version = "0.20.2+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl" }, marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
+    { name = "vllm", version = "0.20.2+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "wandb", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 
@@ -2906,9 +2906,9 @@ requires-dist = [
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
     { name = "uvloop", specifier = ">=0.21.0" },
     { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=aa428f3" },
-    { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'", specifier = ">=0.20.1" },
-    { name = "vllm", marker = "platform_machine == 'aarch64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.20.1/vllm-0.20.1+cu129-cp38-abi3-manylinux_2_31_aarch64.whl" },
-    { name = "vllm", marker = "platform_machine == 'x86_64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.20.1/vllm-0.20.1+cu129-cp38-abi3-manylinux_2_31_x86_64.whl" },
+    { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'", specifier = ">=0.20.2" },
+    { name = "vllm", marker = "platform_machine == 'aarch64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl" },
+    { name = "vllm", marker = "platform_machine == 'x86_64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_x86_64.whl" },
     { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wiki-search", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
@@ -4212,8 +4212,8 @@ wheels = [
 
 [[package]]
 name = "vllm"
-version = "0.20.1+cu129"
-source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.1/vllm-0.20.1+cu129-cp38-abi3-manylinux_2_31_aarch64.whl" }
+version = "0.20.2+cu129"
+source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl" }
 resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
@@ -4288,7 +4288,7 @@ dependencies = [
     { name = "xgrammar", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
 ]
 wheels = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.1/vllm-0.20.1+cu129-cp38-abi3-manylinux_2_31_aarch64.whl", hash = "sha256:ff6bf51f62b78088e94393b2ec1404bf2ad7bc6c58ab673180b8dac44c314952" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl", hash = "sha256:8a58a086c5c4ed2883eee36aaaf6b79c83463d02da3015454acf92afcc8e150e" },
 ]
 
 [package.metadata]
@@ -4387,8 +4387,8 @@ provides-extras = ["zen", "bench", "tensorizer", "fastsafetensors", "instanttens
 
 [[package]]
 name = "vllm"
-version = "0.20.1+cu129"
-source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.1/vllm-0.20.1+cu129-cp38-abi3-manylinux_2_31_x86_64.whl" }
+version = "0.20.2+cu129"
+source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
@@ -4463,7 +4463,7 @@ dependencies = [
     { name = "xgrammar", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 wheels = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.1/vllm-0.20.1+cu129-cp38-abi3-manylinux_2_31_x86_64.whl", hash = "sha256:9b4e40078eea9777ec0e1ffebbcc352b60903ad044bdc3eb235a8a30e8da259a" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_x86_64.whl", hash = "sha256:2f8c2bf2ac6d3d16f930535e66822abd71065468521884eb5b910225b2abef4b" },
 ]
 
 [package.metadata]
