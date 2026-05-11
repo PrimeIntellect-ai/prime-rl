@@ -134,9 +134,14 @@ def test_qwen3_moe_router_replay():
     # Forward without router replay
     out_normal = prime_model(input_ids, position_ids)
 
-    # Construct routed_experts with fixed expert indices
-    # Shape: [batch=1, seq_len=100, num_hidden_layers=3, num_experts_per_tok=4]
-    num_layers = prime_model.config.num_hidden_layers
+    # Construct routed_experts with fixed expert indices.
+    # Shape: [batch=1, seq_len=100, num_moe_layers=2, num_experts_per_tok=4].
+    num_layers = sum(
+        layer_idx not in prime_model.config.mlp_only_layers
+        and prime_model.config.num_experts > 0
+        and (layer_idx + 1) % prime_model.config.decoder_sparse_step == 0
+        for layer_idx in range(prime_model.config.num_hidden_layers)
+    )
     topk = prime_model.config.num_experts_per_tok
     routed_experts = torch.randint(0, prime_model.config.num_experts, (1, 100, num_layers, topk), device="cuda")
 

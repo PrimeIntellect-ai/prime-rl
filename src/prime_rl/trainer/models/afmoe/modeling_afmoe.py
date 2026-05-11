@@ -21,7 +21,12 @@ from transformers.utils import TransformersKwargs
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
-from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
+from prime_rl.trainer.models.layers.moe import (
+    MoE,
+    MoEArgs,
+    assert_routed_experts_layer_count,
+    get_routed_experts_layer,
+)
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import (
     RotaryEmbedding,
@@ -476,7 +481,7 @@ class AfmoeModel(AfmoePreTrainedModel):
         routed_experts: Optional[torch.LongTensor] = None,
     ) -> MoeModelOutputWithPast:
         """
-        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
+        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_moe_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
@@ -519,9 +524,14 @@ class AfmoeModel(AfmoePreTrainedModel):
 
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        for layer_idx, decoder_layer in enumerate(self.layers):
+        sparse_layer_idx = 0
+        for decoder_layer in self.layers:
             mask = causal_mask_mapping[decoder_layer.attention_type] if causal_mask_mapping is not None else None
-            routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
+            routed_experts_layer, sparse_layer_idx = get_routed_experts_layer(
+                routed_experts,
+                decoder_layer,
+                sparse_layer_idx,
+            )
 
             hidden_states = decoder_layer(
                 hidden_states,
@@ -531,6 +541,7 @@ class AfmoeModel(AfmoePreTrainedModel):
                 max_seqlen=max_seqlen,
                 routed_experts=routed_experts_layer,
             )
+        assert_routed_experts_layer_count(routed_experts, sparse_layer_idx)
 
         hidden_states = self.norm(hidden_states)
         return MoeModelOutputWithPast(
@@ -591,7 +602,7 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
             If not provided, the wrapped LM head returns logits only.
         temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
             Per-token temperatures for logprobs/entropy computation when `labels` are provided.
-        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
+        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_moe_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
         """
         assert use_cache is None, "use_cache is not supported for custom afmoe for now"

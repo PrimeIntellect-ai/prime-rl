@@ -200,4 +200,5 @@ debug_I2_zero_band
 
 outputs/
 
-third_party/
+deps/
+third_party

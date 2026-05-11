@@ -31,14 +31,19 @@ def _align_routed_experts(
 ) -> list[list[list[int]]] | None:
     """Align routed_experts length with the expected token count.
 
-    VLLM's capturer uses `num_tokens - 1` slot mappings because the final
-    generated token was never fed as input to a forward pass and has no
-    routing decision. Append zero-filled entries for the missing positions.
+    The verifier client should provide full prompt+completion routing. The only
+    accepted short form is one missing final token, because the final generated
+    token was not fed into another forward pass and has no routing decision.
     """
-    if routed_experts is None or not routed_experts:
+    if routed_experts is None:
+        return routed_experts
+    if not routed_experts:
+        assert expected_len == 0
         return routed_experts
     deficit = expected_len - len(routed_experts)
-    if deficit <= 0:
+    assert deficit >= 0
+    assert deficit <= 1
+    if deficit == 0:
         return routed_experts
     num_layers = len(routed_experts[0])
     topk = len(routed_experts[0][0])

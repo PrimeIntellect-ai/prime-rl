@@ -36,7 +36,12 @@ from prime_rl.trainer.models.glm4_moe.converting_glm4_moe import (
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
-from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
+from prime_rl.trainer.models.layers.moe import (
+    MoE,
+    MoEArgs,
+    assert_routed_experts_layer_count,
+    get_routed_experts_layer,
+)
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
@@ -207,7 +212,7 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
         routed_experts: Optional[torch.LongTensor] = None,
     ) -> BaseModelOutputWithPast:
         """
-        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
+        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_moe_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
@@ -226,8 +231,13 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
-            routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
+        sparse_layer_idx = 0
+        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+            routed_experts_layer, sparse_layer_idx = get_routed_experts_layer(
+                routed_experts,
+                decoder_layer,
+                sparse_layer_idx,
+            )
             hidden_states = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
@@ -235,6 +245,7 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
                 max_seqlen=max_seqlen,
                 routed_experts=routed_experts_layer,
             )
+        assert_routed_experts_layer_count(routed_experts, sparse_layer_idx)
 
         hidden_states = self.norm(hidden_states)
         return BaseModelOutputWithPast(last_hidden_state=hidden_states)
@@ -280,7 +291,7 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
             If not provided, the wrapped LM head returns logits only.
         temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
             Per-token temperatures for logprobs/entropy computation when `labels` are provided.
-        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
+        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_moe_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
 
         Example:

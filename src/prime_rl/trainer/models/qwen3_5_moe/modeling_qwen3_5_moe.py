@@ -16,7 +16,13 @@ from transformers.utils import TransformersKwargs, logging
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
-from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
+from prime_rl.trainer.models.layers.moe import (
+    FeedForward,
+    MoE,
+    MoEArgs,
+    assert_routed_experts_layer_count,
+    get_routed_experts_layer,
+)
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig, apply_rotary_pos_emb
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 
@@ -774,8 +780,13 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        for layer_idx, decoder_layer in enumerate(self.layers):
-            routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
+        sparse_layer_idx = 0
+        for decoder_layer in self.layers:
+            routed_experts_layer, sparse_layer_idx = get_routed_experts_layer(
+                routed_experts,
+                decoder_layer,
+                sparse_layer_idx,
+            )
             hidden_states = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
@@ -783,6 +794,7 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
                 max_seqlen=max_seqlen,
                 routed_experts=routed_experts_layer,
             )
+        assert_routed_experts_layer_count(routed_experts, sparse_layer_idx)
 
         hidden_states = self.norm(hidden_states)
         return MoeModelOutputWithPast(last_hidden_state=hidden_states)

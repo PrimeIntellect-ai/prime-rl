@@ -402,6 +402,14 @@ class InferenceConfig(BaseConfig):
         ),
     ] = False
 
+    routed_experts_replay_max_blocks: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Maximum number of KV-cache-sized routing blocks to keep in vLLM's routed-experts replay LRU cache. Passed to vLLM as `--routed-experts-replay-max-blocks`.",
+        ),
+    ] = 4096
+
     enable_fp32_lm_head: Annotated[
         bool,
         Field(
@@ -551,6 +559,7 @@ class InferenceConfig(BaseConfig):
             "gpu_memory_utilization": "gpu_memory_utilization",
             "api_server_count": "api_server_count",
             "enable_return_routed_experts": "enable_return_routed_experts",
+            "routed_experts_replay_max_blocks": "routed_experts_replay_max_blocks",
             "enable_expert_parallel": "enable_expert_parallel",
             "all2all_backend": "all2all_backend",
             "enable_eplb": "enable_eplb",

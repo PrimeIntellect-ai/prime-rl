@@ -1198,3 +1198,21 @@ class LatentMoE(nn.Module):
             self.tokens_per_expert = torch.zeros(self.experts.num_experts, dtype=torch.float32)
             if self.load_balance_coeff is not None:
                 self.expert_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)
+
+
+def get_routed_experts_layer(
+    routed_experts: torch.Tensor | None,
+    decoder_layer: nn.Module,
+    sparse_layer_idx: int,
+) -> tuple[torch.Tensor | None, int]:
+    mlp = getattr(decoder_layer, "mlp", None)
+    if routed_experts is None or not isinstance(mlp, (MoE, LatentMoE)):
+        return None, sparse_layer_idx
+    return routed_experts[:, :, sparse_layer_idx, :], sparse_layer_idx + 1
+
+
+def assert_routed_experts_layer_count(routed_experts: torch.Tensor | None, sparse_layer_count: int) -> None:
+    if routed_experts is not None:
+        assert routed_experts.shape[2] == sparse_layer_count, (
+            f"routed_experts has {routed_experts.shape[2]} layers, expected {sparse_layer_count} MoE layers"
+        )

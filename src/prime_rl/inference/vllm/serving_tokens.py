@@ -10,9 +10,10 @@ we subclass it to add them back:
    header and forwarded to ``engine_client.generate``. The DP-replicated
    inference servers prime-RL runs need this to target a specific replica.
 
-2. ``routed_experts`` per-token export — when the engine emits routing
-   decisions (``enable_return_routed_experts``), surface them on each choice.
-   This is what the trainer's router-replay path consumes.
+2. ``prompt_routed_experts`` and choice ``routed_experts`` export — when the
+   engine emits routing decisions (``enable_return_routed_experts``), surface
+   the prompt and completion routing as JSON arrays. This is what the trainer's
+   router-replay path consumes.
 
 3. Server-side ``max_tokens`` defaulting — ``ServingTokens`` hands the
    client-supplied ``SamplingParams`` to the engine verbatim, and
@@ -30,9 +31,9 @@ delegates to upstream so we track future vLLM changes for free.
 
 from __future__ import annotations
 
-import base64
 from collections.abc import AsyncGenerator
 from functools import cached_property
+from typing import cast
 
 import numpy as np
 from fastapi import Request
@@ -50,11 +51,11 @@ from vllm.sampling_params import RequestOutputKind, SamplingParams
 
 
 class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
-    routed_experts: dict | None = Field(
+    routed_experts: list[list[list[int]]] | None = Field(
         default=None,
         description=(
-            "Per-token expert routing decisions (base85-encoded int32 array + shape). "
-            "Populated only when the engine was launched with "
+            "Per-completion-token expert routing decisions. Populated only "
+            "when the engine was launched with "
             "``enable_return_routed_experts=True``; otherwise ``None``."
         ),
     )
@@ -62,51 +63,49 @@ class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
 
 class PrimeRlGenerateResponse(GenerateResponse):
     choices: list[PrimeRlGenerateResponseChoice]
+    prompt_routed_experts: list[list[list[int]]] | None = Field(
+        default=None,
+        description=(
+            "Per-prompt-token expert routing decisions. Populated only when "
+            "the engine was launched with ``enable_return_routed_experts=True``; "
+            "otherwise ``None``."
+        ),
+    )
 
 
-def encode_routed_experts(arr: np.ndarray) -> dict:
-    return {
-        "data": base64.b85encode(arr.tobytes()).decode("ascii"),
-        "shape": list(arr.shape),
-    }
+def _serialize_routed_experts(arr: np.ndarray) -> list[list[list[int]]]:
+    _seq_len, _num_layers, _topk = arr.shape
+    return cast(list[list[list[int]]], arr.tolist())
 
 
-class _RoutedExpertsCaptureBase:
-    """Wraps the engine result generator and accumulates a
-    ``{output_index: encoded_experts}`` map as outputs stream. Subclasses
-    implement ``post_process`` to fold the captured map into the response
-    in whatever shape the endpoint returns (in-place vs rebuilt)."""
-
+class _RoutedExpertsCapture:
     def __init__(self, generator: AsyncGenerator[RequestOutput, None]):
         self._generator = generator
-        self.routed_experts: dict[int, dict] = {}
+        self.prompt_routed_experts: list[list[list[int]]] | None = None
+        self.routed_experts: dict[int, list[list[list[int]]]] = {}
 
-    async def __aiter__(self):
+    async def __aiter__(self) -> AsyncGenerator[RequestOutput, None]:
         async for request_output in self._generator:
+            if request_output.prompt_routed_experts is not None:
+                self.prompt_routed_experts = _serialize_routed_experts(request_output.prompt_routed_experts)
             for output in request_output.outputs:
                 if output.routed_experts is not None:
-                    self.routed_experts[output.index] = encode_routed_experts(output.routed_experts)
+                    self.routed_experts[output.index] = _serialize_routed_experts(output.routed_experts)
             yield request_output
 
-
-class _RoutedExpertsCapture(_RoutedExpertsCaptureBase):
-    """Generate-endpoint variant: rebuilds the response with
-    ``PrimeRlGenerateResponseChoice`` because upstream's
-    ``GenerateResponseChoice`` isn't ``extra='allow'``, so an attribute
-    set after construction wouldn't survive serialization."""
-
     def post_process(self, response: GenerateResponse) -> PrimeRlGenerateResponse:
-        new_choices = [
+        choices = [
             PrimeRlGenerateResponseChoice(
                 **choice.model_dump(),
-                routed_experts=self.routed_experts.get(choice.index),
+                routed_experts=(self.routed_experts[choice.index] if choice.index in self.routed_experts else None),
             )
             for choice in response.choices
         ]
         return PrimeRlGenerateResponse(
             request_id=response.request_id,
-            choices=new_choices,
+            choices=choices,
             prompt_logprobs=response.prompt_logprobs,
+            prompt_routed_experts=self.prompt_routed_experts,
             kv_transfer_params=response.kv_transfer_params,
         )
 
@@ -162,7 +161,7 @@ class PrimeRlServingTokens(ServingTokens):
         self,
         request: GenerateRequest,
         raw_request: Request | None = None,
-    ) -> PrimeRlGenerateResponse | ErrorResponse | AsyncGenerator[str, None]:
+    ) -> PrimeRlGenerateResponse | GenerateResponse | ErrorResponse | AsyncGenerator[str, None]:
         # Mirrors upstream ``ServingTokens.serve_tokens`` (vllm 0.20). Diffs:
         # (a) inject ``data_parallel_rank`` from the inbound header into
         # ``engine_client.generate``; (b) default ``sampling_params.max_tokens``
@@ -284,12 +283,6 @@ class PrimeRlServingTokens(ServingTokens):
         model_name: str,
         request_metadata: RequestResponseMetadata,
     ) -> ErrorResponse | GenerateResponse:
-        # Mirror serving_chat_with_tokens: wrap the result generator to capture
-        # routed_experts as it streams, defer the rest to upstream, then post-
-        # process the response into our PrimeRlGenerateResponse subclass so the
-        # encoded experts surface in the JSON. Skipping the wrapper when the
-        # engine isn't producing routed experts keeps us a no-op subclass on
-        # the common path.
         capture: _RoutedExpertsCapture | None = None
         if self.model_config.enable_return_routed_experts:
             capture = _RoutedExpertsCapture(result_generator)

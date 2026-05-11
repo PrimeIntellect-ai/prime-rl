@@ -1857,7 +1857,7 @@ def test_align_routed_experts_none():
 
 
 def test_align_routed_experts_empty():
-    result = _align_routed_experts([], 10)
+    result = _align_routed_experts([], 0)
     assert result == []
 
 
@@ -1869,21 +1869,24 @@ def test_align_routed_experts_no_deficit():
 
 
 def test_align_routed_experts_with_deficit():
-    # 2 tokens but expected 4 (deficit of 2)
     experts = [[[1, 2], [3, 4]], [[5, 6], [7, 0]]]
-    result = _align_routed_experts(experts, expected_len=4)
-    assert len(result) == 4
+    result = _align_routed_experts(experts, expected_len=3)
+    assert len(result) == 3
     assert result[:2] == experts
     # Padded entries should be zero-filled with same shape [layers=2, topk=2]
     assert result[2] == [[0, 0], [0, 0]]
-    assert result[3] == [[0, 0], [0, 0]]
+
+
+def test_align_routed_experts_rejects_large_deficit():
+    experts = [[[1, 2], [3, 4]], [[5, 6], [7, 0]]]
+    with pytest.raises(AssertionError):
+        _align_routed_experts(experts, expected_len=4)
 
 
 def test_align_routed_experts_excess_length():
     experts = [[[1, 2]], [[3, 4]], [[5, 6]]]
-    result = _align_routed_experts(experts, expected_len=2)
-    # No truncation, just returns as-is
-    assert result == experts
+    with pytest.raises(AssertionError):
+        _align_routed_experts(experts, expected_len=2)
 
 
 def test_interleave_rollout_single_step_with_routed_experts():

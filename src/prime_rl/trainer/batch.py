@@ -173,6 +173,12 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.temperatures.extend([1.0] * padding_size)
     if micro_batch.teacher_logprobs is not None:
         micro_batch.teacher_logprobs.extend([0.0] * padding_size)
+    if micro_batch.routed_experts is not None:
+        assert micro_batch.routed_experts
+        num_layers = len(micro_batch.routed_experts[0])
+        topk = len(micro_batch.routed_experts[0][0])
+        zero_entry = [[0] * topk for _ in range(num_layers)]
+        micro_batch.routed_experts.extend([zero_entry] * padding_size)
     micro_batch.lora_num_tokens[-1] += (
         padding_size  # We send padding to the last lora so that tokens have ascending lora idx
     )

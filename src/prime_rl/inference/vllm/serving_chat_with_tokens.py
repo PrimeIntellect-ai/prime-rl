@@ -1,4 +1,4 @@
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import ClassVar, Optional, Union
 
 from fastapi import Request
@@ -14,20 +14,7 @@ from vllm.outputs import RequestOutput
 from vllm.reasoning import ReasoningParser
 from vllm.sampling_params import BeamSearchParams, SamplingParams
 
-from prime_rl.inference.vllm.serving_tokens import _RoutedExpertsCaptureBase
-
 logger = init_logger(__name__)
-
-
-class _RoutedExpertsCapture(_RoutedExpertsCaptureBase):
-    """Chat-endpoint variant: mutates choices in-place because
-    ``ChatCompletionResponseChoice`` is ``extra='allow'``, so an extra
-    ``routed_experts`` attribute survives serialization."""
-
-    def post_process(self, response: ChatCompletionResponse) -> None:
-        for choice in response.choices:
-            if choice.index in self.routed_experts:
-                choice.routed_experts = self.routed_experts[choice.index]
 
 
 class ChatCompletionRequestWithTokens(ChatCompletionRequest):
@@ -36,46 +23,7 @@ class ChatCompletionRequestWithTokens(ChatCompletionRequest):
 
 
 class OpenAIServingChatWithTokens(OpenAIServingChat):
-    """OpenAI-compatible generate API that allows token-in and routed experts capture."""
-
-    async def chat_completion_full_generator(
-        self,
-        request: ChatCompletionRequest,
-        result_generator: AsyncIterator[RequestOutput],
-        request_id: str,
-        model_name: str,
-        conversation,
-        tokenizer,
-        request_metadata: RequestResponseMetadata,
-        reasoning_parser: ReasoningParser | None = None,
-    ) -> ErrorResponse | ChatCompletionResponse:
-        # We need to override the full_generator to be able to capture the routed experts
-        # By default, VLLM does not save the routed experts into ChatCompletionResponse.choices, so we need to capture them manually
-        # How this works:
-        # 1. We create a custom generator that encapsulates the original result_generator in self._generator
-        # 2. We override it's __aiter__ method to also capture the routed experts as an extra field in ChatCompletionResponse.choices
-        # 3. We override the full_generator method to use the custom generator instead of the original one if expert routing is enabled
-        if self.model_config.enable_return_routed_experts:
-            capture = _RoutedExpertsCapture(result_generator)
-            result_generator = capture
-        else:
-            capture = None
-
-        response = await super().chat_completion_full_generator(
-            request,
-            result_generator,
-            request_id,
-            model_name,
-            conversation,
-            tokenizer,
-            request_metadata,
-            reasoning_parser,
-        )
-
-        if capture and isinstance(response, ChatCompletionResponse):
-            capture.post_process(response)
-
-        return response
+    """OpenAI-compatible chat API that allows token-in requests."""
 
     async def create_chat_completion_with_tokens(
         self,
