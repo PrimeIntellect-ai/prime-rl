@@ -59,7 +59,7 @@ def build_dict_config(level: str = "info") -> dict[str, Any]:
     # Each named logger is configured explicitly: vLLM, uvicorn, and
     # transformers all set propagate=False on their own loggers, so a
     # root-only setup wouldn't reach them.
-    named = ("vllm", "uvicorn", "uvicorn.error", "uvicorn.access", "fastapi")
+    named = ("vllm", "uvicorn", "uvicorn.error", "uvicorn.access", "fastapi", "transformers")
     return {
         "version": 1,
         "disable_existing_loggers": False,
