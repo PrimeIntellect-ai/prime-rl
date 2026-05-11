@@ -85,7 +85,6 @@ async def compute_teacher_logprobs(
 ) -> list[list[float]]:
     """Compute teacher model logprobs for a batch of training samples via prefill."""
     import httpx
-
     from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
 
     async def _compute_single(client_config: vf.ClientConfig, sample: TrainingSample) -> list[float]:
