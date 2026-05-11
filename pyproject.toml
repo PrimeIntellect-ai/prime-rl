@@ -31,6 +31,7 @@ dependencies = [
     "uvloop>=0.21.0",
     "torchtitan",
     "verifiers",
+    "renderers==0.1.6",
     "dion",
     "tilelang>=0.1.8",
     "flash-linear-attention",
@@ -152,6 +153,7 @@ prime-tunnel = false
 prime-evals = false
 # Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
 verifiers = false
+renderers = false
 vllm-router = false
 dion = false
 pydantic-config = false
@@ -164,7 +166,7 @@ prime-rl-configs = { workspace = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "3b77145" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "aa428f3" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "c1c3424" }
