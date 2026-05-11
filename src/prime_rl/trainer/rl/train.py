@@ -370,13 +370,12 @@ def train(config: TrainerConfig):
                 # we could've gotten routed experts from the inference server, but we didn't enable router replay
                 routed_experts = None
 
-            # Multimodal fields (Qwen3-VL) - only present for VLM training
-            pixel_values = (
-                micro_batch["pixel_values"].to("cuda") if micro_batch.get("pixel_values") is not None else None
-            )
-            image_grid_thw = (
-                micro_batch["image_grid_thw"].to("cuda") if micro_batch.get("image_grid_thw") is not None else None
-            )
+            # Multimodal kwargs are an opaque per-model dict (e.g.
+            # {"pixel_values": ..., "image_grid_thw": ...} for Qwen3-VL,
+            # just {"pixel_values": ...} for Gemma3-VL) — we move every
+            # tensor to CUDA and let the model's forward sort them.
+            mm_kwargs_raw = micro_batch.get("mm_kwargs")
+            mm_kwargs = {k: v.to("cuda") for k, v in mm_kwargs_raw.items()} if mm_kwargs_raw else None
             mm_token_type_ids = (
                 micro_batch["mm_token_type_ids"].to("cuda")
                 if micro_batch.get("mm_token_type_ids") is not None
@@ -386,7 +385,7 @@ def train(config: TrainerConfig):
             labels = shift_tensor_left(input_ids)
 
             # VLM + CP is not supported: MRoPE requires global positions but CP shards the sequence
-            if cp_enabled and pixel_values is not None:
+            if cp_enabled and mm_kwargs is not None:
                 raise NotImplementedError("Context parallelism is not supported with VLM/multimodal training")
 
             if cp_enabled:
@@ -425,8 +424,7 @@ def train(config: TrainerConfig):
                     forward_position_ids,
                     labels=labels,
                     temperature=temperatures,
-                    pixel_values=pixel_values,
-                    image_grid_thw=image_grid_thw,
+                    mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_token_type_ids,
                     routed_experts=routed_experts,
                 )

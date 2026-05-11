@@ -1256,6 +1256,28 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def vlm_requires_renderer(self):
+        """VLMs (``[model.vlm]`` block set) must go through the renderer.
+
+        The MITO path for VLMs (chat-completions + server-side image
+        stripping + orchestrator-side AutoProcessor + VLMImageCache) was
+        removed: it duplicated processor work, hardcoded a Qwen-VL
+        tensor schema, and produced a token stream the trainer could
+        only reconstruct because the orchestrator re-tokenized through
+        the same processor. The renderer path owns the processor
+        per-slot, produces byte-identical tokens, and ships generic
+        ``mm_kwargs`` keyed by whatever the model's forward signature
+        expects.
+        """
+        if self.model.vlm is not None and not self.use_renderer:
+            raise ValueError(
+                "orchestrator.use_renderer must be true when model.vlm is set. "
+                "The MITO path for VLMs has been removed; VLMs must go through "
+                "a renderer (e.g. Qwen3VLRenderer) that owns the processor."
+            )
+        return self
+
+    @model_validator(mode="after")
     def nccl_max_async_level(self):
         if self.weight_broadcast.type == "nccl":
             if not self.max_async_level == 1:
