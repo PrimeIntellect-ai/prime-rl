@@ -973,6 +973,11 @@ class RLConfig(BaseConfig):
         self.orchestrator.teacher_model.client.base_url = [f"http://{host}:{port}/v1"]
         self.orchestrator.teacher_model.model.name = self.teacher_inference.model.name
 
+        if self.log is not None:
+            if self.log.level is not None:
+                self.teacher_inference.log.level = self.log.level
+            self.teacher_inference.log.json_logging = self.log.json_logging
+
         return self
 
     @model_validator(mode="after")
