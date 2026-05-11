@@ -150,7 +150,11 @@ class PrimeRlServingTokens(ServingTokens):
         override = (
             diff.get("max_tokens")
             if mc.generation_config not in ("auto", "vllm")
-            else getattr(mc, "override_generation_config", {}).get("max_new_tokens")
+            # Upstream uses ``getattr(..., {})`` directly. Defensive ``or {}``
+            # in case a downstream caller ever sets the attribute to ``None``
+            # (``getattr``'s default only fires when the attribute is missing,
+            # not when it exists with a ``None`` value).
+            else (getattr(mc, "override_generation_config", None) or {}).get("max_new_tokens")
         )
         return diff, override
 
