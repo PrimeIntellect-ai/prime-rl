@@ -394,7 +394,7 @@ async def orchestrate(config: OrchestratorConfig):
                         get_client=inference_pool.get_eval_client,
                         ckpt_step=ckpt_step,
                         step=progress.step,
-                        cache_salt=str(ckpt_step),
+                        cache_salt=str(ckpt_step) if scheduler.supports_cache_salt else None,
                     )
                     for eval_env in envs_to_eval
                 ]
@@ -813,7 +813,7 @@ async def orchestrate(config: OrchestratorConfig):
                     get_client=inference_pool.get_eval_client,
                     ckpt_step=ckpt_step,
                     step=progress.step,
-                    cache_salt=str(ckpt_step),
+                    cache_salt=str(ckpt_step) if scheduler.supports_cache_salt else None,
                 )
                 for eval_env in eval_envs
             ]

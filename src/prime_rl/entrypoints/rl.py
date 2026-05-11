@@ -153,7 +153,12 @@ def rl_local(config: RLConfig):
     check_gpus_available(all_gpu_ids)
 
     # Validate client port matches inference server port
-    if config.inference is not None and not config.orchestrator.client.is_elastic:
+    local_router_deployed = not (
+        config.inference is not None
+        and config.inference.backend == "dynamo"
+        and not config.inference.dynamo.deploy_router
+    )
+    if config.inference is not None and not config.orchestrator.client.is_elastic and local_router_deployed:
         from urllib.parse import urlparse
 
         base_url = config.orchestrator.client.base_url[0]

@@ -131,9 +131,16 @@ def inference_local(config: InferenceConfig):
 
     setup_vllm_env(config)
 
-    from prime_rl.inference.vllm.server import server  # pyright: ignore
+    if config.backend == "vllm":
+        from prime_rl.inference.vllm.server import server  # pyright: ignore
 
-    server(config, vllm_extra=config.vllm_extra)
+        server(config, vllm_extra=config.vllm_extra)
+    elif config.backend == "dynamo":
+        from prime_rl.experimental.dynamo.server import server
+
+        server(config)
+    else:
+        raise ValueError(f"Unsupported inference backend: {config.backend}")
 
 
 def inference(config: InferenceConfig):

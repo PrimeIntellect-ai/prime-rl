@@ -10,6 +10,17 @@ from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
 
 # TODO: Set thinking/ solution budget
 
+InferenceBackend: TypeAlias = Literal["vllm", "dynamo"]
+DynamoRouterMode: TypeAlias = Literal[
+    "round-robin",
+    "random",
+    "kv",
+    "direct",
+    "power-of-two",
+    "least-loaded",
+    "device-aware-weighted",
+]
+
 
 class ServerConfig(BaseConfig):
     """Configures the inference server."""
@@ -118,6 +129,78 @@ class WeightBroadcastConfig(BaseConfig):
     type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
         "filesystem"
     )
+
+
+class DynamoConfig(BaseConfig):
+    """Configures the experimental Dynamo backend."""
+
+    deploy_router: Annotated[
+        bool,
+        Field(
+            description=(
+                "Launch Dynamo's frontend/router from the inference entrypoint. Disable only when an "
+                "external Dynamo frontend/router is already deployed and orchestrator.client.base_url points at it."
+            ),
+        ),
+    ] = True
+
+    namespace: Annotated[
+        str,
+        Field(description="Dynamo namespace used by the frontend and worker for service discovery."),
+    ] = "dynamo"
+
+    discovery_backend: Annotated[
+        Literal["file", "etcd", "kubernetes", "mem"],
+        Field(description="Dynamo discovery backend. Use 'file' for local single-node runs without etcd/NATS."),
+    ] = "file"
+
+    request_plane: Annotated[
+        Literal["tcp", "nats", "http"],
+        Field(description="Dynamo request plane used between the frontend and worker."),
+    ] = "tcp"
+
+    router_mode: Annotated[
+        DynamoRouterMode,
+        Field(description="Dynamo frontend router mode used for OpenAI chat-completions traffic."),
+    ] = "round-robin"
+
+    min_initial_workers: Annotated[
+        int | None,
+        Field(
+            ge=0,
+            description="Optional Dynamo frontend minimum worker count before the router starts serving requests.",
+        ),
+    ] = None
+
+    event_plane: Annotated[
+        Literal["nats", "zmq"] | None,
+        Field(description="Dynamo event plane. If None, Dynamo derives it from discovery_backend."),
+    ] = None
+
+    system_port: Annotated[
+        int,
+        Field(ge=1, le=65535, description="Dynamo worker system-server port for /health and /engine routes."),
+    ] = 8081
+
+    use_vllm_tokenizer: Annotated[
+        bool,
+        Field(
+            description=(
+                "Use Dynamo's text-in/text-out vLLM worker path. prime-rl defaults this off so the "
+                "Dynamo frontend tokenizes OpenAI requests before dispatching them to the worker."
+            ),
+        ),
+    ] = False
+
+    frontend_extra: Annotated[
+        dict[str, Any],
+        Field(description="Extra CLI arguments for python -m dynamo.frontend."),
+    ] = {}
+
+    worker_extra: Annotated[
+        dict[str, Any],
+        Field(description="Extra CLI arguments for the Dynamo vLLM worker."),
+    ] = {}
 
 
 class KVCacheOffloadConfig(BaseModel):
@@ -252,6 +335,16 @@ class InferenceExperimentalConfig(BaseConfig):
 class InferenceConfig(BaseConfig):
     """Configures inference."""
 
+    backend: Annotated[
+        InferenceBackend,
+        Field(
+            description=(
+                "Inference server backend to launch. vLLM is the default; Dynamo is an experimental "
+                "backend for OpenAI-compatible rollouts with prime-rl weight updates."
+            )
+        ),
+    ] = "vllm"
+
     # The server configuration
     server: ServerConfig = ServerConfig()
 
@@ -384,6 +477,11 @@ class InferenceConfig(BaseConfig):
         WeightBroadcastConfig()
     )
 
+    dynamo: Annotated[
+        DynamoConfig,
+        Field(description="Experimental Dynamo-specific settings used when backend='dynamo'."),
+    ] = DynamoConfig()
+
     kv_cache_offload: Annotated[
         KVCacheOffloadConfig | None,
         Field(
@@ -445,6 +543,17 @@ class InferenceConfig(BaseConfig):
     def validate_multi_node_requires_slurm(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_backend_support(self):
+        if self.backend != "dynamo":
+            return self
+
+        if self.deployment.type != "single_node":
+            raise ValueError("inference.backend='dynamo' currently supports only single_node deployment.")
+        if self.kv_cache_offload is not None:
+            raise ValueError("inference.backend='dynamo' does not support prime-rl kv_cache_offload plumbing yet.")
         return self
 
     @model_validator(mode="after")
@@ -601,5 +710,112 @@ class InferenceConfig(BaseConfig):
         if hasattr(namespace, "rope_scaling"):
             if namespace.rope_scaling is None:
                 delattr(namespace, "rope_scaling")
+
+        return namespace
+
+    def to_dynamo_frontend(self) -> Namespace:
+        """Convert InferenceConfig to Dynamo frontend CLI namespace."""
+        namespace = Namespace()
+        to_frontend = {
+            "server.host": "http_host",
+            "server.port": "http_port",
+            "dynamo.namespace": "namespace",
+            "dynamo.discovery_backend": "discovery_backend",
+            "dynamo.request_plane": "request_plane",
+            "dynamo.router_mode": "router_mode",
+            "dynamo.min_initial_workers": "min_initial_workers",
+            "dynamo.event_plane": "event_plane",
+            "model.name": "model_name",
+        }
+
+        for config_key, frontend_key in to_frontend.items():
+            value = rgetattr(self, config_key.replace("-", "_"))
+            rsetattr(namespace, frontend_key, value)
+
+        namespace.dyn_chat_processor = "vllm"
+
+        for key, value in self.dynamo.frontend_extra.items():
+            setattr(namespace, key, value)
+
+        for optional_key in ("http_host", "event_plane", "model_name", "min_initial_workers"):
+            value = getattr(namespace, optional_key, None)
+            if value is None:
+                delattr(namespace, optional_key)
+
+        return namespace
+
+    def to_dynamo_vllm(self) -> Namespace:
+        """Convert InferenceConfig to Dynamo vLLM worker CLI namespace."""
+        namespace = Namespace()
+        to_dynamo_vllm = {
+            "dynamo.namespace": "namespace",
+            "dynamo.discovery_backend": "discovery_backend",
+            "dynamo.request_plane": "request_plane",
+            "dynamo.event_plane": "event_plane",
+            "dynamo.use_vllm_tokenizer": "use_vllm_tokenizer",
+            "model.name": "model",
+            "model.dtype": "dtype",
+            "model.max_model_len": "max_model_len",
+            "model.enforce_eager": "enforce_eager",
+            "model.trust_remote_code": "trust_remote_code",
+            "model.rope_scaling": "rope_scaling",
+            "parallel.tp": "tensor_parallel_size",
+            "parallel.dp": "data_parallel_size",
+            "data_parallel_size_local": "data_parallel_size_local",
+            "data_parallel_rpc_port": "data_parallel_rpc_port",
+            "enable_lora": "enable_lora",
+            "enable_prefix_caching": "enable_prefix_caching",
+            "max_loras": "max_loras",
+            "max_cpu_loras": "max_cpu_loras",
+            "max_lora_rank": "max_lora_rank",
+            "lora_target_modules": "lora_target_modules",
+            "gpu_memory_utilization": "gpu_memory_utilization",
+            "enable_return_routed_experts": "enable_return_routed_experts",
+            "enable_expert_parallel": "enable_expert_parallel",
+            "all2all_backend": "all2all_backend",
+            "enable_eplb": "enable_eplb",
+            "enable_dbo": "enable_dbo",
+            "seed": "seed",
+        }
+
+        for config_key, dynamo_key in to_dynamo_vllm.items():
+            value = rgetattr(self, config_key.replace("-", "_"))
+            rsetattr(namespace, dynamo_key, value)
+
+        namespace.served_model_name = self.model.name
+
+        if self.model.tool_call_parser not in (None, "auto"):
+            namespace.dyn_tool_call_parser = self.model.tool_call_parser
+        if self.model.reasoning_parser is not None:
+            namespace.dyn_reasoning_parser = self.model.reasoning_parser
+
+        namespace.logprobs_mode = "processed_logprobs"
+
+        if self.enable_fp32_lm_head:
+            existing = getattr(namespace, "additional_config", None) or {}
+            existing["fp32_lm_head"] = True
+            rsetattr(namespace, "additional_config", existing)
+
+        for key, value in self.vllm_extra.items():
+            setattr(namespace, key, value)
+        for key, value in self.dynamo.worker_extra.items():
+            setattr(namespace, key, value)
+
+        for optional_key in (
+            "event_plane",
+            "rope_scaling",
+            "data_parallel_size_local",
+            "data_parallel_rpc_port",
+            "enable_prefix_caching",
+            "max_lora_rank",
+            "lora_target_modules",
+            "additional_config",
+        ):
+            if not hasattr(namespace, optional_key):
+                continue
+
+            value = getattr(namespace, optional_key)
+            if value is None:
+                delattr(namespace, optional_key)
 
         return namespace

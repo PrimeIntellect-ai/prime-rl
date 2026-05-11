@@ -39,7 +39,7 @@ The entrypoint launches torchrun internally — no need to call torchrun directl
 
 ## `inference` — Standalone inference server
 
-Launches a vLLM-based inference server with OpenAI-compatible API.
+Launches a vLLM-based inference server with OpenAI-compatible API. The experimental Dynamo backend is available with `inference.backend = "dynamo"` after installing the optional Dynamo extra.
 
 ```bash
 uv run inference @ configs/debug/infer.toml
@@ -48,10 +48,20 @@ uv run inference --model.name Qwen/Qwen3-0.6B --model.enforce-eager
 
 Always use the `inference` entrypoint — never `vllm serve` directly.
 
+For Dynamo:
+
+```bash
+uv run --extra dynamo inference @ configs/debug/infer.toml --backend dynamo
+```
+
+Dynamo code lives under `prime_rl.experimental.dynamo`; the launcher exposes Dynamo's OpenAI frontend/router on `inference.server.port` and uses `inference.dynamo.system_port` for weight-update/admin routes on the worker. `inference.dynamo.deploy_router` defaults to true for local `rl` testing; set it false only when `orchestrator.client.base_url` points at an externally deployed Dynamo router.
+
 Custom endpoints beyond standard OpenAI API:
 - `/v1/chat/completions/tokens` — accepts token IDs as prompt input
 - `/update_weights` — hot-reload model weights from the trainer
 - `/load_lora_adapter` — load LoRA adapters at runtime
+
+For Dynamo, generation should go through Dynamo's standard `/v1/chat/completions` frontend route. prime-rl adds only worker admin routes under `/engine/*` for liveness, NCCL broadcaster setup, and weight updates.
 - `/init_broadcaster` — initialize weight broadcast for distributed training
 
 Check health with:
