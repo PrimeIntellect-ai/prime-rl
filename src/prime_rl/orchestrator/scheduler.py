@@ -32,6 +32,8 @@ class InflightRequest:
     env_name: str
     group_id: int | None = None
     rollout_count: int = 1
+    # Dispatch round the request belongs to (see GroupState.current_round).
+    round_id: int = 0
 
 
 @dataclass
@@ -42,10 +44,19 @@ class GroupState:
     rollouts_to_schedule: int
     completed_rollouts: list[vf.RolloutOutput] = field(default_factory=list)
     pinned_client: vf.ClientConfig | None = None
-    # Number of rollout attempts in this group that returned errored or empty
-    # trajectories. Compared against config.max_error_reschedule_attempts to
-    # decide when to drop a permanently-stuck group.
+    # Number of dispatch rounds in which at least one rollout returned errored
+    # or empty trajectories. Compared against
+    # config.max_error_reschedule_attempts to decide when to drop a
+    # permanently-stuck group. Counts rounds, not rollouts: a failed round in
+    # an individual-scoring env that happens to dispatch N rollouts at once
+    # still only counts as 1.
     failed_attempts: int = 0
+    # Round id assigned to newly-dispatched rollouts. Advances after a failure
+    # is counted so the resulting reschedule starts a new round.
+    current_round: int = 0
+    # Highest round already counted as failed; used to dedupe failures from
+    # multiple rollouts in the same round.
+    last_failed_round: int = -1
 
 
 class Scheduler:
@@ -234,6 +245,7 @@ class Scheduler:
             env_name=env_name,
             group_id=group_id,
             rollout_count=rollout_count,
+            round_id=group.current_round,
         )
 
     @property
@@ -463,9 +475,16 @@ class Scheduler:
                             valid_rollouts.append(rollout)
 
                     if has_failures:
-                        group.failed_attempts += 1
+                        # Dedupe failures within the same dispatch round: an
+                        # individual-scoring env dispatches N rollouts at once,
+                        # so a single failed round can produce up to N failed
+                        # tasks. We only count the round once.
+                        if rollout_info.round_id > group.last_failed_round:
+                            group.failed_attempts += 1
+                            group.last_failed_round = rollout_info.round_id
+                            group.current_round = rollout_info.round_id + 1
                         max_attempts = self.config.max_error_reschedule_attempts
-                        if max_attempts is not None and group.failed_attempts > max_attempts:
+                        if max_attempts is not None and group.failed_attempts >= max_attempts:
                             # Permanently-stuck group: drop it from this step and let the
                             # rest of the batch proceed. Avoids a single bad example (e.g.
                             # an agent rollout whose sandbox poll keeps timing out)
@@ -473,7 +492,7 @@ class Scheduler:
                             self.dropped_groups_by_env[env_name] += 1
                             self.logger.warning(
                                 f"Dropping group {group_id} ({env_name}) after {group.failed_attempts} "
-                                f"failed attempts ({len(group.completed_rollouts)}/{self.rollouts_per_example} "
+                                f"failed dispatch rounds ({len(group.completed_rollouts)}/{self.rollouts_per_example} "
                                 f"complete). Last failure: {last_failure_reason}. Set "
                                 f"orchestrator.max_error_reschedule_attempts higher (or to None) "
                                 f"to retry more aggressively."

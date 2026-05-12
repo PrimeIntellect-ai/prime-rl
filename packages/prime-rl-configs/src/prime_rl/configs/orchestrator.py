@@ -1086,7 +1086,7 @@ class OrchestratorConfig(BaseConfig):
         int | None,
         Field(
             ge=1,
-            description="Maximum number of times the scheduler will reschedule a group whose rollouts errored or returned empty trajectories. After this many consecutive failed attempts, the group is dropped from the current step's batch (the trainer proceeds with the rollouts from other groups). `None` means retry indefinitely (legacy behavior). Useful for unblocking single-example hangs in agent envs.",
+            description="The group is dropped from the current step's batch once this many of its dispatch rounds have returned errored or empty rollouts (the trainer proceeds with the rollouts from other groups). Counts rounds, not individual rollouts: a non-group-scoring env that dispatches `rollouts_per_example` rollouts at once still only counts one round per failed batch. `None` means retry indefinitely (legacy behavior). Useful for unblocking single-example hangs in agent envs.",
         ),
     ] = None
 
