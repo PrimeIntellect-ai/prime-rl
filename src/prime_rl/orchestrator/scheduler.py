@@ -462,7 +462,7 @@ class Scheduler:
                     if has_failures:
                         group.failed_attempts += 1
                         max_attempts = self.config.max_error_reschedule_attempts
-                        if max_attempts is not None and group.failed_attempts >= max_attempts:
+                        if max_attempts is not None and group.failed_attempts > max_attempts:
                             # Permanently-stuck group: drop it from this step and let the
                             # rest of the batch proceed. Avoids a single bad example (e.g.
                             # an agent rollout whose sandbox poll keeps timing out)
