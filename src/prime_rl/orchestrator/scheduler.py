@@ -553,6 +553,7 @@ class Scheduler:
             "scheduler/cancelled_rollouts": self.cancelled_rollouts_count,
             "empty_rollouts/all": sum(self.empty_rollouts_by_env.values()) / max(total_rollouts, 1),
             "errored_rollouts/all": sum(self.errored_rollouts_by_env.values()) / max(total_rollouts, 1),
+            "dropped_groups/all": sum(self.dropped_groups_by_env.values()),
             "off_policy_level/all/max": self.max_off_policy_level,
             "off_policy_level/all/mean": self.mean_off_policy_level,
         }
@@ -560,6 +561,8 @@ class Scheduler:
             env_total = max(self.total_rollouts_by_env[env_name], 1)
             metrics[f"empty_rollouts/{env_name}"] = self.empty_rollouts_by_env.get(env_name, 0) / env_total
             metrics[f"errored_rollouts/{env_name}"] = self.errored_rollouts_by_env.get(env_name, 0) / env_total
+        for env_name, count in self.dropped_groups_by_env.items():
+            metrics[f"dropped_groups/{env_name}"] = count
         by_env: dict[str, list[int]] = {}
         for info in self.inflight_requests.values():
             by_env.setdefault(info.env_name, []).append(info.off_policy_steps)
@@ -570,6 +573,7 @@ class Scheduler:
         self.empty_rollouts_by_env.clear()
         self.errored_rollouts_by_env.clear()
         self.total_rollouts_by_env.clear()
+        self.dropped_groups_by_env.clear()
 
         # Add inference pool metrics (e.g. elastic pool server counts)
         metrics.update(self.inference_pool.get_metrics())
