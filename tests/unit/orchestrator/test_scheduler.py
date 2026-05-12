@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import verifiers as vf
 
-from prime_rl.orchestrator.scheduler import InflightRequest, Scheduler
+from prime_rl.orchestrator.scheduler import GroupState, InflightRequest, Scheduler
 from prime_rl.utils.async_utils import safe_cancel
 
 
@@ -31,6 +31,9 @@ def make_scheduler() -> Scheduler:
     scheduler.inflight_policy_update_task = None
     scheduler.update_policy_task = None
     scheduler.enable_policy_updates = True
+    scheduler.rate_limiter = None
+    scheduler.teacher_rollout_clients = None
+    scheduler.teacher_rollout_model_name = None
     return scheduler
 
 
@@ -106,7 +109,6 @@ def test_maybe_update_policy_reuses_inflight_update_after_cancellation():
             update_weights=update_weights,
             update_model_name=MagicMock(),
         )
-        scheduler.eval_inference_pool = scheduler.inference_pool
         scheduler._update_off_policy = AsyncMock()
 
         with (
@@ -147,7 +149,6 @@ def test_stop_cancels_inflight_policy_update_task():
             update_weights=update_weights,
             update_model_name=MagicMock(),
         )
-        scheduler.eval_inference_pool = scheduler.inference_pool
         scheduler._update_off_policy = AsyncMock()
 
         with (
@@ -178,16 +179,14 @@ def test_client_identity_distinguishes_base_url_and_dp_rank():
     assert Scheduler._client_identity(client_a) != Scheduler._client_identity(client_b)
 
 
-def test_lora_policy_update_keeps_teacher_rollout_model_name_with_separate_eval_pool():
+def test_lora_policy_update_keeps_student_model_name_with_teacher_rollout_override():
     async def run() -> None:
         scheduler = make_scheduler()
-        scheduler.model_name = "teacher-model"
+        scheduler.model_name = "student-model"
         scheduler.lora_name = "student-lora"
+        scheduler.teacher_rollout_model_name = "teacher-model"
 
         scheduler.inference_pool = SimpleNamespace(
-            update_model_name=MagicMock(),
-        )
-        scheduler.eval_inference_pool = SimpleNamespace(
             update_weights=AsyncMock(),
             update_model_name=MagicMock(),
         )
@@ -199,9 +198,45 @@ def test_lora_policy_update_keeps_teacher_rollout_model_name_with_separate_eval_
         ):
             await scheduler.maybe_update_policy()
 
-        scheduler.eval_inference_pool.update_weights.assert_awaited_once()
-        scheduler.eval_inference_pool.update_model_name.assert_called_once_with("student-lora")
-        scheduler.inference_pool.update_model_name.assert_not_called()
-        assert scheduler.model_name == "teacher-model"
+        scheduler.inference_pool.update_weights.assert_awaited_once()
+        scheduler.inference_pool.update_model_name.assert_called_once_with("student-lora")
+        assert scheduler.model_name == "student-lora"
+        assert scheduler.teacher_rollout_model_name == "teacher-model"
+
+    asyncio.run(run())
+
+
+def test_schedule_rollout_applies_teacher_override_at_request_submission():
+    async def run() -> None:
+        scheduler = make_scheduler()
+        student_client = vf.ClientConfig(api_base_url="http://student.example/v1")
+        teacher_client = vf.ClientConfig(api_base_url="http://teacher.example/v1")
+        env = SimpleNamespace(
+            requires_group_scoring=False,
+            run_rollout=AsyncMock(return_value=[]),
+        )
+        scheduler.inference_pool = SimpleNamespace(train_clients=[student_client])
+        scheduler.teacher_rollout_clients = [teacher_client]
+        scheduler.teacher_rollout_model_name = "teacher-model"
+        scheduler.train_envs = SimpleNamespace(get=MagicMock(return_value=env))
+        scheduler.groups = {
+            0: GroupState(
+                example={"env_name": "math", "example_id": "ex-1"},
+                rollouts_to_schedule=1,
+            )
+        }
+
+        await scheduler.schedule_rollout(group_id=0)
+        await asyncio.gather(*scheduler.inflight_requests)
+
+        env.run_rollout.assert_awaited_once_with(
+            client=teacher_client,
+            example={"env_name": "math", "example_id": "ex-1"},
+            model_name="teacher-model",
+            cache_salt="7",
+        )
+        assert scheduler.groups[0].pinned_client is student_client
+        [info] = scheduler.inflight_requests.values()
+        assert info.client_config is student_client
 
     asyncio.run(run())

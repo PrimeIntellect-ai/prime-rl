@@ -155,12 +155,13 @@ def setup_external_rollout_model(config: OrchestratorConfig, logger) -> tuple[An
     """Resolve rollout client/model and whether policy updates should be enabled."""
     rollout_client_config = config.client
     rollout_model_name = config.model.name
-    enable_policy_updates = True
+    enable_policy_updates = config.enable_policy_updates if config.enable_policy_updates is not None else True
 
     if config.teacher_rollout_model is not None:
         rollout_client_config = config.teacher_rollout_model.client
         rollout_model_name = config.teacher_rollout_model.model.name
-        enable_policy_updates = False
+        if config.enable_policy_updates is None:
+            enable_policy_updates = False
         logger.info(
             f"Using external teacher rollout model (base_url={', '.join(rollout_client_config.base_url)}, "
             f"model={rollout_model_name})"

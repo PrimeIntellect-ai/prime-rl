@@ -950,17 +950,6 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = None
 
-    use_student_eval_inference_pool: Annotated[
-        bool,
-        Field(
-            description=(
-                "When teacher_rollout_model is set, use orchestrator.client as a separate student inference pool "
-                "for online evals and weight updates. The RL config enables this automatically when [inference] "
-                "is configured."
-            ),
-        ),
-    ] = False
-
     # When True, trainer uses SFT loss instead of RL loss (per-run override for hosted multi-tenant training)
     use_sft_loss: Annotated[
         bool,
@@ -971,6 +960,17 @@ class OrchestratorConfig(BaseConfig):
             ),
         ),
     ] = False
+
+    enable_policy_updates: Annotated[
+        bool | None,
+        Field(
+            description=(
+                "Whether the orchestrator should receive policy weight updates. "
+                "Defaults to False for teacher_rollout_model runs and True otherwise; the RL config enables it "
+                "for teacher_rollout_model runs when [inference] is configured."
+            ),
+        ),
+    ] = None
 
     # The evaluation configuration
     eval: EvalConfig | None = None

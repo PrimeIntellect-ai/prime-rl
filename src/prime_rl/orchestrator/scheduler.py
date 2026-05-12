@@ -68,7 +68,8 @@ class Scheduler:
         tasks_per_minute: int | None,
         enable_policy_updates: bool = True,
         lora_name: str | None = None,
-        eval_inference_pool: InferencePool | None = None,
+        teacher_rollout_clients: list[vf.ClientConfig] | None = None,
+        teacher_rollout_model_name: str | None = None,
     ):
         self.logger = get_logger()
         if tasks_per_minute is not None:
@@ -90,11 +91,9 @@ class Scheduler:
         self.model_name = self.config.model.name
         self.json_logging = config.log.json_logging
 
-        # Inference pool - used for rollout client selection and metrics
         self.inference_pool = inference_pool
-        # Eval inference pool - receives weight updates and serves evals.
-        # Defaults to inference_pool (standard RL where one pool does both).
-        self.eval_inference_pool = eval_inference_pool or inference_pool
+        self.teacher_rollout_clients = teacher_rollout_clients
+        self.teacher_rollout_model_name = teacher_rollout_model_name
 
         group_scoring_envs = [env.name for env in train_envs if env.requires_group_scoring]
         if group_scoring_envs:
@@ -170,6 +169,14 @@ class Scheduler:
         inflight = Counter(self._client_identity(info.client_config) for info in self.inflight_requests.values())
         return min(clients, key=lambda c: inflight[self._client_identity(c)])
 
+    def _resolve_rollout_request_target(self, client_config: vf.ClientConfig) -> tuple[vf.ClientConfig, str]:
+        if self.teacher_rollout_clients is None:
+            return client_config, self.model_name
+
+        teacher_client = self.teacher_rollout_clients[client_config.client_idx % len(self.teacher_rollout_clients)]
+        assert self.teacher_rollout_model_name is not None
+        return teacher_client, self.teacher_rollout_model_name
+
     async def drop_group(self, group_id: int) -> int:
         """Drop a group and cancel any remaining in-flight rollouts for it. Returns the number of cancelled rollouts."""
         tasks_to_cancel = []
@@ -203,15 +210,16 @@ class Scheduler:
         env_name = group.example["env_name"]
         env = self.train_envs.get(env_name)
 
+        request_client_config, request_model_name = self._resolve_rollout_request_target(client_config)
         cache_salt = str(self.ckpt_step)
         if env.requires_group_scoring:
             rollout_count = group.rollouts_to_schedule
             group.rollouts_to_schedule = 0
             task = asyncio.create_task(
                 env.run_group(
-                    client=client_config,
+                    client=request_client_config,
                     example=group.example,
-                    model_name=self.model_name,
+                    model_name=request_model_name,
                     rollouts_per_example=rollout_count,
                     cache_salt=cache_salt,
                 )
@@ -221,9 +229,9 @@ class Scheduler:
             group.rollouts_to_schedule -= 1
             task = asyncio.create_task(
                 env.run_rollout(
-                    client=client_config,
+                    client=request_client_config,
                     example=group.example,
-                    model_name=self.model_name,
+                    model_name=request_model_name,
                     cache_salt=cache_salt,
                 )
             )
@@ -307,15 +315,14 @@ class Scheduler:
 
         update_weights_start_time = time.perf_counter()
         weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
-        await self.eval_inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
+        await self.inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
         self.update_weights_time = time.perf_counter() - update_weights_start_time
         self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
         self.ckpt_step = next_ckpt_step
         if self.lora_name is not None:
-            self.eval_inference_pool.update_model_name(self.lora_name)
-            if self.eval_inference_pool is self.inference_pool:
-                self.model_name = self.lora_name
+            self.inference_pool.update_model_name(self.lora_name)
+            self.model_name = self.lora_name
 
         self.checkpoint_ready.set()
         await self._update_off_policy()

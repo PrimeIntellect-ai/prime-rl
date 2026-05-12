@@ -901,14 +901,13 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_student_eval_inference_pool(self):
-        """Enable student eval inference for hard distill only when [inference] exists."""
+    def auto_setup_teacher_rollout_policy_updates(self):
         if (
             self.orchestrator.teacher_rollout_model is not None
             and self.inference is not None
-            and "use_student_eval_inference_pool" not in self.orchestrator.model_fields_set
+            and "enable_policy_updates" not in self.orchestrator.model_fields_set
         ):
-            self.orchestrator.use_student_eval_inference_pool = True
+            self.orchestrator.enable_policy_updates = True
         return self
 
     @model_validator(mode="after")

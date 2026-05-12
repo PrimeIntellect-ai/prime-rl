@@ -161,7 +161,7 @@ def test_selective_activation_checkpointing_requires_custom_impl():
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
 
 
-def test_teacher_rollout_student_eval_pool_requires_inference_config():
+def test_teacher_rollout_policy_updates_require_inference_config():
     base_config = {
         "trainer": {},
         "orchestrator": {
@@ -175,7 +175,7 @@ def test_teacher_rollout_student_eval_pool_requires_inference_config():
     }
 
     config = RLConfig.model_validate(base_config)
-    assert not config.orchestrator.use_student_eval_inference_pool
+    assert config.orchestrator.enable_policy_updates is None
 
     config = RLConfig.model_validate({**base_config, "inference": {}})
-    assert config.orchestrator.use_student_eval_inference_pool
+    assert config.orchestrator.enable_policy_updates
