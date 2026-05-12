@@ -1,5 +1,11 @@
 import copy
 
+from prime_rl.transport.routed_experts import (
+    append_zero_tokens,
+    concat_routed_experts,
+    routed_experts_len,
+    slice_routed_experts,
+)
 from prime_rl.transport.types import MicroBatch, TrainingSample
 
 
@@ -35,7 +41,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         if teacher_logprobs is not None:
             teacher_logprobs = teacher_logprobs[:seq_len]
         if routed_experts is not None:
-            routed_experts = routed_experts[:seq_len]
+            routed_experts = slice_routed_experts(routed_experts, seq_len)
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:seq_len]
 
@@ -53,8 +59,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         assert len(teacher_logprobs) == len(input_ids), f"teacher_logprobs: {len(teacher_logprobs)}"
 
     if routed_experts is not None:
-        assert len(routed_experts) == len(input_ids), (
-            f"routed_experts: {len(routed_experts)}, input_ids: {len(input_ids)}"
+        assert routed_experts_len(routed_experts) == len(input_ids), (
+            f"routed_experts: {routed_experts_len(routed_experts)}, input_ids: {len(input_ids)}"
         )
 
     if mm_token_type_ids is not None:
@@ -131,8 +137,11 @@ def packed_samples_into_micro_bs(
                     bin_content.teacher_logprobs.extend(sample.teacher_logprobs)
                 if sample.routed_experts is not None:
                     if bin_content.routed_experts is None:
-                        bin_content.routed_experts = []
-                    bin_content.routed_experts.extend(sample.routed_experts)
+                        bin_content.routed_experts = sample.routed_experts
+                    else:
+                        bin_content.routed_experts = concat_routed_experts(
+                            bin_content.routed_experts, sample.routed_experts
+                        )
                 if sample.mm_token_type_ids is not None:
                     if bin_content.mm_token_type_ids is None:
                         bin_content.mm_token_type_ids = []
@@ -174,11 +183,7 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     if micro_batch.teacher_logprobs is not None:
         micro_batch.teacher_logprobs.extend([0.0] * padding_size)
     if micro_batch.routed_experts is not None:
-        assert micro_batch.routed_experts
-        num_layers = len(micro_batch.routed_experts[0])
-        topk = len(micro_batch.routed_experts[0][0])
-        zero_entry = [[0] * topk for _ in range(num_layers)]
-        micro_batch.routed_experts.extend([zero_entry] * padding_size)
+        micro_batch.routed_experts = append_zero_tokens(micro_batch.routed_experts, padding_size)
     micro_batch.lora_num_tokens[-1] += (
         padding_size  # We send padding to the last lora so that tokens have ascending lora idx
     )

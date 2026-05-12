@@ -33,7 +33,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from functools import cached_property
-from typing import cast
 
 import numpy as np
 import pybase64 as base64
@@ -58,7 +57,7 @@ class RoutedExpertsBytes(BaseModel):
     data: str
 
 
-RoutedExpertsResponsePayload = list[list[list[int]]] | RoutedExpertsBytes
+RoutedExpertsResponsePayload = RoutedExpertsBytes
 
 
 class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
@@ -84,19 +83,7 @@ class PrimeRlGenerateResponse(GenerateResponse):
     )
 
 
-def _get_routed_experts_encoding(request: GenerateRequest) -> str:
-    extra_args = request.sampling_params.extra_args or {}
-    encoding = extra_args.get("routed_experts_encoding", "json")
-    assert encoding in ("json", "base64")
-    return str(encoding)
-
-
-def _serialize_routed_experts(
-    arr: np.ndarray,
-    encoding: str,
-) -> RoutedExpertsResponsePayload:
-    if encoding == "json":
-        return cast(list[list[list[int]]], arr.tolist())
+def _serialize_routed_experts(arr: np.ndarray) -> RoutedExpertsResponsePayload:
     data = arr.data if arr.flags.c_contiguous else arr.tobytes()
     return RoutedExpertsBytes(
         shape=list(arr.shape),
@@ -105,9 +92,8 @@ def _serialize_routed_experts(
 
 
 class _RoutedExpertsCapture:
-    def __init__(self, generator: AsyncGenerator[RequestOutput, None], encoding: str):
+    def __init__(self, generator: AsyncGenerator[RequestOutput, None]):
         self._generator = generator
-        self._encoding = encoding
         self.prompt_routed_experts: RoutedExpertsResponsePayload | None = None
         self.routed_experts: dict[int, RoutedExpertsResponsePayload] = {}
 
@@ -116,13 +102,11 @@ class _RoutedExpertsCapture:
             if request_output.prompt_routed_experts is not None:
                 self.prompt_routed_experts = _serialize_routed_experts(
                     request_output.prompt_routed_experts,
-                    self._encoding,
                 )
             for output in request_output.outputs:
                 if output.routed_experts is not None:
                     self.routed_experts[output.index] = _serialize_routed_experts(
                         output.routed_experts,
-                        self._encoding,
                     )
             yield request_output
 
@@ -318,10 +302,7 @@ class PrimeRlServingTokens(ServingTokens):
     ) -> ErrorResponse | GenerateResponse:
         capture: _RoutedExpertsCapture | None = None
         if self.model_config.enable_return_routed_experts:
-            capture = _RoutedExpertsCapture(
-                result_generator,
-                _get_routed_experts_encoding(request),
-            )
+            capture = _RoutedExpertsCapture(result_generator)
             result_generator = capture  # type: ignore[assignment]
 
         response = await super().serve_tokens_full_generator(

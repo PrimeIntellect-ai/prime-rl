@@ -12,6 +12,11 @@ from PIL import Image
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.transport import TrainingSample
+from prime_rl.transport.routed_experts import (
+    align_routed_experts,
+    extend_routed_experts,
+    routed_experts_from_raw,
+)
 from prime_rl.utils.chat_template import (
     common_prefix_len,
     deserialize_tool_calls,
@@ -23,32 +28,6 @@ from prime_rl.utils.logger import get_logger
 
 # We use list() instead of deepcopy() for flat lists (token IDs, logprobs) - safe because
 # primitives are immutable. pixel_values/image_grid_thw are not mutated after creation.
-
-
-def _align_routed_experts(
-    routed_experts: list[list[list[int]]] | None,
-    expected_len: int,
-) -> list[list[list[int]]] | None:
-    """Align routed_experts length with the expected token count.
-
-    The verifier client should provide full prompt+completion routing. The only
-    accepted short form is one missing final token, because the final generated
-    token was not fed into another forward pass and has no routing decision.
-    """
-    if routed_experts is None:
-        return routed_experts
-    if not routed_experts:
-        assert expected_len == 0
-        return routed_experts
-    deficit = expected_len - len(routed_experts)
-    assert deficit >= 0
-    assert deficit <= 1
-    if deficit == 0:
-        return routed_experts
-    num_layers = len(routed_experts[0])
-    topk = len(routed_experts[0][0])
-    zero_entry = [[0] * topk for _ in range(num_layers)]
-    return routed_experts + [zero_entry for _ in range(deficit)]
 
 
 def _common_prefix_len(a: list[int], b: list[int]) -> int:
@@ -301,13 +280,16 @@ def interleave_rollout(
     def prepare_step_tokens(step: vf.TrajectoryStep, step_idx: int) -> dict[str, Any] | None:
         tokens = step["tokens"]
         if tokens is not None:
+            raw_routed_experts = tokens["routed_experts"]
             return {
                 "prompt_ids": list(tokens["prompt_ids"]),
                 "prompt_mask": [bool(i) for i in tokens["prompt_mask"]],
                 "completion_ids": list(tokens["completion_ids"]),
                 "completion_mask": [bool(i) for i in tokens["completion_mask"]],
                 "completion_logprobs": list(tokens["completion_logprobs"]),
-                "routed_experts": tokens.get("routed_experts"),
+                "routed_experts": routed_experts_from_raw(raw_routed_experts)
+                if raw_routed_experts is not None
+                else None,
             }
 
         logger.warning(f"Missing rollout tokens for example {output['example_id']} step {step_idx}.")
@@ -328,8 +310,8 @@ def interleave_rollout(
             completion_mask = [bool(i) for i in tokens["completion_mask"]]
         completion_ids = list(tokens["completion_ids"])
 
-        routed_experts = _align_routed_experts(
-            tokens.get("routed_experts"),
+        routed_experts = align_routed_experts(
+            tokens["routed_experts"],
             len(tokens["prompt_ids"]) + len(tokens["completion_ids"]),
         )
         prompt_ids = list(tokens["prompt_ids"])
@@ -367,17 +349,11 @@ def interleave_rollout(
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
         sample.completion_temperatures.extend([temperature] * len(completion_ids))
 
-        if tokens.get("routed_experts") is not None and sample.routed_experts is not None:
+        if sample.routed_experts is not None:
             step_routed = tokens["routed_experts"]
-            # The previous step's last routing entry was zero-padded by _align_routed_experts
-            # (vLLM only captures num_tokens-1 routings per request). This step actually
-            # processed that boundary token as part of its prompt, so replace the zero-fill
-            # with the real routing decision before appending new entries.
-            if prefix_len > 0 and prefix_len <= len(step_routed):
-                sample.routed_experts[prefix_len - 1] = step_routed[prefix_len - 1]
-            sample.routed_experts.extend(step_routed[prefix_len:])
+            sample.routed_experts = extend_routed_experts(sample.routed_experts, step_routed, prefix_len)
             expected_len = len(sample.prompt_ids) + len(sample.completion_ids)
-            sample.routed_experts = _align_routed_experts(sample.routed_experts, expected_len)
+            sample.routed_experts = align_routed_experts(sample.routed_experts, expected_len)
 
     # Track [prefix_tokens, sample, last_step_idx] per active sample
     active_samples: list[tuple[list[int], TrainingSample, int]] = []

@@ -1,5 +1,7 @@
 import msgspec
 
+from prime_rl.transport.routed_experts import RoutedExperts
+
 
 # Orchestrator -> Packer
 class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -21,7 +23,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # image_grid_thw: grid dimensions [num_images, 3] where each entry is [temporal, height, width]
     image_grid_thw: list[list[int]] | None = None
 
-    routed_experts: list[list[list[int]]] | None = None  # [seq_len, layers, topk]
+    routed_experts: RoutedExperts | None = None  # [seq_len, layers, topk]
 
     # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: list[int] | None = None
@@ -49,7 +51,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     temperatures: list[float]  # Per-token temperatures used during generation
     teacher_logprobs: list[float] | None = None
     lora_num_tokens: list[int] | None = None
-    routed_experts: list[list[list[int]]] | None = None
+    routed_experts: RoutedExperts | None = None
 
     # Multimodal fields (Qwen3-VL) — pixel_values stored as raw float32 bytes for efficient serialization
     pixel_values: bytes | None = None

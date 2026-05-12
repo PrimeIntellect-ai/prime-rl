@@ -1,5 +1,6 @@
 import base64
 from io import BytesIO
+from typing import Any
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -9,7 +10,6 @@ from PIL import Image
 
 from prime_rl.orchestrator.trajectories import (
     VLMImageCache,
-    _align_routed_experts,
     _deserialize_tool_calls,
     _extract_images_from_examples,
     _extract_images_from_messages,
@@ -17,6 +17,7 @@ from prime_rl.orchestrator.trajectories import (
     build_vlm_image_cache,
     interleave_rollout,
 )
+from prime_rl.transport.routed_experts import RoutedExperts, align_routed_experts
 
 
 def _pixels(data: list[list[float]]) -> tuple[bytes, list[int]]:
@@ -28,6 +29,22 @@ def _pixels(data: list[list[float]]) -> tuple[bytes, list[int]]:
 def _decode_pixels(pixel_bytes: bytes, shape: list[int]) -> list[list[float]]:
     """Decode raw pixel bytes back to nested list for assertions."""
     return np.frombuffer(pixel_bytes, dtype=np.float32).reshape(shape).tolist()
+
+
+def _routed_experts(values: list[list[list[int]]] | np.ndarray) -> RoutedExperts:
+    arr = np.asarray(values, dtype=np.int16)
+    assert arr.ndim == 3
+    return RoutedExperts(shape=list(arr.shape), data=arr.tobytes())
+
+
+def _routed_experts_values(payload: RoutedExperts) -> list[list[list[int]]]:
+    return np.frombuffer(payload.data, dtype=np.int16).reshape(payload.shape).tolist()
+
+
+def _trajectory_step_tokens(**kwargs: Any) -> vf.TrajectoryStepTokens:
+    if "routed_experts" not in kwargs:
+        kwargs["routed_experts"] = None
+    return vf.TrajectoryStepTokens(**kwargs)
 
 
 def test_deserialize_tool_calls_does_not_inject_missing_key():
@@ -66,7 +83,7 @@ def single_step_trajectory_output():
                 prompt=[{"role": "user", "content": "U1"}],
                 completion=[{"role": "assistant", "content": "A1"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2],
                     prompt_mask=[0, 0],
                     completion_ids=[3, 4],
@@ -97,7 +114,7 @@ def multi_step_trajectory_output():
                 prompt=[{"role": "user", "content": "U1"}],
                 completion=[{"role": "assistant", "content": "A1"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2],
                     prompt_mask=[0, 0],
                     completion_ids=[3, 4],
@@ -120,7 +137,7 @@ def multi_step_trajectory_output():
                 ],
                 completion=[{"role": "assistant", "content": "A2"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2, 3, 4, 5, 6],
                     prompt_mask=[0, 0, 0, 0, 0, 0],
                     completion_ids=[7, 8],
@@ -151,7 +168,7 @@ def multi_step_trajectory_with_tool_calls_output():
                 prompt=[{"role": "user", "content": "U1"}],
                 completion=[{"role": "assistant", "content": "A1 + TC1"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2],
                     prompt_mask=[0, 0],
                     completion_ids=[3, 4],
@@ -174,7 +191,7 @@ def multi_step_trajectory_with_tool_calls_output():
                 ],
                 completion=[{"role": "assistant", "content": "A2 + TC2"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2, 3, 4, 5, 6],
                     prompt_mask=[0, 0, 0, 0, 0, 0],
                     completion_ids=[7, 8],
@@ -213,7 +230,7 @@ def multi_step_trajectory_extension_never_holds():
                 prompt=[{"role": "user", "content": "U1"}],
                 completion=[{"role": "assistant", "content": "A1"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2],
                     prompt_mask=[0, 0],
                     completion_ids=[3, 4],
@@ -236,7 +253,7 @@ def multi_step_trajectory_extension_never_holds():
                 ],
                 completion=[{"role": "assistant", "content": "A2"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     # Different tokens - extension breaks (e.g. thinking was stripped)
                     prompt_ids=[10, 20, 30, 40, 50, 60],
                     prompt_mask=[0, 0, 0, 0, 0, 0],
@@ -269,7 +286,7 @@ def multi_step_trajectory_with_tool_calls_extension_never_holds():
                 prompt=[{"role": "user", "content": "U1"}],
                 completion=[{"role": "assistant", "content": "A1 + TC1"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2],
                     prompt_mask=[0, 0],
                     completion_ids=[3, 4],
@@ -292,7 +309,7 @@ def multi_step_trajectory_with_tool_calls_extension_never_holds():
                 ],
                 completion=[{"role": "assistant", "content": "A2 + TC2"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     # Different tokens - extension breaks
                     prompt_ids=[10, 20, 30, 40, 50, 60],
                     prompt_mask=[0, 0, 0, 0, 0, 0],
@@ -434,7 +451,7 @@ def five_step_trajectory_with_extension_break():
                 prompt=[{"role": "user", "content": "U1"}],
                 completion=[{"role": "assistant", "content": "A1"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2],
                     prompt_mask=[0, 0],
                     completion_ids=[3, 4],
@@ -458,7 +475,7 @@ def five_step_trajectory_with_extension_break():
                 ],
                 completion=[{"role": "assistant", "content": "A2"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2, 3, 4, 5, 6],
                     prompt_mask=[0, 0, 0, 0, 0, 0],
                     completion_ids=[7, 8],
@@ -484,7 +501,7 @@ def five_step_trajectory_with_extension_break():
                 ],
                 completion=[{"role": "assistant", "content": "A3"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                     prompt_mask=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
                     completion_ids=[11, 12],
@@ -512,7 +529,7 @@ def five_step_trajectory_with_extension_break():
                 ],
                 completion=[{"role": "assistant", "content": "A4"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[100, 101, 102, 103],  # completely different tokens (re-rendered)
                     prompt_mask=[0, 0, 0, 0],
                     completion_ids=[104, 105],
@@ -542,7 +559,7 @@ def five_step_trajectory_with_extension_break():
                 ],
                 completion=[{"role": "assistant", "content": "A5"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[100, 101, 102, 103, 104, 105, 106, 107],
                     prompt_mask=[0, 0, 0, 0, 0, 0, 0, 0],
                     completion_ids=[108, 109],
@@ -619,7 +636,7 @@ def interleaved_agents_trajectory():
                 prompt="agent1 turn 1",
                 completion="response 1",
                 response=None,
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2],
                     prompt_mask=[0, 0],
                     completion_ids=[3, 4],
@@ -639,7 +656,7 @@ def interleaved_agents_trajectory():
                 prompt="agent1 turn 2",
                 completion="response 2",
                 response=None,
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2, 3, 4, 5, 6],
                     prompt_mask=[0, 0, 0, 0, 0, 0],
                     completion_ids=[7, 8],
@@ -659,7 +676,7 @@ def interleaved_agents_trajectory():
                 prompt="agent2 turn 1",
                 completion="agent2 response",
                 response=None,
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[100, 101],
                     prompt_mask=[0, 0],
                     completion_ids=[102, 103],
@@ -679,7 +696,7 @@ def interleaved_agents_trajectory():
                 prompt="agent1 turn 3",
                 completion="response 3",
                 response=None,
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                     prompt_mask=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
                     completion_ids=[11, 12],
@@ -1039,7 +1056,7 @@ def test_interleave_rollout_with_vlm_cache():
                 prompt=[{"role": "user", "content": "Turn 1"}],
                 completion=[{"role": "assistant", "content": "Response 1"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2],
                     prompt_mask=[0, 0],
                     completion_ids=[3, 4],
@@ -1058,7 +1075,7 @@ def test_interleave_rollout_with_vlm_cache():
                 prompt=[{"role": "user", "content": "Turn 2"}],
                 completion=[{"role": "assistant", "content": "Response 2"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2, 3, 4, 5],
                     prompt_mask=[0, 0, 0, 0, 0],
                     completion_ids=[6, 7],
@@ -1113,7 +1130,7 @@ def test_interleave_rollout_uses_cache_key_override():
                 prompt=[{"role": "user", "content": "Turn 1"}],
                 completion=[{"role": "assistant", "content": "Response 1"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2],
                     prompt_mask=[0, 0],
                     completion_ids=[3, 4],
@@ -1164,7 +1181,7 @@ def test_interleave_rollout_vlm_image_then_text_turns():
                 prompt=[{"role": "user", "content": "Describe"}],
                 completion=[{"role": "assistant", "content": "A cat"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2],
                     prompt_mask=[0, 0],
                     completion_ids=[3, 4],
@@ -1184,7 +1201,7 @@ def test_interleave_rollout_vlm_image_then_text_turns():
                 prompt=[{"role": "user", "content": "More detail"}],
                 completion=[{"role": "assistant", "content": "Fluffy"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2, 3, 4, 5, 6],
                     prompt_mask=[0, 0, 0, 0, 0, 0],
                     completion_ids=[7, 8],
@@ -1204,7 +1221,7 @@ def test_interleave_rollout_vlm_image_then_text_turns():
                 prompt=[{"role": "user", "content": "Color?"}],
                 completion=[{"role": "assistant", "content": "Orange"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                     prompt_mask=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
                     completion_ids=[11, 12],
@@ -1261,7 +1278,7 @@ def test_interleave_rollout_vlm_new_image_mid_conversation():
                 prompt=[{"role": "user", "content": "Image 1"}],
                 completion=[{"role": "assistant", "content": "A"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2],
                     prompt_mask=[0, 0],
                     completion_ids=[3, 4],
@@ -1280,7 +1297,7 @@ def test_interleave_rollout_vlm_new_image_mid_conversation():
                 prompt=[{"role": "user", "content": "Text only"}],
                 completion=[{"role": "assistant", "content": "B"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2, 3, 4, 5, 6],
                     prompt_mask=[0, 0, 0, 0, 0, 0],
                     completion_ids=[7, 8],
@@ -1299,7 +1316,7 @@ def test_interleave_rollout_vlm_new_image_mid_conversation():
                 prompt=[{"role": "user", "content": "Image 2"}],
                 completion=[{"role": "assistant", "content": "C"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                     prompt_mask=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
                     completion_ids=[11, 12],
@@ -1353,7 +1370,7 @@ def test_interleave_rollout_vlm_extension_break():
                 prompt=[{"role": "user", "content": "Image 1"}],
                 completion=[{"role": "assistant", "content": "A"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2],
                     prompt_mask=[0, 0],
                     completion_ids=[3, 4],
@@ -1373,7 +1390,7 @@ def test_interleave_rollout_vlm_extension_break():
                 prompt=[{"role": "user", "content": "Follow-up"}],
                 completion=[{"role": "assistant", "content": "B"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2, 3, 4, 5, 6],
                     prompt_mask=[0, 0, 0, 0, 0, 0],
                     completion_ids=[7, 8],
@@ -1393,7 +1410,7 @@ def test_interleave_rollout_vlm_extension_break():
                 prompt=[{"role": "user", "content": "Image 2"}],
                 completion=[{"role": "assistant", "content": "C"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[100, 101, 102, 103],
                     prompt_mask=[0, 0, 0, 0],
                     completion_ids=[104, 105],
@@ -1454,7 +1471,7 @@ def test_interleave_rollout_vlm_image_appears_late():
                 prompt=[{"role": "user", "content": "Hello"}],
                 completion=[{"role": "assistant", "content": "Hi"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2],
                     prompt_mask=[0, 0],
                     completion_ids=[3, 4],
@@ -1474,7 +1491,7 @@ def test_interleave_rollout_vlm_image_appears_late():
                 prompt=[{"role": "user", "content": "Question"}],
                 completion=[{"role": "assistant", "content": "Answer"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2, 3, 4, 5, 6],
                     prompt_mask=[0, 0, 0, 0, 0, 0],
                     completion_ids=[7, 8],
@@ -1494,7 +1511,7 @@ def test_interleave_rollout_vlm_image_appears_late():
                 prompt=[{"role": "user", "content": "Describe this"}],
                 completion=[{"role": "assistant", "content": "A photo"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                     prompt_mask=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
                     completion_ids=[11, 12],
@@ -1549,7 +1566,7 @@ def test_interleave_rollout_error_masks_all_false():
                 prompt=[{"role": "user", "content": "U1"}],
                 completion=[{"role": "assistant", "content": "A1"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2],
                     prompt_mask=[0, 0],
                     completion_ids=[3, 4],
@@ -1568,7 +1585,7 @@ def test_interleave_rollout_error_masks_all_false():
                 prompt=[{"role": "user", "content": "U2"}],
                 completion=[{"role": "assistant", "content": "A2"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2, 3, 4, 5, 6],
                     prompt_mask=[0, 0, 0, 0, 0, 0],
                     completion_ids=[7, 8],
@@ -1634,7 +1651,7 @@ def test_interleave_rollout_vlm_interleaved_agents():
                 prompt=[{"role": "user", "content": "Image A"}],
                 completion=[{"role": "assistant", "content": "A1"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2],
                     prompt_mask=[0, 0],
                     completion_ids=[3, 4],
@@ -1654,7 +1671,7 @@ def test_interleave_rollout_vlm_interleaved_agents():
                 prompt=[{"role": "user", "content": "Follow-up"}],
                 completion=[{"role": "assistant", "content": "A2"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2, 3, 4, 5, 6],
                     prompt_mask=[0, 0, 0, 0, 0, 0],
                     completion_ids=[7, 8],
@@ -1674,7 +1691,7 @@ def test_interleave_rollout_vlm_interleaved_agents():
                 prompt=[{"role": "user", "content": "Image B"}],
                 completion=[{"role": "assistant", "content": "B1"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[100, 101],
                     prompt_mask=[0, 0],
                     completion_ids=[102, 103],
@@ -1694,7 +1711,7 @@ def test_interleave_rollout_vlm_interleaved_agents():
                 prompt=[{"role": "user", "content": "Image C added"}],
                 completion=[{"role": "assistant", "content": "A3"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                     prompt_mask=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
                     completion_ids=[11, 12],
@@ -1853,40 +1870,45 @@ def test_build_vlm_image_cache_no_images():
 
 
 def test_align_routed_experts_none():
-    assert _align_routed_experts(None, 10) is None
+    assert align_routed_experts(None, 10) is None
 
 
 def test_align_routed_experts_empty():
-    result = _align_routed_experts([], 0)
-    assert result == []
+    result = align_routed_experts(_routed_experts(np.zeros((0, 2, 2), dtype=np.int16)), 0)
+    assert result is not None
+    assert result.shape == [0, 2, 2]
+    assert result.data == b""
 
 
 def test_align_routed_experts_no_deficit():
     # 3 tokens, 2 layers, topk=2
     experts = [[[0, 1], [2, 3]], [[4, 5], [6, 7]], [[0, 2], [1, 3]]]
-    result = _align_routed_experts(experts, expected_len=3)
-    assert result == experts
+    result = align_routed_experts(_routed_experts(experts), expected_len=3)
+    assert result is not None
+    assert _routed_experts_values(result) == experts
 
 
 def test_align_routed_experts_with_deficit():
     experts = [[[1, 2], [3, 4]], [[5, 6], [7, 0]]]
-    result = _align_routed_experts(experts, expected_len=3)
-    assert len(result) == 3
-    assert result[:2] == experts
+    result = align_routed_experts(_routed_experts(experts), expected_len=3)
+    assert result is not None
+    values = _routed_experts_values(result)
+    assert len(values) == 3
+    assert values[:2] == experts
     # Padded entries should be zero-filled with same shape [layers=2, topk=2]
-    assert result[2] == [[0, 0], [0, 0]]
+    assert values[2] == [[0, 0], [0, 0]]
 
 
 def test_align_routed_experts_rejects_large_deficit():
     experts = [[[1, 2], [3, 4]], [[5, 6], [7, 0]]]
     with pytest.raises(AssertionError):
-        _align_routed_experts(experts, expected_len=4)
+        align_routed_experts(_routed_experts(experts), expected_len=4)
 
 
 def test_align_routed_experts_excess_length():
     experts = [[[1, 2]], [[3, 4]], [[5, 6]]]
     with pytest.raises(AssertionError):
-        _align_routed_experts(experts, expected_len=2)
+        align_routed_experts(_routed_experts(experts), expected_len=2)
 
 
 def test_interleave_rollout_single_step_with_routed_experts():
@@ -1901,7 +1923,7 @@ def test_interleave_rollout_single_step_with_routed_experts():
                 prompt=[{"role": "user", "content": "U1"}],
                 completion=[{"role": "assistant", "content": "A1"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2],
                     prompt_mask=[0, 0],
                     completion_ids=[3, 4],
@@ -1909,7 +1931,7 @@ def test_interleave_rollout_single_step_with_routed_experts():
                     completion_logprobs=[-0.1, -0.2],
                     overlong_prompt=False,
                     is_truncated=False,
-                    routed_experts=routed_experts_from_vllm,
+                    routed_experts=_routed_experts(routed_experts_from_vllm),
                 ),
                 reward=None,
                 advantage=None,
@@ -1929,10 +1951,11 @@ def test_interleave_rollout_single_step_with_routed_experts():
 
     # Should be aligned to 4 tokens (2 prompt + 2 completion)
     assert sample.routed_experts is not None
-    assert len(sample.routed_experts) == 4
+    routed_values = _routed_experts_values(sample.routed_experts)
+    assert len(routed_values) == 4
     # First 3 are original, last one is zero-padded
-    assert sample.routed_experts[:3] == routed_experts_from_vllm
-    assert sample.routed_experts[3] == [[0, 0]]
+    assert routed_values[:3] == routed_experts_from_vllm
+    assert routed_values[3] == [[0, 0]]
 
 
 def test_interleave_rollout_multi_step_with_routed_experts():
@@ -1949,7 +1972,7 @@ def test_interleave_rollout_multi_step_with_routed_experts():
                 prompt=[{"role": "user", "content": "U1"}],
                 completion=[{"role": "assistant", "content": "A1"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2],
                     prompt_mask=[0, 0],
                     completion_ids=[3, 4],
@@ -1957,7 +1980,7 @@ def test_interleave_rollout_multi_step_with_routed_experts():
                     completion_logprobs=[-0.1, -0.2],
                     overlong_prompt=False,
                     is_truncated=False,
-                    routed_experts=step1_experts,
+                    routed_experts=_routed_experts(step1_experts),
                 ),
                 reward=None,
                 advantage=None,
@@ -1973,7 +1996,7 @@ def test_interleave_rollout_multi_step_with_routed_experts():
                 ],
                 completion=[{"role": "assistant", "content": "A2"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2, 3, 4, 5, 6],
                     prompt_mask=[0, 0, 0, 0, 0, 0],
                     completion_ids=[7, 8],
@@ -1981,7 +2004,7 @@ def test_interleave_rollout_multi_step_with_routed_experts():
                     completion_logprobs=[-0.3, -0.4],
                     overlong_prompt=False,
                     is_truncated=False,
-                    routed_experts=step2_experts,
+                    routed_experts=_routed_experts(step2_experts),
                 ),
                 reward=None,
                 advantage=None,
@@ -2002,7 +2025,7 @@ def test_interleave_rollout_multi_step_with_routed_experts():
     # Merged sample: prompt=[1,2], completion=[3,4,5,6,7,8] -> 8 tokens total
     assert len(sample.prompt_ids) + len(sample.completion_ids) == 8
     assert sample.routed_experts is not None
-    assert len(sample.routed_experts) == 8
+    assert sample.routed_experts.shape[0] == 8
 
 
 def test_interleave_rollout_none_routed_experts_stays_none():
@@ -2014,7 +2037,7 @@ def test_interleave_rollout_none_routed_experts_stays_none():
                 prompt=[{"role": "user", "content": "U1"}],
                 completion=[{"role": "assistant", "content": "A1"}],
                 response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
+                tokens=_trajectory_step_tokens(
                     prompt_ids=[1, 2],
                     prompt_mask=[0, 0],
                     completion_ids=[3, 4],

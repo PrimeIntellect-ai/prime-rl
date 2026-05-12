@@ -71,7 +71,6 @@ CLI uses kebab-case (`--model.max-model-len`), TOML uses snake_case (`max_model_
 
 - **Fail early**: incompatible option combinations (e.g. CP requires flash attention, NCCL broadcast requires async level 1) should raise in `model_validator` at config resolution time, not at runtime. When adding new constraints, add a validator to the config class.
 - **Deprecation**: when renaming or removing config fields, emit a deprecation warning with a clear migration path (e.g. "field X is deprecated, use Y instead"). Do not silently drop fields — help users update their configs.
-- **Router replay**: `trainer.enable_router_replay` auto-enables `inference.enable_return_routed_experts`. Prefix caching may stay enabled when using the patched vLLM fork with routed-expert block replay; without that vLLM support, cached prefix tokens can miss routed experts and corrupt replay logprobs. Tune `inference.routed_experts_replay_max_blocks` when repeated prefixes exceed the default replay LRU size.
 
 ## Important patterns
 

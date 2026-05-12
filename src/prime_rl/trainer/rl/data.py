@@ -11,6 +11,12 @@ from prime_rl.trainer.rl.packer import BasePacker, setup_packer
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
 from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfig, setup_micro_batch_receiver
+from prime_rl.transport.routed_experts import RoutedExperts, validate_routed_experts
+
+
+def _routed_experts_to_tensor(payload: RoutedExperts) -> torch.Tensor:
+    payload = validate_routed_experts(payload)
+    return torch.frombuffer(payload.data, dtype=torch.int16).reshape(payload.shape).to(torch.int32).unsqueeze(0)
 
 
 class TensorMicroBatch(TypedDict):
@@ -218,9 +224,7 @@ class DataLoader:
             mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)
             if micro_batch.mm_token_type_ids is not None
             else None,
-            routed_experts=torch.tensor(micro_batch.routed_experts, dtype=torch.int32).unsqueeze(
-                0
-            )  # [1, seq_len, layers, topk]
+            routed_experts=_routed_experts_to_tensor(micro_batch.routed_experts)
             if micro_batch.routed_experts is not None
             else None,
             sft_loss=micro_batch.sft_loss,

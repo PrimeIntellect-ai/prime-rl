@@ -3,7 +3,7 @@
 The full happy-path is owned upstream by vLLM 0.20's
 ``vllm/entrypoints/serve/disagg`` test suite. We only cover the prime-RL
 deltas here:
-    * ``_serialize_routed_experts`` emits JSON-compatible arrays.
+    * ``_serialize_routed_experts`` emits compact base64 payloads.
     * ``PrimeRlGenerateResponseChoice`` accepts the optional field.
     * The subclass attaches its overrides without monkey-patching the parent.
     * ``_client_set_max_tokens`` distinguishes raw-body shapes correctly.
@@ -12,6 +12,7 @@ deltas here:
 from __future__ import annotations
 
 import asyncio
+import base64
 
 import numpy as np
 
@@ -35,16 +36,20 @@ class _FakeRawRequest:
         return self._body
 
 
-def test_serialize_routed_experts_json_array():
-    arr = np.array([[[1, 2], [3, 4]], [[5, 6], [7, 8]]], dtype=np.int32)
-    assert _serialize_routed_experts(arr) == [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+def test_serialize_routed_experts_compact_payload():
+    arr = np.array([[[1, 2], [3, 4]], [[5, 6], [7, 8]]], dtype=np.int16)
+    payload = _serialize_routed_experts(arr)
+    assert payload.encoding == "base64"
+    assert payload.dtype == "int16"
+    assert payload.shape == [2, 2, 2]
+    assert base64.b64decode(payload.data) == arr.tobytes()
 
 
-def test_routed_experts_choice_accepts_none_and_json_array():
+def test_routed_experts_choice_accepts_none_and_compact_payload():
     no_re = PrimeRlGenerateResponseChoice(index=0, finish_reason="stop", token_ids=[1, 2])
     assert no_re.routed_experts is None
 
-    routed_experts = [[[0, 0]]]
+    routed_experts = _serialize_routed_experts(np.array([[[0, 0]]], dtype=np.int16))
     with_re = PrimeRlGenerateResponseChoice(index=0, finish_reason="stop", token_ids=[1], routed_experts=routed_experts)
     assert with_re.routed_experts == routed_experts
 
