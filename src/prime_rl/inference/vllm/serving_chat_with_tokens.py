@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hashlib
 import json
 import math
 import os
@@ -69,7 +70,7 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
 
         if isinstance(response, ChatCompletionResponse):
             nonfinite = _find_non_finite_chat_value(response)
-            if nonfinite is not None:
+            if nonfinite is not None or _truthy_env("PRIME_RL_CHAT_REPLAY_DUMP_ALL"):
                 replay_dump_path = await _dump_chat_replay(
                     request=request,
                     raw_request=raw_request,
@@ -78,8 +79,9 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                     error=None,
                     nonfinite=nonfinite,
                 )
-                if replay_dump_path is not None:
+                if nonfinite is not None and replay_dump_path is not None:
                     nonfinite["replay_dump_path"] = replay_dump_path
+            if nonfinite is not None:
                 logger.warning(
                     "Non-finite /v1/chat/completions response value before JSON serialization: %s",
                     nonfinite,
@@ -313,6 +315,8 @@ async def _dump_chat_replay(
         "endpoint": "/v1/chat/completions",
         "client": _safe_client(raw_request),
         "headers": _safe_replay_headers(raw_request),
+        "weight_update": _weight_update_state(raw_request),
+        "request_summary": _chat_request_summary(request),
         "data_parallel_rank": data_parallel_rank,
         "request": request.model_dump(mode="python", exclude_none=True),
         "response": response.model_dump(mode="python") if response is not None else None,
@@ -378,11 +382,59 @@ def _safe_replay_headers(raw_request: Optional[Request]) -> dict[str, str]:
         "traceparent",
         "x-b3-traceid",
         "x-data-parallel-rank",
+        "x-prime-rl-probe",
         "x-request-id",
         "x-session-id",
         "x-trace-id",
     }
     return {key: value for key, value in raw_request.headers.items() if key.lower() in allowlist}
+
+
+def _weight_update_state(raw_request: Optional[Request]) -> dict[str, Any]:
+    if raw_request is None:
+        return {}
+    update_state = getattr(raw_request.app.state, "prime_rl_weight_update", None)
+    if isinstance(update_state, dict):
+        return dict(update_state)
+    return {}
+
+
+def _chat_request_summary(request: ChatCompletionRequest) -> dict[str, Any]:
+    payload = request.model_dump(mode="python", exclude_none=True)
+    payload_json = json.dumps(_json_safe(payload), sort_keys=True, ensure_ascii=False, default=str)
+    messages = payload.get("messages") or []
+    prompt_text = _extract_text(messages)
+    return {
+        "body_sha256": hashlib.sha256(payload_json.encode("utf-8")).hexdigest(),
+        "message_count": len(messages) if isinstance(messages, list) else None,
+        "prompt_text_chars": len(prompt_text),
+        "prompt_text_sha256": hashlib.sha256(prompt_text.encode("utf-8")).hexdigest(),
+        "max_completion_tokens": payload.get("max_completion_tokens"),
+        "max_tokens": payload.get("max_tokens"),
+        "temperature": payload.get("temperature"),
+        "top_p": payload.get("top_p"),
+        "top_k": payload.get("top_k"),
+        "min_p": payload.get("min_p"),
+        "logprobs": payload.get("logprobs"),
+        "stream": payload.get("stream"),
+        "request_id": payload.get("request_id"),
+    }
+
+
+def _extract_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return "".join(_extract_text(child) for child in value.values())
+    if isinstance(value, list):
+        return "".join(_extract_text(child) for child in value)
+    return str(value)
+
+
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").lower() in {"1", "true", "yes", "on"}
 
 
 def _get_data_parallel_rank(handler: OpenAIServingChat, raw_request: Optional[Request]) -> int | None:
@@ -402,7 +454,48 @@ def _find_non_finite_chat_value(response: ChatCompletionResponse) -> dict[str, A
     return {
         "paths": paths[:64],
         "path_count": len(paths),
+        "choice_summaries": _summarize_nonfinite_choices(payload),
     }
+
+
+def _summarize_nonfinite_choices(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    choices = payload.get("choices") or []
+    for choice_index, choice in enumerate(choices):
+        if not isinstance(choice, dict):
+            continue
+        logprobs = choice.get("logprobs") or {}
+        if not isinstance(logprobs, dict):
+            continue
+        content = logprobs.get("content") or []
+        if not isinstance(content, list):
+            continue
+        for token_offset, item in enumerate(content):
+            if not isinstance(item, dict):
+                continue
+            logprob = item.get("logprob")
+            if not _is_nonfinite_number(logprob):
+                continue
+            window = content[max(0, token_offset - 4) : token_offset + 5]
+            summaries.append(
+                {
+                    "choice_index": choice_index,
+                    "token_offset": token_offset,
+                    "token": item.get("token"),
+                    "logprob": repr(float(logprob)),
+                    "window": _json_safe(window),
+                }
+            )
+            break
+    return summaries[:16]
+
+
+def _is_nonfinite_number(value: Any) -> bool:
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, np.floating):
+        return not math.isfinite(float(value))
+    return False
 
 
 def _find_non_finite_paths(value: Any, path: str = "$") -> list[str]:

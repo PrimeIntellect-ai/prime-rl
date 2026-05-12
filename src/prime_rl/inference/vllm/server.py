@@ -1,8 +1,15 @@
 import asyncio
+import json
+import math
+import os
+import re
+import time
 from argparse import Namespace
 from http import HTTPStatus
+from pathlib import Path
 from typing import Any
 
+import httpx
 import uvloop
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -224,8 +231,50 @@ async def resume(request: Request):
 @router.post("/update_weights")
 async def update_weights(request: Request):
     data = await request.json()
-    await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
-    return {"status": "ok"}
+    weight_dir = data.get("weight_dir")
+    step = _resolve_weight_update_step(data)
+    update_count = int(getattr(request.app.state, "prime_rl_weight_update_count", 0)) + 1
+    update_state = {
+        "step": step,
+        "update_count": update_count,
+        "status": "updating",
+        "weight_dir": weight_dir,
+        "started_unix": time.time(),
+    }
+    request.app.state.prime_rl_weight_update_count = update_count
+    request.app.state.prime_rl_weight_update = update_state
+    logger.info("Starting inference weight update: %s", update_state)
+
+    try:
+        await engine_client(request).collective_rpc("update_weights_from_path", args=(weight_dir,))
+    except Exception as exc:
+        failed_state = {
+            **update_state,
+            "status": "failed",
+            "completed_unix": time.time(),
+            "error": {"type": type(exc).__name__, "message": str(exc)},
+        }
+        request.app.state.prime_rl_weight_update = failed_state
+        logger.exception("Inference weight update failed: %s", failed_state)
+        raise
+
+    completed_state = {
+        **update_state,
+        "status": "updated",
+        "completed_unix": time.time(),
+    }
+    request.app.state.prime_rl_weight_update = completed_state
+    logger.info("Completed inference weight update: %s", completed_state)
+    return {"status": "ok", "weight_update": completed_state}
+
+
+@router.post("/debug/update_probe")
+async def debug_update_probe(request: Request):
+    data = await request.json()
+    phase = str(data.get("phase") or "manual")
+    step = _resolve_weight_update_step(data)
+    result = await _run_update_probe(request, phase=phase, step=step, weight_dir=data.get("weight_dir"))
+    return result
 
 
 @router.post("/load_lora_adapter")
@@ -267,6 +316,182 @@ async def init_broadcaster(request: Request):
     return {"status": "ok"}
 
 
+def _resolve_weight_update_step(data: dict[str, Any]) -> int | None:
+    step = data.get("step")
+    if step is not None:
+        try:
+            return int(step)
+        except (TypeError, ValueError):
+            return None
+
+    weight_dir = data.get("weight_dir")
+    if isinstance(weight_dir, str):
+        match = re.search(r"(?:^|/)step_(\d+)(?:/|$)", weight_dir)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+async def _run_update_probe(
+    request: Request,
+    *,
+    phase: str,
+    step: int | None,
+    weight_dir: str | None,
+) -> dict[str, Any]:
+    concurrency = int(os.environ.get("PRIME_RL_UPDATE_PROBE_CONCURRENCY", "32"))
+    max_tokens = int(os.environ.get("PRIME_RL_UPDATE_PROBE_MAX_TOKENS", "16"))
+    timeout = float(os.environ.get("PRIME_RL_UPDATE_PROBE_TIMEOUT", "300"))
+    prompt = os.environ.get(
+        "PRIME_RL_UPDATE_PROBE_PROMPT",
+        "Solve the following math problem. Explain your reasoning and put the final answer in \\boxed{}.\n\n"
+        "Solve for $r$ in the equation $19-3=2+r$.",
+    )
+    temperature = float(os.environ.get("PRIME_RL_UPDATE_PROBE_TEMPERATURE", "1.0"))
+    model_name = models(request).model_name(None)
+    url = f"{request.url.scheme}://{request.url.netloc}/v1/chat/completions"
+    update_state = getattr(request.app.state, "prime_rl_weight_update", {})
+    body_base = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_completion_tokens": max_tokens,
+        "temperature": temperature,
+        "top_p": 1.0,
+        "top_k": -1,
+        "min_p": 0.0,
+        "logprobs": True,
+        "top_logprobs": 0,
+        "stream": False,
+    }
+    headers = {
+        "Authorization": f"Bearer {os.environ.get('VLLM_API_KEY', 'EMPTY')}",
+        "Content-Type": "application/json",
+        "X-Prime-RL-Probe": f"update-{phase}",
+    }
+
+    async def _one(idx: int, client: httpx.AsyncClient) -> dict[str, Any]:
+        body = {
+            **body_base,
+            "request_id": f"update-probe-step-{step}-{phase}-{idx}-{int(time.time() * 1000)}",
+        }
+        started = time.perf_counter()
+        result: dict[str, Any] = {"index": idx, "request": body}
+        try:
+            response = await client.post(url, headers=headers, json=body)
+            result["status_code"] = response.status_code
+            result["ok"] = response.is_success
+            try:
+                payload = response.json()
+            except ValueError:
+                result["response_text"] = response.text[:4000]
+                return result
+
+            nonfinite_paths = _find_non_finite_paths(payload)
+            result["nonfinite_paths"] = nonfinite_paths
+            if response.is_success:
+                choice = (payload.get("choices") or [{}])[0]
+                message = choice.get("message") or {}
+                result["finish_reason"] = choice.get("finish_reason")
+                result["completion_chars"] = len(message.get("content") or "")
+                result["usage"] = payload.get("usage")
+            else:
+                result["error_payload"] = _json_safe(payload)
+        except Exception as exc:
+            result["ok"] = False
+            result["exception"] = type(exc).__name__
+            result["error"] = str(exc)
+        finally:
+            result["duration_s"] = time.perf_counter() - started
+        return result
+
+    limits = httpx.Limits(max_connections=concurrency, max_keepalive_connections=concurrency)
+    async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
+        results = await asyncio.gather(*[_one(idx, client) for idx in range(concurrency)])
+
+    failures = sum(1 for result in results if not result.get("ok"))
+    nonfinite = sum(1 for result in results if result.get("nonfinite_paths"))
+    summary = {
+        "schema": "prime_rl.update_probe.v1",
+        "created_unix": time.time(),
+        "ok": failures == 0 and nonfinite == 0,
+        "phase": phase,
+        "step": step,
+        "weight_dir": weight_dir,
+        "weight_update": dict(update_state) if isinstance(update_state, dict) else update_state,
+        "concurrency": concurrency,
+        "max_completion_tokens": max_tokens,
+        "temperature": temperature,
+        "failures": failures,
+        "nonfinite": nonfinite,
+        "results": results,
+    }
+    dump_path = await asyncio.to_thread(_write_update_probe, summary)
+    if dump_path is not None:
+        summary["dump_path"] = dump_path
+    if not summary["ok"]:
+        logger.warning("Update probe found non-ok results: %s", _probe_log_summary(summary))
+    else:
+        logger.info("Update probe completed cleanly: %s", _probe_log_summary(summary))
+    return summary
+
+
+def _probe_log_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "phase": summary.get("phase"),
+        "step": summary.get("step"),
+        "concurrency": summary.get("concurrency"),
+        "failures": summary.get("failures"),
+        "nonfinite": summary.get("nonfinite"),
+        "dump_path": summary.get("dump_path"),
+    }
+
+
+def _write_update_probe(summary: dict[str, Any]) -> str | None:
+    raw_dir = os.environ.get("PRIME_RL_UPDATE_PROBE_DIR")
+    if not raw_dir:
+        output_dir = os.environ.get("OUTPUT_DIR")
+        if output_dir:
+            raw_dir = str(Path(output_dir) / "replay_dumps" / "update_probes")
+    if not raw_dir:
+        return None
+
+    dump_dir = Path(raw_dir).expanduser()
+    dump_dir.mkdir(parents=True, exist_ok=True)
+    step = summary.get("step")
+    phase = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(summary.get("phase") or "manual"))
+    path = dump_dir / f"update_probe_step_{step}_{phase}_{int(summary['created_unix'] * 1000)}.json"
+    tmp_path = path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(_json_safe(summary), ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
+    tmp_path.replace(path)
+    return str(path)
+
+
+def _find_non_finite_paths(value: Any, path: str = "$") -> list[str]:
+    if isinstance(value, float):
+        return [] if math.isfinite(value) else [path]
+    if isinstance(value, dict):
+        paths: list[str] = []
+        for key, child in value.items():
+            paths.extend(_find_non_finite_paths(child, f"{path}.{key}"))
+        return paths
+    if isinstance(value, list):
+        paths = []
+        for idx, child in enumerate(value):
+            paths.extend(_find_non_finite_paths(child, f"{path}[{idx}]"))
+        return paths
+    return []
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, float):
+        return value if math.isfinite(value) else {"__nonfinite_float__": repr(value)}
+    if isinstance(value, dict):
+        return {str(key): _json_safe(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(child) for child in value]
+    return value
+
+
 async def custom_init_app_state(
     engine_client: EngineClient,
     state: State,
@@ -288,6 +513,14 @@ async def custom_init_app_state(
 
     state.reset_prefix_cache_after_update = getattr(args, "reset_prefix_cache_after_update", True)
     state.liveness_timeout_seconds = args.liveness_timeout_seconds
+    state.prime_rl_weight_update_count = 0
+    state.prime_rl_weight_update = {
+        "step": 0,
+        "update_count": 0,
+        "status": "initial",
+        "started_unix": None,
+        "completed_unix": None,
+    }
 
     # TITO: server-side chat templating + token IDs.
     if "generate" in supported_tasks and state.openai_serving_chat is not None:

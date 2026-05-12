@@ -335,9 +335,33 @@ async def update_weights(
         await load_lora_adapter(admin_clients, lora_name, weight_dir)
     else:
 
+        async def _run_update_probe(admin_client: AsyncClient, phase: str) -> None:
+            if os.environ.get("PRIME_RL_UPDATE_PROBE", "").lower() not in {"1", "true", "yes", "on"}:
+                return
+            try:
+                response = await admin_client.post(
+                    "/debug/update_probe",
+                    json={"weight_dir": weight_dir_posix, "step": step, "phase": phase},
+                    timeout=1200,
+                )
+                response.raise_for_status()
+                result = response.json()
+                summary = {
+                    key: result.get(key)
+                    for key in ("phase", "step", "concurrency", "failures", "nonfinite", "dump_path")
+                }
+                if not result.get("ok", False):
+                    logger.warning("Inference update probe reported a failure: %s", summary)
+                else:
+                    logger.info("Inference update probe succeeded: %s", summary)
+            except Exception:
+                logger.exception("Inference update probe failed during phase=%s step=%s", phase, step)
+
         async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
-            response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
+            response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir, "step": step})
             response.raise_for_status()
+
+        await asyncio.gather(*[_run_update_probe(admin_client, "pre") for admin_client in admin_clients])
 
         # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
         await _pause_engines(admin_clients)
@@ -353,6 +377,8 @@ async def update_weights(
             await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
         finally:
             await _resume_engines(admin_clients)
+
+        await asyncio.gather(*[_run_update_probe(admin_client, "post") for admin_client in admin_clients])
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:
