@@ -14,7 +14,7 @@ Use:
 repo: https://github.com/S1ro1/vllm.git
 pr: https://github.com/S1ro1/vllm/pull/3
 branch: feat/routed-experts-prefix-replay
-head: a1c9051bc490be4200137735c4a806d22a184121
+head: cba9775b5897a60f7b91c2eed6412dd2c32b1886
 ```
 
 The branch is based on upstream vLLM `main` at:
@@ -31,7 +31,6 @@ native/CUDA objects are taken from an already-built vLLM wheel:
 
 ```bash
 export VLLM_PRECOMPILED_WHEEL_COMMIT=nightly
-export VLLM_PRECOMPILED_WHEEL_VARIANT=cu129
 export VLLM_USE_PRECOMPILED=1
 uv build --wheel --out-dir dist
 ```
@@ -40,13 +39,13 @@ The resulting wheel was uploaded to the prime-rl `v0.5.0` release and pinned in
 `pyproject.toml` for x86_64 installs:
 
 ```text
-https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.2rc1.dev209%2Bga1c9051bc.precompiled-cp312-cp312-linux_x86_64.whl
+https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.2rc1.dev212%2Bgcba9775b5.precompiled-cp312-cp312-linux_x86_64.whl
 ```
 
 SHA256:
 
 ```text
-9f9fd0f24f6c93082e2449c37d6fa3e18a8ced838e0831db7563f358776db1d2
+3e625083ce0ed7ab2a941fdd84e34571ad35425890fba82196052405cc6acdc9
 ```
 
 ## Required Changes
@@ -69,6 +68,14 @@ transfer working. That upstream PR introduced a two-phase DP pause protocol that
 conflicts with prime-rl's pause/resume flow during NCCL transfer. Keeping it
 reverted preserves the older pause behavior that prime-rl's DP pause/deadlock
 patch expects, so weight transfer can pause and resume generation reliably.
+
+The fork reduces routed-experts overhead in the capture and response path. It
+serializes engine-core routed experts as `(shape, bytes)` instead of nested
+Python lists, supports opt-in base64 HTTP routed-experts payloads via
+`vllm_xargs.routed_experts_encoding = "base64"`, grows per-request host buffers
+less aggressively during decode, avoids an extra device-to-device staging copy
+before routed-experts D2H, and only publishes replay-cache blocks when a block
+can newly become complete.
 
 ## prime-rl Contract
 

@@ -12,8 +12,8 @@ we subclass it to add them back:
 
 2. ``prompt_routed_experts`` and choice ``routed_experts`` export — when the
    engine emits routing decisions (``enable_return_routed_experts``), surface
-   the prompt and completion routing as JSON arrays. This is what the trainer's
-   router-replay path consumes.
+   the prompt and completion routing. This is what the trainer's router-replay
+   path consumes.
 
 3. Server-side ``max_tokens`` defaulting — ``ServingTokens`` hands the
    client-supplied ``SamplingParams`` to the engine verbatim, and
@@ -36,8 +36,9 @@ from functools import cached_property
 from typing import cast
 
 import numpy as np
+import pybase64 as base64
 from fastapi import Request
-from pydantic import Field
+from pydantic import BaseModel, Field
 from vllm.entrypoints.openai.engine.protocol import ErrorResponse, RequestResponseMetadata
 from vllm.entrypoints.serve.disagg.protocol import (
     GenerateRequest,
@@ -50,8 +51,18 @@ from vllm.outputs import RequestOutput
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 
 
+class RoutedExpertsBytes(BaseModel):
+    encoding: str = "base64"
+    dtype: str = "int16"
+    shape: list[int]
+    data: str
+
+
+RoutedExpertsResponsePayload = list[list[list[int]]] | RoutedExpertsBytes
+
+
 class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
-    routed_experts: list[list[list[int]]] | None = Field(
+    routed_experts: RoutedExpertsResponsePayload | None = Field(
         default=None,
         description=(
             "Per-completion-token expert routing decisions. Populated only "
@@ -63,7 +74,7 @@ class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
 
 class PrimeRlGenerateResponse(GenerateResponse):
     choices: list[PrimeRlGenerateResponseChoice]
-    prompt_routed_experts: list[list[list[int]]] | None = Field(
+    prompt_routed_experts: RoutedExpertsResponsePayload | None = Field(
         default=None,
         description=(
             "Per-prompt-token expert routing decisions. Populated only when "
@@ -73,24 +84,46 @@ class PrimeRlGenerateResponse(GenerateResponse):
     )
 
 
-def _serialize_routed_experts(arr: np.ndarray) -> list[list[list[int]]]:
-    _seq_len, _num_layers, _topk = arr.shape
-    return cast(list[list[list[int]]], arr.tolist())
+def _get_routed_experts_encoding(request: GenerateRequest) -> str:
+    extra_args = request.sampling_params.extra_args or {}
+    encoding = extra_args.get("routed_experts_encoding", "json")
+    assert encoding in ("json", "base64")
+    return str(encoding)
+
+
+def _serialize_routed_experts(
+    arr: np.ndarray,
+    encoding: str,
+) -> RoutedExpertsResponsePayload:
+    if encoding == "json":
+        return cast(list[list[list[int]]], arr.tolist())
+    data = arr.data if arr.flags.c_contiguous else arr.tobytes()
+    return RoutedExpertsBytes(
+        shape=list(arr.shape),
+        data=base64.b64encode(data).decode("ascii"),
+    )
 
 
 class _RoutedExpertsCapture:
-    def __init__(self, generator: AsyncGenerator[RequestOutput, None]):
+    def __init__(self, generator: AsyncGenerator[RequestOutput, None], encoding: str):
         self._generator = generator
-        self.prompt_routed_experts: list[list[list[int]]] | None = None
-        self.routed_experts: dict[int, list[list[list[int]]]] = {}
+        self._encoding = encoding
+        self.prompt_routed_experts: RoutedExpertsResponsePayload | None = None
+        self.routed_experts: dict[int, RoutedExpertsResponsePayload] = {}
 
     async def __aiter__(self) -> AsyncGenerator[RequestOutput, None]:
         async for request_output in self._generator:
             if request_output.prompt_routed_experts is not None:
-                self.prompt_routed_experts = _serialize_routed_experts(request_output.prompt_routed_experts)
+                self.prompt_routed_experts = _serialize_routed_experts(
+                    request_output.prompt_routed_experts,
+                    self._encoding,
+                )
             for output in request_output.outputs:
                 if output.routed_experts is not None:
-                    self.routed_experts[output.index] = _serialize_routed_experts(output.routed_experts)
+                    self.routed_experts[output.index] = _serialize_routed_experts(
+                        output.routed_experts,
+                        self._encoding,
+                    )
             yield request_output
 
     def post_process(self, response: GenerateResponse) -> PrimeRlGenerateResponse:
@@ -285,7 +318,10 @@ class PrimeRlServingTokens(ServingTokens):
     ) -> ErrorResponse | GenerateResponse:
         capture: _RoutedExpertsCapture | None = None
         if self.model_config.enable_return_routed_experts:
-            capture = _RoutedExpertsCapture(result_generator)
+            capture = _RoutedExpertsCapture(
+                result_generator,
+                _get_routed_experts_encoding(request),
+            )
             result_generator = capture  # type: ignore[assignment]
 
         response = await super().serve_tokens_full_generator(
