@@ -96,7 +96,7 @@ jobs:
                   repo,
                   workflow_id: "build_image.yaml",
                   ref: "main",
-                  inputs: { ref: tag, tag },
+                  inputs: { ref: tag, tag, platforms: "both" },
                 });
                 core.notice(`Dispatched build_image.yaml for ${tag}`);
               } catch (error) {

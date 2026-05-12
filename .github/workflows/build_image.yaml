@@ -1,6 +1,10 @@
 name: Build Image (ghcr)
 
 on:
+  push:
+    branches:
+      # TEMP: remove before merging. Allows testing this new workflow before it exists on main.
+      - chore/ghcr-image-publish
   workflow_dispatch:
     inputs:
       ref:
@@ -12,15 +16,95 @@ on:
         description: "Image tag (defaults to sanitized ref)"
         required: false
         type: string
+      platforms:
+        description: "Target platforms to build"
+        required: false
+        default: "both"
+        type: choice
+        options:
+          - amd64-only
+          - arm64-only
+          - both
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: primeintellect-ai/prime-rl
+  BUILD_REF: ${{ inputs.ref || github.ref_name }}
+  BUILD_TAG: ${{ inputs.tag || '' }}
+  BUILD_PLATFORMS: ${{ inputs.platforms || 'both' }}
 
 jobs:
+  prepare:
+    name: Prepare build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      ref: ${{ steps.vars.outputs.ref }}
+      tag: ${{ steps.vars.outputs.tag }}
+      sha: ${{ steps.vars.outputs.sha }}
+      full_sha: ${{ steps.vars.outputs.full_sha }}
+      platforms: ${{ steps.vars.outputs.platforms }}
+    steps:
+      - name: Set build matrix
+        id: matrix
+        env:
+          PLATFORMS: ${{ env.BUILD_PLATFORMS }}
+        run: |
+          case "$PLATFORMS" in
+            arm64-only)
+              echo 'matrix={"include":[{"runner":"image-builder-arm-2204","platform":"linux/arm64","suffix":"arm64"}]}' >> "$GITHUB_OUTPUT"
+              ;;
+            both)
+              echo 'matrix={"include":[{"runner":"image-builder","platform":"linux/amd64","suffix":"amd64"},{"runner":"image-builder-arm-2204","platform":"linux/arm64","suffix":"arm64"}]}' >> "$GITHUB_OUTPUT"
+              ;;
+            amd64-only)
+              echo 'matrix={"include":[{"runner":"image-builder","platform":"linux/amd64","suffix":"amd64"}]}' >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unsupported platforms value: ${PLATFORMS}" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BUILD_REF }}
+          fetch-depth: 0
+
+      - name: Resolve image vars
+        id: vars
+        env:
+          INPUT_REF: ${{ env.BUILD_REF }}
+          INPUT_TAG: ${{ env.BUILD_TAG }}
+          PLATFORMS: ${{ env.BUILD_PLATFORMS }}
+        run: |
+          raw_tag="$INPUT_TAG"
+          if [ -z "$raw_tag" ]; then
+            raw_tag="$INPUT_REF"
+          fi
+
+          tag=$(echo "$raw_tag" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g' | sed 's/--*/-/g' | cut -c1-50 | sed 's/^-//;s/-$//')
+          if [ -z "$tag" ]; then
+            echo "Could not derive a valid image tag from '${raw_tag}'." >&2
+            exit 1
+          fi
+
+          echo "ref=${INPUT_REF}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "full_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "platforms=${PLATFORMS}" >> "$GITHUB_OUTPUT"
+
   build:
-    name: Build and push to ghcr
-    runs-on: image-builder
+    name: Build and push (${{ matrix.suffix }})
+    needs: prepare
+    strategy:
+      fail-fast: true
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -32,23 +116,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.prepare.outputs.ref }}
           fetch-depth: 0
-
-      - name: Resolve image tag
-        id: vars
-        env:
-          INPUT_REF: ${{ inputs.ref }}
-          INPUT_TAG: ${{ inputs.tag }}
-        run: |
-          if [ -n "$INPUT_TAG" ]; then
-            TAG="$INPUT_TAG"
-          else
-            TAG=$(echo "$INPUT_REF" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g' | sed 's/--*/-/g' | cut -c1-50 | sed 's/^-//;s/-$//')
-          fi
-          SHA=$(git rev-parse --short HEAD)
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "sha=${SHA}" >> $GITHUB_OUTPUT
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -67,24 +136,94 @@ jobs:
           context: .
           file: ./Dockerfile.cuda
           push: true
+          platforms: ${{ matrix.platform }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:commit-${{ steps.vars.outputs.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.tag }}-${{ matrix.suffix }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:commit-${{ needs.prepare.outputs.sha }}-${{ matrix.suffix }}
+          labels: |
+            org.opencontainers.image.revision=${{ needs.prepare.outputs.full_sha }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.tag }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
       - name: Summary
         env:
-          INPUT_REF: ${{ inputs.ref }}
-          IMAGE_TAG: ${{ steps.vars.outputs.tag }}
-          IMAGE_SHA: ${{ steps.vars.outputs.sha }}
+          INPUT_REF: ${{ needs.prepare.outputs.ref }}
+          IMAGE_TAG: ${{ needs.prepare.outputs.tag }}
+          IMAGE_SHA: ${{ needs.prepare.outputs.sha }}
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          PLATFORM: ${{ matrix.platform }}
+          SUFFIX: ${{ matrix.suffix }}
         run: |
           {
-            echo "## Build Summary"
+            echo "## Build Summary (${SUFFIX})"
             echo ""
             echo "| Property | Value |"
             echo "|----------|-------|"
             echo "| **Ref** | \`${INPUT_REF}\` |"
-            echo "| **Image** | \`${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}\` |"
+            echo "| **Platform** | \`${PLATFORM}\` |"
+            echo "| **Image** | \`${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}-${SUFFIX}\` |"
             echo "| **Commit** | \`${IMAGE_SHA}\` |"
             echo "| **Digest** | \`${IMAGE_DIGEST}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  manifest:
+    name: Create multi-arch manifest
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push manifests
+        env:
+          IMAGE_TAG: ${{ needs.prepare.outputs.tag }}
+          IMAGE_SHA: ${{ needs.prepare.outputs.sha }}
+          PLATFORMS: ${{ needs.prepare.outputs.platforms }}
+        run: |
+          set -euo pipefail
+
+          image="${REGISTRY}/${IMAGE_NAME}"
+          tag_sources=()
+          sha_sources=()
+
+          if [ "$PLATFORMS" != "arm64-only" ]; then
+            tag_sources+=("${image}:${IMAGE_TAG}-amd64")
+            sha_sources+=("${image}:commit-${IMAGE_SHA}-amd64")
+          fi
+
+          if [ "$PLATFORMS" != "amd64-only" ]; then
+            tag_sources+=("${image}:${IMAGE_TAG}-arm64")
+            sha_sources+=("${image}:commit-${IMAGE_SHA}-arm64")
+          fi
+
+          docker buildx imagetools create \
+            -t "${image}:${IMAGE_TAG}" \
+            "${tag_sources[@]}"
+
+          docker buildx imagetools create \
+            -t "${image}:commit-${IMAGE_SHA}" \
+            "${sha_sources[@]}"
+
+      - name: Summary
+        env:
+          INPUT_REF: ${{ needs.prepare.outputs.ref }}
+          IMAGE_TAG: ${{ needs.prepare.outputs.tag }}
+          IMAGE_SHA: ${{ needs.prepare.outputs.sha }}
+          PLATFORMS: ${{ needs.prepare.outputs.platforms }}
+        run: |
+          {
+            echo "## Manifest Summary"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| **Ref** | \`${INPUT_REF}\` |"
+            echo "| **Platforms** | \`${PLATFORMS}\` |"
+            echo "| **Image** | \`${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}\` |"
+            echo "| **Commit Image** | \`${REGISTRY}/${IMAGE_NAME}:commit-${IMAGE_SHA}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
