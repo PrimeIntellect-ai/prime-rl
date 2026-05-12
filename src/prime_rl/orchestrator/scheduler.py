@@ -439,18 +439,21 @@ class Scheduler:
                     # Check for empty/errored rollouts and reschedule
                     valid_rollouts = []
                     has_failures = False
+                    last_failure_reason: str | None = None
                     for rollout in rollouts:
                         if rollout["error"] is not None:
                             self.errored_rollouts_by_env[env_name] += 1
                             has_failures = True
+                            last_failure_reason = rollout["error"]["error_chain_repr"]
                             self.logger.warning(
                                 f"Rollout error in group {group_id} ({env_name}), re-scheduling "
                                 f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete): "
-                                f"{rollout['error']['error_chain_repr']}"
+                                f"{last_failure_reason}"
                             )
                         elif len(rollout["trajectory"]) == 0:
                             self.empty_rollouts_by_env[env_name] += 1
                             has_failures = True
+                            last_failure_reason = "empty trajectory"
                             self.logger.warning(
                                 f"Empty trajectory in group {group_id} ({env_name}), re-scheduling "
                                 f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete)"
@@ -471,7 +474,8 @@ class Scheduler:
                             self.logger.warning(
                                 f"Dropping group {group_id} ({env_name}) after {group.failed_attempts} "
                                 f"failed attempts ({len(group.completed_rollouts)}/{self.rollouts_per_example} "
-                                f"complete). Set orchestrator.max_error_reschedule_attempts higher (or to None) "
+                                f"complete). Last failure: {last_failure_reason}. Set "
+                                f"orchestrator.max_error_reschedule_attempts higher (or to None) "
                                 f"to retry more aggressively."
                             )
                             await self.drop_group(group_id)
