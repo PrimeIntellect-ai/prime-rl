@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Optional, Union
 from uuid import uuid4
 
+import numpy as np
 from fastapi import Request
 from pydantic import Field
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest, ChatCompletionResponse
