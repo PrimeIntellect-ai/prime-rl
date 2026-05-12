@@ -113,11 +113,11 @@ echo "INFER_URLS=${INFER_URLS}"
 # termination and cause the next launch to hang (e.g. decode engines stuck at
 # "Waiting for READY message from DP Coordinator"). Harmless on clean nodes.
 srun bash -c '
-    pkill -9 -f "python.*prime_rl" 2>/dev/null
-    pkill -9 -f "torchrun" 2>/dev/null
-    pkill -9 -f "vllm-router" 2>/dev/null
-    pkill -9 -f "vllm" 2>/dev/null
-    pkill -9 -f "prime_rl" 2>/dev/null
+    pkill -9 -f "[p]ython.*prime_rl" 2>/dev/null
+    pkill -9 -f "[t]orchrun" 2>/dev/null
+    pkill -9 -f "[v]llm-router" 2>/dev/null
+    pkill -9 -f "[v]llm" 2>/dev/null
+    pkill -9 -f "[p]rime_rl" 2>/dev/null
     # Also match prctl-set process names (kernel comm) like "vllm::router"
     # which pkill -f does not see because -f only matches the cmdline.
     pkill -9 "vllm" 2>/dev/null
