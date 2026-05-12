@@ -67,6 +67,7 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
 export TRITON_CACHE_DIR=/tmp/triton-cache-$USER-$SLURM_JOB_ID
+export PRIME_RL_CHAT_REPLAY_DIR=${PRIME_RL_CHAT_REPLAY_DIR:-$OUTPUT_DIR/replay_dumps/chat_completions}
 
 {% if wandb_shared -%}
 export WANDB_SHARED_MODE=1
