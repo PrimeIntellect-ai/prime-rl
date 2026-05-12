@@ -352,10 +352,16 @@ class Tensors(defaultdict):
     def compute_stats(self) -> dict[str, float | int]:
         """Synchronize the tensor statistic across all ranks for each key and compute relevant statistics."""
 
+        local_keys = list(self.keys())
+        gathered_keys: list[list[str] | None] = [None] * dist.get_world_size()
+        dist.all_gather_object(gathered_keys, local_keys)
+        keys = sorted({key for rank_keys in gathered_keys if rank_keys is not None for key in rank_keys})
+
         metrics = {}
-        for key in list(self.keys()):
+        for key in keys:
             # All-gather tensors across steps and ranks (get global distribution)
-            tensors = torch.cat(self.pop(key), dim=0).to("cuda")
+            values = self.pop(key, [])
+            tensors = torch.cat(values, dim=0).to("cuda") if values else torch.empty(0, device="cuda")
             assert tensors.ndim == 1, "Can only aggregate 1D tensors"
             tensors = flexible_all_gather(tensors)
             assert tensors.ndim == 1, "Can only aggregate 1D tensors"
@@ -378,60 +384,6 @@ class Tensors(defaultdict):
 
             # Add back all-gathered tensors to self
             self[key].append(tensors.tolist())
-
-        return metrics
-
-
-class GroupedTensors:
-    """Accumulate 1D tensors and compute distributed statistics grouped by string labels."""
-
-    def __init__(self):
-        assert dist.is_initialized(), "GroupedTensors requires a distributed environment"
-        self.data: dict[str, dict[str, list[Tensor]]] = defaultdict(lambda: defaultdict(list))
-
-    def append(self, key: str, tensors: Tensor, groups: list[str]) -> None:
-        tensors = tensors.flatten()
-        assert tensors.ndim == 1, "Can only aggregate 1D tensors"
-        assert tensors.numel() == len(groups), f"{key} has {tensors.numel()} values but {len(groups)} groups"
-
-        if tensors.numel() == 0:
-            return
-
-        cpu_tensors = tensors.detach().to("cpu")
-        self.data[key]["all"].append(cpu_tensors)
-        group_to_indices: dict[str, list[int]] = defaultdict(list)
-        for idx, group in enumerate(groups):
-            if group:
-                group_to_indices[group].append(idx)
-
-        for group, indices in group_to_indices.items():
-            self.data[key][group].append(cpu_tensors[indices])
-
-    def compute_stats(self) -> dict[str, float | int]:
-        local_pairs = [(key, group) for key, by_group in self.data.items() for group in by_group]
-        gathered_pairs: list[list[tuple[str, str]] | None] = [None] * dist.get_world_size()
-        dist.all_gather_object(gathered_pairs, local_pairs)
-
-        pairs = sorted({pair for rank_pairs in gathered_pairs if rank_pairs is not None for pair in rank_pairs})
-        metrics: dict[str, float | int] = {}
-
-        for key, group in pairs:
-            group_tensors = self.data.get(key, {}).get(group, [])
-            if group_tensors:
-                tensors = torch.cat(group_tensors, dim=0).to("cuda")
-            else:
-                tensors = torch.empty(0, device="cuda")
-
-            tensors = flexible_all_gather(tensors)
-            if tensors.numel() == 0:
-                metrics[f"{key}/{group}/mean"] = float("nan")
-                metrics[f"{key}/{group}/std"] = float("nan")
-                metrics[f"{key}/{group}/max"] = float("nan")
-                continue
-
-            metrics[f"{key}/{group}/mean"] = tensors.mean().item()
-            metrics[f"{key}/{group}/std"] = tensors.std().item()
-            metrics[f"{key}/{group}/max"] = tensors.max().item()
 
         return metrics
 

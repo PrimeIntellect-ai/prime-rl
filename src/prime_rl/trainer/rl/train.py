@@ -46,7 +46,6 @@ from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     GarbageCollection,
-    GroupedTensors,
     MemoryProfiler,
     Tensors,
     export_benchmark_json,
@@ -345,7 +344,6 @@ def train(config: TrainerConfig):
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
-        env_tensors = GroupedTensors()
         cp_enabled = parallel_dims.cp_enabled
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
         cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
@@ -482,10 +480,21 @@ def train(config: TrainerConfig):
 
             env_names = micro_batch["env_names"]
             masked_env_names = [env_name for env_name, keep in zip(env_names, loss_mask.flatten().tolist()) if keep]
-            env_tensors.append("entropy", out["entropy"][loss_mask].detach().to("cpu"), masked_env_names)
+            env_to_indices: dict[str, list[int]] = {}
+            for idx, env_name in enumerate(masked_env_names):
+                env_to_indices.setdefault(env_name, []).append(idx)
+
+            entropy = out["entropy"][loss_mask].detach().to("cpu")
+            tensors["entropy/all"].append(entropy)
+            for env_name, indices in env_to_indices.items():
+                tensors[f"entropy/{env_name}"].append(entropy[indices])
+
             with torch.no_grad():
                 mismatch_kl = compute_mismatch_kl(out["logprobs"], inference_logprobs)
-            env_tensors.append("mismatch_kl", mismatch_kl[loss_mask].detach().to("cpu"), masked_env_names)
+            mismatch_kl = mismatch_kl[loss_mask].detach().to("cpu")
+            tensors["mismatch_kl/all"].append(mismatch_kl)
+            for env_name, indices in env_to_indices.items():
+                tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)
@@ -536,7 +545,6 @@ def train(config: TrainerConfig):
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_stats = tensors.compute_stats()
-        tensor_stats.update(env_tensors.compute_stats())
 
         # Compute step metrics
         num_local_tokens = seq_len * batch_size
