@@ -60,6 +60,14 @@ except ImportError:
     FLACPContext = None  # type: ignore
     build_cp_context = None  # type: ignore
 
+# NOTE: bypass flash_qla's public wrapper — at commit c9b9827 it passes one
+# extra positional arg (`use_qk_l2norm_in_kernel`) to the autograd Function,
+# which raises TypeError. We pre-apply l2norm ourselves and call apply directly.
+try:
+    from flash_qla.ops.gated_delta_rule.chunk import ChunkGatedDeltaRuleFunction as _FlashQLAChunkFn
+except ImportError:
+    _FlashQLAChunkFn = None  # type: ignore
+
 logger = logging.get_logger(__name__)
 
 
@@ -311,7 +319,7 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
             query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
             key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
 
-        # Use fla's native CP when available, otherwise fall back to PyTorch kernel
+        # Use fla's native CP when available; otherwise prefer FlashQLA, then fla/torch.
         cp_context = self._build_cp_context(seq_len, hidden_states.device)
         if cp_context is not None:
             cu_seqlens = cp_context.cu_seqlens
@@ -324,6 +332,21 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
                 use_qk_l2norm_in_kernel=True,
                 cu_seqlens=cu_seqlens,
                 cp_context=cp_context,
+            )
+        elif _FlashQLAChunkFn is not None:
+            # FlashQLA has no fused l2norm and no scale inference; apply both here.
+            # Tilelang kernels require stride-1 on the last dim — q/k/v come from a
+            # transpose+split of mixed_qkv and aren't contiguous, so force a copy.
+            core_attn_out, _ = _FlashQLAChunkFn.apply(
+                l2norm(query).contiguous(),
+                l2norm(key).contiguous(),
+                value.contiguous(),
+                g.contiguous(),
+                beta.contiguous(),
+                self.head_k_dim**-0.5,  # scale
+                None,  # initial_state
+                False,  # output_final_state
+                cu_seqlens,
             )
         else:
             core_attn_out, _ = self._chunk_gated_delta_rule(

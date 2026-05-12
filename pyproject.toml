@@ -35,6 +35,7 @@ dependencies = [
     "dion",
     "tilelang>=0.1.8",
     "flash-linear-attention",
+    "flash-qla",
     "nvidia-ml-py>=12.575.51",
 ]
 
@@ -195,6 +196,7 @@ deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/downlo
 deep-gemm = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }
 nixl-cu12 = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
+flash-qla = { git = "https://github.com/QwenLM/FlashQLA.git", rev = "c9b9827" }
 flash_attn_3 = { index = "pytorch-cu128-test" }
 
 [tool.uv.extra-build-dependencies]
