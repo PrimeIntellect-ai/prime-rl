@@ -14,7 +14,7 @@ Use:
 repo: https://github.com/S1ro1/vllm.git
 pr: https://github.com/S1ro1/vllm/pull/3
 branch: feat/routed-experts-prefix-replay
-head: cff9b14e3f28310128ddbacb708f7bf87768ea86
+head: 24c0208fc6ed488797c3401b3e7f87f3ea9b61a3
 ```
 
 The native objects in the pinned wheel are taken from the vLLM precompiled
@@ -40,13 +40,13 @@ The resulting wheel was uploaded to the prime-rl `v0.5.0` release and pinned in
 `pyproject.toml` for x86_64 installs:
 
 ```text
-https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.2rc1.dev213%2Bgcff9b14e3.precompiled-cp312-cp312-linux_x86_64.whl
+https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.2rc1.dev214%2Bg24c0208fc.precompiled-cp312-cp312-linux_x86_64.whl
 ```
 
 SHA256:
 
 ```text
-5b594e78118d7e6d16adf63a6c8ac4cba059d9f8a1a37ec7e57bbbc70a7acbac
+437a618dd32400d2636e17de266061aa6685001653e6b9a78751e3ae53036e51
 ```
 
 ## Required Changes

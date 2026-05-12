@@ -11,7 +11,7 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-05-05T19:08:02.919471519Z"
+exclude-newer = "2026-05-05T19:27:20.705492862Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -2834,7 +2834,7 @@ dependencies = [
     { name = "transformers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "uvloop", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "vllm", version = "0.20.2rc1.dev213+gcff9b14e3.precompiled", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.2rc1.dev213%2Bgcff9b14e3.precompiled-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm", version = "0.20.2rc1.dev214+g24c0208fc.precompiled", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.2rc1.dev214%2Bg24c0208fc.precompiled-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "vllm", version = "0.20.2+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl" }, marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
     { name = "wandb", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
@@ -2959,10 +2959,10 @@ requires-dist = [
     { name = "torchvision", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=0c6fcff" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=162cffb" },
     { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'", specifier = ">=0.20.2" },
     { name = "vllm", marker = "platform_machine == 'aarch64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl" },
-    { name = "vllm", marker = "platform_machine == 'x86_64'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.2rc1.dev213%2Bgcff9b14e3.precompiled-cp312-cp312-linux_x86_64.whl" },
+    { name = "vllm", marker = "platform_machine == 'x86_64'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.2rc1.dev214%2Bg24c0208fc.precompiled-cp312-cp312-linux_x86_64.whl" },
     { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wiki-search", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
@@ -3000,7 +3000,7 @@ requires-dist = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.2.22"
+version = "0.2.25"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -3010,9 +3010,9 @@ dependencies = [
     { name = "pydantic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tenacity", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/dc/a7/eb9cb01ce7fa812022ec7c2ffaeb379e1103e07f093a4b85e879b2d0143d/prime_sandboxes-0.2.22.tar.gz", hash = "sha256:7901adca4ff7fff1e7f08c06c4b76765cd90791965216655eb3a87d459588f5e", size = 64970, upload-time = "2026-04-22T18:32:12.973Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7d/6d/a800c22973f99e4b9a57caa25aa1b54e54f022641b0576bfcfb064137153/prime_sandboxes-0.2.25.tar.gz", hash = "sha256:df4bf7965ccff953208b881fb743c8cde5280064a8c5a13eabeedded53dd366b", size = 66132, upload-time = "2026-05-11T23:45:19.993Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/90/b8/46bf98c06826fc26d982c53e10d9d4f086a4c322993a6c51188e5bd6fd30/prime_sandboxes-0.2.22-py3-none-any.whl", hash = "sha256:0a75bb02049c16b55aae7475cc4082e8559ffa6d65181b238077771a95b57855", size = 33182, upload-time = "2026-04-22T18:32:11.739Z" },
+    { url = "https://files.pythonhosted.org/packages/34/e8/2ddba24d992ef10b69eb311647443b11992fb2e9514e3a625b98b6a5da65/prime_sandboxes-0.2.25-py3-none-any.whl", hash = "sha256:c335eba6c817722365495ab3d3dfbe77f0a726d9a9f2fd3452ad44666811fbfc", size = 33621, upload-time = "2026-05-11T23:45:18.759Z" },
 ]
 
 [[package]]
@@ -4221,8 +4221,8 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-version = "0.1.14"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=0c6fcff#0c6fcff41605bd1d5f654e42069b0dda52e9419a" }
+version = "0.1.15.dev0"
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=162cffb#162cffbdb2f593ef82d19f0df23073f9b8e6cfe5" }
 dependencies = [
     { name = "aiolimiter", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "anthropic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -4265,8 +4265,8 @@ wheels = [
 
 [[package]]
 name = "vllm"
-version = "0.20.2rc1.dev213+gcff9b14e3.precompiled"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.2rc1.dev213%2Bgcff9b14e3.precompiled-cp312-cp312-linux_x86_64.whl" }
+version = "0.20.2rc1.dev214+g24c0208fc.precompiled"
+source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.2rc1.dev214%2Bg24c0208fc.precompiled-cp312-cp312-linux_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
@@ -4341,7 +4341,7 @@ dependencies = [
     { name = "xgrammar", version = "0.2.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.2rc1.dev213%2Bgcff9b14e3.precompiled-cp312-cp312-linux_x86_64.whl", hash = "sha256:5b594e78118d7e6d16adf63a6c8ac4cba059d9f8a1a37ec7e57bbbc70a7acbac" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.2rc1.dev214%2Bg24c0208fc.precompiled-cp312-cp312-linux_x86_64.whl", hash = "sha256:437a618dd32400d2636e17de266061aa6685001653e6b9a78751e3ae53036e51" },
 ]
 
 [package.metadata]

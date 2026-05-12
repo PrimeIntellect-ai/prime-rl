@@ -1,7 +1,36 @@
 import pytest
 
 from prime_rl.trainer.batch import prepare_batch, prepare_sample
+from prime_rl.transport.routed_experts import RoutedExperts
 from prime_rl.transport.types import TrainingSample
+
+
+def _routed_experts(values: list[list[list[int]]]) -> RoutedExperts:
+    data = bytes()
+    for token in values:
+        for layer in token:
+            for expert in layer:
+                data += int(expert).to_bytes(2, byteorder="little", signed=True)
+    return RoutedExperts(
+        shape=[len(values), len(values[0]) if values else 0, len(values[0][0]) if values and values[0] else 0],
+        data=data,
+    )
+
+
+def _routed_experts_values(payload: RoutedExperts) -> list[list[list[int]]]:
+    seq_len, num_layers, topk = payload.shape
+    values: list[list[list[int]]] = []
+    offset = 0
+    for _ in range(seq_len):
+        token: list[list[int]] = []
+        for _ in range(num_layers):
+            layer: list[int] = []
+            for _ in range(topk):
+                layer.append(int.from_bytes(payload.data[offset : offset + 2], byteorder="little", signed=True))
+                offset += 2
+            token.append(layer)
+        values.append(token)
+    return values
 
 
 @pytest.fixture
@@ -108,7 +137,7 @@ def test_prepare_batch_does_not_pack_mixed_sft_loss(make_training_example):
 def test_prepare_sample_with_routed_experts():
     """Routed experts are passed through prepare_sample and match input_ids length."""
     # 2 prompt + 2 completion = 4 tokens, 2 layers, topk=2
-    routed_experts = [[[0, 1], [2, 3]], [[4, 5], [6, 7]], [[0, 2], [1, 3]], [[1, 0], [3, 2]]]
+    routed_experts_values = [[[0, 1], [2, 3]], [[4, 5], [6, 7]], [[0, 2], [1, 3]], [[1, 0], [3, 2]]]
     sample = TrainingSample(
         prompt_ids=[1, 2],
         prompt_mask=[False, False],
@@ -117,18 +146,18 @@ def test_prepare_sample_with_routed_experts():
         completion_logprobs=[-0.1, -0.2],
         completion_temperatures=[1.0, 1.0],
         advantage=1.0,
-        routed_experts=routed_experts,
+        routed_experts=_routed_experts(routed_experts_values),
     )
 
     micro_batch = prepare_sample(sample, seq_len=8)
     assert micro_batch.routed_experts is not None
-    assert len(micro_batch.routed_experts) == 4
-    assert micro_batch.routed_experts == routed_experts
+    assert micro_batch.routed_experts.shape[0] == 4
+    assert _routed_experts_values(micro_batch.routed_experts) == routed_experts_values
 
 
 def test_prepare_sample_truncates_routed_experts():
     """Routed experts are truncated to seq_len when input exceeds it."""
-    routed_experts = [[[0, 1]], [[2, 3]], [[4, 5]], [[6, 7]]]
+    routed_experts_values = [[[0, 1]], [[2, 3]], [[4, 5]], [[6, 7]]]
     sample = TrainingSample(
         prompt_ids=[1, 2],
         prompt_mask=[False, False],
@@ -137,13 +166,13 @@ def test_prepare_sample_truncates_routed_experts():
         completion_logprobs=[-0.1, -0.2],
         completion_temperatures=[1.0, 1.0],
         advantage=1.0,
-        routed_experts=routed_experts,
+        routed_experts=_routed_experts(routed_experts_values),
     )
 
     micro_batch = prepare_sample(sample, seq_len=3)
     assert micro_batch.routed_experts is not None
-    assert len(micro_batch.routed_experts) == 3
-    assert micro_batch.routed_experts == routed_experts[:3]
+    assert micro_batch.routed_experts.shape[0] == 3
+    assert _routed_experts_values(micro_batch.routed_experts) == routed_experts_values[:3]
 
 
 def test_prepare_sample_none_routed_experts():
