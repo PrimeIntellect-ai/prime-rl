@@ -27,11 +27,17 @@ def make_training_example():
     return _make_training_example
 
 
-def test_prepare_sample_requires_env_name(make_training_example):
-    example = make_training_example(env_name="")
-
-    with pytest.raises(ValueError, match="env_name"):
-        prepare_sample(example, seq_len=16)
+def test_training_sample_requires_env_name():
+    with pytest.raises(TypeError, match="env_name"):
+        TrainingSample(
+            prompt_ids=[1, 2],
+            prompt_mask=[False, False],
+            completion_ids=[3, 4],
+            completion_mask=[True, True],
+            completion_logprobs=[-0.1, -0.2],
+            completion_temperatures=[1.0, 1.0],
+            advantage=1.0,
+        )
 
 
 @pytest.mark.parametrize(

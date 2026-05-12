@@ -18,6 +18,13 @@ from prime_rl.orchestrator.trajectories import (
     interleave_rollout,
 )
 
+_interleave_rollout = interleave_rollout
+
+
+def interleave_rollout(output, *args, **kwargs):
+    output.setdefault("env_name", "test-env")
+    return _interleave_rollout(output, *args, **kwargs)
+
 
 def _pixels(data: list[list[float]]) -> tuple[bytes, list[int]]:
     """Convert pixel values list to (bytes, shape) for test cache data."""

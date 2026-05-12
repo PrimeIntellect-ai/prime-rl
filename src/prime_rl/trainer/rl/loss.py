@@ -104,6 +104,12 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
     return values[mask].sum() / denom
 
 
+def compute_mismatch_kl(trainer_logprobs: Tensor, inference_logprobs: Tensor) -> Tensor:
+    log_importance_ratio = trainer_logprobs - inference_logprobs
+    importance_ratio = torch.exp(log_importance_ratio)
+    return importance_ratio - log_importance_ratio - 1
+
+
 def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutputs:
     """
     DPPO+KL loss, combining:
@@ -139,7 +145,7 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
 
     log_importance_ratio = trainer_logprobs - inference_logprobs
     importance_ratio = torch.exp(log_importance_ratio)
-    mismatch_kl = importance_ratio - log_importance_ratio - 1
+    mismatch_kl = compute_mismatch_kl(trainer_logprobs, inference_logprobs)
 
     advantages = loss_config.adv_tau * advantages
     if teacher_logprobs is not None:

@@ -398,6 +398,7 @@ class GroupedTensors:
             return
 
         cpu_tensors = tensors.detach().to("cpu")
+        self.data[key]["all"].append(cpu_tensors)
         group_to_indices: dict[str, list[int]] = defaultdict(list)
         for idx, group in enumerate(groups):
             if group:

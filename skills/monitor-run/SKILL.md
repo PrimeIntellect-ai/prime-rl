@@ -147,8 +147,8 @@ These tell you whether training is healthy or diverging.
 | `entropy/mean` | trainer | policy entropy |
 | `masked_advantage_positive/mean` | trainer | fraction of DPPO-masked trainable tokens with positive advantage (W&B) |
 | `masked_advantage_negative/mean` | trainer | fraction of DPPO-masked trainable tokens with negative advantage (W&B) |
-| `mismatch_kl/{env}/{mean,std,max}` | trainer | per-environment KL mismatch over trainable tokens (W&B) |
-| `entropy/{env}/{mean,std,max}` | trainer | per-environment policy entropy over trainable tokens (W&B) |
+| `mismatch_kl/{all,env}/{mean,std,max}` | trainer | all-token and per-environment KL mismatch over trainable tokens (W&B) |
+| `entropy/{all,env}/{mean,std,max}` | trainer | all-token and per-environment policy entropy over trainable tokens (W&B) |
 | `optim/grad_norm` | trainer | gradient norm — spikes may precede divergence |
 
 #### Performance

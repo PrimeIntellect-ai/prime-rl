@@ -200,8 +200,6 @@ class DataLoader:
                 f"MicroBatch.env_names must match input_ids length: "
                 f"env_names={len(micro_batch.env_names)}, input_ids={len(micro_batch.input_ids)}"
             )
-        if any(not env_name for env_name, keep in zip(micro_batch.env_names, micro_batch.loss_mask) if keep):
-            raise ValueError("MicroBatch.env_names must be set for every trainable token")
         if micro_batch.lora_num_tokens is None:
             micro_batch.lora_num_tokens = [0] * self.multi_run_manager.max_runs
             micro_batch.lora_num_tokens[0] = len(micro_batch.input_ids)
