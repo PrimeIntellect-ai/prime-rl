@@ -14,6 +14,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     advantages = [training_example.advantage] * len(input_ids)
     position_ids = list(range(len(input_ids)))
     mm_token_type_ids = training_example.mm_token_type_ids
+    env_names = [training_example.env_name] * len(input_ids) if training_example.env_name is not None else None
 
     # Per-token temperatures: prompt tokens use first completion temp (masked out anyway)
     # Default to 1.0 if completion is empty (e.g., model generated only tool calls with no text)
@@ -38,6 +39,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             routed_experts = routed_experts[:seq_len]
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:seq_len]
+        if env_names is not None:
+            env_names = env_names[:seq_len]
 
     assert (
         len(input_ids)
@@ -61,6 +64,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         assert len(mm_token_type_ids) == len(input_ids), (
             f"mm_token_type_ids: {len(mm_token_type_ids)}, input_ids: {len(input_ids)}"
         )
+    if env_names is not None:
+        assert len(env_names) == len(input_ids), f"env_names: {len(env_names)}, input_ids: {len(input_ids)}"
 
     return MicroBatch(
         input_ids=input_ids,
@@ -72,6 +77,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         temperatures=temperatures,
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
+        env_names=env_names,
         # Multimodal fields (Qwen3-VL) - passed through without modification
         pixel_values=training_example.pixel_values,
         pixel_values_shape=training_example.pixel_values_shape,
@@ -137,6 +143,12 @@ def packed_samples_into_micro_bs(
                     if bin_content.mm_token_type_ids is None:
                         bin_content.mm_token_type_ids = []
                     bin_content.mm_token_type_ids.extend(sample.mm_token_type_ids)
+                if sample.env_names is not None:
+                    if bin_content.env_names is None:
+                        bin_content.env_names = [""] * (len(bin_content.input_ids) - len(sample.input_ids))
+                    bin_content.env_names.extend(sample.env_names)
+                elif bin_content.env_names is not None:
+                    bin_content.env_names.extend([""] * len(sample.input_ids))
                 bin_content.position_ids.extend(sample.position_ids)
                 bin_content.lora_num_tokens[idx] += len(sample.input_ids)
                 break
@@ -178,6 +190,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     )
     if micro_batch.mm_token_type_ids is not None:
         micro_batch.mm_token_type_ids.extend([0] * padding_size)
+    if micro_batch.env_names is not None:
+        micro_batch.env_names.extend([""] * padding_size)
 
     return micro_batch
 

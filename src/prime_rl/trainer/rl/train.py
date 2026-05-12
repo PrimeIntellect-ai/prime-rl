@@ -45,6 +45,7 @@ from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     GarbageCollection,
+    GroupedTensors,
     MemoryProfiler,
     Tensors,
     export_benchmark_json,
@@ -343,6 +344,7 @@ def train(config: TrainerConfig):
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
+        env_tensors = GroupedTensors()
         cp_enabled = parallel_dims.cp_enabled
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
         cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
@@ -477,6 +479,17 @@ def train(config: TrainerConfig):
             tensors["entropy"].append(out["entropy"][loss_mask].detach().to("cpu"))
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
+            env_names = micro_batch.get("env_names")
+            if env_names is not None:
+                masked_env_names = [env_name for env_name, keep in zip(env_names, loss_mask.flatten().tolist()) if keep]
+                env_tensors.append("entropy", out["entropy"][loss_mask].detach().to("cpu"), masked_env_names)
+                if "mismatch_kl" in loss_tensors:
+                    with torch.no_grad():
+                        log_importance_ratio = out["logprobs"] - inference_logprobs
+                        importance_ratio = torch.exp(log_importance_ratio)
+                        mismatch_kl = importance_ratio - log_importance_ratio - 1
+                    env_tensors.append("mismatch_kl", mismatch_kl[loss_mask].detach().to("cpu"), masked_env_names)
+
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)
                 for k, v in load_balance_stats.items():
@@ -526,6 +539,7 @@ def train(config: TrainerConfig):
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_stats = tensors.compute_stats()
+        tensor_stats.update(env_tensors.compute_stats())
 
         # Compute step metrics
         num_local_tokens = seq_len * batch_size

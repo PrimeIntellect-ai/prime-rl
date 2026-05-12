@@ -372,6 +372,7 @@ def test_branching_equivalent_multi_step_trajectory_with_tool_calls(
 
 
 def test_interleave_rollout_single_step_trajectory(single_step_trajectory_output):
+    single_step_trajectory_output["env_name"] = "test-env"
     rollouts = interleave_rollout(single_step_trajectory_output)
     assert rollouts is not None
     assert len(rollouts) == 1
@@ -383,6 +384,7 @@ def test_interleave_rollout_single_step_trajectory(single_step_trajectory_output
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2]
     assert rollout.completion_temperatures == [1.0, 1.0]
+    assert rollout.env_name == "test-env"
 
 
 def test_interleave_rollout_multi_step_trajectory(multi_step_trajectory_output):

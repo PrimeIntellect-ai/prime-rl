@@ -382,6 +382,64 @@ class Tensors(defaultdict):
         return metrics
 
 
+class GroupedTensors:
+    """Accumulate 1D tensors and compute distributed statistics grouped by string labels."""
+
+    def __init__(self):
+        assert dist.is_initialized(), "GroupedTensors requires a distributed environment"
+        self.data: dict[str, dict[str, list[Tensor]]] = defaultdict(lambda: defaultdict(list))
+
+    def append(self, key: str, tensors: Tensor, groups: list[str]) -> None:
+        tensors = tensors.flatten()
+        assert tensors.ndim == 1, "Can only aggregate 1D tensors"
+        assert tensors.numel() == len(groups), f"{key} has {tensors.numel()} values but {len(groups)} groups"
+
+        if tensors.numel() == 0:
+            return
+
+        cpu_tensors = tensors.detach().to("cpu")
+        group_to_indices: dict[str, list[int]] = defaultdict(list)
+        for idx, group in enumerate(groups):
+            if group:
+                group_to_indices[group].append(idx)
+
+        for group, indices in group_to_indices.items():
+            self.data[key][group].append(cpu_tensors[indices])
+
+    def compute_stats(self) -> dict[str, float | int]:
+        local_pairs = [(key, group) for key, by_group in self.data.items() for group in by_group]
+        gathered_pairs: list[list[tuple[str, str]] | None] = [None] * dist.get_world_size()
+        dist.all_gather_object(gathered_pairs, local_pairs)
+
+        pairs = sorted({pair for rank_pairs in gathered_pairs if rank_pairs is not None for pair in rank_pairs})
+        metrics: dict[str, float | int] = {}
+
+        for key, group in pairs:
+            group_tensors = self.data.get(key, {}).get(group, [])
+            if group_tensors:
+                tensors = torch.cat(group_tensors, dim=0).to("cuda")
+            else:
+                tensors = torch.empty(0, device="cuda")
+
+            tensors = flexible_all_gather(tensors)
+            if tensors.numel() == 0:
+                metrics[f"{key}/{group}/mean"] = float("nan")
+                metrics[f"{key}/{group}/std"] = float("nan")
+                metrics[f"{key}/{group}/max"] = float("nan")
+                continue
+
+            metrics[f"{key}/{group}/mean"] = tensors.mean().item()
+            metrics[f"{key}/{group}/std"] = tensors.std().item()
+            metrics[f"{key}/{group}/max"] = tensors.max().item()
+
+        return metrics
+
+
+def _is_env_tensor_stat(key: str, allowed_stats: set[str]) -> bool:
+    parts = key.split("/")
+    return len(parts) >= 3 and parts[-1] in allowed_stats
+
+
 def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) -> dict[str, float | int]:
     """Drop noisy per-token distribution keys before sending RL trainer stats to W&B."""
     skip_prefixes = ("trainer_probs/", "inference_probs/")
@@ -402,9 +460,12 @@ def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) ->
             continue
         if any(k.startswith(p) for p in skip_prefixes):
             continue
-        if k.startswith("entropy/") and k != "entropy/mean":
+        if k.startswith("entropy/") and k != "entropy/mean" and not _is_env_tensor_stat(k, {"mean", "std", "max"}):
             continue
         if any(k.startswith(p) for p in mean_max_only_prefixes):
+            if _is_env_tensor_stat(k, {"mean", "std", "max"}):
+                out[k] = v
+                continue
             if not (k.endswith("/mean") or k.endswith("/max")):
                 continue
         out[k] = v
