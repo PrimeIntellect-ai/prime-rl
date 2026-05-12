@@ -1,6 +1,14 @@
+import asyncio
 import base64
+import json
+import math
+import os
+import re
+import time
 from collections.abc import AsyncGenerator, AsyncIterator
-from typing import ClassVar, Optional, Union
+from pathlib import Path
+from typing import Any, ClassVar, Optional, Union
+from uuid import uuid4
 
 import numpy as np
 from fastapi import Request
@@ -17,6 +25,7 @@ from vllm.reasoning import ReasoningParser
 from vllm.sampling_params import BeamSearchParams, SamplingParams
 
 logger = init_logger(__name__)
+CHAT_REPLAY_DIR_ENV = "PRIME_RL_CHAT_REPLAY_DIR"
 
 
 class _RoutedExpertsCapture:
@@ -50,6 +59,44 @@ class ChatCompletionRequestWithTokens(ChatCompletionRequest):
 
 class OpenAIServingChatWithTokens(OpenAIServingChat):
     """OpenAI-compatible generate API that allows token-in and routed experts capture."""
+
+    async def create_chat_completion(
+        self,
+        request: ChatCompletionRequest,
+        raw_request: Optional[Request] = None,
+    ) -> Union[AsyncGenerator[str, None], ChatCompletionResponse, ErrorResponse]:
+        try:
+            response = await super().create_chat_completion(request, raw_request)
+        except Exception as exc:
+            await _dump_chat_replay(
+                request=request,
+                raw_request=raw_request,
+                data_parallel_rank=_get_data_parallel_rank(self, raw_request),
+                response=None,
+                error={"type": type(exc).__name__, "message": str(exc)},
+                nonfinite=None,
+            )
+            raise
+
+        if isinstance(response, ChatCompletionResponse):
+            nonfinite = _find_non_finite_chat_value(response)
+            if nonfinite is not None:
+                replay_dump_path = await _dump_chat_replay(
+                    request=request,
+                    raw_request=raw_request,
+                    data_parallel_rank=_get_data_parallel_rank(self, raw_request),
+                    response=response,
+                    error=None,
+                    nonfinite=nonfinite,
+                )
+                if replay_dump_path is not None:
+                    nonfinite["replay_dump_path"] = replay_dump_path
+                logger.warning(
+                    "Non-finite /v1/chat/completions response value before JSON serialization: %s",
+                    nonfinite,
+                )
+
+        return response
 
     async def chat_completion_full_generator(
         self,
@@ -254,3 +301,155 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
             raise  # Let FastAPI's global generation_error_handler handle it
         except ValueError as e:
             return self.create_error_response(e)
+
+
+async def _dump_chat_replay(
+    *,
+    request: ChatCompletionRequest,
+    raw_request: Optional[Request],
+    data_parallel_rank: int | None,
+    response: ChatCompletionResponse | None,
+    error: dict[str, Any] | None,
+    nonfinite: dict[str, Any] | None,
+) -> str | None:
+    dump_dir = _chat_replay_dir()
+    if dump_dir is None:
+        return None
+
+    request_id = _request_id(request, raw_request)
+    record = {
+        "schema": "prime_rl.chat_completions_replay.v1",
+        "created_unix": time.time(),
+        "request_id": request_id,
+        "endpoint": "/v1/chat/completions",
+        "client": _safe_client(raw_request),
+        "headers": _safe_replay_headers(raw_request),
+        "data_parallel_rank": data_parallel_rank,
+        "request": request.model_dump(mode="python", exclude_none=True),
+        "response": response.model_dump(mode="python") if response is not None else None,
+        "error": error,
+        "nonfinite": nonfinite,
+    }
+
+    try:
+        return await asyncio.to_thread(_write_chat_replay, dump_dir, request_id, record)
+    except Exception:
+        logger.exception("Failed to dump /v1/chat/completions replay record")
+        return None
+
+
+def _chat_replay_dir() -> Path | None:
+    raw_dir = os.environ.get(CHAT_REPLAY_DIR_ENV)
+    if not raw_dir:
+        output_dir = os.environ.get("OUTPUT_DIR")
+        if output_dir:
+            raw_dir = str(Path(output_dir) / "replay_dumps" / "chat_completions")
+    return Path(raw_dir).expanduser() if raw_dir else None
+
+
+def _write_chat_replay(dump_dir: Path, request_id: str, record: dict[str, Any]) -> str:
+    request_dir = dump_dir / "requests"
+    request_dir.mkdir(parents=True, exist_ok=True)
+    filename = re.sub(r"[^A-Za-z0-9_.-]+", "_", request_id)[:180] or f"chatcmpl-{uuid4().hex[:16]}"
+    path = request_dir / f"{filename}.json"
+    tmp_path = path.with_suffix(".json.tmp")
+    tmp_path.write_text(
+        json.dumps(_json_safe(record), ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    tmp_path.replace(path)
+    return str(path)
+
+
+def _request_id(request: ChatCompletionRequest, raw_request: Optional[Request]) -> str:
+    if raw_request is not None:
+        metadata = getattr(raw_request.state, "request_metadata", None)
+        metadata_request_id = getattr(metadata, "request_id", None)
+        if metadata_request_id:
+            return str(metadata_request_id)
+    if request.request_id:
+        return str(request.request_id)
+    return f"chatcmpl-dump-{uuid4().hex[:16]}"
+
+
+def _safe_client(raw_request: Optional[Request]) -> dict[str, Any] | None:
+    if raw_request is None or raw_request.client is None:
+        return None
+    return {
+        "host": raw_request.client.host,
+        "port": raw_request.client.port,
+    }
+
+
+def _safe_replay_headers(raw_request: Optional[Request]) -> dict[str, str]:
+    if raw_request is None:
+        return {}
+    allowlist = {
+        "endpoint-load-metrics-format",
+        "traceparent",
+        "x-b3-traceid",
+        "x-data-parallel-rank",
+        "x-request-id",
+        "x-session-id",
+        "x-trace-id",
+    }
+    return {key: value for key, value in raw_request.headers.items() if key.lower() in allowlist}
+
+
+def _get_data_parallel_rank(handler: OpenAIServingChat, raw_request: Optional[Request]) -> int | None:
+    if raw_request is None:
+        return None
+    try:
+        return handler._get_data_parallel_rank(raw_request)
+    except Exception:
+        return None
+
+
+def _find_non_finite_chat_value(response: ChatCompletionResponse) -> dict[str, Any] | None:
+    payload = response.model_dump(mode="python")
+    paths = _find_non_finite_paths(payload)
+    if not paths:
+        return None
+    return {
+        "paths": paths[:64],
+        "path_count": len(paths),
+    }
+
+
+def _find_non_finite_paths(value: Any, path: str = "$") -> list[str]:
+    if isinstance(value, float):
+        return [] if math.isfinite(value) else [path]
+    if isinstance(value, np.floating):
+        return [] if math.isfinite(float(value)) else [path]
+    if isinstance(value, dict):
+        paths: list[str] = []
+        for key, child in value.items():
+            paths.extend(_find_non_finite_paths(child, f"{path}.{key}"))
+        return paths
+    if isinstance(value, (list, tuple)):
+        paths = []
+        for idx, child in enumerate(value):
+            paths.extend(_find_non_finite_paths(child, f"{path}[{idx}]"))
+        return paths
+    return []
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return value
+        return {"__nonfinite_float__": repr(value)}
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        float_value = float(value)
+        if math.isfinite(float_value):
+            return float_value
+        return {"__nonfinite_float__": repr(float_value)}
+    if isinstance(value, np.ndarray):
+        return _json_safe(value.tolist())
+    if isinstance(value, dict):
+        return {str(key): _json_safe(child) for key, child in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(child) for child in value]
+    return value

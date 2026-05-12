@@ -8,8 +8,9 @@ Default settings target the local Nemotron Super math NaN repro artifacts:
   model:    nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
   mode:     MITO chat completions only; no trainer, orchestrator, env, or weight broadcast.
 
-The input can also be one of the failed request JSON files dumped by
-prime_rl.orchestrator.request_dump, or a directory containing those files.
+The input can also be one of the /v1/chat/completions replay JSON files dumped
+under $OUTPUT_DIR/replay_dumps/chat_completions/requests, or a directory
+containing those files.
 Start an inference server separately, then run this script from the prime-rl
 checkout with `uv run python scripts/replay_chat_rollouts.py`.
 """
@@ -28,7 +29,6 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-
 
 DEFAULT_ROLLOUTS = Path(
     "/beegfs/daniel/nemotron-super-math-minimal/run_default/rollouts/step_2/train_rollouts.jsonl"

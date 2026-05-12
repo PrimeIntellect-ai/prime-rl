@@ -11,13 +11,14 @@ from aiolimiter import AsyncLimiter
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.envs import TrainEnvs
-from prime_rl.orchestrator.vf_utils import get_seq_len
+from prime_rl.orchestrator.vf_utils import append_rollout_records, get_seq_len
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.utils import (
     get_broadcast_dir,
     get_latest_ckpt_step,
+    get_rollout_dir,
     get_step_path,
     wait_for_path,
 )
@@ -373,6 +374,64 @@ class Scheduler:
                 f"Consider increasing max_off_policy_steps to avoid this."
             )
 
+    def _rollout_attempts_path(self, step: int):
+        return get_step_path(get_rollout_dir(self.config.output_dir), step) / "train_rollout_attempts.jsonl"
+
+    async def _dump_rollout_attempts(
+        self,
+        *,
+        step: int,
+        group_id: int | None,
+        rollout_info: InflightRequest,
+        rollouts: list[vf.RolloutOutput],
+        exception: BaseException | None = None,
+    ) -> None:
+        group = self.groups.get(group_id) if group_id is not None else None
+        client = rollout_info.client_config
+        metadata = {
+            "step": step,
+            "ckpt_step": self.ckpt_step,
+            "dump_time": time.time(),
+            "group_id": group_id,
+            "env_name": rollout_info.env_name,
+            "off_policy_steps": rollout_info.off_policy_steps,
+            "rollout_count": rollout_info.rollout_count,
+            "completed_rollouts_before": len(group.completed_rollouts) if group is not None else None,
+            "scheduler_inflight_rollouts": self.inflight_rollout_count,
+            "scheduler_group_count": len(self.groups),
+            "client_idx": getattr(client, "client_idx", None),
+            "api_base_url": getattr(client, "api_base_url", None),
+            "data_parallel_rank": getattr(client, "extra_headers", {}).get("X-data-parallel-rank"),
+            "example_id": group.example.get("example_id") if group is not None else None,
+        }
+
+        records: list[dict] = []
+        if exception is not None:
+            records.append(
+                {
+                    **metadata,
+                    "record_type": "rollout_exception",
+                    "exception": repr(exception),
+                    "example": group.example if group is not None else None,
+                }
+            )
+        else:
+            records.extend(
+                {
+                    **metadata,
+                    "record_type": "rollout",
+                    "rollout_index": idx,
+                    "rollout": rollout,
+                }
+                for idx, rollout in enumerate(rollouts)
+            )
+
+        if records:
+            try:
+                await asyncio.to_thread(append_rollout_records, records, self._rollout_attempts_path(step))
+            except Exception as dump_error:
+                self.logger.warning(f"Failed to dump rollout attempt records: {dump_error!r}")
+
     async def generate_batch(self, step: int) -> list[vf.RolloutOutput]:
         """Continuously generates a batch of rollouts."""
         self.step = step
@@ -429,6 +488,12 @@ class Scheduler:
                     env = self.train_envs.get(env_name)
                     result = finished_task.result()
                     rollouts: list[vf.RolloutOutput] = result if isinstance(result, list) else [result]
+                    await self._dump_rollout_attempts(
+                        step=step,
+                        group_id=group_id,
+                        rollout_info=rollout_info,
+                        rollouts=rollouts,
+                    )
                     self.total_rollouts_by_env[env_name] += len(rollouts)
 
                     # Check for empty/errored rollouts and reschedule
@@ -472,6 +537,13 @@ class Scheduler:
                         await self.drop_group(group_id)
                     continue
                 except Exception as e:
+                    await self._dump_rollout_attempts(
+                        step=step,
+                        group_id=group_id,
+                        rollout_info=rollout_info,
+                        rollouts=[],
+                        exception=e,
+                    )
                     self.logger.warning(f"Rollout failed: {e}")
                     if group_id is not None:
                         await self.drop_group(group_id)
