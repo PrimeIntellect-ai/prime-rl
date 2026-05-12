@@ -1,0 +1,127 @@
+# BlenderGym RL training config — KAOLA platform adaptation.
+#
+# Based on rl_blendergym.toml (phase 10 - Qwen3.5-9B + dp=6 + train=2 + bs=64).
+# All training outputs write to /local-ssd/ (fast NVMe), background rsync to S3:
+#   - output_dir      → /local-ssd/prime-rl-output         → S3 .../output/
+#   - ckpt.output_dir → /local-ssd/checkpoints/            → S3 .../checkpoints/
+#   - work_root       → output_dir/blendergym-work (under output_dir, synced together)
+#   - data_root       → /local-ssd/blendergym (from S3 tar)
+#   - blender_bin     → /local-ssd/blender-4.2.0-linux-x64/blender
+#   - render_timeout_s = 600 (first OPTIX compilation takes ~6min)
+#
+# Setup: . scripts/setup_kaola.sh  (must use source, not bash)
+# Train: uv run rl @ configs/multimodal/rl_blendergym_kaola.toml
+
+output_dir = "/local-ssd/prime-rl-output"
+seq_len = 16384
+max_steps = 20000
+
+[deployment]
+type = "single_node"
+num_infer_gpus = 6
+num_train_gpus = 2
+
+[ckpt]
+interval = 25
+keep_last = 2
+output_dir = "/local-ssd/checkpoints/blendergym-9b-dp6"
+
+[model]
+name = "Qwen/Qwen3.5-9B"
+
+[model.vlm]
+vision_encoder_attr = "model.visual"
+language_model_attr = "model.language_model"
+
+[weight_broadcast]
+type = "nccl"
+
+[wandb]
+project = "blendergym-rl"
+name = "9b-dp6-bs64-kaola"
+
+[orchestrator]
+batch_size = 64
+rollouts_per_example = 8
+max_async_level = 1
+
+[orchestrator.eval]
+interval = 10
+
+[orchestrator.train.sampling]
+max_completion_tokens = 8192
+extra_body = { thinking_token_budget = 2048 }
+
+[[orchestrator.filters]]
+type = "zero_advantage"
+enforce = false
+
+[[orchestrator.train.env]]
+id = "blendergym"
+num_workers = 6
+max_total_completion_tokens = 12288
+
+[orchestrator.train.env.args]
+data_root = "/local-ssd/blendergym"
+task_types = ["placement"]
+max_turns = 3
+blender_bin = "/local-ssd/blender-4.2.0-linux-x64/blender"
+gpu_id_pool = [0, 1, 2, 3, 4, 5]
+work_root = "/local-ssd/prime-rl-output/blendergym-work"
+keep_failed_only = true
+env_name = "blendergym"
+split = "train"
+eval_split = "eval"
+eval_holdout = 5
+cycles_resolution = 256
+cycles_samples = 8
+cycles_denoiser = "OPENIMAGEDENOISE"
+cycles_compute_device = "OPTIX"
+render_timeout_s = 600
+
+[[orchestrator.eval.env]]
+id = "blendergym"
+name = "blendergym-eval"
+num_workers = 1
+num_examples = 5
+rollouts_per_example = 1
+
+[orchestrator.eval.env.args]
+data_root = "/local-ssd/blendergym"
+task_types = ["placement"]
+max_turns = 3
+blender_bin = "/local-ssd/blender-4.2.0-linux-x64/blender"
+gpu_id_pool = [5]
+work_root = "/local-ssd/prime-rl-output/blendergym-work"
+keep_failed_only = false
+env_name = "blendergym-eval"
+split = "eval"
+eval_split = "eval"
+eval_holdout = 5
+cycles_resolution = 256
+cycles_samples = 8
+cycles_denoiser = "OPENIMAGEDENOISE"
+cycles_compute_device = "OPTIX"
+render_timeout_s = 600
+
+[trainer]
+max_async_level = 1
+
+[trainer.model]
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[trainer.model.ac]
+
+[trainer.optim]
+lr = 3e-6
+
+[inference]
+gpu_memory_utilization = 0.80
+enable_prefix_caching = true
+
+[inference.model]
+max_model_len = 32768
+enforce_eager = true
+trust_remote_code = true
+reasoning_parser = "qwen3"
