@@ -17,6 +17,22 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor, sample_items_for_logging
 
 
+def _flatten_run_config(data: dict[str, Any], prefix: str) -> dict[str, Any]:
+    """Flatten a nested config dict into slash-delimited W&B keys under a namespace."""
+    flat: dict[str, Any] = {}
+
+    def _walk(value: Any, path: str) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                next_path = f"{path}/{key}" if path else str(key)
+                _walk(child, next_path)
+        else:
+            flat[path] = value
+
+    _walk(data, prefix)
+    return flat
+
+
 class WandbMonitor(Monitor):
     """Logs to Weights and Biases."""
 
@@ -64,10 +80,12 @@ class WandbMonitor(Monitor):
             )
         else:
             run_id = None
+            label = None
             primary = False
             settings = wandb.Settings(
                 mode="offline" if config.offline else "online",
             )
+        init_config = None if shared_mode else (run_config.model_dump() if run_config else None)
 
         def init_wandb(max_retries: int):
             for attempt in range(max_retries):
@@ -80,7 +98,7 @@ class WandbMonitor(Monitor):
                         group=config.group,
                         tags=config.tags,
                         dir=output_dir,
-                        config=run_config.model_dump() if run_config else None,
+                        config=init_config,
                         settings=settings,
                     )
                 except CommError as e:
@@ -99,6 +117,12 @@ class WandbMonitor(Monitor):
         # Everyone else still retries to absorb transient W&B server errors (e.g. 404 on upsertBucket).
         max_retries = 30 if shared_mode and not primary else 5
         self.wandb = init_wandb(max_retries)
+        if shared_mode and run_config is not None:
+            config_label = label or "shared"
+            self.wandb.config.update(
+                _flatten_run_config(run_config.model_dump(), prefix=config_label),
+                allow_val_change=True,
+            )
 
         wandb.define_metric("*", step_metric="step")
 
