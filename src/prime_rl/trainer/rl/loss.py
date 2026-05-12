@@ -104,10 +104,13 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
     return values[mask].sum() / denom
 
 
-def compute_mismatch_kl(trainer_logprobs: Tensor, inference_logprobs: Tensor) -> Tensor:
+def compute_importance_ratio_and_mismatch_kl(
+    trainer_logprobs: Tensor, inference_logprobs: Tensor
+) -> tuple[Tensor, Tensor, Tensor]:
     log_importance_ratio = trainer_logprobs - inference_logprobs
     importance_ratio = torch.exp(log_importance_ratio)
-    return importance_ratio - log_importance_ratio - 1
+    mismatch_kl = importance_ratio - log_importance_ratio - 1
+    return log_importance_ratio, importance_ratio, mismatch_kl
 
 
 def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutputs:
@@ -143,9 +146,9 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     drop_mask = loss_mask & is_masked
     keep_mask = loss_mask & ~is_masked
 
-    log_importance_ratio = trainer_logprobs - inference_logprobs
-    importance_ratio = torch.exp(log_importance_ratio)
-    mismatch_kl = compute_mismatch_kl(trainer_logprobs, inference_logprobs)
+    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+        trainer_logprobs, inference_logprobs
+    )
 
     advantages = loss_config.adv_tau * advantages
     if teacher_logprobs is not None:

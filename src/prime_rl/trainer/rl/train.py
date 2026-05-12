@@ -29,7 +29,7 @@ from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
-    compute_mismatch_kl,
+    compute_importance_ratio_and_mismatch_kl,
     selective_log_softmax,
     setup_loss_fn,
     shift_tensor_left,
@@ -485,14 +485,12 @@ def train(config: TrainerConfig):
                 env_to_indices.setdefault(env_name, []).append(idx)
 
             entropy = out["entropy"][loss_mask].detach().to("cpu")
-            tensors["entropy/all"].append(entropy)
             for env_name, indices in env_to_indices.items():
                 tensors[f"entropy/{env_name}"].append(entropy[indices])
 
             with torch.no_grad():
-                mismatch_kl = compute_mismatch_kl(out["logprobs"], inference_logprobs)
+                _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(out["logprobs"], inference_logprobs)
             mismatch_kl = mismatch_kl[loss_mask].detach().to("cpu")
-            tensors["mismatch_kl/all"].append(mismatch_kl)
             for env_name, indices in env_to_indices.items():
                 tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
