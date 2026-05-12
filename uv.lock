@@ -11,7 +11,7 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-05-04T22:33:38.153203392Z"
+exclude-newer = "2026-05-05T00:02:37.035558251Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -3377,7 +3377,7 @@ wheels = [
 [[package]]
 name = "renderers"
 version = "0.1.7"
-source = { git = "https://github.com/PrimeIntellect-ai/renderers.git?branch=feat%2Fmultimodal-vlm#28fd8a122409143f84efce156d7917cdb55d8d0f" }
+source = { git = "https://github.com/PrimeIntellect-ai/renderers.git?branch=feat%2Fmultimodal-vlm#c3feaa5fef8c4bfb02e8031c22aeeb77b6563e02" }
 dependencies = [
     { name = "jinja2", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "numpy", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -4164,7 +4164,7 @@ wheels = [
 [[package]]
 name = "verifiers"
 version = "0.1.14"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?branch=feat%2Frenderer-multimodal-passthrough#810a7275e189cfcb9ce99382877bd6d259427d3d" }
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?branch=feat%2Frenderer-multimodal-passthrough#64f2555a18bfeabf1ce61625cb0423551913c7dd" }
 dependencies = [
     { name = "aiolimiter", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "anthropic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
