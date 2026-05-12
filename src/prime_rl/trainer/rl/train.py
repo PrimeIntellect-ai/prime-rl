@@ -479,16 +479,23 @@ def train(config: TrainerConfig):
             tensors["entropy"].append(out["entropy"][loss_mask].detach().to("cpu"))
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
-            env_names = micro_batch.get("env_names")
-            if env_names is not None:
-                masked_env_names = [env_name for env_name, keep in zip(env_names, loss_mask.flatten().tolist()) if keep]
-                env_tensors.append("entropy", out["entropy"][loss_mask].detach().to("cpu"), masked_env_names)
-                if "mismatch_kl" in loss_tensors:
-                    with torch.no_grad():
-                        log_importance_ratio = out["logprobs"] - inference_logprobs
-                        importance_ratio = torch.exp(log_importance_ratio)
-                        mismatch_kl = importance_ratio - log_importance_ratio - 1
-                    env_tensors.append("mismatch_kl", mismatch_kl[loss_mask].detach().to("cpu"), masked_env_names)
+            env_names = micro_batch["env_names"]
+            loss_mask_values = loss_mask.flatten().tolist()
+            if len(env_names) != len(loss_mask_values):
+                raise ValueError(
+                    f"micro_batch env_names length must match loss_mask length: "
+                    f"env_names={len(env_names)}, loss_mask={len(loss_mask_values)}"
+                )
+            masked_env_names = [env_name for env_name, keep in zip(env_names, loss_mask_values) if keep]
+            if any(not env_name for env_name in masked_env_names):
+                raise ValueError("micro_batch env_names must be set for every trainable token")
+            env_tensors.append("entropy", out["entropy"][loss_mask].detach().to("cpu"), masked_env_names)
+            if "mismatch_kl" in loss_tensors:
+                with torch.no_grad():
+                    log_importance_ratio = out["logprobs"] - inference_logprobs
+                    importance_ratio = torch.exp(log_importance_ratio)
+                    mismatch_kl = importance_ratio - log_importance_ratio - 1
+                env_tensors.append("mismatch_kl", mismatch_kl[loss_mask].detach().to("cpu"), masked_env_names)
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)

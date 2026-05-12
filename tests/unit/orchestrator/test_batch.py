@@ -9,7 +9,7 @@ def make_training_example():
     def _make_training_example(
         temperature: float = 1.0,
         sft_loss: bool = False,
-        env_name: str | None = None,
+        env_name: str = "test-env",
     ) -> TrainingSample:
         return TrainingSample(
             prompt_ids=[1, 2],
@@ -25,6 +25,13 @@ def make_training_example():
         )
 
     return _make_training_example
+
+
+def test_prepare_sample_requires_env_name(make_training_example):
+    example = make_training_example(env_name="")
+
+    with pytest.raises(ValueError, match="env_name"):
+        prepare_sample(example, seq_len=16)
 
 
 @pytest.mark.parametrize(
@@ -123,6 +130,7 @@ def test_prepare_sample_with_routed_experts():
         completion_logprobs=[-0.1, -0.2],
         completion_temperatures=[1.0, 1.0],
         advantage=1.0,
+        env_name="test-env",
         routed_experts=routed_experts,
     )
 
@@ -164,6 +172,7 @@ def test_prepare_sample_none_routed_experts():
         completion_logprobs=[-0.1, -0.2],
         completion_temperatures=[1.0, 1.0],
         advantage=1.0,
+        env_name="test-env",
     )
 
     micro_batch = prepare_sample(sample, seq_len=8)

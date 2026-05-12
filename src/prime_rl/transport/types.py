@@ -27,7 +27,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     mm_token_type_ids: list[int] | None = None
 
     sft_loss: bool = False  # When True, trainer uses SFT loss instead of RL loss for this sample
-    env_name: str | None = None
+    env_name: str = ""
 
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -61,4 +61,4 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     mm_token_type_ids: list[int] | None = None
 
     sft_loss: bool = False  # When True, trainer uses SFT loss instead of RL loss for this batch
-    env_names: list[str] | None = None
+    env_names: list[str] = msgspec.field(default_factory=list)
