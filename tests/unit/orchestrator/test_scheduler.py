@@ -106,6 +106,7 @@ def test_maybe_update_policy_reuses_inflight_update_after_cancellation():
             update_weights=update_weights,
             update_model_name=MagicMock(),
         )
+        scheduler.eval_inference_pool = scheduler.inference_pool
         scheduler._update_off_policy = AsyncMock()
 
         with (
@@ -146,6 +147,7 @@ def test_stop_cancels_inflight_policy_update_task():
             update_weights=update_weights,
             update_model_name=MagicMock(),
         )
+        scheduler.eval_inference_pool = scheduler.inference_pool
         scheduler._update_off_policy = AsyncMock()
 
         with (
@@ -174,3 +176,32 @@ def test_client_identity_distinguishes_base_url_and_dp_rank():
     )
 
     assert Scheduler._client_identity(client_a) != Scheduler._client_identity(client_b)
+
+
+def test_lora_policy_update_keeps_teacher_rollout_model_name_with_separate_eval_pool():
+    async def run() -> None:
+        scheduler = make_scheduler()
+        scheduler.model_name = "teacher-model"
+        scheduler.lora_name = "student-lora"
+
+        scheduler.inference_pool = SimpleNamespace(
+            update_model_name=MagicMock(),
+        )
+        scheduler.eval_inference_pool = SimpleNamespace(
+            update_weights=AsyncMock(),
+            update_model_name=MagicMock(),
+        )
+        scheduler._update_off_policy = AsyncMock()
+
+        with (
+            patch("prime_rl.orchestrator.scheduler.get_latest_ckpt_step", return_value=8),
+            patch("prime_rl.orchestrator.scheduler.wait_for_path", new=AsyncMock()),
+        ):
+            await scheduler.maybe_update_policy()
+
+        scheduler.eval_inference_pool.update_weights.assert_awaited_once()
+        scheduler.eval_inference_pool.update_model_name.assert_called_once_with("student-lora")
+        scheduler.inference_pool.update_model_name.assert_not_called()
+        assert scheduler.model_name == "teacher-model"
+
+    asyncio.run(run())

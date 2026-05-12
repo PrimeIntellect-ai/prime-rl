@@ -156,10 +156,9 @@ async def orchestrate(config: OrchestratorConfig):
         logger=logger,
     )
 
-    # When using an external teacher for rollouts, set up a separate student
-    # inference pool for online evals and weight sync.  The student URL comes
-    # from the orchestrator's default client config (config.client).
-    if config.teacher_rollout_model is not None:
+    # When configured for external teacher rollouts, a separate student pool can
+    # serve online evals and receive policy weight updates.
+    if config.teacher_rollout_model is not None and config.use_student_eval_inference_pool:
         student_model_name = config.model.name
         logger.info(
             f"Initializing student eval inference pool (base_url={', '.join(config.client.base_url)}, "

@@ -159,3 +159,23 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
+
+
+def test_teacher_rollout_student_eval_pool_requires_inference_config():
+    base_config = {
+        "trainer": {},
+        "orchestrator": {
+            "use_sft_loss": True,
+            "use_token_client": False,
+            "teacher_rollout_model": {
+                "client": {"base_url": ["http://teacher.example/v1"]},
+                "model": {"name": "teacher-model"},
+            },
+        },
+    }
+
+    config = RLConfig.model_validate(base_config)
+    assert not config.orchestrator.use_student_eval_inference_pool
+
+    config = RLConfig.model_validate({**base_config, "inference": {}})
+    assert config.orchestrator.use_student_eval_inference_pool

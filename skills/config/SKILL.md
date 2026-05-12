@@ -155,7 +155,9 @@ If you wish to configure values of the default variant, you don't need to set th
 
 ### SFT hard distill override
 
-For hosted multi-tenant runs where the trainer image's `trainer.loss.type` is fixed, the orchestrator exposes a per-run override that forces SFT loss on every micro-batch without rebuilding the trainer. Set `orchestrator.use_sft_loss = true` alongside `orchestrator.teacher_rollout_model`; both must be configured together (the orchestrator validator enforces this). The orchestrator stamps each `TrainingSample.sft_loss = True`, which the trainer's `compute_loss` honors by dispatching to `sft_loss_fn` per batch — independent of the trainer's configured default loss.
+For hosted multi-tenant runs where the trainer image's `trainer.loss.type` is fixed, the orchestrator exposes a per-run override that forces SFT loss on every micro-batch without rebuilding the trainer. Set `orchestrator.use_sft_loss = true` alongside `orchestrator.teacher_rollout_model`; both must be configured together (the orchestrator validator enforces this). The orchestrator stamps each `TrainingSample.sft_loss = True`, which the trainer's `compute_loss` honors by dispatching to `sft_loss_fn` per batch, independent of the trainer's configured default loss.
+
+When hard distill also needs online evals or policy weight sync against the student model, configure `[inference]` in the RL config. `RLConfig` then enables `orchestrator.use_student_eval_inference_pool` automatically, and `orchestrator.client` points evals and weight updates at the student inference server while rollouts keep using `orchestrator.teacher_rollout_model`. If `[inference]` is omitted, hard distill keeps the teacher-only rollout behavior and does not wait for a local student inference server.
 
 ### Model fields
 

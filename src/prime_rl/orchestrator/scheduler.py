@@ -313,8 +313,9 @@ class Scheduler:
 
         self.ckpt_step = next_ckpt_step
         if self.lora_name is not None:
-            self.model_name = self.lora_name
-            self.eval_inference_pool.update_model_name(self.model_name)
+            self.eval_inference_pool.update_model_name(self.lora_name)
+            if self.eval_inference_pool is self.inference_pool:
+                self.model_name = self.lora_name
 
         self.checkpoint_ready.set()
         await self._update_off_policy()

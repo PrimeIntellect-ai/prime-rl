@@ -901,6 +901,17 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_student_eval_inference_pool(self):
+        """Enable student eval inference for hard distill only when [inference] exists."""
+        if (
+            self.orchestrator.teacher_rollout_model is not None
+            and self.inference is not None
+            and "use_student_eval_inference_pool" not in self.orchestrator.model_fields_set
+        ):
+            self.orchestrator.use_student_eval_inference_pool = True
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_teacher_inference(self):
         """Auto-configure teacher inference server and orchestrator teacher_model client."""
         if self.deployment.type != "single_node":
