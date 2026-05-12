@@ -242,23 +242,27 @@ async def run() -> int:
 
     failures = 0
     nonfinite = 0
-    async with httpx.AsyncClient(timeout=timeout, limits=limits) as client, args.output.open("w") as out:
+    async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
+        out = args.output.open("w")
+        try:
 
-        async def guarded(repeat_idx: int, row: dict[str, Any]) -> dict[str, Any]:
-            async with semaphore:
-                return await replay_one(client, url, args.model, args.api_key_var, repeat_idx, row)
+            async def guarded(repeat_idx: int, row: dict[str, Any]) -> dict[str, Any]:
+                async with semaphore:
+                    return await replay_one(client, url, args.model, args.api_key_var, repeat_idx, row)
 
-        tasks = [asyncio.create_task(guarded(repeat_idx, row)) for repeat_idx, row in requests]
-        for idx, task in enumerate(asyncio.as_completed(tasks), start=1):
-            result = await task
-            if not result.get("ok"):
-                failures += 1
-            if result.get("nonfinite_paths"):
-                nonfinite += 1
-            out.write(json.dumps(result, allow_nan=False) + "\n")
-            out.flush()
-            if idx == 1 or idx % 16 == 0 or idx == len(tasks):
-                print(f"completed={idx}/{len(tasks)} failures={failures} nonfinite_json={nonfinite}")
+            tasks = [asyncio.create_task(guarded(repeat_idx, row)) for repeat_idx, row in requests]
+            for idx, task in enumerate(asyncio.as_completed(tasks), start=1):
+                result = await task
+                if not result.get("ok"):
+                    failures += 1
+                if result.get("nonfinite_paths"):
+                    nonfinite += 1
+                out.write(json.dumps(result, allow_nan=False) + "\n")
+                out.flush()
+                if idx == 1 or idx % 16 == 0 or idx == len(tasks):
+                    print(f"completed={idx}/{len(tasks)} failures={failures} nonfinite_json={nonfinite}")
+        finally:
+            out.close()
 
     print(f"done failures={failures} nonfinite_json={nonfinite} output={args.output}")
     return 1 if failures or nonfinite else 0
