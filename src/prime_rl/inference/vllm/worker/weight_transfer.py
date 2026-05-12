@@ -6,6 +6,8 @@ from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.reload import finalize_layerwise_reload, initialize_layerwise_reload
 
+from prime_rl.utils.weight_transfer_debug import record_model_tensor_stats
+
 logger = init_logger("vllm.inference.vllm.worker_weight_transfer")
 
 
@@ -14,13 +16,45 @@ def load_weights_checkpoint_layerwise(
     state_iter: Iterable[tuple[str, torch.Tensor]],
     model_config,
     vllm_config,
+    *,
+    weight_dir: str | None = None,
+    step: int | None = None,
+    rank: int | None = None,
 ) -> None:
     logger.info("Reloading checkpoint-format weights with vLLM layerwise processing")
     device = next(model.parameters()).device
     with torch.device(device), set_current_vllm_config(vllm_config):
+        record_model_tensor_stats(
+            "inference_before_layerwise_reload",
+            model,
+            step=step,
+            weight_dir=weight_dir,
+            rank=rank,
+        )
         initialize_layerwise_reload(model)
+        record_model_tensor_stats(
+            "inference_after_initialize_layerwise_reload",
+            model,
+            step=step,
+            weight_dir=weight_dir,
+            rank=rank,
+        )
         model.load_weights(state_iter)  # type: ignore
+        record_model_tensor_stats(
+            "inference_after_load_weights",
+            model,
+            step=step,
+            weight_dir=weight_dir,
+            rank=rank,
+        )
         finalize_layerwise_reload(model, model_config)
+        record_model_tensor_stats(
+            "inference_after_finalize_layerwise_reload",
+            model,
+            step=step,
+            weight_dir=weight_dir,
+            rank=rank,
+        )
 
 
 def _invert_logical_to_physical_map(logical_to_physical_map: torch.Tensor, num_physical_experts: int) -> torch.Tensor:

@@ -13,6 +13,7 @@ from prime_rl.inference.vllm.worker.weight_transfer import (
     update_mla_absorbed_weights,
 )
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
+from prime_rl.utils.weight_transfer_debug import parse_step_from_weight_dir, trace_state_iter
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
@@ -78,14 +79,28 @@ class NCCLWeightBroadcastReceiver:
         self.communicator = PyNcclCommunicator(pg, device=device)
 
     @torch.no_grad()
-    def receive_state_dict(self):
+    def receive_state_dict(
+        self,
+        *,
+        weight_dir: str | None = None,
+        step: int | None = None,
+        rank: int | None = None,
+    ):
         """Receives the state dict of a model from the trainer master rank using NCCL communicator."""
         logger.info("Receiving weights from trainer")
         num_state_dict_to_receive = receive_integer(self.communicator)
         logger.info(f"Receiving {num_state_dict_to_receive} layer state dicts")
         for layer_id in range(num_state_dict_to_receive):
             logger.info(f"Receiving state dict {layer_id + 1}/{num_state_dict_to_receive}")
-            for key, value in receive_state_dict(self.communicator):
+            state_iter = trace_state_iter(
+                receive_state_dict(self.communicator),
+                boundary="inference_after_nccl_receive",
+                layer_id=layer_id - 1,
+                step=step,
+                weight_dir=weight_dir,
+                rank=rank,
+            )
+            for key, value in state_iter:
                 yield key, value
 
 
@@ -142,7 +157,13 @@ class NCCLWeightUpdateWorker(Worker):
             model = model_runner.model
         assert isinstance(model, Module)
 
-        state_iter = self.nccl_broadcast_receiver.receive_state_dict()
+        local_rank = self.device.index
+        step = parse_step_from_weight_dir(weight_dir)
+        state_iter = self.nccl_broadcast_receiver.receive_state_dict(
+            weight_dir=weight_dir,
+            step=step,
+            rank=local_rank,
+        )
         if self.quantize_in_weight_transfer:
             load_weights_kernel(model, state_iter)
             update_mla_absorbed_weights(model)
@@ -153,4 +174,7 @@ class NCCLWeightUpdateWorker(Worker):
             state_iter,
             self.model_runner.model_config,
             self.vllm_config,
+            weight_dir=weight_dir,
+            step=step,
+            rank=local_rank,
         )

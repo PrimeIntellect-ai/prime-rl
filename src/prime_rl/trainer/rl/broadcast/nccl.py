@@ -21,6 +21,7 @@ from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
 from prime_rl.utils.pathing import sync_wait_for_path
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 from prime_rl.utils.vlm import get_layer_prefix
+from prime_rl.utils.weight_transfer_debug import record_state_dict_stats
 
 NCCL_READY_MARKER = "NCCL_READY"
 
@@ -138,7 +139,7 @@ class NCCLWeightBroadcastSender:
             self.logger.debug("NCCL broadcast initialized on non-master rank (no communicator)")
 
     @torch.no_grad()
-    def broadcast_weights(self, model: nn.Module, step: int) -> None:
+    def broadcast_weights(self, model: nn.Module, step: int, debug_weight_dir: Path | None = None) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
         state_dict = model.state_dict()
         layer_prefix = get_layer_prefix(model.config)
@@ -159,6 +160,14 @@ class NCCLWeightBroadcastSender:
             layer_state_dict = self._resolve_dtensors(layer_state_dict)
             layer_state_dict = preprocess_fn(model, layer_state_dict, layer_id)
             if self.world.is_master:
+                record_state_dict_stats(
+                    "trainer_pre_broadcast",
+                    layer_state_dict,
+                    layer_id=layer_id,
+                    step=step,
+                    weight_dir=debug_weight_dir,
+                    rank=getattr(self.world, "rank", None),
+                )
                 broadcast_state_dict(layer_state_dict, self.communicator)
 
     def _resolve_dtensors(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
@@ -210,7 +219,8 @@ class NCCLWeightBroadcast(WeightBroadcast):
         if self.world.is_master:
             self._notify_orchestrator(notified_runs)
         self._wait_for_nccl_ready(notified_runs)
-        self.nccl_broadcast_sender.broadcast_weights(model, step)
+        debug_weight_dir = notified_runs[0][1] if notified_runs else None
+        self.nccl_broadcast_sender.broadcast_weights(model, step, debug_weight_dir=debug_weight_dir)
         self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
     def _compute_notified_runs(self) -> list[tuple[int, Path]]:
