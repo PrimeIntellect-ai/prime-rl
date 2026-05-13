@@ -184,7 +184,9 @@ jobs:
         env:
           IMAGE_TAG: ${{ needs.prepare.outputs.tag }}
           IMAGE_SHA: ${{ needs.prepare.outputs.sha }}
+          IMAGE_FULL_SHA: ${{ needs.prepare.outputs.full_sha }}
           PLATFORMS: ${{ needs.prepare.outputs.platforms }}
+          SOURCE_URL: https://github.com/${{ github.repository }}
         run: |
           set -euo pipefail
 
@@ -203,10 +205,16 @@ jobs:
           fi
 
           docker buildx imagetools create \
+            --annotation "index:org.opencontainers.image.revision=${IMAGE_FULL_SHA}" \
+            --annotation "index:org.opencontainers.image.version=${IMAGE_TAG}" \
+            --annotation "index:org.opencontainers.image.source=${SOURCE_URL}" \
             -t "${image}:${IMAGE_TAG}" \
             "${tag_sources[@]}"
 
           docker buildx imagetools create \
+            --annotation "index:org.opencontainers.image.revision=${IMAGE_FULL_SHA}" \
+            --annotation "index:org.opencontainers.image.version=${IMAGE_TAG}" \
+            --annotation "index:org.opencontainers.image.source=${SOURCE_URL}" \
             -t "${image}:commit-${IMAGE_SHA}" \
             "${sha_sources[@]}"
 
