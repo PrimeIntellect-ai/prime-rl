@@ -96,9 +96,9 @@ async def orchestrate(config: OrchestratorConfig):
     set_default_executor()
 
     if config.experimental.ttt.enabled:
-        raise NotImplementedError(
-            "experimental.ttt config is parsed and propagated, but online TTT rollout execution is not implemented yet. "
-            "This guard prevents launching a TTT config that would silently behave like ordinary sliding-window RL."
+        logger.warning(
+            "experimental.ttt is enabled. This runnable path uses vLLM token sliding plus the trainer-side "
+            "prompt-merge approximation; online per-turn LoRA adapter snapshots are not implemented."
         )
 
     event_loop_lag_monitor = EventLoopLagMonitor()

@@ -15,6 +15,7 @@ from vllm.reasoning import ReasoningParser
 from vllm.sampling_params import BeamSearchParams, SamplingParams
 
 from prime_rl.inference.vllm.serving_tokens import _RoutedExpertsCaptureBase
+from prime_rl.inference.vllm.ttt import requested_completion_budget, truncate_ttt_prompt_tokens
 
 logger = init_logger(__name__)
 
@@ -33,6 +34,10 @@ class _RoutedExpertsCapture(_RoutedExpertsCaptureBase):
 class ChatCompletionRequestWithTokens(ChatCompletionRequest):
     field_names: ClassVar[Optional[set[str]]] = None
     tokens: list[int] = Field(description=("Prompt tokens to use for the request."))
+    ttt_window_seq_len: int | None = Field(
+        default=None,
+        description="Optional physical prompt+completion window for TTT sliding-window rollouts.",
+    )
 
 
 class OpenAIServingChatWithTokens(OpenAIServingChat):
@@ -116,7 +121,28 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
         # We override prompt tokens directly.
         # VLM conversations use MITO (message-based) instead of TITO, so
         # multi_modal_data is not expected here.
-        engine_prompts[0]["prompt_token_ids"] = request.tokens  # type: ignore
+        requested_max_tokens = requested_completion_budget(request.max_completion_tokens, request.max_tokens)
+        prompt_tokens, truncated, prompt_budget, completion_budget = truncate_ttt_prompt_tokens(
+            request.tokens,
+            window_seq_len=request.ttt_window_seq_len,
+            max_model_len=self.model_config.max_model_len,
+            requested_max_tokens=requested_max_tokens,
+        )
+        if request.ttt_window_seq_len is not None and requested_max_tokens is not None:
+            if completion_budget < requested_max_tokens:
+                if request.max_completion_tokens is not None:
+                    request.max_completion_tokens = completion_budget
+                else:
+                    request.max_tokens = completion_budget
+        if truncated:
+            logger.debug(
+                "TTT sliding window trimmed prompt tokens from %s to %s (prompt_budget=%s, window_seq_len=%s)",
+                len(request.tokens),
+                len(prompt_tokens),
+                prompt_budget,
+                request.ttt_window_seq_len,
+            )
+        engine_prompts[0]["prompt_token_ids"] = prompt_tokens  # type: ignore
 
         request_id = f"chatcmpl-{self._base_request_id(raw_request, request.request_id)}"
 

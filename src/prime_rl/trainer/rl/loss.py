@@ -259,3 +259,24 @@ def compute_loss(
             aggregated[k] = torch.cat(v)
 
     return scaled_loss, aggregated
+
+
+def compute_ttt_prompt_loss(
+    trainer_logprobs: Float[Tensor, "batch seq"],
+    input_ids: Int[Tensor, "batch seq"],
+    loss_mask: Bool[Tensor, "batch seq"],
+    *,
+    pad_token_id: int,
+    loss_scale: int,
+    weight: float,
+) -> tuple[Float[Tensor, ""], dict[str, Tensor]]:
+    """Hard-target loss for prompt/environment tokens in the runnable TTT merge path."""
+    prompt_mask = (~loss_mask) & (input_ids != pad_token_id)
+    prompt_loss_sum = -(trainer_logprobs[prompt_mask]).sum()
+    denom = torch.clamp_min(torch.tensor(loss_scale, device=trainer_logprobs.device), 1)
+    loss = weight * prompt_loss_sum / denom
+    metrics = {
+        "ttt_prompt_nll": _safe_mean(-trainer_logprobs, prompt_mask).unsqueeze(0),
+        "ttt_prompt_tokens": prompt_mask.sum().to(dtype=trainer_logprobs.dtype).unsqueeze(0),
+    }
+    return loss, metrics

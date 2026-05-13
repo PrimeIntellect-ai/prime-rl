@@ -129,6 +129,17 @@ class TTTConfig(BaseConfig):
         Field(description="Whether final Phi_p adapters are merged into Theta after an RL optimizer step."),
     ] = "never"
 
+    prompt_loss_weight: Annotated[
+        float,
+        Field(
+            ge=0.0,
+            description=(
+                "Weight for the trainer-side hard-target prompt loss used by the runnable "
+                "after_trainer_step merge approximation."
+            ),
+        ),
+    ] = 1.0
+
     lora: Annotated[
         TTTLoRAConfig,
         Field(description="LoRA adapter configuration for TTT."),

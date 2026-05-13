@@ -655,6 +655,12 @@ class RLConfig(BaseConfig):
                 f"The trainer needs to be able to handle sequences at least as long as those produced by the orchestrator."
             )
 
+        for env in self.orchestrator.train.env:
+            env.extra_env_kwargs.update(max_seq_len=self.orchestrator.seq_len)
+        if self.orchestrator.eval is not None:
+            for env in self.orchestrator.eval.env:
+                env.extra_env_kwargs.update(max_seq_len=self.orchestrator.seq_len)
+
         return self
 
     @model_validator(mode="after")
@@ -666,6 +672,16 @@ class RLConfig(BaseConfig):
 
         self.trainer.experimental.ttt = ttt.model_copy(deep=True)
         self.orchestrator.experimental.ttt = ttt.model_copy(deep=True)
+        is_vllm_rollout = self.orchestrator.teacher_rollout_model is None
+        for env in self.orchestrator.train.env:
+            env.extra_env_kwargs.update(max_seq_len=ttt.total_seq_len)
+            if is_vllm_rollout:
+                env.sampling.extra_body.setdefault("ttt_window_seq_len", ttt.window_seq_len)
+        if self.orchestrator.eval is not None:
+            for env in self.orchestrator.eval.env:
+                env.extra_env_kwargs.update(max_seq_len=ttt.total_seq_len)
+                if is_vllm_rollout:
+                    env.sampling.extra_body.setdefault("ttt_window_seq_len", ttt.window_seq_len)
         if self.inference is not None:
             self.inference.experimental.ttt = ttt.model_copy(deep=True)
             if self.inference.model.max_model_len is None:

@@ -29,6 +29,7 @@ from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
+    compute_ttt_prompt_loss,
     selective_log_softmax,
     setup_loss_fn,
     shift_tensor_left,
@@ -79,9 +80,10 @@ def train(config: TrainerConfig):
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
     if config.experimental.ttt.enabled:
-        raise NotImplementedError(
-            "experimental.ttt config is parsed and propagated, but TTT-aware RL replay is not implemented yet. "
-            "This guard prevents training Theta under the wrong adapter snapshots."
+        logger.warning(
+            "experimental.ttt is enabled. The trainer will run ordinary RL replay; when "
+            "merge_prompt_lora='after_trainer_step', prompt/environment tokens also contribute a hard-target "
+            "auxiliary loss into the same optimizer step."
         )
 
     # Print warning if running in benchmark mode
@@ -346,6 +348,20 @@ def train(config: TrainerConfig):
         # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
         loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
         loss_scale = max(loss_scale, 1)
+        pad_token_id = getattr(model.config, "pad_token_id", None) or 1
+        ttt_merge_prompt_loss = (
+            config.experimental.ttt.enabled
+            and config.experimental.ttt.merge_prompt_lora == "after_trainer_step"
+            and config.experimental.ttt.train_prompt_lora
+            and config.experimental.ttt.prompt_loss_weight > 0
+        )
+        ttt_prompt_loss_scale = 1
+        if ttt_merge_prompt_loss:
+            ttt_prompt_loss_scale = sum(
+                ((~micro_batch["loss_mask"]) & (micro_batch["input_ids"] != pad_token_id)).sum().item()
+                for micro_batch in micro_batches
+            )
+            ttt_prompt_loss_scale = max(ttt_prompt_loss_scale, 1)
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
@@ -359,6 +375,8 @@ def train(config: TrainerConfig):
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
+            full_input_ids = input_ids
+            full_loss_mask = loss_mask
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
             teacher_logprobs = (
                 micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
@@ -474,6 +492,18 @@ def train(config: TrainerConfig):
                 loss_scale=loss_scale,
                 sft_loss=micro_batch["sft_loss"],
             )
+            if ttt_merge_prompt_loss:
+                ttt_loss, ttt_loss_tensors = compute_ttt_prompt_loss(
+                    trainer_logprobs=out["logprobs"],
+                    input_ids=full_input_ids,
+                    loss_mask=full_loss_mask,
+                    pad_token_id=pad_token_id,
+                    loss_scale=ttt_prompt_loss_scale,
+                    weight=config.experimental.ttt.prompt_loss_weight,
+                )
+                loss = loss + ttt_loss
+                loss_tensors.update(ttt_loss_tensors)
+                tensors["ttt_prompt_loss"].append(ttt_loss.detach().to("cpu").unsqueeze(0))
 
             # Backward pass
             with maybe_record_function("backward"):

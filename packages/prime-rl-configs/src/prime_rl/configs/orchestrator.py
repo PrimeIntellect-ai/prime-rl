@@ -1355,4 +1355,11 @@ class OrchestratorConfig(BaseConfig):
                 env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)
                 env.sampling.extra_body.setdefault("return_token_ids", True)
+                if self.experimental.ttt.enabled:
+                    env.sampling.extra_body.setdefault("ttt_window_seq_len", self.experimental.ttt.window_seq_len)
+        if self.eval is not None:
+            for env in self.eval.env:
+                env.extra_env_kwargs.update(max_seq_len=max_seq_len)
+                if is_vllm and self.experimental.ttt.enabled:
+                    env.sampling.extra_body.setdefault("ttt_window_seq_len", self.experimental.ttt.window_seq_len)
         return self

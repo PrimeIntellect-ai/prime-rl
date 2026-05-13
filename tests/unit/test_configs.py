@@ -187,3 +187,4 @@ def test_orchestrator_ttt_uses_total_seq_len_for_env_token_parsing():
     )
 
     assert config.train.env[0].extra_env_kwargs["max_seq_len"] == 32768
+    assert config.train.env[0].sampling.extra_body["ttt_window_seq_len"] == 8192
