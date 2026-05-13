@@ -1,0 +1,32 @@
+output_dir = "outputs/qwen30b-kv-offload-r3-v3"
+enable_return_routed_experts = true
+enable_prefix_caching = true
+gpu_memory_utilization = 0.9
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+max_model_len = 1024
+enforce_eager = true
+
+[parallel]
+tp = 8
+dp = 1
+
+[deployment]
+type = "single_node"
+gpus_per_node = 8
+
+[slurm]
+job_name = "qwen30b-kv-offload-r3-v3"
+partition = "preempt"
+time = "02:00:00"
+pre_run_command = "uv sync --all-extras --reinstall-package vllm --reinstall-package nvidia-cudnn-cu12 --reinstall-package nvidia-nccl-cu12 --reinstall-package nvidia-cusparselt-cu12 --reinstall-package nvidia-nvshmem-cu12"
+
+[kv_cache_offload]
+cpu_bytes = 17179869184
+
+[vllm_extra]
+async_scheduling = false
+kv_cache_memory_bytes = 536870912
+max_num_batched_tokens = 1024
+max_num_seqs = 16

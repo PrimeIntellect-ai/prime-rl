@@ -1,0 +1,108 @@
+output_dir = "outputs/qwen30b-wordle-r3-v3"
+clean_output_dir = true
+max_steps = 20
+seq_len = 4096
+
+[log]
+level = "debug"
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+
+[slurm]
+job_name = "qwen30b-wordle-r3-v3"
+partition = "preempt"
+time = "06:00:00"
+pre_run_command = "uv sync --all-extras --reinstall-package nvidia-cudnn-cu12 --reinstall-package nvidia-nccl-cu12 --reinstall-package nvidia-cusparselt-cu12 --reinstall-package nvidia-nvshmem-cu12"
+
+[wandb]
+project = "qwen30b-wordle"
+name = "qwen30b-wordle-r3-v3"
+group = "qwen30b-wordle-r3-v3"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[trainer]
+enable_router_replay = true
+max_concurrent_runs = 1
+dist_timeout_seconds = 3600
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+ep = 8
+optimization_dtype = "float32"
+reduce_dtype = "float32"
+
+[trainer.model.ac]
+mode = "full"
+freq = 1
+targets = ["norm"]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 5
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+
+[inference]
+enable_return_routed_experts = true
+
+[inference.model]
+max_model_len = 4096
+
+[inference.parallel]
+tp = 8
+dp = 1
+
+[inference.vllm_extra]
+async_scheduling = false
+
+[orchestrator]
+filters = []
+batch_size = 64
+max_inflight_rollouts = 64
+rollouts_per_example = 8
+max_off_policy_steps = 8
+use_token_client = true
+
+[[orchestrator.train.env]]
+id = "primeintellect/wordle"
+name = "wordle"
+num_workers = 1
+max_retries = 0
+max_total_completion_tokens = -1
+
+[orchestrator.train.env.extra_env_kwargs]
+max_total_completion_tokens = -1
+max_seq_len = 4096
+
+[orchestrator.train.sampling]
+temperature = 1.0
+repetition_penalty = 1.0
+max_completion_tokens = 1024
+min_tokens = 0
+
+[orchestrator.train.sampling.extra_body]
+top_k = -1
+min_p = 0.0
+return_token_ids = true
+
+[orchestrator.client]
+timeout = 1200
+wait_for_ready_timeout = 1800
+
+[orchestrator.client.extra_headers_from_state]
+X-Session-ID = "example_id"
+
+[orchestrator.buffer]
+easy_threshold = 1.0
+hard_threshold = 0.0
