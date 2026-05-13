@@ -201,16 +201,8 @@ def _dump_nonfinite_request(raw_request: Request, body: bytes, exc: BaseExceptio
     return dump_path
 
 
-async def _nonfinite_request_dump_middleware(request: Request, call_next):
-    body = await request.body()
-    try:
-        return await call_next(request)
-    except ValueError as exc:
-        if "Out of range float values are not JSON compliant" not in str(exc):
-            raise
-        dump_path = _dump_nonfinite_request(request, body, exc)
-        logger.exception("Dumped request that produced a non-finite JSON response to %s", dump_path)
-        raise
+def _is_nonfinite_json_error(exc: BaseException) -> bool:
+    return isinstance(exc, ValueError) and "Out of range float values are not JSON compliant" in str(exc)
 
 
 def engine_client(request: Request) -> EngineClient:
@@ -248,17 +240,25 @@ def chat_with_tokens(request: Request) -> OpenAIServingChatWithTokens | None:
 @with_cancellation
 @load_aware_call
 async def _chat_with_tokens(request: ChatCompletionRequestWithTokens, raw_request: Request):
-    handler = chat_with_tokens(raw_request)
-    if handler is None:
-        return base(raw_request).create_error_response(message="The model does not support Chat Completions API")
-    generator = await handler.create_chat_completion_with_tokens(request, raw_request)
-    if isinstance(generator, ErrorResponse):
-        return JSONResponse(content=generator.model_dump(), status_code=generator.error.code)
+    body = await raw_request.body()
+    try:
+        handler = chat_with_tokens(raw_request)
+        if handler is None:
+            return base(raw_request).create_error_response(message="The model does not support Chat Completions API")
+        generator = await handler.create_chat_completion_with_tokens(request, raw_request)
+        if isinstance(generator, ErrorResponse):
+            return JSONResponse(content=generator.model_dump(), status_code=generator.error.code)
 
-    elif isinstance(generator, ChatCompletionResponse):
-        return JSONResponse(content=generator.model_dump())
+        elif isinstance(generator, ChatCompletionResponse):
+            return JSONResponse(content=generator.model_dump())
 
-    return StreamingResponse(content=generator, media_type="text/event-stream")
+        return StreamingResponse(content=generator, media_type="text/event-stream")
+    except ValueError as exc:
+        if not _is_nonfinite_json_error(exc):
+            raise
+        dump_path = _dump_nonfinite_request(raw_request, body, exc)
+        logger.exception("Dumped request that produced a non-finite JSON response to %s", dump_path)
+        raise
 
 
 @router.post("/pause")
@@ -383,9 +383,8 @@ def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None)
     app = _original_build_app(args, supported_tasks, model_config)
     app.include_router(router)
     if _env_flag("PRIME_RL_DUMP_NONFINITE_REQUESTS"):
-        app.middleware("http")(_nonfinite_request_dump_middleware)
         dump_dir = os.getenv("PRIME_RL_NONFINITE_DUMP_DIR", "/tmp/prime-rl-nonfinite-requests")
-        logger.warning("Enabled non-finite JSON response request dumps at %s", dump_dir)
+        logger.warning("Enabled /v1/chat/completions/tokens non-finite request dumps at %s", dump_dir)
     return app
 
 
