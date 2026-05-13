@@ -32,30 +32,36 @@ def transformers_v5_compat():
 
 
 def _is_non_persistent_parameter_alias_buffer(
-    layer: torch.nn.Module, name: str, buffer: torch.Tensor
+    layer: torch.nn.Module,
+    name: str,
+    buffer: torch.Tensor,
+    parameter_storage_ptrs: set[int],
 ) -> bool:
     if name not in layer._non_persistent_buffers_set:
         return False
 
-    return bool(_parameter_alias_matches(layer, buffer))
+    buffer_storage_ptr = _tensor_storage_ptr(buffer)
+    return buffer_storage_ptr is not None and buffer_storage_ptr in parameter_storage_ptrs
 
 
-def _is_parameter_alias_tensor(
-    layer: torch.nn.Module,
-    tensor: torch.Tensor,
-    extra_parameters=(),
-) -> bool:
-    return bool(_parameter_alias_matches(layer, tensor, extra_parameters))
-
-
-def _parameter_alias_matches(
-    layer: torch.nn.Module,
-    tensor: torch.Tensor,
-    extra_parameters=(),
-) -> list[dict[str, Any]]:
+def _tensor_storage_ptr(tensor: torch.Tensor) -> int | None:
     try:
-        tensor_storage_ptr = tensor.untyped_storage().data_ptr()
+        return tensor.untyped_storage().data_ptr()
     except RuntimeError:
+        return None
+
+
+def _parameter_storage_ptrs(layer: torch.nn.Module) -> set[int]:
+    return {
+        storage_ptr
+        for param in layer.parameters(recurse=True)
+        if (storage_ptr := _tensor_storage_ptr(param)) is not None
+    }
+
+
+def _parameter_alias_matches(layer: torch.nn.Module, tensor: torch.Tensor) -> list[dict[str, Any]]:
+    tensor_storage_ptr = _tensor_storage_ptr(tensor)
+    if tensor_storage_ptr is None:
         return []
 
     matches: list[dict[str, Any]] = []
@@ -65,12 +71,6 @@ def _parameter_alias_matches(
         try:
             if param.untyped_storage().data_ptr() == tensor_storage_ptr:
                 matches.append({"name": param_name, **_tensor_ref(param)})
-        except RuntimeError:
-            continue
-    for idx, param in enumerate(extra_parameters):
-        try:
-            if param.untyped_storage().data_ptr() == tensor_storage_ptr:
-                matches.append({"name": f"extra_parameters[{idx}]", **_tensor_ref(param)})
         except RuntimeError:
             continue
     return matches
@@ -191,6 +191,7 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
             return ({}, {})
 
         params, buffers = get_layer_params_buffers(layer)
+        parameter_storage_ptrs = _parameter_storage_ptrs(layer)
         captured_buffers = {}
         for name, buffer in buffers.items():
             if name in reload_meta.SKIP_TENSORS:
@@ -198,7 +199,9 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
 
             alias_matches = _parameter_alias_matches(layer, buffer)
             is_non_persistent = name in layer._non_persistent_buffers_set
-            skip_alias_buffer = is_non_persistent and bool(alias_matches)
+            skip_alias_buffer = _is_non_persistent_parameter_alias_buffer(
+                layer, name, buffer, parameter_storage_ptrs
+            )
 
             if skip_alias_buffer or name in layer._non_persistent_buffers_set or "conv" in name:
                 _record_layerwise_alias_event(
@@ -243,7 +246,7 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
         for name, param in parameters.items():
             param.data.copy_(getattr(layer, name))
         for name, buffer in buffers.items():
-            if name not in layer._buffers and _is_parameter_alias_tensor(layer, buffer, parameters.values()):
+            if name not in layer._buffers:
                 continue
             materialized_buffer = getattr(layer, name)
             _record_layerwise_alias_event(
