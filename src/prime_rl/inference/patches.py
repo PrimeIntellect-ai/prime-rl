@@ -37,8 +37,6 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
     def _copy_and_restore_kernel_tensors(layer: torch.nn.Module, info: reload_layerwise.LayerReloadingInfo):
         assert info.kernel_tensors is not None
         parameters, buffers = info.kernel_tensors
-        # Recurse into submodules: alias buffers commonly view a parameter on a
-        # child module (e.g. mixer.conv_weights aliases mixer.conv1d.weight).
         param_storage_ptrs = {p.untyped_storage().data_ptr() for p in layer.parameters(recurse=True)}
         for name, param in parameters.items():
             param.data.copy_(getattr(layer, name))
