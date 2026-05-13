@@ -159,3 +159,31 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
+
+
+def test_rl_ttt_config_propagates_to_subconfigs():
+    config = RLConfig(
+        trainer=TrainerConfig(),
+        orchestrator=OrchestratorConfig(),
+        inference=InferenceConfig(),
+        seq_len=8192,
+        experimental={"ttt": {"enabled": True, "window_seq_len": 8192, "total_seq_len": 32768}},
+    )
+
+    assert config.trainer.model.seq_len == 8192
+    assert config.orchestrator.seq_len == 8192
+    assert config.trainer.experimental.ttt.enabled
+    assert config.orchestrator.experimental.ttt.enabled
+    assert config.inference is not None
+    assert config.inference.experimental.ttt.enabled
+    assert config.inference.enable_lora
+    assert config.inference.max_lora_rank == 8
+
+
+def test_orchestrator_ttt_uses_total_seq_len_for_env_token_parsing():
+    config = OrchestratorConfig(
+        seq_len=8192,
+        experimental={"ttt": {"enabled": True, "window_seq_len": 8192, "total_seq_len": 32768}},
+    )
+
+    assert config.train.env[0].extra_env_kwargs["max_seq_len"] == 32768

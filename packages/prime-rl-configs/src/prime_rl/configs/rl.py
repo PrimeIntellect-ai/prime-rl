@@ -39,6 +39,7 @@ from prime_rl.configs.trainer import (
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
 )
+from prime_rl.configs.ttt import TTTConfig
 from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
@@ -54,6 +55,11 @@ from prime_rl.utils.validation import (
 
 class RLExperimentalConfig(BaseConfig):
     """Experimental features for RL training."""
+
+    ttt: Annotated[
+        TTTConfig,
+        Field(description="Per-rollout test-time-training configuration."),
+    ] = TTTConfig()
 
 
 class SharedLogConfig(BaseConfig):
@@ -647,6 +653,43 @@ class RLConfig(BaseConfig):
             raise ValueError(
                 f"Trainer model seq_len ({self.trainer.model.seq_len}) must be >= orchestrator seq_len ({self.orchestrator.seq_len}). "
                 f"The trainer needs to be able to handle sequences at least as long as those produced by the orchestrator."
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_ttt(self):
+        """Propagate TTT config and keep physical/logical length knobs distinct."""
+        ttt = self.experimental.ttt
+        if not ttt.enabled:
+            return self
+
+        self.trainer.experimental.ttt = ttt.model_copy(deep=True)
+        self.orchestrator.experimental.ttt = ttt.model_copy(deep=True)
+        if self.inference is not None:
+            self.inference.experimental.ttt = ttt.model_copy(deep=True)
+            if self.inference.model.max_model_len is None:
+                self.inference.model.max_model_len = ttt.window_seq_len
+            self.inference.enable_lora = True
+            if self.inference.max_lora_rank is None or self.inference.max_lora_rank < ttt.lora.rank:
+                self.inference.max_lora_rank = ttt.lora.rank
+
+        if self.trainer.model.lora is not None:
+            raise ValueError(
+                "Do not set trainer.model.lora when experimental.ttt.enabled=true. "
+                "TTT adapters are transient rollout state; Theta must remain trainable for RL."
+            )
+
+        if self.trainer.model.seq_len != ttt.window_seq_len:
+            raise ValueError(
+                f"TTT requires trainer.model.seq_len ({self.trainer.model.seq_len}) "
+                f"to equal experimental.ttt.window_seq_len ({ttt.window_seq_len})."
+            )
+
+        if self.orchestrator.seq_len != ttt.window_seq_len:
+            raise ValueError(
+                f"TTT requires orchestrator.seq_len ({self.orchestrator.seq_len}) "
+                f"to equal experimental.ttt.window_seq_len ({ttt.window_seq_len})."
             )
 
         return self

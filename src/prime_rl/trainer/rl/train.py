@@ -78,6 +78,12 @@ def train(config: TrainerConfig):
     )
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
 
+    if config.experimental.ttt.enabled:
+        raise NotImplementedError(
+            "experimental.ttt config is parsed and propagated, but TTT-aware RL replay is not implemented yet. "
+            "This guard prevents training Theta under the wrong adapter snapshots."
+        )
+
     # Print warning if running in benchmark mode
     if config.bench is not None:
         logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")

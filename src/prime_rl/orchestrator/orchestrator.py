@@ -95,6 +95,12 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info("Starting orchestrator")
     set_default_executor()
 
+    if config.experimental.ttt.enabled:
+        raise NotImplementedError(
+            "experimental.ttt config is parsed and propagated, but online TTT rollout execution is not implemented yet. "
+            "This guard prevents launching a TTT config that would silently behave like ordinary sliding-window RL."
+        )
+
     event_loop_lag_monitor = EventLoopLagMonitor()
     event_loop_lag_monitor_task = asyncio.create_task(event_loop_lag_monitor.run())
 

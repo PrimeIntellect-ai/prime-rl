@@ -17,6 +17,7 @@ from prime_rl.configs.shared import (
     WandbWithExtrasConfig,
 )
 from prime_rl.configs.trainer import TokenizerConfig
+from prime_rl.configs.ttt import TTTConfig
 from prime_rl.utils.config import BaseConfig
 
 
@@ -879,6 +880,11 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 class OrchestratorExperimentalConfig(BaseConfig):
     """Experimental features for the orchestrator."""
 
+    ttt: Annotated[
+        TTTConfig,
+        Field(description="Per-rollout test-time-training configuration."),
+    ] = TTTConfig()
+
 
 class TeacherModelConfig(BaseConfig):
     """Configures the teacher model for computing teacher logprobs (e.g. for distillation)."""
@@ -1342,8 +1348,9 @@ class OrchestratorConfig(BaseConfig):
     def resolve_env_config(self):
         """Populate extra_env_kwargs and vLLM sampling defaults from top-level fields."""
         is_vllm = self.teacher_rollout_model is None
+        max_seq_len = self.experimental.ttt.total_seq_len if self.experimental.ttt.enabled else self.seq_len
         for env in self.train.env:
-            env.extra_env_kwargs.update(max_seq_len=self.seq_len)
+            env.extra_env_kwargs.update(max_seq_len=max_seq_len)
             if is_vllm:
                 env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)
