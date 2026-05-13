@@ -15,7 +15,11 @@ def make_scheduler() -> Scheduler:
     scheduler.strict_async_level = False
     scheduler.step = 9
     scheduler.ckpt_step = 7
-    scheduler.config = SimpleNamespace(output_dir=Path("/tmp/prime-rl-test"))
+    scheduler.config = SimpleNamespace(
+        output_dir=Path("/tmp/prime-rl-test"),
+        reset_prefix_cache_on_policy_update=False,
+        client=None,
+    )
     scheduler.logger = MagicMock()
     scheduler.checkpoint_ready = asyncio.Event()
     scheduler.checkpoint_ready.set()
@@ -97,7 +101,7 @@ def test_maybe_update_policy_reuses_inflight_update_after_cancellation():
         release = asyncio.Event()
         applied_steps: list[int] = []
 
-        async def update_weights(weight_dir, lora_name=None, step=0) -> None:
+        async def update_weights(weight_dir, lora_name=None, step=0, reset_prefix_cache=False) -> None:
             applied_steps.append(step)
             started.set()
             await release.wait()
@@ -135,7 +139,7 @@ def test_stop_cancels_inflight_policy_update_task():
         started = asyncio.Event()
         cancelled = asyncio.Event()
 
-        async def update_weights(weight_dir, lora_name=None, step=0) -> None:
+        async def update_weights(weight_dir, lora_name=None, step=0, reset_prefix_cache=False) -> None:
             started.set()
             try:
                 await asyncio.Future()
