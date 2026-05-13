@@ -21,9 +21,7 @@ def transformers_v5_compat():
     monkey_patch_vllm_layerwise_reload_alias_buffers()
 
 
-def _is_non_persistent_parameter_alias_buffer(
-    layer: torch.nn.Module, name: str, buffer: torch.Tensor
-) -> bool:
+def _is_non_persistent_parameter_alias_buffer(layer: torch.nn.Module, name: str, buffer: torch.Tensor) -> bool:
     if name not in layer._non_persistent_buffers_set:
         return False
 
@@ -89,9 +87,7 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
             },
         )
 
-    def _copy_and_restore_kernel_tensors(
-        layer: torch.nn.Module, info: reload_layerwise.LayerReloadingInfo
-    ):
+    def _copy_and_restore_kernel_tensors(layer: torch.nn.Module, info: reload_layerwise.LayerReloadingInfo):
         assert info.kernel_tensors is not None
         parameters, buffers = info.kernel_tensors
         for name, param in parameters.items():
