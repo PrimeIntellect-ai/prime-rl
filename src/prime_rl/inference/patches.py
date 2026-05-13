@@ -93,7 +93,7 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
         for name, param in parameters.items():
             param.data.copy_(getattr(layer, name))
         for name, buffer in buffers.items():
-            if name not in layer._buffers and _is_parameter_alias_tensor(layer, buffer, parameters.values()):
+            if name not in layer._buffers:
                 continue
             buffer.data.copy_(getattr(layer, name))
 
