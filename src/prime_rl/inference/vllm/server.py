@@ -577,7 +577,7 @@ def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None)
     app = _original_build_app(args, supported_tasks, model_config)
     app.include_router(router)
     if _env_flag("PRIME_RL_DUMP_REQUESTS") or _env_flag("PRIME_RL_DUMP_NONFINITE_REQUESTS"):
-        app.add_middleware(RequestDiagnosticsMiddleware)
+        app.middleware_stack = RequestDiagnosticsMiddleware(app.middleware_stack or app.build_middleware_stack())
         logger.warning(
             "Enabled inference request diagnostics dumps at %s (min_lora_step=%s paths=%s)",
             _request_dump_dir(),
