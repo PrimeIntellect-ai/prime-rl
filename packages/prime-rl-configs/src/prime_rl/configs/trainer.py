@@ -208,7 +208,7 @@ class ModelConfig(BaseModelConfig):
         Field(
             description="Whether to compile the model using `torch.compile`.",
         ),
-    ] = None
+    ] = CompileConfig()
 
     ac: Annotated[
         ActivationCheckpointConfig | None,
