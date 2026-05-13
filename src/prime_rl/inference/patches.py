@@ -34,9 +34,6 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
 
     logger = init_logger(__name__)
 
-    if getattr(reload_layerwise, "_prime_rl_layerwise_alias_buffer_patch", False):
-        return
-
     def _copy_and_restore_kernel_tensors(layer: torch.nn.Module, info: reload_layerwise.LayerReloadingInfo):
         assert info.kernel_tensors is not None
         parameters, buffers = info.kernel_tensors
@@ -51,7 +48,6 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
         reload_layerwise._place_kernel_tensors(layer, info)
 
     reload_layerwise._copy_and_restore_kernel_tensors = _copy_and_restore_kernel_tensors
-    reload_layerwise._prime_rl_layerwise_alias_buffer_patch = True
     logger.warning("Enabled vLLM layerwise reload alias-buffer patch.")
 
 
