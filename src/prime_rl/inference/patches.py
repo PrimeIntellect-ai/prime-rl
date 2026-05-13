@@ -18,6 +18,82 @@ def transformers_v5_compat():
     monkey_patch_deep_gemm_ep_scatter()
     monkey_patch_deep_gemm_silu_mul_quant_int64()
     monkey_patch_dp_engine_core_pause_resume_deadlock()
+    monkey_patch_vllm_layerwise_reload_alias_buffers()
+
+
+def _is_non_persistent_parameter_alias_buffer(
+    layer: torch.nn.Module, name: str, buffer: torch.Tensor
+) -> bool:
+    if name not in layer._non_persistent_buffers_set:
+        return False
+
+    try:
+        buffer_storage_ptr = buffer.untyped_storage().data_ptr()
+    except RuntimeError:
+        return False
+
+    for param in layer.parameters(recurse=True):
+        try:
+            if param.untyped_storage().data_ptr() == buffer_storage_ptr:
+                return True
+        except RuntimeError:
+            continue
+    return False
+
+
+def monkey_patch_vllm_layerwise_reload_alias_buffers():
+    # Temporary local carry for vLLM layerwise reload corrupting non-persistent
+    # buffers that alias checkpoint-loaded parameters, e.g. Nemotron Mamba
+    # mixer.conv_weights aliasing mixer.conv1d.weight.
+    from vllm.logger import init_logger
+    from vllm.model_executor.model_loader.reload import layerwise as reload_layerwise
+    from vllm.model_executor.model_loader.reload import meta as reload_meta
+    from vllm.model_executor.model_loader.reload.sanitize import sanitize_layer_refs
+    from vllm.model_executor.model_loader.reload.utils import get_layer_params_buffers
+
+    logger = init_logger(__name__)
+
+    if getattr(reload_meta, "_prime_rl_layerwise_alias_buffer_patch", False):
+        return
+
+    def capture_layer_to_meta(layer: torch.nn.Module):
+        if layer.__class__.__name__ in reload_meta.SKIP_MODULES:
+            return ({}, {})
+
+        params, buffers = get_layer_params_buffers(layer)
+        return (
+            {
+                name: sanitize_layer_refs(reload_meta.to_meta_tensor(param), layer)
+                for name, param in params.items()
+                if name not in reload_meta.SKIP_TENSORS
+            },
+            {
+                name: sanitize_layer_refs(reload_meta.to_meta_tensor(buffer), layer)
+                for name, buffer in buffers.items()
+                if name not in reload_meta.SKIP_TENSORS
+                and not _is_non_persistent_parameter_alias_buffer(layer, name, buffer)
+            },
+        )
+
+    def _copy_and_restore_kernel_tensors(
+        layer: torch.nn.Module, info: reload_layerwise.LayerReloadingInfo
+    ):
+        assert info.kernel_tensors is not None
+        parameters, buffers = info.kernel_tensors
+        for name, param in parameters.items():
+            param.data.copy_(getattr(layer, name))
+        for name, buffer in buffers.items():
+            materialized_buffer = layer._buffers.get(name)
+            if materialized_buffer is not None:
+                buffer.data.copy_(materialized_buffer)
+
+        reload_layerwise._place_kernel_tensors(layer, info)
+
+    reload_meta.capture_layer_to_meta = capture_layer_to_meta
+    reload_layerwise.capture_layer_to_meta = capture_layer_to_meta
+    reload_layerwise._copy_and_restore_kernel_tensors = _copy_and_restore_kernel_tensors
+    reload_meta._prime_rl_layerwise_alias_buffer_patch = True
+    logger.warning("Enabled vLLM layerwise reload alias-buffer patch.")
 
 
 @triton.jit
