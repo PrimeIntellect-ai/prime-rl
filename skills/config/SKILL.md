@@ -206,7 +206,7 @@ For non-thinking sanity configs, keep the active config close to the proven sani
 
 ## Key files
 
-- `src/prime_rl/utils/config.py` — re-exports `BaseConfig` and `cli` from pydantic_config
-- `src/prime_rl/configs/` — all domain-specific config classes
+- `packages/prime-rl-configs/src/prime_rl/utils/config.py` — re-exports `BaseConfig` and `cli` from pydantic_config
+- `packages/prime-rl-configs/src/prime_rl/configs/` — all domain-specific config classes
 - `configs/debug/` — minimal debug configs for testing
 - `examples/` — full example configs for various tasks

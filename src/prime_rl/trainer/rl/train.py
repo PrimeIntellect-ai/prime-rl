@@ -186,13 +186,32 @@ def train(config: TrainerConfig):
     if parallel_dims.cp_enabled:
         cp_group = parallel_dims.world_mesh["cp"].get_group()
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
-        substitute_hf_flash_attn(cp_group, heads_k_stride=1)
-        substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.model.attn)
-        from prime_rl.utils.cp import setup_hybrid_cp, setup_nemotron_h_cp, setup_sparse_mla_cp
+        if config.model.cp_style == "ring":
+            substitute_hf_flash_attn(cp_group, heads_k_stride=1)
+            substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.model.attn)
+        else:
+            from prime_rl.trainer.models.layers.ulysses_attn import (
+                substitute_hf_ulysses_attn,
+                substitute_ulysses_attn,
+            )
 
-        setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
+            substitute_hf_ulysses_attn(cp_group)
+            substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
+        from prime_rl.utils.cp import (
+            assert_cp_style_supports_model,
+            setup_hybrid_cp,
+            setup_nemotron_h_cp,
+            setup_sparse_mla_cp,
+        )
+
+        assert_cp_style_supports_model(config.model.cp_style, model)
+        # sparse MLA is softmax (works with both ring and ulysses).
         setup_sparse_mla_cp(model, cp_group, cp_rank, parallel_dims.cp)
-        setup_nemotron_h_cp(model, cp_group, cp_rank, parallel_dims.cp)
+        # Linear-attn / Mamba layers are only configured under ulysses; with ring
+        # we'd have already raised above.
+        if config.model.cp_style == "ulysses":
+            setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
+            setup_nemotron_h_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -372,7 +391,9 @@ def train(config: TrainerConfig):
                 raise NotImplementedError("Context parallelism is not supported with VLM/multimodal training")
 
             if cp_enabled:
-                input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
+                input_ids, forward_position_ids = setup_cp_params(
+                    input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+                )
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
                 label_loss_mask = shard_for_cp(label_loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
                 if routed_experts is not None:

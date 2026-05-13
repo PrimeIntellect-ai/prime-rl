@@ -199,3 +199,5 @@ debug_I2_zero_band
 .idea
 
 outputs/
+
+third_party/

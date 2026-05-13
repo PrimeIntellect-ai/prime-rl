@@ -25,6 +25,7 @@ from prime_rl.trainer.mtp import (
     mtp_masks_from_label_mask,
     roll_tensor,
 )
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 
 from .configuration_qwen3_5_moe import Qwen3_5MoeConfig
 from .converting_qwen3_5_moe import (
@@ -619,6 +620,7 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
             top_k=config.num_experts_per_tok,
             use_grouped_mm=config.use_grouped_mm,
             load_balance_coeff=config.load_balance_coeff,
+            fp8=getattr(config, "fp8", False),
         )
         self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
 
@@ -685,16 +687,7 @@ def _build_flash_attention_metadata(
     if config._attn_implementation not in ("flash_attention_2", "flash_attention_3", "fa4"):
         return None, None
 
-    flat_position_ids = position_ids.view(-1)
-    seqlens = torch.cat(
-        [
-            flat_position_ids[0:1],
-            flat_position_ids[:-1][(flat_position_ids == 0)[1:]] + 1,
-            flat_position_ids[-1:] + 1,
-        ]
-    )
-    max_seqlen = seqlens.max().item()
-    cu_seqlens = seqlens.cumsum(dim=0, dtype=torch.int32)
+    cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
     torch._dynamo.mark_dynamic(cu_seqlens, 0)
     return cu_seqlens, max_seqlen
 

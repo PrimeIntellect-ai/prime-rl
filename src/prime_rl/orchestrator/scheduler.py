@@ -32,6 +32,8 @@ class InflightRequest:
     env_name: str
     group_id: int | None = None
     rollout_count: int = 1
+    # Dispatch round the request belongs to (see GroupState.current_round).
+    round_id: int = 0
 
 
 @dataclass
@@ -42,6 +44,19 @@ class GroupState:
     rollouts_to_schedule: int
     completed_rollouts: list[vf.RolloutOutput] = field(default_factory=list)
     pinned_client: vf.ClientConfig | None = None
+    # Number of dispatch rounds in which at least one rollout returned errored
+    # or empty trajectories. Compared against
+    # config.max_error_reschedule_attempts to decide when to drop a
+    # permanently-stuck group. Counts rounds, not rollouts: a failed round in
+    # an individual-scoring env that happens to dispatch N rollouts at once
+    # still only counts as 1.
+    failed_attempts: int = 0
+    # Round id assigned to newly-dispatched rollouts. Advances after a failure
+    # is counted so the resulting reschedule starts a new round.
+    current_round: int = 0
+    # Highest round already counted as failed; used to dedupe failures from
+    # multiple rollouts in the same round.
+    last_failed_round: int = -1
 
 
 class Scheduler:
@@ -114,6 +129,7 @@ class Scheduler:
         self.empty_rollouts_by_env: dict[str, int] = defaultdict(int)
         self.errored_rollouts_by_env: dict[str, int] = defaultdict(int)
         self.total_rollouts_by_env: dict[str, int] = defaultdict(int)
+        self.dropped_groups_by_env: dict[str, int] = defaultdict(int)
         self.last_batch_generation_time = 0.0
 
     @property
@@ -229,6 +245,7 @@ class Scheduler:
             env_name=env_name,
             group_id=group_id,
             rollout_count=rollout_count,
+            round_id=group.current_round,
         )
 
     @property
@@ -434,18 +451,21 @@ class Scheduler:
                     # Check for empty/errored rollouts and reschedule
                     valid_rollouts = []
                     has_failures = False
+                    last_failure_reason: str | None = None
                     for rollout in rollouts:
                         if rollout["error"] is not None:
                             self.errored_rollouts_by_env[env_name] += 1
                             has_failures = True
+                            last_failure_reason = rollout["error"]["error_chain_repr"]
                             self.logger.warning(
                                 f"Rollout error in group {group_id} ({env_name}), re-scheduling "
                                 f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete): "
-                                f"{rollout['error']['error_chain_repr']}"
+                                f"{last_failure_reason}"
                             )
                         elif len(rollout["trajectory"]) == 0:
                             self.empty_rollouts_by_env[env_name] += 1
                             has_failures = True
+                            last_failure_reason = "empty trajectory"
                             self.logger.warning(
                                 f"Empty trajectory in group {group_id} ({env_name}), re-scheduling "
                                 f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete)"
@@ -453,6 +473,32 @@ class Scheduler:
                         else:
                             rollout["env_name"] = env_name
                             valid_rollouts.append(rollout)
+
+                    if has_failures:
+                        # Dedupe failures within the same dispatch round: an
+                        # individual-scoring env dispatches N rollouts at once,
+                        # so a single failed round can produce up to N failed
+                        # tasks. We only count the round once.
+                        if rollout_info.round_id > group.last_failed_round:
+                            group.failed_attempts += 1
+                            group.last_failed_round = rollout_info.round_id
+                            group.current_round = rollout_info.round_id + 1
+                        max_attempts = self.config.max_error_reschedule_attempts
+                        if max_attempts is not None and group.failed_attempts >= max_attempts:
+                            # Permanently-stuck group: drop it from this step and let the
+                            # rest of the batch proceed. Avoids a single bad example (e.g.
+                            # an agent rollout whose sandbox poll keeps timing out)
+                            # blocking step progress forever.
+                            self.dropped_groups_by_env[env_name] += 1
+                            self.logger.warning(
+                                f"Dropping group {group_id} ({env_name}) after {group.failed_attempts} "
+                                f"failed dispatch rounds ({len(group.completed_rollouts)}/{self.rollouts_per_example} "
+                                f"complete). Last failure: {last_failure_reason}. Set "
+                                f"orchestrator.max_error_reschedule_attempts higher (or to None) "
+                                f"to retry more aggressively."
+                            )
+                            await self.drop_group(group_id)
+                            continue
 
                     if has_failures and env.requires_group_scoring:
                         # Group scoring requires all rollouts — discard partial results, reschedule full group
@@ -530,6 +576,7 @@ class Scheduler:
             "scheduler/cancelled_rollouts": self.cancelled_rollouts_count,
             "empty_rollouts/all": sum(self.empty_rollouts_by_env.values()) / max(total_rollouts, 1),
             "errored_rollouts/all": sum(self.errored_rollouts_by_env.values()) / max(total_rollouts, 1),
+            "dropped_groups/all": sum(self.dropped_groups_by_env.values()),
             "off_policy_level/all/max": self.max_off_policy_level,
             "off_policy_level/all/mean": self.mean_off_policy_level,
         }
@@ -537,6 +584,8 @@ class Scheduler:
             env_total = max(self.total_rollouts_by_env[env_name], 1)
             metrics[f"empty_rollouts/{env_name}"] = self.empty_rollouts_by_env.get(env_name, 0) / env_total
             metrics[f"errored_rollouts/{env_name}"] = self.errored_rollouts_by_env.get(env_name, 0) / env_total
+        for env_name, count in self.dropped_groups_by_env.items():
+            metrics[f"dropped_groups/{env_name}"] = count
         by_env: dict[str, list[int]] = {}
         for info in self.inflight_requests.values():
             by_env.setdefault(info.env_name, []).append(info.off_policy_steps)
@@ -547,6 +596,7 @@ class Scheduler:
         self.empty_rollouts_by_env.clear()
         self.errored_rollouts_by_env.clear()
         self.total_rollouts_by_env.clear()
+        self.dropped_groups_by_env.clear()
 
         # Add inference pool metrics (e.g. elastic pool server counts)
         metrics.update(self.inference_pool.get_metrics())

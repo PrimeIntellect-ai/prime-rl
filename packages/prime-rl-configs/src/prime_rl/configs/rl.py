@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
@@ -38,8 +39,7 @@ from prime_rl.configs.trainer import (
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
 )
-from prime_rl.utils.config import BaseConfig
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
     validate_shared_max_async_level,
@@ -685,6 +685,26 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_eplb_requires_quantized_weight_transfer(self):
+        if self.inference is None or not self.inference.enable_eplb:
+            return self
+        if self.trainer.model.mtp is not None and self.trainer.model.mtp.enabled:
+            raise ValueError(
+                "inference.enable_eplb is not supported with MTP yet because EPLB currently requires "
+                "quantized NCCL weight transfer, and MTP weights do not support quantized transfer."
+            )
+
+        # TODO(matej): check if weight reloading works itself before supporting EPLB without quantized transfer.
+        trainer_weight_broadcast = self.trainer.weight_broadcast
+        if trainer_weight_broadcast.type != "nccl" or not trainer_weight_broadcast.quantize_in_weight_transfer:
+            raise ValueError(
+                "inference.enable_eplb requires weight_broadcast.type = 'nccl' and "
+                "weight_broadcast.quantize_in_weight_transfer = true."
+            )
+
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_mtp_rollout(self):
         mtp = self.trainer.model.mtp
         if mtp is None or not mtp.enable_rollout:
@@ -766,9 +786,10 @@ class RLConfig(BaseConfig):
                 self.inference.enable_lora = True
                 self.inference.max_lora_rank = self.trainer.model.lora.rank
             else:
-                get_logger().warning(
+                warnings.warn(
                     "LoRA is enabled, but inference is not configured. When manually starting the inference server, "
-                    "make sure to set --enable_lora and --max-lora-rank."
+                    "make sure to set --enable_lora and --max-lora-rank.",
+                    stacklevel=2,
                 )
 
         return self
@@ -784,13 +805,15 @@ class RLConfig(BaseConfig):
         if self.trainer.enable_router_replay:
             if self.inference is not None:
                 if self.inference.enable_return_routed_experts is False:
-                    get_logger().warning(
-                        "Router replay is enabled, but inference.enable_return_routed_experts is False. Setting to True."
+                    warnings.warn(
+                        "Router replay is enabled, but inference.enable_return_routed_experts is False. Setting to True.",
+                        stacklevel=2,
                     )
                 self.inference.enable_return_routed_experts = True
             else:
-                get_logger().warning(
-                    "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server."
+                warnings.warn(
+                    "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server.",
+                    stacklevel=2,
                 )
         return self
 
@@ -978,13 +1001,12 @@ class RLConfig(BaseConfig):
     def auto_setup_slurm_template(self):
         """Auto-setup the default single-node/multi-node SLURM template if no custom template is provided."""
         if self.slurm is not None and self.slurm.template_path is None:
-            import prime_rl
-
-            templates_dir = Path(prime_rl.__file__).parent / "templates"
-            if self.deployment.type == "single_node":
-                self.slurm.template_path = templates_dir / "single_node_rl.sbatch.j2"
-            else:
-                self.slurm.template_path = templates_dir / "multi_node_rl.sbatch.j2"
+            templates_dir = find_package_resource("templates")
+            if templates_dir is not None:
+                if self.deployment.type == "single_node":
+                    self.slurm.template_path = templates_dir / "single_node_rl.sbatch.j2"
+                else:
+                    self.slurm.template_path = templates_dir / "multi_node_rl.sbatch.j2"
         return self
 
     ### Warnings
