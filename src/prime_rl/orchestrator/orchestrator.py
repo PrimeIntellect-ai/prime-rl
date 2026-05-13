@@ -3,6 +3,7 @@ import gc
 import os
 import time
 
+import httpx
 import tomli_w
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
@@ -97,8 +98,8 @@ async def orchestrate(config: OrchestratorConfig):
 
     if config.experimental.ttt.enabled:
         logger.warning(
-            "experimental.ttt is enabled. This runnable path uses vLLM token sliding plus the trainer-side "
-            "prompt-merge approximation; online per-turn LoRA adapter snapshots are not implemented."
+            "experimental.ttt is enabled. Rollouts require exact token ids; online_lora mode calls the external "
+            "TTT learner from the Verifiers token client."
         )
 
     event_loop_lag_monitor = EventLoopLagMonitor()
@@ -323,6 +324,14 @@ async def orchestrate(config: OrchestratorConfig):
             )
             lora_name = config.model.lora.name if config.model.lora else None
             await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
+            ttt = config.experimental.ttt
+            if ttt.enabled and ttt.mode == "online_lora":
+                async with httpx.AsyncClient(timeout=ttt.learner.request_timeout_s) as client:
+                    response = await client.post(
+                        f"{ttt.learner.resolved_base_url.rstrip('/')}/update_base_weights",
+                        json={"weight_dir": weights_path.as_posix(), "step": scheduler.ckpt_step},
+                    )
+                    response.raise_for_status()
     else:
         logger.info("Training from scratch")
 

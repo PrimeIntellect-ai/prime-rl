@@ -265,13 +265,17 @@ def compute_ttt_prompt_loss(
     trainer_logprobs: Float[Tensor, "batch seq"],
     input_ids: Int[Tensor, "batch seq"],
     loss_mask: Bool[Tensor, "batch seq"],
+    ttt_prompt_train_mask: Bool[Tensor, "batch seq"] | None = None,
     *,
     pad_token_id: int,
     loss_scale: int,
     weight: float,
 ) -> tuple[Float[Tensor, ""], dict[str, Tensor]]:
     """Hard-target loss for prompt/environment tokens in the runnable TTT merge path."""
-    prompt_mask = (~loss_mask) & (input_ids != pad_token_id)
+    if ttt_prompt_train_mask is not None:
+        prompt_mask = ttt_prompt_train_mask & (input_ids != pad_token_id)
+    else:
+        prompt_mask = (~loss_mask) & (input_ids != pad_token_id)
     prompt_loss_sum = -(trainer_logprobs[prompt_mask]).sum()
     denom = torch.clamp_min(torch.tensor(loss_scale, device=trainer_logprobs.device), 1)
     loss = weight * prompt_loss_sum / denom

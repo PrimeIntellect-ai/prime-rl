@@ -19,6 +19,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     # Default to 1.0 if completion is empty (e.g., model generated only tool calls with no text)
     prompt_temp = training_example.completion_temperatures[0] if training_example.completion_temperatures else 1.0
     temperatures = [prompt_temp] * len(training_example.prompt_ids) + training_example.completion_temperatures
+    ttt_prompt_train_mask = training_example.ttt_prompt_train_mask
 
     # Teacher logprobs already cover the full sequence (prompt + completion),
     # computed via prefill in the orchestrator when a teacher model is configured
@@ -38,6 +39,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             routed_experts = routed_experts[:seq_len]
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:seq_len]
+        if ttt_prompt_train_mask is not None:
+            ttt_prompt_train_mask = ttt_prompt_train_mask[:seq_len]
 
     assert (
         len(input_ids)
@@ -61,6 +64,10 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         assert len(mm_token_type_ids) == len(input_ids), (
             f"mm_token_type_ids: {len(mm_token_type_ids)}, input_ids: {len(input_ids)}"
         )
+    if ttt_prompt_train_mask is not None:
+        assert len(ttt_prompt_train_mask) == len(input_ids), (
+            f"ttt_prompt_train_mask: {len(ttt_prompt_train_mask)}, input_ids: {len(input_ids)}"
+        )
 
     return MicroBatch(
         input_ids=input_ids,
@@ -77,6 +84,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         pixel_values_shape=training_example.pixel_values_shape,
         image_grid_thw=training_example.image_grid_thw,
         sft_loss=training_example.sft_loss,
+        ttt_prompt_train_mask=ttt_prompt_train_mask,
+        ttt_trace=training_example.ttt_trace,
+        ttt_final_prompt_adapter=training_example.ttt_final_prompt_adapter,
     )
 
 
@@ -137,6 +147,16 @@ def packed_samples_into_micro_bs(
                     if bin_content.mm_token_type_ids is None:
                         bin_content.mm_token_type_ids = []
                     bin_content.mm_token_type_ids.extend(sample.mm_token_type_ids)
+                if sample.ttt_prompt_train_mask is not None:
+                    if bin_content.ttt_prompt_train_mask is None:
+                        bin_content.ttt_prompt_train_mask = []
+                    bin_content.ttt_prompt_train_mask.extend(sample.ttt_prompt_train_mask)
+                if bin_content.ttt_trace is None:
+                    bin_content.ttt_trace = []
+                if sample.ttt_trace:
+                    bin_content.ttt_trace.extend(sample.ttt_trace)
+                if bin_content.ttt_final_prompt_adapter is None:
+                    bin_content.ttt_final_prompt_adapter = sample.ttt_final_prompt_adapter
                 bin_content.position_ids.extend(sample.position_ids)
                 bin_content.lora_num_tokens[idx] += len(sample.input_ids)
                 break
@@ -178,6 +198,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     )
     if micro_batch.mm_token_type_ids is not None:
         micro_batch.mm_token_type_ids.extend([0] * padding_size)
+    if micro_batch.ttt_prompt_train_mask is not None:
+        micro_batch.ttt_prompt_train_mask.extend([False] * padding_size)
 
     return micro_batch
 

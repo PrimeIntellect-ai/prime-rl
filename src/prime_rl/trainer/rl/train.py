@@ -35,6 +35,15 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_left,
     shift_tensor_right,
 )
+from prime_rl.ttt.trainer_replay import (
+    TTTTrainerAdapterManager,
+    cleanup_consumed_adapters,
+    collect_final_prompt_adapters,
+    collect_step_final_prompt_paths,
+    collect_trace_adapter_paths,
+    gather_adapter_paths,
+    merge_prompt_adapters_into_model,
+)
 from prime_rl.trainer.model import (
     forward,
     setup_tokenizer,
@@ -69,6 +78,91 @@ from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
 
 
+def _compute_ttt_replay_loss(
+    *,
+    model,
+    adapter_manager: TTTTrainerAdapterManager,
+    trace: list[dict],
+    loss_fn,
+    loss_scale: int,
+    advantage: torch.Tensor,
+    sft_loss: bool,
+    default_temperature: torch.Tensor,
+    consumed_adapter_paths: set[str],
+):
+    total_loss = None
+    tensors = Tensors()
+    for entry in trace:
+        adapter_path = entry.get("adapter_path")
+        prompt_ids = entry.get("prompt_ids") or []
+        completion_ids = entry.get("completion_ids") or []
+        completion_logprobs = entry.get("completion_logprobs") or []
+        if not adapter_path or not prompt_ids or not completion_ids:
+            continue
+
+        n = min(len(completion_ids), len(completion_logprobs))
+        if n <= 0:
+            continue
+        consumed_adapter_paths.add(str(adapter_path))
+        if n < len(completion_ids):
+            completion_ids = completion_ids[:n]
+
+        ids = prompt_ids + completion_ids
+        input_ids = torch.tensor([ids], dtype=torch.long, device="cuda")
+        position_ids = torch.arange(len(ids), dtype=torch.long, device="cuda").unsqueeze(0)
+        labels = shift_tensor_left(input_ids)
+        temperatures = torch.full(
+            input_ids.shape,
+            float(default_temperature.detach().cpu()),
+            dtype=torch.float,
+            device="cuda",
+        )
+
+        with adapter_manager.active(adapter_path):
+            out = forward(model, input_ids, position_ids, labels=labels, temperature=temperatures)
+
+        if out.get("logprobs") is None:
+            assert out.get("logits") is not None, "Logits must be provided to compute logprobs"
+            logits = out["logits"]
+            scaled_logits = logits / temperatures.unsqueeze(-1)
+            out["logprobs"] = selective_log_softmax(scaled_logits, labels)
+            out["entropy"] = compute_entropy(scaled_logits)
+
+        vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
+        logprobs = shift_tensor_right(
+            out["logprobs"], pad_value=torch.log(torch.tensor(1.0 / vocab_size)).item()
+        )
+        entropy = shift_tensor_right(
+            out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item()
+        )
+
+        start = len(prompt_ids)
+        trainer_logprobs = logprobs.squeeze(0)[start : start + n]
+        inference_logprobs = torch.tensor(completion_logprobs[:n], dtype=torch.float, device="cuda")
+        advantages = advantage.to("cuda").expand(n)
+        loss_mask = torch.ones(n, dtype=torch.bool, device="cuda")
+
+        loss, loss_tensors = compute_loss(
+            trainer_logprobs=[trainer_logprobs],
+            inference_logprobs=[inference_logprobs],
+            teacher_logprobs=None,
+            advantages=[advantages],
+            loss_mask=[loss_mask],
+            loss_fn=loss_fn,
+            loss_scale=loss_scale,
+            sft_loss=sft_loss,
+        )
+        total_loss = loss if total_loss is None else total_loss + loss
+        tensors["entropy"].append(entropy.squeeze(0)[start : start + n].detach().to("cpu"))
+        for key, loss_tensor in loss_tensors.items():
+            tensors[key].append(loss_tensor.detach().to("cpu"))
+
+    if total_loss is None:
+        total_loss = torch.zeros((), device="cuda", requires_grad=True)
+    tensors["loss"].append(total_loss.detach().to("cpu").unsqueeze(0))
+    return total_loss, tensors
+
+
 @clean_exit
 def train(config: TrainerConfig):
     # Setup world and logger
@@ -81,9 +175,8 @@ def train(config: TrainerConfig):
 
     if config.experimental.ttt.enabled:
         logger.warning(
-            "experimental.ttt is enabled. The trainer will run ordinary RL replay; when "
-            "merge_prompt_lora='after_trainer_step', prompt/environment tokens also contribute a hard-target "
-            "auxiliary loss into the same optimizer step."
+            "experimental.ttt is enabled. Online rollout LoRAs are handled by the learner; trainer replay uses "
+            "frozen sampled adapter snapshots when trace metadata is present."
         )
 
     # Print warning if running in benchmark mode
@@ -151,6 +244,14 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = config.ckpt and checkpoint_step is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+    ttt_adapter_manager = (
+        TTTTrainerAdapterManager(
+            model,
+            cache_device_tensors=config.experimental.ttt.learner.trainer_cache_device_tensors,
+        )
+        if config.experimental.ttt.enabled and config.experimental.ttt.mode == "online_lora"
+        else None
+    )
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
@@ -351,20 +452,27 @@ def train(config: TrainerConfig):
         pad_token_id = getattr(model.config, "pad_token_id", None) or 1
         ttt_merge_prompt_loss = (
             config.experimental.ttt.enabled
-            and config.experimental.ttt.merge_prompt_lora == "after_trainer_step"
+            and config.experimental.ttt.merge_prompt_lora in ("after_trainer_step", "after_trainer_update")
             and config.experimental.ttt.train_prompt_lora
             and config.experimental.ttt.prompt_loss_weight > 0
         )
         ttt_prompt_loss_scale = 1
         if ttt_merge_prompt_loss:
             ttt_prompt_loss_scale = sum(
-                ((~micro_batch["loss_mask"]) & (micro_batch["input_ids"] != pad_token_id)).sum().item()
+                (
+                    micro_batch["ttt_prompt_train_mask"]
+                    if micro_batch["ttt_prompt_train_mask"] is not None
+                    else ((~micro_batch["loss_mask"]) & (micro_batch["input_ids"] != pad_token_id))
+                )
+                .sum()
+                .item()
                 for micro_batch in micro_batches
             )
             ttt_prompt_loss_scale = max(ttt_prompt_loss_scale, 1)
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
+        consumed_ttt_adapter_paths: set[str] = set()
         cp_enabled = parallel_dims.cp_enabled
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
         cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
@@ -441,6 +549,34 @@ def train(config: TrainerConfig):
             if cp_enabled:
                 temperatures = shard_for_cp(temperatures, cp_rank=cp_rank, cp_world_size=cp_size)
 
+            ttt_trace = micro_batch["ttt_trace"]
+            if ttt_adapter_manager is not None and ttt_trace:
+                if cp_enabled:
+                    raise NotImplementedError("TTT adapter snapshot replay is not supported with context parallelism.")
+                with maybe_record_function("ttt_replay_forward"), maybe_activation_offloading(config.model.ac_offloading):
+                    loss, replay_tensors = _compute_ttt_replay_loss(
+                        model=model,
+                        adapter_manager=ttt_adapter_manager,
+                        trace=ttt_trace,
+                        loss_fn=loss_fn,
+                        loss_scale=loss_scale,
+                        advantage=advantages.reshape(-1)[0],
+                        sft_loss=micro_batch["sft_loss"],
+                        default_temperature=temperatures.reshape(-1)[0],
+                        consumed_adapter_paths=consumed_ttt_adapter_paths,
+                    )
+
+                with maybe_record_function("backward"):
+                    loss.backward()
+
+                for key, values in replay_tensors.items():
+                    tensors[key].extend(values)
+                logger.debug(
+                    f"Micro Step {micro_step}/{len(micro_batches)} | "
+                    f"TTT replay loss: {loss.detach().item():.4f} | traces: {len(ttt_trace)}"
+                )
+                continue
+
             # Forward pass with per-token temperatures
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                 out = forward(
@@ -497,6 +633,9 @@ def train(config: TrainerConfig):
                     trainer_logprobs=out["logprobs"],
                     input_ids=full_input_ids,
                     loss_mask=full_loss_mask,
+                    ttt_prompt_train_mask=micro_batch["ttt_prompt_train_mask"].to("cuda")
+                    if micro_batch["ttt_prompt_train_mask"] is not None
+                    else None,
                     pad_token_id=pad_token_id,
                     loss_scale=ttt_prompt_loss_scale,
                     weight=config.experimental.ttt.prompt_loss_weight,
@@ -545,6 +684,32 @@ def train(config: TrainerConfig):
 
         # Update the model parameters
         optimizer.step()
+        ttt_merged_modules = 0
+        ttt_deleted_adapters = 0
+        if (
+            ttt_adapter_manager is not None
+            and config.experimental.ttt.merge_prompt_lora == "after_trainer_update"
+            and config.experimental.ttt.train_prompt_lora
+        ):
+            local_adapters = collect_final_prompt_adapters(micro_batches)
+            adapters_to_merge = gather_adapter_paths(local_adapters)
+            ttt_merged_modules = merge_prompt_adapters_into_model(
+                model,
+                ttt_adapter_manager,
+                adapters_to_merge,
+                scale=config.experimental.ttt.merge_prompt_lora_scale,
+                reduce=config.experimental.ttt.merge_prompt_lora_reduce,
+            )
+        if ttt_adapter_manager is not None:
+            for micro_batch in micro_batches:
+                if micro_batch["ttt_trace"]:
+                    consumed_ttt_adapter_paths.update(collect_trace_adapter_paths(micro_batch["ttt_trace"]))
+            consumed_ttt_adapter_paths.update(collect_step_final_prompt_paths(micro_batches))
+            ttt_deleted_adapters = cleanup_consumed_adapters(
+                ttt_adapter_manager,
+                consumed_ttt_adapter_paths,
+                delete_from_disk=config.experimental.ttt.learner.delete_consumed_adapters,
+            )
         optimizer.zero_grad()
 
         # Update learning rate scheduler
@@ -603,6 +768,10 @@ def train(config: TrainerConfig):
         }
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
+        if ttt_merged_modules:
+            optim_metrics["ttt/merged_prompt_lora_modules"] = ttt_merged_modules
+        if ttt_deleted_adapters:
+            optim_metrics["ttt/deleted_adapters"] = ttt_deleted_adapters
         monitor.log(optim_metrics, step=progress.step)
 
         # Compute derived metrics

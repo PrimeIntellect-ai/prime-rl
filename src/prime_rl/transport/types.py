@@ -28,6 +28,16 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
 
     sft_loss: bool = False  # When True, trainer uses SFT loss instead of RL loss for this sample
 
+    # Full-sequence mask for prompt/environment tokens that belong to Phi_p.
+    # Initial system/user prompt tokens are False; tool/env bridge tokens are True.
+    ttt_prompt_train_mask: list[bool] | None = None
+
+    # Experimental online TTT metadata. This is intentionally JSON-like so it
+    # can carry learner snapshot ids/paths without forcing a stable schema while
+    # the experiment evolves.
+    ttt_trace: list[dict] | None = None
+    ttt_final_prompt_adapter: dict | None = None
+
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A batch of training examples with metadata for transport."""
@@ -60,3 +70,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     mm_token_type_ids: list[int] | None = None
 
     sft_loss: bool = False  # When True, trainer uses SFT loss instead of RL loss for this batch
+
+    ttt_prompt_train_mask: list[bool] | None = None
+    ttt_trace: list[dict] | None = None
+    ttt_final_prompt_adapter: dict | None = None

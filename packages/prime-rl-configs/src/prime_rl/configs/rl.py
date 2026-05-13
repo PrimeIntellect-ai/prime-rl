@@ -673,22 +673,41 @@ class RLConfig(BaseConfig):
         self.trainer.experimental.ttt = ttt.model_copy(deep=True)
         self.orchestrator.experimental.ttt = ttt.model_copy(deep=True)
         is_vllm_rollout = self.orchestrator.teacher_rollout_model is None
+        if ttt.mode == "online_lora" and not self.orchestrator.use_token_client:
+            raise ValueError("experimental.ttt.mode='online_lora' requires orchestrator.use_token_client=true.")
+        ttt_extra_body = {
+            "ttt_enabled": ttt.mode == "online_lora",
+            "ttt_learner_url": ttt.learner.resolved_base_url,
+            "ttt_window_seq_len": ttt.window_seq_len,
+            "ttt_train_prompt_lora": ttt.train_prompt_lora,
+            "ttt_train_completion_lora": ttt.train_completion_lora,
+            "ttt_require_exact_token_ids": ttt.require_exact_token_ids,
+            "ttt_completion_lora_trains_initial_prompt": ttt.completion_lora_trains_initial_prompt,
+            "ttt_prompt_lora_trains_environment_responses": ttt.prompt_lora_trains_environment_responses,
+            "ttt_cache_salt_includes_adapter": ttt.cache_salt_includes_adapter,
+            "ttt_request_timeout_s": ttt.learner.request_timeout_s,
+        }
         for env in self.orchestrator.train.env:
             env.extra_env_kwargs.update(max_seq_len=ttt.total_seq_len)
             if is_vllm_rollout:
-                env.sampling.extra_body.setdefault("ttt_window_seq_len", ttt.window_seq_len)
+                for key, value in ttt_extra_body.items():
+                    env.sampling.extra_body.setdefault(key, value)
         if self.orchestrator.eval is not None:
             for env in self.orchestrator.eval.env:
                 env.extra_env_kwargs.update(max_seq_len=ttt.total_seq_len)
                 if is_vllm_rollout:
-                    env.sampling.extra_body.setdefault("ttt_window_seq_len", ttt.window_seq_len)
+                    for key, value in ttt_extra_body.items():
+                        env.sampling.extra_body.setdefault(key, value)
         if self.inference is not None:
             self.inference.experimental.ttt = ttt.model_copy(deep=True)
             if self.inference.model.max_model_len is None:
                 self.inference.model.max_model_len = ttt.window_seq_len
             self.inference.enable_lora = True
-            if self.inference.max_lora_rank is None or self.inference.max_lora_rank < ttt.lora.rank:
-                self.inference.max_lora_rank = ttt.lora.rank
+            required_lora_rank = ttt.lora.rank
+            if ttt.train_prompt_lora and ttt.train_completion_lora:
+                required_lora_rank = 2 * ttt.lora.rank
+            if self.inference.max_lora_rank is None or self.inference.max_lora_rank < required_lora_rank:
+                self.inference.max_lora_rank = required_lora_rank
 
         if self.trainer.model.lora is not None:
             raise ValueError(
@@ -707,6 +726,9 @@ class RLConfig(BaseConfig):
                 f"TTT requires orchestrator.seq_len ({self.orchestrator.seq_len}) "
                 f"to equal experimental.ttt.window_seq_len ({ttt.window_seq_len})."
             )
+
+        if ttt.mode == "online_lora":
+            self.orchestrator.client.extra_headers_from_state["X-Session-ID"] = "trajectory_id"
 
         return self
 
