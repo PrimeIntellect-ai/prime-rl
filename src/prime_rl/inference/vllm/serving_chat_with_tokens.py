@@ -19,6 +19,23 @@ from prime_rl.inference.vllm.serving_tokens import _RoutedExpertsCaptureBase
 logger = init_logger(__name__)
 
 
+def _ensure_tool_parameter_descriptions(request: ChatCompletionRequest) -> None:
+    """Fill optional JSON-schema descriptions required by some chat templates."""
+    if not request.tools:
+        return
+
+    for tool in request.tools:
+        parameters = tool.function.parameters
+        if not isinstance(parameters, dict):
+            continue
+        properties = parameters.get("properties")
+        if not isinstance(properties, dict):
+            continue
+        for name, schema in properties.items():
+            if isinstance(schema, dict) and "description" not in schema:
+                schema["description"] = str(schema.get("title") or name)
+
+
 class _RoutedExpertsCapture(_RoutedExpertsCaptureBase):
     """Chat-endpoint variant: mutates choices in-place because
     ``ChatCompletionResponseChoice`` is ``extra='allow'``, so an extra
@@ -92,6 +109,7 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
         # Streaming response
         tokenizer = self.renderer.tokenizer
         assert tokenizer is not None
+        _ensure_tool_parameter_descriptions(request)
         reasoning_parser: ReasoningParser | None = None
         try:
             if self.reasoning_parser_cls:
