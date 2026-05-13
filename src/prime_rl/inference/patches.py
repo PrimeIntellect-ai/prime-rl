@@ -1,5 +1,15 @@
+import json
+import os
+import socket
+import time
+from pathlib import Path
+from typing import Any
+
 import torch
 from vllm.triton_utils import tl, triton
+
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_LAYERWISE_ALIAS_DEBUG_COUNT = 0
 
 
 def transformers_v5_compat():
@@ -27,20 +37,120 @@ def _is_non_persistent_parameter_alias_buffer(
     if name not in layer._non_persistent_buffers_set:
         return False
 
-    try:
-        buffer_storage_ptr = buffer.untyped_storage().data_ptr()
-    except RuntimeError:
-        return False
+    return bool(_parameter_alias_matches(layer, buffer))
 
-    for param in layer._parameters.values():
+
+def _parameter_alias_matches(layer: torch.nn.Module, tensor: torch.Tensor) -> list[dict[str, Any]]:
+    try:
+        tensor_storage_ptr = tensor.untyped_storage().data_ptr()
+    except RuntimeError:
+        return []
+
+    matches: list[dict[str, Any]] = []
+    for param_name, param in layer.named_parameters(recurse=True):
         if param is None:
             continue
         try:
-            if param.untyped_storage().data_ptr() == buffer_storage_ptr:
-                return True
+            if param.untyped_storage().data_ptr() == tensor_storage_ptr:
+                matches.append({"name": param_name, **_tensor_ref(param)})
         except RuntimeError:
             continue
-    return False
+    return matches
+
+
+def _layerwise_alias_debug_enabled() -> bool:
+    return os.getenv("PRIME_RL_LAYERWISE_ALIAS_DEBUG", "").lower() in _TRUE_VALUES
+
+
+def _layerwise_alias_debug_dir() -> Path:
+    explicit = os.getenv("PRIME_RL_LAYERWISE_ALIAS_DEBUG_DIR")
+    if explicit:
+        return Path(explicit)
+    stats_dir = os.getenv("PRIME_RL_WEIGHT_TRANSFER_STATS_DIR")
+    if stats_dir:
+        return Path(stats_dir) / "layerwise_alias"
+    return Path("/tmp") / f"prime-rl-layerwise-alias-{os.getuid()}"
+
+
+def _record_layerwise_alias_event(event: str, layer: torch.nn.Module, **fields: Any) -> None:
+    global _LAYERWISE_ALIAS_DEBUG_COUNT
+    if not _layerwise_alias_debug_enabled():
+        return
+
+    try:
+        max_events = int(os.getenv("PRIME_RL_LAYERWISE_ALIAS_DEBUG_MAX_EVENTS", "5000"))
+    except ValueError:
+        max_events = 5000
+    if _LAYERWISE_ALIAS_DEBUG_COUNT >= max_events:
+        return
+    _LAYERWISE_ALIAS_DEBUG_COUNT += 1
+
+    record = {
+        "time": time.time(),
+        "host": socket.gethostname(),
+        "pid": os.getpid(),
+        "rank": os.getenv("RANK"),
+        "local_rank": os.getenv("LOCAL_RANK"),
+        "event": event,
+        "layer_class": layer.__class__.__name__,
+        "layer_prefix": getattr(layer, "prefix", None),
+        **fields,
+    }
+
+    debug_dir = _layerwise_alias_debug_dir()
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    path = debug_dir / f"layerwise_alias_pid{os.getpid()}.jsonl"
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, allow_nan=False, sort_keys=True) + "\n")
+
+
+def _tensor_ref(tensor: torch.Tensor) -> dict[str, Any]:
+    ref: dict[str, Any] = {
+        "shape": list(tensor.shape),
+        "stride": list(tensor.stride()),
+        "dtype": str(tensor.dtype),
+        "device": str(tensor.device),
+        "is_meta": bool(tensor.is_meta),
+        "numel": tensor.numel(),
+    }
+    if tensor.is_meta:
+        return ref
+    try:
+        ref["storage_ptr"] = tensor.untyped_storage().data_ptr()
+        ref["storage_offset"] = tensor.storage_offset()
+    except RuntimeError as exc:
+        ref["storage_error"] = repr(exc)
+    return ref
+
+
+def _tensor_stats_for_debug(tensor: torch.Tensor) -> dict[str, Any]:
+    ref = _tensor_ref(tensor)
+    if tensor.is_meta or not (tensor.is_floating_point() or tensor.is_complex()):
+        return ref
+    try:
+        detached = tensor.detach()
+        isfinite = torch.isfinite(detached)
+        ref["finite_count"] = int(isfinite.sum().item())
+        ref["nan_count"] = int(torch.isnan(detached).sum().item())
+        if tensor.is_floating_point():
+            ref["posinf_count"] = int(torch.isposinf(detached).sum().item())
+            ref["neginf_count"] = int(torch.isneginf(detached).sum().item())
+        if ref["finite_count"] == tensor.numel() and not tensor.is_complex():
+            ref["absmax"] = float(detached.abs().max().item())
+    except Exception as exc:
+        ref["stats_error"] = repr(exc)
+    return ref
+
+
+def _conv_alias_debug_tensors(layer: torch.nn.Module) -> dict[str, dict[str, Any]]:
+    tensors: dict[str, dict[str, Any]] = {}
+    for name, param in layer.named_parameters(recurse=True):
+        if "conv" in name:
+            tensors[f"param:{name}"] = _tensor_stats_for_debug(param)
+    for name, buffer in layer.named_buffers(recurse=True):
+        if "conv" in name:
+            tensors[f"buffer:{name}"] = _tensor_stats_for_debug(buffer)
+    return tensors
 
 
 def monkey_patch_vllm_layerwise_reload_alias_buffers():
@@ -55,9 +165,6 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
 
     logger = init_logger(__name__)
 
-    if hasattr(reload_meta, "_is_non_persistent_parameter_alias_buffer"):
-        return
-
     if getattr(reload_meta, "_prime_rl_layerwise_alias_buffer_patch", False):
         return
 
@@ -66,18 +173,38 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
             return ({}, {})
 
         params, buffers = get_layer_params_buffers(layer)
+        captured_buffers = {}
+        for name, buffer in buffers.items():
+            if name in reload_meta.SKIP_TENSORS:
+                continue
+
+            alias_matches = _parameter_alias_matches(layer, buffer)
+            is_non_persistent = name in layer._non_persistent_buffers_set
+            skip_alias_buffer = is_non_persistent and bool(alias_matches)
+
+            if skip_alias_buffer or name in layer._non_persistent_buffers_set or "conv" in name:
+                _record_layerwise_alias_event(
+                    "capture_buffer",
+                    layer,
+                    buffer_name=name,
+                    skipped=skip_alias_buffer,
+                    non_persistent=is_non_persistent,
+                    alias_matches=alias_matches,
+                    buffer=_tensor_ref(buffer),
+                    direct_param_names=list(params),
+                    conv_tensors=_conv_alias_debug_tensors(layer),
+                )
+
+            if not skip_alias_buffer:
+                captured_buffers[name] = sanitize_layer_refs(reload_meta.to_meta_tensor(buffer), layer)
+
         return (
             {
                 name: sanitize_layer_refs(reload_meta.to_meta_tensor(param), layer)
                 for name, param in params.items()
                 if name not in reload_meta.SKIP_TENSORS
             },
-            {
-                name: sanitize_layer_refs(reload_meta.to_meta_tensor(buffer), layer)
-                for name, buffer in buffers.items()
-                if name not in reload_meta.SKIP_TENSORS
-                and not _is_non_persistent_parameter_alias_buffer(layer, name, buffer)
-            },
+            captured_buffers,
         )
 
     def _copy_and_restore_kernel_tensors(
@@ -85,14 +212,41 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
     ):
         assert info.kernel_tensors is not None
         parameters, buffers = info.kernel_tensors
+        should_debug = bool(buffers) or bool(_conv_alias_debug_tensors(layer))
+        if should_debug:
+            _record_layerwise_alias_event(
+                "copy_restore_before",
+                layer,
+                kernel_param_names=list(parameters),
+                kernel_buffer_names=list(buffers),
+                conv_tensors=_conv_alias_debug_tensors(layer),
+            )
+
         for name, param in parameters.items():
             param.data.copy_(getattr(layer, name))
         for name, buffer in buffers.items():
             materialized_buffer = layer._buffers.get(name)
             if materialized_buffer is not None:
+                _record_layerwise_alias_event(
+                    "copy_restore_buffer",
+                    layer,
+                    buffer_name=name,
+                    destination_before=_tensor_stats_for_debug(buffer),
+                    materialized=_tensor_stats_for_debug(materialized_buffer),
+                    alias_matches=_parameter_alias_matches(layer, materialized_buffer),
+                )
                 buffer.data.copy_(materialized_buffer)
 
         reload_layerwise._place_kernel_tensors(layer, info)
+
+        if should_debug:
+            _record_layerwise_alias_event(
+                "copy_restore_after",
+                layer,
+                kernel_param_names=list(parameters),
+                kernel_buffer_names=list(buffers),
+                conv_tensors=_conv_alias_debug_tensors(layer),
+            )
 
     reload_meta.capture_layer_to_meta = capture_layer_to_meta
     reload_layerwise.capture_layer_to_meta = capture_layer_to_meta
