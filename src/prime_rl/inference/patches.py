@@ -40,7 +40,19 @@ def _is_non_persistent_parameter_alias_buffer(
     return bool(_parameter_alias_matches(layer, buffer))
 
 
-def _parameter_alias_matches(layer: torch.nn.Module, tensor: torch.Tensor) -> list[dict[str, Any]]:
+def _is_parameter_alias_tensor(
+    layer: torch.nn.Module,
+    tensor: torch.Tensor,
+    extra_parameters=(),
+) -> bool:
+    return bool(_parameter_alias_matches(layer, tensor, extra_parameters))
+
+
+def _parameter_alias_matches(
+    layer: torch.nn.Module,
+    tensor: torch.Tensor,
+    extra_parameters=(),
+) -> list[dict[str, Any]]:
     try:
         tensor_storage_ptr = tensor.untyped_storage().data_ptr()
     except RuntimeError:
@@ -53,6 +65,12 @@ def _parameter_alias_matches(layer: torch.nn.Module, tensor: torch.Tensor) -> li
         try:
             if param.untyped_storage().data_ptr() == tensor_storage_ptr:
                 matches.append({"name": param_name, **_tensor_ref(param)})
+        except RuntimeError:
+            continue
+    for idx, param in enumerate(extra_parameters):
+        try:
+            if param.untyped_storage().data_ptr() == tensor_storage_ptr:
+                matches.append({"name": f"extra_parameters[{idx}]", **_tensor_ref(param)})
         except RuntimeError:
             continue
     return matches
@@ -225,6 +243,8 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
         for name, param in parameters.items():
             param.data.copy_(getattr(layer, name))
         for name, buffer in buffers.items():
+            if name not in layer._buffers and _is_parameter_alias_tensor(layer, buffer, parameters.values()):
+                continue
             materialized_buffer = getattr(layer, name)
             _record_layerwise_alias_event(
                 "copy_restore_buffer",
