@@ -38,6 +38,32 @@ freq = 1
 
 `freq` controls how often layers are checkpointed: every `freq` layers. Lower values yield lower memory usage (e.g. `freq = 1` checkpoints every layer).
 
+### MoE + activation checkpointing trap
+
+`[model.ac] mode = "full"` (the default) is **not safe** for MoE models. `torch.utils.checkpoint` raises mid-training:
+
+```
+torch.utils.checkpoint.CheckpointError:
+  Recomputed values for the following tensors have different metadata than during the forward pass.
+```
+
+Root cause: the token-choice router does `topk` over near-tied bf16 scores. GPU bf16 matmul reduction order is non-deterministic, so the same input produces slightly different gate logits on the second call (forward vs activation-checkpoint recompute). Different winning experts → different `num_tokens_per_expert` → per-expert tensor shapes don't match between forward-saved and backward-recomputed → backward dies. The bug is in the MoE side, not the checkpoint wrapper. See [PyTorch #171355](https://github.com/pytorch/pytorch/issues/171355).
+
+The fix is to **not** activation-checkpoint the MoE block. Use selective AC and exclude `routed_experts`:
+
+```toml
+[trainer.model.ac]
+mode = "selective"
+freq = 1
+# Skip routed_experts: MoE recompute drifts between forward and backward.
+# Keep norm/attn_proj/linear_attn to recover most of the memory savings.
+targets = ["norm", "attn_proj", "linear_attn"]
+```
+
+Trade-off: MoE outputs and per-expert intermediates stay in memory across forward → backward, so peak usage rises. For Qwen3.5-35B-A3B at seq_len=32k, 8x B300 (275 GiB each), we measured ~126 GiB peak with full AC vs ~249 GiB with selective AC excluding `routed_experts`. Plan accordingly.
+
+This is **not Blackwell-specific** and **not VLM-specific** — anyone training any MoE model with full AC will hit it eventually (the per-step crash probability is roughly proportional to the number of router invocations).
+
 ## Activation offloading
 
 Activation offloading offloads the activations to CPU to reduce the memory usage of the trainer. It can be used in combination with activation checkpointing.
