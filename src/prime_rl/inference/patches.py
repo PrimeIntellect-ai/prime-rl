@@ -27,14 +27,28 @@ def _is_non_persistent_parameter_alias_buffer(
     if name not in layer._non_persistent_buffers_set:
         return False
 
+    return _is_parameter_alias_tensor(layer, buffer)
+
+
+def _is_parameter_alias_tensor(
+    layer: torch.nn.Module,
+    tensor: torch.Tensor,
+    extra_parameters=(),
+) -> bool:
     try:
-        buffer_storage_ptr = buffer.untyped_storage().data_ptr()
+        tensor_storage_ptr = tensor.untyped_storage().data_ptr()
     except RuntimeError:
         return False
 
     for param in layer.parameters(recurse=True):
         try:
-            if param.untyped_storage().data_ptr() == buffer_storage_ptr:
+            if param.untyped_storage().data_ptr() == tensor_storage_ptr:
+                return True
+        except RuntimeError:
+            continue
+    for param in extra_parameters:
+        try:
+            if param.untyped_storage().data_ptr() == tensor_storage_ptr:
                 return True
         except RuntimeError:
             continue
@@ -83,6 +97,8 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
         for name, param in parameters.items():
             param.data.copy_(getattr(layer, name))
         for name, buffer in buffers.items():
+            if name not in layer._buffers and _is_parameter_alias_tensor(layer, buffer, parameters.values()):
+                continue
             buffer.data.copy_(getattr(layer, name))
 
         reload_layerwise._place_kernel_tensors(layer, info)
