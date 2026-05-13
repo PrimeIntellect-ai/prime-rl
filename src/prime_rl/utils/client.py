@@ -416,11 +416,8 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
     lora_path_posix = lora_path.as_posix()
     load_inplace = _env_flag("PRIME_RL_LORA_LOAD_INPLACE")
     logger.info(
-        "Loading LoRA adapter %s from %s (load_inplace=%s, path_summary=%s)",
-        lora_name,
-        lora_path,
-        load_inplace,
-        _summarize_lora_path(lora_path),
+        f"Loading LoRA adapter {lora_name} from {lora_path} "
+        f"(load_inplace={load_inplace}, path_summary={_summarize_lora_path(lora_path)})"
     )
 
     @retry(

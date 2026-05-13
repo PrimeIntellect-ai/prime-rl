@@ -1,9 +1,11 @@
 import asyncio
 import json
 import os
+import re
 import time
 import traceback
 from argparse import Namespace
+from collections.abc import Awaitable, Callable
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
@@ -12,6 +14,7 @@ import uvloop
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.datastructures import State
+from starlette.types import Message, Receive, Scope, Send
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.openai.api_server import init_app_state
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionResponse
@@ -165,12 +168,39 @@ logger = init_logger("vllm.entrypoints.openai.api_server")
 # Create our own router for custom endpoints
 router = APIRouter()
 
+_CURRENT_LORA_CONTEXT: dict[str, Any] = {
+    "name": None,
+    "path": None,
+    "step": None,
+    "updated_at": None,
+}
+
 
 def _env_flag(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
         return default
     return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str) -> int | None:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning("Ignoring invalid integer env %s=%r", name, value)
+        return None
+
+
+def _infer_lora_step(path: str | None) -> int | None:
+    if not path:
+        return None
+    match = re.search(r"(?:^|/)step_(\d+)(?:/)?$", path)
+    if match is None:
+        return None
+    return int(match.group(1))
 
 
 def _dump_nonfinite_request(raw_request: Request, body: bytes, exc: BaseException) -> Path:
@@ -203,6 +233,127 @@ def _dump_nonfinite_request(raw_request: Request, body: bytes, exc: BaseExceptio
 
 def _is_nonfinite_json_error(exc: BaseException) -> bool:
     return isinstance(exc, ValueError) and "Out of range float values are not JSON compliant" in str(exc)
+
+
+def _safe_json_loads(body: bytes) -> Any:
+    try:
+        return json.loads(body.decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _request_headers(scope: Scope) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for raw_key, raw_value in scope.get("headers", []):
+        key = raw_key.decode("latin1")
+        if key.lower() == "authorization":
+            continue
+        headers[key] = raw_value.decode("latin1", errors="replace")
+    return headers
+
+
+def _request_dump_dir() -> Path:
+    dump_dir = Path(os.getenv("PRIME_RL_REQUEST_DUMP_DIR", "/tmp/prime-rl-request-dumps"))
+    dump_dir.mkdir(parents=True, exist_ok=True)
+    return dump_dir
+
+
+def _path_is_capture_target(path: str) -> bool:
+    configured = os.getenv(
+        "PRIME_RL_REQUEST_DUMP_PATHS",
+        "/v1/chat/completions,/v1/chat/completions/tokens,/v1/generate,/inference/v1/generate",
+    )
+    return any(path == target.strip() for target in configured.split(",") if target.strip())
+
+
+def _should_dump_request(scope: Scope) -> bool:
+    if not _env_flag("PRIME_RL_DUMP_REQUESTS"):
+        return False
+    if scope.get("method") != "POST":
+        return False
+    path = str(scope.get("path", ""))
+    if not _path_is_capture_target(path):
+        return False
+    min_step = _env_int("PRIME_RL_REQUEST_DUMP_MIN_LORA_STEP")
+    current_step = _CURRENT_LORA_CONTEXT.get("step")
+    if min_step is not None and (current_step is None or int(current_step) < min_step):
+        return False
+    return True
+
+
+def _dump_request_record(scope: Scope, body: bytes, *, kind: str, exc: BaseException | None = None) -> Path:
+    dump_dir = _request_dump_dir()
+    body_json = _safe_json_loads(body)
+    record = {
+        "kind": kind,
+        "time": time.time(),
+        "pid": os.getpid(),
+        "method": scope.get("method"),
+        "path": scope.get("path"),
+        "query_string": scope.get("query_string", b"").decode("latin1", errors="replace"),
+        "headers": _request_headers(scope),
+        "lora": dict(_CURRENT_LORA_CONTEXT),
+        "body_json": body_json,
+        "body_text": None if body_json is not None else body.decode("utf-8", errors="replace"),
+    }
+    if exc is not None:
+        record["error"] = repr(exc)
+        record["traceback"] = traceback.format_exc()
+
+    if kind == "request":
+        dump_path = dump_dir / f"requests-{os.getpid()}.jsonl"
+        with dump_path.open("a") as f:
+            f.write(json.dumps(record, ensure_ascii=False, default=str))
+            f.write("\n")
+        return dump_path
+
+    safe_path = str(scope.get("path", "root")).strip("/").replace("/", "_") or "root"
+    dump_path = dump_dir / f"{kind}-{int(time.time() * 1000)}-{os.getpid()}-{safe_path}.json"
+    with dump_path.open("w") as f:
+        json.dump(record, f, indent=2, ensure_ascii=False, default=str)
+    return dump_path
+
+
+class RequestDiagnosticsMiddleware:
+    """Dump replayable inference request bodies without consuming them."""
+
+    def __init__(self, app: Callable[[Scope, Receive, Send], Awaitable[None]]):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        messages: list[Message] = []
+        body_parts: list[bytes] = []
+        while True:
+            message = await receive()
+            messages.append(message)
+            if message["type"] != "http.request":
+                break
+            body_parts.append(message.get("body", b""))
+            if not message.get("more_body", False):
+                break
+
+        body = b"".join(body_parts)
+
+        async def replay_receive() -> Message:
+            if messages:
+                return messages.pop(0)
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        if _should_dump_request(scope):
+            dump_path = _dump_request_record(scope, body, kind="request")
+            logger.debug("Dumped inference request for replay to %s", dump_path)
+
+        try:
+            await self.app(scope, replay_receive, send)
+        except Exception as exc:
+            if _is_nonfinite_json_error(exc) or _env_flag("PRIME_RL_DUMP_ALL_REQUEST_ERRORS"):
+                dump_path = _dump_request_record(scope, body, kind="error", exc=exc)
+                logger.exception("Dumped inference request after server error to %s", dump_path)
+            raise
 
 
 def engine_client(request: Request) -> EngineClient:
@@ -283,9 +434,45 @@ async def update_weights(request: Request):
 @router.post("/load_lora_adapter")
 async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request):
     """Wrapper around vLLM's /v1/load_lora_adapter."""
+    start_time = time.monotonic()
+    lora_path = lora_request.lora_path
+    lora_step = _infer_lora_step(lora_path)
+    _CURRENT_LORA_CONTEXT.update(
+        {
+            "name": lora_request.lora_name,
+            "path": lora_path,
+            "step": lora_step,
+            "updated_at": time.time(),
+        }
+    )
+    logger.warning(
+        "PrimeRL LoRA adapter load start: name=%s path=%s step=%s",
+        lora_request.lora_name,
+        lora_path,
+        lora_step,
+    )
     handler = models(raw_request)
-    response = await handler.load_lora_adapter(lora_request)
+    try:
+        response = await handler.load_lora_adapter(lora_request)
+    except Exception:
+        logger.exception(
+            "PrimeRL LoRA adapter load failed: name=%s path=%s step=%s elapsed=%.3fs",
+            lora_request.lora_name,
+            lora_path,
+            lora_step,
+            time.monotonic() - start_time,
+        )
+        raise
     if isinstance(response, ErrorResponse):
+        logger.warning(
+            "PrimeRL LoRA adapter load returned error: name=%s path=%s step=%s elapsed=%.3fs status=%s message=%s",
+            lora_request.lora_name,
+            lora_path,
+            lora_step,
+            time.monotonic() - start_time,
+            response.error.code,
+            response.error.message,
+        )
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
     if _env_flag("PRIME_RL_RESET_PREFIX_CACHE_AFTER_LORA_LOAD"):
         logger.warning(
@@ -294,6 +481,13 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
             lora_request.lora_path,
         )
         await engine_client(raw_request).reset_prefix_cache(reset_running_requests=False, reset_connector=False)
+    logger.warning(
+        "PrimeRL LoRA adapter load done: name=%s path=%s step=%s elapsed=%.3fs",
+        lora_request.lora_name,
+        lora_path,
+        lora_step,
+        time.monotonic() - start_time,
+    )
     return {"status": "ok"}
 
 
@@ -382,6 +576,14 @@ def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None)
     """
     app = _original_build_app(args, supported_tasks, model_config)
     app.include_router(router)
+    if _env_flag("PRIME_RL_DUMP_REQUESTS") or _env_flag("PRIME_RL_DUMP_NONFINITE_REQUESTS"):
+        app.add_middleware(RequestDiagnosticsMiddleware)
+        logger.warning(
+            "Enabled inference request diagnostics dumps at %s (min_lora_step=%s paths=%s)",
+            _request_dump_dir(),
+            os.getenv("PRIME_RL_REQUEST_DUMP_MIN_LORA_STEP"),
+            os.getenv("PRIME_RL_REQUEST_DUMP_PATHS"),
+        )
     if _env_flag("PRIME_RL_DUMP_NONFINITE_REQUESTS"):
         dump_dir = os.getenv("PRIME_RL_NONFINITE_DUMP_DIR", "/tmp/prime-rl-nonfinite-requests")
         logger.warning("Enabled /v1/chat/completions/tokens non-finite request dumps at %s", dump_dir)
