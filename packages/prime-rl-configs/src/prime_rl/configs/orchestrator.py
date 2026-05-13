@@ -1,4 +1,5 @@
 import math
+import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -17,7 +18,6 @@ from prime_rl.configs.shared import (
 )
 from prime_rl.configs.trainer import TokenizerConfig
 from prime_rl.utils.config import BaseConfig
-from prime_rl.utils.logger import get_logger
 
 
 class OptimizerConfig(BaseConfig):
@@ -149,9 +149,11 @@ class TrainSamplingConfig(BaseConfig):
     @classmethod
     def _deprecate_max_tokens(cls, data: Any) -> Any:
         if isinstance(data, dict) and "max_tokens" in data and "max_completion_tokens" not in data:
-            get_logger().warning(
+            warnings.warn(
                 "'max_tokens' is deprecated, use 'max_completion_tokens' instead. "
-                "Auto-translating for now, but this will be removed in a future release."
+                "Auto-translating for now, but this will be removed in a future release.",
+                FutureWarning,
+                stacklevel=2,
             )
         return data
 
@@ -248,9 +250,11 @@ class EvalSamplingConfig(BaseConfig):
     @classmethod
     def _deprecate_max_tokens(cls, data: Any) -> Any:
         if isinstance(data, dict) and "max_tokens" in data and "max_completion_tokens" not in data:
-            get_logger().warning(
+            warnings.warn(
                 "'max_tokens' is deprecated, use 'max_completion_tokens' instead. "
-                "Auto-translating for now, but this will be removed in a future release."
+                "Auto-translating for now, but this will be removed in a future release.",
+                FutureWarning,
+                stacklevel=2,
             )
         return data
 
@@ -685,22 +689,70 @@ class BufferConfig(BaseConfig):
         return self
 
 
+class TokensLengthPenaltyConfig(BaseModel):
+    """Length penalty by weighted token cost.
+
+    Effective cost = completion_weight * model_completion_tokens
+                   + tool_response_weight * tool_response_tokens.
+
+    Tool-response tokens are read from the rollout's harness metric
+    `*_total_tool_response_tokens` (e.g. `rlm_total_tool_response_tokens`); 0 if absent —
+    so for envs without tool accounting, only the completion term contributes regardless of weight.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["tokens"] = "tokens"
+    completion_weight: Annotated[
+        float,
+        Field(
+            ge=0,
+            allow_inf_nan=False,
+            description="Weight on model completion tokens. Finite and non-negative.",
+        ),
+    ] = 1.0
+    tool_response_weight: Annotated[
+        float,
+        Field(
+            ge=0,
+            allow_inf_nan=False,
+            description="Weight on tool-response tokens. Finite and non-negative.",
+        ),
+    ] = 1.0
+
+
+class TurnsLengthPenaltyConfig(BaseModel):
+    """Length penalty by trajectory turn count."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["turns"] = "turns"
+
+
+LengthPenaltyConfig: TypeAlias = Annotated[
+    TokensLengthPenaltyConfig | TurnsLengthPenaltyConfig,
+    Field(discriminator="type"),
+]
+
+
 class DefaultAdvantageConfig(BaseModel):
     """Config for the default advantage."""
 
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["default"] = "default"
-    length_shaping: Annotated[
-        bool,
+    length_penalty: Annotated[
+        LengthPenaltyConfig | None,
         Field(
             description=(
-                "Enable correctness-gated length shaping. In mixed groups, shorter correct rollouts get "
-                "amplified advantage (up to 2x), longer correct rollouts are unchanged, incorrect untouched. "
-                "In all-correct groups, below-average-length rollouts get advantage in [0, 1], others get 0."
+                "Correctness-gated length penalty. `tokens` shapes by weighted token cost, "
+                "`turns` shapes by trajectory turn count, `None` disables shaping. In mixed "
+                "groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct "
+                "rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost "
+                "rollouts get advantage in [0, 1], others get 0."
             )
         ),
-    ] = False
+    ] = None
 
 
 class CustomAdvantageConfig(BaseModel):
@@ -1030,6 +1082,14 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = 8
 
+    max_error_reschedule_attempts: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="The group is dropped from the current step's batch once this many of its dispatch rounds have returned errored or empty rollouts (the trainer proceeds with the rollouts from other groups). Counts rounds, not individual rollouts: a non-group-scoring env that dispatches `rollouts_per_example` rollouts at once still only counts one round per failed batch. `None` means retry indefinitely (legacy behavior). Useful for unblocking single-example hangs in agent envs.",
+        ),
+    ] = None
+
     max_async_level: Annotated[
         int,
         Field(
@@ -1101,15 +1161,19 @@ class OrchestratorConfig(BaseConfig):
             train = data.setdefault("train", {})
             if isinstance(train, dict):
                 if "env" in data:
-                    get_logger().warning(
+                    warnings.warn(
                         "'[[orchestrator.env]]' is deprecated, use '[[orchestrator.train.env]]' instead. "
-                        "Auto-translating for now, but this will be removed in a future release."
+                        "Auto-translating for now, but this will be removed in a future release.",
+                        FutureWarning,
+                        stacklevel=2,
                     )
                     train.setdefault("env", data.pop("env"))
                 if "sampling" in data:
-                    get_logger().warning(
+                    warnings.warn(
                         "'[orchestrator.sampling]' is deprecated, use '[orchestrator.train.sampling]' instead. "
-                        "Auto-translating for now, but this will be removed in a future release."
+                        "Auto-translating for now, but this will be removed in a future release.",
+                        FutureWarning,
+                        stacklevel=2,
                     )
                     train.setdefault("sampling", data.pop("sampling"))
         return data

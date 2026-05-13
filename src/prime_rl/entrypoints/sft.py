@@ -8,6 +8,7 @@ from threading import Event, Thread
 
 import tomli_w
 
+import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.trainer.model import pre_download_model
 from prime_rl.utils.config import cli

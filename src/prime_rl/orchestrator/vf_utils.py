@@ -59,6 +59,26 @@ def get_model_completion_len(output: vf.RolloutOutput) -> int:
     return sum(len(step["tokens"]["completion_ids"]) for step in output["trajectory"] if step.get("tokens"))
 
 
+def get_num_turns(output: vf.RolloutOutput) -> int:
+    """Number of turns (trajectory steps) in a rollout."""
+    return len(output["trajectory"])
+
+
+def get_tool_response_len(output: vf.RolloutOutput) -> int:
+    """
+    Total tool-response tokens consumed across the whole rollout.
+
+    Read from a harness-emitted metric (e.g. RLM's `rlm_total_tool_response_tokens`,
+    deduped across turns/branches/sub-RLMs). Returns 0 if no harness metric is
+    present, which makes this a no-op for envs without tool-response accounting.
+    """
+    metrics = output.get("metrics") or {}
+    for key, value in metrics.items():
+        if key.endswith("total_tool_response_tokens") and isinstance(value, (int, float)):
+            return int(value)
+    return 0
+
+
 def save_rollouts(rollouts: list[vf.RolloutOutput], path: Path, exclude_keys: set[str] | None = None) -> None:
     """Save rollouts to a JSONL file using verifiers serialization."""
     path.parent.mkdir(parents=True, exist_ok=True)
