@@ -80,9 +80,7 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
                 name: sanitize_layer_refs(reload_meta.to_meta_tensor(buffer), layer)
                 for name, buffer in buffers.items()
                 if name not in reload_meta.SKIP_TENSORS
-                and not _is_non_persistent_parameter_alias_buffer(
-                    layer, name, buffer, parameter_storage_ptrs
-                )
+                and not _is_non_persistent_parameter_alias_buffer(layer, name, buffer, parameter_storage_ptrs)
             },
         )
 
