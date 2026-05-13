@@ -11,7 +11,7 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-05-06T12:31:19.143031393Z"
+exclude-newer = "2026-05-06T12:37:29.025733799Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -2812,7 +2812,7 @@ dependencies = [
     { name = "transformers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "uvloop", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "vllm", version = "0.20.1rc1.dev97+g6acff036e.d20260513.precompiled", source = { path = "third_party/vllm/dist-r3-v3-external/vllm-0.20.1rc1.dev97+g6acff036e.d20260513.precompiled-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "vllm", version = "0.20.1rc1.dev97+g6acff036e.d20260513.precompiled", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.1rc1.dev97+g6acff036e.d20260513.precompiled-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "vllm", version = "0.20.2+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl" }, marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
     { name = "wandb", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "wordle", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -2938,14 +2938,14 @@ requires-dist = [
     { name = "torchvision", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", editable = "third_party/verifiers" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers?rev=bb54a3e" },
     { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
     { name = "vllm", marker = "platform_machine == 'aarch64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl" },
-    { name = "vllm", marker = "platform_machine == 'x86_64'", path = "third_party/vllm/dist-r3-v3-external/vllm-0.20.1rc1.dev97+g6acff036e.d20260513.precompiled-cp312-cp312-linux_x86_64.whl" },
-    { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", path = "third_party/router/dist-r3-v3-router-cache/vllm_router-0.1.23-cp38-abi3-linux_x86_64.whl" },
+    { name = "vllm", marker = "platform_machine == 'x86_64'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.1rc1.dev97+g6acff036e.d20260513.precompiled-cp312-cp312-linux_x86_64.whl" },
+    { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm_router-0.1.23-cp38-abi3-linux_x86_64.whl" },
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wiki-search", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
-    { name = "wordle", directory = "third_party/verifiers/environments/wordle" },
+    { name = "wordle", git = "https://github.com/PrimeIntellect-ai/verifiers?subdirectory=environments%2Fwordle&rev=bb54a3e" },
 ]
 provides-extras = ["flash-attn", "flash-attn-3", "flash-attn-cute", "envs", "disagg", "gpt-oss", "quack", "all"]
 
@@ -4247,7 +4247,8 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-source = { editable = "third_party/verifiers" }
+version = "0.1.15.dev2"
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers?rev=bb54a3e#bb54a3efc5ee1d48b2328fc2d07c690fb50cd7e0" }
 dependencies = [
     { name = "aiolimiter", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "anthropic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -4274,75 +4275,6 @@ dependencies = [
     { name = "textual", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 
-[package.metadata]
-requires-dist = [
-    { name = "accelerate", marker = "extra == 'rl'", specifier = ">=1.4.0" },
-    { name = "aiohttp", marker = "extra == 'browser'", specifier = ">=3.9.0" },
-    { name = "aiolimiter", specifier = ">=1.2.1" },
-    { name = "anthropic", specifier = ">=0.78.0" },
-    { name = "datasets", specifier = ">=3.0.0,<4.7.0" },
-    { name = "deepspeed", marker = "extra == 'rl'", specifier = ">=0.17.6" },
-    { name = "flash-attn", marker = "extra == 'rl'", specifier = ">=2.8.3" },
-    { name = "gepa" },
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "jinja2", specifier = ">=3.1.6" },
-    { name = "liger-kernel", marker = "extra == 'rl'", specifier = ">=0.5.10" },
-    { name = "math-verify", specifier = ">=0.8.0" },
-    { name = "mcp", specifier = ">=1.14.1" },
-    { name = "msgpack", specifier = ">=1.1.2" },
-    { name = "nest-asyncio", specifier = ">=1.6.0" },
-    { name = "nltk", marker = "extra == 'ta'" },
-    { name = "numpy" },
-    { name = "openai", specifier = ">=1.108.1" },
-    { name = "openai-agents", specifier = ">=0.0.7" },
-    { name = "openenv-core", extras = ["core"], marker = "extra == 'openenv'", specifier = "==0.2.1" },
-    { name = "peft", marker = "extra == 'rl'" },
-    { name = "prime-sandboxes", specifier = ">=0.2.25" },
-    { name = "prime-tunnel", specifier = ">=0.1.6" },
-    { name = "pydantic", specifier = ">=2.11.9" },
-    { name = "python-dotenv", marker = "extra == 'browser'", specifier = ">=1.0.0" },
-    { name = "pyzmq", specifier = ">=27.1.0" },
-    { name = "reasoning-gym", marker = "extra == 'rg'" },
-    { name = "regex", specifier = "<2026.4.4" },
-    { name = "renderers", marker = "extra == 'renderers'", specifier = ">=0.1.8.dev0" },
-    { name = "requests" },
-    { name = "requests", marker = "extra == 'rl'" },
-    { name = "rich" },
-    { name = "setproctitle", specifier = ">=1.3.0" },
-    { name = "stagehand", marker = "extra == 'browser'", specifier = ">=3.0.0" },
-    { name = "tenacity", specifier = ">=8.5.0" },
-    { name = "textarena", marker = "extra == 'ta'" },
-    { name = "textual" },
-    { name = "tomli", marker = "python_full_version < '3.11'" },
-    { name = "torch", marker = "extra == 'rl'", specifier = ">=2.8.0,<2.9.0" },
-    { name = "transformers", marker = "extra == 'rl'", specifier = ">=4.56.2" },
-    { name = "typing-extensions", marker = "python_full_version < '3.12'" },
-    { name = "vllm", marker = "extra == 'rl'", specifier = ">=0.10.0,<0.11.0" },
-    { name = "wandb", marker = "extra == 'rl'" },
-]
-provides-extras = ["browser", "openenv", "renderers", "rg", "rl", "ta"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "aiohttp", specifier = ">=3.9.0" },
-    { name = "ipykernel" },
-    { name = "ipywidgets" },
-    { name = "nltk" },
-    { name = "openenv-core", extras = ["core"], specifier = "==0.2.1" },
-    { name = "pre-commit" },
-    { name = "pytest", specifier = ">=7.0.0" },
-    { name = "pytest-asyncio", specifier = ">=0.21.0" },
-    { name = "pytest-cov", specifier = ">=4.0.0" },
-    { name = "pytest-xdist", specifier = ">=3.8.0" },
-    { name = "python-dotenv", specifier = ">=1.0.0" },
-    { name = "reasoning-gym" },
-    { name = "renderers", specifier = ">=0.1.8.dev0" },
-    { name = "ruff" },
-    { name = "stagehand", specifier = ">=3.0.0" },
-    { name = "textarena" },
-    { name = "ty", specifier = ">=0.0.1a29,<0.0.22" },
-]
-
 [[package]]
 name = "virtualenv"
 version = "20.34.0"
@@ -4360,7 +4292,7 @@ wheels = [
 [[package]]
 name = "vllm"
 version = "0.20.1rc1.dev97+g6acff036e.d20260513.precompiled"
-source = { path = "third_party/vllm/dist-r3-v3-external/vllm-0.20.1rc1.dev97+g6acff036e.d20260513.precompiled-cp312-cp312-linux_x86_64.whl" }
+source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.1rc1.dev97+g6acff036e.d20260513.precompiled-cp312-cp312-linux_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
@@ -4435,7 +4367,7 @@ dependencies = [
     { name = "xgrammar", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 wheels = [
-    { filename = "vllm-0.20.1rc1.dev97+g6acff036e.d20260513.precompiled-cp312-cp312-linux_x86_64.whl", hash = "sha256:8db1e80a5f4dd97237d7c5702b33f37a65910db9976b42db4f58937ddd0ffd48" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.1rc1.dev97+g6acff036e.d20260513.precompiled-cp312-cp312-linux_x86_64.whl", hash = "sha256:8db1e80a5f4dd97237d7c5702b33f37a65910db9976b42db4f58937ddd0ffd48" },
 ]
 
 [package.metadata]
@@ -4710,7 +4642,7 @@ provides-extras = ["zen", "bench", "tensorizer", "fastsafetensors", "instanttens
 [[package]]
 name = "vllm-router"
 version = "0.1.23"
-source = { path = "third_party/router/dist-r3-v3-router-cache/vllm_router-0.1.23-cp38-abi3-linux_x86_64.whl" }
+source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm_router-0.1.23-cp38-abi3-linux_x86_64.whl" }
 dependencies = [
     { name = "aiohttp", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "fastapi", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -4720,7 +4652,7 @@ dependencies = [
     { name = "uvicorn", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 wheels = [
-    { filename = "vllm_router-0.1.23-cp38-abi3-linux_x86_64.whl", hash = "sha256:306525b002ec3d8652fcbfaf37cfa46f1fde48180e01ffa0efa0e55d952bbfc2" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm_router-0.1.23-cp38-abi3-linux_x86_64.whl", hash = "sha256:306525b002ec3d8652fcbfaf37cfa46f1fde48180e01ffa0efa0e55d952bbfc2" },
 ]
 
 [package.metadata]
@@ -4854,18 +4786,11 @@ wheels = [
 [[package]]
 name = "wordle"
 version = "0.1.7"
-source = { directory = "third_party/verifiers/environments/wordle" }
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers?subdirectory=environments%2Fwordle&rev=bb54a3e#bb54a3efc5ee1d48b2328fc2d07c690fb50cd7e0" }
 dependencies = [
     { name = "nltk", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "textarena", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "nltk", specifier = ">=3.9.2" },
-    { name = "textarena", specifier = "==0.7.4" },
-    { name = "verifiers", specifier = ">=0.1.9.post3" },
 ]
 
 [[package]]
