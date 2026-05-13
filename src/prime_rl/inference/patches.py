@@ -225,17 +225,16 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
         for name, param in parameters.items():
             param.data.copy_(getattr(layer, name))
         for name, buffer in buffers.items():
-            materialized_buffer = layer._buffers.get(name)
-            if materialized_buffer is not None:
-                _record_layerwise_alias_event(
-                    "copy_restore_buffer",
-                    layer,
-                    buffer_name=name,
-                    destination_before=_tensor_stats_for_debug(buffer),
-                    materialized=_tensor_stats_for_debug(materialized_buffer),
-                    alias_matches=_parameter_alias_matches(layer, materialized_buffer),
-                )
-                buffer.data.copy_(materialized_buffer)
+            materialized_buffer = getattr(layer, name)
+            _record_layerwise_alias_event(
+                "copy_restore_buffer",
+                layer,
+                buffer_name=name,
+                destination_before=_tensor_stats_for_debug(buffer),
+                materialized=_tensor_stats_for_debug(materialized_buffer),
+                alias_matches=_parameter_alias_matches(layer, materialized_buffer),
+            )
+            buffer.data.copy_(materialized_buffer)
 
         reload_layerwise._place_kernel_tensors(layer, info)
 
