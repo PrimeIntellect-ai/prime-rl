@@ -457,6 +457,9 @@ def train(config: TrainerConfig):
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
+            log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+                out["logprobs"], inference_logprobs
+            )
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
@@ -468,6 +471,9 @@ def train(config: TrainerConfig):
                 loss_fn=loss_fn,
                 loss_scale=loss_scale,
                 sft_loss=micro_batch["sft_loss"],
+                log_importance_ratio=log_importance_ratio.squeeze().split(response_lengths),
+                importance_ratio=importance_ratio.squeeze().split(response_lengths),
+                mismatch_kl=mismatch_kl.squeeze().split(response_lengths),
             )
 
             # Backward pass
@@ -484,12 +490,10 @@ def train(config: TrainerConfig):
             for idx, env_name in enumerate(masked_env_names):
                 env_to_indices.setdefault(env_name, []).append(idx)
 
-            entropy = out["entropy"][loss_mask].detach().to("cpu")
+            entropy = tensors["entropy"][-1]
             for env_name, indices in env_to_indices.items():
                 tensors[f"entropy/{env_name}"].append(entropy[indices])
 
-            with torch.no_grad():
-                _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(out["logprobs"], inference_logprobs)
             mismatch_kl = mismatch_kl[loss_mask].detach().to("cpu")
             for env_name, indices in env_to_indices.items():
                 tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
