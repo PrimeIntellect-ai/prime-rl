@@ -55,6 +55,7 @@ from prime_rl.orchestrator.vf_utils import (
 )
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.utils.client import (
+    clear_routing_cache,
     init_nccl_broadcast,
     setup_inference_pool,
 )
@@ -316,7 +317,14 @@ async def orchestrate(config: OrchestratorConfig):
                 config.output_dir, scheduler.ckpt_step, check_exists=check_exists, wait_timeout=wait_timeout
             )
             lora_name = config.model.lora.name if config.model.lora else None
-            await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
+            await inference_pool.update_weights(
+                weights_path,
+                lora_name=lora_name,
+                step=scheduler.ckpt_step,
+                reset_prefix_cache=config.reset_prefix_cache_on_policy_update,
+            )
+            if config.reset_prefix_cache_on_policy_update:
+                await clear_routing_cache(config.client)
     else:
         logger.info("Training from scratch")
 

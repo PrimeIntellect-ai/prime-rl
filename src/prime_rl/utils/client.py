@@ -42,7 +42,13 @@ class InferencePool(Protocol):
         """Wait for inference pool to be ready."""
         ...
 
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
+    async def update_weights(
+        self,
+        weight_dir: Path | None,
+        lora_name: str | None = None,
+        step: int = 0,
+        reset_prefix_cache: bool = False,
+    ) -> None:
         """Update weights on all inference servers."""
         ...
 
@@ -110,8 +116,20 @@ class StaticInferencePool:
         )
         await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
 
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
-        await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
+    async def update_weights(
+        self,
+        weight_dir: Path | None,
+        lora_name: str | None = None,
+        step: int = 0,
+        reset_prefix_cache: bool = False,
+    ) -> None:
+        await update_weights(
+            self._admin_clients,
+            weight_dir,
+            lora_name=lora_name,
+            step=step,
+            reset_prefix_cache=reset_prefix_cache,
+        )
 
     def get_metrics(self) -> dict[str, float]:
         return {}
@@ -287,13 +305,14 @@ async def check_health(
 NCCL_READY_MARKER = "NCCL_READY"
 
 
-async def _pause_engines(admin_clients: list[AsyncClient]) -> None:
+async def _pause_engines(admin_clients: list[AsyncClient], reset_prefix_cache: bool = False) -> None:
     """Pause all inference engines, waiting for in-flight requests to drain."""
     logger = get_logger()
-    logger.info("Pausing inference engines for weight update")
+    mode = "clear" if reset_prefix_cache else "keep"
+    logger.info(f"Pausing inference engines for weight update (mode={mode})")
 
     async def _pause(client: AsyncClient) -> None:
-        response = await client.post("/pause", params={"mode": "keep", "clear_cache": "false"})
+        response = await client.post("/pause", params={"mode": mode})
         response.raise_for_status()
 
     await asyncio.gather(*[_pause(client) for client in admin_clients])
@@ -312,11 +331,52 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
     logger.info("All inference engines resumed")
 
 
+async def clear_routing_cache(client_config: ClientConfig) -> None:
+    """Clear router-local routed-experts cache when a policy update resets prefix cache."""
+    logger = get_logger()
+    if client_config.router_url is not None:
+        router_urls = [client_config.router_url]
+    elif client_config.admin_base_url is not None:
+        router_urls = client_config.base_url
+    else:
+        router_urls = []
+
+    def _setup_router_client(base_url: str) -> AsyncClient:
+        headers = client_config.headers.copy()
+        api_key = os.getenv(client_config.api_key_var, "EMPTY")
+        if api_key and api_key != "EMPTY":
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        return AsyncClient(
+            base_url=base_url.rstrip("/").removesuffix("/v1"),
+            headers=headers,
+            limits=httpx.Limits(max_connections=4, max_keepalive_connections=1),
+            timeout=httpx.Timeout(None),
+        )
+
+    router_clients = [_setup_router_client(url) for url in router_urls]
+    if not router_clients:
+        logger.info("Skipping routing cache clear: no router admin endpoint configured")
+        return
+
+    async def _clear(client: AsyncClient) -> None:
+        response = await client.post("/clear_routing_cache")
+        response.raise_for_status()
+
+    try:
+        logger.info(f"Clearing router routing cache on {', '.join(str(client.base_url) for client in router_clients)}")
+        await asyncio.gather(*[_clear(client) for client in router_clients])
+        logger.info("Router routing cache cleared")
+    finally:
+        await asyncio.gather(*[client.aclose() for client in router_clients])
+
+
 async def update_weights(
     admin_clients: list[AsyncClient],
     weight_dir: Path | None,
     lora_name: str | None = None,
     step: int = 0,
+    reset_prefix_cache: bool = False,
 ) -> None:
     """Update weights on static inference servers.
 
@@ -324,8 +384,8 @@ async def update_weights(
     weight update, then resumes. This ensures all DP workers are idle and can
     participate in the collective weight transfer.
 
-    Note: The server-side /update_weights endpoint automatically resets the prefix cache
-    to invalidate any cached KV states computed with the old weights.
+    When reset_prefix_cache is enabled, engines are paused in clear mode so vLLM
+    drops prefix-cache state before loading the new weights.
     """
     logger = get_logger()
 
@@ -340,7 +400,7 @@ async def update_weights(
             response.raise_for_status()
 
         # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
-        await _pause_engines(admin_clients)
+        await _pause_engines(admin_clients, reset_prefix_cache=reset_prefix_cache)
 
         try:
             # Create ready marker before servers enter receive path (used by NCCL broadcast)

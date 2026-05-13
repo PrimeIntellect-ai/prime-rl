@@ -1,7 +1,7 @@
 import asyncio
 from argparse import Namespace
 from http import HTTPStatus
-from typing import Any
+from typing import Any, Literal
 
 import uvloop
 from fastapi import APIRouter, Depends, Request
@@ -210,9 +210,9 @@ async def _chat_with_tokens(request: ChatCompletionRequestWithTokens, raw_reques
 
 
 @router.post("/pause")
-async def pause(request: Request):
-    await engine_client(request).pause_generation(mode="keep", clear_cache=False)
-    return {"status": "paused"}
+async def pause(request: Request, mode: Literal["keep", "clear"] = "keep"):
+    await engine_client(request).pause_generation(mode="keep", clear_cache=mode == "clear")
+    return {"status": "paused", "mode": mode}
 
 
 @router.post("/resume")

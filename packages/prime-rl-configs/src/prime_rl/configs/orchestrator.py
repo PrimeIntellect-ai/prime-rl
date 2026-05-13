@@ -1090,6 +1090,16 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = None
 
+    reset_prefix_cache_on_policy_update: Annotated[
+        bool,
+        Field(
+            description=(
+                "Reset vLLM prefix caches when updating inference weights. This prevents stale KV cache reuse "
+                "across policy steps, at the cost of losing cross-policy prefix-cache hits."
+            ),
+        ),
+    ] = False
+
     max_async_level: Annotated[
         int,
         Field(
