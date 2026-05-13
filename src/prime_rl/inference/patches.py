@@ -21,85 +21,33 @@ def transformers_v5_compat():
     monkey_patch_vllm_layerwise_reload_alias_buffers()
 
 
-def _is_non_persistent_parameter_alias_buffer(
-    layer: torch.nn.Module,
-    name: str,
-    buffer: torch.Tensor,
-    parameter_storage_ptrs: set[int],
-) -> bool:
-    if name not in layer._non_persistent_buffers_set:
-        return False
-
-    buffer_storage_ptr = _tensor_storage_ptr(buffer)
-    return buffer_storage_ptr is not None and buffer_storage_ptr in parameter_storage_ptrs
-
-
-def _tensor_storage_ptr(tensor: torch.Tensor) -> int | None:
-    try:
-        return tensor.untyped_storage().data_ptr()
-    except RuntimeError:
-        return None
-
-
-def _parameter_storage_ptrs(layer: torch.nn.Module) -> set[int]:
-    return {
-        storage_ptr
-        for param in layer.parameters(recurse=True)
-        if (storage_ptr := _tensor_storage_ptr(param)) is not None
-    }
-
-
 def monkey_patch_vllm_layerwise_reload_alias_buffers():
-    # Temporary local carry for vLLM layerwise reload corrupting non-persistent
-    # buffers that alias checkpoint-loaded parameters, e.g. Nemotron Mamba
-    # mixer.conv_weights aliasing mixer.conv1d.weight.
+    # vLLM's layerwise reload materializes each buffer as an independent tensor
+    # and then copies it back into the original kernel storage. When a buffer
+    # aliases a parameter (e.g. NemotronH Mamba's mixer.conv_weights, a view of
+    # mixer.conv1d.weight), the buffer copy stamps garbage into the parameter's
+    # storage *after* the parameter has been correctly reloaded. Skip the copy
+    # for any buffer that shares storage with a parameter; _place_kernel_tensors
+    # re-registers the original view, which trivially reflects the parameter.
     from vllm.logger import init_logger
     from vllm.model_executor.model_loader.reload import layerwise as reload_layerwise
-    from vllm.model_executor.model_loader.reload import meta as reload_meta
-    from vllm.model_executor.model_loader.reload.sanitize import sanitize_layer_refs
-    from vllm.model_executor.model_loader.reload.utils import get_layer_params_buffers
 
     logger = init_logger(__name__)
-
-    if getattr(reload_meta, "_prime_rl_layerwise_alias_buffer_patch", False):
-        return
-
-    def capture_layer_to_meta(layer: torch.nn.Module):
-        if layer.__class__.__name__ in reload_meta.SKIP_MODULES:
-            return ({}, {})
-
-        params, buffers = get_layer_params_buffers(layer)
-        parameter_storage_ptrs = _parameter_storage_ptrs(layer)
-        return (
-            {
-                name: sanitize_layer_refs(reload_meta.to_meta_tensor(param), layer)
-                for name, param in params.items()
-                if name not in reload_meta.SKIP_TENSORS
-            },
-            {
-                name: sanitize_layer_refs(reload_meta.to_meta_tensor(buffer), layer)
-                for name, buffer in buffers.items()
-                if name not in reload_meta.SKIP_TENSORS
-                and not _is_non_persistent_parameter_alias_buffer(layer, name, buffer, parameter_storage_ptrs)
-            },
-        )
 
     def _copy_and_restore_kernel_tensors(layer: torch.nn.Module, info: reload_layerwise.LayerReloadingInfo):
         assert info.kernel_tensors is not None
         parameters, buffers = info.kernel_tensors
+        param_storage_ptrs = {p.untyped_storage().data_ptr() for p in layer.parameters(recurse=True)}
         for name, param in parameters.items():
             param.data.copy_(getattr(layer, name))
         for name, buffer in buffers.items():
-            if name not in layer._buffers:
+            if buffer.untyped_storage().data_ptr() in param_storage_ptrs:
                 continue
             buffer.data.copy_(getattr(layer, name))
 
         reload_layerwise._place_kernel_tensors(layer, info)
 
-    reload_meta.capture_layer_to_meta = capture_layer_to_meta
-    reload_layerwise.capture_layer_to_meta = capture_layer_to_meta
     reload_layerwise._copy_and_restore_kernel_tensors = _copy_and_restore_kernel_tensors
-    reload_meta._prime_rl_layerwise_alias_buffer_patch = True
     logger.warning("Enabled vLLM layerwise reload alias-buffer patch.")
 
 
