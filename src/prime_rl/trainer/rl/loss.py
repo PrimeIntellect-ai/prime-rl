@@ -134,9 +134,19 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     advantages = inputs.advantages
     loss_mask = inputs.loss_mask
 
-    trainer_probs = torch.exp(trainer_logprobs)
+    if inputs.log_importance_ratio is None and inputs.importance_ratio is None and inputs.mismatch_kl is None:
+        log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+            trainer_logprobs, inference_logprobs
+        )
+    elif inputs.log_importance_ratio is None or inputs.importance_ratio is None or inputs.mismatch_kl is None:
+        raise ValueError("precomputed importance-ratio tensors must be provided together")
+    else:
+        log_importance_ratio = inputs.log_importance_ratio
+        importance_ratio = inputs.importance_ratio
+        mismatch_kl = inputs.mismatch_kl
+
     inference_probs = torch.exp(inference_logprobs)
-    probs_diff = trainer_probs - inference_probs
+    probs_diff = inference_probs * (importance_ratio - 1)
     dppo_invalid_mask_high = probs_diff > loss_config.dppo_mask_high
     dppo_invalid_mask_low = probs_diff < -loss_config.dppo_mask_low
     positive_advantages = advantages > 0
@@ -148,17 +158,6 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     is_masked_low = negative_advantages & dppo_invalid_mask_low
     drop_mask = loss_mask & is_masked
     keep_mask = loss_mask & ~is_masked
-
-    if inputs.log_importance_ratio is None and inputs.importance_ratio is None and inputs.mismatch_kl is None:
-        log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
-            trainer_logprobs, inference_logprobs
-        )
-    elif inputs.log_importance_ratio is None or inputs.importance_ratio is None or inputs.mismatch_kl is None:
-        raise ValueError("precomputed importance-ratio tensors must be provided together")
-    else:
-        log_importance_ratio = inputs.log_importance_ratio
-        importance_ratio = inputs.importance_ratio
-        mismatch_kl = inputs.mismatch_kl
 
     advantages = loss_config.adv_tau * advantages
     if teacher_logprobs is not None:
