@@ -11,7 +11,7 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-05-06T12:10:58.853628905Z"
+exclude-newer = "2026-05-06T12:31:19.143031393Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -4720,7 +4720,7 @@ dependencies = [
     { name = "uvicorn", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 wheels = [
-    { filename = "vllm_router-0.1.23-cp38-abi3-linux_x86_64.whl", hash = "sha256:545aee83e3b10901a50d8426b32105bf3eeb9fa8af8c71cdc7f4cfc4303da42f" },
+    { filename = "vllm_router-0.1.23-cp38-abi3-linux_x86_64.whl", hash = "sha256:306525b002ec3d8652fcbfaf37cfa46f1fde48180e01ffa0efa0e55d952bbfc2" },
 ]
 
 [package.metadata]

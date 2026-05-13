@@ -3,18 +3,14 @@
 vLLM 0.20 ships a generic tokens-in / tokens-out handler at
 ``vllm.entrypoints.serve.disagg.serving.ServingTokens`` that already covers
 prefix-cache salting, lora dispatch, multimodal features, prompt logprobs and
-priority. Three prime-RL features are not in the upstream protocol though, so
+priority. Two prime-RL features are not in the upstream protocol though, so
 we subclass it to add them back:
 
 1. ``data_parallel_rank`` routing — read from the ``X-data-parallel-rank``
    header and forwarded to ``engine_client.generate``. The DP-replicated
    inference servers prime-RL runs need this to target a specific replica.
 
-2. ``routed_experts`` per-token export — when the engine emits routing
-   decisions (``enable_return_routed_experts``), surface them on each choice.
-   This is what the trainer's router-replay path consumes.
-
-3. Server-side ``max_tokens`` defaulting — ``ServingTokens`` hands the
+2. Server-side ``max_tokens`` defaulting — ``ServingTokens`` hands the
    client-supplied ``SamplingParams`` to the engine verbatim, and
    ``SamplingParams.max_tokens`` defaults to ``16`` (a dataclass-level
    default that predates the OpenAI-compat layer). Every other vLLM
@@ -30,85 +26,18 @@ delegates to upstream so we track future vLLM changes for free.
 
 from __future__ import annotations
 
-import base64
 from collections.abc import AsyncGenerator
 from functools import cached_property
 
-import numpy as np
 from fastapi import Request
-from pydantic import Field
 from vllm.entrypoints.openai.engine.protocol import ErrorResponse, RequestResponseMetadata
 from vllm.entrypoints.serve.disagg.protocol import (
     GenerateRequest,
     GenerateResponse,
-    GenerateResponseChoice,
 )
 from vllm.entrypoints.serve.disagg.serving import ServingTokens
 from vllm.entrypoints.utils import get_max_tokens
-from vllm.outputs import RequestOutput
 from vllm.sampling_params import RequestOutputKind, SamplingParams
-
-
-class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
-    routed_experts: dict | None = Field(
-        default=None,
-        description=(
-            "Per-token expert routing decisions (base85-encoded int32 array + shape). "
-            "Populated only when the engine was launched with "
-            "``enable_return_routed_experts=True``; otherwise ``None``."
-        ),
-    )
-
-
-class PrimeRlGenerateResponse(GenerateResponse):
-    choices: list[PrimeRlGenerateResponseChoice]
-
-
-def encode_routed_experts(arr: np.ndarray) -> dict:
-    return {
-        "data": base64.b85encode(arr.tobytes()).decode("ascii"),
-        "shape": list(arr.shape),
-    }
-
-
-class _RoutedExpertsCaptureBase:
-    """Wraps the engine result generator and accumulates a
-    ``{output_index: encoded_experts}`` map as outputs stream. Subclasses
-    implement ``post_process`` to fold the captured map into the response
-    in whatever shape the endpoint returns (in-place vs rebuilt)."""
-
-    def __init__(self, generator: AsyncGenerator[RequestOutput, None]):
-        self._generator = generator
-        self.routed_experts: dict[int, dict] = {}
-
-    async def __aiter__(self):
-        async for request_output in self._generator:
-            for output in request_output.outputs:
-                if output.routed_experts is not None:
-                    self.routed_experts[output.index] = encode_routed_experts(output.routed_experts)
-            yield request_output
-
-
-class _RoutedExpertsCapture(_RoutedExpertsCaptureBase):
-    """Generate-endpoint variant: rebuilds the response with
-    ``PrimeRlGenerateResponseChoice`` because upstream's
-    ``GenerateResponseChoice`` isn't ``extra='allow'``, so an attribute
-    set after construction wouldn't survive serialization."""
-
-    def post_process(self, response: GenerateResponse) -> PrimeRlGenerateResponse:
-        new_choices = [
-            PrimeRlGenerateResponseChoice(
-                **choice.model_dump(),
-                routed_experts=self.routed_experts.get(choice.index),
-            )
-            for choice in response.choices
-        ]
-        return PrimeRlGenerateResponse(
-            request_id=response.request_id,
-            choices=new_choices,
-            prompt_logprobs=response.prompt_logprobs,
-            kv_transfer_params=response.kv_transfer_params,
-        )
 
 
 async def _client_set_max_tokens(raw_request: Request | None) -> bool:
@@ -135,7 +64,7 @@ async def _client_set_max_tokens(raw_request: Request | None) -> bool:
 
 
 class PrimeRlServingTokens(ServingTokens):
-    """ServingTokens + DP-rank routing + routed_experts export + max_tokens defaulting."""
+    """ServingTokens + DP-rank routing + max_tokens defaulting."""
 
     @cached_property
     def _max_tokens_defaults(self) -> tuple[dict, int | None]:
@@ -162,13 +91,11 @@ class PrimeRlServingTokens(ServingTokens):
         self,
         request: GenerateRequest,
         raw_request: Request | None = None,
-    ) -> PrimeRlGenerateResponse | ErrorResponse | AsyncGenerator[str, None]:
+    ) -> GenerateResponse | ErrorResponse | AsyncGenerator[str, None]:
         # Mirrors upstream ``ServingTokens.serve_tokens`` (vllm 0.20). Diffs:
         # (a) inject ``data_parallel_rank`` from the inbound header into
         # ``engine_client.generate``; (b) default ``sampling_params.max_tokens``
-        # to ``max_model_len - prompt_len`` when the caller didn't set it; and
-        # (c) dispatch to our overridden response builder so ``routed_experts``
-        # makes it into the JSON.
+        # to ``max_model_len - prompt_len`` when the caller didn't set it.
         error_check_ret = await self._check_model(request)
         if error_check_ret is not None:
             return error_check_ret
@@ -261,9 +188,6 @@ class PrimeRlServingTokens(ServingTokens):
         )
 
         if request.stream:
-            # Streaming path: defer to upstream — prime-RL's renderer client
-            # only consumes the full response, so adding routed_experts to the
-            # streaming choice schema is unnecessary churn.
             return self.serve_tokens_stream_generator(
                 request,
                 result_generator,
@@ -275,31 +199,3 @@ class PrimeRlServingTokens(ServingTokens):
         return await self.serve_tokens_full_generator(
             request, result_generator, request_id, model_name, request_metadata
         )
-
-    async def serve_tokens_full_generator(  # type: ignore[override]
-        self,
-        request: GenerateRequest,
-        result_generator: AsyncGenerator[RequestOutput, None],
-        request_id: str,
-        model_name: str,
-        request_metadata: RequestResponseMetadata,
-    ) -> ErrorResponse | GenerateResponse:
-        # Mirror serving_chat_with_tokens: wrap the result generator to capture
-        # routed_experts as it streams, defer the rest to upstream, then post-
-        # process the response into our PrimeRlGenerateResponse subclass so the
-        # encoded experts surface in the JSON. Skipping the wrapper when the
-        # engine isn't producing routed experts keeps us a no-op subclass on
-        # the common path.
-        capture: _RoutedExpertsCapture | None = None
-        if self.model_config.enable_return_routed_experts:
-            capture = _RoutedExpertsCapture(result_generator)
-            result_generator = capture  # type: ignore[assignment]
-
-        response = await super().serve_tokens_full_generator(
-            request, result_generator, request_id, model_name, request_metadata
-        )
-
-        if capture is not None and isinstance(response, GenerateResponse):
-            response = capture.post_process(response)
-
-        return response
