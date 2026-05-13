@@ -1,5 +1,14 @@
+import os
+
 import torch
 from vllm.triton_utils import tl, triton
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
 
 
 def transformers_v5_compat():
@@ -558,17 +567,45 @@ def monkey_patch_load_lora_adapter():
         self: OpenAIServingModels, request: LoadLoRAAdapterRequest, base_model_name: str | None = None
     ) -> ErrorResponse | str:
         lora_name = request.lora_name
+        env_load_inplace = _env_flag("PRIME_RL_LORA_LOAD_INPLACE")
 
         # Ensure atomicity based on the lora name
         async with self.lora_resolver_lock[lora_name]:
             lora_path = request.lora_path
             ## START PATCHED CODE
-            if lora_name in self.lora_requests:
-                lora_request = self.lora_requests[lora_name]
-                lora_request.lora_path = lora_path
+            existing_request = self.lora_requests.get(lora_name)
+            request_load_inplace = bool(getattr(request, "load_inplace", False))
+            load_inplace = request_load_inplace or env_load_inplace
+            if existing_request is not None:
+                unique_id = existing_request.lora_int_id
+                if not load_inplace:
+                    logger.warning(
+                        "PrimeRL LoRA reload is reusing existing adapter id without load_inplace; "
+                        "the worker cache may keep the old adapter resident. name=%s id=%s old_path=%s new_path=%s",
+                        lora_name,
+                        unique_id,
+                        existing_request.lora_path,
+                        lora_path,
+                    )
             else:
                 unique_id = self.lora_id_counter.inc(1)
-                lora_request = LoRARequest(lora_name=lora_name, lora_int_id=unique_id, lora_path=lora_path)
+            lora_request = LoRARequest(
+                lora_name=lora_name,
+                lora_int_id=unique_id,
+                lora_path=lora_path,
+                load_inplace=load_inplace,
+            )
+            logger.info(
+                "PrimeRL LoRA load request: name=%s id=%s path=%s existed=%s request_load_inplace=%s "
+                "env_load_inplace=%s effective_load_inplace=%s",
+                lora_name,
+                unique_id,
+                lora_path,
+                existing_request is not None,
+                request_load_inplace,
+                env_load_inplace,
+                load_inplace,
+            )
             ## END PATCHED CODE
             if base_model_name is not None and self.is_base_model(base_model_name):
                 lora_request.base_model_name = base_model_name
@@ -598,6 +635,8 @@ def monkey_patch_load_lora_adapter():
 def monkey_patch_LRUCacheWorkerLoRAManager():
     from vllm.lora.worker_manager import LoRARequest, LRUCacheLoRAModelManager, LRUCacheWorkerLoRAManager
 
+    logger = init_logger(__name__)
+
     # The dunder is intended. It's a private method that we're patching.
     def _patched__apply_adapters(self: LRUCacheWorkerLoRAManager, lora_requests: set[LoRARequest]) -> None:
         loras_map = {lora_request.lora_int_id: lora_request for lora_request in lora_requests if lora_request}
@@ -621,7 +660,21 @@ def monkey_patch_LRUCacheWorkerLoRAManager():
         # the single-threaded core engine loop.
 
         ## START PATCHED CODE
-        if lora_request.lora_int_id not in self.list_adapters() or force_load:
+        already_loaded = lora_request.lora_int_id in self.list_adapters()
+        load_inplace = bool(getattr(lora_request, "load_inplace", False))
+        should_load = not already_loaded or force_load or load_inplace
+        logger.info(
+            "PrimeRL LoRA worker add_adapter: name=%s id=%s path=%s already_loaded=%s force_load=%s "
+            "load_inplace=%s will_load=%s",
+            lora_request.lora_name,
+            lora_request.lora_int_id,
+            lora_request.lora_path,
+            already_loaded,
+            force_load,
+            load_inplace,
+            should_load,
+        )
+        if should_load:
             ## END PATCHED CODE
             # Load the new adapter first to ensure it is actually valid, before
             # evicting any existing adapters.
@@ -642,6 +695,12 @@ def monkey_patch_LRUCacheWorkerLoRAManager():
         else:
             # If the lora is already loaded, just touch it to
             # update its position in the caches
+            logger.warning(
+                "PrimeRL LoRA worker skipped reload for already-loaded adapter. name=%s id=%s path=%s",
+                lora_request.lora_name,
+                lora_request.lora_int_id,
+                lora_request.lora_path,
+            )
             loaded = self._adapter_manager.get_adapter(lora_request.lora_int_id) is not None
         self._adapter_manager.activate_adapter(lora_request.lora_int_id)
         return loaded

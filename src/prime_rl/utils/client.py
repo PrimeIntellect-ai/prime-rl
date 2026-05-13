@@ -16,6 +16,30 @@ from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _summarize_lora_path(path: Path) -> str:
+    if not path.exists():
+        return "missing"
+
+    interesting = []
+    for filename in ("adapter_config.json", "adapter_model.safetensors", "adapter_model.bin"):
+        file_path = path / filename
+        if file_path.exists():
+            try:
+                stat = file_path.stat()
+            except OSError as exc:
+                interesting.append(f"{filename}:stat_error={exc}")
+            else:
+                interesting.append(f"{filename}:size={stat.st_size}:mtime={int(stat.st_mtime)}")
+    return ", ".join(interesting) if interesting else "present:no-known-adapter-files"
+
+
 @runtime_checkable
 class InferencePool(Protocol):
     """Protocol for inference pools (static or elastic)."""
@@ -382,14 +406,22 @@ LORA_LOAD_TOTAL_TIMEOUT_S = 120.0
 async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
     """Make a HTTP post request to the vLLM server to load a LoRA adapter.
 
-    Uses our wrapper endpoint that also resets the prefix cache to invalidate
-    KV states computed with old weights.
+    Uses our wrapper endpoint so diagnostics and optional cache invalidation can
+    run around vLLM's adapter-load handler.
 
     Retries with exponential backoff if the adapter files are not found,
     which can happen due to NFS propagation delays.
     """
     logger = get_logger()
     lora_path_posix = lora_path.as_posix()
+    load_inplace = _env_flag("PRIME_RL_LORA_LOAD_INPLACE")
+    logger.info(
+        "Loading LoRA adapter %s from %s (load_inplace=%s, path_summary=%s)",
+        lora_name,
+        lora_path,
+        load_inplace,
+        _summarize_lora_path(lora_path),
+    )
 
     @retry(
         retry=retry_if_exception(_is_retryable_lora_error),
@@ -401,7 +433,7 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
         logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
         response = await admin_client.post(
             "/load_lora_adapter",
-            json={"lora_name": lora_name, "lora_path": lora_path_posix},
+            json={"lora_name": lora_name, "lora_path": lora_path_posix, "load_inplace": load_inplace},
             timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0),
         )
         response.raise_for_status()

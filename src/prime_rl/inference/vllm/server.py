@@ -1,6 +1,11 @@
 import asyncio
+import json
+import os
+import time
+import traceback
 from argparse import Namespace
 from http import HTTPStatus
+from pathlib import Path
 from typing import Any
 
 import uvloop
@@ -161,6 +166,53 @@ logger = init_logger("vllm.entrypoints.openai.api_server")
 router = APIRouter()
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _dump_nonfinite_request(raw_request: Request, body: bytes, exc: BaseException) -> Path:
+    dump_dir = Path(os.getenv("PRIME_RL_NONFINITE_DUMP_DIR", "/tmp/prime-rl-nonfinite-requests"))
+    dump_dir.mkdir(parents=True, exist_ok=True)
+
+    body_text = body.decode("utf-8", errors="replace")
+    try:
+        parsed_body: Any = json.loads(body_text)
+    except json.JSONDecodeError:
+        parsed_body = None
+
+    safe_path = raw_request.url.path.strip("/").replace("/", "_") or "root"
+    dump_path = dump_dir / f"{int(time.time() * 1000)}-{os.getpid()}-{safe_path}.json"
+    headers = {k: v for k, v in raw_request.headers.items() if k.lower() != "authorization"}
+    payload = {
+        "method": raw_request.method,
+        "url": str(raw_request.url),
+        "path": raw_request.url.path,
+        "headers": headers,
+        "error": repr(exc),
+        "traceback": traceback.format_exc(),
+        "body_json": parsed_body,
+        "body_text": None if parsed_body is not None else body_text,
+    }
+    with dump_path.open("w") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False, default=str)
+    return dump_path
+
+
+async def _nonfinite_request_dump_middleware(request: Request, call_next):
+    body = await request.body()
+    try:
+        return await call_next(request)
+    except ValueError as exc:
+        if "Out of range float values are not JSON compliant" not in str(exc):
+            raise
+        dump_path = _dump_nonfinite_request(request, body, exc)
+        logger.exception("Dumped request that produced a non-finite JSON response to %s", dump_path)
+        raise
+
+
 def engine_client(request: Request) -> EngineClient:
     return request.app.state.engine_client
 
@@ -235,6 +287,13 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
     response = await handler.load_lora_adapter(lora_request)
     if isinstance(response, ErrorResponse):
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
+    if _env_flag("PRIME_RL_RESET_PREFIX_CACHE_AFTER_LORA_LOAD"):
+        logger.warning(
+            "Resetting prefix cache after LoRA load: name=%s path=%s",
+            lora_request.lora_name,
+            lora_request.lora_path,
+        )
+        await engine_client(raw_request).reset_prefix_cache(reset_running_requests=False, reset_connector=False)
     return {"status": "ok"}
 
 
@@ -323,6 +382,10 @@ def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None)
     """
     app = _original_build_app(args, supported_tasks, model_config)
     app.include_router(router)
+    if _env_flag("PRIME_RL_DUMP_NONFINITE_REQUESTS"):
+        app.middleware("http")(_nonfinite_request_dump_middleware)
+        dump_dir = os.getenv("PRIME_RL_NONFINITE_DUMP_DIR", "/tmp/prime-rl-nonfinite-requests")
+        logger.warning("Enabled non-finite JSON response request dumps at %s", dump_dir)
     return app
 
 
