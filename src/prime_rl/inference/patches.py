@@ -83,9 +83,7 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
         for name, param in parameters.items():
             param.data.copy_(getattr(layer, name))
         for name, buffer in buffers.items():
-            materialized_buffer = layer._buffers.get(name)
-            if materialized_buffer is not None:
-                buffer.data.copy_(materialized_buffer)
+            buffer.data.copy_(getattr(layer, name))
 
         reload_layerwise._place_kernel_tensors(layer, info)
 
