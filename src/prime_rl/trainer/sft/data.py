@@ -748,15 +748,21 @@ def _resolve_local_data_files(data_files: list[str] | None) -> list[str] | None:
 
     Both steps stream line-by-line — no full-file load into memory — so the
     14GB full Plex dataset goes through the same path as the 38MB sample.
+
+    Only the global-rank-0 process performs the work; other ranks wait on a
+    barrier and then read the materialized files. Without this gate, parallel
+    ranks racing to write the same TMPDIR path produced byte-interleaved
+    output that PyArrow rejected with "Missing closing quotation mark".
     """
     if not data_files:
         return data_files
+    is_rank_zero = not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
     resolved: list[str] = []
     for path in data_files:
         p = Path(path)
         if p.suffix == ".zst":
             tmp = Path(tempfile.gettempdir()) / (p.stem + ".prime_rl_normalized.jsonl")
-            if not tmp.exists() or tmp.stat().st_size == 0:
+            if is_rank_zero and (not tmp.exists() or tmp.stat().st_size == 0):
                 get_logger().info(f"Decompressing + normalizing {p} → {tmp}")
                 decompressed = Path(tempfile.gettempdir()) / (p.stem + ".prime_rl_raw")
                 if not decompressed.exists() or decompressed.stat().st_size == 0:
@@ -765,12 +771,14 @@ def _resolve_local_data_files(data_files: list[str] | None) -> list[str] | None:
             resolved.append(str(tmp))
         elif p.suffix == ".jsonl":
             tmp = Path(tempfile.gettempdir()) / (p.stem + ".prime_rl_normalized.jsonl")
-            if not tmp.exists() or tmp.stat().st_size == 0:
+            if is_rank_zero and (not tmp.exists() or tmp.stat().st_size == 0):
                 get_logger().info(f"Normalizing {p} → {tmp}")
                 _normalize_jsonl(p, tmp)
             resolved.append(str(tmp))
         else:
             resolved.append(str(p))
+    if torch.distributed.is_initialized():
+        torch.distributed.barrier()
     return resolved
 
 
