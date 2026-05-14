@@ -479,10 +479,6 @@ def train(config: TrainerConfig):
             tensors["entropy/all"].append(entropy)
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
-            with torch.no_grad():
-                _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(out["logprobs"], inference_logprobs)
-            mismatch_kl = mismatch_kl[loss_mask].detach().to("cpu")
-
             env_names = micro_batch["env_names"]
             masked_env_names = [env_name for env_name, keep in zip(env_names, loss_mask.flatten().tolist()) if keep]
             env_to_indices: dict[str, list[int]] = {}
@@ -491,7 +487,13 @@ def train(config: TrainerConfig):
 
             for env_name, indices in env_to_indices.items():
                 tensors[f"entropy/{env_name}"].append(entropy[indices])
-                tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
+
+            if not micro_batch["sft_loss"]:
+                with torch.no_grad():
+                    _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(out["logprobs"], inference_logprobs)
+                mismatch_kl = mismatch_kl[loss_mask].detach().to("cpu")
+                for env_name, indices in env_to_indices.items():
+                    tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)
@@ -507,7 +509,9 @@ def train(config: TrainerConfig):
                 tensors[key].append(loss_tensor)
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy/all'][-1].mean().item():.4f} | Mismatch KL: {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
+            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy/all'][-1].mean().item():.4f}"
+            if not micro_batch["sft_loss"]:
+                micro_step_message += f" | Mismatch KL: {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
@@ -555,7 +559,9 @@ def train(config: TrainerConfig):
 
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/all/mean']:.4f} | Mismatch KL: {tensor_stats['mismatch_kl/all/mean']:.4f}"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/all/mean']:.4f}"
+        if "mismatch_kl/all/mean" in tensor_stats:
+            step_message += f" | Mismatch KL: {tensor_stats['mismatch_kl/all/mean']:.4f}"
         if grad_norm is not None:
             step_message += f" | Grad. Norm: {grad_norm:.4f}"
         step_message += f" | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
