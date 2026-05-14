@@ -1,10 +1,6 @@
 name: Build Image (ghcr)
 
 on:
-  push:
-    branches:
-      # TEMP: remove before merging. Allows testing this new workflow before it exists on main.
-      - chore/ghcr-image-publish
   workflow_dispatch:
     inputs:
       ref:
