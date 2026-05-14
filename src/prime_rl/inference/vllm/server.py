@@ -258,6 +258,17 @@ def _error_dump_dir() -> Path:
     return dump_dir
 
 
+def _is_error_dump_target(scope: Scope) -> bool:
+    if scope.get("method") != "POST":
+        return False
+    path = str(scope.get("path", ""))
+    configured = os.getenv(
+        "PRIME_RL_REQUEST_DUMP_PATHS",
+        "/v1/chat/completions,/v1/chat/completions/tokens,/v1/generate,/inference/v1/generate",
+    )
+    return any(path == target.strip() for target in configured.split(",") if target.strip())
+
+
 def _dump_error_request_record(scope: Scope, body: bytes, exc: BaseException) -> Path:
     dump_dir = _error_dump_dir()
     body_json = _safe_json_loads(body)
@@ -291,6 +302,9 @@ class RequestDiagnosticsMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        if not _is_error_dump_target(scope):
             await self.app(scope, receive, send)
             return
 
