@@ -1,6 +1,8 @@
 name: Build Image (ghcr)
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       ref:
@@ -25,8 +27,8 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: primeintellect-ai/prime-rl
-  BUILD_REF: ${{ inputs.ref || github.ref_name }}
-  BUILD_TAG: ${{ inputs.tag || '' }}
+  BUILD_REF: ${{ github.event.release.tag_name || inputs.ref || github.ref_name }}
+  BUILD_TAG: ${{ github.event.release.tag_name || inputs.tag || '' }}
   BUILD_PLATFORMS: ${{ inputs.platforms || 'both' }}
 
 jobs:
