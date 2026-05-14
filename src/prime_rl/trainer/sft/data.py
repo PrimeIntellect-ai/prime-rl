@@ -6,6 +6,7 @@ from typing import Literal, TypedDict, cast
 import torch
 from datasets import Dataset, interleave_datasets, load_dataset
 from jaxtyping import Bool, Int
+from renderers.base import Renderer, build_training_sample
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.utils.data import IterableDataset, get_worker_info
@@ -127,7 +128,7 @@ class SFTDataset(StatefulIterableDataset):
         loss_mask_config: LossMaskConfig = LossMaskConfig(),
         max_examples: int | None = None,
         max_epochs: int | None = None,
-        renderer=None,
+        renderer: Renderer | None = None,
     ):
         super().__init__()
         self.logger = get_logger()
@@ -141,6 +142,7 @@ class SFTDataset(StatefulIterableDataset):
         self.max_examples = max_examples
         self.max_epochs = max_epochs
         self.renderer = renderer
+        self._warned_chat_template_kwargs = False
 
         if self.tokenizer is None:
             self.logger.warning("No tokenizer provided, will not process examples")
@@ -209,7 +211,14 @@ class SFTDataset(StatefulIterableDataset):
                     raise ValueError(f"Invalid message role: {message['role']}")
 
         if self.renderer is not None:
-            from renderers.base import build_training_sample
+            if example.get("chat_template_kwargs") and not self._warned_chat_template_kwargs:
+                self.logger.warning(
+                    "Example carries chat_template_kwargs but use_renderer=True; "
+                    "renderers don't forward chat_template_kwargs (model-specific "
+                    "renderers bake their template behavior in). These kwargs will "
+                    "be ignored. Further warnings suppressed for this dataset."
+                )
+                self._warned_chat_template_kwargs = True
 
             input_ids, loss_mask = build_training_sample(
                 self.renderer,
@@ -549,7 +558,7 @@ def setup_dataset(
     *,
     max_epochs: int | None = None,
     raw_dataset: Dataset | None = None,
-    renderer=None,
+    renderer: Renderer | None = None,
 ) -> StatefulIterableDataset:
     if config.type == "fake":
         return FakeDataset(
