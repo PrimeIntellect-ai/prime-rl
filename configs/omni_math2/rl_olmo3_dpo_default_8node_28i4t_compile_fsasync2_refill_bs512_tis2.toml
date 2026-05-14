@@ -1,0 +1,151 @@
+max_steps = 100
+max_async_level = 2
+seq_len = 16384
+output_dir = "outputs/omni_math2_rlvr_canary/default_8node_28i4t_fsasync2_refill_bs512_tis2"
+
+[log]
+level = "info"
+
+[slurm]
+job_name = "olmo3-28i4t-fsasync2-refill-bs512-tis2"
+project_dir = "/lus/lfs1aip2/projects/a6r/joanv.a6r/work/prime-rl"
+partition = "workq"
+account = "brics.a6r"
+time = "08:00:00"
+
+[model]
+name = "allenai/Olmo-3-7B-Instruct-DPO"
+
+[weight_broadcast]
+type = "filesystem"
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 4
+num_train_nodes = 1
+num_infer_nodes = 1
+num_infer_replicas = 7
+nodes_per_fsdp_group = 1
+
+[wandb]
+project = "omni-math2-rlvr"
+name = "olmo3-dpo-default-28i4t-fsasync2-refill-bs512-tis2"
+
+[ckpt]
+interval = 25
+keep_last = 2
+keep_interval = 50
+
+[orchestrator.wandb.log_extras]
+samples = false
+distributions = true
+interval = 10
+
+[trainer]
+pack_samples = true
+
+[trainer.model]
+impl = "custom"
+seq_len = 18432
+dp_replicate = 1
+cp = 1
+ep = 1
+attn = "flash_attention_3"
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+reshard_after_forward = false
+fused_lm_head_token_chunk_size = 8192
+
+[trainer.model.ac]
+freq = 2
+
+[trainer.model.compile]
+
+[trainer.optim]
+type = "adamw"
+lr = 3e-6
+weight_decay = 0.0
+max_norm = 1.0
+betas1 = 0.9
+betas2 = 0.95
+
+[trainer.loss]
+type = "default"
+dppo_mask_low = 0.2
+dppo_mask_high = 0.2
+adv_tau = 1.0
+teacher_tau = 0.0
+kl_tau = 1e-4
+importance_ratio_clip = 2.0
+
+[orchestrator]
+batch_size = 512
+max_inflight_rollouts = 1536
+rollouts_per_example = 8
+max_off_policy_steps = 4
+
+[orchestrator.advantage]
+type = "default"
+length_shaping = true
+
+[orchestrator.train_batch_refill]
+enabled = true
+max_refill_rounds = 4
+candidate_groups_per_round = 32
+max_candidate_groups = 128
+
+[orchestrator.train]
+num_workers = 28
+
+[orchestrator.train.sampling]
+temperature = 1.0
+top_p = 0.95
+max_completion_tokens = 15360
+
+[[orchestrator.train.env]]
+id = "omni_math2_singleturn"
+name = "omni-math2-train"
+args = { dataset_name = "joanvelja/omni-math2-olmo3-perfectible-seed42", dataset_split = "train", question_key = "problem", answer_key = "answer", example_id_key = "id", task_name = "omni_math2", prompts_ref = "configs/baselines/omni_math2_prompt_pack.yaml", use_judge_fallback = true, judge_model = "gpt-5.4-mini", judge_persistent_cache_path = "outputs/judge-cache/omni_math2_rlvr_gpt54mini.sqlite3", math_verify_max_workers = 50, math_verify_timeout_seconds = 5 }
+
+[orchestrator.buffer]
+easy_threshold = 1.0
+online_difficulty_filtering = true
+seed = 42
+
+[orchestrator.eval]
+interval = 25
+num_examples = 100
+seed = 42
+rollouts_per_example = 8
+max_concurrent_rollouts_per_client = 32
+num_workers = 96
+eval_base_model = true
+cancel_inflight_rollouts_on_eval = false
+
+[orchestrator.eval.sampling]
+temperature = 0.6
+top_p = 0.95
+max_completion_tokens = 15360
+
+[[orchestrator.eval.env]]
+id = "omni_math2_singleturn"
+name = "omni-math2-baseline100"
+num_examples = 100
+rollouts_per_example = 8
+interval = 25
+args = { dataset_name = "json", data_files = "benchmarks/datasets/omni_math2/omni_math2_stratified_600_seed42.jsonl", dataset_split = "train", question_key = "problem", answer_key = "answer", example_id_key = "id", task_name = "omni_math2", prompts_ref = "configs/baselines/omni_math2_prompt_pack.yaml", use_judge_fallback = true, judge_model = "gpt-5.4-mini", judge_persistent_cache_path = "outputs/judge-cache/omni_math2_rlvr_gpt54mini.sqlite3", math_verify_max_workers = 50, math_verify_timeout_seconds = 10 }
+
+[inference]
+gpu_memory_utilization = 0.95
+enable_fp32_lm_head = true
+enable_prefix_caching = false
+enable_expert_parallel = false
+vllm_extra = { max_num_seqs = 192, max_num_batched_tokens = 65536, performance_mode = "throughput", generation_config = "vllm", stream_interval = 10 }
+
+[inference.model]
+max_model_len = 16384
+enforce_eager = false
+
+[inference.parallel]
+tp = 1
+dp = 1
