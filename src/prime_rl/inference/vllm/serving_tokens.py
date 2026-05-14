@@ -54,11 +54,10 @@ class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
 
 class PrimeRlGenerateResponse(GenerateResponse):
     choices: list[PrimeRlGenerateResponseChoice]
-    prompt_token_ids: list[int]
 
 
 class _GenerateRoutedExpertsCapture(RoutedExpertsCapture):
-    def post_process(self, response: GenerateResponse, prompt_token_ids: list[int]) -> PrimeRlGenerateResponse:
+    def post_process(self, response: GenerateResponse) -> PrimeRlGenerateResponse:
         choices = [
             PrimeRlGenerateResponseChoice(
                 **choice.model_dump(),
@@ -69,7 +68,6 @@ class _GenerateRoutedExpertsCapture(RoutedExpertsCapture):
         return PrimeRlGenerateResponse(
             request_id=response.request_id,
             choices=choices,
-            prompt_token_ids=prompt_token_ids,
             prompt_logprobs=response.prompt_logprobs,
             kv_transfer_params=response.kv_transfer_params,
         )
@@ -126,11 +124,13 @@ class PrimeRlServingTokens(ServingTokens):
         self,
         request: GenerateRequest,
         raw_request: Request | None = None,
-    ) -> GenerateResponse | ErrorResponse | AsyncGenerator[str, None]:
+    ) -> PrimeRlGenerateResponse | ErrorResponse | AsyncGenerator[str, None]:
         # Mirrors upstream ``ServingTokens.serve_tokens`` (vllm 0.20). Diffs:
         # (a) inject ``data_parallel_rank`` from the inbound header into
         # ``engine_client.generate``; (b) default ``sampling_params.max_tokens``
-        # to ``max_model_len - prompt_len`` when the caller didn't set it.
+        # to ``max_model_len - prompt_len`` when the caller didn't set it; and
+        # (c) dispatch to our overridden response builder so ``routed_experts``
+        # makes it into the JSON.
         error_check_ret = await self._check_model(request)
         if error_check_ret is not None:
             return error_check_ret
@@ -223,6 +223,9 @@ class PrimeRlServingTokens(ServingTokens):
         )
 
         if request.stream:
+            # Streaming path: defer to upstream — prime-RL's renderer client
+            # only consumes the full response, so adding routed_experts to the
+            # streaming choice schema is unnecessary churn.
             return self.serve_tokens_stream_generator(
                 request,
                 result_generator,
@@ -243,7 +246,13 @@ class PrimeRlServingTokens(ServingTokens):
         model_name: str,
         request_metadata: RequestResponseMetadata,
     ) -> ErrorResponse | GenerateResponse:
-        capture = None
+        # Mirror serving_chat_with_tokens: wrap the result generator to capture
+        # routed_experts as it streams, defer the rest to upstream, then post-
+        # process the response into our PrimeRlGenerateResponse subclass so the
+        # encoded experts surface in the JSON. Skipping the wrapper when the
+        # engine isn't producing routed experts keeps us a no-op subclass on
+        # the common path.
+        capture: _GenerateRoutedExpertsCapture | None = None
         if self.model_config.enable_return_routed_experts:
             capture = _GenerateRoutedExpertsCapture(result_generator)
             result_generator = capture
@@ -253,6 +262,6 @@ class PrimeRlServingTokens(ServingTokens):
         )
 
         if capture is not None and isinstance(response, GenerateResponse):
-            response = capture.post_process(response, request.token_ids)
+            response = capture.post_process(response)
 
         return response

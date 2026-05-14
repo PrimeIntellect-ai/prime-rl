@@ -39,10 +39,8 @@ def _routed_experts_payload(data, dtype=np.uint8) -> str:
 
 def _sample_routed_experts(sample) -> np.ndarray:
     assert sample.routed_experts is not None
-    assert sample.routed_experts_shape is not None
-    assert sample.routed_experts_dtype is not None
-    return np.frombuffer(sample.routed_experts, dtype=np.dtype(sample.routed_experts_dtype)).reshape(
-        sample.routed_experts_shape
+    return np.frombuffer(sample.routed_experts.data, dtype=np.dtype(sample.routed_experts.dtype)).reshape(
+        sample.routed_experts.shape
     )
 
 

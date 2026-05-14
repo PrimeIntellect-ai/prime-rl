@@ -1,4 +1,12 @@
-"""Sanity tests for the prime-RL ``ServingTokens`` subclass."""
+"""Sanity tests for the prime-RL ``ServingTokens`` subclass.
+
+The full happy-path is owned upstream by vLLM 0.20's
+``vllm/entrypoints/serve/disagg`` test suite. We only cover the prime-RL
+deltas here:
+    * ``serialize_routed_experts`` round-trips a numpy array as expected.
+    * The subclass attaches its overrides without monkey-patching the parent.
+    * ``_client_set_max_tokens`` distinguishes raw-body shapes correctly.
+"""
 
 from __future__ import annotations
 
@@ -82,12 +90,12 @@ def test_client_set_max_tokens_detects_unset():
 
 
 def test_client_set_max_tokens_assumes_set_when_body_unreadable():
-    # No raw_request: can't tell, don't override.
+    # No raw_request → can't tell, don't override.
     assert asyncio.run(_client_set_max_tokens(None)) is True
 
-    # body read raises: can't tell, don't override.
+    # body read raises → can't tell, don't override.
     err = ValueError("bad json")
     assert asyncio.run(_client_set_max_tokens(_FakeRawRequest(err))) is True
 
-    # non-dict body: can't tell, don't override.
+    # non-dict body → can't tell, don't override.
     assert asyncio.run(_client_set_max_tokens(_FakeRawRequest([1, 2, 3]))) is True

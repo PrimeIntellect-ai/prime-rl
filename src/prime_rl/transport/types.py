@@ -1,6 +1,14 @@
 import msgspec
 
 
+# Routed experts are large per-token arrays. tolist() is too expensive, so we
+# send raw bytes through msgpack and carry the shape/dtype needed to rebuild.
+class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    data: bytes
+    shape: list[int]  # [seq_len, layers, topk]
+    dtype: str
+
+
 # Orchestrator -> Packer
 class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A single training example."""
@@ -21,9 +29,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # image_grid_thw: grid dimensions [num_images, 3] where each entry is [temporal, height, width]
     image_grid_thw: list[list[int]] | None = None
 
-    routed_experts: bytes | None = None
-    routed_experts_shape: list[int] | None = None  # [seq_len, layers, topk]
-    routed_experts_dtype: str | None = None
+    routed_experts: RoutedExperts | None = None
 
     # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: list[int] | None = None
@@ -51,9 +57,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     temperatures: list[float]  # Per-token temperatures used during generation
     teacher_logprobs: list[float] | None = None
     lora_num_tokens: list[int] | None = None
-    routed_experts: bytes | None = None
-    routed_experts_shape: list[int] | None = None  # [seq_len, layers, topk]
-    routed_experts_dtype: str | None = None
+    routed_experts: RoutedExperts | None = None
 
     # Multimodal fields (Qwen3-VL) — pixel_values stored as raw float32 bytes for efficient serialization
     pixel_values: bytes | None = None

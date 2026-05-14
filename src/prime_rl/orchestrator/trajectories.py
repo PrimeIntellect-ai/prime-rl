@@ -12,7 +12,7 @@ import verifiers as vf
 from PIL import Image
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.transport import TrainingSample
+from prime_rl.transport import RoutedExperts, TrainingSample
 from prime_rl.utils.chat_template import (
     common_prefix_len,
     deserialize_tool_calls,
@@ -56,16 +56,15 @@ def _align_routed_experts(
     return np.concatenate((routed_experts, padding), axis=0)
 
 
-def _set_sample_routed_experts(sample: TrainingSample, routed_experts: np.ndarray | None) -> None:
+def _pack_routed_experts(routed_experts: np.ndarray | None) -> RoutedExperts | None:
     if routed_experts is None:
-        sample.routed_experts = None
-        sample.routed_experts_shape = None
-        sample.routed_experts_dtype = None
-        return
+        return None
     routed_experts = np.ascontiguousarray(routed_experts)
-    sample.routed_experts = routed_experts.tobytes()
-    sample.routed_experts_shape = list(routed_experts.shape)
-    sample.routed_experts_dtype = str(routed_experts.dtype)
+    return RoutedExperts(
+        data=routed_experts.tobytes(),
+        shape=list(routed_experts.shape),
+        dtype=str(routed_experts.dtype),
+    )
 
 
 def _common_prefix_len(a: list[int], b: list[int]) -> int:
@@ -359,9 +358,9 @@ def interleave_rollout(
             completion_temperatures=[temperature] * len(completion_ids),
             teacher_logprobs=None,
             advantage=None,
+            routed_experts=_pack_routed_experts(routed_experts),
             mm_token_type_ids=None,
         )
-        _set_sample_routed_experts(sample, routed_experts)
         return sample, routed_experts
 
     def extend_sample(
@@ -401,7 +400,7 @@ def interleave_rollout(
             sample_routed_experts = np.concatenate((sample_routed_experts, step_routed[prefix_len:]), axis=0)
             expected_len = len(sample.prompt_ids) + len(sample.completion_ids)
             sample_routed_experts = _align_routed_experts(sample_routed_experts, expected_len)
-            _set_sample_routed_experts(sample, sample_routed_experts)
+            sample.routed_experts = _pack_routed_experts(sample_routed_experts)
         return sample_routed_experts
 
     # Track [prefix_tokens, sample, last_step_idx, routed_experts] per active sample

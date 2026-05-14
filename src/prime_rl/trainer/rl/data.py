@@ -202,15 +202,14 @@ class DataLoader:
             micro_batch.lora_num_tokens = [0] * self.multi_run_manager.max_runs
             micro_batch.lora_num_tokens[0] = len(micro_batch.input_ids)
         routed_experts = None
-        if micro_batch.routed_experts is not None:
-            assert micro_batch.routed_experts_shape is not None
-            assert micro_batch.routed_experts_dtype is not None
+        packed_routed_experts = micro_batch.routed_experts
+        if packed_routed_experts is not None:
             routed_experts = (
                 torch.frombuffer(
-                    micro_batch.routed_experts,
-                    dtype=ROUTED_EXPERTS_TORCH_DTYPES[micro_batch.routed_experts_dtype],
+                    packed_routed_experts.data,
+                    dtype=ROUTED_EXPERTS_TORCH_DTYPES[packed_routed_experts.dtype],
                 )
-                .reshape(micro_batch.routed_experts_shape)
+                .reshape(packed_routed_experts.shape)
                 .to(torch.int32)
                 .unsqueeze(0)
             )
