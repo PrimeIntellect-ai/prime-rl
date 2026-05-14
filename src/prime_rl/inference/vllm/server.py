@@ -252,40 +252,17 @@ def _request_headers(scope: Scope) -> dict[str, str]:
     return headers
 
 
-def _request_dump_dir() -> Path:
-    dump_dir = Path(os.getenv("PRIME_RL_REQUEST_DUMP_DIR", "/tmp/prime-rl-request-dumps"))
+def _error_dump_dir() -> Path:
+    dump_dir = Path(os.getenv("PRIME_RL_NONFINITE_DUMP_DIR", "/tmp/prime-rl-nonfinite-requests"))
     dump_dir.mkdir(parents=True, exist_ok=True)
     return dump_dir
 
 
-def _path_is_capture_target(path: str) -> bool:
-    configured = os.getenv(
-        "PRIME_RL_REQUEST_DUMP_PATHS",
-        "/v1/chat/completions,/v1/chat/completions/tokens,/v1/generate,/inference/v1/generate",
-    )
-    return any(path == target.strip() for target in configured.split(",") if target.strip())
-
-
-def _should_dump_request(scope: Scope) -> bool:
-    if not _env_flag("PRIME_RL_DUMP_REQUESTS"):
-        return False
-    if scope.get("method") != "POST":
-        return False
-    path = str(scope.get("path", ""))
-    if not _path_is_capture_target(path):
-        return False
-    min_step = _env_int("PRIME_RL_REQUEST_DUMP_MIN_LORA_STEP")
-    current_step = _CURRENT_LORA_CONTEXT.get("step")
-    if min_step is not None and (current_step is None or int(current_step) < min_step):
-        return False
-    return True
-
-
-def _dump_request_record(scope: Scope, body: bytes, *, kind: str, exc: BaseException | None = None) -> Path:
-    dump_dir = _request_dump_dir()
+def _dump_error_request_record(scope: Scope, body: bytes, exc: BaseException) -> Path:
+    dump_dir = _error_dump_dir()
     body_json = _safe_json_loads(body)
     record = {
-        "kind": kind,
+        "kind": "error",
         "time": time.time(),
         "pid": os.getpid(),
         "method": scope.get("method"),
@@ -295,20 +272,12 @@ def _dump_request_record(scope: Scope, body: bytes, *, kind: str, exc: BaseExcep
         "lora": dict(_CURRENT_LORA_CONTEXT),
         "body_json": body_json,
         "body_text": None if body_json is not None else body.decode("utf-8", errors="replace"),
+        "error": repr(exc),
+        "traceback": traceback.format_exc(),
     }
-    if exc is not None:
-        record["error"] = repr(exc)
-        record["traceback"] = traceback.format_exc()
-
-    if kind == "request":
-        dump_path = dump_dir / f"requests-{os.getpid()}.jsonl"
-        with dump_path.open("a") as f:
-            f.write(json.dumps(record, ensure_ascii=False, default=str))
-            f.write("\n")
-        return dump_path
 
     safe_path = str(scope.get("path", "root")).strip("/").replace("/", "_") or "root"
-    dump_path = dump_dir / f"{kind}-{int(time.time() * 1000)}-{os.getpid()}-{safe_path}.json"
+    dump_path = dump_dir / f"error-{int(time.time() * 1000)}-{os.getpid()}-{safe_path}.json"
     with dump_path.open("w") as f:
         json.dump(record, f, indent=2, ensure_ascii=False, default=str)
     return dump_path
@@ -343,15 +312,11 @@ class RequestDiagnosticsMiddleware:
                 return messages.pop(0)
             return {"type": "http.request", "body": b"", "more_body": False}
 
-        if _should_dump_request(scope):
-            dump_path = _dump_request_record(scope, body, kind="request")
-            logger.debug("Dumped inference request for replay to %s", dump_path)
-
         try:
             await self.app(scope, replay_receive, send)
         except Exception as exc:
             if _is_nonfinite_json_error(exc) or _env_flag("PRIME_RL_DUMP_ALL_REQUEST_ERRORS"):
-                dump_path = _dump_request_record(scope, body, kind="error", exc=exc)
+                dump_path = _dump_error_request_record(scope, body, exc)
                 logger.exception("Dumped inference request after server error to %s", dump_path)
             raise
 
@@ -576,13 +541,11 @@ def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None)
     """
     app = _original_build_app(args, supported_tasks, model_config)
     app.include_router(router)
-    if _env_flag("PRIME_RL_DUMP_REQUESTS") or _env_flag("PRIME_RL_DUMP_NONFINITE_REQUESTS"):
+    if _env_flag("PRIME_RL_DUMP_NONFINITE_REQUESTS") or _env_flag("PRIME_RL_DUMP_ALL_REQUEST_ERRORS"):
         app.middleware_stack = RequestDiagnosticsMiddleware(app.middleware_stack or app.build_middleware_stack())
         logger.warning(
-            "Enabled inference request diagnostics dumps at %s (min_lora_step=%s paths=%s)",
-            _request_dump_dir(),
-            os.getenv("PRIME_RL_REQUEST_DUMP_MIN_LORA_STEP"),
-            os.getenv("PRIME_RL_REQUEST_DUMP_PATHS"),
+            "Enabled inference error request dumps at %s",
+            _error_dump_dir(),
         )
     if _env_flag("PRIME_RL_DUMP_NONFINITE_REQUESTS"):
         dump_dir = os.getenv("PRIME_RL_NONFINITE_DUMP_DIR", "/tmp/prime-rl-nonfinite-requests")
