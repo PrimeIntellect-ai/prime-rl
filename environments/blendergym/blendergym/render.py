@@ -59,6 +59,7 @@ class RenderResult:
     code_path: Path | None = None
     log_path: Path | None = None
     timed_out: bool = False
+    gpu_id: int | None = None
     extra: dict[str, object] = field(default_factory=dict)
 
 

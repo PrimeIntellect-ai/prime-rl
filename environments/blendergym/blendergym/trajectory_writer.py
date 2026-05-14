@@ -213,7 +213,9 @@ def write_trajectory_artifacts(
         "num_turns": len(turns),
         "max_turns": rollout.max_turns,
         "steps": [asdict(r) for r in turns],
-        "runtime": {"gpu_id": rollout.gpu_id},
+        "runtime": {
+            "render_gpus": [t.render_gpu_id for t in turns],
+        },
     }
 
     meta_path = paths.meta_json if paths else work_dir / "meta.json"

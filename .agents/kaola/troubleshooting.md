@@ -4,6 +4,58 @@
 
 ---
 
+## 2026-05-13 — 自定义镜像导致 PodInitializing 长时间卡住
+
+### 不要用 `--image`，使用 KAOLA 默认 ECR 镜像
+
+**现象**：`koala submit --image "ericzyma/prime-rl-blendergym:v0.0.5"` 提交后，pod 持续停留在 `PodInitializing` 状态（5-10+ 分钟），`koala logs` 报 `container is waiting to start`。集群有空闲 GPU，不是资源问题。
+
+**原因**：自定义镜像托管在 Docker Hub，集群节点需要跨区域拉取大镜像（数 GB）。KAOLA 默认 ECR 镜像（`600627331169.dkr.ecr.us-west-2.amazonaws.com/arcwm/train-aws:cuda12.8-efa1.44-ubuntu24.04-zsh-uvcache`）在同区域 ECR，节点普遍有缓存，秒级拉取。
+
+**解决**：不要指定 `--image`，让 koala 使用默认镜像。所有项目依赖通过 `--sync-code` 同步本地代码 + `setup_kaola.sh` 中 `uv sync` 安装。
+
+---
+
+## 2026-05-13 — 本地代码改动未进入 pod
+
+### 漏了 `--sync-code` 导致 pod 运行镜像内置旧代码
+
+**现象**：本地修改了 `gpu_mem.py` 等文件，但 pod 里的行为没变、新增的日志不出现。
+
+**原因**：`koala submit` 不加 `--sync-code` 时，pod 使用镜像内置的代码。本地改动只存在于 Mac 上。
+
+**解决**：提交时必须加 `--sync-code .:/data/work/prime-rl`，并在 `-c` 命令中 `cd /data/work/prime-rl`（而非镜像内置的 `/code/prime-rl`）。
+
+---
+
+## 2026-05-13 — rsync 无法覆盖 S3 上已有文件
+
+### S3 FUSE mtime 不可靠 + `--inplace` 对已有对象的写入异常
+
+**现象**：新训练 `142027` 启动后，S3 上的 `orchestrator.log`、`env_worker_0.log` 等日志仍保持旧训练 `135718` 的内容（14:10 时间戳）。而新创建的 `trainer/torchrun/` 子目录文件（14:27 时间戳）正常同步。
+
+**原因**：三因素叠加——
+1. S3 对象的 mtime 由 FUSE 层模拟，`utimensat()` 不可靠。rsync `-a`（隐含 `-t`）依赖 mtime 判断"未变化"而跳过已有文件。
+2. S3 对象不可变，`--inplace` 的 truncate + write 流程在部分 FUSE 实现中对已有文件出错。
+3. `2>/dev/null || true` 吞掉所有错误。
+
+新文件不受影响（直接 `creat()` + `write()` + `close()`，FUSE 作为新对象上传）。
+
+**解决**：
+1. rsync 改用 `-rlt`（去掉 `-a` 中的 `-o -g`，S3 FUSE 不支持 `chown`）。
+2. 每次 sync 前 `rm -rf "${OUTPUT_S3}"` 后全量重建，绕过 `--inplace` 无法覆盖已有文件的问题。
+3. `2>/dev/null` 改为写入 `s3_sync.log`，方便排障。
+4. 新增 S3 output 存在检查（guard），防止新训练误写旧目录。
+
+**S3 清理注意事项**：Mac 端通过 FUSE `rm -rf` 删除 S3 对象不可靠（可能静默失败）。建议用 `rclone purge` 直接走 S3 API：
+```bash
+rclone purge "threed-code:arcwm-code-us-west-2/ericzyma/experiments/<EXP_NAME>"
+```
+
+**附加发现**：env worker 子进程的 stderr 被 verifiers 框架重定向到日志文件，不出现在 `koala logs` 中。normal pod 不支持 SSH/exec，只能通过 S3 rsync 查看 env worker 日志。
+
+---
+
 ## 2026-05-12 — rsync 后台同步到 S3 静默失败
 
 ### rsync 默认使用 rename()，S3 FUSE 不支持

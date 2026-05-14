@@ -102,13 +102,64 @@ env_setup() {
     setup_bg_restore_dataset
     setup_bg_install_python_pkg
 
-    # OPTIX：后台恢复或编译 shader cache。
-    # 有 S3 cache 时秒级恢复；无 cache 时编译 ~6 min 并自动上传 S3。
+    # OPTIX warmup must complete before starting Render Service to avoid
+    # 6 Blender workers simultaneously JIT-compiling OPTIX kernels (OOM).
     if [ "$FAST_MODE" = true ]; then
         echo "  [env] OPTIX warm-up: SKIPPED (fast mode)"
     else
-        setup_bg_optix_warmup &
-        OPTIX_PID=$!
-        echo "  [env] OPTIX warm-up started in background (PID: ${OPTIX_PID})"
+        setup_bg_optix_warmup
     fi
+
+    LOG_DIR="/local-ssd/prime-rl-output/logs"
+    mkdir -p "$LOG_DIR"
+
+    # Cleanup service processes on job preemption/kill
+    trap 'echo "[env] Cleaning up services..."; kill $RENDER_PID $SCORE_PID 2>/dev/null; wait' EXIT TERM INT
+
+    # Start Render Service (background)
+    echo "  [env] Starting Render Service..."
+    python -m blendergym.services.render.server \
+        --port 8420 --blender-bin "$BLENDER_BIN" --gpu-pool 0,1,2,3,4,5 \
+        --cycles-resolution 256 --cycles-samples 8 \
+        --cycles-denoiser OPENIMAGEDENOISE --cycles-compute-device OPTIX \
+        > "$LOG_DIR/render_service.log" 2>&1 &
+    RENDER_PID=$!
+
+    # Start Score Service (background)
+    echo "  [env] Starting Score Service..."
+    python -m blendergym.services.score.server \
+        --port 8421 --gpu-pool 0,1,2,3,4,5 \
+        --clip-model ViT-B-32 --clip-pretrained openai \
+        > "$LOG_DIR/score_service.log" 2>&1 &
+    SCORE_PID=$!
+
+    # Deep health check — wait for Render Service (Blender workers ready)
+    echo "  [env] Waiting for Render Service..."
+    for i in $(seq 1 60); do
+        STATUS=$(curl -s http://localhost:8420/health | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
+        if [ "$STATUS" = "ok" ]; then
+            echo "  [env] Render Service ready (PID=$RENDER_PID)"
+            break
+        fi
+        if [ "$i" = "60" ]; then
+            echo "  [env] ERROR: Render Service failed to start"
+            exit 1
+        fi
+        sleep 2
+    done
+
+    # Deep health check — wait for Score Service (CLIP models loaded)
+    echo "  [env] Waiting for Score Service..."
+    for i in $(seq 1 30); do
+        STATUS=$(curl -s http://localhost:8421/health | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
+        if [ "$STATUS" = "ok" ]; then
+            echo "  [env] Score Service ready (PID=$SCORE_PID)"
+            break
+        fi
+        if [ "$i" = "30" ]; then
+            echo "  [env] ERROR: Score Service failed to start"
+            exit 1
+        fi
+        sleep 2
+    done
 }

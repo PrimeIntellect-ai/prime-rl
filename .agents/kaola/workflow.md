@@ -51,12 +51,29 @@ uv sync --locked --extra flash-attn
 ```bash
 cd ~/Desktop/codes/prime-rl
 koala submit -m normal -g 8 --sync-code .:/data/work/prime-rl \
-    -c "export HF_TOKEN=\$HF_TOKEN && export WANDB_API_KEY=\$WANDB_API_KEY && export EXP_NAME=blendergym-9b-dp6 && cd /data/work/prime-rl && . scripts/setup_kaola.sh --env blendergym && uv run rl @ configs/multimodal/rl_blendergym_kaola.toml --ckpt.output_dir /local-ssd/checkpoints/\${EXP_NAME}"
+    -c "export HF_TOKEN=$HF_TOKEN && export WANDB_API_KEY=$WANDB_API_KEY && export EXP_NAME=blendergym-9b-dp6 && cd /data/work/prime-rl && . scripts/setup_kaola.sh --env blendergym && uv run rl @ configs/multimodal/rl_blendergym_kaola.toml --ckpt.output_dir /local-ssd/checkpoints/\${EXP_NAME}"
 ```
 
-注意：
-- 用 `.`（source）而非 `bash` 执行 setup 脚本，确保 `HF_HOME` 等 export 生效
-- `EXP_NAME` 必须显式 export（无默认值，防止新实验误写旧目录）
+Resume 训练（从已有 checkpoint 继续）：
+
+```bash
+cd ~/Desktop/codes/prime-rl
+koala submit -m normal -g 8 --sync-code .:/data/work/prime-rl \
+    -c "export HF_TOKEN=$HF_TOKEN && export WANDB_API_KEY=$WANDB_API_KEY && export EXP_NAME=blendergym-9b-dp6 && cd /data/work/prime-rl && . scripts/setup_kaola.sh --env blendergym --resume && uv run rl @ configs/multimodal/rl_blendergym_kaola.toml --ckpt.output_dir /local-ssd/checkpoints/\${EXP_NAME}"
+```
+
+### 提交命令 Checklist
+
+| 必须 | 说明 | 漏了会怎样 |
+|------|------|-----------|
+| `--sync-code .:/data/work/prime-rl` | 同步本地代码到 pod | pod 里跑镜像内置旧代码，本地改动不生效 |
+| **不要**指定 `--image` | 使用 KAOLA 默认 ECR 镜像 | 自定义 Docker Hub 镜像会导致 PodInitializing 卡住 |
+| `$HF_TOKEN` 用**双引号** | 在本地 shell 展开为实际值 | 单引号不展开，pod 里 token 为空，报 `HF_TOKEN not set` |
+| `. scripts/setup_kaola.sh` | source 执行 | `bash` 子 shell 中 export 不传递给后续命令 |
+| `export EXP_NAME=...` | 显式设置实验名 | 无默认值，脚本会报错退出 |
+| S3 上**无**同名实验数据 | 或加 `--resume` | guard check 报错退出，防止误覆盖 |
+
+其他注意：
 - `--ckpt.output_dir` 让 checkpoint 路径自动跟随 `EXP_NAME`，与 S3 sync 路径一致
 - `HF_MODEL` 有默认值（Qwen/Qwen3.5-9B），换模型时追加 `export HF_MODEL=...`
 - OPTIX warmup 在 setup 末尾后台启动，与训练初始化（model load ~3-5 min）并行
@@ -107,9 +124,12 @@ ls ~/Desktop/codes/s3/experiments/${EXP_NAME}/checkpoints/
 # Tensorboard
 tensorboard --logdir ~/Desktop/codes/s3/experiments/${EXP_NAME}/output/
 
-# 实时日志
+# 实时日志（仅主进程 trainer 输出，不含 env worker 子进程日志）
 koala logs <任务名> -f
 ```
+
+> **注意**：env worker 日志（GPU 内存监控等）仅通过 S3 rsync 可见，不会出现在 `koala logs` 中。
+> 若 S3 上的日志文件没有更新，参见 [troubleshooting.md](troubleshooting.md) 中 "rsync 无法覆盖 S3 上已有文件" 条目。
 
 ---
 

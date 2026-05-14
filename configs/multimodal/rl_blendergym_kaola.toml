@@ -65,18 +65,14 @@ max_total_completion_tokens = 12288
 data_root = "/local-ssd/blendergym"
 task_types = ["placement"]
 max_turns = 3
-blender_bin = "/local-ssd/blender-4.2.0-linux-x64/blender"
-gpu_id_pool = [0, 1, 2, 3, 4, 5]
 work_root = "/local-ssd/prime-rl-output/blendergym-work"
 keep_failed_only = true
 env_name = "blendergym"
 split = "train"
 eval_split = "eval"
 eval_holdout = 5
-cycles_resolution = 256
-cycles_samples = 8
-cycles_denoiser = "OPENIMAGEDENOISE"
-cycles_compute_device = "OPTIX"
+render_service_url = "http://localhost:8420"
+score_service_url = "http://localhost:8421"
 render_timeout_s = 600
 
 [[orchestrator.eval.env]]
@@ -90,18 +86,14 @@ rollouts_per_example = 1
 data_root = "/local-ssd/blendergym"
 task_types = ["placement"]
 max_turns = 3
-blender_bin = "/local-ssd/blender-4.2.0-linux-x64/blender"
-gpu_id_pool = [5]
 work_root = "/local-ssd/prime-rl-output/blendergym-work"
 keep_failed_only = false
 env_name = "blendergym-eval"
 split = "eval"
 eval_split = "eval"
 eval_holdout = 5
-cycles_resolution = 256
-cycles_samples = 8
-cycles_denoiser = "OPENIMAGEDENOISE"
-cycles_compute_device = "OPTIX"
+render_service_url = "http://localhost:8420"
+score_service_url = "http://localhost:8421"
 render_timeout_s = 600
 
 [trainer]
@@ -117,7 +109,7 @@ reduce_dtype = "bfloat16"
 lr = 3e-6
 
 [inference]
-gpu_memory_utilization = 0.80
+gpu_memory_utilization = 0.75
 enable_prefix_caching = true
 
 [inference.model]

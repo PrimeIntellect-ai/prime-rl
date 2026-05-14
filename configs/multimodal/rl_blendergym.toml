@@ -66,18 +66,15 @@ num_workers = 6
 data_root = "data/blendergym"
 task_types = ["placement"]
 max_turns = 3
-blender_bin = "_reference_codes/VIGA/utils/third_party/infinigen/blender/blender"
-gpu_id_pool = [0, 1, 2, 3, 4, 5]
 work_root = "outputs/blendergym_v3_9b_dp6_long/run_default/blendergym_work"
 keep_failed_only = false
 env_name = "blendergym"
 split = "train"
 eval_split = "eval"
 eval_holdout = 5
-cycles_resolution = 256
-cycles_samples = 8
-cycles_denoiser = "OPENIMAGEDENOISE"
-cycles_compute_device = "OPTIX"
+render_service_url = "http://localhost:8420"
+score_service_url = "http://localhost:8421"
+render_timeout_s = 600
 
 [[orchestrator.eval.env]]
 id = "blendergym"
@@ -90,18 +87,15 @@ rollouts_per_example = 1
 data_root = "data/blendergym"
 task_types = ["placement"]
 max_turns = 3
-blender_bin = "_reference_codes/VIGA/utils/third_party/infinigen/blender/blender"
-gpu_id_pool = [5]
 work_root = "outputs/blendergym_v3_9b_dp6_long/run_default/blendergym_work"
 keep_failed_only = false
 env_name = "blendergym-eval"
 split = "eval"
 eval_split = "eval"
 eval_holdout = 5
-cycles_resolution = 256
-cycles_samples = 8
-cycles_denoiser = "OPENIMAGEDENOISE"
-cycles_compute_device = "OPTIX"
+render_service_url = "http://localhost:8420"
+score_service_url = "http://localhost:8421"
+render_timeout_s = 600
 
 [trainer]
 max_async_level = 1

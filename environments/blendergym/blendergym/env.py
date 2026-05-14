@@ -31,7 +31,6 @@ import base64
 import logging
 import os
 from collections.abc import Sequence
-from itertools import count
 from pathlib import Path
 from typing import Any
 
@@ -40,9 +39,9 @@ import verifiers as vf
 from .artifact_manager import ArtifactManager, ArtifactPolicy
 from .dataset import build_dataset
 from .prompts import REFINE_INSTRUCTION, SYSTEM_PROMPT, TASK_INSTRUCTION
-from .render import RenderResult
 from .rubric import BlenderGymRubric
 from .schema import Rollout, Task, require_rollout
+from .services.render.client import RenderClient
 from .trajectory_writer import completion_to_text
 
 logger = logging.getLogger(__name__)
@@ -70,21 +69,15 @@ class BlenderGymEnv(vf.MultiTurnEnv):
         data_root: str | Path = "data/blendergym",
         task_types: Sequence[str] = ("placement",),
         max_turns: int = 3,
-        blender_bin: str | Path = "_reference_codes/VIGA/utils/third_party/infinigen/blender/blender",
-        gpu_id_pool: Sequence[int] = (0,),
         work_root: str | Path = "outputs/blendergym_v1/blendergym_work",
         keep_failed_only: bool = False,
         env_name: str = "blendergym",
         split: str = "train",
         eval_split: str = "eval",
         eval_holdout: int = 5,
-        render_timeout_s: int = 120,
-        cycles_resolution: int = 512,
-        cycles_samples: int = 16,
-        cycles_denoiser: str = "OPENIMAGEDENOISE",
-        cycles_compute_device: str = "OPTIX",
-        clip_model_name: str = "ViT-B-32",
-        clip_pretrained: str = "openai",
+        render_service_url: str = "http://localhost:8420",
+        score_service_url: str = "http://localhost:8421",
+        render_timeout_s: int = 600,
         # -- artifact policy --
         save_blender_log: bool = True,
         save_response_txt: bool = True,
@@ -96,25 +89,13 @@ class BlenderGymEnv(vf.MultiTurnEnv):
     ) -> None:
         if max_turns < 1:
             raise ValueError(f"max_turns must be >= 1, got {max_turns}")
-        if not gpu_id_pool:
-            raise ValueError("gpu_id_pool must contain at least one GPU id")
-
-        # Cycles knobs are forwarded to the Blender child via os.environ
-        # (run_blender's ``_build_subprocess_env`` already inherits dict(os.environ),
-        # so the public Python signature of run_blender stays unchanged).
-        # ``os.environ`` is process-local; each prime-rl env worker is its own
-        # Python process, so workers don't fight over these vars.
-        os.environ["BLENDERGYM_RENDER_RESOLUTION"] = str(cycles_resolution)
-        os.environ["BLENDERGYM_CYCLES_SAMPLES"] = str(cycles_samples)
-        os.environ["BLENDERGYM_CYCLES_DENOISER"] = cycles_denoiser
-        os.environ["BLENDERGYM_CYCLES_COMPUTE_DEVICE"] = cycles_compute_device
 
         self.data_root = Path(data_root).expanduser().resolve()
         self.task_types = tuple(task_types)
-        self.blender_bin = Path(blender_bin).expanduser().resolve()
-        self.gpu_id_pool = tuple(gpu_id_pool)
         self.work_root = Path(work_root).expanduser().resolve()
         self.work_root.mkdir(parents=True, exist_ok=True)
+
+        self.render_client = RenderClient(render_service_url, render_timeout_s)
 
         policy = ArtifactPolicy(
             save_blender_log=save_blender_log,
@@ -126,31 +107,16 @@ class BlenderGymEnv(vf.MultiTurnEnv):
             max_rollouts_per_example=max_rollouts_per_example,
         )
         self.artifact_manager = ArtifactManager(self.work_root, policy)
-        # ``env_name`` mirrors the orchestrator's resolved env name so that
-        # local metadata matches wandb sample tables (e.g. ``"blendergym"`` for
-        # train, ``"blendergym-eval"`` for eval). Should be set per-env in the
-        # toml ``args`` block — see ``configs/multimodal/rl_blendergym.toml``.
         self.env_name = env_name
         self.split = split
         self.eval_split = eval_split
         self.eval_holdout = eval_holdout
         self.render_timeout_s = render_timeout_s
 
-        # Round-robin GPU assignment shared across rollouts in this worker.
-        # itertools.count is process-local, which is what we want — multiple
-        # env workers each cycle through the pool independently.
-        self._gpu_counter = count()
-
-        # Drop ``think`` from the XML parser: Qwen3 chat templates auto-strip
-        # ``<think>...</think>``, so insisting the model emit them at the
-        # parser layer just guarantees parse failures (see plan §"容易踩的坑").
-        # The system prompt explicitly tells the model that ``<code>`` must be
-        # the last thing in the reply; reasoning before that block is fine.
         self.parser = vf.XMLParser(["code"], answer_field="code")
 
         rubric = BlenderGymRubric(
-            clip_model_name=clip_model_name,
-            clip_pretrained=clip_pretrained,
+            score_service_url=score_service_url,
             parser=self.parser,
             artifact_manager=self.artifact_manager,
         )
@@ -182,9 +148,6 @@ class BlenderGymEnv(vf.MultiTurnEnv):
         )
 
     # ----------------------------------------------------------------- helpers
-
-    def _next_gpu(self) -> int:
-        return self.gpu_id_pool[next(self._gpu_counter) % len(self.gpu_id_pool)]
 
     def _build_initial_user_message(
         self,
@@ -258,7 +221,6 @@ class BlenderGymEnv(vf.MultiTurnEnv):
             task=task,
             trajectory_id=state["trajectory_id"],
             work_dir=work_dir,
-            gpu_id=self._next_gpu(),
             max_turns=self.max_turns,
             metadata=metadata,
             start_code_text=task.start_code_path.read_text(encoding="utf-8"),
@@ -350,20 +312,27 @@ class BlenderGymEnv(vf.MultiTurnEnv):
         if not code or not str(code).strip():
             record.fill_xml_parse_failure()
         else:
-            try:
-                result: RenderResult = await asyncio.to_thread(
-                    mgr.run_render, paths,
-                    blend_file=rollout.task.blend_file,
-                    code=str(code),
-                    blender_bin=self.blender_bin,
-                    gpu_id=rollout.gpu_id,
-                    timeout=self.render_timeout_s,
-                )
-            except FileNotFoundError:
-                raise
+            result = await asyncio.to_thread(
+                self.render_client.render,
+                blend_file=rollout.task.blend_file,
+                code=str(code),
+                output_dir=str(paths.turn_dir),
+            )
+            if paths.log and result.stderr:
+                paths.log.write_text(result.stderr, encoding="utf-8")
             mgr.fill_record(record, result)
+            record.render_gpu_id = result.gpu_id
 
         rollout.turns.append(record)
+
+    async def close(self) -> None:
+        self.render_client.close()
+
+    def __del__(self) -> None:
+        try:
+            self.render_client.close()
+        except Exception:
+            pass
 
 
 def load_environment(**kwargs: Any) -> BlenderGymEnv:

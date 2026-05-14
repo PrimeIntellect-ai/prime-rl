@@ -185,19 +185,6 @@ class ArtifactManager:
         if self.policy.save_response_txt:
             paths.response.write_text(text, encoding="utf-8")
 
-    def run_render(
-        self, paths: TurnPaths, *,
-        blend_file: Path, code: str,
-        blender_bin: Path, gpu_id: int, timeout: int,
-    ) -> "RenderResult":
-        from .render import run_blender
-        return run_blender(
-            blend_file=blend_file, code=code,
-            output_dir=paths.turn_dir,
-            blender_bin=blender_bin, gpu_id=gpu_id, timeout=timeout,
-            paths=paths,
-        )
-
     # ---- record construction ------------------------------------------------
 
     def init_record(self, turn: int) -> "TurnRecord":

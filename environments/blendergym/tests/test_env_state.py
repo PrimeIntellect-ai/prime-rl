@@ -25,7 +25,6 @@ def test_setup_state_stores_single_rollout_object(tmp_path):
     env = BlenderGymEnv(
         data_root=tmp_path,
         work_root=tmp_path / "work",
-        gpu_id_pool=(3,),
         max_turns=2,
         env_name="blendergym-train",
     )
@@ -47,7 +46,6 @@ def test_setup_state_stores_single_rollout_object(tmp_path):
     assert isinstance(rollout, Rollout)
     assert rollout.task.task_id == "placement1"
     assert rollout.task.task_type == "placement"
-    assert rollout.gpu_id == 3
     assert rollout.max_turns == 2
     assert rollout.start_code_text == "import bpy\n"
     assert rollout.goal_image_data_url.startswith("data:image/png;base64,")
@@ -104,7 +102,6 @@ def test_make_work_dir_falls_back_to_legacy_layout(tmp_path, split, example_id):
     env = BlenderGymEnv(
         data_root=tmp_path,
         work_root=tmp_path / "work",
-        gpu_id_pool=(0,),
         max_turns=1,
     )
     work_dir = env.artifact_manager.make_rollout_dir(
@@ -121,7 +118,6 @@ def test_make_work_dir_uses_structured_layout_when_metadata_present(tmp_path):
     env = BlenderGymEnv(
         data_root=tmp_path,
         work_root=tmp_path / "work",
-        gpu_id_pool=(0,),
         max_turns=1,
     )
     work_dir = env.artifact_manager.make_rollout_dir(

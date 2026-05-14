@@ -40,7 +40,7 @@ def clip_runtime():
 def test_clip_cosine_similarity_same_color_high_diff_color_lower(tmp_path, clip_runtime):
     """Same-color image pair scores higher than different-color pair, both in [-1, 1]."""
     model, preprocess, device = clip_runtime
-    from blendergym.rubric import compute_clip_cosine_similarity
+    from blendergym.services.score.clip_scorer import compute_clip_cosine_similarity
 
     red_a = tmp_path / "red_a.png"
     red_b = tmp_path / "red_b.png"

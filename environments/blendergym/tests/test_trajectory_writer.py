@@ -77,7 +77,6 @@ def _make_rollout(
         task=_make_task(),
         trajectory_id=trajectory_id,
         work_dir=work_dir,
-        gpu_id=6,
         max_turns=3,
         turns=list(turns or []),
         final_reward=final_reward,
@@ -385,7 +384,7 @@ def test_write_trajectory_artifacts_emits_meta_json_html(tmp_path):
     assert "extras" not in traj["steps"][0]
     assert traj["final_reward"] == pytest.approx(0.7321)
     assert traj["metrics"]["xml_parse_success"] == 1.0
-    assert traj["runtime"]["gpu_id"] == 6
+    assert "render_gpus" in traj["runtime"]
     assert "session_id" not in traj
     assert "agents" not in traj
 

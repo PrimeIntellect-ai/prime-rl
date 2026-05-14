@@ -47,6 +47,9 @@ class TurnRecord:
     # ---- metrics (lower signal) ----
     duration_s: float | None = None
 
+    # ---- GPU tracking (server-side per-turn assignment) ----
+    render_gpu_id: int | None = None
+
     @property
     def xml_parsed(self) -> bool:
         return self.exit_status is not None and self.exit_status != "xml_parse_failed"
@@ -176,7 +179,6 @@ class Rollout:
     # ---- execution context ----
     trajectory_id: str
     work_dir: Path
-    gpu_id: int
     max_turns: int
 
     # ---- progress ----

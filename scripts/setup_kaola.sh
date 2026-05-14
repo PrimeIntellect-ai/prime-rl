@@ -3,9 +3,10 @@
 # KOALA 环境恢复脚本 — 通用编排器
 # ============================================================================
 # 用法：
-#   . scripts/setup_kaola.sh [--fast] [--env blendergym]
+#   . scripts/setup_kaola.sh [--fast] [--resume] [--env blendergym]
 #
 # --fast   debug 模式（跳过数据集拷贝和 warmup）
+# --resume 从已有 checkpoint 恢复训练（跳过 S3 output 存在检查）
 # --env    环境插件名称（默认 blendergym），对应 scripts/envs/<name>.sh
 #
 # 注意：此脚本通过 source 执行（. scripts/setup_kaola.sh），set -euo pipefail
@@ -22,11 +23,13 @@ set -euo pipefail
 
 # --- 参数解析 ---
 FAST_MODE=false
+RESUME_MODE=false
 ENV_NAME="blendergym"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --fast) FAST_MODE=true; shift ;;
+        --resume) RESUME_MODE=true; shift ;;
         --env)
             if [[ $# -lt 2 ]]; then echo "ERROR: --env requires a name"; exit 1; fi
             ENV_NAME="$2"; shift 2 ;;
@@ -62,6 +65,15 @@ CKPT_S3="${S3_EXP}/checkpoints"
 OUTPUT_S3="${S3_EXP}/output"
 HF_CACHE_TAR="${S3_PREFIX}/tools/hf_cache_${HF_MODEL_SHORT}.tar"
 PROJECT_DIR="/data/work/prime-rl"
+
+if [ "$FAST_MODE" = false ] && [ "$RESUME_MODE" = false ] && [ -d "${OUTPUT_S3}/logs" ]; then
+    echo "ERROR: S3 output already exists: ${OUTPUT_S3}/logs"
+    echo "  Previous training data would be overwritten."
+    echo "  To resume:      add --resume"
+    echo "  To start fresh:  rclone purge threed-code:arcwm-code-us-west-2/${S3_EXP#/threed-code/}"
+    echo "  Or use a different EXP_NAME."
+    exit 1
+fi
 
 # ============================================================================
 # 通用函数定义
@@ -99,10 +111,18 @@ setup_s3_sync() {
     echo "  Starting background S3 sync..."
     mkdir -p "${CKPT_S3}" "${OUTPUT_S3}"
     sync_all() {
-        # --inplace: 直接写入目标文件，跳过 rsync 默认的"临时文件 + rename"模式。
-        # S3 FUSE 不支持 rename()（返回 ENOSYS），没有 --inplace 会导致同步静默失败。
-        [ -d "${CKPT_LOCAL}" ] && rsync -a --inplace --delete "${CKPT_LOCAL}/" "${CKPT_S3}/" 2>/dev/null || true
-        [ -d "${OUTPUT_LOCAL}" ] && rsync -a --inplace --copy-links --exclude broadcasts/ --exclude '*.bin' "${OUTPUT_LOCAL}/" "${OUTPUT_S3}/" 2>/dev/null || true
+        local _sync_log="${OUTPUT_LOCAL}/logs/s3_sync.log"
+        # -rlt: recursive + symlinks + timestamps. 不用 -a（含 -o -g），S3 FUSE 不支持 chown。
+        # --inplace: S3 FUSE 不支持 rename()，跳过临时文件模式。
+        # --delete: 清理 checkpoint 残留文件。
+        [ -d "${CKPT_LOCAL}" ] && rsync -rlt --inplace --delete "${CKPT_LOCAL}/" "${CKPT_S3}/" >> "${_sync_log}" 2>&1 || true
+        if [ -d "${OUTPUT_LOCAL}" ]; then
+            # S3 FUSE 的 --inplace 无法覆盖已有文件（S3 对象不可变，truncate+write 静默失败）。
+            # 每次全量删除目标后重建，output 以小文件为主，代价可接受。
+            rm -rf "${OUTPUT_S3}" 2>/dev/null || true
+            mkdir -p "${OUTPUT_S3}"
+            rsync -rlt --inplace --copy-links --exclude broadcasts/ --exclude '*.bin' "${OUTPUT_LOCAL}/" "${OUTPUT_S3}/" >> "${_sync_log}" 2>&1 || true
+        fi
     }
     (while true; do sleep 300; sync_all; done) &
     SYNC_PID=$!
