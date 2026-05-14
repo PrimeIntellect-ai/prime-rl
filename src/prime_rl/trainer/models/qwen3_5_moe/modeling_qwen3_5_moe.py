@@ -945,7 +945,7 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
 
         if self._is_vlm:
             self.model = Qwen3_5MoeVLMModel(config)
-            text_config = config.text_config
+            text_config = self.model.language_model.config
             self._tied_weights_keys = {"lm_head.weight": "model.language_model.embed_tokens.weight"}
         else:
             self.model = Qwen3_5MoeModel(config)
@@ -954,9 +954,8 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
         self.vocab_size = text_config.vocab_size
         self._text_config = text_config
         self.lm_head = nn.Linear(text_config.hidden_size, text_config.vocab_size, bias=False)
-        self.mtp_layers = nn.ModuleList(
-            [Qwen3_5MoeMTPLayer(text_config) for _ in range(getattr(text_config, "mtp_num_hidden_layers", 0))]
-        )
+        mtp_num_hidden_layers = 0 if self._is_vlm else getattr(text_config, "mtp_num_hidden_layers", 0)
+        self.mtp_layers = nn.ModuleList([Qwen3_5MoeMTPLayer(text_config) for _ in range(mtp_num_hidden_layers)])
         self.post_init()
 
     def get_input_embeddings(self):
@@ -1045,10 +1044,10 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
         loss_mask: torch.Tensor,
         position_ids: torch.LongTensor,
     ) -> PrimeLmOutput:
-        if len(self.mtp_layers) == 0:
-            raise ValueError("MTP was enabled but this Qwen config has no MTP layers.")
         if self._is_vlm:
             raise ValueError("MTP training is only supported for text-only Qwen3.5 MoE models.")
+        if len(self.mtp_layers) == 0:
+            raise ValueError("MTP was enabled but this Qwen config has no MTP layers.")
 
         language_model = self.model
         assert isinstance(language_model, Qwen3_5MoeModel)
