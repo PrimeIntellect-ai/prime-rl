@@ -17,6 +17,13 @@ import tomli_w
 from prime_rl.baselines.config import BaselineConfig
 
 DP_COORDINATOR_STARTUP_TIMEOUT = "DP Coordinator process failed to report ZMQ addresses during startup."
+TRANSIENT_HTTP_STATUS_CODES = {502, 503, 504}
+TRANSIENT_READINESS_ERRORS = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.RemoteProtocolError,
+)
 
 
 @dataclass(frozen=True)
@@ -63,7 +70,11 @@ def wait_for_endpoint(base_url: str, api_key_var: str, timeout_s: float, *, heal
                 response.raise_for_status()
                 if response.json().get("data"):
                     return
-            except Exception as exc:
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in TRANSIENT_HTTP_STATUS_CODES:
+                    raise
+                last_error = exc
+            except TRANSIENT_READINESS_ERRORS as exc:
                 last_error = exc
             time.sleep(1.0)
     raise RuntimeError(f"Inference endpoint {base_url} did not become ready. Last error: {last_error}")
@@ -92,7 +103,11 @@ def _wait_for_local_endpoint(
                 response.raise_for_status()
                 if response.json().get("data"):
                     return
-            except Exception as exc:
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in TRANSIENT_HTTP_STATUS_CODES:
+                    raise
+                last_error = exc
+            except TRANSIENT_READINESS_ERRORS as exc:
                 last_error = exc
             time.sleep(1.0)
     raise RuntimeError(f"Inference endpoint {base_url} did not become ready. Last error: {last_error}")
@@ -118,7 +133,11 @@ def _wait_for_local_router(
                 response = client.get(_router_health_url(base_url))
                 response.raise_for_status()
                 return
-            except Exception as exc:
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in TRANSIENT_HTTP_STATUS_CODES:
+                    raise
+                last_error = exc
+            except TRANSIENT_READINESS_ERRORS as exc:
                 last_error = exc
             time.sleep(1.0)
     raise RuntimeError(f"Inference router {base_url} did not become ready. Last error: {last_error}")

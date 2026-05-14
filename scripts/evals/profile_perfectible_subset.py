@@ -273,11 +273,9 @@ def main() -> int:
 
     # Source mix
     sel_sources = Counter((r.get("source") or "unknown") for r in selected)
-    sampled_sources = Counter((r.get("source") or "unknown") for r in sampled_rows)
 
     # Difficulty mix
     sel_difficulty = Counter(difficulty_bucket(r.get("difficulty")) for r in selected)
-    sampled_difficulty = Counter(difficulty_bucket(r.get("difficulty")) for r in sampled_rows)
 
     # pass@k for selected (unbiased estimator)
     def pass_at_k(n: int, c: int, k: int) -> float:
@@ -291,6 +289,8 @@ def main() -> int:
         return 1.0 - total
 
     selected_per_problem_correct = [(40, c) for c in sel_correct_counts]
+    if not selected_per_problem_correct:
+        raise ValueError("No selected problem IDs matched rollout records; check --selected and --records inputs.")
     pass_ks = [1, 2, 4, 8, 16, 32, 40]
     pass_at_k_values = [mean(pass_at_k(n, c, k) for n, c in selected_per_problem_correct) for k in pass_ks]
 
@@ -483,9 +483,9 @@ def main() -> int:
     readme.append(f"| Source dataset | `omni_math2_train_excluding_baseline600_seed42.jsonl` ({len(source)} problems) |\n")
     readme.append(f"| Sampled this run (seed=42) | **{len(sampled_rows)}** problems × 40 rollouts each |\n")
     readme.append(f"| Selected band | `[{args.low}, {args.high}]` mean reward |\n")
-    readme.append(f"| Min rollouts threshold | 8 |\n")
-    readme.append(f"| Scoring | math_verify (SymPy) + gpt-5.4-mini judge fallback (`omni_math2_hybrid_math_v1` rubric) |\n")
-    readme.append(f"| Sampling | t=1.0, top_p=0.95, max_completion_tokens=15360 |\n")
+    readme.append("| Min rollouts threshold | 8 |\n")
+    readme.append("| Scoring | math_verify (SymPy) + gpt-5.4-mini judge fallback (`omni_math2_hybrid_math_v1` rubric) |\n")
+    readme.append("| Sampling | t=1.0, top_p=0.95, max_completion_tokens=15360 |\n")
     readme.append(f"| **Selected** | **{len(selected)}** problems ({len(selected) * 100 / len(sampled_rows):.1f}% of sampled) |\n\n")
 
     # Data-driven tail-shape description (not hardcoded — varies by model)
