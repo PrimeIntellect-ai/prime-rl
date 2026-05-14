@@ -118,7 +118,7 @@ env_setup() {
 
     # Start Render Service (background)
     echo "  [env] Starting Render Service..."
-    python -m blendergym.services.render.server \
+    uv run python -m blendergym.services.render.server \
         --port 8420 --blender-bin "$BLENDER_BIN" --gpu-pool 0,1,2,3,4,5 \
         --cycles-resolution 256 --cycles-samples 8 \
         --cycles-denoiser OPENIMAGEDENOISE --cycles-compute-device OPTIX \
@@ -127,7 +127,7 @@ env_setup() {
 
     # Start Score Service (background)
     echo "  [env] Starting Score Service..."
-    python -m blendergym.services.score.server \
+    uv run python -m blendergym.services.score.server \
         --port 8421 --gpu-pool 0,1,2,3,4,5 \
         --clip-model ViT-B-32 --clip-pretrained openai \
         > "$LOG_DIR/score_service.log" 2>&1 &

@@ -40,6 +40,8 @@ class RenderService(BaseService):
         self.app.add_api_route("/render", self.render, methods=["POST"])
 
     async def on_startup(self) -> None:
+        import asyncio
+
         for k, v in self.cycles_cfg.items():
             os.environ[f"BLENDERGYM_{k.upper()}"] = str(v)
         self.router = SemaphoreRouter(self.gpu_pool, max_concurrent=self.pool_size)
@@ -47,8 +49,7 @@ class RenderService(BaseService):
             g: BlenderPool(g, self.blender_bin, pool_size=self.pool_size)
             for g in self.gpu_pool
         }
-        for pool in self.pools.values():
-            await pool.wait_ready(timeout=120)
+        await asyncio.gather(*[pool.wait_ready(timeout=120) for pool in self.pools.values()])
 
     async def on_shutdown(self) -> None:
         for pool in self.pools.values():
