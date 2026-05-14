@@ -51,7 +51,11 @@ class WandbMonitor(Monitor):
         if shared_mode:
             run_id = os.environ.get("WANDB_SHARED_RUN_ID")
             label = os.environ.get("WANDB_SHARED_LABEL")
-            primary = label == "orchestrator"
+            # WANDB_SHARED_PRIMARY=1 lets launchers nominate the primary
+            # explicitly (e.g. rl-multi-run uses the launcher process so the
+            # run outlives every subprocess). Fall back to the single-run
+            # convention where the orchestrator owns the run.
+            primary = os.environ.get("WANDB_SHARED_PRIMARY") == "1" or label == "orchestrator"
             settings = wandb.Settings(
                 mode="shared",
                 x_label=label,
