@@ -19,6 +19,7 @@ def transformers_v5_compat():
     monkey_patch_deep_gemm_silu_mul_quant_int64()
     monkey_patch_dp_engine_core_pause_resume_deadlock()
     monkey_patch_vllm_layerwise_reload_alias_buffers()
+    monkey_patch_vllm_nan_trace()
 
 
 def monkey_patch_vllm_layerwise_reload_alias_buffers():
@@ -49,6 +50,12 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
 
     reload_layerwise._copy_and_restore_kernel_tensors = _copy_and_restore_kernel_tensors
     logger.warning("Enabled vLLM layerwise reload alias-buffer patch.")
+
+
+def monkey_patch_vllm_nan_trace():
+    from prime_rl.inference.vllm_nan_trace import install_vllm_nan_trace
+
+    install_vllm_nan_trace()
 
 
 @triton.jit
