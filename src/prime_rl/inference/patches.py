@@ -779,6 +779,60 @@ def monkey_patch_tokenize_params_validation():
     TokenizeParams.get_encode_kwargs = _patched_get_encode_kwargs
 
 
+def monkey_patch_chat_completion_nan_diagnostics():
+    """Dump exact non-streaming /v1/chat/completions requests that produce NaN fields.
+
+    vLLM serializes chat responses in its API router after
+    OpenAIServingChat.create_chat_completion returns. If the response contains a
+    float NaN, Starlette raises while building JSONResponse and the raw request
+    context is otherwise lost. This hook inspects the returned pydantic response
+    before route serialization and writes a replayable dump only on the
+    non-finite error case.
+    """
+    from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
+    from vllm.logger import init_logger
+
+    from prime_rl.inference.vllm.chat_nan_diagnostics import (
+        dump_chat_nonfinite_response,
+        model_dump,
+        nonfinite_paths,
+        snapshot_chat_request,
+    )
+    from prime_rl.inference.vllm.chat_nan_diagnostics import (
+        enabled as chat_nan_diag_enabled,
+    )
+
+    logger = init_logger(__name__)
+
+    if getattr(OpenAIServingChat.create_chat_completion, "_prime_rl_chat_nan_diag", False):
+        return
+
+    original_create_chat_completion = OpenAIServingChat.create_chat_completion
+
+    async def _patched_create_chat_completion(self, request, raw_request):
+        if not chat_nan_diag_enabled():
+            return await original_create_chat_completion(self, request, raw_request)
+
+        request_snapshot = await snapshot_chat_request(
+            endpoint="/v1/chat/completions",
+            parsed_request=request,
+            raw_request=raw_request,
+        )
+        response = await original_create_chat_completion(self, request, raw_request)
+        response_payload = model_dump(response)
+        if nonfinite_paths(response_payload):
+            await dump_chat_nonfinite_response(
+                endpoint="/v1/chat/completions",
+                request_snapshot=request_snapshot,
+                response_payload=response_payload,
+            )
+        return response
+
+    _patched_create_chat_completion._prime_rl_chat_nan_diag = True
+    OpenAIServingChat.create_chat_completion = _patched_create_chat_completion
+    logger.warning("Enabled chat-completions NaN diagnostic patch.")
+
+
 def monkey_patch_minimax_m2_for_lora():
     """Patch vLLM's MiniMaxM2 model for LoRA compatibility.
 

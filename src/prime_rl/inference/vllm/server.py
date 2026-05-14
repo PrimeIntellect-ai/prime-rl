@@ -136,6 +136,7 @@ def resolve_tool_call_parser(model_name: str, tool_call_parser: str | None) -> s
 
 logger = get_logger()
 from prime_rl.inference.patches import (
+    monkey_patch_chat_completion_nan_diagnostics,
     monkey_patch_harmony_stop_token_propagation,
     monkey_patch_load_lora_adapter,
     monkey_patch_tokenize_params_validation,
@@ -154,6 +155,8 @@ monkey_patch_load_lora_adapter()
 # NOTE: Monkeypatch TokenizeParams to fix overly conservative validation
 # Still needed in vLLM 0.20 — upstream rejects prompt_len > max_model_len - max_tokens
 monkey_patch_tokenize_params_validation()
+# NOTE: Capture exact stock /v1/chat/completions requests whose responses contain NaN floats.
+monkey_patch_chat_completion_nan_diagnostics()
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
 
