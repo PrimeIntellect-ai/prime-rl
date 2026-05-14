@@ -12,6 +12,12 @@ from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
 from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfig, setup_micro_batch_receiver
 
+ROUTED_EXPERTS_TORCH_DTYPES = {
+    "uint8": torch.uint8,
+    "int16": torch.int16,
+    "int32": torch.int32,
+}
+
 
 class TensorMicroBatch(TypedDict):
     """A micro batch of data for training."""
@@ -195,6 +201,19 @@ class DataLoader:
         if micro_batch.lora_num_tokens is None:
             micro_batch.lora_num_tokens = [0] * self.multi_run_manager.max_runs
             micro_batch.lora_num_tokens[0] = len(micro_batch.input_ids)
+        routed_experts = None
+        if micro_batch.routed_experts is not None:
+            assert micro_batch.routed_experts_shape is not None
+            assert micro_batch.routed_experts_dtype is not None
+            routed_experts = (
+                torch.frombuffer(
+                    micro_batch.routed_experts,
+                    dtype=ROUTED_EXPERTS_TORCH_DTYPES[micro_batch.routed_experts_dtype],
+                )
+                .reshape(micro_batch.routed_experts_shape)
+                .to(torch.int32)
+                .unsqueeze(0)
+            )
         return TensorMicroBatch(
             input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
@@ -218,10 +237,6 @@ class DataLoader:
             mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)
             if micro_batch.mm_token_type_ids is not None
             else None,
-            routed_experts=torch.tensor(micro_batch.routed_experts, dtype=torch.int32).unsqueeze(
-                0
-            )  # [1, seq_len, layers, topk]
-            if micro_batch.routed_experts is not None
-            else None,
+            routed_experts=routed_experts,
             sft_loss=micro_batch.sft_loss,
         )

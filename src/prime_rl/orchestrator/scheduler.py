@@ -13,7 +13,7 @@ from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.vf_utils import get_seq_len
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
-from prime_rl.utils.client import InferencePool, clear_routing_cache
+from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.utils import (
     get_broadcast_dir,
@@ -320,14 +320,7 @@ class Scheduler:
 
         update_weights_start_time = time.perf_counter()
         weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
-        await self.inference_pool.update_weights(
-            weights_path,
-            lora_name=self.lora_name,
-            step=next_ckpt_step,
-            reset_prefix_cache=self.config.reset_prefix_cache_on_policy_update,
-        )
-        if self.config.reset_prefix_cache_on_policy_update:
-            await clear_routing_cache(self.config.client)
+        await self.inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
         self.update_weights_time = time.perf_counter() - update_weights_start_time
         self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 

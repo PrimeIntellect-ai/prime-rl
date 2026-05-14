@@ -1,4 +1,4 @@
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import ClassVar, Optional, Union
 
 from fastapi import Request
@@ -10,8 +10,11 @@ from vllm.entrypoints.openai.engine.serving import GenerationError
 from vllm.entrypoints.utils import get_max_tokens
 from vllm.exceptions import VLLMValidationError
 from vllm.logger import init_logger
+from vllm.outputs import RequestOutput
 from vllm.reasoning import ReasoningParser
 from vllm.sampling_params import BeamSearchParams, SamplingParams
+
+from prime_rl.inference.vllm.routed_experts import RoutedExpertsCapture
 
 logger = init_logger(__name__)
 
@@ -23,6 +26,40 @@ class ChatCompletionRequestWithTokens(ChatCompletionRequest):
 
 class OpenAIServingChatWithTokens(OpenAIServingChat):
     """OpenAI-compatible chat API that allows token-in requests."""
+
+    async def chat_completion_full_generator(
+        self,
+        request: ChatCompletionRequest,
+        result_generator: AsyncIterator[RequestOutput],
+        request_id: str,
+        model_name: str,
+        conversation,
+        tokenizer,
+        request_metadata: RequestResponseMetadata,
+        reasoning_parser: ReasoningParser | None = None,
+    ) -> ErrorResponse | ChatCompletionResponse:
+        capture = None
+        if self.model_config.enable_return_routed_experts:
+            capture = RoutedExpertsCapture(result_generator)
+            result_generator = capture
+
+        response = await super().chat_completion_full_generator(
+            request,
+            result_generator,
+            request_id,
+            model_name,
+            conversation,
+            tokenizer,
+            request_metadata,
+            reasoning_parser,
+        )
+
+        if capture is not None and isinstance(response, ChatCompletionResponse):
+            for choice in response.choices:
+                if choice.index in capture.routed_experts:
+                    choice.routed_experts = capture.routed_experts[choice.index]
+
+        return response
 
     async def create_chat_completion_with_tokens(
         self,

@@ -30,6 +30,22 @@ def _decode_pixels(pixel_bytes: bytes, shape: list[int]) -> list[list[float]]:
     return np.frombuffer(pixel_bytes, dtype=np.float32).reshape(shape).tolist()
 
 
+def _routed_experts_payload(data, dtype=np.uint8) -> str:
+    arr = np.asarray(data, dtype=dtype)
+    buffer = BytesIO()
+    np.save(buffer, arr, allow_pickle=False)
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _sample_routed_experts(sample) -> np.ndarray:
+    assert sample.routed_experts is not None
+    assert sample.routed_experts_shape is not None
+    assert sample.routed_experts_dtype is not None
+    return np.frombuffer(sample.routed_experts, dtype=np.dtype(sample.routed_experts_dtype)).reshape(
+        sample.routed_experts_shape
+    )
+
+
 def test_deserialize_tool_calls_does_not_inject_missing_key():
     messages = [{"role": "assistant", "content": "hello"}]
 
@@ -1857,40 +1873,43 @@ def test_align_routed_experts_none():
 
 
 def test_align_routed_experts_empty():
-    result = _align_routed_experts([], 10)
-    assert result == []
+    experts = np.empty((0, 2, 2), dtype=np.uint8)
+    result = _align_routed_experts(experts, 10)
+    assert result is not None
+    assert result.shape == (10, 2, 2)
+    assert np.all(result == 0)
 
 
 def test_align_routed_experts_no_deficit():
     # 3 tokens, 2 layers, topk=2
-    experts = [[[0, 1], [2, 3]], [[4, 5], [6, 7]], [[0, 2], [1, 3]]]
+    experts = np.asarray([[[0, 1], [2, 3]], [[4, 5], [6, 7]], [[0, 2], [1, 3]]], dtype=np.uint8)
     result = _align_routed_experts(experts, expected_len=3)
-    assert result == experts
+    np.testing.assert_array_equal(result, experts)
 
 
 def test_align_routed_experts_with_deficit():
     # 2 tokens but expected 4 (deficit of 2)
-    experts = [[[1, 2], [3, 4]], [[5, 6], [7, 0]]]
+    experts = np.asarray([[[1, 2], [3, 4]], [[5, 6], [7, 0]]], dtype=np.uint8)
     result = _align_routed_experts(experts, expected_len=4)
-    assert len(result) == 4
-    assert result[:2] == experts
+    assert result is not None
+    assert result.shape == (4, 2, 2)
+    np.testing.assert_array_equal(result[:2], experts)
     # Padded entries should be zero-filled with same shape [layers=2, topk=2]
-    assert result[2] == [[0, 0], [0, 0]]
-    assert result[3] == [[0, 0], [0, 0]]
+    np.testing.assert_array_equal(result[2], [[0, 0], [0, 0]])
+    np.testing.assert_array_equal(result[3], [[0, 0], [0, 0]])
 
 
 def test_align_routed_experts_excess_length():
-    experts = [[[1, 2]], [[3, 4]], [[5, 6]]]
+    experts = np.asarray([[[1, 2]], [[3, 4]], [[5, 6]]], dtype=np.uint8)
     result = _align_routed_experts(experts, expected_len=2)
-    # No truncation, just returns as-is
-    assert result == experts
+    np.testing.assert_array_equal(result, experts[:2])
 
 
 def test_interleave_rollout_single_step_with_routed_experts():
     """Routed experts are aligned and passed through for a single-step trajectory."""
     # prompt_ids=[1,2], completion_ids=[3,4] -> total 4 tokens
     # vLLM returns num_tokens-1 = 3 routed expert entries
-    routed_experts_from_vllm = [[[0, 1]], [[2, 3]], [[4, 5]]]  # 3 entries, 1 layer, topk=2
+    routed_experts_from_vllm = np.asarray([[[0, 1]], [[2, 3]], [[4, 5]]], dtype=np.uint8)
     output = vf.RolloutOutput(
         example_id=0,
         trajectory=[
@@ -1906,7 +1925,7 @@ def test_interleave_rollout_single_step_with_routed_experts():
                     completion_logprobs=[-0.1, -0.2],
                     overlong_prompt=False,
                     is_truncated=False,
-                    routed_experts=routed_experts_from_vllm,
+                    routed_experts=_routed_experts_payload(routed_experts_from_vllm),
                 ),
                 reward=None,
                 advantage=None,
@@ -1926,18 +1945,19 @@ def test_interleave_rollout_single_step_with_routed_experts():
 
     # Should be aligned to 4 tokens (2 prompt + 2 completion)
     assert sample.routed_experts is not None
-    assert len(sample.routed_experts) == 4
+    routed_experts = _sample_routed_experts(sample)
+    assert routed_experts.shape == (4, 1, 2)
     # First 3 are original, last one is zero-padded
-    assert sample.routed_experts[:3] == routed_experts_from_vllm
-    assert sample.routed_experts[3] == [[0, 0]]
+    np.testing.assert_array_equal(routed_experts[:3], routed_experts_from_vllm)
+    np.testing.assert_array_equal(routed_experts[3], [[0, 0]])
 
 
 def test_interleave_rollout_multi_step_with_routed_experts():
     """Routed experts are extended and aligned across multi-step trajectories."""
     # Step 1: prompt=[1,2], completion=[3,4] -> 4 tokens, vLLM returns 3
-    step1_experts = [[[1, 2]], [[3, 4]], [[5, 6]]]
+    step1_experts = np.asarray([[[1, 2]], [[3, 4]], [[5, 6]]], dtype=np.uint8)
     # Step 2: prompt=[1,2,3,4,5,6], completion=[7,8] -> 8 tokens, vLLM returns 7
-    step2_experts = [[[1, 0]], [[2, 0]], [[3, 0]], [[4, 0]], [[5, 0]], [[6, 0]], [[7, 0]]]
+    step2_experts = np.asarray([[[1, 0]], [[2, 0]], [[3, 0]], [[4, 0]], [[5, 0]], [[6, 0]], [[7, 0]]], dtype=np.uint8)
 
     output = vf.RolloutOutput(
         example_id=0,
@@ -1954,7 +1974,7 @@ def test_interleave_rollout_multi_step_with_routed_experts():
                     completion_logprobs=[-0.1, -0.2],
                     overlong_prompt=False,
                     is_truncated=False,
-                    routed_experts=step1_experts,
+                    routed_experts=_routed_experts_payload(step1_experts),
                 ),
                 reward=None,
                 advantage=None,
@@ -1978,7 +1998,7 @@ def test_interleave_rollout_multi_step_with_routed_experts():
                     completion_logprobs=[-0.3, -0.4],
                     overlong_prompt=False,
                     is_truncated=False,
-                    routed_experts=step2_experts,
+                    routed_experts=_routed_experts_payload(step2_experts),
                 ),
                 reward=None,
                 advantage=None,
@@ -1999,7 +2019,7 @@ def test_interleave_rollout_multi_step_with_routed_experts():
     # Merged sample: prompt=[1,2], completion=[3,4,5,6,7,8] -> 8 tokens total
     assert len(sample.prompt_ids) + len(sample.completion_ids) == 8
     assert sample.routed_experts is not None
-    assert len(sample.routed_experts) == 8
+    assert _sample_routed_experts(sample).shape == (8, 1, 2)
 
 
 def test_interleave_rollout_none_routed_experts_stays_none():

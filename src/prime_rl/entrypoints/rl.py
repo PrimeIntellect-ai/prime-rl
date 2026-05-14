@@ -543,18 +543,7 @@ def rl_slurm(config: RLConfig):
     logger.success(f"{result.stdout.strip()}\n\n{log_message}")
 
 
-def finalize_policy_update_cache_reset(config: RLConfig) -> None:
-    if (
-        config.trainer.enable_router_replay
-        and config.inference is not None
-        and config.inference.kv_cache_offload is not None
-    ):
-        config.orchestrator.reset_prefix_cache_on_policy_update = True
-
-
 def rl(config: RLConfig):
-    finalize_policy_update_cache_reset(config)
-
     resuming = config.ckpt is not None and config.ckpt.resume_step is not None
     clean = config.clean_output_dir and not os.environ.get("NEVER_CLEAN_OUTPUT_DIR")
     ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None

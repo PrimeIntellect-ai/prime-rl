@@ -3,14 +3,18 @@
 vLLM 0.20 ships a generic tokens-in / tokens-out handler at
 ``vllm.entrypoints.serve.disagg.serving.ServingTokens`` that already covers
 prefix-cache salting, lora dispatch, multimodal features, prompt logprobs and
-priority. Two prime-RL features are not in the upstream protocol though, so
+priority. Three prime-RL features are not in the upstream protocol though, so
 we subclass it to add them back:
 
 1. ``data_parallel_rank`` routing — read from the ``X-data-parallel-rank``
    header and forwarded to ``engine_client.generate``. The DP-replicated
    inference servers prime-RL runs need this to target a specific replica.
 
-2. Server-side ``max_tokens`` defaulting — ``ServingTokens`` hands the
+2. Compact ``routed_experts`` export — when the engine emits routing
+   decisions, surface them as base64 NumPy payloads without requiring a vLLM
+   source fork.
+
+3. Server-side ``max_tokens`` defaulting — ``ServingTokens`` hands the
    client-supplied ``SamplingParams`` to the engine verbatim, and
    ``SamplingParams.max_tokens`` defaults to ``16`` (a dataclass-level
    default that predates the OpenAI-compat layer). Every other vLLM
@@ -34,10 +38,41 @@ from vllm.entrypoints.openai.engine.protocol import ErrorResponse, RequestRespon
 from vllm.entrypoints.serve.disagg.protocol import (
     GenerateRequest,
     GenerateResponse,
+    GenerateResponseChoice,
 )
 from vllm.entrypoints.serve.disagg.serving import ServingTokens
 from vllm.entrypoints.utils import get_max_tokens
+from vllm.outputs import RequestOutput
 from vllm.sampling_params import RequestOutputKind, SamplingParams
+
+from prime_rl.inference.vllm.routed_experts import RoutedExpertsCapture
+
+
+class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
+    routed_experts: str | None = None
+
+
+class PrimeRlGenerateResponse(GenerateResponse):
+    choices: list[PrimeRlGenerateResponseChoice]
+    prompt_token_ids: list[int]
+
+
+class _GenerateRoutedExpertsCapture(RoutedExpertsCapture):
+    def post_process(self, response: GenerateResponse, prompt_token_ids: list[int]) -> PrimeRlGenerateResponse:
+        choices = [
+            PrimeRlGenerateResponseChoice(
+                **choice.model_dump(),
+                routed_experts=self.routed_experts.get(choice.index),
+            )
+            for choice in response.choices
+        ]
+        return PrimeRlGenerateResponse(
+            request_id=response.request_id,
+            choices=choices,
+            prompt_token_ids=prompt_token_ids,
+            prompt_logprobs=response.prompt_logprobs,
+            kv_transfer_params=response.kv_transfer_params,
+        )
 
 
 async def _client_set_max_tokens(raw_request: Request | None) -> bool:
@@ -64,7 +99,7 @@ async def _client_set_max_tokens(raw_request: Request | None) -> bool:
 
 
 class PrimeRlServingTokens(ServingTokens):
-    """ServingTokens + DP-rank routing + max_tokens defaulting."""
+    """ServingTokens + DP-rank routing + compact routed experts + max_tokens defaulting."""
 
     @cached_property
     def _max_tokens_defaults(self) -> tuple[dict, int | None]:
@@ -199,3 +234,25 @@ class PrimeRlServingTokens(ServingTokens):
         return await self.serve_tokens_full_generator(
             request, result_generator, request_id, model_name, request_metadata
         )
+
+    async def serve_tokens_full_generator(  # type: ignore[override]
+        self,
+        request: GenerateRequest,
+        result_generator: AsyncGenerator[RequestOutput, None],
+        request_id: str,
+        model_name: str,
+        request_metadata: RequestResponseMetadata,
+    ) -> ErrorResponse | GenerateResponse:
+        capture = None
+        if self.model_config.enable_return_routed_experts:
+            capture = _GenerateRoutedExpertsCapture(result_generator)
+            result_generator = capture
+
+        response = await super().serve_tokens_full_generator(
+            request, result_generator, request_id, model_name, request_metadata
+        )
+
+        if capture is not None and isinstance(response, GenerateResponse):
+            response = capture.post_process(response, request.token_ids)
+
+        return response

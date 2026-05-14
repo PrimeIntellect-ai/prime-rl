@@ -1,7 +1,7 @@
 import asyncio
 from argparse import Namespace
 from http import HTTPStatus
-from typing import Any, Literal
+from typing import Any
 
 import uvloop
 from fastapi import APIRouter, Depends, Request
@@ -210,9 +210,9 @@ async def _chat_with_tokens(request: ChatCompletionRequestWithTokens, raw_reques
 
 
 @router.post("/pause")
-async def pause(request: Request, mode: Literal["keep", "clear"] = "keep"):
-    await engine_client(request).pause_generation(mode="keep", clear_cache=mode == "clear")
-    return {"status": "paused", "mode": mode}
+async def pause(request: Request):
+    await engine_client(request).pause_generation(mode="keep", clear_cache=False)
+    return {"status": "paused"}
 
 
 @router.post("/resume")
@@ -281,8 +281,8 @@ async def custom_init_app_state(
        so the ``/v1/chat/completions/tokens`` (TITO) endpoint can stream
        token IDs alongside the rendered chat completion.
     3. Replace ``serving_tokens`` with ``PrimeRlServingTokens`` so DP-rank
-       routing and server-side ``max_tokens`` defaulting are available on
-       ``/inference/v1/generate``.
+       routing and ``routed_experts`` export survive the migration off the
+       legacy ``/v1/generate`` endpoint.
     """
     await init_app_state(engine_client, state, args, supported_tasks)
 
@@ -300,8 +300,8 @@ async def custom_init_app_state(
         state.openai_serving_chat_with_tokens = None
 
     # Swap in our ServingTokens subclass for /inference/v1/generate so the
-    # X-data-parallel-rank header and server-side max_tokens defaulting keep
-    # working.
+    # X-data-parallel-rank header and routed_experts response field — both
+    # used by prime-RL's renderer / router-replay paths — keep working.
     if "generate" in supported_tasks and state.serving_tokens is not None:
         from prime_rl.inference.vllm.serving_tokens import PrimeRlServingTokens
 
