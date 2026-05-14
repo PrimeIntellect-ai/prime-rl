@@ -9,6 +9,8 @@ from typing import Any, Literal
 from prime_rl.baselines.metrics import DEFAULT_KS
 
 LaunchMode = Literal["external", "local", "srun", "srun_multinode"]
+ExternalHealthCheck = Literal["models", "router_health"]
+ProgressMode = Literal["auto", "none"]
 
 
 @dataclass
@@ -38,6 +40,8 @@ class LaunchConfig:
     launch_prefix: list[str] = field(default_factory=list)
     wait_timeout_s: float = 900.0
     server_start_retries: int = 1
+    external_health_check: ExternalHealthCheck = "models"
+    router_extra_args: list[str] = field(default_factory=list)
     extra_args: list[str] = field(default_factory=list)
     vllm_extra: dict[str, Any] = field(default_factory=dict)
 
@@ -57,6 +61,7 @@ class BaselineConfig:
     max_concurrency: int = 32
     score_max_concurrency: int | None = None
     max_retries: int = 0
+    resume_partial: bool = True
     fail_on_error: bool = True
     success_threshold: float = 1.0
     ks: tuple[int, ...] = DEFAULT_KS
@@ -66,6 +71,7 @@ class BaselineConfig:
     api_key_var: str = "VLLM_API_KEY"
     client_type: str = "openai_chat_completions"
     api_profile: str | None = None
+    progress: ProgressMode = "auto"
     verifiers_path: Path | None = None
     env_paths: list[Path] = field(default_factory=list)
     launch: LaunchConfig = field(default_factory=LaunchConfig)
@@ -88,6 +94,9 @@ def _coerce_launch(raw: dict[str, Any]) -> LaunchConfig:
     extra_args = raw.get("extra_args", [])
     if isinstance(extra_args, str):
         extra_args = shlex.split(extra_args)
+    router_extra_args = raw.get("router_extra_args", [])
+    if isinstance(router_extra_args, str):
+        router_extra_args = shlex.split(router_extra_args)
     return LaunchConfig(
         mode=raw.get("mode", "external"),
         port=int(raw.get("port", 8000)),
@@ -118,6 +127,8 @@ def _coerce_launch(raw: dict[str, Any]) -> LaunchConfig:
         launch_prefix=list(prefix),
         wait_timeout_s=float(raw.get("wait_timeout_s", 900.0)),
         server_start_retries=int(raw.get("server_start_retries", 1)),
+        external_health_check=raw.get("external_health_check", "models"),
+        router_extra_args=list(router_extra_args),
         extra_args=list(extra_args),
         vllm_extra=dict(raw.get("vllm_extra", {})),
     )
@@ -157,6 +168,7 @@ def load_config(path: Path) -> BaselineConfig:
             else None
         ),
         max_retries=int(raw.get("max_retries", 0)),
+        resume_partial=bool(raw.get("resume_partial", True)),
         fail_on_error=bool(raw.get("fail_on_error", True)),
         success_threshold=float(raw.get("success_threshold", 1.0)),
         ks=tuple(int(k) for k in raw.get("ks", DEFAULT_KS)),
@@ -166,6 +178,7 @@ def load_config(path: Path) -> BaselineConfig:
         api_key_var=raw.get("api_key_var", "VLLM_API_KEY"),
         client_type=raw.get("client_type", "openai_chat_completions"),
         api_profile=raw.get("api_profile"),
+        progress=raw.get("progress", "auto"),
         verifiers_path=Path(raw["verifiers_path"]) if raw.get("verifiers_path") else None,
         env_paths=env_paths,
         launch=_coerce_launch(dict(raw.get("launch", {}))),

@@ -16,7 +16,10 @@ def pass_at_k_unbiased(n: int, c: int, k: int) -> float | None:
         return 0.0
     if n - c < k:
         return 1.0
-    return 1.0 - math.prod(1.0 - k / i for i in range(n - c + 1, n + 1))
+    total = 1.0
+    for i in range(n - c + 1, n + 1):
+        total *= 1.0 - k / i
+    return 1.0 - total
 
 
 def _posterior_value(row: dict[str, Any]) -> float | None:

@@ -7,6 +7,19 @@ description: All available prime-rl entrypoints — what they do, how to launch 
 
 All entrypoints are run via `uv run <command>` and accept TOML configs via `@ path/to/config.toml` with CLI overrides. See the `config` skill for config system details.
 
+For OmniMath2 RLVR, offline eval, and data-generation/filtering workflows,
+prefer the canonical launch surface:
+
+```bash
+uv run --no-sync python -m prime_rl.entrypoints.launch rlvr --config configs/omni_math2/<run>.toml
+uv run --no-sync python -m prime_rl.entrypoints.launch offline-eval --in-allocation --arm <arm> --run-root <run_default>
+uv run --no-sync python -m prime_rl.entrypoints.launch data --baseline-config <config.toml> --dataset <source.jsonl> --filter-output <out.jsonl>
+```
+
+The `prime-launch` console alias exists after the environment is synced, but
+the `python -m` form works with `uv run --no-sync`. See `docs/launch.md` for
+the current 8-node routed eval recipe.
+
 ## `rl` — RL training
 
 Orchestrates the complete RL loop: launches inference server, orchestrator, and trainer as subprocesses.

@@ -68,6 +68,188 @@ Shared W&B requires server connectivity and config validation will fail before
 launch. Use online W&B, or explicitly disable shared mode if offline logging is
 required.
 
+Prime-RL defaults W&B data/cache/config/artifact storage under the run
+`output_dir` so long Isambard runs do not fill the home quota. If you override
+`WANDB_DATA_DIR`, `WANDB_CACHE_DIR`, `WANDB_CONFIG_DIR`, or
+`WANDB_ARTIFACT_DIR`, point them at project scratch/Lustre, not `$HOME`.
+
+For canaries launched from inside an already-created Isambard allocation, do
+not add `[slurm]` sections just to encode partition/account/time. The allocation
+wrapper owns job submission and, from the next mnode allocation onward, exports
+`MASTER_ADDR`, `MASTER_PORT`, `NNODES`, `NPROC_PER_NODE`, `GPUSTAT_DIR`, and the
+CUDA 13.1 forward-compat environment from `.env`. Keep the TOML focused on
+experiment topology and validate the wrapper environment before launch.
+
+For sub-node RL packing inside an allocation, use
+`[deployment].type = "gpu_layout"` instead of pretending the run is homogeneous
+`single_node` or `multi_node`. The layout is ordered by selected host: each
+`[[deployment.nodes]]` lists one-GPU inference server GPUs in `inference` and
+trainer GPUs in `trainer`. If `[deployment].hosts` is unset, the launcher uses
+the first `len(nodes)` hosts from `SLURM_JOB_NODELIST`; override hosts on the
+CLI as a JSON-style list or in a temporary overlay when running multiple
+layouts in parallel. Launch long gpu-layout canaries from an attached tmux pane
+so the allocation keeps a live control surface for logs and interruption.
+For Omni-MATH-2 canaries, source `.env` and put the HF-task verifiers checkout
+before the older shared verifiers checkout on `PYTHONPATH`, then add the
+repo-local task environment. The order matters because
+`verifiers.utils.hf_tasks` exists in the HF-task checkout but not in the older
+shared checkout:
+`/lus/lfs1aip2/projects/a6r/joanv.a6r/tmp/verifiers-hf-task-envs`,
+`/lus/lfs1aip2/projects/a6r/joanv.a6r/work/verifiers`, then
+`/lus/lfs1aip2/projects/a6r/joanv.a6r/work/prime-rl/environments/omni_math2_singleturn`.
+
+For long-rollout Omni-MATH RLVR canaries using token-budget batching, size
+`max_off_policy_steps` to the in-flight queue geometry. If
+`max_inflight_rollouts` holds several token-batches, setting
+`max_off_policy_steps` too low cancels already-generated rollouts and wastes
+inference. Keep the cap explicit because higher values improve throughput by
+accepting more stale samples.
+
+When deliberately moving toward a more PipelineRL-style high-throughput regime,
+do not raise staleness caps under a loss that ignores behavior-policy
+probabilities. Prefer `trainer.loss.type = "default"` or the custom
+`is_reinforce_loss_fn`, set `importance_ratio_clip` (PipelineRL used 5 in its
+experiments), and monitor `importance_ratio_raw`, `importance_ratio`, and
+`importance_ratio_clipped` alongside reward/MFU.
+
+Do not confuse `max_async_level` with `max_off_policy_steps`. NCCL weight
+broadcast currently requires `max_async_level = 1`, but in-flight rollout groups
+can still age across multiple policy updates before being accepted or dropped.
+Use W&B/log metrics `scheduler/async_level`, `off_policy_level/*`, and
+`scheduler/cancelled_rollouts` to verify the actual staleness and cancellation
+rate.
+
+Before increasing `max_off_policy_steps` further, prefer larger batches only
+when memory and policy-lag evidence justify it. Token-budget batching can create
+more packed micro-batches per optimizer step without raising the per-sequence
+activation footprint, but oversized in-flight queues can make the orchestrator
+run far ahead of the trainer and turn throughput into stale-policy backlog. For
+OLMo3 Omni-MATH canaries, the stable checked-in token-budget shape is
+`token_batch_size = 524288`, `max_inflight_rollouts = 768`,
+`max_off_policy_steps = 8`, and
+`[orchestrator.eval].cancel_inflight_rollouts_on_eval = false`. The
+`*_pipelinerl_speed.toml` `3072`-in-flight experiments were speed probes, not
+the default recommendation. For fixed-batch long canaries, start with
+`batch_size = 256` and `max_inflight_rollouts = 256`; only oversample above one
+batch if W&B `time/wait_for_batch` or local rollout queues show real trainer
+starvation.
+
+Blocking online eval should not allow the background policy-update poller to
+swap in a newly saved trainer checkpoint mid-eval. If eval logs
+`Pausing inference engines for weight update` after `Running evals at
+ckpt_step=...`, treat that eval as potentially weight-contaminated and make
+sure the orchestrator pauses policy updates before launching MaxRL/comparison
+runs.
+
+For Omni-MATH eval quality, do not interpret `100×8` online eval as a
+checkpoint-selection oracle. It is a heartbeat with high prompt-level variance.
+Use it every 50 steps, add a cheap full-set `600×1` sentinel every ~250 steps
+for broad p@1 coverage, and run heavier `600×4/8` evals offline/posthoc when
+choosing checkpoints. Keep `cancel_inflight_rollouts_on_eval = false` unless
+there is concrete inference congestion. `Timeout during comparison` comes from
+symbolic `math_verify`; the LLM judge fallback runs after that timeout, so the
+timeout still costs scorer latency and can still become a zero if parsing or
+judge fallback fails. Eval-only `math_verify_timeout_seconds = 10` is a
+reasonable first bump; raising train timeout can slow the rollout pipeline.
+
+For NCCL weight broadcast, pausing orchestrator policy updates during eval is
+not enough by itself. Non-master trainer ranks must also wait out-of-band before
+entering DTensor/FSDP collectives for the next broadcast. If rank 1 times out in
+`NCCLWeightBroadcastSender._resolve_dtensors` / `DTensor.full_tensor()` while
+rank 0 is waiting for inference `NCCL_READY`, the bug is broadcast-rank
+coordination, not vLLM eval throughput. Keep the trainer-side
+`TRAINER_NCCL_READY` marker handshake in place for blocking online evals.
+
+For 1-GPU OLMo3 vLLM servers on GH200, the current 8-node long-context serving
+shape is `gpu_memory_utilization = 0.95`, `max_num_seqs = 192`, and
+`max_num_batched_tokens = 65536`. The failed `0.95/256/262144` boot was caused
+by the larger sequence/token caps, not by `gpu_memory_utilization = 0.95` alone.
+
+For gpu-layout runs with many one-GPU vLLM servers, keep vLLM/Torch/Triton
+compile caches server-local on `/tmp`. Concurrent EngineCore warmup can otherwise
+race through shared `~/.cache/vllm/torch_compile_cache` and fail with
+`torch._inductor.exc.InductorError: ... [Errno 116] Stale file handle` during
+autotuning. The launcher should set per-server `VLLM_CACHE_ROOT`,
+`TORCHINDUCTOR_CACHE_DIR`, `TRITON_CACHE_DIR`, and `XDG_CACHE_HOME`, and should
+preserve those compile cache roots across relaunches inside the same allocation.
+It is fine to clear the vLLM RPC socket dir; do not wipe compile caches unless
+you are intentionally invalidating them.
+
+Keep `USE_HUB_KERNELS=NO` for OLMo3 unless a model-specific config explicitly
+requires hub kernels. If the expected Transformers warning
+`kernels hub usage is disabled through the environment USE_HUB_KERNELS=...`
+gets noisy, suppress only that message via the PrimeRL logging filter rather
+than enabling hub kernels or lowering all Transformers logging.
+
+For current OLMo3 Omni-MATH-2 RLVR full fine-tuning, use solved-only online
+filtering: `lr = 1e-6`, `[orchestrator.buffer].easy_threshold = 1.0`,
+`online_difficulty_filtering = true`, and no `hard_threshold`. Older
+`0.875/0.0625` and `hard_threshold = 0.0` notes are superseded for this run
+family: `hard_threshold = 0.0` permanently evicts all-zero prompts that may
+become solvable later.
+
+For the 8-node GH200 allocation, the current best-known OLMo3 Omni-MATH-2
+topology is 28 inference GPUs / 4 trainer GPUs: `deployment.type =
+"multi_node"`, `num_train_nodes = 1`, `num_infer_replicas = 7`, and
+`nodes_per_fsdp_group = 1`. Use filesystem weight broadcast with
+`max_async_level = 4`, and `enable_prefix_caching = false`. Do not add
+`vllm_extra.num_scheduler_steps` unless the installed vLLM exposes that flag;
+the 2026-05-12 local environment did not. `batch_size = 256` is the default
+throughput/quality point; `batch_size = 512` is viable but inference/KV
+pressure makes it slower and higher variance. Add `[trainer.model.compile]`
+for the next controlled run, because the 2026-05-12 bs512 probe showed
+`compile=None`.
+
+For OLMo3 Omni-MATH RLVR, use higher exploration during training than eval:
+`[orchestrator.train.sampling].temperature = 1.0` and
+`[orchestrator.eval.sampling].temperature = 0.6`. Keep eval temperature fixed
+when comparing against earlier model-card or offline benchmark numbers.
+
+`generation_config = "vllm"` uses vLLM's neutral sampling defaults. In vLLM
+0.20.x this does not by itself prove that model EOS IDs are ignored, so treat
+`generation_config = "auto"` as a smoke-test axis rather than a confirmed fix
+until a short generation run shows reduced truncation.
+
+OLMo3 YaRN configs from HF may encode `beta_fast`/`beta_slow` as JSON integers.
+Transformers v5 expects floats there. Prime-RL normalizes those RoPE fields at
+the HF config ingestion boundary; do not work around the warning by changing the
+model's RoPE values in TOML.
+
+Online eval has separate environment-worker concurrency from training rollouts.
+For 100×8 long-context Omni-MATH evals, the `"auto"` worker rule resolves to
+only 4 eval workers, which can bottleneck scoring and judge fallback. This is
+separate from vLLM request concurrency: long generation volume can still
+dominate wall-clock time even when inference GPUs are full. Set
+`[orchestrator.eval].num_workers` explicitly for those configs before judging
+eval wall-clock time; this does not change model sampling or reward semantics.
+
+For many-server online evals, avoid launching all eval rollouts at once unless
+you explicitly want eager round-robin pre-assignment. Set
+`[orchestrator.eval].max_concurrent_rollouts_per_client` to enable bounded
+dynamic refill across inference clients. This keeps eval size and
+`rollouts_per_example` unchanged while reducing late bubbles where some vLLM
+servers drain to zero requests and others are stuck on long completions.
+
+For pipelined RLVR runs, choose
+`[orchestrator.eval].cancel_inflight_rollouts_on_eval` from the failure mode you
+are measuring. `true` gives cleaner checkpoint-boundary evals by clearing stale
+train work first, but it can create a severe post-eval refill bubble. `false`
+preserves overlap after eval and is useful for long throughput canaries, but it
+can leave eval requests behind already-queued train rollouts and make eval
+wall-clock harder to interpret. Record which mode was used before comparing
+runtime or eval timing.
+
+For small Omni-MATH eval subsets, set `[orchestrator.eval].seed` explicitly.
+Without a seed, `get_eval_dataset(n=...)` preserves the dataset's default order,
+so `num_examples = 100` can mean the first 100 records rather than a
+representative shuffled subset. The seed is inherited by `[[orchestrator.eval.env]]`
+entries unless an env overrides it.
+
+CUDA/NCCL package versions must be locked, not only manually installed into the
+live venv. If upgrading NCCL, update `uv.lock` so `uv run` does not sync back to
+the older wheel. The exact `ctypes.CDLL("libnccl.so.2")` check also requires the
+venv NCCL wheel lib directory on `LD_LIBRARY_PATH`.
+
 ## Naming
 
 CLI uses kebab-case (`--model.max-model-len`), TOML uses snake_case (`max_model_len`). Both refer to the same field.
