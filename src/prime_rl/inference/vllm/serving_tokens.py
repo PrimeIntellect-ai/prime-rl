@@ -48,6 +48,11 @@ from vllm.entrypoints.utils import get_max_tokens
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 
+from prime_rl.inference.vllm.nan_diagnostics import (
+    dump_nonfinite_response,
+    generate_check_enabled,
+)
+
 
 class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
     routed_experts: dict | None = Field(
@@ -272,9 +277,29 @@ class PrimeRlServingTokens(ServingTokens):
                 request_metadata,
             )
 
-        return await self.serve_tokens_full_generator(
+        response = await self.serve_tokens_full_generator(
             request, result_generator, request_id, model_name, request_metadata
         )
+        if generate_check_enabled() and isinstance(response, GenerateResponse):
+            payload = response.model_dump()
+            try:
+                from fastapi.responses import JSONResponse
+
+                JSONResponse(content=payload)
+            except ValueError as exc:
+                if "Out of range float values" in str(exc):
+                    await dump_nonfinite_response(
+                        endpoint="/inference/v1/generate",
+                        request_id=request_id,
+                        model_name=model_name,
+                        raw_request=raw_request,
+                        response_payload=payload,
+                        exception=exc,
+                        lora_name=getattr(lora_request, "lora_name", None),
+                        lora_int_id=getattr(lora_request, "lora_int_id", None),
+                    )
+                raise
+        return response
 
     async def serve_tokens_full_generator(  # type: ignore[override]
         self,

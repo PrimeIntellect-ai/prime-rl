@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from itertools import cycle
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -332,7 +333,7 @@ async def update_weights(
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
     if lora_name is not None and weight_dir is not None:
-        await load_lora_adapter(admin_clients, lora_name, weight_dir)
+        await load_lora_adapter(admin_clients, lora_name, weight_dir, step=step)
     else:
 
         async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
@@ -379,7 +380,7 @@ LORA_LOAD_READ_TIMEOUT_S = 30.0
 LORA_LOAD_TOTAL_TIMEOUT_S = 120.0
 
 
-async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
+async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lora_path: Path, step: int = 0) -> None:
     """Make a HTTP post request to the vLLM server to load a LoRA adapter.
 
     Uses our wrapper endpoint that also resets the prefix cache to invalidate
@@ -390,6 +391,9 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
     """
     logger = get_logger()
     lora_path_posix = lora_path.as_posix()
+    diag_enabled = os.getenv("PRIME_RL_LORA_NAN_DIAG", "").lower() in {"1", "true", "yes", "on"}
+    probe_enabled = os.getenv("PRIME_RL_LORA_NAN_DIAG_PROBE", "").lower() in {"1", "true", "yes", "on"}
+    headers = {"X-Prime-RL-Step": str(step)}
 
     @retry(
         retry=retry_if_exception(_is_retryable_lora_error),
@@ -398,15 +402,89 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
         reraise=True,
     )
     async def _load_lora_adapter(admin_client: AsyncClient) -> None:
-        logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
+        start = time.perf_counter()
+        if diag_enabled:
+            logger.info(
+                "LoRA diagnostic request start: url=%s step=%s name=%s path=%s",
+                admin_client.base_url,
+                step,
+                lora_name,
+                lora_path,
+            )
+        else:
+            logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
         response = await admin_client.post(
             "/load_lora_adapter",
             json={"lora_name": lora_name, "lora_path": lora_path_posix},
+            headers=headers,
             timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0),
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except Exception:
+            if diag_enabled:
+                logger.exception(
+                    "LoRA diagnostic request failed: url=%s step=%s name=%s elapsed=%.3fs status=%s body=%s",
+                    admin_client.base_url,
+                    step,
+                    lora_name,
+                    time.perf_counter() - start,
+                    response.status_code,
+                    response.text[:1000],
+                )
+            raise
+        if diag_enabled:
+            logger.info(
+                "LoRA diagnostic request success: url=%s step=%s name=%s elapsed=%.3fs",
+                admin_client.base_url,
+                step,
+                lora_name,
+                time.perf_counter() - start,
+            )
 
     await asyncio.gather(*[_load_lora_adapter(admin_client) for admin_client in admin_clients])
+
+    if probe_enabled:
+        await asyncio.gather(
+            *[_probe_lora_adapter(admin_client, lora_name=lora_name, step=step) for admin_client in admin_clients]
+        )
+
+
+async def _probe_lora_adapter(admin_client: AsyncClient, *, lora_name: str, step: int) -> None:
+    logger = get_logger()
+    from prime_rl.inference.vllm.nan_diagnostics import contains_nonfinite
+
+    payload = {
+        "model": lora_name,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 1,
+        "temperature": 0,
+    }
+    start = time.perf_counter()
+    try:
+        response = await admin_client.post(
+            "/v1/chat/completions",
+            json=payload,
+            timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
+        )
+        body = response.json()
+        response.raise_for_status()
+        logger.info(
+            "LoRA diagnostic probe success: url=%s step=%s name=%s elapsed=%.3fs contains_nonfinite=%s",
+            admin_client.base_url,
+            step,
+            lora_name,
+            time.perf_counter() - start,
+            contains_nonfinite(body),
+        )
+    except Exception:
+        logger.exception(
+            "LoRA diagnostic probe failed: url=%s step=%s name=%s elapsed=%.3fs",
+            admin_client.base_url,
+            step,
+            lora_name,
+            time.perf_counter() - start,
+        )
 
 
 async def unload_lora_adapter(admin_clients: list[AsyncClient], lora_name: str) -> None:

@@ -1,4 +1,5 @@
 import asyncio
+import time
 from argparse import Namespace
 from http import HTTPStatus
 from typing import Any
@@ -140,6 +141,13 @@ from prime_rl.inference.patches import (
     monkey_patch_load_lora_adapter,
     monkey_patch_tokenize_params_validation,
 )
+from prime_rl.inference.vllm.nan_diagnostics import (
+    adapter_path_summary,
+    json_response_or_dump,
+)
+from prime_rl.inference.vllm.nan_diagnostics import (
+    enabled as nan_diag_enabled,
+)
 from prime_rl.inference.vllm.serving_chat_with_tokens import (
     ChatCompletionRequestWithTokens,
     OpenAIServingChatWithTokens,
@@ -204,7 +212,18 @@ async def _chat_with_tokens(request: ChatCompletionRequestWithTokens, raw_reques
         return JSONResponse(content=generator.model_dump(), status_code=generator.error.code)
 
     elif isinstance(generator, ChatCompletionResponse):
-        return JSONResponse(content=generator.model_dump())
+        request_metadata = getattr(raw_request.state, "request_metadata", None)
+        request_id = getattr(request_metadata, "request_id", request.request_id or "unknown")
+        lora_request = handler._maybe_get_adapters(request, supports_default_mm_loras=True)
+        return await json_response_or_dump(
+            endpoint="/v1/chat/completions/tokens",
+            request_id=request_id,
+            model_name=handler.models.model_name(lora_request),
+            raw_request=raw_request,
+            response_payload=generator.model_dump(),
+            lora_name=getattr(lora_request, "lora_name", None),
+            lora_int_id=getattr(lora_request, "lora_int_id", None),
+        )
 
     return StreamingResponse(content=generator, media_type="text/event-stream")
 
@@ -232,9 +251,35 @@ async def update_weights(request: Request):
 async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request):
     """Wrapper around vLLM's /v1/load_lora_adapter."""
     handler = models(raw_request)
+    start = time.perf_counter()
+    if nan_diag_enabled():
+        logger.info(
+            "LoRA diagnostic load start: name=%s path_summary=%s step=%s",
+            lora_request.lora_name,
+            adapter_path_summary(lora_request.lora_path),
+            raw_request.headers.get("x-prime-rl-step"),
+        )
     response = await handler.load_lora_adapter(lora_request)
+    elapsed = time.perf_counter() - start
     if isinstance(response, ErrorResponse):
+        if nan_diag_enabled():
+            logger.error(
+                "LoRA diagnostic load failed: name=%s elapsed=%.3fs error=%s",
+                lora_request.lora_name,
+                elapsed,
+                response.model_dump(),
+            )
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
+    if nan_diag_enabled():
+        loaded = handler.lora_requests.get(lora_request.lora_name)
+        logger.info(
+            "LoRA diagnostic load success: name=%s elapsed=%.3fs lora_int_id=%s loaded_path=%s loaded_names=%s",
+            lora_request.lora_name,
+            elapsed,
+            getattr(loaded, "lora_int_id", None),
+            getattr(loaded, "lora_path", None),
+            sorted(handler.lora_requests.keys()),
+        )
     return {"status": "ok"}
 
 

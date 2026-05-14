@@ -1,6 +1,13 @@
 import torch
 from vllm.triton_utils import tl, triton
 
+from prime_rl.inference.vllm.nan_diagnostics import (
+    enabled as nan_diag_enabled,
+)
+from prime_rl.inference.vllm.nan_diagnostics import (
+    log_adapter_file_finiteness,
+)
+
 
 def transformers_v5_compat():
     """vLLM general plugin: patch transformers v5 config attrs that vLLM still expects.
@@ -587,7 +594,12 @@ def monkey_patch_load_lora_adapter():
                 return create_error_response(message=str(e), err_type=error_type, status_code=status_code)
 
             self.lora_requests[lora_name] = lora_request
-            logger.info("Loaded new LoRA adapter: name '%s', path '%s'", lora_name, lora_path)
+            logger.info(
+                "Loaded new LoRA adapter: name '%s', path '%s', lora_int_id '%s'",
+                lora_name,
+                lora_path,
+                lora_request.lora_int_id,
+            )
             return f"Success: LoRA adapter '{lora_name}' added successfully."
 
     OpenAIServingModels.load_lora_adapter = _patched_load_lora_adapter
@@ -623,6 +635,12 @@ def monkey_patch_LRUCacheWorkerLoRAManager():
         ## START PATCHED CODE
         if lora_request.lora_int_id not in self.list_adapters() or force_load:
             ## END PATCHED CODE
+            if nan_diag_enabled():
+                log_adapter_file_finiteness(
+                    lora_request.lora_path,
+                    lora_name=lora_request.lora_name,
+                    lora_int_id=lora_request.lora_int_id,
+                )
             # Load the new adapter first to ensure it is actually valid, before
             # evicting any existing adapters.
             # This may cause the # of loaded lora adapters to very temporarily
@@ -644,6 +662,15 @@ def monkey_patch_LRUCacheWorkerLoRAManager():
             # update its position in the caches
             loaded = self._adapter_manager.get_adapter(lora_request.lora_int_id) is not None
         self._adapter_manager.activate_adapter(lora_request.lora_int_id)
+        if nan_diag_enabled():
+            logger.info(
+                "LoRA worker diagnostic: name=%s lora_int_id=%s loaded=%s force_load=%s adapters=%s",
+                lora_request.lora_name,
+                lora_request.lora_int_id,
+                loaded,
+                force_load,
+                sorted(self.list_adapters()),
+            )
         return loaded
 
     LRUCacheWorkerLoRAManager._apply_adapters = _patched__apply_adapters
