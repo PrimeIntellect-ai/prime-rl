@@ -81,9 +81,40 @@ its parent node's final recurrent state and parent convolution cache, then save
 the node's final state for its children.
 
 For Qwen3.5 GatedDeltaNet, this is plausible because the FLA kernel already
-exposes `initial_state` and `output_final_state`. Prime-RL's current wrapper
-uses the production linear-sequence mode and passes `initial_state = None`, so
-Tree Training would need a new tree-aware path around that kernel.
+supports variable-length inputs with per-segment initial states:
+
+```text
+initial_state: [N, H, K, V]
+cu_seqlens:    [N + 1]
+final_state:   [N, H, K, V]
+```
+
+Prime-RL's current wrapper uses the production linear-sequence mode and passes
+`initial_state = None`, so Tree Training would need a new tree-aware path around
+that existing FLA kernel.
+
+The main implementation risk is not mathematical correctness, but avoiding a
+separate kernel launch per small tree node. The path should be a segmented
+wavefront scan:
+
+1. Collapse single-child chains and split only at branch points. For
+   caterpillar-shaped data, this makes launches proportional to branch depth,
+   not token count or node count.
+2. Batch all segments whose parent state is already available. Gather their
+   parent final states into `initial_state`, flatten the child segments, build
+   `cu_seqlens`, and call `chunk_gated_delta_rule` once for the whole wavefront.
+3. Run pointwise work once over the packed tree tensor. Input projections,
+   gates, norms, and output projection should stay dense over the packed tree;
+   only the recurrent scan needs tree semantics.
+4. Handle the pre-scan causal Conv1d with cached-prefix padding first: prepend
+   each segment with the parent path's last `kernel_size - 1` projected tokens,
+   run batched causal Conv1d over flattened segments, then drop prefix outputs.
+5. Add bucketing or CUDA graphs only after the wavefront path works. They reduce
+   CPU overhead but do not replace batching segments into fewer GPU launches.
+
+This should avoid death by tiny kernels on caterpillar-like examples. It will
+not be as efficient as one contiguous linear-sequence FLA call, but it preserves
+tree deduplication and reuses the mature production scan kernel.
 
 Preserves:
 
@@ -95,15 +126,16 @@ Preserves:
 Loses:
 
 - The current single large contiguous FLA call.
-- Some launch efficiency if implemented naively as many small per-node scans.
+- Some launch efficiency from wavefront-level segmented calls.
 - Current context-parallel assumptions: the Qwen3.5 CP context currently assumes
   one global linear sequence, not a branching state graph.
 - Simplicity; activation and state bookkeeping become model-specific.
 
 Assessment: the best practical production direction. It should start with
 Qwen3.5 GatedDeltaNet, because its state API is closest to what Tree Training
-needs. The implementation must batch compatible nodes where possible to avoid
-death by tiny kernels.
+needs. A prototype is likely days to a week; a robust production path is more
+like one to three weeks, mostly because of state bookkeeping, conv-cache
+inheritance, equivalence tests, and performance tuning.
 
 ## Option 3: Custom Tree Scan Kernel
 
@@ -111,6 +143,13 @@ Build a native tree-aware scan kernel for each hybrid token mixer. The kernel
 would handle state fanout from parent nodes to children, convolution-cache
 inheritance, and recurrent state updates without materializing per-branch
 duplicates.
+
+For Qwen3.5 GatedDeltaNet, this means replacing or extending the FLA segmented
+scan with a kernel that understands tree metadata directly. The forward pass
+needs to propagate parent states to children and produce per-node final states.
+The backward pass is harder: gradients flowing from multiple children must
+accumulate into the parent recurrent state and convolution cache in a way that
+matches the per-branch reference.
 
 Preserves:
 
@@ -127,7 +166,11 @@ Loses:
   different state layouts and recurrence semantics.
 
 Assessment: this is the eventual high-performance path, but it is a kernel
-project, not a small extension to the current Tree Training PR.
+project, not a small extension to the current Tree Training PR. A forward-only
+prototype may be manageable, but a production autograd kernel with numerics,
+ragged metadata, conv-cache handling, tests, and CP support is likely a
+multi-week effort for Qwen3.5 alone. A generic hybrid kernel covering
+GatedDeltaNet and Mamba/Nemotron-H should be treated as a separate project.
 
 ## Recommendation
 
@@ -142,8 +185,7 @@ Recommended follow-up sequence:
 2. Implement `hybrid_tree_mode = "branchwise_mixer"` as an exact reference.
 3. Implement a Qwen3.5-specific tree-state scan path using FLA
    `initial_state` / `output_final_state` plus parent convolution-cache
-   inheritance.
+   inheritance, with wavefront batching to avoid per-node kernel launches.
 4. Treat Mamba/Nemotron-H as a separate follow-up because the state API differs.
 5. Consider custom kernels only after the tree-state scan demonstrates a useful
    end-to-end gain.
-
