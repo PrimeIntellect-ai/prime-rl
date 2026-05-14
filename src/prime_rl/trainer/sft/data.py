@@ -190,7 +190,14 @@ class SFTDataset(StatefulIterableDataset):
 
         # Parse available tools, if present - assumes OAI format
         # Reference: https://platform.openai.com/docs/guides/function-calling#function-tool-example
-        tools = json.loads(example.get("tools") or "[]")
+        # Accepts either `tools` (single JSON string of a list) or `tool_defs`
+        # (list of dicts or list of JSON strings; the verifiers rollout format).
+        if "tools" in example and example["tools"]:
+            tools = json.loads(example["tools"])
+        elif "tool_defs" in example and example["tool_defs"]:
+            tools = [json.loads(t) if isinstance(t, str) else t for t in example["tool_defs"]]
+        else:
+            tools = []
 
         def should_mask(message: dict) -> bool:
             assert "role" in message, "Message must have a role"
