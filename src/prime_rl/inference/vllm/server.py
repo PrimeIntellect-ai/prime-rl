@@ -141,6 +141,7 @@ from prime_rl.inference.patches import (
     monkey_patch_harmony_stop_token_propagation,
     monkey_patch_load_lora_adapter,
     monkey_patch_tokenize_params_validation,
+    monkey_patch_vllm_nan_trace,
 )
 from prime_rl.inference.vllm.nan_diagnostics import (
     adapter_path_summary,
@@ -165,6 +166,8 @@ monkey_patch_load_lora_adapter()
 monkey_patch_tokenize_params_validation()
 # NOTE: Capture exact stock /v1/chat/completions requests whose responses contain NaN floats.
 monkey_patch_chat_completion_nan_diagnostics()
+# NOTE: Trace vLLM output/logprob/model-runner state for targeted NaN localization.
+monkey_patch_vllm_nan_trace()
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
 
