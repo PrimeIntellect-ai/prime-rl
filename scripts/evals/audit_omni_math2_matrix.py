@@ -10,9 +10,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from prime_rl.baselines.benchmark import filter_blocked_specs
 from scripts.evals.analyze_baseline_matrix import load_jsonl, safe_float
 from scripts.evals.run_omni_math2_model_bench import REQUESTED_MODELS
-from prime_rl.baselines.benchmark import filter_blocked_specs
 
 EXPECTED_KS = ("1", "3", "5", "8", "16")
 
