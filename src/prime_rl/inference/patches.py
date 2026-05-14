@@ -19,6 +19,54 @@ def transformers_v5_compat():
     monkey_patch_deep_gemm_silu_mul_quant_int64()
     monkey_patch_dp_engine_core_pause_resume_deadlock()
     monkey_patch_vllm_layerwise_reload_alias_buffers()
+    monkey_patch_return_routed_experts_with_nixl_connector()
+
+
+def monkey_patch_return_routed_experts_with_nixl_connector():
+    from vllm import envs
+    from vllm.config.vllm import VllmConfig
+    from vllm.logger import init_logger
+
+    logger = init_logger(__name__)
+    original_post_init = VllmConfig.__post_init__
+
+    if getattr(original_post_init, "_prime_rl_allows_nixl_routed_experts", False):
+        return
+
+    def _is_nixl_routed_experts_pd_config(config: VllmConfig) -> bool:
+        kv_transfer_config = config.kv_transfer_config
+        return (
+            config.model_config is not None
+            and config.model_config.enable_return_routed_experts
+            and kv_transfer_config is not None
+            and kv_transfer_config.kv_connector == "NixlConnector"
+            and kv_transfer_config.is_kv_transfer_instance
+        )
+
+    def _post_init(config: VllmConfig):
+        if not _is_nixl_routed_experts_pd_config(config):
+            return original_post_init(config)
+
+        if config.parallel_config.pipeline_parallel_size > 1:
+            raise ValueError(
+                "--enable-return-routed-experts is incompatible with "
+                "pipeline parallelism (PP > 1)."
+            )
+        if envs.VLLM_USE_V2_MODEL_RUNNER:
+            raise ValueError("VLLM_USE_V2_MODEL_RUNNER does not yet support: routed experts capture")
+
+        # vLLM rejects every KV connector, but our P/D path uses NIXL and
+        # stitches prefill/decode routed experts in the router. CPU KV offload
+        # remains rejected by prime-rl config validation.
+        config.model_config.enable_return_routed_experts = False
+        try:
+            return original_post_init(config)
+        finally:
+            config.model_config.enable_return_routed_experts = True
+
+    _post_init._prime_rl_allows_nixl_routed_experts = True
+    VllmConfig.__post_init__ = _post_init
+    logger.warning("Enabled vLLM routed-experts capture with NIXL connector patch.")
 
 
 def monkey_patch_vllm_layerwise_reload_alias_buffers():
