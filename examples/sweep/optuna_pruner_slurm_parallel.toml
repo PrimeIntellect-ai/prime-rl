@@ -1,0 +1,60 @@
+# Optuna + median pruner over synchronous SLURM with parallel trials.
+#
+# Combines two features:
+#   - scheduler.max_parallel = N → up to N concurrent SLURM jobs from a
+#     single Optuna study, driven by a ThreadPoolExecutor.
+#   - strategy.pruner = "median" → each in-flight worker polls its
+#     metrics.jsonl, forwards (step, value) to optuna_trial.report, and
+#     scancel's the SLURM job if should_prune fires.
+#
+# Concurrency model: each worker thread holds its own optuna_trial (each
+# from a distinct study.ask()). report/should_prune calls go through
+# Optuna's storage layer, which serializes them — the same contract that
+# makes Optuna's stock study.optimize(n_jobs > 1) work. TPE auto-enables
+# constant_liar so concurrent asks diversify across the search space.
+#
+# Use this when each individual trial is short enough that you want
+# adaptive pruning, AND large enough that you want the cluster filling
+# multiple trials at once. For very short trials, the no-pruner parallel
+# example is simpler; for very long single-node trials, the serial
+# pruner+slurm-sync example uses one trial in flight.
+#
+# Requires:
+#   - sbatch on PATH.
+#   - A shared filesystem between the controller and compute nodes so the
+#     controller can read metrics.jsonl as the trial writes it.
+#   - Edit examples/sweep/slurm_base.toml to match your cluster.
+#
+# Run:
+#   uv run sweep @ examples/sweep/optuna_pruner_slurm_parallel.toml
+name = "reverse-text-optuna-pruner-slurm-parallel"
+entrypoint = "rl"
+base = ["examples/reverse_text/rl.toml", "examples/sweep/slurm_base.toml"]
+output_dir = "outputs/studies/reverse-text-optuna-pruner-slurm-parallel"
+
+[strategy]
+type = "optuna"
+num_trials = 12
+seed = 42
+sampler = "tpe"
+poll_interval_seconds = 10.0
+
+[strategy.pruner]
+type = "median"
+n_startup_trials = 2
+n_warmup_steps = 5
+interval_steps = 1
+
+[scheduler]
+type = "slurm"
+synchronous = true
+max_parallel = 3
+
+[objective]
+metric = "reward/reverse-text/mean"
+direction = "maximize"
+
+[parameters."trainer.optim.lr"]
+distribution = "log_uniform"
+min = 1e-7
+max = 1e-4

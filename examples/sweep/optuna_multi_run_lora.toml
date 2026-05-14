@@ -1,0 +1,37 @@
+# Optuna sweep using the multi_run_lora wave driver.
+#
+# Demonstrates: Optuna + multi_run_lora. num_trials trials are split
+# into waves of size max_concurrent_runs; each wave spawns one
+# rl-multi-run invocation with that many orchestrators running against
+# the same shared trainer. The controller tells Optuna each wave's
+# results before proposing the next wave, so wave N+1 benefits from
+# wave N's history. A non-trivial pruner (median/asha/hyperband) can
+# also prune within a wave by polling each run's metrics.jsonl —
+# see optuna_pruner_median.toml for that variant.
+#
+# Run:
+#   uv run sweep @ examples/sweep/optuna_multi_run_lora.toml
+name = "reverse-text-optuna-multi-run-lora"
+entrypoint = "rl"
+base = ["examples/sweep/rl_multi_run_lora_disagg.toml"]
+output_dir = "outputs/studies/reverse-text-optuna-multi-run-lora"
+
+[strategy]
+type = "optuna"
+num_trials = 6
+seed = 42
+sampler = "tpe"
+
+[scheduler]
+type = "multi_run_lora"
+max_concurrent_runs = 3
+shared = ["examples/sweep/rl_multi_run_lora_disagg.toml"]
+
+[objective]
+metric = "reward/reverse-text/mean"
+direction = "maximize"
+
+[parameters."orchestrator.optim.lr"]
+distribution = "log_uniform"
+min = 1e-7
+max = 1e-4

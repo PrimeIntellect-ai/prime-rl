@@ -163,7 +163,10 @@ def _start_supervised(
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_file = open(log_path, "w")
-    process = Popen(cmd, env=env, stdout=log_file, stderr=log_file)
+    try:
+        process = Popen(cmd, env=env, stdout=log_file, stderr=log_file)
+    finally:
+        log_file.close()
     supervisor.processes.append(process)
     stop_event = Event()
     supervisor.stop_events[label] = stop_event

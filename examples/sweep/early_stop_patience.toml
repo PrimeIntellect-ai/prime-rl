@@ -1,0 +1,37 @@
+# Early stopping (patience): halt the sweep after N consecutive
+# completed trials fail to improve on the best-so-far.
+#
+# Demonstrates: [early_stopping] type="patience". After patience=1
+# consecutive trials with no improvement (and min_trials trials
+# completed), the sweep halts new submissions. In-flight trials are
+# not killed.
+#
+# Order: trial 0 sets the baseline reward, trial 1 has a bad LR that
+# fails to improve, so steps_without_improvement reaches patience=1
+# and the sweep halts before trial 2 launches.
+#
+# Run:
+#   uv run sweep @ examples/sweep/early_stop_patience.toml
+name = "reverse-text-early-stop-patience"
+entrypoint = "rl"
+base = ["examples/sweep/rl.toml"]
+output_dir = "outputs/studies/reverse-text-early-stop-patience"
+
+[strategy]
+type = "grid"
+
+[scheduler]
+type = "local"
+max_parallel = 1
+
+[objective]
+metric = "reward/reverse-text/mean"
+direction = "maximize"
+
+[early_stopping]
+type = "patience"
+patience = 1
+min_trials = 1
+
+[parameters."trainer.optim.lr"]
+values = [3e-6, 1e-3, 1e-5]

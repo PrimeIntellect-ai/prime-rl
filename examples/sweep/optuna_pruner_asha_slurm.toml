@@ -1,0 +1,54 @@
+# Optuna + ASHA pruner over the synchronous SLURM scheduler.
+#
+# ASHA (Asynchronous Successive Halving) prunes more aggressively than the
+# median pruner: trials are evaluated at increasingly demanding "rungs", and
+# at each rung only the top 1/reduction_factor are promoted while the rest
+# are pruned. Useful when most of the search space is bad and you want to
+# fail-fast on cluster time.
+#
+# How it works on SLURM-sync: each trial is submitted via `sbatch --parsable`
+# (captures the job id), the controller polls shared-FS metrics.jsonl while
+# the job runs, forwards (step, value) reports to `optuna_trial.report`,
+# and on `should_prune()` issues `scancel <jobid>`. Trials are serialized at
+# the controller, so ASHA's *adaptive* behavior is preserved even though the
+# wall-clock concurrency is one.
+#
+# Trials need enough steps to cross multiple rungs for ASHA to do useful
+# work. Tune `min_resource` (first rung) and `reduction_factor` to the
+# trial length you actually run.
+#
+# Requires a shared filesystem between the controller and compute nodes
+# so the controller can read metrics.jsonl as the trial writes it.
+#
+# Run:
+#   uv run sweep @ examples/sweep/optuna_pruner_asha_slurm.toml
+name = "reverse-text-optuna-asha-slurm"
+entrypoint = "rl"
+base = ["examples/reverse_text/rl.toml", "examples/sweep/slurm_base.toml"]
+output_dir = "outputs/studies/reverse-text-optuna-asha-slurm"
+
+[strategy]
+type = "optuna"
+num_trials = 12
+seed = 42
+sampler = "tpe"
+poll_interval_seconds = 10.0
+
+[strategy.pruner]
+type = "asha"
+min_resource = 1
+reduction_factor = 3
+min_early_stopping_rate = 0
+
+[scheduler]
+type = "slurm"
+synchronous = true
+
+[objective]
+metric = "reward/reverse-text/mean"
+direction = "maximize"
+
+[parameters."trainer.optim.lr"]
+distribution = "log_uniform"
+min = 1e-7
+max = 1e-4

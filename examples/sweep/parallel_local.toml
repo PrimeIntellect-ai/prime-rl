@@ -1,0 +1,39 @@
+# Parallel local sweep with explicit GPU assignment.
+#
+# Demonstrates: max_parallel > 1 with [scheduler.gpu_assignment] pinning
+# each parallel worker to a disjoint device group. Each trial subprocess
+# inherits a CUDA_VISIBLE_DEVICES override matching its assigned group.
+#
+# Requires: at least max_parallel disjoint visible_devices groups; the
+# validator rejects max_parallel > 1 without gpu_assignment so two
+# workers can never silently colocate trainer/inference stacks on the
+# same GPUs.
+#
+# The example below pins two workers to GPUs [0,1] and [2,3] respectively,
+# matching a 4-GPU node with each trial running its own 1-train + 1-infer
+# split. Adjust visible_devices to match your hardware.
+#
+# Run:
+#   uv run sweep @ examples/sweep/parallel_local.toml
+name = "reverse-text-parallel"
+entrypoint = "rl"
+base = ["examples/sweep/rl.toml"]
+output_dir = "outputs/studies/reverse-text-parallel"
+
+[strategy]
+type = "grid"
+
+[scheduler]
+type = "local"
+max_parallel = 2
+
+[scheduler.gpu_assignment]
+mode = "static"
+visible_devices = [[0, 1], [2, 3]]
+
+[objective]
+metric = "reward/reverse-text/mean"
+direction = "maximize"
+
+[parameters."trainer.optim.lr"]
+values = [1e-6, 3e-6, 1e-5, 3e-5]

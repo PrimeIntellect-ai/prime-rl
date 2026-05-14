@@ -1,0 +1,47 @@
+# Optuna with Hyperband pruning.
+#
+# Demonstrates: Hyperband runs multiple ASHA brackets in parallel,
+# each with a different min_resource. Bracket 0 starts pruning at
+# min_resource; bracket 1 at min_resource * reduction_factor; etc.
+# This hedges across resource budgets — bracket 0 fail-fasts the
+# obviously bad trials, deeper brackets give borderline trials a
+# longer look. Compared to plain ASHA, Hyperband prunes less
+# aggressively because some trials get a free pass in the deeper
+# brackets.
+#
+# Requires intermediate metric reports from the trial (the trial
+# subprocess writes metrics.jsonl via FileMonitor when the sweep
+# launcher sets PRIME_RL_SWEEP_METRICS_JSONL).
+#
+# Run:
+#   uv run sweep @ examples/sweep/optuna_pruner_hyperband.toml
+name = "reverse-text-optuna-hyperband"
+entrypoint = "rl"
+base = ["examples/sweep/rl.toml"]
+output_dir = "outputs/studies/reverse-text-optuna-hyperband"
+
+[strategy]
+type = "optuna"
+num_trials = 12
+seed = 42
+sampler = "tpe"
+poll_interval_seconds = 5.0
+
+[strategy.pruner]
+type = "hyperband"
+min_resource = 1
+max_resource = "auto"
+reduction_factor = 3
+
+[scheduler]
+type = "local"
+max_parallel = 1
+
+[objective]
+metric = "reward/reverse-text/mean"
+direction = "maximize"
+
+[parameters."trainer.optim.lr"]
+distribution = "log_uniform"
+min = 1e-7
+max = 1e-4

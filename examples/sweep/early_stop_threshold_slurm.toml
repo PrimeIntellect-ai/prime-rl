@@ -1,0 +1,41 @@
+# Early stopping (threshold) over the synchronous SLURM scheduler.
+#
+# Demonstrates: pairing [early_stopping] with scheduler.type = "slurm" +
+# synchronous = true. The controller observes each trial's objective via
+# sbatch --wait + scontrol/metrics fallback, then checks the tracker
+# between trials. When a completed trial's objective falls on the wrong
+# side of the threshold, the controller halts: no further sbatch
+# submissions, and the in-flight trial (if any) is allowed to finish.
+#
+# Order matters for grid expansion: trial 0 should pass the threshold,
+# trial 1 has a known-bad LR that collapses the reward, so the controller
+# halts after trial 1 and trial 2 stays state="pending" in the manifest.
+#
+# Requires: same SLURM prerequisites as examples/sweep/slurm.toml
+# (sbatch on PATH, reachable cluster, slurm_base.toml edited).
+#
+# Run:
+#   uv run sweep @ examples/sweep/early_stop_threshold_slurm.toml
+name = "reverse-text-early-stop-threshold-slurm"
+entrypoint = "rl"
+base = ["examples/reverse_text/rl.toml", "examples/sweep/slurm_base.toml"]
+output_dir = "outputs/studies/reverse-text-early-stop-threshold-slurm"
+
+[strategy]
+type = "grid"
+
+[scheduler]
+type = "slurm"
+synchronous = true
+
+[objective]
+metric = "reward/reverse-text/mean"
+direction = "maximize"
+
+[early_stopping]
+type = "threshold"
+threshold = 0.10
+min_trials = 1
+
+[parameters."trainer.optim.lr"]
+values = [3e-6, 1e-3, 1e-5]

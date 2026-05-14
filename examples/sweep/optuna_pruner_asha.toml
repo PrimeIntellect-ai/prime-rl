@@ -1,0 +1,50 @@
+# Optuna with ASHA (Asynchronous Successive Halving) pruning.
+#
+# Demonstrates: aggressive resource-bracketed pruning. ASHA evaluates
+# trials at increasingly demanding "rungs": at each rung, only the
+# top 1/reduction_factor of trials are promoted to the next rung; the
+# rest are pruned. Compared to median, ASHA prunes earlier and harder,
+# which is useful when most of the search space is bad and you want to
+# fail-fast.
+#
+# Like the median variant, this requires intermediate metric reports
+# from trials. For real use, trials should run long enough that
+# multiple rungs can be evaluated; the smoke-test scale here will not
+# produce meaningful pruning decisions.
+#
+# Hyperband is also available (type = "hyperband"); it runs multiple
+# ASHA brackets with different min_resource values to hedge across
+# resource budgets.
+#
+# Run:
+#   uv run sweep @ examples/sweep/optuna_pruner_asha.toml
+name = "reverse-text-optuna-asha"
+entrypoint = "rl"
+base = ["examples/sweep/rl.toml"]
+output_dir = "outputs/studies/reverse-text-optuna-asha"
+
+[strategy]
+type = "optuna"
+num_trials = 12
+seed = 42
+sampler = "tpe"
+poll_interval_seconds = 5.0
+
+[strategy.pruner]
+type = "asha"
+min_resource = 1
+reduction_factor = 3
+min_early_stopping_rate = 0
+
+[scheduler]
+type = "local"
+max_parallel = 1
+
+[objective]
+metric = "reward/reverse-text/mean"
+direction = "maximize"
+
+[parameters."trainer.optim.lr"]
+distribution = "log_uniform"
+min = 1e-7
+max = 1e-4

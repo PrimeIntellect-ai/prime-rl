@@ -1,0 +1,22 @@
+# SLURM submission settings, chained on top of examples/sweep/rl.toml
+# when running examples/sweep/slurm.toml. Edit to match your cluster.
+#
+# The [deployment] block forces a multi-node layout with one training
+# node and one inference node, each with 1 GPU. This fits a 2 x 1 GPU
+# homelab cluster out of the box. Bump gpus_per_node, num_train_nodes,
+# and num_infer_nodes to match larger clusters.
+[slurm]
+job_name = "reverse-text-sweep"
+partition = "gpu"
+# account = "your-account"
+# time = "01:00:00"
+# nodelist = "node-a,node-b"
+# exclude = "node-bad"
+# template_path = "/path/to/custom_sbatch_template.sh"
+# pre_run_command = "module load cuda/12.8"
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 1
+num_train_nodes = 1
+num_infer_nodes = 1

@@ -36,16 +36,6 @@ dependencies = [
     "tilelang>=0.1.8",
     "flash-linear-attention",
     "nvidia-ml-py>=12.575.51",
-    # vLLM 0.20.1's vllm._C is compiled against CUDA 13 and dlopens
-    # libcudart.so.13 / libnvrtc.so.13 at import time. Boxes that only
-    # have the NVIDIA driver (no system CUDA toolkit) and torch's
-    # bundled cu12 runtime cannot find these. Pinning the cu13 wheels
-    # alongside makes prime-rl installable on a fresh GPU host.
-    # The libs land at site-packages/nvidia/cu13/lib/; users may still
-    # need to add that to LD_LIBRARY_PATH if their loader doesn't pick
-    # it up automatically.
-    "nvidia-cuda-runtime ; platform_machine == 'x86_64'",
-    "nvidia-cuda-nvrtc ; platform_machine == 'x86_64'",
 ]
 
 [project.scripts]

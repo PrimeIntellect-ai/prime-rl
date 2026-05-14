@@ -1,0 +1,33 @@
+# Grid search against a disaggregated inference server.
+#
+# Demonstrates: running a sweep when inference lives on a separate rig
+# (no [inference] block in the base config; orchestrator points at a
+# remote vLLM via client.base_url).
+#
+# Prereq:
+#   - vLLM running on the inference rig serving the same model as the
+#     trainer-side base (PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT).
+#   - examples/sweep/rl_disagg.toml points client.base_url at it.
+#   - Shared NAS mount visible from both rigs at the same absolute path
+#     so weight broadcasts are reachable.
+#
+# Run:
+#   uv run sweep @ examples/sweep/grid_local_disagg.toml
+name = "reverse-text-disagg-lr"
+entrypoint = "rl"
+base = ["examples/sweep/rl_disagg.toml"]
+output_dir = "outputs/studies/reverse-text-disagg-lr"
+
+[strategy]
+type = "grid"
+
+[scheduler]
+type = "local"
+max_parallel = 1
+
+[objective]
+metric = "reward/reverse-text/mean"
+direction = "maximize"
+
+[parameters."trainer.optim.lr"]
+values = [1e-6, 3e-6]

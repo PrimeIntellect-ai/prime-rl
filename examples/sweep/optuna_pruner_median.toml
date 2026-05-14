@@ -1,0 +1,51 @@
+# Optuna with intermediate-metric pruning (median).
+#
+# Demonstrates: Optuna pruners. While each trial runs, the controller
+# polls the trial subprocess's metrics.jsonl sidecar every
+# poll_interval_seconds and reports each new (step, value) to Optuna
+# via trial.report. If trial.should_prune fires, the controller
+# SIGTERMs the trial's process group and marks status="pruned".
+#
+# MedianPruner prunes a trial whose intermediate value falls below
+# the running median of completed trials at the same step. With
+# n_startup_trials=2 below, pruning is enabled after 2 trials have
+# completed in full; n_warmup_steps=1 skips pruning during the very
+# first step of each trial.
+#
+# Trade-off: pruning requires intermediate metric reports, so trials
+# must run long enough (typically 50+ steps) for pruning decisions
+# to be meaningful. The 30 steps below is a smoke-test scale; bump
+# in real use.
+#
+# Run:
+#   uv run sweep @ examples/sweep/optuna_pruner_median.toml
+name = "reverse-text-optuna-median"
+entrypoint = "rl"
+base = ["examples/sweep/rl.toml"]
+output_dir = "outputs/studies/reverse-text-optuna-median"
+
+[strategy]
+type = "optuna"
+num_trials = 8
+seed = 42
+sampler = "tpe"
+poll_interval_seconds = 5.0
+
+[strategy.pruner]
+type = "median"
+n_startup_trials = 2
+n_warmup_steps = 1
+interval_steps = 1
+
+[scheduler]
+type = "local"
+max_parallel = 1
+
+[objective]
+metric = "reward/reverse-text/mean"
+direction = "maximize"
+
+[parameters."trainer.optim.lr"]
+distribution = "log_uniform"
+min = 1e-7
+max = 1e-4

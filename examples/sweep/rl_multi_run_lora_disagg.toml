@@ -1,0 +1,42 @@
+# Shared base for a multi_run_lora sweep with disagg inference.
+# rl-multi-run launches one trainer + N orchestrators; inference is on rig B.
+max_steps = 15
+max_async_level = 20
+seq_len = 2048
+clean_output_dir = true
+
+[deployment]
+type = "single_node"
+num_train_gpus = 1
+num_infer_gpus = 0
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[trainer]
+max_concurrent_runs = 3
+
+[trainer.model.lora]
+rank = 8
+alpha = 16
+
+[trainer.optim]
+lr = 3e-6
+
+[orchestrator]
+batch_size = 64
+rollouts_per_example = 8
+
+[orchestrator.client]
+base_url = ["http://10.1.0.69:8000/v1"]
+
+[orchestrator.model.lora]
+rank = 8
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.train.env]]
+id = "reverse-text"
+
+[ckpt]

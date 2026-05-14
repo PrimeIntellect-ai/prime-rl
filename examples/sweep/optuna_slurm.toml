@@ -1,0 +1,42 @@
+# Optuna over the synchronous SLURM scheduler.
+#
+# Demonstrates: scheduler.synchronous = true. The controller submits each
+# trial via `sbatch --wait`, blocking until the job exits, so Optuna can
+# observe each trial's objective before proposing the next. Trials still
+# run on a SLURM-managed compute node; the controller process holds one
+# slot on the login/controller node for the duration of the sweep.
+#
+# Tradeoff: trials are serialized at the controller (one in-flight at a
+# time), so this is most useful when each individual trial is too large
+# to run anywhere except the cluster, but you still want adaptive search.
+# For embarrassingly parallel grid/random sweeps with a stable queue,
+# stick with the default (synchronous = false).
+#
+# Pruners are supported on this scheduler — see
+# examples/sweep/optuna_pruner_slurm.toml for a pruning variant.
+#
+# Run:
+#   uv run sweep @ examples/sweep/optuna_slurm.toml
+name = "reverse-text-optuna-slurm"
+entrypoint = "rl"
+base = ["examples/reverse_text/rl.toml", "examples/sweep/slurm_base.toml"]
+output_dir = "outputs/studies/reverse-text-optuna-slurm"
+
+[strategy]
+type = "optuna"
+num_trials = 6
+seed = 42
+sampler = "tpe"
+
+[scheduler]
+type = "slurm"
+synchronous = true
+
+[objective]
+metric = "reward/reverse-text/mean"
+direction = "maximize"
+
+[parameters."trainer.optim.lr"]
+distribution = "log_uniform"
+min = 1e-7
+max = 1e-4

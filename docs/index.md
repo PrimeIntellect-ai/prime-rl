@@ -4,6 +4,7 @@ This directory maintains the documentation for PRIME-RL. It is organized into th
 
 - [**Entrypoints**](entrypoints.md) - Overview of the main components (orchestrator, trainer, inference) and how to run SFT, RL, and evals
 - [**Configs**](configs.md) - Configuration system using TOML files, CLI arguments, and environment variables
+- [**Sweeps**](sweeps.md) - Hyperparameter studies with grid, random, Optuna, local, SLURM, and shared-trainer LoRA schedulers
 - [**Environments**](environments.md) - Installing and using verifiers environments from the Environments Hub
 - [**Async Training**](async.md) - Understanding asynchronous off-policy training and step semantics
 - [**Logging**](logging.md) - Logging with loguru, torchrun, and Weights & Biases

@@ -1,0 +1,33 @@
+# Optuna (TPE) adaptive sweep, single trial at a time.
+#
+# Demonstrates: optuna strategy with TPE sampler over a log-uniform
+# parameter. The controller asks Optuna for one trial, materializes
+# it, runs it through the local scheduler, and reports the objective
+# back before asking for the next trial. With seed pinned, the
+# proposed LR sequence is reproducible across runs.
+#
+# Run:
+#   uv run sweep @ examples/sweep/optuna_local.toml
+name = "reverse-text-optuna"
+entrypoint = "rl"
+base = ["examples/sweep/rl.toml"]
+output_dir = "outputs/studies/reverse-text-optuna"
+
+[strategy]
+type = "optuna"
+num_trials = 6
+seed = 42
+sampler = "tpe"
+
+[scheduler]
+type = "local"
+max_parallel = 1
+
+[objective]
+metric = "reward/reverse-text/mean"
+direction = "maximize"
+
+[parameters."trainer.optim.lr"]
+distribution = "log_uniform"
+min = 1e-7
+max = 1e-4
