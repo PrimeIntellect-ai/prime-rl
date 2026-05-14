@@ -192,7 +192,7 @@ class SFTDataset(StatefulIterableDataset):
         # Reference: https://platform.openai.com/docs/guides/function-calling#function-tool-example
         # Accepts either `tools` or `tool_defs` (the verifiers rollout format),
         # as either a JSON-encoded string of a list or a list of dicts.
-        raw_tools = example.get("tools") if "tools" in example and example["tools"] else example.get("tool_defs")
+        raw_tools = example.get("tools", example.get("tool_defs"))
         if not raw_tools:
             tools = []
         elif isinstance(raw_tools, str):
