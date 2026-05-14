@@ -34,6 +34,15 @@ def _has_linear_attn_layer(model: nn.Module) -> bool:
     return False
 
 
+def is_zaya_model(model: nn.Module) -> bool:
+    config = getattr(model, "config", None)
+    if getattr(config, "model_type", None) == "zaya":
+        return True
+    inner = getattr(model, "model", None)
+    config = getattr(inner, "config", None)
+    return getattr(config, "model_type", None) == "zaya"
+
+
 def assert_cp_style_supports_model(cp_style: CPStyle, model: nn.Module) -> None:
     """Refuse `cp_style='ring'` on models that have linear/SSM attention layers.
 
@@ -49,6 +58,12 @@ def assert_cp_style_supports_model(cp_style: CPStyle, model: nn.Module) -> None:
             "or Mamba/SSM layers (e.g. Qwen3.5 hybrid, NemotronH). Use "
             "cp_style='ulysses' instead — its all-to-all on Q/K/V works "
             "out-of-the-box with non-softmax kernels."
+        )
+    if cp_style == "ring" and is_zaya_model(model):
+        raise ValueError(
+            "cp_style='ring' is not supported for Zaya because CCA convolution "
+            "and value shifting require full sequence context before attention. "
+            "Use cp_style='ulysses' instead."
         )
 
 
@@ -123,6 +138,27 @@ def setup_sparse_mla_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: 
         from prime_rl.utils.logger import get_logger
 
         get_logger().info(f"Configured sparse MLA CP on {count} DSA layers")
+
+
+def setup_zaya_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
+    """Configure Zaya attention layers for context-parallel full-sequence CCA."""
+
+    inner = getattr(model, "model", model)
+    layers = getattr(inner, "layers", None)
+    if layers is None:
+        return
+
+    count = 0
+    for layer in layers:
+        attn = getattr(layer, "self_attn", None)
+        if attn is not None and hasattr(attn, "set_context_parallel_attributes"):
+            attn.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
+            count += 1
+
+    if count > 0:
+        from prime_rl.utils.logger import get_logger
+
+        get_logger().info(f"Configured Zaya CP on {count} CCA attention layers")
 
 
 def shard_for_cp(t: torch.Tensor, cp_rank: int, cp_world_size: int) -> torch.Tensor:

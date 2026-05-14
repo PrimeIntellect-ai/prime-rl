@@ -115,10 +115,18 @@ def train(config: SFTConfig):
                 substitute_hf_ulysses_attn,
                 substitute_ulysses_attn,
             )
+            from prime_rl.utils.cp import (
+                setup_hybrid_cp,
+                setup_nemotron_h_cp,
+                setup_sparse_mla_cp,
+                setup_zaya_cp,
+                is_zaya_model,
+            )
 
             substitute_hf_ulysses_attn(cp_group)
-            substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
-        from prime_rl.utils.cp import setup_hybrid_cp, setup_nemotron_h_cp, setup_sparse_mla_cp
+            if not is_zaya_model(model):
+                # Zaya does a different kind of ulysses where FlashAttention should be vanilla
+                substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint managers ({config.ckpt})")
@@ -143,6 +151,7 @@ def train(config: SFTConfig):
         assert_cp_style_supports_model(config.model.cp_style, model)
         # sparse MLA is softmax (works with both ring and ulysses).
         setup_sparse_mla_cp(model, cp_group, cp_rank, parallel_dims.cp)
+        setup_zaya_cp(model, cp_group, cp_rank, parallel_dims.cp)
         # Linear-attn / Mamba layers are only configured under ulysses; with ring
         # we'd have already raised above.
         if config.model.cp_style == "ulysses":
