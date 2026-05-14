@@ -11,7 +11,7 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-05-07T15:52:53.627120476Z"
+exclude-newer = "2026-05-07T18:56:25.00241089Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -2962,11 +2962,11 @@ requires-dist = [
     { name = "torchvision", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers?rev=48a203f" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers?rev=7fdf522" },
     { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
     { name = "vllm", marker = "platform_machine == 'aarch64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl" },
     { name = "vllm", marker = "platform_machine == 'x86_64'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.2rc1.dev354+g24337fb86.cu129-cp38-abi3-manylinux_2_34_x86_64.whl" },
-    { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl" },
+    { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.24/vllm_router-0.1.24-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wiki-search", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
 ]
@@ -4274,8 +4274,8 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-version = "0.1.15.dev4"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers?rev=48a203f#48a203feb82eeadce37ead5fc6d24d1cd7014575" }
+version = "0.1.15.dev5"
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers?rev=7fdf522#7fdf52219347086c76f00b37659a3626562a58ec" }
 dependencies = [
     { name = "aiolimiter", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "anthropic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -4670,8 +4670,8 @@ provides-extras = ["zen", "bench", "tensorizer", "fastsafetensors", "instanttens
 
 [[package]]
 name = "vllm-router"
-version = "0.1.22"
-source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl" }
+version = "0.1.24"
+source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.24/vllm_router-0.1.24-cp38-abi3-manylinux_2_28_x86_64.whl" }
 dependencies = [
     { name = "aiohttp", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "fastapi", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -4681,7 +4681,7 @@ dependencies = [
     { name = "uvicorn", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:6361a0387241e56932f3ba2e51af27f58d11a462e3187e58286b2f96056e4d15" },
+    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.24/vllm_router-0.1.24-cp38-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:5b45d59871b73357ab1c3d48790de233e190055b6ace810aefb3cb1416fe0d00" },
 ]
 
 [package.metadata]
