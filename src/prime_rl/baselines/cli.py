@@ -24,12 +24,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--api-key-var")
     parser.add_argument("--client-type")
     parser.add_argument("--api-profile")
+    parser.add_argument("--progress", choices=["auto", "none"])
     parser.add_argument("--num-examples", type=int)
     parser.add_argument("--record-ids", nargs="+")
     parser.add_argument("--rollouts-per-example", type=int)
     parser.add_argument("--max-concurrency", type=int)
     parser.add_argument("--score-max-concurrency", type=int)
     parser.add_argument("--max-retries", type=int)
+    parser.add_argument("--no-resume-partial", action="store_true")
     parser.add_argument("--no-fail-on-error", action="store_true")
     parser.add_argument("--seed", type=int)
     parser.add_argument("--ks", type=_parse_k_list)
@@ -71,6 +73,7 @@ def _apply_overrides(config: BaselineConfig, args: argparse.Namespace) -> Baseli
         "api_key_var",
         "client_type",
         "api_profile",
+        "progress",
         "num_examples",
         "record_ids",
         "rollouts_per_example",
@@ -87,6 +90,8 @@ def _apply_overrides(config: BaselineConfig, args: argparse.Namespace) -> Baseli
 
     if args.env_path:
         config.env_paths.extend(args.env_path)
+    if args.no_resume_partial:
+        config.resume_partial = False
     if args.no_fail_on_error:
         config.fail_on_error = False
     if args.env_args_json:

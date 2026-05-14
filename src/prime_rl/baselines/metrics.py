@@ -5,18 +5,14 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
 from typing import Any
 
+from prime_rl.orchestrator.eval_utils import estimate_pass_at_k
+
 DEFAULT_KS = (1, 3, 5, 8, 16)
 
 
 def pass_at_k_unbiased(n: int, c: int, k: int) -> float | None:
     """Chen et al. pass@k estimator for n sampled attempts and c successes."""
-    if k > n:
-        return None
-    if c <= 0:
-        return 0.0
-    if n - c < k:
-        return 1.0
-    return 1.0 - math.prod(1.0 - k / i for i in range(n - c + 1, n + 1))
+    return estimate_pass_at_k(n, c, k)
 
 
 def _posterior_value(row: dict[str, Any]) -> float | None:

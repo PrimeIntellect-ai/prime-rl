@@ -8,7 +8,7 @@ import uuid
 from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeAlias
 
 from prime_rl.baselines.config import BaselineConfig
 from prime_rl.baselines.metrics import summarize_records
@@ -33,6 +33,8 @@ VLLM_EXTRA_BODY_KEYS = frozenset(
         "bad_words",
     }
 )
+ProgressCallback = Callable[[str, int], None]
+RolloutKey: TypeAlias = tuple[str, int]
 
 
 def _module_name(env_id: str) -> str:
@@ -152,6 +154,64 @@ def _example_id(example: dict[str, Any]) -> str:
     return str(example.get("example_id", example.get("id")))
 
 
+def _expected_rollout_keys(examples: Sequence[dict[str, Any]], rollouts_per_example: int) -> set[RolloutKey]:
+    return {
+        (_example_id(example), trial_index)
+        for example in examples
+        for trial_index in range(rollouts_per_example)
+    }
+
+
+def _rollout_key(trial_index: int, output: Any) -> RolloutKey | None:
+    if not isinstance(output, dict):
+        return None
+    example_id = output.get("example_id")
+    if example_id is None:
+        return None
+    return (str(example_id), int(trial_index))
+
+
+def _read_partial_outputs(path: Path, expected_keys: set[RolloutKey]) -> dict[RolloutKey, tuple[int, Any]]:
+    if not path.exists():
+        return {}
+
+    outputs: dict[RolloutKey, tuple[int, Any]] = {}
+    with path.open() as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+                trial_index = int(row["trial_index"])
+                output = row["output"]
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            key = _rollout_key(trial_index, output)
+            if key in expected_keys:
+                outputs[key] = (trial_index, output)
+    return outputs
+
+
+def _merge_rollout_outputs(
+    *,
+    expected_keys: set[RolloutKey],
+    existing_outputs: Sequence[tuple[int, Any]],
+    new_outputs: Sequence[tuple[int, Any]],
+) -> list[tuple[int, Any]]:
+    merged: dict[RolloutKey, tuple[int, Any]] = {}
+    for trial_index, output in (*existing_outputs, *new_outputs):
+        key = _rollout_key(trial_index, output)
+        if key in expected_keys:
+            merged[key] = (trial_index, output)
+
+    missing = sorted(expected_keys - set(merged))
+    if missing:
+        preview = ", ".join(f"{example_id}:{trial_index}" for example_id, trial_index in missing[:10])
+        raise RuntimeError(f"Missing {len(missing)} baseline rollout(s) after generation; first missing: {preview}")
+
+    return [merged[key] for key in sorted(expected_keys)]
+
+
 def _eval_examples(config: BaselineConfig, env: Any) -> list[dict[str, Any]]:
     if not config.record_ids:
         return env.get_eval_dataset(n=config.num_examples, seed=config.seed).to_list()
@@ -173,27 +233,76 @@ async def _run_rollouts(
     env: Any,
     endpoint: Endpoint,
     sampling: dict[str, Any],
+    progress_callback: ProgressCallback | None = None,
 ) -> list[tuple[int, Any]]:
     import verifiers as vf
     from verifiers.clients import resolve_client
     from verifiers.utils.async_utils import maybe_retry
-    from verifiers.utils.save_utils import state_to_output
+    from verifiers.utils.save_utils import make_serializable, state_to_output
 
     examples = _eval_examples(config, env)
+    expected_keys = _expected_rollout_keys(examples, config.rollouts_per_example)
+    partial_path = config.output_dir / "raw_rollouts.partial.jsonl"
+    resumed_outputs = _read_partial_outputs(partial_path, expected_keys) if config.resume_partial else {}
+    if resumed_outputs:
+        print(
+            f"resuming {len(resumed_outputs)}/{len(expected_keys)} completed baseline rollouts "
+            f"from {partial_path}",
+            flush=True,
+        )
     client = _make_client_config(config, endpoint, config.max_concurrency)
     generation_semaphore = asyncio.Semaphore(config.max_concurrency)
     scoring_semaphore = asyncio.Semaphore(config.score_max_concurrency or config.max_concurrency)
     requires_group = _requires_group_scoring(env)
     resolved_client = resolve_client(client)
-    total_rollouts = len(examples) * config.rollouts_per_example
+    if requires_group:
+        examples_to_run = [
+            example
+            for example in examples
+            if any(
+                (_example_id(example), trial_index) not in resumed_outputs
+                for trial_index in range(config.rollouts_per_example)
+            )
+        ]
+        total_rollouts = len(examples_to_run) * config.rollouts_per_example
+    else:
+        rollout_tasks = [
+            (example, trial_index)
+            for example in examples
+            for trial_index in range(config.rollouts_per_example)
+            if (_example_id(example), trial_index) not in resumed_outputs
+        ]
+        total_rollouts = len(rollout_tasks)
     decoupled = not requires_group and getattr(env, "env_client", None) is None
+    progress_enabled = config.progress != "none"
     generation_pbar = (
-        ProgressTracker(total=total_rollouts, desc="Baseline generations", position=0) if decoupled else None
+        ProgressTracker(total=total_rollouts, desc="Baseline generations", position=0)
+        if decoupled and progress_enabled and total_rollouts
+        else None
     )
-    scoring_pbar = ProgressTracker(total=total_rollouts, desc="Baseline scoring", position=1) if decoupled else None
+    scoring_pbar = (
+        ProgressTracker(total=total_rollouts, desc="Baseline scoring", position=1)
+        if decoupled and progress_enabled and total_rollouts
+        else None
+    )
     rollout_pbar = (
-        ProgressTracker(total=total_rollouts, desc="Baseline rollouts", position=0) if not decoupled else None
+        ProgressTracker(total=total_rollouts, desc="Baseline rollouts", position=0)
+        if not decoupled and progress_enabled and total_rollouts
+        else None
     )
+
+    # Streaming partial writer: append each completed (trial_index, output) tuple.
+    # On restart, completed (example_id, trial_index) keys are reused and skipped.
+    partial_path.parent.mkdir(parents=True, exist_ok=True)
+    if not config.resume_partial:
+        partial_path.unlink(missing_ok=True)
+    partial_fh = open(partial_path, "a" if config.resume_partial else "w", buffering=1)
+    partial_lock = asyncio.Lock()
+
+    async def _append_partial(trial_index: int, output: Any) -> None:
+        async with partial_lock:
+            partial_fh.write(json.dumps({"trial_index": trial_index, "output": output}, default=make_serializable))
+            partial_fh.write("\n")
 
     async def run_one_decoupled(example: dict[str, Any], trial_index: int) -> tuple[int, Any]:
         rollout_input = vf.RolloutInput(**example)
@@ -208,6 +317,8 @@ async def _run_rollouts(
                 )
             if generation_pbar is not None:
                 generation_pbar.update(1)
+            if progress_callback is not None:
+                progress_callback("generated", 1)
 
             async with scoring_semaphore:
                 if env.score_rollouts:
@@ -217,11 +328,15 @@ async def _run_rollouts(
                 await env.rubric.cleanup(state)
             if scoring_pbar is not None:
                 scoring_pbar.update(1)
+            if progress_callback is not None:
+                progress_callback("scored", 1)
 
             return state
 
         state = await maybe_retry(run_attempt, max_retries=config.max_retries)()
-        return trial_index, state_to_output(state, STATE_COLUMNS)
+        output = state_to_output(state, STATE_COLUMNS)
+        await _append_partial(trial_index, output)
+        return trial_index, output
 
     async def run_one_coupled(example: dict[str, Any], trial_index: int) -> tuple[int, Any]:
         async with generation_semaphore:
@@ -235,6 +350,9 @@ async def _run_rollouts(
             )
         if rollout_pbar is not None:
             rollout_pbar.update(1)
+        if progress_callback is not None:
+            progress_callback("rollout", 1)
+        await _append_partial(trial_index, output)
         return trial_index, output
 
     async def run_group(example: dict[str, Any]) -> list[tuple[int, Any]]:
@@ -249,19 +367,40 @@ async def _run_rollouts(
             )
         if rollout_pbar is not None:
             rollout_pbar.update(len(outputs))
-        return list(enumerate(outputs))
+        if progress_callback is not None:
+            progress_callback("rollout", len(outputs))
+        indexed = list(enumerate(outputs))
+        for trial_index, output in indexed:
+            await _append_partial(trial_index, output)
+        return indexed
 
     try:
+        if total_rollouts == 0:
+            return _merge_rollout_outputs(
+                expected_keys=expected_keys,
+                existing_outputs=list(resumed_outputs.values()),
+                new_outputs=[],
+            )
+
         if requires_group:
-            grouped = await asyncio.gather(*(run_group(example) for example in examples))
-            return [item for group in grouped for item in group]
+            grouped = await asyncio.gather(*(run_group(example) for example in examples_to_run))
+            new_outputs = [item for group in grouped for item in group]
+            return _merge_rollout_outputs(
+                expected_keys=expected_keys,
+                existing_outputs=list(resumed_outputs.values()),
+                new_outputs=new_outputs,
+            )
 
         run_one = run_one_coupled if getattr(env, "env_client", None) is not None else run_one_decoupled
-        tasks = [
-            run_one(example, trial_index) for example in examples for trial_index in range(config.rollouts_per_example)
-        ]
-        return list(await asyncio.gather(*tasks))
+        tasks = [run_one(example, trial_index) for example, trial_index in rollout_tasks]
+        new_outputs = list(await asyncio.gather(*tasks))
+        return _merge_rollout_outputs(
+            expected_keys=expected_keys,
+            existing_outputs=list(resumed_outputs.values()),
+            new_outputs=new_outputs,
+        )
     finally:
+        partial_fh.close()
         for pbar in (generation_pbar, scoring_pbar, rollout_pbar):
             if pbar is not None:
                 pbar.close()
@@ -321,7 +460,7 @@ def _question_rows(records: list[dict[str, Any]], config: BaselineConfig) -> lis
     return rows
 
 
-def run_baseline(config: BaselineConfig) -> dict[str, Any]:
+def run_baseline(config: BaselineConfig, progress_callback: ProgressCallback | None = None) -> dict[str, Any]:
     prepare_import_paths(config)
     import verifiers as vf
 
@@ -336,7 +475,7 @@ def run_baseline(config: BaselineConfig) -> dict[str, Any]:
     env = vf.load_environment(config.env_id, **env_args)
     sampling = _sampling_args(config)
     with InferenceProvisioner(config) as endpoint:
-        outputs = asyncio.run(_run_rollouts(config, env, endpoint, sampling))
+        outputs = asyncio.run(_run_rollouts(config, env, endpoint, sampling, progress_callback=progress_callback))
     elapsed_s = time.perf_counter() - t0
 
     records = [
@@ -383,6 +522,8 @@ def run_baseline(config: BaselineConfig) -> dict[str, Any]:
     data_dir.mkdir(parents=True, exist_ok=True)
     _write_jsonl(config.output_dir / "raw_rollouts.jsonl", raw_outputs)
     _write_jsonl(config.output_dir / "records.jsonl", records)
+    # Canonical raw_rollouts.jsonl is in place; partial is now redundant.
+    (config.output_dir / "raw_rollouts.partial.jsonl").unlink(missing_ok=True)
     (config.output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     (data_dir / f"{config.protocol}.json").write_text(json.dumps(question_rows, indent=2))
     (data_dir / "tokens.json").write_text(
