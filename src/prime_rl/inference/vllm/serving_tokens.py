@@ -184,6 +184,22 @@ class PrimeRlServingTokens(ServingTokens):
 
         sampling_params: SamplingParams = request.sampling_params
 
+        # Upstream ``ServingTokens.serve_tokens`` parses ``request.kv_transfer_params``
+        # but never threads it into the engine, so PD disagg never fires on
+        # ``/inference/v1/generate`` — decode receives an empty NIXL handshake
+        # and ends up re-prefilling the prompt locally (~100× slower under
+        # concurrency). The chat path bridges this via
+        # ``ChatCompletionRequestWithTokens.to_sampling_params``; we mirror that
+        # bridge here so the engine's KV connector picks the params up out of
+        # ``sampling_params.extra_args``.
+        #
+        # Upstream fix: https://github.com/vllm-project/vllm/pull/42644 — drop
+        # this block once we pin a vLLM version that includes it.
+        if request.kv_transfer_params is not None:
+            extra = sampling_params.extra_args or {}
+            extra["kv_transfer_params"] = request.kv_transfer_params
+            sampling_params.extra_args = extra
+
         # Server-side ``max_tokens`` defaulting — see module docstring.
         # Mirrors ``OpenAIServingChat`` (vllm/entrypoints/openai/chat_completion/
         # serving.py:284) so callers that omit ``max_tokens`` don't get capped
