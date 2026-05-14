@@ -164,7 +164,9 @@ def build_samples(matrix_dir: Path, *, n: int, response_chars: int) -> list[dict
     for run_dir in run_dirs(matrix_dir):
         summary = json.loads((run_dir / "summary.json").read_text())
         rows = load_jsonl(run_dir / "records.jsonl")
-        model = str(summary.get("model") or rows[0].get("model"))
+        model = str(summary.get("model") or (rows[0].get("model") if rows else "unknown"))
+        if not rows:
+            print(f"warning: {run_dir / 'records.jsonl'} is empty; emitting no samples", file=sys.stderr)
         samples.append(
             {
                 "run_dir": str(run_dir),

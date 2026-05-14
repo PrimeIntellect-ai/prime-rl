@@ -12,14 +12,28 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.evals.analyze_baseline_matrix import load_jsonl, safe_float
 from scripts.evals.run_omni_math2_model_bench import REQUESTED_MODELS
+from prime_rl.baselines.benchmark import filter_blocked_specs
 
 EXPECTED_KS = ("1", "3", "5", "8", "16")
 
 
-def expected_run_dirs(matrix_dir: Path, run_prefix: str, rollouts_per_example: int) -> dict[str, Path]:
+def expected_run_dirs(
+    matrix_dir: Path,
+    run_prefix: str,
+    rollouts_per_example: int,
+    *,
+    multinode_nodes: int,
+) -> dict[str, Path]:
+    specs, _ = filter_blocked_specs(
+        REQUESTED_MODELS,
+        explicitly_requested=False,
+        include_blocked=False,
+    )
+    if multinode_nodes <= 1:
+        specs = [spec for spec in specs if not spec.requires_multinode]
     return {
         spec.short_name: matrix_dir / f"{run_prefix}-{spec.short_name}-omni_math2-k{rollouts_per_example}"
-        for spec in REQUESTED_MODELS
+        for spec in specs
     }
 
 
@@ -135,6 +149,7 @@ def main() -> None:
     parser.add_argument("--run-prefix", default="k16-32k-v5")
     parser.add_argument("--num-examples", type=int, default=600)
     parser.add_argument("--rollouts-per-example", type=int, default=16)
+    parser.add_argument("--multinode-nodes", type=int, default=1)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--allow-errors", action="store_true")
     args = parser.parse_args()
@@ -150,7 +165,10 @@ def main() -> None:
             require_zero_errors=not args.allow_errors,
         )
         for short_name, run_dir in expected_run_dirs(
-            args.matrix_dir, args.run_prefix, args.rollouts_per_example
+            args.matrix_dir,
+            args.run_prefix,
+            args.rollouts_per_example,
+            multinode_nodes=args.multinode_nodes,
         ).items()
     ]
     result = {

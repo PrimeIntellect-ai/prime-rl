@@ -806,8 +806,12 @@ def main() -> None:
     with endpoint_context as endpoint:
         admin_urls = args.admin_url
         if not admin_urls:
-            admin_urls = _derive_admin_urls(server_config, endpoint) if server_config is not None else [endpoint.base_url]
+            admin_urls = _derive_admin_urls(server_config, endpoint) if server_config is not None else list(generation_urls)
         generation_urls = generation_urls if args.base_url else _derive_generation_urls(server_config, endpoint, admin_urls)
+        if args.base_url and len(admin_urls) != len(generation_urls):
+            parser.error(
+                "external endpoint mode requires either no --admin-url or exactly one --admin-url per --base-url"
+            )
 
         print(f"generation endpoint: {endpoint.base_url}")
         print(f"generation shards: {', '.join(generation_urls)}")
