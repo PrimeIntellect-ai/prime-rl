@@ -608,7 +608,10 @@ def monkey_patch_load_lora_adapter():
 # Monkeypatch LRUCacheWorkerLoRAManager to allow loading adapter inplace without doing it every request
 # TODO: may be removable if we pass load_inplace=True (supported since vLLM 0.18, PR #31326)
 def monkey_patch_LRUCacheWorkerLoRAManager():
+    from vllm.logger import init_logger
     from vllm.lora.worker_manager import LoRARequest, LRUCacheLoRAModelManager, LRUCacheWorkerLoRAManager
+
+    logger = init_logger(__name__)
 
     # The dunder is intended. It's a private method that we're patching.
     def _patched__apply_adapters(self: LRUCacheWorkerLoRAManager, lora_requests: set[LoRARequest]) -> None:
