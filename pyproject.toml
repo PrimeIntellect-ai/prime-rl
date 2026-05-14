@@ -130,6 +130,7 @@ override-dependencies = [
 [tool.uv.exclude-newer-package]
 # we want latest vllm, remove next patch
 vllm = false
+tokenspeed-mla = false
 flash_attn_3 = false
 # Self-vendored packages on our primeintellect index
 reverse-text = false
@@ -175,7 +176,7 @@ pydantic-config = { git = "https://github.com/samsja/pydantic_config.git", branc
 # TODO: update router wheel when the routed-experts P/D stitching release is ready.
 vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl" }
 vllm = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.1rc1.dev99+g77adbf599.precompiled-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.2rc1.dev354+g24337fb86.cu129-cp38-abi3-manylinux_2_34_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 reverse-text = { index = "primeintellect" }

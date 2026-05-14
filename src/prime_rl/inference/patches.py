@@ -897,9 +897,9 @@ def monkey_patch_dp_engine_core_pause_resume_deadlock():
     - on resume, wake every DP rank and force an immediate global unfinished
       sync instead of waiting for the normal 32-step cadence
 
-    This keeps the upstream pause-side fix from
-    https://github.com/vllm-project/vllm/pull/37024 and extends it with the
-    resume-side wave-state fix.
+    This also bypasses vLLM's two-phase DP pause implementation
+    (https://github.com/vllm-project/vllm/pull/39366), which makes resume
+    reject states that our weight-update flow can validly hit.
     """
     from vllm.config import ParallelConfig
     from vllm.v1.core.sched.interface import PauseState
@@ -909,7 +909,8 @@ def monkey_patch_dp_engine_core_pause_resume_deadlock():
 
     _base_add_request = EngineCore.add_request
     _base_handle_client_request = EngineCoreProc._handle_client_request
-    _base_resume_scheduler = DPEngineCoreProc.resume_scheduler
+    _base_pause_complete = EngineCoreProc._pause_complete
+    _base_resume_scheduler = EngineCoreProc.resume_scheduler
 
     def _patched_add_request(self, request: Request, request_wave: int = 0):
         _base_add_request(self, request, request_wave)
@@ -930,8 +931,15 @@ def monkey_patch_dp_engine_core_pause_resume_deadlock():
         else:
             _base_handle_client_request(self, request_type, request)
 
+    def _patched_pause_complete(self) -> bool:
+        self.pending_pause = False
+        self.ignore_start_dp_wave = False
+        return _base_pause_complete(self)
+
     def _patched_resume_scheduler(self):
         was_paused = self.scheduler.pause_state != PauseState.UNPAUSED
+        self.pending_pause = False
+        self.ignore_start_dp_wave = False
         _base_resume_scheduler(self)
         if was_paused:
             self.engines_running = True
@@ -948,6 +956,7 @@ def monkey_patch_dp_engine_core_pause_resume_deadlock():
 
     DPEngineCoreProc.add_request = _patched_add_request
     DPEngineCoreProc._handle_client_request = _patched_handle_client_request
+    DPEngineCoreProc._pause_complete = _patched_pause_complete
     DPEngineCoreProc.resume_scheduler = _patched_resume_scheduler
     DPEngineCoreProc._has_global_unfinished_reqs = _patched_has_global_unfinished_reqs
 
