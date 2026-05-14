@@ -48,10 +48,7 @@ def monkey_patch_return_routed_experts_with_nixl_connector():
             return original_post_init(config)
 
         if config.parallel_config.pipeline_parallel_size > 1:
-            raise ValueError(
-                "--enable-return-routed-experts is incompatible with "
-                "pipeline parallelism (PP > 1)."
-            )
+            raise ValueError("--enable-return-routed-experts is incompatible with pipeline parallelism (PP > 1).")
         if envs.VLLM_USE_V2_MODEL_RUNNER:
             raise ValueError("VLLM_USE_V2_MODEL_RUNNER does not yet support: routed experts capture")
 
