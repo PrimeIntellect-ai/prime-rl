@@ -125,6 +125,7 @@ def _build_role_loss_mask_from_token_stream(
     im_start = tokenizer.convert_tokens_to_ids("<|im_start|>")
     im_end = tokenizer.convert_tokens_to_ids("<|im_end|>")
     tool_response = tokenizer.convert_tokens_to_ids("<tool_response>")
+    tool_response_close = tokenizer.convert_tokens_to_ids("</tool_response>")
     newline_ids = tokenizer.encode("\n", add_special_tokens=False)
     if len(newline_ids) != 1:
         raise RuntimeError(
@@ -177,6 +178,55 @@ def _build_role_loss_mask_from_token_stream(
         else:
             mask[i] = _mask_role(current_role) if current_role is not None else False
             i += 1
+
+    if loss_mask_config.tool_content_only and loss_mask_config.tool:
+        # Second pass: zero the chat-template envelope tokens on each tool span,
+        # leaving only the actual content tokens inside `<tool_response>…</tool_response>`
+        # contributing to the SFT loss. The structural tokens (`<|im_start|>user\n`,
+        # `<tool_response>\n`, `\n</tool_response>`, `<|im_end|>\n`) are the same
+        # for every tool message regardless of content; training to generate
+        # them gives a degenerate target that the model can satisfy by
+        # hallucinating the envelope outside real tool calls.
+        i = 0
+        while i < n:
+            if full_ids[i] != im_start:
+                i += 1
+                continue
+            j = i + 1
+            while j < n and full_ids[j] != newline:
+                j += 1
+            is_tool_span = (
+                j + 1 < n
+                and full_ids[j + 1] == tool_response
+                and tokenizer.decode(full_ids[i + 1 : j]).strip() == "user"
+            )
+            if not is_tool_span:
+                i = j + 1
+                continue
+            # Find the matching <|im_end|>.
+            k = j + 1
+            while k < n and full_ids[k] != im_end:
+                k += 1
+            if k >= n:
+                break  # malformed trailing span; nothing more to do
+            # Header: <|im_start|> user \n (indices i..j inclusive)
+            for p in range(i, j + 1):
+                mask[p] = False
+            # Opening envelope: <tool_response> \n (indices j+1, j+2)
+            mask[j + 1] = False
+            if j + 2 < n and full_ids[j + 2] == newline:
+                mask[j + 2] = False
+            # Closing envelope: \n </tool_response> (indices k-2, k-1)
+            if k - 1 >= 0 and full_ids[k - 1] == tool_response_close:
+                mask[k - 1] = False
+                if k - 2 >= 0 and full_ids[k - 2] == newline:
+                    mask[k - 2] = False
+            # Footer: <|im_end|> \n (indices k, k+1)
+            mask[k] = False
+            if k + 1 < n and full_ids[k + 1] == newline:
+                mask[k + 1] = False
+            i = k + 1
+
     return mask
 
 

@@ -685,6 +685,19 @@ class RoleLossMaskConfig(BaseConfig):
     user: Annotated[bool, Field(description="Whether user messages contribute to the loss.")] = False
     assistant: Annotated[bool, Field(description="Whether assistant messages contribute to the loss.")] = True
     tool: Annotated[bool, Field(description="Whether tool messages contribute to the loss.")] = False
+    tool_content_only: Annotated[
+        bool,
+        Field(
+            description=(
+                "When `tool=True` and this is set, the mask covers only the *content* "
+                "tokens inside each tool message — the chat-template envelope "
+                "(`<|im_start|>user\\n`, `<tool_response>\\n`, `\\n</tool_response>`, "
+                "`<|im_end|>\\n`) is excluded from the SFT loss. Default `False` "
+                "preserves the original behavior of training on the full tool-message "
+                "span including the envelope."
+            ),
+        ),
+    ] = False
 
     def is_completion_only(self) -> bool:
         """Whether this matches the default RL mask of assistant completions only."""
