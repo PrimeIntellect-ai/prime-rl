@@ -36,11 +36,23 @@ dependencies = [
     "tilelang>=0.1.8",
     "flash-linear-attention",
     "nvidia-ml-py>=12.575.51",
+    # vLLM 0.20.1's vllm._C is compiled against CUDA 13 and dlopens
+    # libcudart.so.13 / libnvrtc.so.13 at import time. Boxes that only
+    # have the NVIDIA driver (no system CUDA toolkit) and torch's
+    # bundled cu12 runtime cannot find these. Pinning the cu13 wheels
+    # alongside makes prime-rl installable on a fresh GPU host.
+    # The libs land at site-packages/nvidia/cu13/lib/; users may still
+    # need to add that to LD_LIBRARY_PATH if their loader doesn't pick
+    # it up automatically.
+    "nvidia-cuda-runtime ; platform_machine == 'x86_64'",
+    "nvidia-cuda-nvrtc ; platform_machine == 'x86_64'",
 ]
 
 [project.scripts]
 rl = "prime_rl.entrypoints.rl:main"
+rl-multi-run = "prime_rl.entrypoints.rl_multi_run:main"
 sft = "prime_rl.entrypoints.sft:main"
+sweep = "prime_rl.entrypoints.sweep:main"
 inference = "prime_rl.entrypoints.inference:main"
 trainer = "prime_rl.trainer.rl.train:main"
 orchestrator = "prime_rl.orchestrator.orchestrator:main"
@@ -57,6 +69,9 @@ flash-attn-3 = ["flash_attn_3"]
 
 flash-attn-cute = [
     "flash-attn-4",
+]
+hpo = [
+    "optuna>=4",
 ]
 envs = [
     "reverse-text",
