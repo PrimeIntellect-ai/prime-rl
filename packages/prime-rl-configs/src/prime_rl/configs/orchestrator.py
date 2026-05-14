@@ -967,8 +967,13 @@ class OrchestratorConfig(BaseConfig):
     # Data buffer configuration
     buffer: BufferConfig = BufferConfig()
 
-    # The advantage configuration
-    advantage: AdvantageConfig | None = DefaultAdvantageConfig()
+    # Inlined rather than `AdvantageConfig | None`: tyro's expand_union_types
+    # mishandles `Annotated[X | Y, Field(discriminator)] | None` with a
+    # non-None default and emits a duplicate-subcommand warning.
+    advantage: Annotated[
+        DefaultAdvantageConfig | CustomAdvantageConfig | None,
+        Field(discriminator="type"),
+    ] = DefaultAdvantageConfig()
 
     # Rollout filters (monitor by default, enforce optionally)
     filters: list[FilterConfig] = [GibberishFilterConfig(), RepetitionFilterConfig(), ZeroAdvantageFilterConfig()]
