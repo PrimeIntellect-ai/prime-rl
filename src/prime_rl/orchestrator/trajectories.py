@@ -12,7 +12,8 @@ import verifiers as vf
 from PIL import Image
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.transport import RoutedExperts, TrainingSample
+from prime_rl.transport import TrainingSample
+from prime_rl.transport.types import RoutedExperts
 from prime_rl.utils.chat_template import (
     common_prefix_len,
     deserialize_tool_calls,
@@ -65,6 +66,10 @@ def _pack_routed_experts(routed_experts: np.ndarray | None) -> RoutedExperts | N
         shape=list(routed_experts.shape),
         dtype=str(routed_experts.dtype),
     )
+
+
+def _unpack_routed_experts(routed_experts: RoutedExperts) -> np.ndarray:
+    return np.frombuffer(routed_experts.data, dtype=np.dtype(routed_experts.dtype)).reshape(routed_experts.shape).copy()
 
 
 def _common_prefix_len(a: list[int], b: list[int]) -> int:
@@ -336,7 +341,7 @@ def interleave_rollout(
             return None
         prepared_steps.append(prepared)
 
-    def make_sample(tokens: dict[str, Any]) -> tuple[TrainingSample, np.ndarray | None]:
+    def make_sample(tokens: dict[str, Any]) -> TrainingSample:
         """Create a new TrainingSample from a trajectory step."""
         if has_error:
             completion_mask = [False] * len(tokens["completion_mask"])
@@ -361,14 +366,9 @@ def interleave_rollout(
             routed_experts=_pack_routed_experts(routed_experts),
             mm_token_type_ids=None,
         )
-        return sample, routed_experts
+        return sample
 
-    def extend_sample(
-        sample: TrainingSample,
-        sample_routed_experts: np.ndarray | None,
-        prefix_len: int,
-        step_idx: int,
-    ) -> np.ndarray | None:
+    def extend_sample(sample: TrainingSample, prefix_len: int, step_idx: int) -> None:
         """Extend an existing sample with a new trajectory step (extension property holds)."""
         tokens = prepared_steps[step_idx]
 
@@ -389,8 +389,9 @@ def interleave_rollout(
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
         sample.completion_temperatures.extend([temperature] * len(completion_ids))
 
-        if tokens.get("routed_experts") is not None and sample_routed_experts is not None:
+        if tokens.get("routed_experts") is not None and sample.routed_experts is not None:
             step_routed = tokens["routed_experts"]
+            sample_routed_experts = _unpack_routed_experts(sample.routed_experts)
             # The previous step's last routing entry was zero-padded by _align_routed_experts
             # (vLLM only captures num_tokens-1 routings per request). This step actually
             # processed that boundary token as part of its prompt, so replace the zero-fill
@@ -401,15 +402,13 @@ def interleave_rollout(
             expected_len = len(sample.prompt_ids) + len(sample.completion_ids)
             sample_routed_experts = _align_routed_experts(sample_routed_experts, expected_len)
             sample.routed_experts = _pack_routed_experts(sample_routed_experts)
-        return sample_routed_experts
 
-    # Track [prefix_tokens, sample, last_step_idx, routed_experts] per active sample
-    active_samples: list[tuple[list[int], TrainingSample, int, np.ndarray | None]] = []
+    # Track [prefix_tokens, sample, last_step_idx] per active sample
+    active_samples: list[tuple[list[int], TrainingSample, int]] = []
 
     first_tokens = prepared_steps[0]
     first_prefix = first_tokens["prompt_ids"] + first_tokens["completion_ids"]
-    first_sample, first_routed_experts = make_sample(first_tokens)
-    active_samples.append((first_prefix, first_sample, 0, first_routed_experts))
+    active_samples.append((first_prefix, make_sample(first_tokens), 0))
 
     for step_idx, _step in enumerate(trajectory[1:], start=1):
         tokens = prepared_steps[step_idx]
@@ -417,21 +416,16 @@ def interleave_rollout(
 
         # Check if this step extends ANY active prefix
         matched_idx = None
-        for idx, (prefix_tokens, _, _, _) in enumerate(active_samples):
+        for idx, (prefix_tokens, _, _) in enumerate(active_samples):
             if step_prompt_ids[: len(prefix_tokens)] == prefix_tokens:
                 matched_idx = idx
                 break
 
         if matched_idx is not None:
             # Extension holds - merge into matched sample
-            prefix_tokens, sample, _, sample_routed_experts = active_samples[matched_idx]
-            sample_routed_experts = extend_sample(sample, sample_routed_experts, len(prefix_tokens), step_idx=step_idx)
-            active_samples[matched_idx] = (
-                tokens["prompt_ids"] + tokens["completion_ids"],
-                sample,
-                step_idx,
-                sample_routed_experts,
-            )
+            prefix_tokens, sample, _ = active_samples[matched_idx]
+            extend_sample(sample, len(prefix_tokens), step_idx=step_idx)
+            active_samples[matched_idx] = (tokens["prompt_ids"] + tokens["completion_ids"], sample, step_idx)
         else:
             # No prefix matches - start a new sample
             logger.debug(
@@ -439,8 +433,7 @@ def interleave_rollout(
                 f"Starting new sample (active_prefixes={len(active_samples)}, step_prompt_len={len(step_prompt_ids)})."
             )
             new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
-            sample, routed_experts = make_sample(tokens)
-            active_samples.append((new_prefix, sample, step_idx, routed_experts))
+            active_samples.append((new_prefix, make_sample(tokens), step_idx))
 
     # Attach images once per sample using only the last merged step. Prompt
     # tokens already contain fully expanded <|image_pad|> placeholders because
@@ -449,7 +442,7 @@ def interleave_rollout(
     # fallback path so features and tokens stay 1:1.
     if vlm_cache is not None:
         key = output["example_id"] if cache_key is None else cache_key
-        for _, sample, last_step_idx, _ in active_samples:
+        for _, sample, last_step_idx in active_samples:
             pv, shape, grids = vlm_cache.get_for_step(key, last_step_idx)
             sample.pixel_values = pv
             sample.pixel_values_shape = shape
@@ -459,7 +452,7 @@ def interleave_rollout(
                     mm_token_type_ids_mapping.get(token_id, 0) for token_id in sample.prompt_ids + sample.completion_ids
                 ]
 
-    return [sample for _, sample, _, _ in active_samples]
+    return [sample for _, sample, _ in active_samples]
 
 
 # =============================================================================
