@@ -1,15 +1,4 @@
 import asyncio
-import sys
-from pathlib import Path
-
-from scripts.evals.make_omni_math2_tasks import (
-    allocate_largest_remainder,
-    stratified_sample_indices,
-    stratified_sample_plan,
-)
-
-VERIFIERS_PATH = Path("/projects/a6r/joanv.a6r/tmp/verifiers-hf-task-envs")
-sys.path.insert(0, str(VERIFIERS_PATH))
 
 from verifiers.utils.data_utils import extract_boxed_answer
 
@@ -17,6 +6,11 @@ from environments.omni_math2_singleturn.omni_math2_singleturn import (
     PARSED_ANSWER_STATE_KEY,
     MathVerifyThenJudgeRubric,
     extract_omni_math2_answer,
+)
+from scripts.evals.make_omni_math2_tasks import (
+    allocate_largest_remainder,
+    stratified_sample_indices,
+    stratified_sample_plan,
 )
 
 

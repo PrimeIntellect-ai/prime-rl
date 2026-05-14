@@ -1,8 +1,24 @@
 from __future__ import annotations
 
+# ruff: noqa: I001 — `prime_rl._compat` must run before `ring_flash_attn` imports below.
+import prime_rl._compat  # noqa: F401
+
 import torch
 import torch.distributed as dist
 from ring_flash_attn.utils import AllGatherComm, get_default_args
+
+
+def _set_fa3_signature_params(params: dict, causal: bool, window_size: tuple[int, int]) -> None:
+    if "is_causal" in params:
+        params["is_causal"] = causal
+    else:
+        params["causal"] = causal
+
+    if "window_size" in params:
+        params["window_size"] = window_size
+    else:
+        params["window_size_left"] = window_size[0]
+        params["window_size_right"] = window_size[1]
 
 
 def _fa3_varlen_forward(
@@ -30,11 +46,9 @@ def _fa3_varlen_forward(
             "max_seqlen_q": max_seqlen_q,
             "max_seqlen_k": max_seqlen_k,
             "softmax_scale": softmax_scale,
-            "causal": causal,
         }
     )
-    if "window_size" in params:
-        params["window_size"] = window_size
+    _set_fa3_signature_params(params, causal, window_size)
     out, lse, _, _ = _flash_attn_forward(**params)
     return out, lse
 
@@ -76,11 +90,9 @@ def _fa3_varlen_backward(
             "dk": dk,
             "dv": dv,
             "softmax_scale": softmax_scale,
-            "causal": causal,
         }
     )
-    if "window_size" in params:
-        params["window_size"] = window_size
+    _set_fa3_signature_params(params, causal, window_size)
     _flash_attn_backward(**params)
 
 

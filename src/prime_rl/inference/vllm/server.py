@@ -1,3 +1,4 @@
+import asyncio
 from argparse import Namespace
 from http import HTTPStatus
 from typing import Any
@@ -136,6 +137,7 @@ def resolve_tool_call_parser(model_name: str, tool_call_parser: str | None) -> s
 logger = get_logger()
 from prime_rl.inference.patches import (
     monkey_patch_harmony_stop_token_propagation,
+    monkey_patch_load_lora_adapter,
     monkey_patch_tokenize_params_validation,
 )
 from prime_rl.inference.vllm.serving_chat_with_tokens import (
@@ -146,8 +148,11 @@ from prime_rl.inference.vllm.serving_chat_with_tokens import (
 # NOTE: Fix harmony stop token propagation for GPT-OSS models
 # Upstream issue still open: https://github.com/vllm-project/vllm/issues/22519
 monkey_patch_harmony_stop_token_propagation()
+# NOTE: Monkeypatch LoadLoRAAdapter to allow loading the same adapter multiple times
+# May be removable if we pass load_inplace=True (supported since vLLM 0.18, PR #31326)
+monkey_patch_load_lora_adapter()
 # NOTE: Monkeypatch TokenizeParams to fix overly conservative validation
-# Still needed in vLLM 0.20.1 — upstream rejects prompt_len > max_model_len - max_tokens
+# Still needed in vLLM 0.20 — upstream rejects prompt_len > max_model_len - max_tokens
 monkey_patch_tokenize_params_validation()
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
@@ -178,52 +183,6 @@ def chat_with_tokens(request: Request) -> OpenAIServingChatWithTokens | None:
     return request.app.state.openai_serving_chat_with_tokens
 
 
-@router.post("/pause")
-async def pause(request: Request):
-    await engine_client(request).pause_generation(mode="keep", clear_cache=False)
-    return {"status": "paused"}
-
-
-@router.post("/resume")
-async def resume(request: Request):
-    await engine_client(request).resume_generation()
-    return {"status": "resumed"}
-
-
-@router.post("/update_weights")
-async def update_weights(request: Request):
-    data = await request.json()
-    await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
-    return {"status": "ok"}
-
-
-@router.post("/load_lora_adapter")
-async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request):
-    """Wrapper around vLLM's /v1/load_lora_adapter."""
-    lora_request.load_inplace = True
-    handler = models(raw_request)
-    response = await handler.load_lora_adapter(lora_request)
-    if isinstance(response, ErrorResponse):
-        return JSONResponse(content=response.model_dump(), status_code=response.error.code)
-    return {"status": "ok"}
-
-
-@router.post("/init_broadcaster")
-async def init_broadcaster(request: Request):
-    data = await request.json()
-    host = data.get("host")
-    port = data.get("port")
-    timeout = data.get("timeout")
-    rank_offset = data.get("rank_offset")
-    inference_world_size = data.get("inference_world_size")
-    quantize_in_weight_transfer = data.get("quantize_in_weight_transfer", False)
-    await engine_client(request).collective_rpc(
-        "init_broadcaster",
-        args=(host, port, rank_offset, inference_world_size, timeout, quantize_in_weight_transfer),
-    )
-    return {"status": "ok"}
-
-
 @router.post(
     "/v1/chat/completions/tokens",
     dependencies=[Depends(validate_json_request)],
@@ -250,6 +209,64 @@ async def _chat_with_tokens(request: ChatCompletionRequestWithTokens, raw_reques
     return StreamingResponse(content=generator, media_type="text/event-stream")
 
 
+@router.post("/pause")
+async def pause(request: Request):
+    await engine_client(request).pause_generation(mode="keep", clear_cache=False)
+    return {"status": "paused"}
+
+
+@router.post("/resume")
+async def resume(request: Request):
+    await engine_client(request).resume_generation()
+    return {"status": "resumed"}
+
+
+@router.post("/update_weights")
+async def update_weights(request: Request):
+    data = await request.json()
+    await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+    return {"status": "ok"}
+
+
+@router.post("/load_lora_adapter")
+async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request):
+    """Wrapper around vLLM's /v1/load_lora_adapter."""
+    handler = models(raw_request)
+    response = await handler.load_lora_adapter(lora_request)
+    if isinstance(response, ErrorResponse):
+        return JSONResponse(content=response.model_dump(), status_code=response.error.code)
+    return {"status": "ok"}
+
+
+@router.get("/liveness")
+async def liveness(raw_request: Request):
+    """Check that the engine event loop can service a no-op worker RPC."""
+    try:
+        await asyncio.wait_for(
+            engine_client(raw_request).collective_rpc("liveness_probe"),
+            timeout=raw_request.app.state.liveness_timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        return JSONResponse({"status": "engine_unresponsive"}, status_code=503)
+    return {"status": "ok"}
+
+
+@router.post("/init_broadcaster")
+async def init_broadcaster(request: Request):
+    data = await request.json()
+    host = data.get("host")
+    port = data.get("port")
+    timeout = data.get("timeout")
+    rank_offset = data.get("rank_offset")
+    inference_world_size = data.get("inference_world_size")
+    quantize_in_weight_transfer = data.get("quantize_in_weight_transfer", False)
+    await engine_client(request).collective_rpc(
+        "init_broadcaster",
+        args=(host, port, rank_offset, inference_world_size, timeout, quantize_in_weight_transfer),
+    )
+    return {"status": "ok"}
+
+
 async def custom_init_app_state(
     engine_client: EngineClient,
     state: State,
@@ -258,11 +275,21 @@ async def custom_init_app_state(
 ):
     """
     Modifies init_app_state:
-    1. Call the original init_app_state to set up standard state.
-    2. Replace the serving_chat with our OpenAIServingChatWithTokens wrapper.
+    1. Call the original init_app_state to set up standard state, including
+       vLLM 0.20's ``serving_tokens`` for ``/inference/v1/generate``.
+    2. Replace ``serving_chat`` with our ``OpenAIServingChatWithTokens`` wrapper
+       so the ``/v1/chat/completions/tokens`` (TITO) endpoint can stream
+       token IDs alongside the rendered chat completion.
+    3. Replace ``serving_tokens`` with ``PrimeRlServingTokens`` so DP-rank
+       routing and ``routed_experts`` export survive the migration off the
+       legacy ``/v1/generate`` endpoint.
     """
     await init_app_state(engine_client, state, args, supported_tasks)
 
+    state.reset_prefix_cache_after_update = getattr(args, "reset_prefix_cache_after_update", True)
+    state.liveness_timeout_seconds = args.liveness_timeout_seconds
+
+    # TITO: server-side chat templating + token IDs.
     if "generate" in supported_tasks and state.openai_serving_chat is not None:
         original_chat = state.openai_serving_chat
         serving_chat = object.__new__(OpenAIServingChatWithTokens)
@@ -271,6 +298,17 @@ async def custom_init_app_state(
         state.openai_serving_chat_with_tokens = serving_chat
     else:
         state.openai_serving_chat_with_tokens = None
+
+    # Swap in our ServingTokens subclass for /inference/v1/generate so the
+    # X-data-parallel-rank header and routed_experts response field — both
+    # used by prime-RL's renderer / router-replay paths — keep working.
+    if "generate" in supported_tasks and state.serving_tokens is not None:
+        from prime_rl.inference.vllm.serving_tokens import PrimeRlServingTokens
+
+        upstream = state.serving_tokens
+        prime_serving = object.__new__(PrimeRlServingTokens)
+        prime_serving.__dict__.update(upstream.__dict__)
+        state.serving_tokens = prime_serving
 
 
 import vllm.entrypoints.openai.api_server

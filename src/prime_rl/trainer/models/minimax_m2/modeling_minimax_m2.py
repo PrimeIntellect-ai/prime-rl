@@ -22,7 +22,7 @@ from prime_rl.trainer.models.minimax_m2.converting_minimax_m2 import (
     convert_tt_layer_to_hf,
     convert_tt_to_hf_moe,
 )
-from prime_rl.utils.sequence_packing import infer_cu_seqlens_from_position_ids
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 
 logger = logging.get_logger(__name__)
 
@@ -55,6 +55,7 @@ class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
             top_k=config.num_experts_per_tok,
             use_grouped_mm=config.use_grouped_mm,
             load_balance_coeff=1e-3 if config.use_routing_bias else None,
+            fp8=getattr(config, "fp8", False),
         )
         self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.intermediate_size)
 
@@ -165,16 +166,10 @@ class MiniMaxM2Model(MiniMaxM2PreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
-        cu_seqlens: Optional[torch.LongTensor] = None,
-        max_seqlen: Optional[int] = None,
     ) -> BaseModelOutputWithPast:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
-        cu_seqlens (`torch.LongTensor`, *optional*):
-            Explicit packed-sequence cumulative lengths for FlashAttention varlen kernels.
-        max_seqlen (`int`, *optional*):
-            Maximum packed subsequence length corresponding to `cu_seqlens`.
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -183,8 +178,7 @@ class MiniMaxM2Model(MiniMaxM2PreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
-            if cu_seqlens is None or max_seqlen is None:
-                cu_seqlens, max_seqlen = infer_cu_seqlens_from_position_ids(position_ids)
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         else:
             max_seqlen = None
@@ -239,6 +233,10 @@ class MiniMaxM2ForCausalLM(MiniMaxM2PreTrainedModel, GenerationMixin):
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
+        cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
+            Indices of input tokens in the KV cache. Accepted only for HuggingFace API
+            compatibility — prime-rl asserts `use_cache is None` since training does not
+            perform autoregressive decoding, so this argument is unused.
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss.
         temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -260,8 +258,6 @@ class MiniMaxM2ForCausalLM(MiniMaxM2PreTrainedModel, GenerationMixin):
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
-            cu_seqlens=kwargs.get("cu_seqlens"),
-            max_seqlen=kwargs.get("max_seqlen"),
         )
 
         hidden_states = outputs.last_hidden_state

@@ -40,7 +40,7 @@ from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import (
     convert_tt_layer_to_hf,
     convert_tt_to_hf_moe,
 )
-from prime_rl.utils.sequence_packing import infer_cu_seqlens_from_position_ids
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 
 logger = logging.get_logger(__name__)
 
@@ -73,6 +73,7 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
             top_k=config.num_experts_per_tok,
             use_grouped_mm=config.use_grouped_mm,
             load_balance_coeff=config.load_balance_coeff,
+            fp8=getattr(config, "fp8", False),
         )
         mlp_config = MLPConfig(
             hidden_size=config.hidden_size,
@@ -205,16 +206,10 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
-        cu_seqlens: Optional[torch.LongTensor] = None,
-        max_seqlen: Optional[int] = None,
     ) -> MoeModelOutputWithPast:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
-        cu_seqlens (`torch.LongTensor`, *optional*):
-            Explicit packed-sequence cumulative lengths for FlashAttention varlen kernels.
-        max_seqlen (`int`, *optional*):
-            Maximum packed subsequence length corresponding to `cu_seqlens`.
         """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -223,8 +218,7 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
-            if cu_seqlens is None or max_seqlen is None:
-                cu_seqlens, max_seqlen = infer_cu_seqlens_from_position_ids(position_ids)
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         else:
             max_seqlen = None
@@ -373,6 +367,10 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
+        cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
+            Indices of input tokens in the KV cache. Accepted only for HuggingFace API
+            compatibility — prime-rl asserts `use_cache is None` since training does not
+            perform autoregressive decoding, so this argument is unused.
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
             config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
@@ -416,8 +414,6 @@ class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
-            cu_seqlens=kwargs.get("cu_seqlens"),
-            max_seqlen=kwargs.get("max_seqlen"),
         )
 
         hidden_states = outputs.last_hidden_state

@@ -52,6 +52,7 @@ ln -sfn inference/node_0.log $OUTPUT_DIR/logs/inference.log
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
+export TRITON_CACHE_DIR=/tmp/triton-cache-$USER-$SLURM_JOB_ID
 export VLLM_CACHE_ROOT=/tmp/.vllm_cache_$(whoami)
 
 # Setup environment
@@ -112,11 +113,11 @@ echo "INFER_URLS=${INFER_URLS}"
 # termination and cause the next launch to hang (e.g. decode engines stuck at
 # "Waiting for READY message from DP Coordinator"). Harmless on clean nodes.
 srun bash -c '
-    pkill -9 -f "python.*prime_rl" 2>/dev/null
-    pkill -9 -f "torchrun" 2>/dev/null
-    pkill -9 -f "vllm-router" 2>/dev/null
-    pkill -9 -f "vllm" 2>/dev/null
-    pkill -9 -f "prime_rl" 2>/dev/null
+    pkill -9 -f "[p]ython.*prime_rl" 2>/dev/null
+    pkill -9 -f "[t]orchrun" 2>/dev/null
+    pkill -9 -f "[v]llm-router" 2>/dev/null
+    pkill -9 -f "[v]llm" 2>/dev/null
+    pkill -9 -f "[p]rime_rl" 2>/dev/null
     # Also match prctl-set process names (kernel comm) like "vllm::router"
     # which pkill -f does not see because -f only matches the cmdline.
     pkill -9 "vllm" 2>/dev/null
@@ -140,6 +141,10 @@ srun bash -c '
 
     INFER_NODE_RANK=$SLURM_PROCID
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
+
+{%- if kv_offload %}
+    ulimit -l unlimited
+{%- endif %}
 
 {% if disaggregated -%}
     # NVSHMEM libs for DeepEP — ensure the rpath target exists on all nodes
@@ -166,7 +171,6 @@ srun bash -c '
     export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
 
 {%- if kv_offload %}
-    ulimit -l unlimited
     PREFILL_KV_CFG='"'"'{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}},{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":{{ kv_offload_cpu_bytes }}}}]}}'"'"'
 {%- else %}
     PREFILL_KV_CFG='"'"'{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}}'"'"'

@@ -23,6 +23,8 @@ from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
 
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM as PrimeRLGlm4MoeForCausalLM
+from prime_rl.trainer.models.laguna import LagunaConfig
+from prime_rl.trainer.models.laguna import LagunaForCausalLM as PrimeRLLagunaForCausalLM
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2Config
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2ForCausalLM as PrimeRLMiniMaxM2ForCausalLM
@@ -129,6 +131,59 @@ ARCH_PRESETS = {
         "hf_model_class": None,  # uses AutoModelForCausalLM with trust_remote_code
         "prime_model_class": PrimeRLMiniMaxM2ForCausalLM,
         "tokenizer_source": "MiniMaxAI/MiniMax-M2.1",
+    },
+    "laguna": {
+        "config_class": LagunaConfig,
+        "config_kwargs": dict(
+            vocab_size=100352,
+            hidden_size=512,
+            intermediate_size=2048,
+            num_hidden_layers=12,
+            num_attention_heads=8,
+            num_attention_heads_per_layer=[8] * 12,
+            num_key_value_heads=4,
+            head_dim=64,
+            hidden_act="silu",
+            max_position_embeddings=4096,
+            rms_norm_eps=1e-6,
+            rope_parameters={
+                "full_attention": {
+                    "rope_type": "yarn",
+                    "rope_theta": 500000.0,
+                    "factor": 4.0,
+                    "original_max_position_embeddings": 1024,
+                    "beta_slow": 1.0,
+                    "beta_fast": 64.0,
+                    "attention_factor": 1.0,
+                    "partial_rotary_factor": 0.5,
+                },
+                "sliding_attention": {
+                    "rope_type": "default",
+                    "rope_theta": 10000.0,
+                    "partial_rotary_factor": 1.0,
+                },
+            },
+            layer_types=["full_attention", "sliding_attention", "sliding_attention", "sliding_attention"] * 3,
+            sliding_window=512,
+            moe_intermediate_size=128,
+            shared_expert_intermediate_size=128,
+            num_experts=8,
+            num_experts_per_tok=4,
+            mlp_layer_types=["dense"] + ["sparse"] * 11,
+            moe_routed_scaling_factor=2.5,
+            use_grouped_mm=False,
+            pad_token_id=9,
+            bos_token_id=2,
+            eos_token_id=[2, 24],
+            auto_map={
+                "AutoConfig": "poolside/Laguna-XS.2--configuration_laguna.LagunaConfig",
+                "AutoModel": "poolside/Laguna-XS.2--modeling_laguna.LagunaModel",
+                "AutoModelForCausalLM": "poolside/Laguna-XS.2--modeling_laguna.LagunaForCausalLM",
+            },
+        ),
+        "hf_model_class": None,  # uses Poolside remote modeling code
+        "prime_model_class": PrimeRLLagunaForCausalLM,
+        "tokenizer_source": "poolside/Laguna-XS.2",
     },
     "qwen3_5_moe_vlm": {
         "config_fn": _qwen3_5_moe_vlm_config,

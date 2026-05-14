@@ -40,7 +40,7 @@ from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
-from prime_rl.utils.sequence_packing import infer_cu_seqlens_from_position_ids
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 
 logger = logging.get_logger(__name__)
 
@@ -181,15 +181,7 @@ class LlamaModel(LlamaPreTrainedModel):
         input_ids: Optional[torch.LongTensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
-        cu_seqlens: Optional[torch.LongTensor] = None,
-        max_seqlen: Optional[int] = None,
     ) -> BaseModelOutputWithPast:
-        r"""
-        cu_seqlens (`torch.LongTensor`, *optional*):
-            Explicit packed-sequence cumulative lengths for FlashAttention varlen kernels.
-        max_seqlen (`int`, *optional*):
-            Maximum packed subsequence length corresponding to `cu_seqlens`.
-        """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
@@ -197,8 +189,7 @@ class LlamaModel(LlamaPreTrainedModel):
             inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
 
         if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
-            if cu_seqlens is None or max_seqlen is None:
-                cu_seqlens, max_seqlen = infer_cu_seqlens_from_position_ids(position_ids)
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         else:
             max_seqlen = None
@@ -253,6 +244,10 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
         **kwargs: Unpack[TransformersKwargs],
     ) -> PrimeLmOutput:
         r"""
+        cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
+            Indices of input tokens in the KV cache. Accepted only for HuggingFace API
+            compatibility — prime-rl asserts `use_cache is None` since training does not
+            perform autoregressive decoding, so this argument is unused.
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels used by PrimeRL's wrapped LM head to optionally compute per-token logprobs/entropy.
             If not provided, the wrapped LM head returns logits only.
@@ -288,8 +283,6 @@ class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
             input_ids=input_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            cu_seqlens=kwargs.get("cu_seqlens"),
-            max_seqlen=kwargs.get("max_seqlen"),
         )
 
         hidden_states = outputs.last_hidden_state

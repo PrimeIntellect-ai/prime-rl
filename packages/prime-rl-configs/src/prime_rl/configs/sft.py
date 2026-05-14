@@ -21,7 +21,7 @@ from prime_rl.configs.trainer import (
     SchedulerConfig,
     TokenizerConfig,
 )
-from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.config import BaseConfig, find_package_resource
 
 
 class BaseDataConfig(BaseModel):
@@ -430,11 +430,10 @@ class SFTConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_slurm_template(self):
         if self.slurm is not None and self.slurm.template_path is None:
-            import prime_rl
-
-            templates_dir = Path(prime_rl.__file__).parent / "templates"
-            if self.deployment.type == "single_node":
-                self.slurm.template_path = templates_dir / "single_node_sft.sbatch.j2"
-            else:
-                self.slurm.template_path = templates_dir / "multi_node_sft.sbatch.j2"
+            templates_dir = find_package_resource("templates")
+            if templates_dir is not None:
+                if self.deployment.type == "single_node":
+                    self.slurm.template_path = templates_dir / "single_node_sft.sbatch.j2"
+                else:
+                    self.slurm.template_path = templates_dir / "multi_node_sft.sbatch.j2"
         return self

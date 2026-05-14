@@ -30,7 +30,7 @@ from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import (
     convert_prime_layer_to_hf,
     convert_prime_to_hf,
 )
-from prime_rl.utils.sequence_packing import infer_cu_seqlens_from_position_ids
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 
 logger = logging.get_logger(__name__)
 
@@ -69,7 +69,78 @@ def _patch_mamba2_use_triton_ssd():
         logger.warning_once("mamba_ssm not available; NemotronH Mamba layers will use torch_forward (bf16 softplus)")
         return
 
-    def _patched_forward(self, hidden_states, cache_params=None, attention_mask=None):
+    def _varlen_mamba_forward(self, hidden_states, cu_seqlens):
+        """Varlen-aware mamba forward. `cu_seqlens` is required: shape [num_seq+1],
+        e.g. [0, s1, s1+s2, ...]. Handles packed batches by:
+          - applying conv1d per-sequence (with kernel-1 leading zeros)
+          - passing seq_idx to mamba_chunk_scan_combined (SSM state resets at boundaries)
+        """
+        batch_size, seq_len, _ = hidden_states.shape
+        assert batch_size == 1, "varlen mamba expects batch_size=1 (packed)"
+        groups_time_state_size = self.n_groups * self.ssm_state_size
+
+        # 1. Input projection (pointwise, no cross-seq mixing)
+        projected_states = self.in_proj(hidden_states)
+        A = -torch.exp(self.A_log.float())
+        dt_limit_kwargs = {} if self.time_step_limit is None else {"dt_limit": self.time_step_limit}
+
+        gate, hidden_states_B_C, time_step = torch.split(
+            projected_states,
+            [self.intermediate_size, self.conv_dim, self.num_heads],
+            dim=-1,
+        )
+
+        # 2. Per-sequence causal conv1d. self.conv1d already has padding=kernel-1 so
+        # applying it to each segment independently gives the correct causal output
+        # without cross-sequence history.
+        hbc_t = hidden_states_B_C.transpose(1, 2)  # (1, C, L)
+        cu = cu_seqlens.tolist()
+        conv_outs = []
+        for i in range(len(cu) - 1):
+            s, e = cu[i], cu[i + 1]
+            if s == e:
+                continue
+            seg = hbc_t[:, :, s:e]
+            conv_out = self.conv1d(seg)[:, :, : e - s]
+            conv_outs.append(conv_out)
+        hidden_states_B_C = self.act(torch.cat(conv_outs, dim=-1).transpose(1, 2))
+
+        hidden_states, B, C = torch.split(
+            hidden_states_B_C,
+            [self.intermediate_size, groups_time_state_size, groups_time_state_size],
+            dim=-1,
+        )
+
+        # 3. SSM with seq_idx so state resets at sequence boundaries
+        seq_idx = torch.zeros(seq_len, dtype=torch.int32, device=hidden_states.device)
+        for i in range(len(cu) - 1):
+            s, e = cu[i], cu[i + 1]
+            if e > s:
+                seq_idx[s:e] = i
+        seq_idx = seq_idx.unsqueeze(0)  # (1, L)
+
+        scan_output = _mamba_chunk_scan_combined(
+            hidden_states.view(batch_size, seq_len, -1, self.head_dim),
+            time_step,
+            A,
+            B.view(batch_size, seq_len, self.n_groups, -1),
+            C.view(batch_size, seq_len, self.n_groups, -1),
+            chunk_size=self.chunk_size,
+            D=self.D,
+            z=None,
+            seq_idx=seq_idx,
+            return_final_states=False,
+            dt_bias=self.dt_bias,
+            dt_softplus=True,
+            **dt_limit_kwargs,
+        )
+        scan_output = scan_output.view(batch_size, seq_len, -1)
+        scan_output = self.norm(scan_output, gate)
+        return self.out_proj(scan_output)
+
+    def _patched_forward(self, hidden_states, cache_params=None, attention_mask=None, cu_seqlens=None):
+        if cu_seqlens is not None and cache_params is None and "cuda" in self.in_proj.weight.device.type:
+            return _varlen_mamba_forward(self, hidden_states, cu_seqlens)
         if "cuda" in self.in_proj.weight.device.type:
             # Disable fused training path (needs causal_conv1d CUDA extension)
             orig = self.use_mem_eff_path
@@ -81,7 +152,7 @@ def _patch_mamba2_use_triton_ssd():
 
     NemotronHMamba2Mixer.forward = _patched_forward
     _patch_applied = True
-    logger.info("Patched NemotronHMamba2Mixer to use mamba_ssm Triton SSD kernels")
+    logger.info("Patched NemotronHMamba2Mixer: Triton SSD kernels + varlen (cu_seqlens) support")
 
 
 def _ensure_zamba2_compat(config: NemotronHConfig):
@@ -155,12 +226,15 @@ class NemotronHMambaLayer(GradientCheckpointingLayer):
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.norm(hidden_states)
+
         if self.cp_enabled:
+            # TODO: This path doesnt support cu_seqlens so packing makes it wrong
             hidden_states = mamba_cp_forward(
                 self.mamba, hidden_states, self._cp_group, self._cp_rank, self._cp_world_size
             )
         else:
-            hidden_states = self.mamba(hidden_states)
+            hidden_states = self.mamba(hidden_states, cu_seqlens=cu_seqlens)
+
         return residual + hidden_states
 
 
@@ -183,6 +257,7 @@ class NemotronHMoELayer(GradientCheckpointingLayer):
             routed_scaling_factor=config.routed_scaling_factor,
             use_grouped_mm=config.use_grouped_mm,
             load_balance_coeff=config.load_balance_coeff,
+            fp8=getattr(config, "fp8", False),
         )
 
     def forward(
@@ -302,6 +377,23 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
         return state_dict
 
     @classmethod
+    def convert_adapter_to_hf(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        # HF NemotronH unifies attention/mlp under a single `mixer` attribute per layer.
+        import re
+
+        rename = [
+            (re.compile(r"(\.layers\.\d+)\.mlp\."), r"\1.mixer."),
+            (re.compile(r"(\.layers\.\d+)\.self_attn\."), r"\1.mixer."),
+        ]
+        for old_key in list(state_dict.keys()):
+            new_key = old_key
+            for pattern, repl in rename:
+                new_key = pattern.sub(repl, new_key)
+            if new_key != old_key:
+                state_dict[new_key] = state_dict.pop(old_key)
+        return state_dict
+
+    @classmethod
     def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
         from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import _rename_keys
 
@@ -406,15 +498,7 @@ class NemotronHModel(NemotronHPreTrainedModel):
         input_ids: Optional[torch.LongTensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
-        cu_seqlens: Optional[torch.LongTensor] = None,
-        max_seqlen: Optional[int] = None,
     ) -> BaseModelOutputWithPast:
-        r"""
-        cu_seqlens (`torch.LongTensor`, *optional*):
-            Explicit packed-sequence cumulative lengths for FlashAttention varlen kernels.
-        max_seqlen (`int`, *optional*):
-            Maximum packed subsequence length corresponding to `cu_seqlens`.
-        """
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
@@ -423,8 +507,7 @@ class NemotronHModel(NemotronHPreTrainedModel):
 
         # Compute cu_seqlens and max_seqlen for flash attention
         if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
-            if cu_seqlens is None or max_seqlen is None:
-                cu_seqlens, max_seqlen = infer_cu_seqlens_from_position_ids(position_ids)
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         else:
             max_seqlen = None
@@ -479,8 +562,6 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel, GenerationMixin):
             input_ids=input_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            cu_seqlens=kwargs.get("cu_seqlens"),
-            max_seqlen=kwargs.get("max_seqlen"),
         )
 
         hidden_states = outputs.last_hidden_state
