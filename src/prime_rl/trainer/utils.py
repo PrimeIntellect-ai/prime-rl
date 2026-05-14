@@ -413,7 +413,7 @@ def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) ->
             continue
         if any(k.startswith(p) for p in skip_prefixes):
             continue
-        if k.startswith("entropy/") and k != "entropy/mean" and not _is_env_tensor_stat(k, {"mean", "std", "max"}):
+        if k.startswith("entropy/") and not _is_env_tensor_stat(k, {"mean", "std", "max"}):
             continue
         if any(k.startswith(p) for p in mean_max_only_prefixes):
             if _is_env_tensor_stat(k, {"mean", "std", "max"}):

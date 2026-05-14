@@ -19,9 +19,6 @@ class LossInputs:
     teacher_logprobs: Float[Tensor, " seq"] | None
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
-    log_importance_ratio: Float[Tensor, " seq"] | None = None
-    importance_ratio: Float[Tensor, " seq"] | None = None
-    mismatch_kl: Float[Tensor, " seq"] | None = None
 
 
 @dataclass
@@ -134,16 +131,9 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     advantages = inputs.advantages
     loss_mask = inputs.loss_mask
 
-    if inputs.log_importance_ratio is None and inputs.importance_ratio is None and inputs.mismatch_kl is None:
-        log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
-            trainer_logprobs, inference_logprobs
-        )
-    elif inputs.log_importance_ratio is None or inputs.importance_ratio is None or inputs.mismatch_kl is None:
-        raise ValueError("precomputed importance-ratio tensors must be provided together")
-    else:
-        log_importance_ratio = inputs.log_importance_ratio
-        importance_ratio = inputs.importance_ratio
-        mismatch_kl = inputs.mismatch_kl
+    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+        trainer_logprobs, inference_logprobs
+    )
 
     inference_probs = torch.exp(inference_logprobs)
     probs_diff = inference_probs * (importance_ratio - 1)
@@ -227,9 +217,6 @@ def compute_loss(
     loss_fn: LossFn,
     loss_scale: int,
     sft_loss: bool = False,
-    log_importance_ratio: list[Float[Tensor, " seq_i"]] | None = None,
-    importance_ratio: list[Float[Tensor, " seq_i"]] | None = None,
-    mismatch_kl: list[Float[Tensor, " seq_i"]] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -243,9 +230,6 @@ def compute_loss(
         loss_fn: Per-sequence loss function
         loss_scale: Scale factor to normalize the loss
         sft_loss: If True, use SFT loss instead of the configured loss_fn for this batch
-        log_importance_ratio: Optional precomputed trainer-reference log ratio for each sequence
-        importance_ratio: Optional precomputed exp(log_importance_ratio) for each sequence
-        mismatch_kl: Optional precomputed mismatch KL for each sequence
 
     Returns:
         Tuple of (scaled_loss, aggregated_metrics)
@@ -257,22 +241,13 @@ def compute_loss(
 
     if teacher_logprobs is None:
         teacher_logprobs = [None] * len(trainer_logprobs)
-    if log_importance_ratio is None:
-        log_importance_ratio = [None] * len(trainer_logprobs)
-    if importance_ratio is None:
-        importance_ratio = [None] * len(trainer_logprobs)
-    if mismatch_kl is None:
-        mismatch_kl = [None] * len(trainer_logprobs)
 
-    for t_logp, i_logp, teach_logp, adv, mask, log_ratio, ratio, kl in zip(
+    for t_logp, i_logp, teach_logp, adv, mask in zip(
         trainer_logprobs,
         inference_logprobs,
         teacher_logprobs,
         advantages,
         loss_mask,
-        log_importance_ratio,
-        importance_ratio,
-        mismatch_kl,
     ):
         inputs = LossInputs(
             trainer_logprobs=t_logp,
@@ -280,9 +255,6 @@ def compute_loss(
             teacher_logprobs=teach_logp,
             advantages=adv,
             loss_mask=mask,
-            log_importance_ratio=log_ratio,
-            importance_ratio=ratio,
-            mismatch_kl=kl,
         )
 
         result = effective_loss_fn(inputs)

@@ -195,11 +195,6 @@ class DataLoader:
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
-        if len(micro_batch.env_names) != len(micro_batch.input_ids):
-            raise ValueError(
-                f"MicroBatch.env_names must match input_ids length: "
-                f"env_names={len(micro_batch.env_names)}, input_ids={len(micro_batch.input_ids)}"
-            )
         if micro_batch.lora_num_tokens is None:
             micro_batch.lora_num_tokens = [0] * self.multi_run_manager.max_runs
             micro_batch.lora_num_tokens[0] = len(micro_batch.input_ids)
