@@ -1,3 +1,5 @@
+import os
+
 import torch
 from vllm.triton_utils import tl, triton
 
@@ -19,6 +21,7 @@ def transformers_v5_compat():
     monkey_patch_deep_gemm_silu_mul_quant_int64()
     monkey_patch_dp_engine_core_pause_resume_deadlock()
     monkey_patch_vllm_layerwise_reload_alias_buffers()
+    monkey_patch_vllm_gdn_debug()
 
 
 def monkey_patch_vllm_layerwise_reload_alias_buffers():
@@ -49,6 +52,222 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
 
     reload_layerwise._copy_and_restore_kernel_tensors = _copy_and_restore_kernel_tensors
     logger.warning("Enabled vLLM layerwise reload alias-buffer patch.")
+
+
+def monkey_patch_vllm_gdn_debug():
+    if os.environ.get("PRIME_RL_GDN_DEBUG") != "1":
+        return
+
+    from vllm.forward_context import get_forward_context
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.mamba import gdn_linear_attn
+    from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadata
+
+    logger = init_logger(__name__)
+    cls = gdn_linear_attn.GatedDeltaNetAttention
+
+    if getattr(cls, "_prime_rl_gdn_debug_patched", False):
+        return
+
+    original_forward_core = cls._forward_core
+    original_forward_core_decode_non_spec = cls._forward_core_decode_non_spec
+
+    def _scalar(value):
+        if isinstance(value, torch.Tensor):
+            if value.numel() != 1:
+                return value
+            return value.item()
+        return value
+
+    def _tensor_summary(name: str, tensor: torch.Tensor | None) -> str:
+        if tensor is None:
+            return f"{name}=None"
+        parts = [
+            f"{name}.shape={tuple(tensor.shape)}",
+            f"dtype={tensor.dtype}",
+            f"device={tensor.device}",
+        ]
+        if tensor.numel() == 0:
+            parts.append("empty")
+            return ", ".join(parts)
+        detached = tensor.detach()
+        try:
+            if detached.dtype == torch.bool:
+                true_count = int(detached.sum().item())
+                parts.append(f"true={true_count}/{detached.numel()}")
+            elif not detached.is_floating_point():
+                min_value = int(detached.amin().item())
+                max_value = int(detached.amax().item())
+                neg_count = int((detached < 0).sum().item())
+                parts.extend(
+                    [
+                        f"min={min_value}",
+                        f"max={max_value}",
+                        f"neg_count={neg_count}",
+                    ]
+                )
+            else:
+                parts.append(f"min={float(detached.amin().item()):.6g}")
+                parts.append(f"max={float(detached.amax().item()):.6g}")
+        except Exception as exc:  # pragma: no cover - debug path
+            parts.append(f"summary_error={type(exc).__name__}: {exc}")
+        return ", ".join(parts)
+
+    def _index_error(name: str, tensor: torch.Tensor | None, upper: int | None, *, allow_negative: bool = False) -> str | None:
+        if tensor is None or tensor.numel() == 0 or upper is None:
+            return None
+        detached = tensor.detach()
+        try:
+            min_value = int(detached.amin().item())
+            max_value = int(detached.amax().item())
+        except Exception as exc:  # pragma: no cover - debug path
+            return f"{name} could not be summarized: {type(exc).__name__}: {exc}"
+        if not allow_negative and min_value < 0:
+            return f"{name} has negative index {min_value}"
+        if max_value >= upper:
+            return f"{name} max index {max_value} >= upper bound {upper}"
+        return None
+
+    def _get_metadata(self):
+        attn_metadata_raw = get_forward_context().attn_metadata
+        if attn_metadata_raw is None:
+            return None
+        if not isinstance(attn_metadata_raw, dict):
+            return None
+        attn_metadata = attn_metadata_raw.get(self.prefix)
+        if not isinstance(attn_metadata, GDNAttentionMetadata):
+            return None
+        return attn_metadata
+
+    def _build_context(self, mixed_qkv: torch.Tensor, b: torch.Tensor, a: torch.Tensor, core_attn_out: torch.Tensor, attn_metadata=None) -> tuple[list[str], list[str]]:
+        attn_metadata = attn_metadata if attn_metadata is not None else _get_metadata(self)
+        lines = [
+            f"prefix={self.prefix}",
+            f"mixed_qkv.shape={tuple(mixed_qkv.shape)}",
+            f"b.shape={tuple(b.shape)}",
+            f"a.shape={tuple(a.shape)}",
+            f"core_attn_out.shape={tuple(core_attn_out.shape)}",
+        ]
+        errors: list[str] = []
+
+        if attn_metadata is None:
+            lines.append("attn_metadata=None")
+            return lines, errors
+
+        fields = [
+            "num_actual_tokens",
+            "num_prefills",
+            "num_decodes",
+            "num_spec_decodes",
+            "num_spec_decode_tokens",
+        ]
+        for field in fields:
+            lines.append(f"{field}={_scalar(getattr(attn_metadata, field, None))}")
+
+        num_actual_tokens = getattr(attn_metadata, "num_actual_tokens", None)
+        if isinstance(num_actual_tokens, int) and num_actual_tokens > mixed_qkv.size(0):
+            errors.append(
+                f"num_actual_tokens {num_actual_tokens} > mixed_qkv tokens {mixed_qkv.size(0)}"
+            )
+
+        self_kv_cache = getattr(self, "kv_cache", None)
+        conv_state_size = None
+        ssm_state_size = None
+        if self_kv_cache is not None:
+            conv_state = (
+                self_kv_cache[0]
+                if gdn_linear_attn.is_conv_state_dim_first()
+                else self_kv_cache[0].transpose(-1, -2)
+            )
+            ssm_state = self_kv_cache[1]
+            conv_state_size = conv_state.size(0)
+            ssm_state_size = ssm_state.size(0)
+            lines.append(f"conv_state.shape={tuple(conv_state.shape)}")
+            lines.append(f"ssm_state.shape={tuple(ssm_state.shape)}")
+
+        spec_sequence_masks = getattr(attn_metadata, "spec_sequence_masks", None)
+        lines.append(f"spec_sequence_masks_present={spec_sequence_masks is not None}")
+        lines.append(_tensor_summary("spec_sequence_masks", spec_sequence_masks))
+
+        tensor_fields = [
+            "spec_token_indx",
+            "non_spec_token_indx",
+            "spec_state_indices_tensor",
+            "non_spec_state_indices_tensor",
+            "spec_query_start_loc",
+            "non_spec_query_start_loc",
+            "num_accepted_tokens",
+            "chunk_indices",
+            "chunk_offsets",
+            "has_initial_state",
+        ]
+        for field in tensor_fields:
+            lines.append(_tensor_summary(field, getattr(attn_metadata, field, None)))
+
+        token_upper = num_actual_tokens if isinstance(num_actual_tokens, int) else mixed_qkv.size(0)
+        for field in ("spec_token_indx", "non_spec_token_indx"):
+            err = _index_error(field, getattr(attn_metadata, field, None), token_upper)
+            if err:
+                errors.append(err)
+
+        for field, upper in (
+            ("spec_state_indices_tensor", min(conv_state_size or 0, ssm_state_size or 0) or None),
+            ("non_spec_state_indices_tensor", min(conv_state_size or 0, ssm_state_size or 0) or None),
+        ):
+            err = _index_error(
+                field,
+                getattr(attn_metadata, field, None),
+                upper,
+                allow_negative=True,
+            )
+            if err:
+                errors.append(err)
+
+        return lines, errors
+
+    def _format_context(lines: list[str], errors: list[str]) -> str:
+        parts = ["PRIME_RL_GDN_DEBUG context:"]
+        parts.extend(f"  {line}" for line in lines)
+        if errors:
+            parts.append("validation_errors:")
+            parts.extend(f"  {error}" for error in errors)
+        return "\n".join(parts)
+
+    def _forward_core_debug(self, mixed_qkv, b, a, core_attn_out):
+        lines, errors = _build_context(self, mixed_qkv, b, a, core_attn_out)
+        if errors:
+            raise RuntimeError(_format_context(lines, errors))
+        try:
+            result = original_forward_core(self, mixed_qkv, b, a, core_attn_out)
+            if os.environ.get("PRIME_RL_GDN_DEBUG_SYNC") == "1" and torch.cuda.is_available():
+                torch.cuda.synchronize()
+            return result
+        except Exception as exc:
+            raise RuntimeError(_format_context(lines, errors)) from exc
+
+    def _forward_core_decode_non_spec_debug(self, mixed_qkv, b, a, core_attn_out, attn_metadata):
+        lines, errors = _build_context(self, mixed_qkv, b, a, core_attn_out, attn_metadata)
+        if errors:
+            raise RuntimeError(_format_context(lines, errors))
+        try:
+            result = original_forward_core_decode_non_spec(
+                self,
+                mixed_qkv,
+                b,
+                a,
+                core_attn_out,
+                attn_metadata,
+            )
+            if os.environ.get("PRIME_RL_GDN_DEBUG_SYNC") == "1" and torch.cuda.is_available():
+                torch.cuda.synchronize()
+            return result
+        except Exception as exc:
+            raise RuntimeError(_format_context(lines, errors)) from exc
+
+    cls._forward_core = _forward_core_debug
+    cls._forward_core_decode_non_spec = _forward_core_decode_non_spec_debug
+    cls._prime_rl_gdn_debug_patched = True
+    logger.warning("Enabled vLLM GDN debug instrumentation.")
 
 
 @triton.jit

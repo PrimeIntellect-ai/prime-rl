@@ -335,7 +335,7 @@ Interpretation:
 
 ### Isolation 8: longer same-shape full local RL run
 
-Status: planned/running.
+Status: reproduced a vLLM inference failure.
 
 Reason:
 
@@ -356,4 +356,68 @@ Progress:
 - Investigation branch: `codex/mtp-root-cause-isolation-20260514`.
 - Run started at 2026-05-14 23:05 UTC.
 - W&B run: `https://wandb.ai/primeintellect/mtp-qwen35-hendrycks/runs/061129638e2f40ae82a5d1bb20fe31c0`.
-- Latest poll: trainer completed step 3 at 23:15:45, broadcasted `step_4` weights, and started waiting for step 4 rollouts. No vLLM/orchestrator/trainer error has been observed so far.
+- Trainer completed step 8 at 23:24:50, broadcasted `step_9` weights, and started waiting for step 9 rollouts.
+- Orchestrator step 9 began at 23:24:29. While 32/128 rollouts had completed, it got policy step 9 at 23:24:53, paused inference, updated weights, and resumed inference at 23:24:54.
+- Inference failed immediately after `/update_weights` and `/resume` returned HTTP 200.
+
+Failure details:
+
+- Failing process: `EngineCore_DP0` worker PID `132013`.
+- Top worker exception:
+
+```text
+torch.AcceleratorError: CUDA error: device-side assert triggered
+Search for `cudaErrorAssert' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+```
+
+- Stack location where the async CUDA error was reported:
+
+```text
+vllm/model_executor/models/qwen3_next.py:408 self.linear_attn(...)
+vllm/model_executor/layers/mamba/gdn_linear_attn.py:517 forward
+vllm/model_executor/layers/mamba/gdn_linear_attn.py:577 forward_cuda
+torch.ops.vllm.gdn_attention_core(...)
+vllm/model_executor/layers/mamba/gdn_linear_attn.py:1081 gdn_attention_core
+vllm/model_executor/layers/mamba/gdn_linear_attn.py:956 _forward_core
+self.chunk_gated_delta_rule(...)
+vllm/model_executor/layers/mamba/gdn_linear_attn.py:173 forward_cuda
+vllm/model_executor/layers/mamba/gdn_linear_attn.py:103 fi_chunk_gated_delta_rule
+g=torch.exp(fi_g)
+```
+
+- Engine wrapper exception:
+
+```text
+RuntimeError: Worker failed with error 'CUDA error: device-side assert triggered
+Search for `cudaErrorAssert' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+'
+```
+
+Scheduler dump at failure:
+
+- `scheduled_new_reqs=[]`.
+- `scheduled_cached_reqs` had 28 cached requests on DP0.
+- `all_token_ids_lens` ranged from 2442 to 8191; five requests were near the 8192 model limit: 7983, 8090, 8134, 8180, 8191.
+- `num_computed_tokens` was exactly one less than each corresponding `all_token_ids_lens`.
+- `num_output_tokens` ranged from 2373 to 7370.
+- `num_scheduled_tokens` was 2 for every cached request except one request at 1; total scheduled tokens was 55.
+- `scheduled_spec_decode_tokens` contained only `[-1]` placeholders for the cached requests.
+- `kv_cache_usage=0.02950531230967046`.
+
+Notes:
+
+- This is the same high-level failure surface as the original run: cached decode requests, preserved through an in-flight MTP weight update, followed by a GDN/Qwen3.5 CUDA device-side assert.
+- This reproduction reports in the GDN prefill/chunk path (`chunk_gated_delta_rule`), while the original run reported in the recurrent decode convolution path (`causal_conv1d_update`). The CUDA error is explicitly asynchronous, so the stack frame may be the first sync point rather than the true failing kernel.
+- The many `layerwise.py:225 Failed to load weights` warnings are not by themselves the root cause. The clean 32-step run produced 28,520 of the same warning and completed successfully; the failing long run produced 8,280 before crashing.
+
+Next isolation:
+
+- Added repo-level debug instrumentation around vLLM's GDN `_forward_core` path in `src/prime_rl/inference/patches.py`.
+- The instrumentation is gated behind `PRIME_RL_GDN_DEBUG=1`; it wraps GDN core execution, validates obvious token/state index bounds, and appends the GDN metadata context if the wrapped call or a forced CUDA sync fails.
+- Run the same workload with `CUDA_LAUNCH_BLOCKING=1` and the debug wrapper enabled so a future failure includes GDN metadata: token/state index ranges, query start locs, prefill/decode counts, spec masks, cache shapes, and chunk metadata.
