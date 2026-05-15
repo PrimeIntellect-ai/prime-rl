@@ -3,8 +3,8 @@ from io import BytesIO
 from unittest.mock import MagicMock
 
 import numpy as np
-import pytest
 import pybase64
+import pytest
 import verifiers as vf
 from PIL import Image
 
