@@ -19,9 +19,11 @@ _NEMOTRON_H_LAYERS_PATCHED = False
 _NEMOTRON_H_MIXERS_PATCHED = False
 _ATTENTION_OPS_PATCHED = False
 _MAMBA_MIXER2_OPS_PATCHED = False
+_CUDAGRAPH_REPLAY_PATCHED = False
 _WRITE_LOCK = threading.Lock()
 _ACTIVE_STATE_DUMPED: set[str] = set()
 _TARGET_BATCH_TRACE_COUNT: dict[int, int] = {}
+_CUDAGRAPH_REPLAY_TRACE_COUNT: dict[int, int] = {}
 _MODEL_RUNNER_TRACE_LOCAL = threading.local()
 _MAMBA_TRACE_LOCAL = threading.local()
 
@@ -35,6 +37,7 @@ def install_vllm_nan_trace() -> None:
         _patch_output_processor()
         _patch_scheduler()
         _patch_model_runner()
+        _patch_cudagraph_replay()
         _patch_nemotron_h_layers()
         _patch_nemotron_h_mixers()
         _patch_attention_ops()
@@ -105,6 +108,26 @@ def _mamba_op_trace_enabled() -> bool:
 
 def _mamba_op_trace_requires_request_ids() -> bool:
     return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_MAMBA_OPS_REQUIRE_REQUEST_IDS", "1") != "0"
+
+
+def _cudagraph_replay_trace_enabled() -> bool:
+    return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_CUDAGRAPH_REPLAY", "0") != "0"
+
+
+def _cudagraph_replay_trace_only_full() -> bool:
+    return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_CUDAGRAPH_REPLAY_ONLY_FULL", "1") != "0"
+
+
+def _cudagraph_replay_trace_fail_fast() -> bool:
+    return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_CUDAGRAPH_REPLAY_FAIL_FAST", "1") != "0"
+
+
+def _cudagraph_replay_tensor_limit() -> int:
+    return _env_int("PRIME_RL_VLLM_NAN_TRACE_CUDAGRAPH_REPLAY_TENSOR_LIMIT", 32) or 32
+
+
+def _cudagraph_replay_numel_limit() -> int:
+    return _env_int("PRIME_RL_VLLM_NAN_TRACE_CUDAGRAPH_REPLAY_NUMEL_LIMIT", 50_000_000) or 50_000_000
 
 
 def _active_state_trace_enabled() -> bool:
@@ -226,6 +249,11 @@ def _patch_model_runner() -> None:
             if _model_runner_trace_enabled() or _model_runner_batch_trace_enabled():
                 try:
                     self._prime_rl_nan_trace_batch_execution = _batch_execution_summary(result, args, kwargs)
+                    context = _current_model_runner_context() or {}
+                    _MODEL_RUNNER_TRACE_LOCAL.context = _model_runner_execution_context(
+                        self,
+                        execute_index=context.get("execute_index"),
+                    )
                 except Exception:
                     logger.exception("Failed to trace vLLM model runner batch execution decision")
             return result
@@ -307,6 +335,140 @@ def _patch_model_runner() -> None:
     GPUModelRunner.execute_model = _patched_execute_model
     GPUModelRunner._sample = _patched_sample
     _MODEL_RUNNER_PATCHED = True
+
+
+def _patch_cudagraph_replay() -> None:
+    global _CUDAGRAPH_REPLAY_PATCHED
+    if _CUDAGRAPH_REPLAY_PATCHED:
+        return
+    if not _cudagraph_replay_trace_enabled():
+        return
+
+    try:
+        from vllm.compilation.cuda_graph import CUDAGraphWrapper
+        from vllm.forward_context import get_forward_context, is_forward_context_available
+    except Exception:
+        logger.exception("Failed to import vLLM CUDA graph wrapper for NaN tracing")
+        return
+
+    original_call = CUDAGraphWrapper.__call__
+
+    def _patched_call(self, *args, **kwargs):
+        trace_info = None
+        try:
+            trace_info = _cudagraph_replay_trace_info(
+                self,
+                get_forward_context=get_forward_context,
+                is_forward_context_available=is_forward_context_available,
+            )
+        except Exception:
+            logger.exception("Failed to inspect vLLM CUDA graph replay context")
+
+        if trace_info is None:
+            return original_call(self, *args, **kwargs)
+
+        pre_summary = _tensor_tree_summary(
+            {"args": args, "kwargs": kwargs},
+            max_tensors=_cudagraph_replay_tensor_limit(),
+            max_numel=_cudagraph_replay_numel_limit(),
+        )
+        output = original_call(self, *args, **kwargs)
+        post_summary = _tensor_tree_summary(
+            output,
+            max_tensors=_cudagraph_replay_tensor_limit(),
+            max_numel=_cudagraph_replay_numel_limit(),
+        )
+
+        if pre_summary["nonfinite_tensor_count"] or post_summary["nonfinite_tensor_count"]:
+            _trace_cudagraph_replay_nonfinite(
+                trace_info=trace_info,
+                pre_summary=pre_summary,
+                post_summary=post_summary,
+            )
+            if _cudagraph_replay_trace_fail_fast() and post_summary["nonfinite_tensor_count"]:
+                raise RuntimeError(
+                    "Prime-RL vLLM NaN trace: FULL CUDA graph replay produced non-finite output"
+                )
+        return output
+
+    CUDAGraphWrapper.__call__ = _patched_call
+    _CUDAGRAPH_REPLAY_PATCHED = True
+
+
+def _cudagraph_replay_trace_info(
+    cudagraph_wrapper: Any,
+    *,
+    get_forward_context: Any,
+    is_forward_context_available: Any,
+) -> dict[str, Any] | None:
+    if not is_forward_context_available():
+        return None
+
+    forward_context = get_forward_context()
+    batch_descriptor = getattr(forward_context, "batch_descriptor", None)
+    runtime_mode = getattr(forward_context, "cudagraph_runtime_mode", None)
+    wrapper_mode = getattr(cudagraph_wrapper, "runtime_mode", None)
+    if batch_descriptor is None or runtime_mode is None or runtime_mode != wrapper_mode:
+        return None
+
+    mode_name = _enum_name(runtime_mode)
+    if _cudagraph_replay_trace_only_full() and "FULL" not in mode_name:
+        return None
+
+    entries = getattr(cudagraph_wrapper, "concrete_cudagraph_entries", {}) or {}
+    entry = entries.get(batch_descriptor)
+    if entry is None or getattr(entry, "cudagraph", None) is None:
+        return None
+    if not _cudagraph_replay_trace_take_record():
+        return None
+
+    return {
+        "runtime_mode": _enum_summary(runtime_mode),
+        "wrapper_runtime_mode": _enum_summary(wrapper_mode),
+        "batch_descriptor": _object_attr_summary(
+            batch_descriptor,
+            ("num_tokens", "num_reqs", "uniform", "has_lora", "num_active_loras"),
+        ),
+        "entry_batch_descriptor": _object_attr_summary(
+            getattr(entry, "batch_descriptor", None),
+            ("num_tokens", "num_reqs", "uniform", "has_lora", "num_active_loras"),
+        ),
+        "input_addresses": _sequence_summary(getattr(entry, "input_addresses", None)),
+        "slot_mapping": _slot_mappings_summary(getattr(forward_context, "slot_mapping", None)),
+        "model_runner_context": _current_model_runner_context(),
+    }
+
+
+def _cudagraph_replay_trace_take_record() -> bool:
+    limit = _env_int("PRIME_RL_VLLM_NAN_TRACE_CUDAGRAPH_REPLAY_LIMIT", 0)
+    if limit is not None and limit <= 0:
+        return True
+    pid = os.getpid()
+    with _WRITE_LOCK:
+        count = _CUDAGRAPH_REPLAY_TRACE_COUNT.get(pid, 0)
+        if limit is not None and count >= limit:
+            return False
+        _CUDAGRAPH_REPLAY_TRACE_COUNT[pid] = count + 1
+    return True
+
+
+def _trace_cudagraph_replay_nonfinite(
+    *,
+    trace_info: dict[str, Any],
+    pre_summary: dict[str, Any],
+    post_summary: dict[str, Any],
+) -> None:
+    _write_jsonl(
+        "cudagraph_replay_nonfinite",
+        {
+            "schema": "prime_rl.vllm_cudagraph_replay_nonfinite.v1",
+            "created_unix": time.time(),
+            "pid": os.getpid(),
+            "trace_info": trace_info,
+            "pre": pre_summary,
+            "post": post_summary,
+        },
+    )
 
 
 def _patch_nemotron_h_layers() -> None:
@@ -1076,11 +1238,14 @@ def _model_runner_execution_context(model_runner: Any, *, execute_index: int | N
     input_batch = getattr(model_runner, "input_batch", None)
     req_ids = list(getattr(input_batch, "req_ids", []) or []) if input_batch is not None else []
     num_reqs = getattr(input_batch, "num_reqs", len(req_ids)) if input_batch is not None else len(req_ids)
+    num_reqs_int = _safe_int(num_reqs, len(req_ids)) or len(req_ids)
     return {
         "execute_index": execute_index,
         "req_id_count": len(req_ids),
         "req_ids_head": req_ids[:16],
+        "req_ids_tail": req_ids[-16:] if len(req_ids) > 16 else [],
         "num_reqs": _json_safe(num_reqs),
+        "input_batch": _input_batch_summary(input_batch, num_reqs_int),
         "batch_execution": getattr(model_runner, "_prime_rl_nan_trace_batch_execution", None),
     }
 
@@ -1340,7 +1505,10 @@ def _slot_mappings_summary(slot_mappings: Any) -> dict[str, Any] | None:
             "truncated": len(slot_mappings) > 4,
         }
     if not isinstance(slot_mappings, dict):
-        return {"type": type(slot_mappings).__name__, "value": _json_safe(slot_mappings)}
+        return {
+            "type": type(slot_mappings).__name__,
+            "value": _tensor_or_sequence_summary(slot_mappings),
+        }
 
     groups: dict[str, dict[str, Any]] = {}
     for layer_name, tensor in slot_mappings.items():
@@ -1742,6 +1910,130 @@ def _tensor_total_counts(tensor: Any) -> dict[str, Any] | None:
         return meta
 
 
+def _tensor_tree_summary(value: Any, *, max_tensors: int, max_numel: int) -> dict[str, Any]:
+    tensors: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    truncated = False
+
+    def walk(item: Any, path: str, depth: int) -> None:
+        nonlocal truncated
+        if item is None or depth > 8:
+            return
+        if len(tensors) >= max_tensors:
+            truncated = True
+            return
+
+        item_id = id(item)
+        if item_id in seen:
+            return
+        seen.add(item_id)
+
+        if hasattr(item, "shape") and hasattr(item, "numel"):
+            tensors.append(_tensor_finiteness_summary(item, path=path, max_numel=max_numel))
+            return
+
+        if isinstance(item, dict):
+            for key, child in list(item.items())[:64]:
+                walk(child, f"{path}.{key}", depth + 1)
+            if len(item) > 64:
+                truncated = True
+            return
+
+        if isinstance(item, (list, tuple)):
+            for idx, child in enumerate(item[:64]):
+                walk(child, f"{path}[{idx}]", depth + 1)
+            if len(item) > 64:
+                truncated = True
+            return
+
+        intermediate_tensors = getattr(item, "tensors", None)
+        if isinstance(intermediate_tensors, dict):
+            walk(intermediate_tensors, f"{path}.tensors", depth + 1)
+
+    walk(value, "$", 0)
+    nonfinite_tensor_count = sum(1 for tensor in tensors if tensor.get("nonfinite"))
+    return {
+        "tensor_count": len(tensors),
+        "nonfinite_tensor_count": nonfinite_tensor_count,
+        "truncated": truncated,
+        "tensors": tensors,
+    }
+
+
+def _tensor_finiteness_summary(tensor: Any, *, path: str, max_numel: int) -> dict[str, Any]:
+    meta = {
+        "path": path,
+        "shape": list(getattr(tensor, "shape", [])),
+        "dtype": str(getattr(tensor, "dtype", "")),
+        "device": str(getattr(tensor, "device", "")),
+    }
+    try:
+        numel = int(tensor.numel())
+    except Exception:
+        return meta
+
+    meta["numel"] = numel
+    if numel == 0:
+        meta["nonfinite"] = False
+        return meta
+    if numel > max_numel:
+        meta["skipped_finiteness"] = f"numel>{max_numel}"
+        return meta
+
+    try:
+        if hasattr(tensor, "is_floating_point") and not tensor.is_floating_point():
+            meta["nonfinite"] = False
+            return meta
+    except Exception:
+        pass
+
+    if not hasattr(tensor, "isfinite") or _torch_is_compiling():
+        return meta
+
+    try:
+        finite = tensor.isfinite()
+        nan_count = int(tensor.isnan().sum().detach().cpu().item())
+        posinf_count = int(tensor.isposinf().sum().detach().cpu().item())
+        neginf_count = int(tensor.isneginf().sum().detach().cpu().item())
+        nonfinite = nan_count + posinf_count + neginf_count
+        meta.update(
+            {
+                "finite": int(finite.sum().detach().cpu().item()),
+                "nan": nan_count,
+                "posinf": posinf_count,
+                "neginf": neginf_count,
+                "nonfinite": nonfinite > 0,
+            }
+        )
+        if nonfinite:
+            meta["bad_rows"] = _tensor_bad_rows(tensor)
+    except Exception as exc:
+        meta["finiteness_error"] = str(exc)
+    return meta
+
+
+def _tensor_bad_rows(tensor: Any, *, limit: int = 16) -> list[dict[str, Any]]:
+    try:
+        if len(tensor.shape) == 0:
+            rows = tensor.reshape(1, 1)
+        elif len(tensor.shape) == 1:
+            rows = tensor.reshape(tensor.shape[0], 1)
+        else:
+            rows = tensor.reshape(tensor.shape[0], -1)
+        bad_by_row = ~rows.isfinite().all(dim=-1)
+        row_indices = bad_by_row.nonzero(as_tuple=False).reshape(-1)[:limit].detach().cpu().tolist()
+        counts = _tensor_row_counts(tensor)
+        return [
+            {
+                "row_index": int(row_idx),
+                **_row_count_at(counts, int(row_idx)),
+            }
+            for row_idx in row_indices
+        ]
+    except Exception as exc:
+        return [{"error": str(exc)}]
+
+
 def _tensor_or_sequence_summary(value: Any, *, limit: int = 16, count: int | None = None) -> dict[str, Any] | None:
     if value is None:
         return None
@@ -1834,6 +2126,10 @@ def _enum_summary(value: Any) -> dict[str, Any] | None:
         "value": getattr(value, "value", None),
         "string": str(value),
     }
+
+
+def _enum_name(value: Any) -> str:
+    return str(getattr(value, "name", None) or getattr(value, "value", None) or value)
 
 
 def _object_attr_summary(value: Any, attrs: tuple[str, ...]) -> dict[str, Any] | None:
