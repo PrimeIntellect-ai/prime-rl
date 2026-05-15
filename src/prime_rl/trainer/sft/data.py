@@ -192,6 +192,29 @@ class SFTDataset(StatefulIterableDataset):
         # Reference: https://platform.openai.com/docs/guides/function-calling#function-tool-example
         tools = json.loads(example.get("tools") or "[]")
 
+        allowlist = (
+            set(self.loss_mask_config.tool_name_allowlist)
+            if self.loss_mask_config.tool_name_allowlist is not None
+            else None
+        )
+        id_to_name: dict[str, str | None] = {}
+        if allowlist is not None:
+            for m in messages:
+                if m.get("role") != "assistant":
+                    continue
+                for tc in m.get("tool_calls") or []:
+                    tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                    if tc_id is None:
+                        continue
+                    name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+                    if name is None:
+                        fn = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
+                        if isinstance(fn, dict):
+                            name = fn.get("name")
+                        elif fn is not None:
+                            name = getattr(fn, "name", None)
+                    id_to_name[tc_id] = name
+
         def should_mask(message: dict) -> bool:
             assert "role" in message, "Message must have a role"
             match message["role"]:
@@ -202,7 +225,12 @@ class SFTDataset(StatefulIterableDataset):
                 case "system":
                     return True if self.loss_mask_config.system else False
                 case "tool":
-                    return True if self.loss_mask_config.tool else False
+                    if not self.loss_mask_config.tool:
+                        return False
+                    if allowlist is None:
+                        return True
+                    name = id_to_name.get(message.get("tool_call_id"))
+                    return name in allowlist if name is not None else False
                 case _:
                     raise ValueError(f"Invalid message role: {message['role']}")
 

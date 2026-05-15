@@ -96,10 +96,62 @@ def _should_mask_role(message: dict[str, Any], config: RoleLossMaskConfig) -> bo
             raise ValueError(f"Invalid message role: {role}")
 
 
+def _tool_call_function_name(tc: dict[str, Any] | Any) -> str | None:
+    """Extract the function name from a tool_call, handling both verifiers' flat
+    {id, name, arguments} shape and OpenAI's nested {id, type, function: {name, arguments}}.
+    """
+    if isinstance(tc, dict):
+        name = tc.get("name")
+        if name is None:
+            fn = tc.get("function")
+            if isinstance(fn, dict):
+                name = fn.get("name")
+        return name
+    name = getattr(tc, "name", None)
+    if name is None:
+        fn = getattr(tc, "function", None)
+        name = getattr(fn, "name", None) if fn is not None else None
+    return name
+
+
+def _tool_call_names_in_order(
+    prompt: list[dict[str, Any]] | None,
+    completion: list[dict[str, Any]] | None,
+) -> list[str | None]:
+    """Return the function names of the originating tool_calls for each tool-role
+    message in `prompt + completion`, in conversation order.
+
+    Walks the assistant messages first to build a `tool_call_id -> name` map,
+    then returns one entry per tool-role message — `None` for any tool message
+    whose `tool_call_id` we can't resolve (older trajectories, malformed data).
+    The caller should treat `None` as "name unknown" and apply its own policy.
+    """
+    id_to_name: dict[str, str | None] = {}
+    for messages in (prompt or [], completion or []):
+        for m in messages:
+            if not isinstance(m, dict) or m.get("role") != "assistant":
+                continue
+            for tc in m.get("tool_calls") or []:
+                tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                if tc_id is None:
+                    continue
+                id_to_name[tc_id] = _tool_call_function_name(tc)
+
+    names: list[str | None] = []
+    for messages in (prompt or [], completion or []):
+        for m in messages:
+            if not isinstance(m, dict) or m.get("role") != "tool":
+                continue
+            tc_id = m.get("tool_call_id")
+            names.append(id_to_name.get(tc_id) if tc_id is not None else None)
+    return names
+
+
 def _build_role_loss_mask_from_token_stream(
     full_ids: list[int],
     tokenizer: PreTrainedTokenizer,
     loss_mask_config: RoleLossMaskConfig,
+    tool_call_names_in_order: list[str | None] | None = None,
 ) -> list[bool]:
     """Parse a Qwen-style ChatML token stream into a per-token role mask.
 
@@ -136,6 +188,12 @@ def _build_role_loss_mask_from_token_stream(
 
     _KNOWN_ROLES = {"system", "user", "assistant", "tool"}
 
+    allowlist: set[str] | None = (
+        set(loss_mask_config.tool_name_allowlist)
+        if loss_mask_config.tool_name_allowlist is not None
+        else None
+    )
+
     def _mask_role(role: str | None) -> bool:
         # Defensive: an unrecognised role shouldn't mask anything. The token
         # stream on a live run should only contain the four ChatML roles; if
@@ -144,8 +202,22 @@ def _build_role_loss_mask_from_token_stream(
             return False
         return _should_mask_role({"role": role}, loss_mask_config)
 
+    def _mask_for_tool_span(span_idx: int) -> bool:
+        # Conservative: when the allowlist is set but we lack the metadata
+        # needed to decide (no precomputed names, cursor past the end, or
+        # name unresolved), mask the span out. Silent inclusion would defeat
+        # the experimental control the allowlist exists for.
+        if not _mask_role("tool") or allowlist is None:
+            return _mask_role("tool")
+        if tool_call_names_in_order is None or span_idx >= len(tool_call_names_in_order):
+            return False
+        name = tool_call_names_in_order[span_idx]
+        return name in allowlist if name is not None else False
+
     mask = [False] * len(full_ids)
     current_role: str | None = None
+    current_span_mask = False
+    tool_span_idx = 0
     i = 0
     n = len(full_ids)
     while i < n:
@@ -162,21 +234,27 @@ def _build_role_loss_mask_from_token_stream(
             if role_str == "user" and j + 1 < n and full_ids[j + 1] == tool_response:
                 role_str = "tool"
             current_role = role_str
+            current_span_mask = (
+                _mask_for_tool_span(tool_span_idx) if role_str == "tool" else _mask_role(role_str)
+            )
             span_end = min(j, n - 1)
             for k in range(i, span_end + 1):
-                mask[k] = _mask_role(current_role)
+                mask[k] = current_span_mask
             i = j + 1
         elif tok == im_end and current_role is not None:
-            mask[i] = _mask_role(current_role)
+            mask[i] = current_span_mask
             i += 1
             # `\n` separator after <|im_end|> (if present) stays with the
             # current role, matching the behavior of build_incremental_token_mask.
             if i < n and full_ids[i] == newline:
-                mask[i] = _mask_role(current_role)
+                mask[i] = current_span_mask
                 i += 1
+            if current_role == "tool":
+                tool_span_idx += 1
             current_role = None
+            current_span_mask = False
         else:
-            mask[i] = _mask_role(current_role) if current_role is not None else False
+            mask[i] = current_span_mask if current_role is not None else False
             i += 1
 
     if loss_mask_config.tool_content_only and loss_mask_config.tool:
@@ -186,7 +264,8 @@ def _build_role_loss_mask_from_token_stream(
         # `<tool_response>\n`, `\n</tool_response>`, `<|im_end|>\n`) are the same
         # for every tool message regardless of content; training to generate
         # them gives a degenerate target that the model can satisfy by
-        # hallucinating the envelope outside real tool calls.
+        # hallucinating the envelope outside real tool calls (cf. cmb-all step-700
+        # coherence collapse in 2026-05-14 forth-lang 1k writeup).
         i = 0
         while i < n:
             if full_ids[i] != im_start:
@@ -244,11 +323,12 @@ def _build_role_loss_masks_for_step(
     re-render of the messages when tokens aren't available (e.g. offline
     SFT-data synthesis).
     """
+    tool_call_names = _tool_call_names_in_order(step.get("prompt"), step.get("completion"))
     tokens = step.get("tokens")
     if tokens is not None:
         full_ids = list(tokens["prompt_ids"]) + list(tokens["completion_ids"])
         full_loss_mask = _build_role_loss_mask_from_token_stream(
-            full_ids, tokenizer, loss_mask_config
+            full_ids, tokenizer, loss_mask_config, tool_call_names_in_order=tool_call_names
         )
         split_idx = len(tokens["prompt_ids"])
         return full_loss_mask[:split_idx], full_loss_mask[split_idx:]
@@ -261,11 +341,33 @@ def _build_role_loss_masks_for_step(
         prompt = _prepare_messages_for_processor(prompt)
         completion = _prepare_messages_for_processor(completion)
     messages = prompt + completion
+    allowlist = (
+        set(loss_mask_config.tool_name_allowlist)
+        if loss_mask_config.tool_name_allowlist is not None
+        else None
+    )
+    id_to_name: dict[str, str | None] = {}
+    if allowlist is not None:
+        for m in messages:
+            if m.get("role") != "assistant":
+                continue
+            for tc in m.get("tool_calls") or []:
+                tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                if tc_id is not None:
+                    id_to_name[tc_id] = _tool_call_function_name(tc)
+
+    def _role_to_mask(message: dict[str, Any]) -> bool:
+        base = _should_mask_role(message, loss_mask_config)
+        if not base or message.get("role") != "tool" or allowlist is None:
+            return base
+        name = id_to_name.get(message.get("tool_call_id"))
+        return name in allowlist if name is not None else False
+
     try:
         full_ids, full_loss_mask = build_incremental_token_mask(
             tokenizer,
             messages,
-            role_to_mask=lambda message: _should_mask_role(message, loss_mask_config),
+            role_to_mask=_role_to_mask,
             tools=tools,
             collapse_consecutive_tool_messages=True,
             processor=processor,

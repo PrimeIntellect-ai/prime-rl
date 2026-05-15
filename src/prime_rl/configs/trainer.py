@@ -685,6 +685,18 @@ class RoleLossMaskConfig(BaseConfig):
     user: Annotated[bool, Field(description="Whether user messages contribute to the loss.")] = False
     assistant: Annotated[bool, Field(description="Whether assistant messages contribute to the loss.")] = True
     tool: Annotated[bool, Field(description="Whether tool messages contribute to the loss.")] = False
+    tool_name_allowlist: Annotated[
+        list[str] | None,
+        Field(
+            description=(
+                "When `tool=True` and this is set, additionally restrict the tool-loss "
+                "to messages whose originating tool_call's function name is in this list. "
+                "`None` means no restriction (all tool messages are eligible). An empty "
+                "list means no tool messages are eligible (functionally equivalent to "
+                "`tool=False`)."
+            ),
+        ),
+    ] = None
     tool_content_only: Annotated[
         bool,
         Field(
