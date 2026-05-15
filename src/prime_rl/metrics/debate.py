@@ -249,9 +249,7 @@ def compute_step_metrics(rollouts: Iterable[vf.RolloutOutput]) -> dict[str, floa
             continue
         paired.append((float(la - lb), 1.0 if w == "debater_a" else 0.0))
     if len(paired) >= 2:
-        metrics["length_bias_corr"] = _spearman(
-            [p[0] for p in paired], [p[1] for p in paired]
-        )
+        metrics["length_bias_corr"] = _spearman([p[0] for p in paired], [p[1] for p in paired])
 
     return metrics
 

@@ -83,7 +83,9 @@ class PerfCounter:
     def get_mfu(self) -> float | None:
         if len(self.flops) < 2:
             return None
-        return 100 * sum(self.flops[1:]) / (self.times[-1] - self.times[0]) / self.gpu_peak_flops / self._world.world_size
+        return (
+            100 * sum(self.flops[1:]) / (self.times[-1] - self.times[0]) / self.gpu_peak_flops / self._world.world_size
+        )
 
     def get_step_tokens_per_second(self, tokens: int, fwd_bwd_time: float) -> float:
         """Single-step throughput from a caller-provided duration."""

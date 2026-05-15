@@ -244,11 +244,7 @@ async def orchestrate(config: OrchestratorConfig):
     )
     logger.success("Train environment(s) ready")
 
-    ma_env_names = {
-        env.name
-        for env in train_envs
-        if isinstance(env.env.rubric, MultiAgentRubric)
-    }
+    ma_env_names = {env.name for env in train_envs if isinstance(env.env.rubric, MultiAgentRubric)}
     non_ma_env_names = set(train_envs.names) - ma_env_names
     if ma_env_names and non_ma_env_names:
         raise NotImplementedError(
@@ -379,9 +375,7 @@ async def orchestrate(config: OrchestratorConfig):
     # must resume with progress/buffer for multi-agent runs.
     progress = Progress()
     advantage_state: RAEState | None = (
-        RAEState(momentum=config.advantage.momentum)
-        if advantage_type == "ema_per_member"
-        else None
+        RAEState(momentum=config.advantage.momentum) if advantage_type == "ema_per_member" else None
     )
 
     if checkpoint_step is not None and ckpt_manager is not None:

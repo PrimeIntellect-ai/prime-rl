@@ -28,11 +28,18 @@ REQUIRED_COLUMNS = ["trajectory", "sampling_args", "trajectory_id"]
 
 def _step(member_id: str, content: str = "x") -> TrajectoryStep:
     return TrajectoryStep(
-        prompt=[], completion=[],
-        response={"id": "r", "created": 0, "model": "m",
-                  "message": {"role": "assistant", "content": content,
-                              "finish_reason": "stop", "is_truncated": False}},
-        tokens=None, reward=None, advantage=None, is_truncated=False,
+        prompt=[],
+        completion=[],
+        response={
+            "id": "r",
+            "created": 0,
+            "model": "m",
+            "message": {"role": "assistant", "content": content, "finish_reason": "stop", "is_truncated": False},
+        },
+        tokens=None,
+        reward=None,
+        advantage=None,
+        is_truncated=False,
         trajectory_id="ep-0",
         extras={"member_id": member_id, "phase": "p"},
     )
@@ -140,9 +147,7 @@ def test_fan_out_filter_by_learner_seat_keeps_only_matching_member():
     opposite seat's trajectory never reaches the trainer."""
     rollouts = [_build_rollout(example_id=1, trajectory_id="ep-1")]
     rollouts[0]["info"] = {"learner_seat": "debater_a"}
-    units, mapping = fan_out_for_multi_agent(
-        rollouts, filter_by_learner_seat=True
-    )
+    units, mapping = fan_out_for_multi_agent(rollouts, filter_by_learner_seat=True)
     assert [u["member_id"] for u in units] == ["debater_a"]
     assert mapping == [[0]]
 

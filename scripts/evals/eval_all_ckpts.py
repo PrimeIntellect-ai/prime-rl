@@ -34,7 +34,6 @@ from . import run_all
 from ._server import resolve_path_args
 from .run_all import EvalName
 
-
 _STEP_RE = re.compile(r"step_(\d+)$")
 
 
@@ -70,8 +69,7 @@ def run(
     ckpts = _find_ckpts(ckpt_root)
     if not ckpts:
         raise ValueError(f"No step_N ckpts under {ckpt_root}")
-    print(f"[eval_all_ckpts] found {len(ckpts)} ckpts: "
-          f"steps={[s for s, _ in ckpts]}", flush=True)
+    print(f"[eval_all_ckpts] found {len(ckpts)} ckpts: steps={[s for s, _ in ckpts]}", flush=True)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     summary: dict[str, Any] = {"ckpt_root": str(ckpt_root), "steps": {}}
@@ -83,8 +81,11 @@ def run(
             summary["steps"][step] = json.loads(rollup_path.read_text())
             continue
 
-        print(f"\n{'=' * 70}\n[eval_all_ckpts] EVALUATING step_{step}\n"
-              f"  ckpt: {ckpt_dir}\n  out:  {step_dir}\n{'=' * 70}\n", flush=True)
+        print(
+            f"\n{'=' * 70}\n[eval_all_ckpts] EVALUATING step_{step}\n"
+            f"  ckpt: {ckpt_dir}\n  out:  {step_dir}\n{'=' * 70}\n",
+            flush=True,
+        )
         t0 = time.time()
         try:
             result = run_all.run(
@@ -116,8 +117,7 @@ def run(
     failed = [str(s) for s, r in summary["steps"].items() if isinstance(r, dict) and "error" in r]
     succeeded = total - len(failed)
     print(
-        f"\n[eval_all_ckpts] {succeeded}/{total} steps succeeded, "
-        f"{len(failed)} failed: {failed}",
+        f"\n[eval_all_ckpts] {succeeded}/{total} steps succeeded, {len(failed)} failed: {failed}",
         flush=True,
     )
     summary["n_total"] = total
@@ -129,8 +129,7 @@ def run(
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--ckpt-root", type=Path, required=True,
-                   help="Directory containing step_N subdirs.")
+    p.add_argument("--ckpt-root", type=Path, required=True, help="Directory containing step_N subdirs.")
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--base-model", type=str, default=None)
     p.add_argument("--only", nargs="+", default=None, choices=run_all.PHASES)

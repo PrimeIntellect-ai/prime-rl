@@ -115,12 +115,8 @@ class SystemPromptSampler:
         # Treat as HF Hub dataset repo ID (e.g. "joanvelja/sft-system-prompts-v1")
         from huggingface_hub import hf_hub_download
 
-        final_path = hf_hub_download(
-            repo_id=pool_path, filename=cls._FINAL_FILENAME, repo_type="dataset"
-        )
-        expanded_path = hf_hub_download(
-            repo_id=pool_path, filename=cls._EXPANDED_FILENAME, repo_type="dataset"
-        )
+        final_path = hf_hub_download(repo_id=pool_path, filename=cls._FINAL_FILENAME, repo_type="dataset")
+        expanded_path = hf_hub_download(repo_id=pool_path, filename=cls._EXPANDED_FILENAME, repo_type="dataset")
         return final_path, expanded_path
 
     def sample(self, profile_name: str | None, seed: int) -> str:

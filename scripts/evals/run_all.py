@@ -39,7 +39,6 @@ from typing import Any, Literal
 from . import gsm8k, ifeval, mmlu, mtbench, smoke, sycophancy
 from ._server import infer_base_model, load_suite, resolve_path_args
 
-
 EvalName = Literal["smoke", "sycophancy", "mtbench", "ifeval", "gsm8k", "mmlu"]
 PHASES: tuple[EvalName, ...] = typing.get_args(EvalName)
 
@@ -51,8 +50,11 @@ def _collect_rollup(results: dict[str, Any], thresholds: dict[str, Any]) -> dict
     def add(metric: str, base_val: Any, ckpt_val: Any, delta: Any, *, spec: dict | None = None) -> None:
         row: dict[str, Any] = {
             "metric": metric,
-            "base": base_val, "ckpt": ckpt_val, "delta": delta,
-            "threshold": None, "pass": None,
+            "base": base_val,
+            "ckpt": ckpt_val,
+            "delta": delta,
+            "threshold": None,
+            "pass": None,
         }
         if spec is not None and isinstance(ckpt_val, (int, float)):
             if "min" in spec:
@@ -74,14 +76,18 @@ def _collect_rollup(results: dict[str, Any], thresholds: dict[str, Any]) -> dict
     for metric_name in ("aggregate",):
         base_val = syco_phases.get("base", {}).get(metric_name)
         ckpt_val = syco_phases.get("ckpt", {}).get(metric_name)
-        delta = (ckpt_val - base_val) if isinstance(base_val, (int, float)) and isinstance(ckpt_val, (int, float)) else None
+        delta = (
+            (ckpt_val - base_val) if isinstance(base_val, (int, float)) and isinstance(ckpt_val, (int, float)) else None
+        )
         add(f"sycophancy.{metric_name}", base_val, ckpt_val, delta, spec=thresholds.get("sycophancy_mean"))
     for sub in ("are_you_sure", "answer"):
         base_sub = syco_phases.get("base", {}).get("subsets", {}).get(sub, {})
         ckpt_sub = syco_phases.get("ckpt", {}).get("subsets", {}).get(sub, {})
         base_val = base_sub.get("flip_rate_when_correct")
         ckpt_val = ckpt_sub.get("flip_rate_when_correct")
-        delta = (ckpt_val - base_val) if isinstance(base_val, (int, float)) and isinstance(ckpt_val, (int, float)) else None
+        delta = (
+            (ckpt_val - base_val) if isinstance(base_val, (int, float)) and isinstance(ckpt_val, (int, float)) else None
+        )
         add(f"sycophancy.{sub}.flip_rate", base_val, ckpt_val, delta)
     base_fb = syco_phases.get("base", {}).get("subsets", {}).get("feedback", {})
     ckpt_fb = syco_phases.get("ckpt", {}).get("subsets", {}).get("feedback", {})
@@ -97,11 +103,17 @@ def _collect_rollup(results: dict[str, Any], thresholds: dict[str, Any]) -> dict
     ckpt_val = mt_phases.get("ckpt", {}).get("aggregate", {}).get("overall")
     delta = (ckpt_val - base_val) if isinstance(base_val, (int, float)) and isinstance(ckpt_val, (int, float)) else None
     add("mtbench.overall", base_val, ckpt_val, delta, spec=thresholds.get("mtbench_overall"))
-    for cat in sorted(set(list(mt_phases.get("base", {}).get("aggregate", {}).get("per_category", {})) +
-                           list(mt_phases.get("ckpt", {}).get("aggregate", {}).get("per_category", {})))):
+    for cat in sorted(
+        set(
+            list(mt_phases.get("base", {}).get("aggregate", {}).get("per_category", {}))
+            + list(mt_phases.get("ckpt", {}).get("aggregate", {}).get("per_category", {}))
+        )
+    ):
         base_cat = mt_phases.get("base", {}).get("aggregate", {}).get("per_category", {}).get(cat)
         ckpt_cat = mt_phases.get("ckpt", {}).get("aggregate", {}).get("per_category", {}).get(cat)
-        delta_cat = (ckpt_cat - base_cat) if isinstance(base_cat, (int, float)) and isinstance(ckpt_cat, (int, float)) else None
+        delta_cat = (
+            (ckpt_cat - base_cat) if isinstance(base_cat, (int, float)) and isinstance(ckpt_cat, (int, float)) else None
+        )
         add(f"mtbench.{cat}", base_cat, ckpt_cat, delta_cat)
 
     # ---- smoke ----
@@ -121,8 +133,10 @@ def _collect_rollup(results: dict[str, Any], thresholds: dict[str, Any]) -> dict
     ifv = results.get("ifeval") or {}
     ifv_phases = ifv.get("phases", {})
     for metric_name in (
-        "prompt_level_strict_acc", "prompt_level_loose_acc",
-        "inst_level_strict_acc", "inst_level_loose_acc",
+        "prompt_level_strict_acc",
+        "prompt_level_loose_acc",
+        "inst_level_strict_acc",
+        "inst_level_loose_acc",
     ):
         bv = ifv_phases.get("base", {}).get(metric_name)
         cv = ifv_phases.get("ckpt", {}).get(metric_name)
@@ -152,9 +166,7 @@ def _collect_rollup(results: dict[str, Any], thresholds: dict[str, Any]) -> dict
 
 def _write_csv(path: Path, rollup: dict) -> None:
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(
-            f, fieldnames=["metric", "base", "ckpt", "delta", "threshold", "pass"]
-        )
+        writer = csv.DictWriter(f, fieldnames=["metric", "base", "ckpt", "delta", "threshold", "pass"])
         writer.writeheader()
         for row in rollup["rows"]:
             writer.writerow(row)
@@ -193,45 +205,73 @@ def run(
 
     if should_run("smoke"):
         results["smoke"] = _run_phase(
-            "smoke", smoke.run,
-            ckpt=ckpt, output_dir=output_dir / "smoke",
-            base_model=base, port=port, max_model_len=max_model_len,
+            "smoke",
+            smoke.run,
+            ckpt=ckpt,
+            output_dir=output_dir / "smoke",
+            base_model=base,
+            port=port,
+            max_model_len=max_model_len,
         )
 
     if should_run("sycophancy"):
         results["sycophancy"] = _run_phase(
-            "sycophancy", sycophancy.run,
-            ckpt=ckpt, output_dir=output_dir / "sycophancy",
-            base_model=base, n_per_subset=syco_n, port=port,
+            "sycophancy",
+            sycophancy.run,
+            ckpt=ckpt,
+            output_dir=output_dir / "sycophancy",
+            base_model=base,
+            n_per_subset=syco_n,
+            port=port,
             max_model_len=max_model_len,
         )
 
     if should_run("mtbench"):
         results["mtbench"] = _run_phase(
-            "mtbench", mtbench.run,
-            ckpt=ckpt, output_dir=output_dir / "mtbench",
-            base_model=base, n=mtbench_n, port=port, max_model_len=max_model_len,
+            "mtbench",
+            mtbench.run,
+            ckpt=ckpt,
+            output_dir=output_dir / "mtbench",
+            base_model=base,
+            n=mtbench_n,
+            port=port,
+            max_model_len=max_model_len,
         )
 
     if should_run("ifeval"):
         results["ifeval"] = _run_phase(
-            "ifeval", ifeval.run,
-            ckpt=ckpt, output_dir=output_dir / "ifeval",
-            base_model=base, n=ifeval_n, port=port, max_model_len=max_model_len,
+            "ifeval",
+            ifeval.run,
+            ckpt=ckpt,
+            output_dir=output_dir / "ifeval",
+            base_model=base,
+            n=ifeval_n,
+            port=port,
+            max_model_len=max_model_len,
         )
 
     if should_run("gsm8k"):
         results["gsm8k"] = _run_phase(
-            "gsm8k", gsm8k.run,
-            ckpt=ckpt, output_dir=output_dir / "gsm8k",
-            base_model=base, n=gsm8k_n, port=port, max_model_len=max_model_len,
+            "gsm8k",
+            gsm8k.run,
+            ckpt=ckpt,
+            output_dir=output_dir / "gsm8k",
+            base_model=base,
+            n=gsm8k_n,
+            port=port,
+            max_model_len=max_model_len,
         )
 
     if should_run("mmlu"):
         results["mmlu"] = _run_phase(
-            "mmlu", mmlu.run,
-            ckpt=ckpt, output_dir=output_dir / "mmlu",
-            base_model=base, n=mmlu_n, port=port, max_model_len=max_model_len,
+            "mmlu",
+            mmlu.run,
+            ckpt=ckpt,
+            output_dir=output_dir / "mmlu",
+            base_model=base,
+            n=mmlu_n,
+            port=port,
+            max_model_len=max_model_len,
         )
 
     rollup = _collect_rollup(results, thresholds)
@@ -242,8 +282,13 @@ def run(
     print(f"{'metric':<50} {'base':>10} {'ckpt':>10} {'delta':>10}  {'gate':>6} {'threshold'}")
     for row in rollup["rows"]:
         flag = "✓" if row["pass"] is True else ("✗" if row["pass"] is False else "·")
-        def fmt(v): return f"{v:>10.4f}" if isinstance(v, float) else (f"{v!s:>10}")
-        print(f"  {row['metric']:<50} {fmt(row['base'])} {fmt(row['ckpt'])} {fmt(row['delta'])}  {flag:>6} {row['threshold'] or ''}")
+
+        def fmt(v):
+            return f"{v:>10.4f}" if isinstance(v, float) else (f"{v!s:>10}")
+
+        print(
+            f"  {row['metric']:<50} {fmt(row['base'])} {fmt(row['ckpt'])} {fmt(row['delta'])}  {flag:>6} {row['threshold'] or ''}"
+        )
     if rollup["any_fail"]:
         print("\n[run_all] ≥1 threshold failed — see rollup.csv")
     else:

@@ -33,12 +33,20 @@ from datasets import load_dataset
 
 from ._server import resolve_path_args
 
-
 TRAIN_REPO = "joanvelja/dolci-debate-sft-v1"
 TRAIN_SUBSETS = [
-    "wildchat", "tulu-3-persona-math", "dolci-precise-if", "dolci-openthoughts-sci",
-    "evol-codealpaca", "dolci-python-algo", "flan", "tulu-3-persona-algebra",
-    "openmathinstruct-2", "openassistant", "tablegpt", "sciriff",
+    "wildchat",
+    "tulu-3-persona-math",
+    "dolci-precise-if",
+    "dolci-openthoughts-sci",
+    "evol-codealpaca",
+    "dolci-python-algo",
+    "flan",
+    "tulu-3-persona-algebra",
+    "openmathinstruct-2",
+    "openassistant",
+    "tablegpt",
+    "sciriff",
 ]
 
 NGRAM_SIZE = 13
@@ -54,7 +62,7 @@ def _ngrams(tokens: list[str], n: int = NGRAM_SIZE) -> Iterable[tuple[str, ...]]
     if len(tokens) < n:
         return
     for i in range(len(tokens) - n + 1):
-        yield tuple(tokens[i:i + n])
+        yield tuple(tokens[i : i + n])
 
 
 # -------------------- eval prompt extraction --------------------
@@ -118,7 +126,9 @@ def _extract_training_text(row: dict) -> str:
 # -------------------- decon pipeline --------------------
 
 
-def build_eval_index(evals: dict[str, list[str]]) -> tuple[
+def build_eval_index(
+    evals: dict[str, list[str]],
+) -> tuple[
     dict[tuple[str, ...], set[tuple[str, int]]],
     dict[tuple[str, int], int],
 ]:
@@ -147,17 +157,16 @@ def run(
     output_dir.mkdir(parents=True, exist_ok=True)
     subsets = subsets or TRAIN_SUBSETS
 
-    print(f"[decon] loading eval prompts...", flush=True)
+    print("[decon] loading eval prompts...", flush=True)
     t0 = time.time()
     evals = {name: loader() for name, loader in EVALS.items()}
     for name, prompts in evals.items():
         print(f"  {name}: {len(prompts)} prompts", flush=True)
 
-    print(f"\n[decon] building 13-gram index from evals...", flush=True)
+    print("\n[decon] building 13-gram index from evals...", flush=True)
     index, counts = build_eval_index(evals)
     total_unique_ngrams = len(index)
-    print(f"  {total_unique_ngrams} unique 13-grams across all evals "
-          f"(from {sum(counts.values())} total)", flush=True)
+    print(f"  {total_unique_ngrams} unique 13-grams across all evals (from {sum(counts.values())} total)", flush=True)
 
     # hits[(eval_name, row_idx)] = set of 13-grams from that row that were seen in training
     hits: dict[tuple[str, int], set[tuple[str, ...]]] = defaultdict(set)
@@ -223,8 +232,7 @@ def run(
                 worst.append((idx, frac, matched, total))
         worst.sort(key=lambda t: (-t[1], -t[2]))
         worst_top = [
-            {"idx": i, "frac_matched": round(f, 4), "matched": m, "total": t,
-             "prompt_preview": prompts[i][:200]}
+            {"idx": i, "frac_matched": round(f, 4), "matched": m, "total": t, "prompt_preview": prompts[i][:200]}
             for (i, f, m, t) in worst[:20]
         ]
         report["per_eval"][eval_name] = {
@@ -252,10 +260,8 @@ def run(
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--output-dir", type=Path, default=Path("outputs/evals/decon"))
-    p.add_argument("--subsets", nargs="+", default=None,
-                   help="Override default subset list (debug).")
-    p.add_argument("--sample-cap", type=int, default=None,
-                   help="Cap rows per subset (debug).")
+    p.add_argument("--subsets", nargs="+", default=None, help="Override default subset list (debug).")
+    p.add_argument("--sample-cap", type=int, default=None, help="Cap rows per subset (debug).")
     return p.parse_args()
 
 

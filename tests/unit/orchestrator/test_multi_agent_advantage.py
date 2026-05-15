@@ -62,8 +62,8 @@ def test_baselines_update_after_batch():
 
 def test_second_batch_uses_updated_baseline():
     """Two sequential batches with R=1, momentum=0.9 (cold start):
-        b_1 = 0.1; A_1 = 1 - 0.1 = 0.9
-        b_2 = 0.9·0.1 + 0.1·1 = 0.19; A_2 = 1 - 0.19 = 0.81"""
+    b_1 = 0.1; A_1 = 1 - 0.1 = 0.9
+    b_2 = 0.9·0.1 + 0.1·1 = 0.19; A_2 = 1 - 0.19 = 0.81"""
     state = RAEState(baselines={}, momentum=0.9)
     advs1 = compute_rae_advantages([_make_rollout(reward=1.0)], state)
     assert advs1 == [pytest.approx(0.9)]

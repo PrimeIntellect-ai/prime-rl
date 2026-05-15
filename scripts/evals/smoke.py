@@ -28,10 +28,7 @@ from typing import Any
 
 from ._server import PhaseHandle, complete_batch, infer_base_model, load_sft_tokenizer, paired_run, resolve_path_args
 
-
-DEFAULT_PROMPTS_PATH = (
-    Path(__file__).resolve().parents[1] / "smoke_eval_sft_prompts.json"
-)
+DEFAULT_PROMPTS_PATH = Path(__file__).resolve().parents[1] / "smoke_eval_sft_prompts.json"
 
 
 def _load_prompts(path: Path) -> list[dict]:
@@ -78,56 +75,58 @@ def run_phase(
     )
     t0 = time.perf_counter()
     batch_results = complete_batch(
-        handle, batch_messages,
+        handle,
+        batch_messages,
         max_tokens=effective_max_tokens,
-        temperature=temperature, top_p=top_p,
+        temperature=temperature,
+        top_p=top_p,
         max_concurrency=max_concurrency,
     )
     elapsed = time.perf_counter() - t0
     print(
-        f"[smoke/{handle.phase}] batch done in {elapsed:.1f}s "
-        f"(= {elapsed/len(prompts):.1f}s avg/prompt wall)",
+        f"[smoke/{handle.phase}] batch done in {elapsed:.1f}s (= {elapsed / len(prompts):.1f}s avg/prompt wall)",
         flush=True,
     )
 
     results: list[dict[str, Any]] = []
     for prompt, (text, usage) in zip(prompts, batch_results):
         metrics = _completion_metrics(text, usage)
-        results.append({
-            "phase": handle.phase,
-            "id": prompt["id"],
-            "source": prompt["source"],
-            "category": prompt["category"],
-            "prompt": prompt["prompt"],
-            "response": text,
-            "metrics": metrics,
-        })
+        results.append(
+            {
+                "phase": handle.phase,
+                "id": prompt["id"],
+                "source": prompt["source"],
+                "category": prompt["category"],
+                "prompt": prompt["prompt"],
+                "response": text,
+                "metrics": metrics,
+            }
+        )
     return results
 
 
 def _aggregate(results: list[dict]) -> dict[str, Any]:
-    token_counts = [
-        r["metrics"]["completion_tokens"]
-        for r in results if r["metrics"]["completion_tokens"] is not None
-    ]
+    token_counts = [r["metrics"]["completion_tokens"] for r in results if r["metrics"]["completion_tokens"] is not None]
     paragraphs = [r["metrics"]["paragraphs"] for r in results]
     return {
         "n": len(results),
         "median_tokens": statistics.median(token_counts) if token_counts else None,
-        "p90_tokens": (
-            statistics.quantiles(token_counts, n=10)[-1]
-            if len(token_counts) >= 10 else None
-        ),
+        "p90_tokens": (statistics.quantiles(token_counts, n=10)[-1] if len(token_counts) >= 10 else None),
         "median_paragraphs": statistics.median(paragraphs) if paragraphs else None,
         "empty_responses": sum(1 for r in results if not r["response"].strip()),
     }
 
 
 def _write_markdown(
-    output_path: Path, *,
-    base_model: str, ckpt: Path, prompts_path: Path,
-    sft_tokenizer_name: str, model_id: str,
-    base_results: list[dict], ckpt_results: list[dict],
+    output_path: Path,
+    *,
+    base_model: str,
+    ckpt: Path,
+    prompts_path: Path,
+    sft_tokenizer_name: str,
+    model_id: str,
+    base_results: list[dict],
+    ckpt_results: list[dict],
 ) -> None:
     ckpt_by_id = {r["id"]: r for r in ckpt_results}
     lines = [
@@ -154,15 +153,27 @@ def _write_markdown(
     for base_item in base_results:
         ci = ckpt_by_id[base_item["id"]]
         lines += [
-            "", f"## {base_item['id']}",
-            "", f"Source: `{base_item['source']}`",
-            "", "### Prompt", "", base_item["prompt"],
-            "", "### Base",
-            "", f"Metrics: `{json.dumps(base_item['metrics'], sort_keys=True)}`",
-            "", base_item["response"],
-            "", "### Checkpoint",
-            "", f"Metrics: `{json.dumps(ci['metrics'], sort_keys=True)}`",
-            "", ci["response"], "",
+            "",
+            f"## {base_item['id']}",
+            "",
+            f"Source: `{base_item['source']}`",
+            "",
+            "### Prompt",
+            "",
+            base_item["prompt"],
+            "",
+            "### Base",
+            "",
+            f"Metrics: `{json.dumps(base_item['metrics'], sort_keys=True)}`",
+            "",
+            base_item["response"],
+            "",
+            "### Checkpoint",
+            "",
+            f"Metrics: `{json.dumps(ci['metrics'], sort_keys=True)}`",
+            "",
+            ci["response"],
+            "",
         ]
     output_path.write_text("\n".join(lines))
 
@@ -193,21 +204,31 @@ def run(
     log_path = output_dir / "inference.log"
 
     with paired_run(
-        base_model=base, ckpt_dir=ckpt, sft_tokenizer=sft_tokenizer,
-        port=port, max_model_len=max_model_len, log_path=log_path,
+        base_model=base,
+        ckpt_dir=ckpt,
+        sft_tokenizer=sft_tokenizer,
+        port=port,
+        max_model_len=max_model_len,
+        log_path=log_path,
     ) as (enter_base, enter_ckpt):
         base_handle = enter_base()
         print(f"\n[smoke] BASE pass (server model_id={base_handle.model_id})\n", flush=True)
         base_results = run_phase(
-            base_handle, prompts=prompts,
-            max_tokens=max_tokens, temperature=temperature, top_p=top_p,
+            base_handle,
+            prompts=prompts,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
         )
 
         ckpt_handle = enter_ckpt()
         print(f"\n[smoke] CKPT pass (weights swapped to {ckpt})\n", flush=True)
         ckpt_results = run_phase(
-            ckpt_handle, prompts=prompts,
-            max_tokens=max_tokens, temperature=temperature, top_p=top_p,
+            ckpt_handle,
+            prompts=prompts,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
         )
 
     base_agg = _aggregate(base_results)
@@ -236,10 +257,13 @@ def run(
     (output_dir / "aggregate.json").write_text(json.dumps(payload["aggregate"], indent=2))
     _write_markdown(
         output_dir / "comparison.md",
-        base_model=base, ckpt=ckpt, prompts_path=prompts_path,
+        base_model=base,
+        ckpt=ckpt,
+        prompts_path=prompts_path,
         sft_tokenizer_name=getattr(sft_tokenizer, "name_or_path", "unknown"),
         model_id=base_handle.model_id,
-        base_results=base_results, ckpt_results=ckpt_results,
+        base_results=base_results,
+        ckpt_results=ckpt_results,
     )
     print(
         f"\n[smoke] wrote {output_dir}/results.json, comparison.md, aggregate.json\n",

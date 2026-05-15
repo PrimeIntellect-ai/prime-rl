@@ -24,9 +24,7 @@ class _StructuredRubric(MultiAgentRubric):
 
     async def build_marscore(self, state) -> MARScore:
         return MARScore(
-            members=[
-                MemberScore(member_id=m, reward=1.0) for m in self.members
-            ],
+            members=[MemberScore(member_id=m, reward=1.0) for m in self.members],
             episode_scalar=1.0,
         )
 
@@ -45,9 +43,7 @@ class _RaisingRubric(MultiAgentRubric):
         if self._i in self.fail_on:
             raise KernelProtocolError(f"boom-{self._i}")
         return MARScore(
-            members=[
-                MemberScore(member_id=m, reward=1.0) for m in self.members
-            ],
+            members=[MemberScore(member_id=m, reward=1.0) for m in self.members],
             episode_scalar=1.0,
         )
 

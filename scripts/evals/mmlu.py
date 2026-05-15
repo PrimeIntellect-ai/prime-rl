@@ -32,7 +32,6 @@ from datasets import load_dataset
 
 from ._server import AccResult, PhaseHandle, paired_eval, resolve_path_args
 
-
 MMLU_DATASET = "cais/mmlu"
 MMLU_CONFIG = "all"
 MMLU_SPLIT = "test"
@@ -95,9 +94,7 @@ async def _call_with_retry(
             resp = await _post_completion(base_url, api_key, model_id, full, client)
             # Retry only 5xx (transient server errors).
             if resp.status_code >= 500:
-                err = httpx.HTTPStatusError(
-                    f"server error {resp.status_code}", request=resp.request, response=resp
-                )
+                err = httpx.HTTPStatusError(f"server error {resp.status_code}", request=resp.request, response=resp)
                 if attempt == len(_RETRY_DELAYS) - 1:
                     raise err
                 last_exc = err
@@ -157,7 +154,9 @@ async def _score_continuation(
 async def _score_all_async(
     rows: list[dict],
     *,
-    base_url: str, api_key: str, model_id: str,
+    base_url: str,
+    api_key: str,
+    model_id: str,
     max_concurrency: int,
 ) -> AccResult:
     semaphore = asyncio.Semaphore(max_concurrency)
@@ -170,8 +169,7 @@ async def _score_all_async(
 
     async with httpx.AsyncClient(http2=False) as client:
         tasks = [
-            _score_continuation(base_url, api_key, model_id, ctx, cont, semaphore, client)
-            for (_, _, ctx, cont) in jobs
+            _score_continuation(base_url, api_key, model_id, ctx, cont, semaphore, client) for (_, _, ctx, cont) in jobs
         ]
         # Fail-fast: any unrecoverable error (post-retry) propagates up.
         scores = await asyncio.gather(*tasks)
@@ -198,15 +196,17 @@ async def _score_all_async(
         ok = pred == gold
         result.n += 1
         result.correct += int(ok)
-        result.per_row.append({
-            "subject": row.get("subject"),
-            "question": row["question"],
-            "choices": row["choices"],
-            "gold": gold,
-            "pred": pred,
-            "scores": choice_scores,
-            "correct": ok,
-        })
+        result.per_row.append(
+            {
+                "subject": row.get("subject"),
+                "question": row["question"],
+                "choices": row["choices"],
+                "gold": gold,
+                "pred": pred,
+                "scores": choice_scores,
+                "correct": ok,
+            }
+        )
     return result
 
 
@@ -217,8 +217,7 @@ def run_phase(
     max_concurrency: int,
 ) -> dict[str, Any]:
     print(
-        f"[mmlu/{handle.phase}] firing {len(rows)}×4 likelihood queries "
-        f"(max_concurrency={max_concurrency})",
+        f"[mmlu/{handle.phase}] firing {len(rows)}×4 likelihood queries (max_concurrency={max_concurrency})",
         flush=True,
     )
     t0 = time.time()
@@ -232,7 +231,9 @@ def run_phase(
     result = loop.run_until_complete(
         _score_all_async(
             rows,
-            base_url=handle.base_url, api_key=handle.api_key, model_id=handle.model_id,
+            base_url=handle.base_url,
+            api_key=handle.api_key,
+            model_id=handle.model_id,
             max_concurrency=max_concurrency,
         )
     )

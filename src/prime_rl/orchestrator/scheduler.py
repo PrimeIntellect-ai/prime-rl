@@ -524,10 +524,7 @@ class Scheduler:
                     # the same drop-and-refill path as other transient
                     # infrastructure/model-response failures, while real bugs
                     # still propagate loud.
-                    self.logger.warning(
-                        f"Retryable rollout error in group {group_id}: {e!r}; "
-                        "dropping group"
-                    )
+                    self.logger.warning(f"Retryable rollout error in group {group_id}: {e!r}; dropping group")
                     if group_id is not None:
                         await self.drop_group(group_id)
                     continue

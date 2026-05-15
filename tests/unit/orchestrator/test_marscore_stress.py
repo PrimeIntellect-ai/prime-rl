@@ -13,13 +13,13 @@ import json
 import pytest
 import verifiers as vf
 from verifiers import rollout_to_member_rollouts
+from verifiers.envs.multi_agent_env import MultiAgentEnv
 from verifiers.envs.multi_agent_kernel import (
     KernelState,
     StaticSchedule,
     TurnSlot,
     apply_action,
 )
-from verifiers.envs.multi_agent_env import MultiAgentEnv
 from verifiers.types import MARScore, MemberScore, State, TrajectoryStep
 from verifiers.utils.save_utils import state_to_output
 from verifiers.utils.usage_utils import StateUsageTracker
@@ -81,32 +81,52 @@ def _build_clean_state(*, episode_scalar=1.0, parse_errors=None) -> State:
         extras_b["parse_error"] = parse_errors["B"]
     state["trajectory"] = [
         TrajectoryStep(
-            prompt=[], completion=[],
-            response={"id": "x", "created": 0, "model": "m",
-                      "message": {"role": "assistant", "content": "a-says",
-                                  "finish_reason": "stop", "is_truncated": False}},
-            tokens=None, reward=None, advantage=None,
-            is_truncated=False, trajectory_id="ep-7",
+            prompt=[],
+            completion=[],
+            response={
+                "id": "x",
+                "created": 0,
+                "model": "m",
+                "message": {"role": "assistant", "content": "a-says", "finish_reason": "stop", "is_truncated": False},
+            },
+            tokens=None,
+            reward=None,
+            advantage=None,
+            is_truncated=False,
+            trajectory_id="ep-7",
             extras=extras_a,
         ),
         TrajectoryStep(
-            prompt=[], completion=[],
-            response={"id": "y", "created": 0, "model": "m",
-                      "message": {"role": "assistant", "content": "b-says",
-                                  "finish_reason": "stop", "is_truncated": False}},
-            tokens=None, reward=None, advantage=None,
-            is_truncated=False, trajectory_id="ep-7",
+            prompt=[],
+            completion=[],
+            response={
+                "id": "y",
+                "created": 0,
+                "model": "m",
+                "message": {"role": "assistant", "content": "b-says", "finish_reason": "stop", "is_truncated": False},
+            },
+            tokens=None,
+            reward=None,
+            advantage=None,
+            is_truncated=False,
+            trajectory_id="ep-7",
             extras=extras_b,
         ),
     ]
     state["mar_score"] = MARScore(
         members=[
-            MemberScore(member_id="A", reward=1.0,
-                        parse_error_count=1 if parse_errors.get("A") else 0,
-                        metrics={"accuracy": 1.0}),
-            MemberScore(member_id="B", reward=0.0,
-                        parse_error_count=1 if parse_errors.get("B") else 0,
-                        metrics={"accuracy": 0.0}),
+            MemberScore(
+                member_id="A",
+                reward=1.0,
+                parse_error_count=1 if parse_errors.get("A") else 0,
+                metrics={"accuracy": 1.0},
+            ),
+            MemberScore(
+                member_id="B",
+                reward=0.0,
+                parse_error_count=1 if parse_errors.get("B") else 0,
+                metrics={"accuracy": 0.0},
+            ),
         ],
         episode_scalar=episode_scalar,
         episode_metrics={"agreement": 0.0, "winner": 0.0},
@@ -152,8 +172,7 @@ def test_round_trip_preserves_member_id_assignment():
     state = _build_clean_state()
     output = _wire_round_trip(state)
     rollouts = rollout_to_member_rollouts(output)
-    by_member = {r["member_id"]: [s["extras"]["member_id"] for s in r["trajectory"]]
-                 for r in rollouts}
+    by_member = {r["member_id"]: [s["extras"]["member_id"] for s in r["trajectory"]] for r in rollouts}
     assert by_member == {"A": ["A"], "B": ["B"]}
 
 
@@ -167,26 +186,52 @@ def test_round_trip_preserves_episode_id_from_trajectory_id():
 def test_round_trip_preserves_temporal_step_order_per_member():
     state = _build_clean_state()
     # Add 2 more steps interleaved so each member has 2 steps.
-    state["trajectory"].extend([
-        TrajectoryStep(
-            prompt=[], completion=[],
-            response={"id": "x2", "created": 0, "model": "m",
-                      "message": {"role": "assistant", "content": "a-rebut",
-                                  "finish_reason": "stop", "is_truncated": False}},
-            tokens=None, reward=None, advantage=None, is_truncated=False,
-            trajectory_id="ep-7",
-            extras={"member_id": "A", "phase": "rebuttal"},
-        ),
-        TrajectoryStep(
-            prompt=[], completion=[],
-            response={"id": "y2", "created": 0, "model": "m",
-                      "message": {"role": "assistant", "content": "b-rebut",
-                                  "finish_reason": "stop", "is_truncated": False}},
-            tokens=None, reward=None, advantage=None, is_truncated=False,
-            trajectory_id="ep-7",
-            extras={"member_id": "B", "phase": "rebuttal"},
-        ),
-    ])
+    state["trajectory"].extend(
+        [
+            TrajectoryStep(
+                prompt=[],
+                completion=[],
+                response={
+                    "id": "x2",
+                    "created": 0,
+                    "model": "m",
+                    "message": {
+                        "role": "assistant",
+                        "content": "a-rebut",
+                        "finish_reason": "stop",
+                        "is_truncated": False,
+                    },
+                },
+                tokens=None,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="ep-7",
+                extras={"member_id": "A", "phase": "rebuttal"},
+            ),
+            TrajectoryStep(
+                prompt=[],
+                completion=[],
+                response={
+                    "id": "y2",
+                    "created": 0,
+                    "model": "m",
+                    "message": {
+                        "role": "assistant",
+                        "content": "b-rebut",
+                        "finish_reason": "stop",
+                        "is_truncated": False,
+                    },
+                },
+                tokens=None,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="ep-7",
+                extras={"member_id": "B", "phase": "rebuttal"},
+            ),
+        ]
+    )
     output = _wire_round_trip(state)
     rollouts = rollout_to_member_rollouts(output)
     a = next(r for r in rollouts if r["member_id"] == "A")
@@ -393,9 +438,10 @@ def test_member_snapshot_tallies_parse_errors():
     """Parse-error counting now lives in ``member_snapshot``: per-member step
     walk that records ``extras['parse_error']`` occurrences. The trainer
     consumes the count through ``MemberScore.parse_error_count``."""
+    import importlib.resources
+
     from verifiers.envs.debate.prompts import resolve_prompts
     from verifiers.envs.debate_rubric import member_snapshot
-    import importlib.resources
 
     prompts_dir = importlib.resources.files("verifiers.envs.debate") / "prompts"
     prompts = resolve_prompts(str(prompts_dir / "default.yaml"))
@@ -405,12 +451,20 @@ def test_member_snapshot_tallies_parse_errors():
         if parse_error is not None:
             extras["parse_error"] = parse_error
         return TrajectoryStep(
-            prompt=[], completion=[],
-            response={"id": "x", "created": 0, "model": "m",
-                      "message": {"role": "assistant", "content": "",
-                                  "finish_reason": "stop", "is_truncated": False}},
-            tokens=None, reward=None, advantage=None, is_truncated=False,
-            trajectory_id="t", extras=extras,
+            prompt=[],
+            completion=[],
+            response={
+                "id": "x",
+                "created": 0,
+                "model": "m",
+                "message": {"role": "assistant", "content": "", "finish_reason": "stop", "is_truncated": False},
+            },
+            tokens=None,
+            reward=None,
+            advantage=None,
+            is_truncated=False,
+            trajectory_id="t",
+            extras=extras,
         )
 
     a_steps = [_step("A", "unbalanced"), _step("A")]
@@ -575,8 +629,7 @@ def test_bridge_raises_on_missing_mar_score():
 
 def test_to_metrics_flat_idempotent_on_repeated_calls():
     mar = MARScore(
-        members=[MemberScore(member_id="A", reward=1.0,
-                             metrics={"x": 1.0})],
+        members=[MemberScore(member_id="A", reward=1.0, metrics={"x": 1.0})],
         episode_scalar=1.0,
         episode_metrics={"agreement": 1.0},
     )
@@ -590,8 +643,7 @@ def test_to_metrics_flat_idempotent_on_repeated_calls():
 def test_to_metrics_flat_episode_metrics_not_clobbered_by_member_metrics():
     """Episode-level keys MUST NOT be overwritten by per-member projections."""
     mar = MARScore(
-        members=[MemberScore(member_id="A", reward=1.0,
-                             metrics={"agreement": 999.0})],  # collides
+        members=[MemberScore(member_id="A", reward=1.0, metrics={"agreement": 999.0})],  # collides
         episode_scalar=1.0,
         episode_metrics={"agreement": 0.5},
     )

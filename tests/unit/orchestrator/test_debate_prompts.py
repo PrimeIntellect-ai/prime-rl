@@ -13,21 +13,18 @@ import textwrap
 from pathlib import Path
 
 import pytest
-
 from verifiers.envs.debate.prompts import (
     DebatePrompts,
     JudgeTemplate,
-    build_context,
-    resolve_prompts,
     _normalize_think,
     _validate,
+    build_context,
+    resolve_prompts,
 )
 
 # importlib.resources is namespace-package-safe and survives non-editable
 # (wheel) installs — stdlib-idiomatic way to locate package-shipped data.
-_PROMPTS_DIR = Path(
-    str(importlib.resources.files("verifiers.envs.debate") / "prompts")
-)
+_PROMPTS_DIR = Path(str(importlib.resources.files("verifiers.envs.debate") / "prompts"))
 
 
 # ---------------------------------------------------------------------------
@@ -467,89 +464,107 @@ def test_validate_rejects_wrong_version():
 
 def test_validate_rejects_unknown_role():
     with pytest.raises(ValueError, match="Unknown role"):
-        _validate({
-            "version": 2,
-            "system": {"bad_role": "x"},
-            "question": {"debater_a": "q", "debater_b": "q"},
-        })
+        _validate(
+            {
+                "version": 2,
+                "system": {"bad_role": "x"},
+                "question": {"debater_a": "q", "debater_b": "q"},
+            }
+        )
 
 
 def test_validate_rejects_missing_question_role():
     with pytest.raises(ValueError, match="debater_b"):
-        _validate({
-            "version": 2,
-            "system": {},
-            "question": {"debater_a": "q"},
-        })
+        _validate(
+            {
+                "version": 2,
+                "system": {},
+                "question": {"debater_a": "q"},
+            }
+        )
 
 
 def test_validate_rejects_bad_think_visibility():
     with pytest.raises(ValueError, match="unknown visibility"):
-        _validate({
-            "version": 2,
-            "system": {},
-            "question": {"debater_a": "q", "debater_b": "q"},
-            "think": {"debater_a": "invalid_vis"},
-        })
+        _validate(
+            {
+                "version": 2,
+                "system": {},
+                "question": {"debater_a": "q", "debater_b": "q"},
+                "think": {"debater_a": "invalid_vis"},
+            }
+        )
 
 
 def test_validate_rejects_bare_true_think():
     with pytest.raises(ValueError, match="bare"):
-        _validate({
-            "version": 2,
-            "system": {},
-            "question": {"debater_a": "q", "debater_b": "q"},
-            "think": {"debater_a": True},
-        })
+        _validate(
+            {
+                "version": 2,
+                "system": {},
+                "question": {"debater_a": "q", "debater_b": "q"},
+                "think": {"debater_a": True},
+            }
+        )
 
 
 def test_validate_accepts_minimal():
-    _validate({
-        "version": 2,
-        "system": {"debater_a": "x", "debater_b": "y"},
-        "question": {"debater_a": "q", "debater_b": "q"},
-    })
+    _validate(
+        {
+            "version": 2,
+            "system": {"debater_a": "x", "debater_b": "y"},
+            "question": {"debater_a": "q", "debater_b": "q"},
+        }
+    )
 
 
 def test_validate_rejects_nested_system():
     """System must be role -> string. Phase-indexed system is forbidden
     because it would break prefix caching."""
     with pytest.raises(ValueError, match="expected a string"):
-        _validate({
-            "version": 2,
-            "system": {"debater_a": {"default": "x"}, "debater_b": "y"},
-            "question": {"debater_a": "q", "debater_b": "q"},
-        })
+        _validate(
+            {
+                "version": 2,
+                "system": {"debater_a": {"default": "x"}, "debater_b": "y"},
+                "question": {"debater_a": "q", "debater_b": "q"},
+            }
+        )
 
 
 def test_validate_rejects_bad_judge_block():
     with pytest.raises(ValueError, match="missing"):
-        _validate({
-            "version": 2,
-            "system": {},
-            "question": {"debater_a": "q", "debater_b": "q"},
-            "_grader": {"system": "x", "user": "y", "positive": "YES"},
-        })
+        _validate(
+            {
+                "version": 2,
+                "system": {},
+                "question": {"debater_a": "q", "debater_b": "q"},
+                "_grader": {"system": "x", "user": "y", "positive": "YES"},
+            }
+        )
 
 
 def test_validate_rejects_colliding_verdicts():
     with pytest.raises(ValueError, match="distinct"):
-        _validate({
-            "version": 2,
-            "system": {},
-            "question": {"debater_a": "q", "debater_b": "q"},
-            "_grader": {"system": "x", "user": "y", "positive": "YES", "negative": "yes"},
-        })
+        _validate(
+            {
+                "version": 2,
+                "system": {},
+                "question": {"debater_a": "q", "debater_b": "q"},
+                "_grader": {"system": "x", "user": "y", "positive": "YES", "negative": "yes"},
+            }
+        )
 
 
 def test_validate_rejects_bad_opponent_wrap():
     with pytest.raises(ValueError, match="unknown keys"):
-        _validate({
-            "version": 2,
-            "system": {},
-            "question": {"debater_a": "q", "debater_b": "q"},
-            "opponent_wrap": {"bad_key": "x"},
-        })
+        _validate(
+            {
+                "version": 2,
+                "system": {},
+                "question": {"debater_a": "q", "debater_b": "q"},
+                "opponent_wrap": {"bad_key": "x"},
+            }
+        )
 
 
 # ===================================================================

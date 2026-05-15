@@ -121,15 +121,10 @@ def _posterior_success_distribution(rows: Sequence[dict[str, Any]], k: int) -> d
     return distribution
 
 
-def _summarize_posterior_distributions(
-    distributions: Sequence[dict[int, float]], k: int
-) -> dict[str, Any] | None:
+def _summarize_posterior_distributions(distributions: Sequence[dict[int, float]], k: int) -> dict[str, Any] | None:
     if not distributions:
         return None
-    averaged = {
-        i: sum(dist.get(i, 0.0) for dist in distributions) / len(distributions)
-        for i in range(k + 1)
-    }
+    averaged = {i: sum(dist.get(i, 0.0) for dist in distributions) / len(distributions) for i in range(k + 1)}
     successes_mean = sum(i * probability for i, probability in averaged.items())
     return {
         "num_examples": len(distributions),
@@ -137,9 +132,7 @@ def _summarize_posterior_distributions(
         "successes_at_k_mean": successes_mean,
         "success_rate_at_k_mean": successes_mean / k if k else None,
         "all_pass_at_k": averaged.get(k, 0.0),
-        "successes_at_k_distribution": {
-            str(i): averaged.get(i, 0.0) for i in range(k + 1)
-        },
+        "successes_at_k_distribution": {str(i): averaged.get(i, 0.0) for i in range(k + 1)},
     }
 
 
@@ -168,14 +161,10 @@ def summarize_records(records: Sequence[dict[str, Any]], ks: Iterable[int] = DEF
         ]
         unbiased_vals = [v for v in unbiased_vals if v is not None]
         histogram = Counter(prefix_success_counts)
-        prefix_pass_at_k = (
-            sum(1 for count in prefix_success_counts if count > 0) / len(usable) if usable else None
-        )
+        prefix_pass_at_k = sum(1 for count in prefix_success_counts if count > 0) / len(usable) if usable else None
         unbiased_pass_at_k = sum(unbiased_vals) / len(unbiased_vals) if unbiased_vals else None
         posterior_distributions = [
-            distribution
-            for rows in usable
-            if (distribution := _posterior_success_distribution(rows, k)) is not None
+            distribution for rows in usable if (distribution := _posterior_success_distribution(rows, k)) is not None
         ]
         per_k[str(k)] = {
             "num_examples": len(usable),
@@ -220,8 +209,6 @@ def summarize_records(records: Sequence[dict[str, Any]], ks: Iterable[int] = DEF
             "avg_total_ms": sum(total_ms) / len(total_ms) if total_ms else None,
             "avg_generation_ms": sum(generation_ms) / len(generation_ms) if generation_ms else None,
         },
-        "truncation_rate": (
-            sum(1 for r in records if r.get("is_truncated") is True) / total if total else 0.0
-        ),
+        "truncation_rate": (sum(1 for r in records if r.get("is_truncated") is True) / total if total else 0.0),
         "error_rate": sum(1 for r in records if r.get("error")) / total if total else 0.0,
     }

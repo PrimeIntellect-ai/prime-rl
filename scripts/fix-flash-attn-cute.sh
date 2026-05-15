@@ -17,6 +17,7 @@ FA4_SPEC="flash-attn-4 @ git+https://github.com/Dao-AILab/flash-attention.git@96
 
 SITE_PACKAGES=$(uv run --no-sync python -c 'import site; print(site.getsitepackages()[0])')
 CUTE_INTERFACE="$SITE_PACKAGES/flash_attn/cute/interface.py"
+CUTE_TILE_SCHEDULER="$SITE_PACKAGES/flash_attn/cute/tile_scheduler.py"
 
 if [ -f "$CUTE_INTERFACE" ]; then
     LINES=$(wc -l < "$CUTE_INTERFACE")
@@ -24,10 +25,16 @@ else
     LINES=0
 fi
 
-if [ "$LINES" -gt 1000 ]; then
+if [ -f "$CUTE_TILE_SCHEDULER" ] && grep -q "FastDivmodDivisor" "$CUTE_TILE_SCHEDULER"; then
+    TILE_SCHEDULER_OK=1
+else
+    TILE_SCHEDULER_OK=0
+fi
+
+if [ "$LINES" -gt 1000 ] && [ "$TILE_SCHEDULER_OK" -eq 1 ]; then
     echo "flash-attn-cute OK ($LINES lines at $CUTE_INTERFACE); no reinstall needed."
 else
-    echo "flash-attn-cute missing or clobbered ($LINES lines); reinstalling FA4..."
+    echo "flash-attn-cute missing or clobbered; reinstalling FA4..."
     uv pip install --python .venv/bin/python --reinstall --no-deps "$FA4_SPEC"
 fi
 

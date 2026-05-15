@@ -17,7 +17,6 @@ from typing import Any
 
 from anthropic import Anthropic, AsyncAnthropic
 
-
 DEFAULT_JUDGE_MODEL = "claude-sonnet-4-6"
 DEFAULT_JUDGE_CONCURRENCY = 16
 
@@ -69,8 +68,7 @@ class Judge:
         key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not key:
             raise RuntimeError(
-                "ANTHROPIC_API_KEY not set; cannot run LLM-judge evals. "
-                "Set it in your environment or pass api_key=."
+                "ANTHROPIC_API_KEY not set; cannot run LLM-judge evals. Set it in your environment or pass api_key=."
             )
         self.client = Anthropic(api_key=key, max_retries=max_retries)
         self.async_client = AsyncAnthropic(api_key=key, max_retries=max_retries)
@@ -119,7 +117,10 @@ class Judge:
                 return exc
 
     def call_batch(
-        self, calls: list[JudgeCall], *, max_concurrency: int = DEFAULT_JUDGE_CONCURRENCY,
+        self,
+        calls: list[JudgeCall],
+        *,
+        max_concurrency: int = DEFAULT_JUDGE_CONCURRENCY,
     ) -> list[JudgeResponse | None]:
         """Fire `calls` concurrently via AsyncAnthropic. Failures → None at that slot."""
         if not calls:
@@ -148,11 +149,12 @@ class Judge:
         return out
 
     def score_int_batch(
-        self, calls: list[JudgeCall], *, lo: int, hi: int,
+        self,
+        calls: list[JudgeCall],
+        *,
+        lo: int,
+        hi: int,
         max_concurrency: int = DEFAULT_JUDGE_CONCURRENCY,
     ) -> list[int | None]:
         responses = self.call_batch(calls, max_concurrency=max_concurrency)
-        return [
-            _parse_int(r.text, lo=lo, hi=hi) if r is not None else None
-            for r in responses
-        ]
+        return [_parse_int(r.text, lo=lo, hi=hi) if r is not None else None for r in responses]

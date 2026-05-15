@@ -518,11 +518,7 @@ class InferenceProvisioner(AbstractContextManager[Endpoint]):
             allow_direct_backend = os.environ.get("PRIME_RL_ALLOW_DIRECT_BACKEND") == "1"
             uses_multinode_tp = _uses_multinode_tensor_parallel(self.config)
             router_bin = _find_vllm_router()
-            use_router = (
-                not disable_router
-                and router_bin is not None
-                and not uses_multinode_tp
-            )
+            use_router = not disable_router and router_bin is not None and not uses_multinode_tp
             if not use_router and not uses_multinode_tp and not allow_direct_backend:
                 reason = (
                     "PRIME_RL_DISABLE_VLLM_ROUTER=1"
@@ -545,6 +541,7 @@ class InferenceProvisioner(AbstractContextManager[Endpoint]):
             effective_nodes = launch.nodes
             if os.environ.get("PRIME_RL_EXCLUDE_LOCAL_FROM_HOSTS") == "1":
                 import socket
+
                 local_short = socket.gethostname().split(".")[0]
                 filtered = [h for h in multinode_hostnames if h.split(".")[0] != local_short]
                 if len(filtered) < len(multinode_hostnames):
@@ -555,14 +552,12 @@ class InferenceProvisioner(AbstractContextManager[Endpoint]):
                     multinode_hostnames = filtered
                     effective_nodes = min(effective_nodes, len(multinode_hostnames))
             if len(multinode_hostnames) < effective_nodes:
-                raise RuntimeError(
-                    f"Requested {effective_nodes} nodes but Slurm exposes only {multinode_hostnames}"
-                )
+                raise RuntimeError(f"Requested {effective_nodes} nodes but Slurm exposes only {multinode_hostnames}")
             launch_script = write_srun_multinode_script(self.config, config_path, use_router=use_router)
             driver_script = write_srun_multinode_driver_script(
                 self.config,
                 launch_script,
-                hostnames=multinode_hostnames[: effective_nodes],
+                hostnames=multinode_hostnames[:effective_nodes],
             )
             cmd = ["bash", str(driver_script)]
         elif launch.mode == "srun":

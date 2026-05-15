@@ -117,9 +117,7 @@ def _coerce_launch(raw: dict[str, Any]) -> LaunchConfig:
         enable_expert_parallel=bool(raw.get("enable_expert_parallel", False)),
         use_deep_gemm=bool(raw.get("use_deep_gemm", False)),
         srun_network=raw.get("srun_network"),
-        srun_cpus_per_task=(
-            int(raw["srun_cpus_per_task"]) if raw.get("srun_cpus_per_task") is not None else None
-        ),
+        srun_cpus_per_task=(int(raw["srun_cpus_per_task"]) if raw.get("srun_cpus_per_task") is not None else None),
         gpu_memory_utilization=float(raw.get("gpu_memory_utilization", 0.85)),
         max_model_len=raw.get("max_model_len"),
         enforce_eager=bool(raw.get("enforce_eager", False)),
@@ -163,9 +161,7 @@ def load_config(path: Path) -> BaselineConfig:
         rollouts_per_example=int(raw.get("rollouts_per_example", 1)),
         max_concurrency=int(raw.get("max_concurrency", 32)),
         score_max_concurrency=(
-            int(raw["score_max_concurrency"])
-            if raw.get("score_max_concurrency") is not None
-            else None
+            int(raw["score_max_concurrency"]) if raw.get("score_max_concurrency") is not None else None
         ),
         max_retries=int(raw.get("max_retries", 0)),
         resume_partial=bool(raw.get("resume_partial", True)),

@@ -23,7 +23,6 @@ from datasets import load_dataset
 
 from ._server import AccResult, PhaseHandle, complete_batch, paired_eval, resolve_path_args
 
-
 GSM8K_DATASET = "openai/gsm8k"
 GSM8K_CONFIG = "main"
 GSM8K_SPLIT = "test"
@@ -66,13 +65,15 @@ def _score_all(rows: list[dict], responses: list[str]) -> AccResult:
         ok = gold is not None and pred is not None and gold == pred
         result.n += 1
         result.correct += int(ok)
-        result.per_row.append({
-            "question": row["question"],
-            "gold": gold,
-            "pred": pred,
-            "correct": ok,
-            "response": response,
-        })
+        result.per_row.append(
+            {
+                "question": row["question"],
+                "gold": gold,
+                "pred": pred,
+                "correct": ok,
+                "response": response,
+            }
+        )
     return result
 
 
@@ -91,11 +92,14 @@ def run_phase(
     )
     t0 = time.time()
     batch_out = complete_batch(
-        handle, batch_messages,
-        max_tokens=max_gen_tokens, temperature=0.0, max_concurrency=max_concurrency,
+        handle,
+        batch_messages,
+        max_tokens=max_gen_tokens,
+        temperature=0.0,
+        max_concurrency=max_concurrency,
     )
     elapsed = time.time() - t0
-    print(f"[gsm8k/{handle.phase}] gen done in {elapsed:.1f}s ({elapsed/len(rows):.2f}s avg)", flush=True)
+    print(f"[gsm8k/{handle.phase}] gen done in {elapsed:.1f}s ({elapsed / len(rows):.2f}s avg)", flush=True)
 
     responses = [text for text, _ in batch_out]
     result = _score_all(rows, responses)

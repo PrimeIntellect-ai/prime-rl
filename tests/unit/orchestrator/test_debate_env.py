@@ -135,14 +135,14 @@ class FakeClient(_VFClient):
         self._responses = list(responses)
         self.calls: list[dict[str, Any]] = []
 
-    async def get_response(
-        self, prompt, model, sampling_args=None, tools=None, **kwargs
-    ) -> Response:
-        self.calls.append({
-            "prompt": prompt,
-            "model": model,
-            "sampling_args": sampling_args,
-        })
+    async def get_response(self, prompt, model, sampling_args=None, tools=None, **kwargs) -> Response:
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "model": model,
+                "sampling_args": sampling_args,
+            }
+        )
         if not self._responses:
             raise RuntimeError("FakeClient exhausted — more calls than expected")
         return self._responses.pop(0)
@@ -266,6 +266,7 @@ DEBATE_PROMPTS = DebatePrompts(
     judges={},
     source_ref="test",
 )
+
 
 def _make_env(
     responses: list[Response],
@@ -444,20 +445,39 @@ def test_rubric_sets_episode_and_per_member_rewards():
     state["answer"] = "C"
     state["trajectory"] = [
         TrajectoryStep(
-            prompt=[], completion=[], response=_make_response("hi"),
-            tokens=None, reward=None, advantage=None, is_truncated=False,
-            trajectory_id="t", extras={"member_id": "debater_a", "phase": "propose"},
+            prompt=[],
+            completion=[],
+            response=_make_response("hi"),
+            tokens=None,
+            reward=None,
+            advantage=None,
+            is_truncated=False,
+            trajectory_id="t",
+            extras={"member_id": "debater_a", "phase": "propose"},
         ),
         TrajectoryStep(
-            prompt=[], completion=[], response=_make_response("bye"),
-            tokens=None, reward=None, advantage=None, is_truncated=False,
-            trajectory_id="t", extras={"member_id": "debater_b", "phase": "propose"},
+            prompt=[],
+            completion=[],
+            response=_make_response("bye"),
+            tokens=None,
+            reward=None,
+            advantage=None,
+            is_truncated=False,
+            trajectory_id="t",
+            extras={"member_id": "debater_b", "phase": "propose"},
         ),
         TrajectoryStep(
-            prompt=[], completion=[], response=_make_response("judge decides"),
-            tokens=None, reward=None, advantage=None, is_truncated=False,
-            trajectory_id="t", extras={
-                "member_id": "judge", "phase": "final",
+            prompt=[],
+            completion=[],
+            response=_make_response("judge decides"),
+            tokens=None,
+            reward=None,
+            advantage=None,
+            is_truncated=False,
+            trajectory_id="t",
+            extras={
+                "member_id": "judge",
+                "phase": "final",
                 "fields": {"decision": "debater_a"},
             },
         ),
@@ -481,20 +501,39 @@ def test_rubric_verifier_wins():
     state["answer"] = "C"
     state["trajectory"] = [
         TrajectoryStep(
-            prompt=[], completion=[], response=_make_response("x"),
-            tokens=None, reward=None, advantage=None, is_truncated=False,
-            trajectory_id="t", extras={"member_id": "debater_a", "phase": "propose"},
+            prompt=[],
+            completion=[],
+            response=_make_response("x"),
+            tokens=None,
+            reward=None,
+            advantage=None,
+            is_truncated=False,
+            trajectory_id="t",
+            extras={"member_id": "debater_a", "phase": "propose"},
         ),
         TrajectoryStep(
-            prompt=[], completion=[], response=_make_response("y"),
-            tokens=None, reward=None, advantage=None, is_truncated=False,
-            trajectory_id="t", extras={"member_id": "debater_b", "phase": "propose"},
+            prompt=[],
+            completion=[],
+            response=_make_response("y"),
+            tokens=None,
+            reward=None,
+            advantage=None,
+            is_truncated=False,
+            trajectory_id="t",
+            extras={"member_id": "debater_b", "phase": "propose"},
         ),
         TrajectoryStep(
-            prompt=[], completion=[], response=_make_response("judge decides"),
-            tokens=None, reward=None, advantage=None, is_truncated=False,
-            trajectory_id="t", extras={
-                "member_id": "judge", "phase": "final",
+            prompt=[],
+            completion=[],
+            response=_make_response("judge decides"),
+            tokens=None,
+            reward=None,
+            advantage=None,
+            is_truncated=False,
+            trajectory_id="t",
+            extras={
+                "member_id": "judge",
+                "phase": "final",
                 "fields": {"decision": "debater_b"},
             },
         ),
@@ -559,9 +598,7 @@ def test_render_completion_excludes_per_turn_prompts():
 
 def test_simultaneous_slot_produces_responses_for_all_agents():
     """Simultaneous slot with both agents -> 2 steps added at once."""
-    sim_slots = (
-        TurnSlot(slot_id=0, agents=("prover", "verifier"), phase="simultaneous"),
-    )
+    sim_slots = (TurnSlot(slot_id=0, agents=("prover", "verifier"), phase="simultaneous"),)
     responses = [
         _make_response("prover simultaneous"),
         _make_response("verifier simultaneous"),
@@ -602,10 +639,17 @@ def test_full_pipeline_rollout_to_member_rollouts():
     # Inject judge decision into trajectory (winner = prover)
     state["trajectory"] = list(state["trajectory"]) + [
         TrajectoryStep(
-            prompt=[], completion=[], response=_make_response("verdict"),
-            tokens=None, reward=None, advantage=None, is_truncated=False,
-            trajectory_id="t", extras={
-                "member_id": "judge", "phase": "final",
+            prompt=[],
+            completion=[],
+            response=_make_response("verdict"),
+            tokens=None,
+            reward=None,
+            advantage=None,
+            is_truncated=False,
+            trajectory_id="t",
+            extras={
+                "member_id": "judge",
+                "phase": "final",
                 "fields": {"decision": "prover"},
             },
         ),
@@ -619,10 +663,8 @@ def test_full_pipeline_rollout_to_member_rollouts():
     # Judge was injected post-rollout; rubric didn't score it. Extend
     # mar_score to match trajectory members before bridging.
     from verifiers.types import MARScore, MemberScore
-    base_members = [
-        MemberScore(member_id=m.member_id, reward=m.reward)
-        for m in state["mar_score"].members
-    ]
+
+    base_members = [MemberScore(member_id=m.member_id, reward=m.reward) for m in state["mar_score"].members]
     base_members.append(MemberScore(member_id="judge", reward=0.0))
     augmented = MARScore(
         members=base_members,
@@ -677,10 +719,7 @@ def test_prompt_includes_system_and_question():
 
     # Check first call's prompt (A's opening)
     first_prompt = client.calls[0]["prompt"]
-    prompt_texts = [
-        m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "")
-        for m in first_prompt
-    ]
+    prompt_texts = [m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "") for m in first_prompt]
     prompt_str = " ".join(str(t) for t in prompt_texts)
 
     assert "You argue for the answer" in prompt_str
@@ -699,10 +738,7 @@ def test_prompt_includes_opponent_utterances_in_rebuttal():
 
     # A's rebuttal prompt (3rd call, index 2) should contain B's opening
     rebuttal_prompt = client.calls[2]["prompt"]
-    prompt_texts = [
-        m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "")
-        for m in rebuttal_prompt
-    ]
+    prompt_texts = [m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "") for m in rebuttal_prompt]
     prompt_str = " ".join(str(t) for t in prompt_texts)
 
     assert "B opens with counter" in prompt_str
@@ -774,9 +810,7 @@ def test_kernel_rejects_wrong_agent():
     a non-scheduled agent submits. The rollout-layer vf.Error boundary
     catches it distinctly from generic Python errors.
     """
-    schedule = StaticSchedule((
-        TurnSlot(slot_id=0, agents=("A",), phase="opening"),
-    ))
+    schedule = StaticSchedule((TurnSlot(slot_id=0, agents=("A",), phase="opening"),))
     ks = KernelState(slot_index=0)
     with pytest.raises(KernelProtocolError, match="not scheduled"):
         apply_action(ks, schedule, "B", "wrong agent", 5)
@@ -789,28 +823,26 @@ def test_kernel_rejects_wrong_agent():
 
 
 def test_kernel_rejects_finished_episode_with_protocol_error():
-    schedule = StaticSchedule((
-        TurnSlot(slot_id=0, agents=("A",), phase="opening"),
-    ))
+    schedule = StaticSchedule((TurnSlot(slot_id=0, agents=("A",), phase="opening"),))
     r1 = apply_action(KernelState(slot_index=0), schedule, "A", "done", 1)
     with pytest.raises(KernelProtocolError, match="No active slot"):
         apply_action(r1.new_state, schedule, "A", "late", 1)
 
 
 def test_kernel_rejects_duplicate_submission_with_protocol_error():
-    schedule = StaticSchedule((
-        TurnSlot(slot_id=0, agents=("A", "B"), phase="sim"),
-    ))
+    schedule = StaticSchedule((TurnSlot(slot_id=0, agents=("A", "B"), phase="sim"),))
     r1 = apply_action(KernelState(slot_index=0), schedule, "A", "first", 1)
     with pytest.raises(KernelProtocolError, match="already submitted"):
         apply_action(r1.new_state, schedule, "A", "again", 1)
 
 
 def _two_agent_schedule() -> StaticSchedule:
-    return StaticSchedule((
-        TurnSlot(slot_id=0, agents=("A",), phase="p"),
-        TurnSlot(slot_id=1, agents=("B",), phase="p"),
-    ))
+    return StaticSchedule(
+        (
+            TurnSlot(slot_id=0, agents=("A",), phase="p"),
+            TurnSlot(slot_id=1, agents=("B",), phase="p"),
+        )
+    )
 
 
 def test_debate_env_requires_members():
@@ -862,10 +894,12 @@ def test_debate_env_members_must_match_rubric_members():
 
     # Same set, different order — still a failure (order matters for
     # any downstream index-based attribution).
-    schedule_reversed = StaticSchedule((
-        TurnSlot(slot_id=0, agents=("B",), phase="p"),
-        TurnSlot(slot_id=1, agents=("A",), phase="p"),
-    ))
+    schedule_reversed = StaticSchedule(
+        (
+            TurnSlot(slot_id=0, agents=("B",), phase="p"),
+            TurnSlot(slot_id=1, agents=("A",), phase="p"),
+        )
+    )
     with pytest.raises(ValueError, match="members != rubric.members"):
         DebateEnv(
             schedule=schedule_reversed,
@@ -881,9 +915,7 @@ def test_debate_env_members_must_match_static_schedule_agents():
     rubric = DebateRubric(truth_member="prover", members=["A", "B"], prompts=DEBATE_PROMPTS)
 
     # Member declared but never appears in schedule.
-    schedule_missing_b = StaticSchedule((
-        TurnSlot(slot_id=0, agents=("A",), phase="p"),
-    ))
+    schedule_missing_b = StaticSchedule((TurnSlot(slot_id=0, agents=("A",), phase="p"),))
     with pytest.raises(ValueError, match="unique agents in StaticSchedule"):
         DebateEnv(
             schedule=schedule_missing_b,
@@ -894,11 +926,13 @@ def test_debate_env_members_must_match_static_schedule_agents():
         )
 
     # Actor appears in schedule but not declared as member.
-    schedule_with_c = StaticSchedule((
-        TurnSlot(slot_id=0, agents=("A",), phase="p"),
-        TurnSlot(slot_id=1, agents=("B",), phase="p"),
-        TurnSlot(slot_id=2, agents=("C",), phase="p"),
-    ))
+    schedule_with_c = StaticSchedule(
+        (
+            TurnSlot(slot_id=0, agents=("A",), phase="p"),
+            TurnSlot(slot_id=1, agents=("B",), phase="p"),
+            TurnSlot(slot_id=2, agents=("C",), phase="p"),
+        )
+    )
     with pytest.raises(ValueError, match="unique agents in StaticSchedule"):
         DebateEnv(
             schedule=schedule_with_c,
@@ -913,6 +947,7 @@ def test_debate_env_skips_schedule_cross_check_for_dynamic_program():
     """Dynamic SlotProgram implementations are exempt from cross-check 2
     (agent set may be data-dependent).
     """
+
     class DynamicProgram:
         def current_slot(self, state):
             return None
@@ -1086,9 +1121,7 @@ def test_format_history_attributes_both_debaters_distinctly():
         prefill={},
         opponent_wrap={
             "debater": _je.from_string(
-                "═══ {{ member_id | upper }} [phase={{ phase }}] ═══\n"
-                "{{ text }}\n"
-                "═══ END {{ member_id | upper }} ═══"
+                "═══ {{ member_id | upper }} [phase={{ phase }}] ═══\n{{ text }}\n═══ END {{ member_id | upper }} ═══"
             ),
         },
         judges={},
@@ -1109,18 +1142,22 @@ def test_format_history_attributes_both_debaters_distinctly():
         slot_index=2,
         transcript=(
             Utterance(
-                member_id="prover", slot_id=0,
+                member_id="prover",
+                slot_id=0,
                 raw_content="Prover opens: answer is 4.",
                 public_channel="Prover opens: answer is 4.",
                 private_channel=None,
-                phase="opening", token_count=5,
+                phase="opening",
+                token_count=5,
             ),
             Utterance(
-                member_id="verifier", slot_id=1,
+                member_id="verifier",
+                slot_id=1,
                 raw_content="Verifier challenges: show the work.",
                 public_channel="Verifier challenges: show the work.",
                 private_channel=None,
-                phase="opening", token_count=5,
+                phase="opening",
+                token_count=5,
             ),
         ),
     )
@@ -1162,11 +1199,13 @@ def test_format_history_fallback_prefixes_member_id_when_no_template():
         slot_index=1,
         transcript=(
             Utterance(
-                member_id="prover", slot_id=0,
+                member_id="prover",
+                slot_id=0,
                 raw_content="Prover says foo.",
                 public_channel="Prover says foo.",
                 private_channel=None,
-                phase="opening", token_count=3,
+                phase="opening",
+                token_count=3,
             ),
         ),
     )
@@ -1290,7 +1329,9 @@ def test_apply_action_quarantines_malformed_think_markup():
 
     # Quarantine path — benign prose with a stray opener.
     result = _ap(
-        _KS(slot_index=0), schedule, "A",
+        _KS(slot_index=0),
+        schedule,
+        "A",
         "I will <think> and then answer",
         10,
         think_tag="thinking",
@@ -1358,10 +1399,12 @@ def test_rollout_survives_benign_prose_with_bracket_words():
     from verifiers.envs.multi_agent_kernel import TurnSlot as _TS
     from verifiers.envs.multi_agent_kernel import apply_action as _ap
 
-    schedule = _Sch((
-        _TS(slot_id=0, agents=("A",), phase="opening"),
-        _TS(slot_id=1, agents=("B",), phase="opening"),
-    ))
+    schedule = _Sch(
+        (
+            _TS(slot_id=0, agents=("A",), phase="opening"),
+            _TS(slot_id=1, agents=("B",), phase="opening"),
+        )
+    )
 
     ks = _KS(slot_index=0)
     r1 = _ap(ks, schedule, "A", "I will <think> and then answer", 5, think_tag="thinking")
@@ -1560,10 +1603,7 @@ def test_round_index_is_round_not_slot():
     def _instruction_text(call_idx: int) -> str:
         # Instruction is rendered into the user message (last message in prompt).
         msgs = client.calls[call_idx]["prompt"]
-        parts = [
-            m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "")
-            for m in msgs
-        ]
+        parts = [m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "") for m in msgs]
         return "\n".join(parts)
 
     # Slot 0 (A opening) -> round 0, num_rounds 2
@@ -1589,8 +1629,7 @@ def test_build_prompt_uses_debate_prompts():
 
     first_prompt = client.calls[0]["prompt"]
     prompt_str = " ".join(
-        m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "")
-        for m in first_prompt
+        m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "") for m in first_prompt
     )
     # System prompt rendered from DebatePrompts template
     assert "You argue for the answer" in prompt_str
@@ -1655,18 +1694,31 @@ def _debater_step(
     if answer is not None:
         extras["fields"] = {"answer": answer}
     return TrajectoryStep(
-        prompt=[], completion=[], response=_make_response("arg"),
-        tokens=None, reward=None, advantage=None, is_truncated=False,
-        trajectory_id="t", extras=extras,
+        prompt=[],
+        completion=[],
+        response=_make_response("arg"),
+        tokens=None,
+        reward=None,
+        advantage=None,
+        is_truncated=False,
+        trajectory_id="t",
+        extras=extras,
     )
 
 
 def _judge_step(decision: str) -> TrajectoryStep:
     return TrajectoryStep(
-        prompt=[], completion=[], response=_make_response("verdict"),
-        tokens=None, reward=None, advantage=None, is_truncated=False,
-        trajectory_id="t", extras={
-            "member_id": "judge", "phase": "final",
+        prompt=[],
+        completion=[],
+        response=_make_response("verdict"),
+        tokens=None,
+        reward=None,
+        advantage=None,
+        is_truncated=False,
+        trajectory_id="t",
+        extras={
+            "member_id": "judge",
+            "phase": "final",
             "fields": {"decision": decision},
         },
     )
@@ -1675,11 +1727,13 @@ def _judge_step(decision: str) -> TrajectoryStep:
 def test_w_truth_wins():
     """W: judge picks truth_member -> episode reward=1.0, per-member correct."""
     rubric = _rubric()
-    state = _state_with_trajectory([
-        _debater_step("debater_a", answer="C"),
-        _debater_step("debater_b", answer="B"),
-        _judge_step("debater_a"),
-    ])
+    state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", answer="C"),
+            _debater_step("debater_b", answer="B"),
+            _judge_step("debater_a"),
+        ]
+    )
     _run(rubric.score_rollout(state))
 
     assert _views.episode_scalar(state) == 1.0
@@ -1690,11 +1744,13 @@ def test_w_truth_wins():
 def test_w_truth_loses():
     """W: judge picks opponent -> episode reward=0.0, per-member debater_b=1.0 debater_a=-1.0."""
     rubric = _rubric(truth_member="debater_a")
-    state = _state_with_trajectory([
-        _debater_step("debater_a", answer="C"),
-        _debater_step("debater_b", answer="B"),
-        _judge_step("debater_b"),
-    ])
+    state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", answer="C"),
+            _debater_step("debater_b", answer="B"),
+            _judge_step("debater_b"),
+        ]
+    )
     _run(rubric.score_rollout(state))
 
     assert _views.episode_scalar(state) == 0.0
@@ -1705,11 +1761,13 @@ def test_w_truth_loses():
 def test_w_tie():
     """W: judge says 'tie' -> reward=0.0 (tie != any truth_member)."""
     rubric = _rubric()
-    state = _state_with_trajectory([
-        _debater_step("debater_a", answer="C"),
-        _debater_step("debater_b", answer="B"),
-        _judge_step("tie"),
-    ])
+    state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", answer="C"),
+            _debater_step("debater_b", answer="B"),
+            _judge_step("tie"),
+        ]
+    )
     _run(rubric.score_rollout(state))
 
     assert _views.episode_scalar(state) == 0.0
@@ -1724,10 +1782,12 @@ def test_w_no_judge_raises_when_judge_declared():
     captured onto state['error'] and an errored MARScore — silently falling
     through to answer-grading would install fake training signal."""
     rubric = _rubric()  # uses SELFPLAY_PROMPTS which declares judge
-    state = _state_with_trajectory([
-        _debater_step("debater_a", answer="C"),
-        _debater_step("debater_b", answer="B"),
-    ])
+    state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", answer="C"),
+            _debater_step("debater_b", answer="B"),
+        ]
+    )
     _run(rubric.score_rollout(state))
 
     err = state.get("error")
@@ -1866,13 +1926,13 @@ def test_w_no_judge_fallback_for_judgeless_pack():
     no episode_scalar reward (only judge decisions produce that), but the
     G-fallback emits ``truth_member_correct`` as a diagnostic metric."""
     prompts = _judgeless_prompts()
-    rubric = DebateRubric(
-        truth_member="debater_a", members=["debater_a", "debater_b"], prompts=prompts
+    rubric = DebateRubric(truth_member="debater_a", members=["debater_a", "debater_b"], prompts=prompts)
+    state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", answer="C"),
+            _debater_step("debater_b", answer="B"),
+        ]
     )
-    state = _state_with_trajectory([
-        _debater_step("debater_a", answer="C"),
-        _debater_step("debater_b", answer="B"),
-    ])
     # Ground truth "C", debater_a answered "C" → truth_member_correct=1.0 via
     # G-fallback. episode_scalar stays 0.0 because no judge picked a winner.
     _run(rubric.score_rollout(state))
@@ -1884,11 +1944,13 @@ def test_w_no_judge_fallback_for_judgeless_pack():
 def test_g_accuracy_mcq():
     """G: MCQ grading via classify_enum — debater_a correct, debater_b wrong."""
     rubric = _rubric()
-    state = _state_with_trajectory([
-        _debater_step("debater_a", answer="C"),
-        _debater_step("debater_b", answer="B"),
-        _judge_step("debater_a"),
-    ])
+    state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", answer="C"),
+            _debater_step("debater_b", answer="B"),
+            _judge_step("debater_a"),
+        ]
+    )
     _run(rubric.score_rollout(state))
 
     assert _views.metrics(state)["accuracy/debater_a"] == 1.0
@@ -1899,11 +1961,13 @@ def test_g_missing_answer():
     """G: debater whose LATEST step has no answer field -> extraction_failed=1.0,
     accuracy/B absent (must not conflate "wrong" with "unparseable")."""
     rubric = _rubric()
-    state = _state_with_trajectory([
-        _debater_step("debater_a", answer="C"),
-        _debater_step("debater_b"),  # no answer field
-        _judge_step("debater_a"),
-    ])
+    state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", answer="C"),
+            _debater_step("debater_b"),  # no answer field
+            _judge_step("debater_a"),
+        ]
+    )
     _run(rubric.score_rollout(state))
 
     assert _views.metrics(state)["accuracy/debater_a"] == 1.0
@@ -1927,19 +1991,21 @@ def test_g_stale_commit_not_graded_when_latest_fails():
     # phases: propose (valid commit) → critique (parse failure, fields=None).
     # Truth is C; A's stale commit is B → if graded, would give accuracy/A=0.0.
     # With the fix, accuracy/A must be ABSENT entirely.
-    state = _state_with_trajectory([
-        _debater_step("debater_a", phase="propose", answer="B"),  # stale
-        _debater_step("debater_b", phase="propose", answer="D"),
-        _debater_step("debater_a", phase="critique"),  # LATEST, no fields
-        _debater_step("debater_b", phase="critique", answer="D"),
-        _judge_step("debater_a"),
-    ], answer="C")
+    state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", phase="propose", answer="B"),  # stale
+            _debater_step("debater_b", phase="propose", answer="D"),
+            _debater_step("debater_a", phase="critique"),  # LATEST, no fields
+            _debater_step("debater_b", phase="critique", answer="D"),
+            _judge_step("debater_a"),
+        ],
+        answer="C",
+    )
     _run(rubric.score_rollout(state))
 
     metrics = _views.metrics(state)
     assert "accuracy/debater_a" not in metrics, (
-        f"stale 'propose' commit 'B' must not be graded; "
-        f"got accuracy/A={metrics.get('accuracy/A')}"
+        f"stale 'propose' commit 'B' must not be graded; got accuracy/A={metrics.get('accuracy/A')}"
     )
     assert metrics["extraction_failed/debater_a"] == 1.0
     # B is parseable on its latest step → accuracy fires normally (D != C)
@@ -1949,19 +2015,19 @@ def test_g_stale_commit_not_graded_when_latest_fails():
     # but the flip/final_correct metrics must be skipped since the latest
     # step is unparseable (the rubric's rubric.py:313-315 guard).
     assert _views.commits(state)["debater_a"] == ["B"]
-    assert "final_correct/debater_a" not in metrics, (
-        "flip diagnostics must be skipped when latest step is unparseable"
-    )
+    assert "final_correct/debater_a" not in metrics, "flip diagnostics must be skipped when latest step is unparseable"
 
 
 def test_m_agreement_same():
     """M: both debaters answer 'C' -> agreement=1.0."""
     rubric = _rubric()
-    state = _state_with_trajectory([
-        _debater_step("debater_a", answer="C"),
-        _debater_step("debater_b", answer="C"),
-        _judge_step("debater_a"),
-    ])
+    state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", answer="C"),
+            _debater_step("debater_b", answer="C"),
+            _judge_step("debater_a"),
+        ]
+    )
     _run(rubric.score_rollout(state))
 
     assert _views.metrics(state)["agreement"] == 1.0
@@ -1970,11 +2036,13 @@ def test_m_agreement_same():
 def test_m_agreement_different():
     """M: A answers C, B answers B -> agreement=0.0."""
     rubric = _rubric()
-    state = _state_with_trajectory([
-        _debater_step("debater_a", answer="C"),
-        _debater_step("debater_b", answer="B"),
-        _judge_step("debater_a"),
-    ])
+    state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", answer="C"),
+            _debater_step("debater_b", answer="B"),
+            _judge_step("debater_a"),
+        ]
+    )
     _run(rubric.score_rollout(state))
 
     assert _views.metrics(state)["agreement"] == 0.0
@@ -2022,15 +2090,11 @@ class FakeJudgeClient(_VFClient):
         tools=None,
         **kwargs,
     ) -> Response:
-        self.calls.append(
-            {"prompt": prompt, "model": model, "sampling_args": sampling_args}
-        )
+        self.calls.append({"prompt": prompt, "model": model, "sampling_args": sampling_args})
         if self._exc_to_raise is not None:
             raise self._exc_to_raise
         if not self._verdicts:
-            raise RuntimeError(
-                "FakeJudgeClient exhausted — more calls than expected"
-            )
+            raise RuntimeError("FakeJudgeClient exhausted — more calls than expected")
         content = self._verdicts.pop(0)
         return Response(
             id="fake-judge",
@@ -2204,19 +2268,33 @@ def test_missing_fields_graceful():
 def test_yaml_without_answer_fields():
     """default.yaml has no debater answer fields -> G/M skipped, W still works."""
     rubric = _rubric(prompts=DEFAULT_PROMPTS)
-    state = _state_with_trajectory([
-        TrajectoryStep(
-            prompt=[], completion=[], response=_make_response("arg"),
-            tokens=None, reward=None, advantage=None, is_truncated=False,
-            trajectory_id="t", extras={"member_id": "debater_a", "phase": "propose"},
-        ),
-        TrajectoryStep(
-            prompt=[], completion=[], response=_make_response("arg"),
-            tokens=None, reward=None, advantage=None, is_truncated=False,
-            trajectory_id="t", extras={"member_id": "debater_b", "phase": "propose"},
-        ),
-        _judge_step("debater_a"),
-    ])
+    state = _state_with_trajectory(
+        [
+            TrajectoryStep(
+                prompt=[],
+                completion=[],
+                response=_make_response("arg"),
+                tokens=None,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="t",
+                extras={"member_id": "debater_a", "phase": "propose"},
+            ),
+            TrajectoryStep(
+                prompt=[],
+                completion=[],
+                response=_make_response("arg"),
+                tokens=None,
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="t",
+                extras={"member_id": "debater_b", "phase": "propose"},
+            ),
+            _judge_step("debater_a"),
+        ]
+    )
     _run(rubric.score_rollout(state))
 
     # W works: judge picked truth_member
@@ -2235,13 +2313,15 @@ def test_flip_hold_correct():
     """Policy commits correct answer at propose and holds at critique:
     num_commits=2, num_unique=1, initial_correct=1, final_correct=1."""
     rubric = _rubric()
-    state = _state_with_trajectory([
-        _debater_step("debater_a", phase="propose", answer="C"),
-        _debater_step("debater_b", phase="propose", answer="B"),
-        _debater_step("debater_a", phase="critique", answer="C"),
-        _debater_step("debater_b", phase="critique", answer="B"),
-        _judge_step("debater_a"),
-    ])
+    state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", phase="propose", answer="C"),
+            _debater_step("debater_b", phase="propose", answer="B"),
+            _debater_step("debater_a", phase="critique", answer="C"),
+            _debater_step("debater_b", phase="critique", answer="B"),
+            _judge_step("debater_a"),
+        ]
+    )
     _run(rubric.score_rollout(state))
 
     m = _views.metrics(state)
@@ -2255,13 +2335,15 @@ def test_flip_hold_correct():
 def test_flip_hold_incorrect():
     """Policy commits wrong answer and holds: both correctness = 0, unique = 1."""
     rubric = _rubric()
-    state = _state_with_trajectory([
-        _debater_step("debater_a", phase="propose", answer="B"),
-        _debater_step("debater_b", phase="propose", answer="C"),
-        _debater_step("debater_a", phase="critique", answer="B"),
-        _debater_step("debater_b", phase="critique", answer="C"),
-        _judge_step("debater_b"),
-    ])
+    state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", phase="propose", answer="B"),
+            _debater_step("debater_b", phase="propose", answer="C"),
+            _debater_step("debater_a", phase="critique", answer="B"),
+            _debater_step("debater_b", phase="critique", answer="C"),
+            _judge_step("debater_b"),
+        ]
+    )
     _run(rubric.score_rollout(state))
 
     m = _views.metrics(state)
@@ -2274,33 +2356,37 @@ def test_flip_hold_incorrect():
 def test_flip_earned():
     """Policy commits wrong, then updates to correct (earned flip)."""
     rubric = _rubric()
-    state = _state_with_trajectory([
-        _debater_step("debater_a", phase="propose", answer="B"),     # wrong
-        _debater_step("debater_b", phase="propose", answer="C"),
-        _debater_step("debater_a", phase="critique", answer="C"),    # updated → right
-        _debater_step("debater_b", phase="critique", answer="C"),
-        _judge_step("debater_a"),
-    ])
+    state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", phase="propose", answer="B"),  # wrong
+            _debater_step("debater_b", phase="propose", answer="C"),
+            _debater_step("debater_a", phase="critique", answer="C"),  # updated → right
+            _debater_step("debater_b", phase="critique", answer="C"),
+            _judge_step("debater_a"),
+        ]
+    )
     _run(rubric.score_rollout(state))
 
     m = _views.metrics(state)
     assert m["num_commits/debater_a"] == 2.0
     assert m["num_unique_commits/debater_a"] == 2.0
     assert m["initial_correct/debater_a"] == 0.0  # wrong at propose
-    assert m["final_correct/debater_a"] == 1.0    # right at critique
+    assert m["final_correct/debater_a"] == 1.0  # right at critique
     assert _views.commits(state)["debater_a"] == ["B", "C"]
 
 
 def test_flip_unearned():
     """Policy commits correct, then capitulates to wrong (unearned flip)."""
     rubric = _rubric()
-    state = _state_with_trajectory([
-        _debater_step("debater_a", phase="propose", answer="C"),     # right
-        _debater_step("debater_b", phase="propose", answer="B"),
-        _debater_step("debater_a", phase="critique", answer="B"),    # capitulated
-        _debater_step("debater_b", phase="critique", answer="B"),
-        _judge_step("debater_b"),
-    ])
+    state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", phase="propose", answer="C"),  # right
+            _debater_step("debater_b", phase="propose", answer="B"),
+            _debater_step("debater_a", phase="critique", answer="B"),  # capitulated
+            _debater_step("debater_b", phase="critique", answer="B"),
+            _judge_step("debater_b"),
+        ]
+    )
     _run(rubric.score_rollout(state))
 
     m = _views.metrics(state)
@@ -2314,15 +2400,17 @@ def test_flip_unearned():
 def test_flip_wobble_correct():
     """Three-round: right → wrong → right. num_unique=2, both endpoints correct."""
     rubric = _rubric()
-    state = _state_with_trajectory([
-        _debater_step("debater_a", phase="propose", answer="C"),
-        _debater_step("debater_b", phase="propose", answer="B"),
-        _debater_step("debater_a", phase="critique", answer="B"),    # wobble out
-        _debater_step("debater_b", phase="critique", answer="B"),
-        _debater_step("debater_a", phase="critique", answer="C"),    # wobble back
-        _debater_step("debater_b", phase="critique", answer="B"),
-        _judge_step("debater_a"),
-    ])
+    state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", phase="propose", answer="C"),
+            _debater_step("debater_b", phase="propose", answer="B"),
+            _debater_step("debater_a", phase="critique", answer="B"),  # wobble out
+            _debater_step("debater_b", phase="critique", answer="B"),
+            _debater_step("debater_a", phase="critique", answer="C"),  # wobble back
+            _debater_step("debater_b", phase="critique", answer="B"),
+            _judge_step("debater_a"),
+        ]
+    )
     _run(rubric.score_rollout(state))
 
     m = _views.metrics(state)
@@ -2400,11 +2488,13 @@ def test_debate_rubric_init_accepts_selfplay_pack_without_judge_client():
     # And the rubric is functional: a clean rollout scores without touching
     # the LLM grader. If the fast path weren't hit, verdict() would raise
     # vf.Error.
-    state = _state_with_trajectory([
-        _debater_step("debater_a", answer="C"),
-        _debater_step("debater_b", answer="B"),
-        _judge_step("debater_a"),
-    ])
+    state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", answer="C"),
+            _debater_step("debater_b", answer="B"),
+            _judge_step("debater_a"),
+        ]
+    )
     _run(rubric.score_rollout(state))
     assert _views.episode_scalar(state) == 1.0
     assert _views.metrics(state)["accuracy/debater_a"] == 1.0
@@ -2498,10 +2588,12 @@ def test_rubric_short_circuits_on_prompt_too_long():
     asyncio.gather in score_group. Instead, emit reward=0.0 with
     errored_rollout=1.0 and error_type='prompt_too_long'."""
     rubric = _rubric()
-    state = _state_with_trajectory([
-        _debater_step("debater_a", answer="C"),
-        # No B step, no judge step — rollout was truncated early.
-    ])
+    state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", answer="C"),
+            # No B step, no judge step — rollout was truncated early.
+        ]
+    )
     state["prompt_too_long"] = True
     _run(rubric.score_rollout(state))
 
@@ -2524,9 +2616,11 @@ def test_rubric_short_circuits_on_state_error():
         pass
 
     rubric = _rubric()
-    state = _state_with_trajectory([
-        _debater_step("debater_a", answer="C"),
-    ])
+    state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", answer="C"),
+        ]
+    )
     state["error"] = _SimulatedEnvError("boom")
     _run(rubric.score_rollout(state))
 
@@ -2547,12 +2641,14 @@ def test_rubric_does_not_short_circuit_on_clean_rollout():
     is strictly gated on state.error/prompt_too_long; here neither was
     pre-set so build_marscore runs and its vf.Error is captured."""
     rubric = _rubric()  # SELFPLAY_PROMPTS declares judge
-    state = _state_with_trajectory([
-        _debater_step("debater_a", answer="C"),
-        _debater_step("debater_b", answer="B"),
-        # No judge step, no error flags — this is a "normal" rollout
-        # where the judge should have run but didn't. G7.3 must fire.
-    ])
+    state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", answer="C"),
+            _debater_step("debater_b", answer="B"),
+            # No judge step, no error flags — this is a "normal" rollout
+            # where the judge should have run but didn't. G7.3 must fire.
+        ]
+    )
     _run(rubric.score_rollout(state))
     err = state.get("error")
     assert isinstance(err, vf.Error)
@@ -2569,16 +2665,20 @@ def test_rubric_short_circuit_does_not_propagate_through_gather():
     rubric = _rubric()
 
     # Mix: one errored, one clean-with-judge.
-    errored_state = _state_with_trajectory([
-        _debater_step("debater_a", answer="C"),
-    ])
+    errored_state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", answer="C"),
+        ]
+    )
     errored_state["prompt_too_long"] = True
 
-    clean_state = _state_with_trajectory([
-        _debater_step("debater_a", answer="C"),
-        _debater_step("debater_b", answer="B"),
-        _judge_step("debater_a"),
-    ])
+    clean_state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", answer="C"),
+            _debater_step("debater_b", answer="B"),
+            _judge_step("debater_a"),
+        ]
+    )
 
     _run(rubric.score_group([errored_state, clean_state]))
 
@@ -2726,11 +2826,13 @@ def test_score_group_propagates_programming_bug_attribute_error():
         raise AttributeError("simulated programming bug in build_marscore")
 
     rubric.build_marscore = buggy_build  # type: ignore[method-assign]
-    state = _state_with_trajectory([
-        _debater_step("debater_a", answer="C"),
-        _debater_step("debater_b", answer="B"),
-        _judge_step("debater_a"),
-    ])
+    state = _state_with_trajectory(
+        [
+            _debater_step("debater_a", answer="C"),
+            _debater_step("debater_b", answer="B"),
+            _judge_step("debater_a"),
+        ]
+    )
 
     with pytest.raises(AttributeError, match="simulated programming bug"):
         _run(rubric.score_group([state]))
@@ -2755,9 +2857,7 @@ def test_score_rollout_state_error_is_visible_to_reraise_contract():
     retryable = (vf.InfraError, vf.InvalidModelResponseError)
     err = state.get("error")
     assert err is not None, "state['error'] must be set for retry discovery"
-    assert isinstance(err, retryable), (
-        f"state['error'] must be a retryable type; got {type(err).__name__}"
-    )
+    assert isinstance(err, retryable), f"state['error'] must be a retryable type; got {type(err).__name__}"
     assert str(err) == "transient"
 
 
@@ -2775,9 +2875,7 @@ class _FlakeyClient(_VFClient):
         self.call_count = 0
         self.calls: list[dict] = []
 
-    async def get_response(
-        self, prompt, model, sampling_args, tools=None, **kwargs
-    ) -> Response:
+    async def get_response(self, prompt, model, sampling_args, tools=None, **kwargs) -> Response:
         self.call_count += 1
         self.calls.append({"prompt": prompt, "model": model})
         if self.call_count <= self._fail_n:
@@ -2829,9 +2927,7 @@ def _instant_retry_waits(monkeypatch):
     """
     import tenacity as tc
 
-    monkeypatch.setattr(
-        tc, "wait_exponential_jitter", lambda **_: tc.wait_none()
-    )
+    monkeypatch.setattr(tc, "wait_exponential_jitter", lambda **_: tc.wait_none())
 
 
 def test_score_rollout_retry_loop_end_to_end(_instant_retry_waits):
@@ -2857,9 +2953,7 @@ def test_score_rollout_retry_loop_end_to_end(_instant_retry_waits):
     results = _run(wrapped())
 
     # 2 transient failures + 1 success = 3 grader calls.
-    assert client.call_count == 3, (
-        f"expected 3 grader calls (fail, fail, succeed), got {client.call_count}"
-    )
+    assert client.call_count == 3, f"expected 3 grader calls (fail, fail, succeed), got {client.call_count}"
     assert len(results) == 1
     final = results[0]
     assert final.get("error") is None
@@ -2936,12 +3030,8 @@ def test_debate_rubric_composes_grader_and_matcher():
     )
     assert rubric.grader is not None
     assert rubric.matcher is not None
-    assert rubric.grader.judge_prompt == (
-        "Target: {answer}\nResponse: {response}"
-    )
-    assert rubric.matcher.judge_prompt == (
-        "A: {answer}\nB: {response}"
-    )
+    assert rubric.grader.judge_prompt == ("Target: {answer}\nResponse: {response}")
+    assert rubric.matcher.judge_prompt == ("A: {answer}\nB: {response}")
     # Both must share the SAME judge_client instance — a round of
     # premature optimization that stored a second copy would double
     # the connection pool.
@@ -3109,9 +3199,7 @@ def test_wrap_opponent_respects_viewer_id():
         think_tag="thinking",
         prefill={},
         opponent_wrap={
-            "debater": _je.from_string(
-                "[viewer={{ viewer_id }}] {{ member_id }}: {{ text }}"
-            ),
+            "debater": _je.from_string("[viewer={{ viewer_id }}] {{ member_id }}: {{ text }}"),
         },
         judges={},
         source_ref="viewer-id-test",
@@ -3123,8 +3211,7 @@ def test_wrap_opponent_respects_viewer_id():
         viewer_id="debater_a",
     )
     assert "viewer=debater_a" in rendered, (
-        "wrap_opponent must thread viewer_id through to the opponent_wrap "
-        "template render context."
+        "wrap_opponent must thread viewer_id through to the opponent_wrap template render context."
     )
     assert "debater_b: my argument" in rendered
 
@@ -3142,9 +3229,7 @@ def test_debate_env_build_prompt_monotonic_across_slots():
     This is the prefix-cache contract on which lineage-scoped KV reuse
     depends; a violation silently turns an O(T) episode into O(T²).
     """
-    responses = [
-        _make_response(f"turn-{i}") for i in range(4)
-    ]
+    responses = [_make_response(f"turn-{i}") for i in range(4)]
     env, client = _make_env(responses)
     state = _run(env.rollout(_rollout_input(), client, "test-model"))
 
@@ -3155,16 +3240,9 @@ def test_debate_env_build_prompt_monotonic_across_slots():
 
     for mid, seq in per_member.items():
         for prev, curr in zip(seq, seq[1:]):
-            assert len(curr) >= len(prev), (
-                f"{mid}: subsequent prompt shorter than prior "
-                f"({len(curr)} < {len(prev)})"
-            )
+            assert len(curr) >= len(prev), f"{mid}: subsequent prompt shorter than prior ({len(curr)} < {len(prev)})"
             for i, (p, c) in enumerate(zip(prev, curr)):
-                assert p == c, (
-                    f"{mid}: message {i} diverged between slots\n"
-                    f"  prev: {p!r}\n"
-                    f"  curr: {c!r}"
-                )
+                assert p == c, f"{mid}: message {i} diverged between slots\n  prev: {p!r}\n  curr: {c!r}"
 
 
 def test_debate_env_end_to_end_real_types_rollout():
@@ -3197,22 +3275,26 @@ def test_debate_env_end_to_end_real_types_rollout():
         rubric=rubric,
         dataset=lambda: None,
     )
-    client = FakeClient([
-        _make_response("<answer>C</answer>"),
-        _make_response("<answer>B</answer>"),
-        _make_response("<decision>debater_a</decision>"),
-    ])
+    client = FakeClient(
+        [
+            _make_response("<answer>C</answer>"),
+            _make_response("<answer>B</answer>"),
+            _make_response("<decision>debater_a</decision>"),
+        ]
+    )
 
-    state = _run(env.rollout(
-        RolloutInput(
-            prompt=[{"role": "user", "content": "What is 2+2?\n\nA) 1\nB) 3\nC) 4\nD) 5"}],
-            example_id=7,
-            task="mcq_debate",
-            answer="C",
-        ),
-        client,
-        "test-model",
-    ))
+    state = _run(
+        env.rollout(
+            RolloutInput(
+                prompt=[{"role": "user", "content": "What is 2+2?\n\nA) 1\nB) 3\nC) 4\nD) 5"}],
+                example_id=7,
+                task="mcq_debate",
+                answer="C",
+            ),
+            client,
+            "test-model",
+        )
+    )
 
     trajectory = state["trajectory"]
     assert len(trajectory) == 3

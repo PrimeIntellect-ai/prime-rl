@@ -55,12 +55,20 @@ def build_olmes_cmd(
     # installed via install_evals.sh — e.g. antlr4-python3-runtime==4.11,
     # lm_eval==0.4.11, etc.).
     cmd = [
-        "uv", "run", "--no-sync", olmes_bin,
-        "--model", str(ckpt),
-        "--model-type", model_type,
-        "--task", *tasks,
-        "--output-dir", str(output_dir),
-        "--gpus", str(gpus),
+        "uv",
+        "run",
+        "--no-sync",
+        olmes_bin,
+        "--model",
+        str(ckpt),
+        "--model-type",
+        model_type,
+        "--task",
+        *tasks,
+        "--output-dir",
+        str(output_dir),
+        "--gpus",
+        str(gpus),
     ]
     if batch_size is not None:
         cmd.extend(["--batch-size", batch_size])
@@ -75,9 +83,7 @@ def parse_metrics(output_dir: Path) -> dict[str, dict]:
     """Read `metrics-all.jsonl` and return a dict keyed by task name."""
     metrics_file = output_dir / "metrics-all.jsonl"
     if not metrics_file.exists():
-        raise FileNotFoundError(
-            f"olmes did not produce {metrics_file}. Something went wrong during the run."
-        )
+        raise FileNotFoundError(f"olmes did not produce {metrics_file}. Something went wrong during the run.")
     out: dict[str, dict] = {}
     with open(metrics_file) as f:
         for line in f:
@@ -131,9 +137,7 @@ def run(
     with open(log_path, "w") as log_file:
         proc = subprocess.run(cmd, stdout=log_file, stderr=subprocess.STDOUT, env=env)
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"olmes exited with code {proc.returncode}. Log: {log_path}"
-        )
+        raise RuntimeError(f"olmes exited with code {proc.returncode}. Log: {log_path}")
 
     metrics = parse_metrics(output_dir)
     summary_path = output_dir / "summary.json"
@@ -149,19 +153,26 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True, help="Output directory.")
     parser.add_argument("--gpus", type=int, default=1, help="GPUs olmes's internal vLLM uses.")
     parser.add_argument(
-        "--tasks", type=str, nargs="+", default=None,
+        "--tasks",
+        type=str,
+        nargs="+",
+        default=None,
         help="Override task list (default: Rung-6 suite).",
     )
     parser.add_argument(
-        "--model-type", type=str, default="hf",
+        "--model-type",
+        type=str,
+        default="hf",
         choices=["hf", "vllm", "litellm"],
         help="olmes backend. hf = transformers path (always works). "
-             "vllm = faster inference via olmes's internal vLLM. "
-             "litellm = proxy through our prime-rl inference server.",
+        "vllm = faster inference via olmes's internal vLLM. "
+        "litellm = proxy through our prime-rl inference server.",
     )
     parser.add_argument("--batch-size", type=str, default=None, help="Passed to olmes --batch-size.")
     parser.add_argument(
-        "--limit", type=float, default=None,
+        "--limit",
+        type=float,
+        default=None,
         help="Subsample N items per task (or fraction < 1). For smoke/debug only.",
     )
     parser.add_argument("--model-args", type=str, default=None, help="Passed to olmes --model-args.")

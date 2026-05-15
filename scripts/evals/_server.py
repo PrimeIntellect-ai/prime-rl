@@ -152,9 +152,7 @@ def render_messages(
     """Apply the SFT chat template to a list of messages, return rendered string."""
     if tokenizer.chat_template is None:
         raise ValueError("Tokenizer has no chat_template; cannot render messages.")
-    return tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=add_generation_prompt
-    )
+    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=add_generation_prompt)
 
 
 def _wait_for_server(port: int, api_key: str, timeout_s: float = 300.0) -> dict:
@@ -185,10 +183,15 @@ def start_server(
 ) -> subprocess.Popen[str]:
     """Boot a prime-rl inference server in the background."""
     cmd = [
-        "uv", "run", "inference",
-        "--model.name", base_model,
-        "--model.max-model-len", str(max_model_len),
-        "--server.port", str(port),
+        "uv",
+        "run",
+        "inference",
+        "--model.name",
+        base_model,
+        "--model.max-model-len",
+        str(max_model_len),
+        "--server.port",
+        str(port),
     ]
     if enforce_eager:
         cmd.append("--model.enforce-eager")
@@ -321,8 +324,11 @@ def paired_run(
 
     with running_server(
         base_model=base_model,  # boot directly on base; no swap needed for base phase
-        port=port, max_model_len=max_model_len,
-        log_path=log_path, enforce_eager=enforce_eager, ckpt_dir=None,
+        port=port,
+        max_model_len=max_model_len,
+        log_path=log_path,
+        enforce_eager=enforce_eager,
+        ckpt_dir=None,
     ) as server:
         entered = {"base": False, "ckpt": False}
 
@@ -331,9 +337,13 @@ def paired_run(
 
         def _handle(phase: Phase) -> PhaseHandle:
             return PhaseHandle(
-                phase=phase, client=server.client, async_client=async_client,
-                model_id=server.model_id, sft_tokenizer=sft_tokenizer,
-                base_url=server.base_url, api_key=server.api_key,
+                phase=phase,
+                client=server.client,
+                async_client=async_client,
+                model_id=server.model_id,
+                sft_tokenizer=sft_tokenizer,
+                base_url=server.base_url,
+                api_key=server.api_key,
                 stop_token_ids=stop_ids,
             )
 
@@ -398,30 +408,41 @@ def complete(
     Only use for small-N debugging. For real evals use `complete_batch`.
     """
     rendered = render_messages(handle.sft_tokenizer, messages, add_generation_prompt=True)
-    effective_stop_ids = (
-        list(stop_token_ids) if stop_token_ids is not None else list(handle.stop_token_ids)
-    )
+    effective_stop_ids = list(stop_token_ids) if stop_token_ids is not None else list(handle.stop_token_ids)
     response = handle.client.completions.create(
-        model=handle.model_id, prompt=rendered,
-        max_tokens=max_tokens, temperature=temperature, top_p=top_p,
-        stop=stop, echo=echo,
+        model=handle.model_id,
+        prompt=rendered,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        stop=stop,
+        echo=echo,
         extra_body={"stop_token_ids": effective_stop_ids},
     )
     return response.choices[0].text or "", response.usage
 
 
 async def _complete_one_async(
-    handle: PhaseHandle, rendered: str,
-    *, max_tokens: int, temperature: float, top_p: float,
-    stop: list[str] | None, stop_token_ids: list[int],
+    handle: PhaseHandle,
+    rendered: str,
+    *,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    stop: list[str] | None,
+    stop_token_ids: list[int],
     seed: int | None,
     semaphore: asyncio.Semaphore,
 ) -> tuple[str, Any]:
     async with semaphore:
         resp = await handle.async_client.completions.create(
-            model=handle.model_id, prompt=rendered,
-            max_tokens=max_tokens, temperature=temperature, top_p=top_p,
-            stop=stop, seed=seed,
+            model=handle.model_id,
+            prompt=rendered,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            stop=stop,
+            seed=seed,
             extra_body={"stop_token_ids": stop_token_ids},
         )
         return resp.choices[0].text or "", resp.usage
@@ -454,21 +475,20 @@ def complete_batch(
     n = len(batch_messages)
     if n == 0:
         return []
-    rendered = [
-        render_messages(handle.sft_tokenizer, ms, add_generation_prompt=True)
-        for ms in batch_messages
-    ]
-    effective_stop_ids = (
-        list(stop_token_ids) if stop_token_ids is not None else list(handle.stop_token_ids)
-    )
+    rendered = [render_messages(handle.sft_tokenizer, ms, add_generation_prompt=True) for ms in batch_messages]
+    effective_stop_ids = list(stop_token_ids) if stop_token_ids is not None else list(handle.stop_token_ids)
     semaphore = asyncio.Semaphore(max_concurrency)
 
     async def _run_all():
         tasks = [
             _complete_one_async(
-                handle, r,
-                max_tokens=max_tokens, temperature=temperature, top_p=top_p,
-                stop=stop, stop_token_ids=effective_stop_ids,
+                handle,
+                r,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                stop=stop,
+                stop_token_ids=effective_stop_ids,
                 seed=(seeds[i] if seeds is not None else None),
                 semaphore=semaphore,
             )
@@ -482,8 +502,7 @@ def complete_batch(
         loop = asyncio.get_event_loop()
         if loop.is_running():
             raise RuntimeError(
-                "complete_batch called from inside a running event loop — "
-                "call from sync context or refactor caller."
+                "complete_batch called from inside a running event loop — call from sync context or refactor caller."
             )
     except RuntimeError:
         loop = asyncio.new_event_loop()
@@ -507,6 +526,7 @@ class AccResult:
     structures) keep their own Result types — forcing them under this shape
     would require `Optional[Any]` sprawl, so we don't.
     """
+
     n: int = 0
     correct: int = 0
     per_row: list[dict] = field(default_factory=list)
@@ -558,8 +578,12 @@ def paired_eval(
     }
 
     with paired_run(
-        base_model=base, ckpt_dir=ckpt, sft_tokenizer=sft_tokenizer,
-        port=port, max_model_len=max_model_len, log_path=log_path,
+        base_model=base,
+        ckpt_dir=ckpt,
+        sft_tokenizer=sft_tokenizer,
+        port=port,
+        max_model_len=max_model_len,
+        log_path=log_path,
     ) as (enter_base, enter_ckpt):
         t0 = time.time()
         base_handle = enter_base()

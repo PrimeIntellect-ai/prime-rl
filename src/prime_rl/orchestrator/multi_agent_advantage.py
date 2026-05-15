@@ -85,9 +85,7 @@ def fan_out_for_multi_agent(
                     "self-play envs."
                 )
             members = [m for m in members if m["member_id"] == seat]
-        rollout_to_unit_idxs.append(
-            list(range(len(training_units), len(training_units) + len(members)))
-        )
+        rollout_to_unit_idxs.append(list(range(len(training_units), len(training_units) + len(members))))
         training_units.extend(members)
     return training_units, rollout_to_unit_idxs
 

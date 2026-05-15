@@ -53,8 +53,7 @@ def test_perf_counter_estimate_batch_flops_uses_actual_sequence_lengths():
     perf_counter = PerfCounter(model, seq_len=8, window_size=10)
     sequence_lengths = [5, 3]
     processed_tokens = sum(sequence_lengths)
-    expected = (
-        perf_counter.non_attention_flop_per_token * processed_tokens
-        + perf_counter.attention_flop_per_seq_sq * (5 * 5 + 3 * 3)
+    expected = perf_counter.non_attention_flop_per_token * processed_tokens + perf_counter.attention_flop_per_seq_sq * (
+        5 * 5 + 3 * 3
     )
     assert perf_counter.estimate_batch_flops(processed_tokens, sequence_lengths) == expected

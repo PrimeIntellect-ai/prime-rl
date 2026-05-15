@@ -89,7 +89,9 @@ class SFTDataConfig(BaseDataConfig):
 
     system_prompt_pool_path: Annotated[
         str | None,
-        Field(description="Path to a JSON file containing a list of system prompt strings. If set, a system prompt is prepended to every single-turn sample using profile-weighted sampling."),
+        Field(
+            description="Path to a JSON file containing a list of system prompt strings. If set, a system prompt is prepended to every single-turn sample using profile-weighted sampling."
+        ),
     ] = None
 
     @model_validator(mode="after")
