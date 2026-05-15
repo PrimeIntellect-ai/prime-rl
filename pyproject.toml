@@ -162,7 +162,7 @@ nixl-cu12 = false
 [tool.uv.sources]
 prime-rl-configs = { workspace = true }
 torch = { index = "pytorch-cu128" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "0bece1fa" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "9485194f" }
 renderers = { git = "https://github.com/PrimeIntellect-ai/renderers.git", rev = "17005dd" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }

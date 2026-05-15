@@ -98,7 +98,7 @@ def test_setup_clients_uses_dynamo_transport_for_dynamo_renderer():
 
     clients = setup_clients(client_config, client_type="renderer")
 
-    assert clients[0].renderer_transport == "dynamo_chat_nvext"
+    assert clients[0].renderer_transport == "dynamo"
 
 
 def test_setup_clients_preserves_chat_client_defaults():
