@@ -21,6 +21,7 @@ _ATTENTION_OPS_PATCHED = False
 _MAMBA_MIXER2_OPS_PATCHED = False
 _WRITE_LOCK = threading.Lock()
 _ACTIVE_STATE_DUMPED: set[str] = set()
+_TARGET_BATCH_TRACE_COUNT: dict[int, int] = {}
 _MODEL_RUNNER_TRACE_LOCAL = threading.local()
 _MAMBA_TRACE_LOCAL = threading.local()
 
@@ -74,6 +75,18 @@ def _model_runner_batch_gpu_trace_enabled() -> bool:
     return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_BATCH_GPU", "0") != "0"
 
 
+def _target_batch_trace_enabled() -> bool:
+    return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_TARGET_BATCH", "0") != "0"
+
+
+def _target_batch_trace_only_full() -> bool:
+    return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_TARGET_BATCH_ONLY_FULL", "1") != "0"
+
+
+def _target_batch_trace_only_uniform() -> bool:
+    return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_TARGET_BATCH_ONLY_UNIFORM", "1") != "0"
+
+
 def _nemotron_h_layer_trace_enabled() -> bool:
     return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_NEMOTRON_H_LAYERS", "0") != "0"
 
@@ -119,6 +132,16 @@ def _active_output_token_limit() -> int:
         return int(value)
     except ValueError:
         return 4096
+
+
+def _env_int(name: str, default: int | None = None) -> int | None:
+    value = os.environ.get(name)
+    if value is None or value.strip() == "":
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
 
 
 def _patch_output_processor() -> None:
@@ -210,8 +233,9 @@ def _patch_model_runner() -> None:
         GPUModelRunner._determine_batch_execution_and_padding = _patched_determine_batch_execution_and_padding
 
     def _patched_execute_model(self, *args, **kwargs):
+        execute_index = _next_model_runner_execute_index(self)
         previous_context = getattr(_MODEL_RUNNER_TRACE_LOCAL, "context", None)
-        _MODEL_RUNNER_TRACE_LOCAL.context = _model_runner_execution_context(self)
+        _MODEL_RUNNER_TRACE_LOCAL.context = _model_runner_execution_context(self, execute_index=execute_index)
         try:
             result = original_execute_model(self, *args, **kwargs)
             if _model_runner_batch_trace_enabled():
@@ -225,6 +249,18 @@ def _patch_model_runner() -> None:
                         )
                 except Exception:
                     logger.exception("Failed to trace vLLM model runner batch state")
+
+            if _target_batch_trace_enabled():
+                try:
+                    state = getattr(self, "execute_model_state", None)
+                    if state is not None:
+                        _trace_model_runner_target_batch_state(
+                            self,
+                            state,
+                            getattr(self, "_prime_rl_nan_trace_batch_execution", None),
+                        )
+                except Exception:
+                    logger.exception("Failed to trace targeted vLLM model runner batch state")
 
             if not _model_runner_trace_enabled():
                 return result
@@ -514,30 +550,20 @@ def _patch_mamba_mixer2_ops() -> None:
                         op_name="causal_conv1d_update",
                         before={
                             "hidden_states_B_C_d": _tensor_total_counts(input_tensor),
-                            "projected_states": _tensor_total_counts(
-                                _mamba_projected_states_from_context()
-                            ),
+                            "projected_states": _tensor_total_counts(_mamba_projected_states_from_context()),
                             "conv_state": _tensor_meta(args[1]) if len(args) > 1 else None,
                         },
                         after={
                             "hidden_states_B_C_d": _tensor_total_counts(result),
                         },
                         metadata={
-                            "conv_state_indices": _tensor_or_sequence_summary(
-                                kwargs.get("conv_state_indices")
-                            ),
+                            "conv_state_indices": _tensor_or_sequence_summary(kwargs.get("conv_state_indices")),
                             "block_idx_last_scheduled_token": _tensor_or_sequence_summary(
                                 kwargs.get("block_idx_last_scheduled_token")
                             ),
-                            "initial_state_idx": _tensor_or_sequence_summary(
-                                kwargs.get("initial_state_idx")
-                            ),
-                            "num_accepted_tokens": _tensor_or_sequence_summary(
-                                kwargs.get("num_accepted_tokens")
-                            ),
-                            "query_start_loc": _tensor_or_sequence_summary(
-                                kwargs.get("query_start_loc")
-                            ),
+                            "initial_state_idx": _tensor_or_sequence_summary(kwargs.get("initial_state_idx")),
+                            "num_accepted_tokens": _tensor_or_sequence_summary(kwargs.get("num_accepted_tokens")),
+                            "query_start_loc": _tensor_or_sequence_summary(kwargs.get("query_start_loc")),
                             "max_query_len": kwargs.get("max_query_len"),
                         },
                     )
@@ -572,18 +598,12 @@ def _patch_mamba_mixer2_ops() -> None:
                             "result": _tensor_total_counts(result),
                         },
                         metadata={
-                            "state_batch_indices": _tensor_or_sequence_summary(
-                                kwargs.get("state_batch_indices")
-                            ),
+                            "state_batch_indices": _tensor_or_sequence_summary(kwargs.get("state_batch_indices")),
                             "dst_state_batch_indices": _tensor_or_sequence_summary(
                                 kwargs.get("dst_state_batch_indices")
                             ),
-                            "num_accepted_tokens": _tensor_or_sequence_summary(
-                                kwargs.get("num_accepted_tokens")
-                            ),
-                            "cu_seqlens": _tensor_or_sequence_summary(
-                                kwargs.get("cu_seqlens")
-                            ),
+                            "num_accepted_tokens": _tensor_or_sequence_summary(kwargs.get("num_accepted_tokens")),
+                            "cu_seqlens": _tensor_or_sequence_summary(kwargs.get("cu_seqlens")),
                             "dt": _tensor_total_counts(args[2]) if len(args) > 2 else None,
                             "B": _tensor_total_counts(args[4]) if len(args) > 4 else None,
                             "C": _tensor_total_counts(args[5]) if len(args) > 5 else None,
@@ -663,8 +683,7 @@ def _trace_attention_op_event(
         "output": output,
     }
     counts = {
-        name: _tensor_row_counts(tensor) if hasattr(tensor, "shape") else None
-        for name, tensor in tensors.items()
+        name: _tensor_row_counts(tensor) if hasattr(tensor, "shape") else None for name, tensor in tensors.items()
     }
     selected_rows: set[int] = set()
     for item_counts in counts.values():
@@ -971,6 +990,7 @@ def _trace_model_runner_sample(
             "dtype": str(getattr(logits, "dtype", "")),
             "spec_decode": spec_decode,
             "batch_execution": batch_execution,
+            "model_runner_context": _current_model_runner_context(),
             "watched_token_id": watched_token_id,
             "num_rows": len(req_ids),
             "rows": rows,
@@ -1039,17 +1059,25 @@ def _trace_model_runner_logits_state(
             "logits_dtype": str(getattr(logits, "dtype", "")),
             "spec_decode": spec_decode,
             "batch_execution": batch_execution,
+            "model_runner_context": _current_model_runner_context(),
             "num_rows": len(req_ids),
             "rows": rows,
         },
     )
 
 
-def _model_runner_execution_context(model_runner: Any) -> dict[str, Any]:
+def _next_model_runner_execute_index(model_runner: Any) -> int:
+    execute_index = int(getattr(model_runner, "_prime_rl_nan_trace_execute_index", 0)) + 1
+    model_runner._prime_rl_nan_trace_execute_index = execute_index
+    return execute_index
+
+
+def _model_runner_execution_context(model_runner: Any, *, execute_index: int | None = None) -> dict[str, Any]:
     input_batch = getattr(model_runner, "input_batch", None)
     req_ids = list(getattr(input_batch, "req_ids", []) or []) if input_batch is not None else []
     num_reqs = getattr(input_batch, "num_reqs", len(req_ids)) if input_batch is not None else len(req_ids)
     return {
+        "execute_index": execute_index,
         "req_id_count": len(req_ids),
         "req_ids_head": req_ids[:16],
         "num_reqs": _json_safe(num_reqs),
@@ -1148,6 +1176,116 @@ def _trace_model_runner_batch_state(model_runner: Any, state: Any, batch_executi
     _write_jsonl("model_runner_batches", record)
 
 
+def _trace_model_runner_target_batch_state(
+    model_runner: Any,
+    state: Any,
+    batch_execution: dict[str, Any] | None,
+) -> None:
+    input_batch = getattr(model_runner, "input_batch", None)
+    if input_batch is None or not _target_batch_trace_matches(batch_execution):
+        return
+    if not _target_batch_trace_take_record():
+        return
+
+    req_ids = list(getattr(input_batch, "req_ids", []) or [])
+    num_reqs = _safe_int(getattr(input_batch, "num_reqs", len(req_ids)), len(req_ids))
+    req_ids = req_ids[:num_reqs]
+    query_start_locs = _sequence_values(getattr(input_batch, "query_start_loc_np", None))
+    if not query_start_locs:
+        query_start_locs = _sequence_values(getattr(input_batch, "query_start_loc", None))
+
+    record = {
+        "schema": "prime_rl.vllm_model_runner_target_batch_trace.v1",
+        "created_unix": time.time(),
+        "pid": os.getpid(),
+        "model_runner_context": _current_model_runner_context(),
+        "num_reqs": num_reqs,
+        "batch_execution": batch_execution,
+        "state_cudagraph_stats": _object_attr_summary(
+            getattr(state, "cudagraph_stats", None),
+            ("num_unpadded_tokens", "num_padded_tokens", "num_paddings", "runtime_mode"),
+        ),
+        "input_batch": _input_batch_summary(input_batch, num_reqs),
+        "rows": _target_batch_rows_summary(input_batch, req_ids, query_start_locs),
+        "slot_mappings_by_row": _slot_mappings_rows_summary(
+            getattr(state, "slot_mappings", None),
+            query_start_locs,
+            num_reqs,
+        ),
+        "logits": _tensor_meta(getattr(state, "logits", None)),
+        "sample_hidden_states": _tensor_meta(getattr(state, "sample_hidden_states", None)),
+        "spec_decode": getattr(state, "spec_decode_metadata", None) is not None,
+    }
+    _write_jsonl("model_runner_target_batches", record)
+
+
+def _target_batch_trace_matches(batch_execution: dict[str, Any] | None) -> bool:
+    if not isinstance(batch_execution, dict):
+        return False
+
+    mode_name = _batch_execution_mode_name(batch_execution)
+    if _target_batch_trace_only_full() and "FULL" not in mode_name:
+        return False
+    if _target_batch_trace_only_uniform() and not _batch_execution_uniform_decode(batch_execution):
+        return False
+
+    actual_num_reqs = _safe_int(
+        (batch_execution.get("inputs") or {}).get("num_reqs"),
+        None,
+    )
+    padded_num_reqs = _safe_int(
+        (batch_execution.get("batch_descriptor") or {}).get("num_reqs"),
+        None,
+    )
+    return _value_in_range(
+        actual_num_reqs,
+        low=_env_int("PRIME_RL_VLLM_NAN_TRACE_TARGET_BATCH_ACTUAL_MIN", 192),
+        high=_env_int("PRIME_RL_VLLM_NAN_TRACE_TARGET_BATCH_ACTUAL_MAX", 224),
+    ) or _value_in_range(
+        padded_num_reqs,
+        low=_env_int("PRIME_RL_VLLM_NAN_TRACE_TARGET_BATCH_PADDED_MIN", 208),
+        high=_env_int("PRIME_RL_VLLM_NAN_TRACE_TARGET_BATCH_PADDED_MAX", 224),
+    )
+
+
+def _target_batch_trace_take_record() -> bool:
+    limit = _env_int("PRIME_RL_VLLM_NAN_TRACE_TARGET_BATCH_LIMIT", 512)
+    if limit is not None and limit <= 0:
+        return False
+    pid = os.getpid()
+    with _WRITE_LOCK:
+        count = _TARGET_BATCH_TRACE_COUNT.get(pid, 0)
+        if limit is not None and count >= limit:
+            return False
+        _TARGET_BATCH_TRACE_COUNT[pid] = count + 1
+    return True
+
+
+def _batch_execution_mode_name(batch_execution: dict[str, Any]) -> str:
+    mode = batch_execution.get("cudagraph_mode")
+    if not isinstance(mode, dict):
+        return str(mode)
+    return str(mode.get("name") or mode.get("string") or mode.get("value") or "")
+
+
+def _batch_execution_uniform_decode(batch_execution: dict[str, Any]) -> bool:
+    descriptor = batch_execution.get("batch_descriptor") or {}
+    if descriptor.get("uniform") is True:
+        return True
+    scheduled = (batch_execution.get("inputs") or {}).get("num_scheduled_tokens_np") or {}
+    return scheduled.get("min") == 1 and scheduled.get("max") == 1
+
+
+def _value_in_range(value: int | None, *, low: int | None, high: int | None) -> bool:
+    if value is None:
+        return False
+    if low is not None and value < low:
+        return False
+    if high is not None and value > high:
+        return False
+    return True
+
+
 def _model_runner_scheduler_output_summary(
     scheduler_output: Any | None,
     scheduled_tokens_by_req: dict[str, Any],
@@ -1225,6 +1363,151 @@ def _slot_mappings_summary(slot_mappings: Any) -> dict[str, Any] | None:
         "unique_tensor_count": len(groups),
         "groups": list(groups.values())[:8],
         "truncated": len(groups) > 8,
+    }
+
+
+def _target_batch_rows_summary(
+    input_batch: Any,
+    req_ids: list[str],
+    query_start_locs: list[Any],
+) -> list[dict[str, Any]]:
+    num_reqs = len(req_ids)
+    scheduled_tokens = _sequence_values(getattr(input_batch, "num_scheduled_tokens", None), count=num_reqs)
+    prompt_tokens = _sequence_values(getattr(input_batch, "num_prompt_tokens", None), count=num_reqs)
+    tokens_no_spec = _sequence_values(getattr(input_batch, "num_tokens_no_spec", None), count=num_reqs)
+    computed_tokens = _sequence_values(getattr(input_batch, "num_computed_tokens_cpu", None), count=num_reqs)
+    accepted_tokens = _sequence_values(getattr(input_batch, "num_accepted_tokens_cpu", None), count=num_reqs)
+    seq_lens = _sequence_values(getattr(input_batch, "seq_lens", None), count=num_reqs)
+    seq_lens_upper = _sequence_values(getattr(input_batch, "seq_lens_cpu_upper_bound", None), count=num_reqs)
+    is_prefilling = _sequence_values(getattr(input_batch, "is_prefilling_np", None), count=num_reqs)
+    idx_mapping = _sequence_values(getattr(input_batch, "idx_mapping_np", None), count=num_reqs)
+    if not idx_mapping:
+        idx_mapping = _sequence_values(getattr(input_batch, "idx_mapping", None), count=num_reqs)
+    expanded_local_pos = _sequence_values(getattr(input_batch, "expanded_local_pos", None), count=num_reqs)
+
+    rows = []
+    for row_idx, req_id in enumerate(req_ids):
+        query_start = _row_value(query_start_locs, row_idx)
+        query_end = _row_value(query_start_locs, row_idx + 1)
+        rows.append(
+            {
+                "row_index": row_idx,
+                "request_id": req_id,
+                "external_request_id_guess": _external_request_id_from_internal(req_id),
+                "num_scheduled_tokens": _row_value(scheduled_tokens, row_idx),
+                "num_prompt_tokens": _row_value(prompt_tokens, row_idx),
+                "num_tokens_no_spec": _row_value(tokens_no_spec, row_idx),
+                "num_computed_tokens_cpu": _row_value(computed_tokens, row_idx),
+                "num_accepted_tokens_cpu": _row_value(accepted_tokens, row_idx),
+                "seq_len": _row_value(seq_lens, row_idx),
+                "seq_len_cpu_upper_bound": _row_value(seq_lens_upper, row_idx),
+                "is_prefilling": _row_value(is_prefilling, row_idx),
+                "idx_mapping": _row_value(idx_mapping, row_idx),
+                "expanded_local_pos": _row_value(expanded_local_pos, row_idx),
+                "query_start": query_start,
+                "query_end": query_end,
+                "input_ids": _vector_slice_summary(
+                    getattr(input_batch, "input_ids", None),
+                    query_start,
+                    query_end,
+                ),
+                "positions": _vector_slice_summary(
+                    getattr(input_batch, "positions", None),
+                    query_start,
+                    query_end,
+                ),
+            }
+        )
+    return rows
+
+
+def _slot_mappings_rows_summary(
+    slot_mappings: Any,
+    query_start_locs: list[Any],
+    num_reqs: int,
+) -> dict[str, Any] | None:
+    if slot_mappings is None:
+        return None
+    token_indices = [_safe_int(value, None) for value in query_start_locs[:num_reqs]]
+    if isinstance(slot_mappings, list):
+        return {
+            "type": "list",
+            "count": len(slot_mappings),
+            "items": [_slot_mappings_rows_summary(item, query_start_locs, num_reqs) for item in slot_mappings[:4]],
+            "truncated": len(slot_mappings) > 4,
+        }
+    if not isinstance(slot_mappings, dict):
+        return {
+            "type": type(slot_mappings).__name__,
+            "values_by_row": _indexed_values(slot_mappings, token_indices),
+        }
+
+    groups: dict[str, dict[str, Any]] = {}
+    for layer_name, tensor in slot_mappings.items():
+        key = _tensor_identity(tensor)
+        group = groups.setdefault(
+            key,
+            {
+                "layer_count": 0,
+                "layer_names": [],
+                "tensor": _tensor_or_sequence_summary(tensor),
+                "values_by_row": _indexed_values(tensor, token_indices),
+            },
+        )
+        group["layer_count"] += 1
+        if len(group["layer_names"]) < 8:
+            group["layer_names"].append(layer_name)
+
+    return {
+        "type": "dict",
+        "layer_count": len(slot_mappings),
+        "unique_tensor_count": len(groups),
+        "groups": list(groups.values())[:8],
+        "truncated": len(groups) > 8,
+    }
+
+
+def _vector_slice_summary(vector: Any, start: Any, end: Any, *, limit: int = 8) -> dict[str, Any] | None:
+    start_int = _safe_int(start, None)
+    end_int = _safe_int(end, None)
+    if vector is None or start_int is None or end_int is None:
+        return None
+    if end_int < start_int:
+        return {"start": start_int, "end": end_int, "error": "end_before_start"}
+    try:
+        sliced = vector[start_int:end_int]
+        values = _sequence_values(sliced)
+    except Exception:
+        return {"start": start_int, "end": end_int, "error": "slice_failed"}
+    return {
+        "start": start_int,
+        "end": end_int,
+        "count": len(values),
+        "head": values[:limit],
+        "tail": values[-limit:] if len(values) > limit else [],
+    }
+
+
+def _indexed_values(vector: Any, indices: list[int | None]) -> dict[str, Any] | None:
+    if vector is None:
+        return None
+    values = []
+    for index in indices:
+        if index is None:
+            values.append(None)
+            continue
+        try:
+            item = vector[index]
+            if hasattr(item, "detach"):
+                item = item.detach().cpu()
+            if hasattr(item, "item"):
+                item = item.item()
+            values.append(_json_safe(item))
+        except Exception:
+            values.append("index_failed")
+    return {
+        "count": len(values),
+        "values": values,
     }
 
 
@@ -1497,6 +1780,25 @@ def _tensor_vector_summary(tensor: Any, *, limit: int = 16, count: int | None = 
         return _tensor_meta(tensor)
 
 
+def _sequence_values(value: Any, *, count: int | None = None) -> list[Any]:
+    if value is None:
+        return []
+    try:
+        if hasattr(value, "detach"):
+            value = value.detach().cpu()
+        if hasattr(value, "reshape"):
+            value = value.reshape(-1)
+        if hasattr(value, "tolist"):
+            values = value.tolist()
+        else:
+            values = list(value)
+    except Exception:
+        return []
+    if count is not None:
+        values = values[:count]
+    return [_json_safe(item) for item in values]
+
+
 def _sequence_summary(value: Any, *, limit: int = 16, count: int | None = None) -> dict[str, Any] | None:
     if value is None:
         return None
@@ -1537,11 +1839,7 @@ def _enum_summary(value: Any) -> dict[str, Any] | None:
 def _object_attr_summary(value: Any, attrs: tuple[str, ...]) -> dict[str, Any] | None:
     if value is None:
         return None
-    return {
-        attr: _json_safe(getattr(value, attr))
-        for attr in attrs
-        if hasattr(value, attr)
-    }
+    return {attr: _json_safe(getattr(value, attr)) for attr in attrs if hasattr(value, attr)}
 
 
 def _tensor_identity(value: Any) -> str:
@@ -1556,6 +1854,23 @@ def _row_count_at(counts: dict[str, list[int]], row_idx: int) -> dict[str, int |
         key.removesuffix("_counts"): values[row_idx] if row_idx < len(values) else None
         for key, values in counts.items()
     }
+
+
+def _row_value(values: list[Any], row_idx: int) -> Any:
+    if row_idx < 0 or row_idx >= len(values):
+        return None
+    return _json_safe(values[row_idx])
+
+
+def _safe_int(value: Any, default: int | None = None) -> int | None:
+    if value is None:
+        return default
+    try:
+        if hasattr(value, "item"):
+            value = value.item()
+        return int(value)
+    except Exception:
+        return default
 
 
 def _sampled_token_ids(sampler_output: Any) -> list[int | None]:
