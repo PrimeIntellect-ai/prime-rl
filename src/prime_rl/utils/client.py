@@ -24,10 +24,15 @@ class AdminAPI(Protocol):
     """
 
     async def health(self, client: AsyncClient) -> None: ...
+
     async def list_models(self, client: AsyncClient) -> list[dict]: ...
+
     async def pause(self, client: AsyncClient) -> None: ...
+
     async def resume(self, client: AsyncClient) -> None: ...
+
     async def update_weights(self, client: AsyncClient, weight_dir: str | None) -> None: ...
+
     async def load_lora_adapter(
         self,
         client: AsyncClient,
@@ -36,6 +41,7 @@ class AdminAPI(Protocol):
         *,
         timeout: httpx.Timeout,
     ) -> None: ...
+
     async def init_broadcaster(
         self,
         client: AsyncClient,
@@ -310,7 +316,16 @@ def setup_clients(
 ) -> list[vf.ClientConfig]:
     clients = []
     client_idx = 0
-    renderer_transport = "dynamo" if client_type == "renderer" and client_config.backend == "dynamo" else "vllm"
+    # `renderer_transport` selects the engine wire shape. Dynamo accepts the
+    # `dynamo` shape (placeholder messages + nvext.token_data on
+    # `/v1/chat/completions`) for both renderer-mode and TITO; vanilla vLLM
+    # accepts only the legacy shapes (`/generate` for renderer, `/chat/
+    # completions/tokens` for TITO).
+    is_token_aware_client = client_type in {"renderer", "openai_chat_completions_token"}
+    if is_token_aware_client and client_config.backend == "dynamo":
+        renderer_transport = "dynamo"
+    else:
+        renderer_transport = "vllm"
     for base_url in client_config.base_url:
         for dp_rank in range(client_config.dp_rank_count):
             headers = client_config.headers.copy()

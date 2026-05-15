@@ -101,6 +101,18 @@ def test_setup_clients_uses_dynamo_transport_for_dynamo_renderer():
     assert clients[0].renderer_transport == "dynamo"
 
 
+def test_setup_clients_uses_dynamo_transport_for_dynamo_token_client():
+    client_config = ClientConfig(
+        base_url=["http://worker-a:8000/v1"],
+        api_key_var="PRIME_API_KEY",
+        backend="dynamo",
+    )
+
+    clients = setup_clients(client_config, client_type="openai_chat_completions_token")
+
+    assert clients[0].renderer_transport == "dynamo"
+
+
 def test_setup_clients_preserves_chat_client_defaults():
     client_config = ClientConfig(
         base_url=["http://worker-a:8000/v1"],
