@@ -128,6 +128,10 @@ def _cudagraph_replay_trace_fail_fast_real_only() -> bool:
     return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_CUDAGRAPH_REPLAY_FAIL_FAST_REAL_ONLY", "1") != "0"
 
 
+def _cudagraph_replay_eager_compare_enabled() -> bool:
+    return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_CUDAGRAPH_REPLAY_EAGER_COMPARE", "0") != "0"
+
+
 def _disable_padded_full_for_mamba() -> bool:
     return os.environ.get("PRIME_RL_VLLM_DISABLE_PADDED_FULL_FOR_MAMBA", "0") != "0"
 
@@ -394,9 +398,7 @@ def _patch_model_runner() -> None:
         def _patched_determine_batch_execution_and_padding(self, *args, **kwargs):
             if _disable_padded_full_for_mamba():
                 try:
-                    self.cudagraph_dispatcher._prime_rl_has_mamba_layers = (
-                        _model_runner_has_mamba_layers(self)
-                    )
+                    self.cudagraph_dispatcher._prime_rl_has_mamba_layers = _model_runner_has_mamba_layers(self)
                 except Exception:
                     logger.exception("Failed to mark vLLM dispatcher Mamba state")
             result = original_determine_batch(self, *args, **kwargs)
@@ -508,10 +510,26 @@ def _patch_cudagraph_replay() -> None:
     original_call = CUDAGraphWrapper.__call__
 
     def _patched_call(self, *args, **kwargs):
+        capture_entry = None
+        capture_addresses = None
+        try:
+            capture_entry = _cudagraph_replay_entry(
+                self,
+                get_forward_context=get_forward_context,
+                is_forward_context_available=is_forward_context_available,
+                require_captured=False,
+            )
+            if capture_entry is None or getattr(capture_entry, "cudagraph", None) is None:
+                capture_addresses = _tensor_input_addresses(args, kwargs)
+        except Exception:
+            logger.exception("Failed to inspect vLLM CUDA graph capture context")
+
         trace_info = None
         try:
             trace_info = _cudagraph_replay_trace_info(
                 self,
+                args=args,
+                kwargs=kwargs,
                 get_forward_context=get_forward_context,
                 is_forward_context_available=is_forward_context_available,
             )
@@ -519,7 +537,20 @@ def _patch_cudagraph_replay() -> None:
             logger.exception("Failed to inspect vLLM CUDA graph replay context")
 
         if trace_info is None:
-            return original_call(self, *args, **kwargs)
+            output = original_call(self, *args, **kwargs)
+            if capture_addresses is not None:
+                try:
+                    capture_entry = capture_entry or _cudagraph_replay_entry(
+                        self,
+                        get_forward_context=get_forward_context,
+                        is_forward_context_available=is_forward_context_available,
+                        require_captured=False,
+                    )
+                    if capture_entry is not None:
+                        setattr(capture_entry, "_prime_rl_all_input_addresses", capture_addresses)
+                except Exception:
+                    logger.exception("Failed to record CUDA graph capture input addresses")
+            return output
 
         pre_summary = _tensor_tree_summary(
             {"args": args, "kwargs": kwargs},
@@ -535,9 +566,7 @@ def _patch_cudagraph_replay() -> None:
 
         if pre_summary["nonfinite_tensor_count"] or post_summary["nonfinite_tensor_count"]:
             nonfinite_scope = _cudagraph_replay_nonfinite_scope(trace_info, post_summary)
-            should_fail_fast = _cudagraph_replay_trace_fail_fast() and post_summary[
-                "nonfinite_tensor_count"
-            ]
+            should_fail_fast = _cudagraph_replay_trace_fail_fast() and post_summary["nonfinite_tensor_count"]
             if (
                 should_fail_fast
                 and _cudagraph_replay_trace_fail_fast_real_only()
@@ -550,6 +579,13 @@ def _patch_cudagraph_replay() -> None:
                 or _cudagraph_replay_trace_take_padded_only_record()
             )
             if should_write:
+                eager_compare = None
+                if (
+                    post_summary["nonfinite_tensor_count"]
+                    and nonfinite_scope.get("has_real_nonfinite", True)
+                    and _cudagraph_replay_eager_compare_enabled()
+                ):
+                    eager_compare = _cudagraph_replay_eager_compare(self, args, kwargs)
                 nonfinite_scope["bad_row_details"] = _cudagraph_replay_bad_row_details(
                     trace_info,
                     args,
@@ -561,11 +597,10 @@ def _patch_cudagraph_replay() -> None:
                     pre_summary=pre_summary,
                     post_summary=post_summary,
                     nonfinite_scope=nonfinite_scope,
+                    eager_compare=eager_compare,
                 )
             if should_fail_fast:
-                raise RuntimeError(
-                    "Prime-RL vLLM NaN trace: FULL CUDA graph replay produced non-finite output"
-                )
+                raise RuntimeError("Prime-RL vLLM NaN trace: FULL CUDA graph replay produced non-finite output")
         return output
 
     CUDAGraphWrapper.__call__ = _patched_call
@@ -573,6 +608,70 @@ def _patch_cudagraph_replay() -> None:
 
 
 def _cudagraph_replay_trace_info(
+    cudagraph_wrapper: Any,
+    *,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    get_forward_context: Any,
+    is_forward_context_available: Any,
+) -> dict[str, Any] | None:
+    entry_info = _cudagraph_replay_entry_info(
+        cudagraph_wrapper,
+        get_forward_context=get_forward_context,
+        is_forward_context_available=is_forward_context_available,
+    )
+    if entry_info is None:
+        return None
+    if getattr(entry_info["entry"], "cudagraph", None) is None:
+        return None
+    mode_name = _enum_name(entry_info["runtime_mode"])
+    if _cudagraph_replay_trace_only_full() and "FULL" not in mode_name:
+        return None
+
+    current_addresses = _tensor_input_addresses(args, kwargs)
+    captured_addresses = getattr(entry_info["entry"], "_prime_rl_all_input_addresses", None)
+    return {
+        "runtime_mode": _enum_summary(entry_info["runtime_mode"]),
+        "wrapper_runtime_mode": _enum_summary(entry_info["wrapper_mode"]),
+        "batch_descriptor": _object_attr_summary(
+            entry_info["batch_descriptor"],
+            ("num_tokens", "num_reqs", "uniform", "has_lora", "num_active_loras"),
+        ),
+        "entry_batch_descriptor": _object_attr_summary(
+            getattr(entry_info["entry"], "batch_descriptor", None),
+            ("num_tokens", "num_reqs", "uniform", "has_lora", "num_active_loras"),
+        ),
+        "positional_input_addresses": _sequence_summary(getattr(entry_info["entry"], "input_addresses", None)),
+        "captured_input_addresses": captured_addresses,
+        "current_input_addresses": current_addresses,
+        "input_address_comparison": _compare_tensor_input_addresses(captured_addresses, current_addresses),
+        "slot_mapping": _slot_mappings_summary(getattr(entry_info["forward_context"], "slot_mapping", None)),
+        "_raw_slot_mapping": getattr(entry_info["forward_context"], "slot_mapping", None),
+        "model_runner_context": _current_model_runner_context(),
+    }
+
+
+def _cudagraph_replay_entry(
+    cudagraph_wrapper: Any,
+    *,
+    get_forward_context: Any,
+    is_forward_context_available: Any,
+    require_captured: bool,
+) -> Any | None:
+    entry_info = _cudagraph_replay_entry_info(
+        cudagraph_wrapper,
+        get_forward_context=get_forward_context,
+        is_forward_context_available=is_forward_context_available,
+    )
+    if entry_info is None:
+        return None
+    entry = entry_info["entry"]
+    if require_captured and getattr(entry, "cudagraph", None) is None:
+        return None
+    return entry
+
+
+def _cudagraph_replay_entry_info(
     cudagraph_wrapper: Any,
     *,
     get_forward_context: Any,
@@ -588,29 +687,16 @@ def _cudagraph_replay_trace_info(
     if batch_descriptor is None or runtime_mode is None or runtime_mode != wrapper_mode:
         return None
 
-    mode_name = _enum_name(runtime_mode)
-    if _cudagraph_replay_trace_only_full() and "FULL" not in mode_name:
-        return None
-
     entries = getattr(cudagraph_wrapper, "concrete_cudagraph_entries", {}) or {}
     entry = entries.get(batch_descriptor)
-    if entry is None or getattr(entry, "cudagraph", None) is None:
+    if entry is None:
         return None
     return {
-        "runtime_mode": _enum_summary(runtime_mode),
-        "wrapper_runtime_mode": _enum_summary(wrapper_mode),
-        "batch_descriptor": _object_attr_summary(
-            batch_descriptor,
-            ("num_tokens", "num_reqs", "uniform", "has_lora", "num_active_loras"),
-        ),
-        "entry_batch_descriptor": _object_attr_summary(
-            getattr(entry, "batch_descriptor", None),
-            ("num_tokens", "num_reqs", "uniform", "has_lora", "num_active_loras"),
-        ),
-        "input_addresses": _sequence_summary(getattr(entry, "input_addresses", None)),
-        "slot_mapping": _slot_mappings_summary(getattr(forward_context, "slot_mapping", None)),
-        "_raw_slot_mapping": getattr(forward_context, "slot_mapping", None),
-        "model_runner_context": _current_model_runner_context(),
+        "entry": entry,
+        "forward_context": forward_context,
+        "batch_descriptor": batch_descriptor,
+        "runtime_mode": runtime_mode,
+        "wrapper_mode": wrapper_mode,
     }
 
 
@@ -633,6 +719,7 @@ def _trace_cudagraph_replay_nonfinite(
     pre_summary: dict[str, Any],
     post_summary: dict[str, Any],
     nonfinite_scope: dict[str, Any],
+    eager_compare: dict[str, Any] | None,
 ) -> None:
     _write_jsonl(
         "cudagraph_replay_nonfinite",
@@ -644,6 +731,7 @@ def _trace_cudagraph_replay_nonfinite(
             "nonfinite_scope": nonfinite_scope,
             "pre": pre_summary,
             "post": post_summary,
+            "eager_compare": eager_compare,
         },
     )
 
@@ -693,9 +781,7 @@ def _cudagraph_replay_nonfinite_scope(
                 }
             )
 
-    has_real_nonfinite = has_unclassified_nonfinite or any(
-        row.get("region") in ("real", "unknown") for row in rows
-    )
+    has_real_nonfinite = has_unclassified_nonfinite or any(row.get("region") in ("real", "unknown") for row in rows)
     return {
         "actual_num_tokens": actual_num_tokens,
         "actual_num_reqs": actual_num_reqs,
@@ -760,13 +846,37 @@ def _cudagraph_replay_bad_row_details(
                 else request_id,
                 "input_id": _indexed_value(input_ids, row_index),
                 "position": _indexed_value(positions, row_index),
-                "input_batch": {
-                    key: _row_value(values, row_index) for key, values in row_values.items()
-                },
+                "input_batch": {key: _row_value(values, row_index) for key, values in row_values.items()},
                 "slot_mappings": _slot_mapping_detail_for_row(slot_mappings, row_index),
             }
         )
     return details
+
+
+def _cudagraph_replay_eager_compare(
+    cudagraph_wrapper: Any,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        output = cudagraph_wrapper.runnable(*args, **kwargs)
+    except Exception as exc:
+        return {
+            "attempted": True,
+            "ok": False,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        }
+
+    return {
+        "attempted": True,
+        "ok": True,
+        "output": _tensor_tree_summary(
+            output,
+            max_tensors=_cudagraph_replay_tensor_limit(),
+            max_numel=_cudagraph_replay_numel_limit(),
+        ),
+    }
 
 
 def _patch_nemotron_h_layers() -> None:
@@ -2001,15 +2111,12 @@ def _slot_mapping_detail_for_row(slot_mapping_summary: dict[str, Any] | None, ro
     if slot_mapping_summary.get("type") == "list":
         return {
             **slot_mapping_summary,
-            "items": [
-                _slot_mapping_detail_for_row(item, row_index)
-                for item in slot_mapping_summary.get("items", [])
-            ],
+            "items": [_slot_mapping_detail_for_row(item, row_index) for item in slot_mapping_summary.get("items", [])],
         }
     groups = []
     for group in slot_mapping_summary.get("groups", []):
-        values = ((group.get("values_by_bad_row") or {}).get("values") or [])
-        row_indices = ((group.get("values_by_bad_row") or {}).get("row_indices") or [])
+        values = (group.get("values_by_bad_row") or {}).get("values") or []
+        row_indices = (group.get("values_by_bad_row") or {}).get("row_indices") or []
         value = None
         for idx, candidate_row in enumerate(row_indices):
             if candidate_row == row_index and idx < len(values):
@@ -2541,6 +2648,124 @@ def _object_attr_summary(value: Any, attrs: tuple[str, ...]) -> dict[str, Any] |
     if value is None:
         return None
     return {attr: _json_safe(getattr(value, attr)) for attr in attrs if hasattr(value, attr)}
+
+
+def _tensor_input_addresses(args: tuple[Any, ...], kwargs: dict[str, Any], *, limit: int = 64) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    truncated = False
+
+    def walk(value: Any, path: str, depth: int) -> None:
+        nonlocal truncated
+        if len(entries) >= limit:
+            truncated = True
+            return
+        if value is None or depth > 6:
+            return
+        value_id = id(value)
+        if value_id in seen:
+            return
+        seen.add(value_id)
+
+        if hasattr(value, "data_ptr") and hasattr(value, "shape"):
+            try:
+                entry = {
+                    "path": path,
+                    "data_ptr": int(value.data_ptr()),
+                    "device": str(getattr(value, "device", "")),
+                    "dtype": str(getattr(value, "dtype", "")),
+                    "shape": list(getattr(value, "shape", [])),
+                    "stride": list(value.stride()) if hasattr(value, "stride") else None,
+                    "numel": int(value.numel()) if hasattr(value, "numel") else None,
+                }
+            except Exception as exc:
+                entry = {
+                    "path": path,
+                    "error": str(exc),
+                    "type": type(value).__name__,
+                }
+            entries.append(entry)
+            return
+
+        if isinstance(value, dict):
+            for key, child in list(value.items())[:64]:
+                walk(child, f"{path}.{key}", depth + 1)
+            if len(value) > 64:
+                truncated = True
+            return
+
+        if isinstance(value, (list, tuple)):
+            for index, child in enumerate(value[:64]):
+                walk(child, f"{path}[{index}]", depth + 1)
+            if len(value) > 64:
+                truncated = True
+
+    walk(args, "$.args", 0)
+    walk(kwargs, "$.kwargs", 0)
+    return {
+        "count": len(entries),
+        "truncated": truncated,
+        "entries": entries,
+    }
+
+
+def _compare_tensor_input_addresses(
+    captured: dict[str, Any] | None,
+    current: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not captured or not current:
+        return {
+            "compared": False,
+            "reason": "missing_captured_or_current_addresses",
+            "captured_count": (captured or {}).get("count"),
+            "current_count": (current or {}).get("count"),
+        }
+
+    captured_by_path = {
+        entry.get("path"): entry for entry in captured.get("entries", []) if entry.get("path") is not None
+    }
+    current_by_path = {
+        entry.get("path"): entry for entry in current.get("entries", []) if entry.get("path") is not None
+    }
+    paths = sorted(set(captured_by_path) | set(current_by_path))
+    mismatches = []
+    for path in paths:
+        captured_entry = captured_by_path.get(path)
+        current_entry = current_by_path.get(path)
+        if captured_entry is None or current_entry is None:
+            mismatches.append(
+                {
+                    "path": path,
+                    "kind": "missing",
+                    "captured_present": captured_entry is not None,
+                    "current_present": current_entry is not None,
+                }
+            )
+            continue
+        differing_fields = {}
+        for field in ("data_ptr", "device", "dtype", "shape", "stride", "numel"):
+            if captured_entry.get(field) != current_entry.get(field):
+                differing_fields[field] = {
+                    "captured": captured_entry.get(field),
+                    "current": current_entry.get(field),
+                }
+        if differing_fields:
+            mismatches.append(
+                {
+                    "path": path,
+                    "kind": "field_mismatch",
+                    "fields": differing_fields,
+                }
+            )
+
+    return {
+        "compared": True,
+        "captured_count": captured.get("count"),
+        "current_count": current.get("count"),
+        "mismatch_count": len(mismatches),
+        "mismatches": mismatches[:16],
+        "truncated": len(mismatches) > 16,
+    }
 
 
 def _tensor_identity(value: Any) -> str:
