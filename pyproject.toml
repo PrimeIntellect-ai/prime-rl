@@ -122,14 +122,10 @@ dev = [
 
 
 [tool.uv.workspace]
-# Workspace members must all be resolvable together, so we list only the env
-# packages we actually install via the `envs` extra. Adding a new env is a
-# two-line change: add it here and to `[project.optional-dependencies] envs`.
 members = [
     "packages/prime-rl-configs",
     "packages/verifiers",
     "packages/renderers",
-    # Env packages — one entry per item in the `envs` extra.
     "packages/verifiers/environments/alphabet_sort",
     "packages/verifiers/environments/math_python",
     "packages/verifiers/environments/reverse_text",
@@ -173,9 +169,7 @@ override-dependencies = [
     "nvidia-cudnn-cu12>=9.15",
     "nvidia-cutlass-dsl>=4.4.1",
     "transformers>=5.1.0.dev0",
-    # verifiers[rl] pins torch<2.9; prime-rl needs torch>=2.9. Force our version.
     "torch>=2.9.0",
-    # verifiers[openenv] requires openenv-core>=0.3.0 (not yet published); allow current PyPI.
     "openenv-core",
 ]
 
@@ -200,7 +194,6 @@ nixl-cu12 = false
 prime-rl-configs = { workspace = true }
 verifiers = { workspace = true }
 renderers = { workspace = true }
-# Env packages from verifiers/environments/* and research-environments/environments/*
 alphabet-sort = { workspace = true }
 browser-cua-example = { workspace = true }
 browser-dom-example = { workspace = true }
@@ -351,8 +344,6 @@ known-first-party = ["prime_rl"]
 
 [tool.ruff]
 line-length = 120
-# Packages under packages/ either have their own ruff config (submodules) or
-# are vendored — skip them all from prime-rl's checks.
 extend-exclude = ["packages"]
 
 [tool.pytest.ini_options]

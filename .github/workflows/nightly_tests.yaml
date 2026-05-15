@@ -25,7 +25,6 @@ jobs:
             - name: Checkout repository
               uses: actions/checkout@v4
               with:
-                  # Matrix-building only reads the repo tree; no submodules needed.
                   submodules: false
 
             - name: Build matrix from nightly test files
@@ -76,8 +75,6 @@ jobs:
             - name: Checkout repository
               uses: actions/checkout@v4
               with:
-                  # GITHUB_TOKEN can't fetch configs/private (no cross-repo access).
-                  # Init only the public submodules in the next step.
                   submodules: false
             - name: Init public submodules
               run: git submodule update --init --recursive -- packages/verifiers packages/renderers packages/research-environments
