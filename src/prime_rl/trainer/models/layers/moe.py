@@ -1274,10 +1274,6 @@ class ZayaRouter(nn.Module):
 
         router_probs = torch.gather(router_probs, dim=2, index=router_indices)
 
-        skip_expert = router_indices == (self.num_experts - 1)
-        router_probs = router_probs.masked_fill(skip_expert, 0)
-        router_indices = router_indices.masked_fill(skip_expert, 0)
-
         return (
             router_logits.reshape(-1, self.num_experts),
             router_probs.reshape(final_shape),
@@ -1552,8 +1548,16 @@ class ZayaMoE(nn.Module):
         batch_size, seq_length, hidden_size = hidden_states.shape
         hidden_states_flat = hidden_states.view(batch_size * seq_length, hidden_size)
 
+        skip_expert = expert_choice == self.experts.num_experts
+        skip_tokens = skip_expert.squeeze(-1)
+        non_skip_tokens = ~skip_tokens
+
+        expert_choice_routed = expert_choice[non_skip_tokens]
+        route_prob_routed = route_prob[non_skip_tokens]
+        hidden_states_routed = hidden_states_flat[non_skip_tokens]
+
         num_tokens_per_expert = torch.histc(
-            expert_choice.reshape(-1).float(),
+            expert_choice_routed.reshape(-1).float(),
             bins=self.experts.num_experts,
             min=0,
             max=self.experts.num_experts,
@@ -1561,20 +1565,31 @@ class ZayaMoE(nn.Module):
         with torch.no_grad():
             self.tokens_per_expert.add_(num_tokens_per_expert)
 
+        out = torch.zeros_like(hidden_states_flat)
+        if skip_tokens.any():
+            out[skip_tokens] = hidden_states_flat[skip_tokens] * route_prob[skip_tokens]
+
+        if hidden_states_routed.shape[0] == 0:
+            return out.reshape(batch_size, seq_length, hidden_size), prev_router_hidden_states, router_logits
+
         if self.ep_comm_backend == "deepep":
-            expert_output = self._run_deepep_routed_experts(hidden_states_flat, expert_choice, route_prob)
-            return expert_output.reshape(batch_size, seq_length, hidden_size), prev_router_hidden_states, router_logits
+            expert_output = self._run_deepep_routed_experts(
+                hidden_states_routed, expert_choice_routed, route_prob_routed
+            )
+            out[non_skip_tokens] = expert_output
+            return out.reshape(batch_size, seq_length, hidden_size), prev_router_hidden_states, router_logits
 
         top_scores_experts_sorted, token_indices_experts_sorted, num_tokens_per_expert = self.reorderer(
-            route_prob, expert_choice
+            route_prob_routed, expert_choice_routed
         )
-        out = torch.zeros_like(hidden_states_flat)
 
         routed_output = self._run_routed_experts(
-            hidden_states_flat, token_indices_experts_sorted, num_tokens_per_expert, top_scores_experts_sorted
+            hidden_states_routed, token_indices_experts_sorted, num_tokens_per_expert, top_scores_experts_sorted
         )
+        routed_out = torch.zeros_like(hidden_states_routed)
         token_indices_full = token_indices_experts_sorted.reshape(-1, 1).expand(-1, hidden_size)
-        out = out.scatter_add(dim=0, index=token_indices_full, src=routed_output)
+        routed_out = routed_out.scatter_add(dim=0, index=token_indices_full, src=routed_output)
+        out[non_skip_tokens] = routed_out
         return out.reshape(batch_size, seq_length, hidden_size), prev_router_hidden_states, router_logits
 
     def init_weights(self, init_std: float, buffer_device: torch.device):
