@@ -11,7 +11,7 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-05-05T12:53:34.246685771Z"
+exclude-newer = "2026-05-08T23:56:37.663000296Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -926,6 +926,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/1b/72/acab01c6b68c7f94080f79049b3d67bbec3af98b65ef101775e08cd11f41/fastcore-1.12.31.tar.gz", hash = "sha256:684a7b05b9f49d94d9ebbf7e104bbe54fa001aa8c78fa681cc7aabbd12d1bbde", size = 94319, upload-time = "2026-03-22T02:21:21.211Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1e/5c/9516828037b1680de14bae4d93b2868b26417059e1e5cb7d8ad7be649197/fastcore-1.12.31-py3-none-any.whl", hash = "sha256:2634f117fe3a2f6c250f8500f70211c96158399936e90fa6d1010d2d516bf03a", size = 98509, upload-time = "2026-03-22T02:21:19.274Z" },
+]
+
+[[package]]
+name = "fastokens"
+version = "0.1.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f2/bd/e65b2989eb045863e1d4b1d161d122f69c8d3b8e23fa287e2a8f1eb4c8ab/fastokens-0.1.2.tar.gz", hash = "sha256:71da0dd9b198d3a00c1cdfae06aff7a616513bced4ba6b2ab0da63b688302c0d", size = 675220, upload-time = "2026-05-07T14:34:31.372Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c7/79/fd6f087929423289df4cf11c5c05d0c13f5274b6f1ff187d322b15ee35bc/fastokens-0.1.2-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:07737f126ea0c6b92123f13c6aef9fada45923d37efdcf3d6bb23e677ec782a6", size = 3304086, upload-time = "2026-05-07T14:34:13.13Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/9d/393fa72d1d9a4e251221e077e42bdccce736f86636563b785d8460d655d1/fastokens-0.1.2-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:cd5c630f190a29492d86da7fcc53dd642f59dec4bf3eb204a378a32131003970", size = 3252648, upload-time = "2026-05-07T14:34:01.934Z" },
+    { url = "https://files.pythonhosted.org/packages/70/8e/728c46b32fd6c10088a6a1b268732f50c03b0efb035bbea7d3f22b8de47e/fastokens-0.1.2-cp39-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:62b3bbbeb4e0ec72ff895b15e4b0ad04a791c87caa0edb1f63bd9d7c9896c86e", size = 3335929, upload-time = "2026-05-07T14:34:21.548Z" },
+    { url = "https://files.pythonhosted.org/packages/04/3d/4ccb53de21bfb87ec13f1dfddc7567cb01732f5c755a083a7cc9e6eebfec/fastokens-0.1.2-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:8e1cb2331e4ac377a636411d722e7a0a2a12c00a46c2d64ab6522004a38c8918", size = 3598235, upload-time = "2026-05-07T14:34:30.102Z" },
 ]
 
 [[package]]
@@ -2890,7 +2902,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "quack-kernels", marker = "extra == 'quack'", specifier = ">=0.3.3" },
-    { name = "renderers", specifier = ">=0.1.7" },
+    { name = "renderers", specifier = ">=0.1.8.dev2" },
     { name = "reverse-text", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ring-flash-attn", specifier = ">=0.1.8" },
@@ -2905,7 +2917,7 @@ requires-dist = [
     { name = "torchvision", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?branch=feat%2Frenderer-multimodal-passthrough" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=f633365f85fde8102310de77ca3139621088b423" },
     { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'", specifier = ">=0.20.2" },
     { name = "vllm", marker = "platform_machine == 'aarch64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl" },
     { name = "vllm", marker = "platform_machine == 'x86_64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_x86_64.whl" },
@@ -2946,7 +2958,7 @@ requires-dist = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.2.22"
+version = "0.2.26"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -2956,9 +2968,9 @@ dependencies = [
     { name = "pydantic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tenacity", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/dc/a7/eb9cb01ce7fa812022ec7c2ffaeb379e1103e07f093a4b85e879b2d0143d/prime_sandboxes-0.2.22.tar.gz", hash = "sha256:7901adca4ff7fff1e7f08c06c4b76765cd90791965216655eb3a87d459588f5e", size = 64970, upload-time = "2026-04-22T18:32:12.973Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9b/98/7ecfdd389664c5112eda8d83e287b266f627fdbcefe5510b1b7346effa4b/prime_sandboxes-0.2.26.tar.gz", hash = "sha256:87b0aa2d5ee44f201cb4d0fc1bdf52efa617a7f3cbf9e5a5ee7bc2de0f45ac98", size = 68496, upload-time = "2026-05-12T22:17:47.801Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/90/b8/46bf98c06826fc26d982c53e10d9d4f086a4c322993a6c51188e5bd6fd30/prime_sandboxes-0.2.22-py3-none-any.whl", hash = "sha256:0a75bb02049c16b55aae7475cc4082e8559ffa6d65181b238077771a95b57855", size = 33182, upload-time = "2026-04-22T18:32:11.739Z" },
+    { url = "https://files.pythonhosted.org/packages/e8/51/b5c282dffd4eba73953cdf86c34df36dd31264464489fd14a1a565776e03/prime_sandboxes-0.2.26-py3-none-any.whl", hash = "sha256:03226e4fa81a8008bbdb3046f295a56a43e74bb89b8e894b001547643deca918", size = 34234, upload-time = "2026-05-12T22:17:46.494Z" },
 ]
 
 [[package]]
@@ -3376,9 +3388,10 @@ wheels = [
 
 [[package]]
 name = "renderers"
-version = "0.1.7"
+version = "0.1.8.dev2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "fastokens", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "jinja2", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "numpy", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "openai", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -3386,9 +3399,9 @@ dependencies = [
     { name = "tiktoken", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "transformers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b1/5f/fdd86253f562ffdecbdb56cb8591961f0b82914a9abc4ebf43976befb891/renderers-0.1.7.tar.gz", hash = "sha256:d17ccbc3813dd0ee3a6f7d8794308bd4300eb2a80dbc01e83c8f47513e9614f0", size = 209731, upload-time = "2026-05-12T12:51:07.559Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/25/49/5503e2dec10f03c24fda25d6c24b985de962792a3dbd20594812307e13e7/renderers-0.1.8.dev2.tar.gz", hash = "sha256:4c1d67a62b1397461546464da0ac833342f4cd793a1a19ac9dee2b8b80778c9c", size = 240216, upload-time = "2026-05-15T06:59:56.92Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f2/71/af973d6fb806cc0f7e9f4d7cab3ed7265745e596298c8eab2185260c6979/renderers-0.1.7-py3-none-any.whl", hash = "sha256:64b119d13952df983462d72882aa97f1c7075fc4a7409a6b6b85ee88d83dfa52", size = 97934, upload-time = "2026-05-12T12:51:06.534Z" },
+    { url = "https://files.pythonhosted.org/packages/50/61/dcfcc357491f089d4f7f6d56e5255b71efdbc9a31710dc4ea92fb8ed005f/renderers-0.1.8.dev2-py3-none-any.whl", hash = "sha256:1664987b4b2db03a584e8cb13f0075dcb516a09337db646b13b359f9b61b2992", size = 123675, upload-time = "2026-05-15T06:59:55.264Z" },
 ]
 
 [[package]]
@@ -4167,8 +4180,8 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-version = "0.1.14"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?branch=feat%2Frenderer-multimodal-passthrough#397b8aa5d27d1e84d78c7b0c6a8b46448b63268f" }
+version = "0.1.15.dev7"
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=f633365f85fde8102310de77ca3139621088b423#f633365f85fde8102310de77ca3139621088b423" }
 dependencies = [
     { name = "aiolimiter", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "anthropic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -4193,7 +4206,6 @@ dependencies = [
     { name = "setproctitle", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tenacity", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "textual", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "wget", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 
 [[package]]
@@ -4680,12 +4692,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/9f/69/83029f1f6300c5fb2
 wheels = [
     { url = "https://files.pythonhosted.org/packages/52/24/ab44c871b0f07f491e5d2ad12c9bd7358e527510618cb1b803a88e986db1/werkzeug-3.1.3-py3-none-any.whl", hash = "sha256:54b78bf3716d19a65be4fceccc0d1d7b89e608834989dfae50ea87564639213e", size = 224498, upload-time = "2024-11-08T15:52:16.132Z" },
 ]
-
-[[package]]
-name = "wget"
-version = "3.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/47/6a/62e288da7bcda82b935ff0c6cfe542970f04e29c756b0e147251b2fb251f/wget-3.2.zip", hash = "sha256:35e630eca2aa50ce998b9b1a127bb26b30dfee573702782aa982f875e3f16061", size = 10857, upload-time = "2015-10-22T15:26:37.51Z" }
 
 [[package]]
 name = "widgetsnbextension"

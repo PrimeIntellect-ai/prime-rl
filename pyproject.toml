@@ -31,7 +31,7 @@ dependencies = [
     "uvloop>=0.21.0",
     "torchtitan",
     "verifiers",
-    "renderers>=0.1.7",
+    "renderers>=0.1.8.dev2",
     "dion",
     "tilelang>=0.1.8",
     "flash-linear-attention",
@@ -166,7 +166,7 @@ prime-rl-configs = { workspace = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", branch = "feat/renderer-multimodal-passthrough" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "f633365f85fde8102310de77ca3139621088b423" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "c1c3424" }
