@@ -58,6 +58,10 @@ def _scheduler_trace_enabled() -> bool:
     return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_SCHEDULER", "1") != "0"
 
 
+def _scheduler_compact_trace_enabled() -> bool:
+    return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_SCHEDULER_COMPACT", "0") != "0"
+
+
 def _model_runner_trace_enabled() -> bool:
     return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_MODEL_RUNNER", "1") != "0"
 
@@ -840,6 +844,10 @@ def _trace_active_request_states_once(output_processor: Any, trigger: dict[str, 
 
 
 def _trace_scheduler_output(scheduler: Any, scheduler_output: Any) -> None:
+    if _scheduler_compact_trace_enabled():
+        _trace_scheduler_shape(scheduler, scheduler_output)
+        return
+
     running_by_id = {req.request_id: req for req in getattr(scheduler, "running", [])}
     cached = scheduler_output.scheduled_cached_reqs
     cached_reqs = [
@@ -881,6 +889,33 @@ def _trace_scheduler_output(scheduler: Any, scheduler_output: Any) -> None:
             "scheduled_new_reqs": new_reqs,
             "scheduled_cached_reqs": cached_reqs,
             "num_scheduled_tokens": dict(sorted(scheduler_output.num_scheduled_tokens.items())),
+        },
+    )
+
+
+def _trace_scheduler_shape(scheduler: Any, scheduler_output: Any) -> None:
+    scheduled_tokens = list((scheduler_output.num_scheduled_tokens or {}).values())
+    scheduled_req_count = len(scheduled_tokens)
+    uniform_decode = scheduled_req_count > 0 and all(value == 1 for value in scheduled_tokens)
+    _write_jsonl(
+        "scheduler_shapes",
+        {
+            "schema": "prime_rl.vllm_scheduler_shape_trace.v1",
+            "created_unix": time.time(),
+            "pid": os.getpid(),
+            "running_count": len(getattr(scheduler, "running", [])),
+            "waiting_count": len(getattr(scheduler, "waiting", [])),
+            "skipped_waiting_count": len(getattr(scheduler, "skipped_waiting", [])),
+            "scheduled_req_count": scheduled_req_count,
+            "scheduled_cached_req_count": len(getattr(scheduler_output.scheduled_cached_reqs, "req_ids", [])),
+            "scheduled_new_req_count": len(scheduler_output.scheduled_new_reqs),
+            "total_num_scheduled_tokens": scheduler_output.total_num_scheduled_tokens,
+            "min_scheduled_tokens": min(scheduled_tokens) if scheduled_tokens else None,
+            "max_scheduled_tokens": max(scheduled_tokens) if scheduled_tokens else None,
+            "uniform_decode": uniform_decode,
+            "finished_req_count": len(scheduler_output.finished_req_ids),
+            "preempted_req_count": len(scheduler_output.preempted_req_ids or []),
+            "new_block_ids_to_zero_count": len(scheduler_output.new_block_ids_to_zero or []),
         },
     )
 
