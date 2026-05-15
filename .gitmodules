@@ -7,3 +7,6 @@
 [submodule "research-environments"]
 	path = research-environments
 	url = git@github.com:PrimeIntellect-ai/research-environments.git
+[submodule "configs/private"]
+	path = configs/private
+	url = git@github.com:PrimeIntellect-ai/research-configs.git
