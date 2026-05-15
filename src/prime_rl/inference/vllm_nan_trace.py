@@ -122,6 +122,10 @@ def _cudagraph_replay_trace_fail_fast() -> bool:
     return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_CUDAGRAPH_REPLAY_FAIL_FAST", "1") != "0"
 
 
+def _cudagraph_replay_trace_fail_fast_real_only() -> bool:
+    return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_CUDAGRAPH_REPLAY_FAIL_FAST_REAL_ONLY", "1") != "0"
+
+
 def _cudagraph_replay_tensor_limit() -> int:
     return _env_int("PRIME_RL_VLLM_NAN_TRACE_CUDAGRAPH_REPLAY_TENSOR_LIMIT", 32) or 32
 
@@ -165,6 +169,15 @@ def _env_int(name: str, default: int | None = None) -> int | None:
         return int(value)
     except ValueError:
         return default
+
+
+def _nested_get(value: Any, keys: tuple[str, ...]) -> Any:
+    current = value
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
 
 
 def _patch_output_processor() -> None:
@@ -380,12 +393,23 @@ def _patch_cudagraph_replay() -> None:
         )
 
         if pre_summary["nonfinite_tensor_count"] or post_summary["nonfinite_tensor_count"]:
+            nonfinite_scope = _cudagraph_replay_nonfinite_scope(trace_info, post_summary)
             _trace_cudagraph_replay_nonfinite(
                 trace_info=trace_info,
                 pre_summary=pre_summary,
                 post_summary=post_summary,
+                nonfinite_scope=nonfinite_scope,
             )
-            if _cudagraph_replay_trace_fail_fast() and post_summary["nonfinite_tensor_count"]:
+            should_fail_fast = _cudagraph_replay_trace_fail_fast() and post_summary[
+                "nonfinite_tensor_count"
+            ]
+            if (
+                should_fail_fast
+                and _cudagraph_replay_trace_fail_fast_real_only()
+                and not nonfinite_scope.get("has_real_nonfinite", True)
+            ):
+                should_fail_fast = False
+            if should_fail_fast:
                 raise RuntimeError(
                     "Prime-RL vLLM NaN trace: FULL CUDA graph replay produced non-finite output"
                 )
@@ -457,6 +481,7 @@ def _trace_cudagraph_replay_nonfinite(
     trace_info: dict[str, Any],
     pre_summary: dict[str, Any],
     post_summary: dict[str, Any],
+    nonfinite_scope: dict[str, Any],
 ) -> None:
     _write_jsonl(
         "cudagraph_replay_nonfinite",
@@ -465,10 +490,71 @@ def _trace_cudagraph_replay_nonfinite(
             "created_unix": time.time(),
             "pid": os.getpid(),
             "trace_info": trace_info,
+            "nonfinite_scope": nonfinite_scope,
             "pre": pre_summary,
             "post": post_summary,
         },
     )
+
+
+def _cudagraph_replay_nonfinite_scope(
+    trace_info: dict[str, Any],
+    post_summary: dict[str, Any],
+) -> dict[str, Any]:
+    actual_num_tokens = _nested_get(
+        trace_info,
+        ("model_runner_context", "batch_execution", "inputs", "num_tokens"),
+    )
+    actual_num_reqs = _nested_get(
+        trace_info,
+        ("model_runner_context", "batch_execution", "inputs", "num_reqs"),
+    )
+    descriptor_num_tokens = _nested_get(trace_info, ("batch_descriptor", "num_tokens"))
+    descriptor_num_reqs = _nested_get(trace_info, ("batch_descriptor", "num_reqs"))
+
+    rows: list[dict[str, Any]] = []
+    has_unclassified_nonfinite = False
+    for tensor in post_summary.get("tensors") or []:
+        if not tensor.get("nonfinite"):
+            continue
+        bad_rows = tensor.get("bad_rows") or []
+        if not bad_rows:
+            has_unclassified_nonfinite = True
+            continue
+        for bad_row in bad_rows:
+            row_index = bad_row.get("row_index")
+            region = "unknown"
+            if isinstance(row_index, int) and isinstance(actual_num_tokens, int):
+                region = "real" if row_index < actual_num_tokens else "padded"
+            rows.append(
+                {
+                    "path": tensor.get("path"),
+                    "shape": tensor.get("shape"),
+                    "row_index": row_index,
+                    "region": region,
+                    "nan": bad_row.get("nan"),
+                    "posinf": bad_row.get("posinf"),
+                    "neginf": bad_row.get("neginf"),
+                }
+            )
+
+    has_real_nonfinite = has_unclassified_nonfinite or any(
+        row.get("region") in ("real", "unknown") for row in rows
+    )
+    return {
+        "actual_num_tokens": actual_num_tokens,
+        "actual_num_reqs": actual_num_reqs,
+        "descriptor_num_tokens": descriptor_num_tokens,
+        "descriptor_num_reqs": descriptor_num_reqs,
+        "padded_rows": (
+            descriptor_num_tokens - actual_num_tokens
+            if isinstance(descriptor_num_tokens, int) and isinstance(actual_num_tokens, int)
+            else None
+        ),
+        "has_real_nonfinite": has_real_nonfinite,
+        "has_unclassified_nonfinite": has_unclassified_nonfinite,
+        "bad_rows": rows,
+    }
 
 
 def _patch_nemotron_h_layers() -> None:
