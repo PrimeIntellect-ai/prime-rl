@@ -28,7 +28,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: true
+          # GITHUB_TOKEN can't fetch configs/private (no cross-repo access).
+          # Init only the public submodules in the next step.
+          submodules: false
+      - name: Init public submodules
+        run: git submodule update --init --recursive -- packages/verifiers packages/renderers packages/research-environments
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
@@ -87,7 +91,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: true
+          # GITHUB_TOKEN can't fetch configs/private (no cross-repo access).
+          # Init only the public submodules in the next step.
+          submodules: false
+      - name: Init public submodules
+        run: git submodule update --init --recursive -- packages/verifiers packages/renderers packages/research-environments
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
