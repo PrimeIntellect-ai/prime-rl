@@ -1,4 +1,5 @@
 # This script should be run with "https://github.com/JJJYmmm/transformers.git" which checks against the (likely) merged transformers PR for Zaya
+# Only the test_zaya should be run with "https://github.com/nreHieW/transformers"
 from pathlib import Path
 
 import pytest
@@ -163,7 +164,11 @@ def test_zaya() -> None:
     dtype = torch.bfloat16
     device = torch.device("cuda")
 
-    hf_model = HFZayaForCausalLM.from_pretrained(str(snapshot), torch_dtype=dtype)
+    # This path here is to use the HF PR version
+    # hf_model = HFZayaForCausalLM.from_pretrained(str(snapshot), torch_dtype=dtype)
+
+    # This path here is to use the official Zyphra version, use transformers from "https://github.com/nreHieW/transformers"
+    hf_model = HFZayaForCausalLM.from_pretrained("Zyphra/ZAYA1-8B", torch_dtype=dtype)
     hf_model.to(device)
     attn_impl = getattr(
         hf_model.config,
