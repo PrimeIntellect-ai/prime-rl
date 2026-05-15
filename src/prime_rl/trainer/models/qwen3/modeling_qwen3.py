@@ -51,9 +51,7 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         self.self_attn = ATTN_IMPL2CLASS[config._attn_implementation](attn_config)
         if self.layer_type == "sliding_attention":
             if config._attn_implementation == "sdpa":
-                raise ValueError(
-                    "Qwen3 sliding attention is only supported by the custom model with flash attention."
-                )
+                raise ValueError("Qwen3 sliding attention is only supported by the custom model with flash attention.")
             self.self_attn.sliding_window = config.sliding_window
 
         mlp_config = MLPConfig(

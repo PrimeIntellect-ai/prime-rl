@@ -71,9 +71,7 @@ class FlashAttention(nn.Module):
         self.v_proj = nn.Linear(
             config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
         )
-        self.o_proj = nn.Linear(
-            config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.output_bias
-        )
+        self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.output_bias)
         self.use_qk_norm = config.use_qk_norm
         self.qk_norm_type = config.qk_norm_type
         if self.use_qk_norm:
@@ -204,9 +202,7 @@ class SDPAAttention(nn.Module):
         self.v_proj = nn.Linear(
             config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
         )
-        self.o_proj = nn.Linear(
-            config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.output_bias
-        )
+        self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.output_bias)
         self.use_qk_norm = config.use_qk_norm
         self.qk_norm_type = config.qk_norm_type
         if self.use_qk_norm:
