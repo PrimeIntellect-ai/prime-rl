@@ -135,8 +135,7 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
         trainer_logprobs, inference_logprobs
     )
 
-    inference_probs = torch.exp(inference_logprobs)
-    probs_diff = inference_probs * (importance_ratio - 1)
+    probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
     dppo_invalid_mask_high = probs_diff > loss_config.dppo_mask_high
     dppo_invalid_mask_low = probs_diff < -loss_config.dppo_mask_low
     positive_advantages = advantages > 0
@@ -161,7 +160,6 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
 
     metrics = {
-        "mismatch_kl": _safe_mean(mismatch_kl, loss_mask),  # all trainable tokens
         "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
         "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
         "is_masked": _safe_mean(is_masked, loss_mask),

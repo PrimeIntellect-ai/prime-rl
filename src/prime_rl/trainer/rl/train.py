@@ -492,6 +492,7 @@ def train(config: TrainerConfig):
                 with torch.no_grad():
                     _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(out["logprobs"], inference_logprobs)
                 mismatch_kl = mismatch_kl[loss_mask].detach().to("cpu")
+                tensors["mismatch_kl/all"].append(mismatch_kl)
                 for env_name, indices in env_to_indices.items():
                     tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
@@ -503,10 +504,7 @@ def train(config: TrainerConfig):
 
             # Add loss tensors to tensor dict for logging purposes
             for key, loss_tensor in loss_tensors.items():
-                loss_tensor = loss_tensor.detach().to("cpu")
-                if key == "mismatch_kl":
-                    key = "mismatch_kl/all"
-                tensors[key].append(loss_tensor)
+                tensors[key].append(loss_tensor.detach().to("cpu"))
 
             # Debug log with *local, micro step* stats
             micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy/all'][-1].mean().item():.4f}"
