@@ -3,12 +3,6 @@ from torch import Tensor
 
 _HF_GATE_PREFIX = ".mlp.gate."
 _PRIME_ROUTER_PREFIX = ".mlp.router."
-_LAYER_ZERO_RESIDUAL_SUFFIXES = (
-    "post_attention_residual_scale.residual_scale",
-    "post_attention_residual_scale.residual_bias",
-    "post_mlp_residual_scale.residual_scale",
-    "post_mlp_residual_scale.residual_bias",
-)
 
 
 def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
@@ -28,29 +22,8 @@ def _rename_layer_prefix(state_dict: dict[str, Tensor], old_prefix: str, new_pre
         state_dict[new_prefix + key[len(old_prefix) :]] = state_dict.pop(key)
 
 
-def _remove_layer_zero_residual_params(state_dict: dict[str, Tensor]) -> None:
-    for suffix in _LAYER_ZERO_RESIDUAL_SUFFIXES:
-        state_dict.pop(f"model.layers.0.{suffix}", None)
-
-
-def _add_layer_zero_residual_params(state_dict: dict[str, Tensor]) -> None:
-    for block in ("post_attention_residual_scale", "post_mlp_residual_scale"):
-        scale_key = f"model.layers.0.{block}.hidden_states_scale"
-        bias_key = f"model.layers.0.{block}.hidden_states_bias"
-        residual_scale_key = f"model.layers.0.{block}.residual_scale"
-        residual_bias_key = f"model.layers.0.{block}.residual_bias"
-
-        if scale_key in state_dict and residual_scale_key not in state_dict:
-            state_dict[residual_scale_key] = torch.ones_like(state_dict[scale_key])
-        if bias_key in state_dict and residual_bias_key not in state_dict:
-            state_dict[residual_bias_key] = torch.zeros_like(state_dict[bias_key])
-
-
 def convert_hf_layer_to_prime(state_dict: dict[str, Tensor], layer_idx: int) -> None:
     prefix = f"model.layers.{layer_idx}"
-    if layer_idx == 0:
-        _remove_layer_zero_residual_params(state_dict)
-
     _rename_layer_prefix(state_dict, f"{prefix}.mlp.gate.", f"{prefix}.mlp.router.")
 
     gate_up_key = f"{prefix}.mlp.experts.gate_up_proj"
@@ -77,8 +50,6 @@ def convert_prime_layer_to_hf(state_dict: dict[str, Tensor], layer_idx: int) -> 
     w2_key = f"{prefix}.mlp.experts.w2"
     w3_key = f"{prefix}.mlp.experts.w3"
     if w1_key not in state_dict:
-        if layer_idx == 0:
-            _add_layer_zero_residual_params(state_dict)
         return
 
     w1 = state_dict.pop(w1_key)
@@ -86,12 +57,9 @@ def convert_prime_layer_to_hf(state_dict: dict[str, Tensor], layer_idx: int) -> 
     w3 = state_dict.pop(w3_key)
     state_dict[f"{prefix}.mlp.experts.gate_up_proj"] = torch.cat([w1, w3], dim=1).contiguous()
     state_dict[f"{prefix}.mlp.experts.down_proj"] = w2.contiguous()
-    if layer_idx == 0:
-        _add_layer_zero_residual_params(state_dict)
 
 
 def convert_hf_to_prime(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-    _remove_layer_zero_residual_params(state_dict)
     for layer_idx in range(get_max_layer_num(state_dict)):
         convert_hf_layer_to_prime(state_dict, layer_idx)
     return state_dict
@@ -100,7 +68,6 @@ def convert_hf_to_prime(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
 def convert_prime_to_hf(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
     for layer_idx in range(get_max_layer_num(state_dict)):
         convert_prime_layer_to_hf(state_dict, layer_idx)
-    _add_layer_zero_residual_params(state_dict)
     return state_dict
 
 

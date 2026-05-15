@@ -1421,8 +1421,12 @@ class ZayaMoE(nn.Module):
                 expert_idx = int(expert_idx_tensor[0].item())
                 top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
                 current_state = hidden_states_flat[token_idx]
-                gate = F.linear(current_state, self.experts.w1[expert_idx])
-                up = F.linear(current_state, self.experts.w3[expert_idx])
+                # gate = F.linear(current_state, self.experts.w1[expert_idx])
+                # up = F.linear(current_state, self.experts.w3[expert_idx])
+                gate_up = F.linear(
+                    current_state, torch.cat([self.experts.w1[expert_idx], self.experts.w3[expert_idx]], dim=0)
+                )
+                gate, up = gate_up.chunk(2, dim=-1)
                 current_hidden_states = F.silu(gate) * up
                 current_hidden_states = F.linear(current_hidden_states, self.experts.w2[expert_idx])
                 current_hidden_states = current_hidden_states * route_prob[token_idx, top_k_pos, None]

@@ -39,24 +39,22 @@ from prime_rl.trainer.models.zaya.configuration_zaya import ZayaConfig
 from prime_rl.trainer.models.zaya.converting_zaya import convert_hf_to_prime, convert_prime_to_hf
 from prime_rl.trainer.models.zaya.converting_zaya import is_hf_state_dict as _is_hf_state_dict
 from prime_rl.trainer.models.zaya.converting_zaya import is_prime_state_dict as _is_prime_state_dict
+from prime_rl.trainer.models.zaya.vllm_postprocessing import convert_prime_to_vllm
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 
 
 class ZayaResidualScaling(nn.Module):
-    def __init__(self, config: ZayaConfig, layer_idx: int):
+    def __init__(self, config: ZayaConfig):
         super().__init__()
-        self.not_first_layer = layer_idx != 0
         self.hidden_states_scale = nn.Parameter(torch.ones(config.hidden_size))
         self.hidden_states_bias = nn.Parameter(torch.zeros(config.hidden_size))
-        if self.not_first_layer:
-            self.residual_scale = nn.Parameter(torch.ones(config.hidden_size))
-            self.residual_bias = nn.Parameter(torch.zeros(config.hidden_size))
+        self.residual_scale = nn.Parameter(torch.ones(config.hidden_size))
+        self.residual_bias = nn.Parameter(torch.zeros(config.hidden_size))
 
-    def forward(self, residual: torch.Tensor | None, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, residual: torch.Tensor) -> torch.Tensor:
         output_dtype = hidden_states.dtype
         hidden_states = (hidden_states + self.hidden_states_bias) * self.hidden_states_scale
-        if self.not_first_layer and residual is not None:
-            residual = (residual.to(torch.float32) + self.residual_bias) * self.residual_scale
+        residual = (residual.to(torch.float32) + self.residual_bias) * self.residual_scale
         return (hidden_states + residual).to(output_dtype)
 
 
@@ -161,6 +159,21 @@ class ZayaQKNorm(nn.Module):
         return query_states, key_states
 
 
+class ZayaRotaryEmbedding(RotaryEmbedding):
+    def __init__(self, config: RotaryEmbeddingConfig, device=None):
+        super().__init__(config, device=device)
+        self.inv_freq = self.inv_freq.float()
+        self.original_inv_freq = self.inv_freq.clone()
+
+    def _apply(self, fn):
+        super()._apply(fn)
+        # always force RoPE in fp32
+        inv_freq, self.attention_scaling = self.rope_init_fn(self.config, self.inv_freq.device)
+        self.inv_freq = inv_freq.float()
+        self.original_inv_freq = self.inv_freq.clone()
+        return self
+
+
 def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     batch, num_key_value_heads, slen, head_dim = hidden_states.shape
     if n_rep == 1:
@@ -201,8 +214,8 @@ class ZayaSPDAAttention(SDPAAttention):
         value_states: torch.Tensor,
         causal_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        key_states = key_states.repeat_interleave(self.num_key_value_groups, dim=1)
-        value_states = value_states.repeat_interleave(self.num_key_value_groups, dim=1)
+        key_states = _repeat_kv(key_states, self.num_key_value_groups)
+        value_states = _repeat_kv(value_states, self.num_key_value_groups)
         out = F.scaled_dot_product_attention(
             query_states,
             key_states,
@@ -345,13 +358,14 @@ class ZayaDecoderLayer(nn.Module):
             num_experts_per_tok=config.num_experts_per_tok,
             router_hidden_size=config.router_hidden_size,
             norm_epsilon=config.norm_epsilon,
-            use_grouped_mm=config.use_grouped_mm,
+            use_grouped_mm=False,
+            # use_grouped_mm=config.use_grouped_mm,
             use_eda=config.zaya_use_eda,
         )
         self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.norm_epsilon))
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.norm_epsilon))
-        self.post_attention_residual_scale = ZayaResidualScaling(config, layer_idx)
-        self.post_mlp_residual_scale = ZayaResidualScaling(config, layer_idx)
+        self.post_attention_residual_scale = ZayaResidualScaling(config)
+        self.post_mlp_residual_scale = ZayaResidualScaling(config)
 
     def forward(
         self,
@@ -416,7 +430,7 @@ class ZayaModel(ZayaPreTrainedModel):
         rope_parameters = config.rope_parameters.get("hybrid", config.rope_parameters)
         rope_config = copy.copy(config)
         rope_config.rope_parameters = rope_parameters
-        self.rotary_emb = RotaryEmbedding(
+        self.rotary_emb = ZayaRotaryEmbedding(
             RotaryEmbeddingConfig(
                 max_position_embeddings=config.max_position_embeddings,
                 rope_type=rope_parameters["rope_type"],
@@ -571,6 +585,10 @@ class ZayaForCausalLM(ZayaPreTrainedModel, GenerationMixin):
     def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         return convert_hf_to_prime(state_dict)
 
+    @classmethod
+    def convert_to_vllm(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        return convert_prime_to_vllm(state_dict)
+
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -617,7 +635,7 @@ class ZayaForCausalLM(ZayaPreTrainedModel, GenerationMixin):
         for module in self.modules():
             if isinstance(module, ZayaMoE):
                 module.tokens_per_expert = torch.zeros(
-                    module.router.num_experts,
+                    module.experts.num_experts,
                     dtype=torch.float32,
                     device=module.tokens_per_expert.device,
                 )
