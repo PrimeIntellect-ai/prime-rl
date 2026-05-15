@@ -19,6 +19,7 @@ def transformers_v5_compat():
     monkey_patch_deep_gemm_silu_mul_quant_int64()
     monkey_patch_dp_engine_core_pause_resume_deadlock()
     monkey_patch_vllm_layerwise_reload_alias_buffers()
+    monkey_patch_vllm_invalid_spec_token_guard()
 
 
 def monkey_patch_vllm_layerwise_reload_alias_buffers():
@@ -49,6 +50,71 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
 
     reload_layerwise._copy_and_restore_kernel_tensors = _copy_and_restore_kernel_tensors
     logger.warning("Enabled vLLM layerwise reload alias-buffer patch.")
+
+
+def _trim_invalid_spec_token_suffix(spec_token_ids: list[int]) -> list[int]:
+    """Drop speculative placeholders before vLLM schedules them as input IDs."""
+    for index, token_id in enumerate(spec_token_ids):
+        if token_id < 0:
+            return spec_token_ids[:index]
+    return spec_token_ids
+
+
+def _sanitize_request_spec_token_ids(request) -> bool:
+    spec_token_ids = getattr(request, "spec_token_ids", None)
+    if not spec_token_ids:
+        return False
+
+    trimmed = _trim_invalid_spec_token_suffix(spec_token_ids)
+    if trimmed is spec_token_ids:
+        return False
+
+    request.spec_token_ids = trimmed
+    return True
+
+
+def _sanitize_scheduler_spec_token_ids(scheduler) -> int:
+    requests = getattr(scheduler, "requests", {})
+    return sum(_sanitize_request_spec_token_ids(request) for request in requests.values())
+
+
+def monkey_patch_vllm_invalid_spec_token_guard():
+    """Prevent invalid speculative placeholders from reaching model input IDs.
+
+    Qwen3.5 MTP can emit ``-1`` draft-token placeholders after pause/update/resume
+    while cached decode requests are preserved. vLLM's scheduler treats
+    ``request.spec_token_ids`` as real future tokens when computing
+    ``num_scheduled_tokens``; if ``-1`` survives there, the model runner can feed
+    it into the target model embedding. Trimming at the first negative value keeps
+    the valid draft prefix, drops invalid placeholders, and preserves KV/cache.
+    """
+    from vllm.logger import init_logger
+    from vllm.v1.core.sched.scheduler import Scheduler
+
+    logger = init_logger(__name__)
+
+    if getattr(Scheduler, "_prime_rl_invalid_spec_token_guard_patched", False):
+        return
+
+    original_schedule = Scheduler.schedule
+    original_update_draft_token_ids = Scheduler.update_draft_token_ids
+
+    def _patched_schedule(self):
+        sanitized_count = _sanitize_scheduler_spec_token_ids(self)
+        if sanitized_count:
+            logger.debug("Dropped invalid speculative token IDs for %d request(s) before scheduling.", sanitized_count)
+        return original_schedule(self)
+
+    def _patched_update_draft_token_ids(self, draft_token_ids):
+        original_update_draft_token_ids(self, draft_token_ids)
+        sanitized_count = _sanitize_scheduler_spec_token_ids(self)
+        if sanitized_count:
+            logger.debug("Dropped invalid speculative token IDs for %d request(s) after draft update.", sanitized_count)
+
+    Scheduler.schedule = _patched_schedule
+    Scheduler.update_draft_token_ids = _patched_update_draft_token_ids
+    Scheduler._prime_rl_invalid_spec_token_guard_patched = True
+    logger.warning("Enabled vLLM invalid speculative token guard.")
 
 
 @triton.jit
