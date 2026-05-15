@@ -36,7 +36,12 @@ from prime_rl.trainer.models.layers.moe import ZayaMoE
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig, apply_rotary_pos_emb
 from prime_rl.trainer.models.zaya.configuration_zaya import ZayaConfig
-from prime_rl.trainer.models.zaya.converting_zaya import convert_hf_to_prime, convert_prime_to_hf
+from prime_rl.trainer.models.zaya.converting_zaya import (
+    convert_hf_layer_to_prime,
+    convert_hf_to_prime,
+    convert_prime_layer_to_hf,
+    convert_prime_to_hf,
+)
 from prime_rl.trainer.models.zaya.converting_zaya import is_hf_state_dict as _is_hf_state_dict
 from prime_rl.trainer.models.zaya.converting_zaya import is_prime_state_dict as _is_prime_state_dict
 from prime_rl.trainer.models.zaya.vllm_postprocessing import convert_prime_to_vllm
@@ -358,8 +363,7 @@ class ZayaDecoderLayer(nn.Module):
             num_experts_per_tok=config.num_experts_per_tok,
             router_hidden_size=config.router_hidden_size,
             norm_epsilon=config.norm_epsilon,
-            use_grouped_mm=False,
-            # use_grouped_mm=config.use_grouped_mm,
+            use_grouped_mm=config.use_grouped_mm,
             use_eda=config.zaya_use_eda,
         )
         self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.norm_epsilon))
@@ -584,6 +588,16 @@ class ZayaForCausalLM(ZayaPreTrainedModel, GenerationMixin):
     @classmethod
     def convert_to_prime(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         return convert_hf_to_prime(state_dict)
+
+    @classmethod
+    def convert_layer_to_hf(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
+        convert_prime_layer_to_hf(state_dict, layer_idx)
+        return state_dict
+
+    @classmethod
+    def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
+        convert_hf_layer_to_prime(state_dict, layer_idx)
+        return state_dict
 
     @classmethod
     def convert_to_vllm(cls, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:

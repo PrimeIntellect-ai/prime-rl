@@ -10,6 +10,7 @@ from typing import Literal
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.distributed.tensor import DTensor
 from torchtitan.distributed.expert_parallel import expert_parallel
 
 from prime_rl.configs.trainer import EPCommBackend
@@ -1285,6 +1286,145 @@ class ZayaRouter(nn.Module):
         )
 
 
+def _run_zaya_experts_for_loop_impl(
+    gate_up_proj: torch.Tensor,
+    down_proj: torch.Tensor,
+    x: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+) -> torch.Tensor:
+    num_tokens_per_expert = num_tokens_per_expert.tolist()
+    num_padding = x.shape[0] - sum(num_tokens_per_expert)
+
+    x = torch.split(
+        x[: sum(num_tokens_per_expert)],
+        split_size_or_sections=num_tokens_per_expert,
+        dim=0,
+    )
+    out_experts_splits = []
+    for expert_idx, x_expert in enumerate(x):
+        gate_up = torch.matmul(x_expert, gate_up_proj[expert_idx].transpose(-2, -1))
+        gate, up = gate_up.chunk(2, dim=-1)
+        h = F.silu(gate) * up
+        h = torch.matmul(h, down_proj[expert_idx].transpose(-2, -1))
+        out_experts_splits.append(h)
+    out = torch.cat(out_experts_splits, dim=0)
+    out = torch.vstack((out, out.new_zeros((num_padding, out.shape[-1]))))
+    return out
+
+
+@expert_parallel
+def _run_zaya_experts_for_loop(
+    gate_up_proj: torch.Tensor,
+    down_proj: torch.Tensor,
+    _w3: torch.Tensor,
+    x: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+) -> torch.Tensor:
+    return _run_zaya_experts_for_loop_impl(gate_up_proj, down_proj, x, num_tokens_per_expert)
+
+
+def _run_zaya_experts_grouped_mm_impl(
+    gate_up_proj: torch.Tensor,
+    down_proj: torch.Tensor,
+    x: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    fp8: bool = False,
+) -> torch.Tensor:
+    offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
+    assert x.dim() == 2
+
+    if fp8:
+        from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
+
+        gate_up = grouped_fp8_gemm(x.bfloat16(), gate_up_proj.bfloat16().transpose(-2, -1), offsets)
+        gate, up = gate_up.chunk(2, dim=-1)
+        h = (F.silu(gate) * up).contiguous()
+        out = grouped_fp8_gemm(h, down_proj.bfloat16().transpose(-2, -1), offsets).type_as(x)
+    else:
+        gate_up = torch._grouped_mm(x.bfloat16(), gate_up_proj.bfloat16().transpose(-2, -1), offs=offsets)
+        gate, up = gate_up.chunk(2, dim=-1)
+        h = (F.silu(gate) * up).contiguous()
+        out = torch._grouped_mm(h, down_proj.bfloat16().transpose(-2, -1), offs=offsets).type_as(x)
+    return out
+
+
+@expert_parallel
+def _run_zaya_experts_grouped_mm(
+    gate_up_proj: torch.Tensor,
+    down_proj: torch.Tensor,
+    _w3: torch.Tensor,
+    x: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+) -> torch.Tensor:
+    return _run_zaya_experts_grouped_mm_impl(gate_up_proj, down_proj, x, num_tokens_per_expert)
+
+
+@expert_parallel
+def _run_zaya_experts_fp8_grouped_mm(
+    gate_up_proj: torch.Tensor,
+    down_proj: torch.Tensor,
+    _w3: torch.Tensor,
+    x: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+) -> torch.Tensor:
+    return _run_zaya_experts_grouped_mm_impl(gate_up_proj, down_proj, x, num_tokens_per_expert, fp8=True)
+
+
+class ZayaGroupedExperts(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        hidden_dim: int,
+        num_experts: int,
+        use_grouped_mm: bool,
+        fp8: bool = False,
+    ):
+        super().__init__()
+        self.num_experts = num_experts
+        self.gate_up_proj = nn.Parameter(torch.empty(num_experts, 2 * hidden_dim, dim))
+        self.down_proj = nn.Parameter(torch.empty(num_experts, dim, hidden_dim))
+        self.use_grouped_mm = use_grouped_mm
+        self.fp8 = fp8
+        self.ep_comm_backend: EPCommBackend = "torch"
+
+    def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
+        self.ep_comm_backend = backend
+
+    def _forward_deepep(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
+        gate_up_proj = self.gate_up_proj.to_local()
+        down_proj = self.down_proj.to_local()
+        if self.use_grouped_mm:
+            return _run_zaya_experts_grouped_mm_impl(gate_up_proj, down_proj, x, num_tokens_per_expert, fp8=self.fp8)
+        return _run_zaya_experts_for_loop_impl(gate_up_proj, down_proj, x, num_tokens_per_expert)
+
+    def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
+        if self.ep_comm_backend == "deepep":
+            return self._forward_deepep(x, num_tokens_per_expert)
+
+        num_tokens_per_expert = num_tokens_per_expert.to(torch.int32)
+        # This DTensor check is basically to ensure accuracy when comparing with local HF
+        if not isinstance(self.gate_up_proj, DTensor):
+            if self.use_grouped_mm:
+                return _run_zaya_experts_grouped_mm_impl(
+                    self.gate_up_proj, self.down_proj, x, num_tokens_per_expert, fp8=self.fp8
+                )
+            return _run_zaya_experts_for_loop_impl(self.gate_up_proj, self.down_proj, x, num_tokens_per_expert)
+
+        if self.use_grouped_mm:
+            if self.fp8:
+                return _run_zaya_experts_fp8_grouped_mm(
+                    self.gate_up_proj, self.down_proj, self.down_proj, x, num_tokens_per_expert
+                )
+            return _run_zaya_experts_grouped_mm(
+                self.gate_up_proj, self.down_proj, self.down_proj, x, num_tokens_per_expert
+            )
+        return _run_zaya_experts_for_loop(self.gate_up_proj, self.down_proj, self.down_proj, x, num_tokens_per_expert)
+
+    def init_weights(self, init_std: float):
+        nn.init.trunc_normal_(self.gate_up_proj, mean=0.0, std=0.02)
+        nn.init.trunc_normal_(self.down_proj, mean=0.0, std=init_std)
+
+
 class ZayaMoE(nn.Module):
     def __init__(
         self,
@@ -1314,7 +1454,7 @@ class ZayaMoE(nn.Module):
             use_eda=use_eda,
             norm_epsilon=norm_epsilon,
         )
-        self.experts = GroupedExperts(
+        self.experts = ZayaGroupedExperts(
             dim=hidden_size,
             hidden_dim=moe_intermediate_size,
             num_experts=num_experts,
@@ -1337,6 +1477,18 @@ class ZayaMoE(nn.Module):
 
     def set_deepep_token_chunk_size(self, chunk_size: int | None) -> None:
         self.deepep_token_chunk_size = chunk_size
+
+    def _run_routed_experts(
+        self,
+        x: torch.Tensor,
+        token_indices_experts_sorted: torch.Tensor,
+        num_tokens_per_expert: torch.Tensor,
+        top_scores_experts_sorted: torch.Tensor,
+    ) -> torch.Tensor:
+        routed_indices = token_indices_experts_sorted.reshape(-1, 1).expand(-1, x.shape[-1])
+        routed_input = torch.gather(x, dim=0, index=routed_indices)
+        routed_output = self.experts(routed_input, num_tokens_per_expert)
+        return routed_output * top_scores_experts_sorted.reshape(-1, 1)
 
     def _run_local_routed_experts(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
         return self.experts(x, num_tokens_per_expert)
@@ -1413,40 +1565,16 @@ class ZayaMoE(nn.Module):
             expert_output = self._run_deepep_routed_experts(hidden_states_flat, expert_choice, route_prob)
             return expert_output.reshape(batch_size, seq_length, hidden_size), prev_router_hidden_states, router_logits
 
-        if not self.experts.use_grouped_mm:
-            out = torch.zeros_like(hidden_states_flat)
-            expert_mask = F.one_hot(expert_choice, num_classes=self.experts.num_experts).permute(2, 1, 0)
-            active_experts = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
-            for expert_idx_tensor in active_experts:
-                expert_idx = int(expert_idx_tensor[0].item())
-                top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
-                current_state = hidden_states_flat[token_idx]
-                # gate = F.linear(current_state, self.experts.w1[expert_idx])
-                # up = F.linear(current_state, self.experts.w3[expert_idx])
-                gate_up = F.linear(
-                    current_state, torch.cat([self.experts.w1[expert_idx], self.experts.w3[expert_idx]], dim=0)
-                )
-                gate, up = gate_up.chunk(2, dim=-1)
-                current_hidden_states = F.silu(gate) * up
-                current_hidden_states = F.linear(current_hidden_states, self.experts.w2[expert_idx])
-                current_hidden_states = current_hidden_states * route_prob[token_idx, top_k_pos, None]
-                out.index_add_(0, token_idx, current_hidden_states.to(out.dtype))
-            return out.reshape(batch_size, seq_length, hidden_size), prev_router_hidden_states, router_logits
-
         top_scores_experts_sorted, token_indices_experts_sorted, num_tokens_per_expert = self.reorderer(
             route_prob, expert_choice
         )
-        sorted_input = hidden_states_flat[token_indices_experts_sorted]
-
-        local_counts = num_tokens_per_expert.to(torch.int32)
-        expert_output_sorted = self.experts(sorted_input, local_counts)
-
-        expert_output_sorted = (expert_output_sorted.float() * top_scores_experts_sorted.reshape(-1, 1)).to(
-            expert_output_sorted.dtype
-        )
         out = torch.zeros_like(hidden_states_flat)
+
+        routed_output = self._run_routed_experts(
+            hidden_states_flat, token_indices_experts_sorted, num_tokens_per_expert, top_scores_experts_sorted
+        )
         token_indices_full = token_indices_experts_sorted.reshape(-1, 1).expand(-1, hidden_size)
-        out = out.scatter_add(dim=0, index=token_indices_full, src=expert_output_sorted)
+        out = out.scatter_add(dim=0, index=token_indices_full, src=routed_output)
         return out.reshape(batch_size, seq_length, hidden_size), prev_router_hidden_states, router_logits
 
     def init_weights(self, init_std: float, buffer_device: torch.device):

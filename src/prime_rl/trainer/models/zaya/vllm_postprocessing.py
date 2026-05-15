@@ -94,12 +94,21 @@ def _add_vllm_experts(hf_state_dict: dict[str, Tensor], vllm_state_dict: dict[st
         vllm_state_dict[f"{prefix}.linear_fc2.weight"] = down[expert_idx].contiguous()
 
 
-def convert_hf_to_vllm(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+def _infer_num_hidden_layers(state_dict: dict[str, Tensor]) -> int:
+    if not any(key.startswith("model.layers.") for key in state_dict):
+        return 0
+    return get_max_layer_num(state_dict)
+
+
+def convert_hf_to_vllm(state_dict: dict[str, Tensor], num_hidden_layers: int | None = None) -> dict[str, Tensor]:
     """Convert Transformers-native Zaya weights to vLLM original Zaya weights."""
-    num_hidden_layers = get_max_layer_num(state_dict)
+    if num_hidden_layers is None:
+        num_hidden_layers = _infer_num_hidden_layers(state_dict)
     converted: dict[str, Tensor] = {}
 
     for name, tensor in state_dict.items():
+        if name == "lm_head.weight":
+            continue
         target = _convert_hf_weight_name_to_vllm(name, num_hidden_layers)
         if target is not None:
             converted[target] = tensor.contiguous()
@@ -110,19 +119,22 @@ def convert_hf_to_vllm(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
     return converted
 
 
-def convert_prime_to_vllm(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+def convert_prime_to_vllm(state_dict: dict[str, Tensor], num_hidden_layers: int | None = None) -> dict[str, Tensor]:
     """Convert PrimeRL training-format Zaya weights to vLLM original Zaya weights."""
     hf_state_dict = dict(state_dict)
     if is_prime_state_dict(hf_state_dict):
         hf_state_dict = convert_prime_to_hf(hf_state_dict)
-    return convert_hf_to_vllm(hf_state_dict)
+    return convert_hf_to_vllm(hf_state_dict, num_hidden_layers=num_hidden_layers)
 
 
 class ZayaVLLMWeightPostprocessor:
     """Callable postprocessor shared by checkpoint and NCCL broadcast paths."""
 
+    def __init__(self, num_hidden_layers: int | None = None):
+        self.num_hidden_layers = num_hidden_layers
+
     def __call__(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        return convert_prime_to_vllm(state_dict)
+        return convert_prime_to_vllm(state_dict, num_hidden_layers=self.num_hidden_layers)
 
 
 __all__ = ["ZayaVLLMWeightPostprocessor", "convert_hf_to_vllm", "convert_prime_to_vllm"]

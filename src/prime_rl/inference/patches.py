@@ -937,14 +937,25 @@ def monkey_patch_dp_engine_core_pause_resume_deadlock():
             self.engines_running = True
             self._force_dp_running_state_sync = True
 
+    def _sync_dp_state(self, local_unfinished: bool) -> bool:
+        has_unfinished, pause_consensus = ParallelConfig.sync_dp_state(
+            self.dp_group,
+            has_unfinished=local_unfinished,
+            pending_pause=self.pending_pause,
+        )
+        if pause_consensus:
+            self.ignore_start_dp_wave = True
+            self.pending_pause = False
+        return has_unfinished
+
     def _patched_has_global_unfinished_reqs(self, local_unfinished: bool) -> bool:
         self.step_counter += 1
         if getattr(self, "_force_dp_running_state_sync", False):
             self._force_dp_running_state_sync = False
-            return ParallelConfig.has_unfinished_dp(self.dp_group, local_unfinished)
+            return _sync_dp_state(self, local_unfinished)
         if self.step_counter % 32 != 0:
             return True
-        return ParallelConfig.has_unfinished_dp(self.dp_group, local_unfinished)
+        return _sync_dp_state(self, local_unfinished)
 
     DPEngineCoreProc.add_request = _patched_add_request
     DPEngineCoreProc._handle_client_request = _patched_handle_client_request

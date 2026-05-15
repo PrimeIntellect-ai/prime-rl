@@ -90,6 +90,13 @@ def preprocess_layer_checkpoint(
     layer_state_dict: dict[str, Tensor],
     layer_idx: int,
 ) -> dict[str, Tensor]:
+    if getattr(model.config, "model_type", None) == "zaya":
+        from prime_rl.trainer.models.zaya.vllm_postprocessing import convert_hf_to_vllm
+
+        if isinstance(model, PreTrainedModelPrimeRL) and layer_idx >= 0:
+            model.convert_layer_to_hf(layer_state_dict, layer_idx)
+        return convert_hf_to_vllm(layer_state_dict, num_hidden_layers=model.config.num_hidden_layers)
+
     if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(layer_state_dict):
         model.convert_layer_to_hf(layer_state_dict, layer_idx)
         return layer_state_dict

@@ -305,8 +305,22 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
     logger = get_logger()
 
     async def _resume(client: AsyncClient) -> None:
-        response = await client.post("/resume")
-        response.raise_for_status()
+        last_error: httpx.HTTPStatusError | None = None
+        for _ in range(20):
+            response = await client.post("/resume")
+            try:
+                response.raise_for_status()
+                return
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                # vLLM can return from /pause before its internal pause future has fully settled.
+                # Retry only that transient race; all other resume failures should surface immediately.
+                if exc.response.status_code != 500 or "pause is still in flight" not in exc.response.text:
+                    raise
+                await asyncio.sleep(0.5)
+
+        assert last_error is not None
+        raise last_error
 
     await asyncio.gather(*[_resume(client) for client in admin_clients])
     logger.info("All inference engines resumed")

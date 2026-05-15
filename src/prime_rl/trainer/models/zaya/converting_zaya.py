@@ -10,7 +10,7 @@ def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
 
 
 def is_hf_state_dict(state_dict: dict[str, Tensor]) -> bool:
-    return any(_HF_GATE_PREFIX in name or name.endswith(".mlp.experts.gate_up_proj") for name in state_dict)
+    return any(_HF_GATE_PREFIX in name for name in state_dict)
 
 
 def is_prime_state_dict(state_dict: dict[str, Tensor]) -> bool:
@@ -28,16 +28,10 @@ def convert_hf_layer_to_prime(state_dict: dict[str, Tensor], layer_idx: int) -> 
 
     gate_up_key = f"{prefix}.mlp.experts.gate_up_proj"
     down_key = f"{prefix}.mlp.experts.down_proj"
-    if gate_up_key not in state_dict:
-        return
-
-    gate_up_proj = state_dict.pop(gate_up_key)
-    down_proj = state_dict.pop(down_key)
-    moe_dim = gate_up_proj.shape[1] // 2
-
-    state_dict[f"{prefix}.mlp.experts.w1"] = gate_up_proj[:, :moe_dim, :].contiguous()
-    state_dict[f"{prefix}.mlp.experts.w2"] = down_proj.contiguous()
-    state_dict[f"{prefix}.mlp.experts.w3"] = gate_up_proj[:, moe_dim:, :].contiguous()
+    if gate_up_key in state_dict:
+        state_dict[gate_up_key] = state_dict[gate_up_key].contiguous()
+    if down_key in state_dict:
+        state_dict[down_key] = state_dict[down_key].contiguous()
 
 
 def convert_prime_layer_to_hf(state_dict: dict[str, Tensor], layer_idx: int) -> None:
@@ -46,17 +40,22 @@ def convert_prime_layer_to_hf(state_dict: dict[str, Tensor], layer_idx: int) -> 
     state_dict.pop(f"{prefix}.mlp.tokens_per_expert", None)
     _rename_layer_prefix(state_dict, f"{prefix}.mlp.router.", f"{prefix}.mlp.gate.")
 
+    gate_up_key = f"{prefix}.mlp.experts.gate_up_proj"
+    down_key = f"{prefix}.mlp.experts.down_proj"
+    if gate_up_key in state_dict:
+        state_dict[gate_up_key] = state_dict[gate_up_key].contiguous()
+    if down_key in state_dict:
+        state_dict[down_key] = state_dict[down_key].contiguous()
+
     w1_key = f"{prefix}.mlp.experts.w1"
     w2_key = f"{prefix}.mlp.experts.w2"
     w3_key = f"{prefix}.mlp.experts.w3"
-    if w1_key not in state_dict:
-        return
-
-    w1 = state_dict.pop(w1_key)
-    w2 = state_dict.pop(w2_key)
-    w3 = state_dict.pop(w3_key)
-    state_dict[f"{prefix}.mlp.experts.gate_up_proj"] = torch.cat([w1, w3], dim=1).contiguous()
-    state_dict[f"{prefix}.mlp.experts.down_proj"] = w2.contiguous()
+    if w1_key in state_dict:
+        w1 = state_dict.pop(w1_key)
+        w2 = state_dict.pop(w2_key)
+        w3 = state_dict.pop(w3_key)
+        state_dict[gate_up_key] = torch.cat([w1, w3], dim=1).contiguous()
+        state_dict[down_key] = w2.contiguous()
 
 
 def convert_hf_to_prime(state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
