@@ -69,12 +69,12 @@ class StaticInferencePool:
         reasoning_parser: str | None = None,
         renderer_pool_size: int | None = None,
     ):
-        renderer_tokenizer_name_or_path = model_name if train_client_type == "openai_chat_completions_token" else None
+        renderer_model_name = model_name if train_client_type == "renderer" else None
         self._train_clients = setup_clients(
             client_config,
             client_type=train_client_type,
             renderer_name=renderer_name,
-            renderer_model_name=renderer_tokenizer_name_or_path,
+            renderer_model_name=renderer_model_name,
             tool_parser=tool_parser,
             reasoning_parser=reasoning_parser,
             renderer_pool_size=renderer_pool_size,
@@ -192,7 +192,7 @@ def setup_clients(
                     client_idx=client_idx,
                     client_type=client_type,
                     renderer=renderer_name,
-                    renderer_tokenizer_name_or_path=renderer_model_name,
+                    renderer_model_name=renderer_model_name,
                     renderer_pool_size=renderer_pool_size,
                     tool_parser=tool_parser,
                     reasoning_parser=reasoning_parser,

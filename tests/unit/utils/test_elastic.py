@@ -421,7 +421,7 @@ def test_elastic_clients_preserve_renderer_model_name_when_model_name_updates():
         pool = ElasticInferencePool(
             client_config=client_config,
             model_name="Qwen/Qwen3-VL-4B-Instruct",
-            train_client_type="openai_chat_completions_token",
+            train_client_type="renderer",
             renderer_name="qwen3_vl",
         )
         pool._servers = {
@@ -434,9 +434,9 @@ def test_elastic_clients_preserve_renderer_model_name_when_model_name_updates():
         assert clients == [
             vf.ClientConfig(
                 client_idx=0,
-                client_type="openai_chat_completions_token",
+                client_type="renderer",
                 renderer="qwen3_vl",
-                renderer_tokenizer_name_or_path="Qwen/Qwen3-VL-4B-Instruct",
+                renderer_model_name="Qwen/Qwen3-VL-4B-Instruct",
                 api_key_var="PRIME_API_KEY",
                 api_base_url="http://10.0.0.1:8000/v1",
                 timeout=1200,

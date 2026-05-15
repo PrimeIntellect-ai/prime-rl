@@ -127,7 +127,6 @@ override-dependencies = [
     "nvidia-cudnn-cu12>=9.15",
     "nvidia-cutlass-dsl>=4.4.1",
     "transformers>=5.1.0.dev0",
-    "verifiers @ git+https://github.com/joanvelja/verifiers.git@03883b3",
 ]
 
 [tool.uv.exclude-newer-package]
@@ -169,7 +168,7 @@ prime-rl-configs = { workspace = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
-verifiers = { git = "https://github.com/joanvelja/verifiers.git", rev = "03883b3" }
+verifiers = { git = "https://github.com/joanvelja/verifiers.git", rev = "73fe401" }
 renderers = { git = "https://github.com/joanvelja/renderers.git", rev = "cce74eb" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }

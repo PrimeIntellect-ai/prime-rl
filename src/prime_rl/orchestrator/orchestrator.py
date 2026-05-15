@@ -1068,7 +1068,7 @@ async def setup_rollout_inference_pool(
         inference_pool = await setup_inference_pool(
             rollout_client_config,
             model_name=rollout_model_name,
-            train_client_type="openai_chat_completions_token",
+            train_client_type="renderer",
             eval_client_type="openai_chat_completions",
             renderer_name=config.renderer.name,
             tool_parser=config.renderer.tool_parser,

@@ -115,7 +115,7 @@ class ElasticInferencePool:
         self.client_config = client_config
         self.model_name = model_name
         self.base_model_name = model_name  # Keep original for health checks
-        self.renderer_tokenizer_name_or_path = model_name if train_client_type == "openai_chat_completions_token" else None
+        self.renderer_model_name = model_name if train_client_type == "renderer" else None
         self.hostname = client_config.elastic.hostname
         self.port = client_config.elastic.port
         self.sync_interval = client_config.elastic.sync_interval
@@ -210,7 +210,7 @@ class ElasticInferencePool:
                     url_config,
                     client_type=self.train_client_type,
                     renderer_name=self.renderer_name,
-                    renderer_model_name=self.renderer_tokenizer_name_or_path,
+                    renderer_model_name=self.renderer_model_name,
                     tool_parser=self.tool_parser,
                     reasoning_parser=self.reasoning_parser,
                     renderer_pool_size=self.renderer_pool_size,
