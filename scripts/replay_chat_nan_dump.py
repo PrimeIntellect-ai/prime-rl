@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -53,6 +54,63 @@ def _request_entry(body: Any, *, source: str, request_id: str | None, ordinal: i
         "source": source,
         "request_id": request_id,
         "ordinal": ordinal,
+    }
+
+
+def _find_nonfinite(value: Any, path: str = "$", *, limit: int = 8) -> tuple[int, list[str]]:
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return 1, [path]
+        return 0, []
+    if isinstance(value, dict):
+        total = 0
+        paths: list[str] = []
+        for key, child in value.items():
+            count, child_paths = _find_nonfinite(child, f"{path}.{key}", limit=limit)
+            total += count
+            if len(paths) < limit:
+                paths.extend(child_paths[: limit - len(paths)])
+        return total, paths
+    if isinstance(value, list):
+        total = 0
+        paths = []
+        for idx, child in enumerate(value):
+            count, child_paths = _find_nonfinite(child, f"{path}[{idx}]", limit=limit)
+            total += count
+            if len(paths) < limit:
+                paths.extend(child_paths[: limit - len(paths)])
+        return total, paths
+    return 0, []
+
+
+def _count_token_id_zero(value: Any) -> int:
+    if not isinstance(value, dict):
+        return 0
+    count = 0
+    for choice in value.get("choices") or []:
+        logprobs = choice.get("logprobs") or {}
+        for item in logprobs.get("content") or []:
+            if item.get("token_id") == 0:
+                count += 1
+    return count
+
+
+def _response_summary(parsed: Any) -> dict[str, Any]:
+    if not isinstance(parsed, dict):
+        return {}
+
+    nonfinite_count, nonfinite_paths = _find_nonfinite(parsed)
+    choices = parsed.get("choices") or []
+    first_choice = choices[0] if choices else {}
+    usage = parsed.get("usage") or {}
+    return {
+        "nonfinite_count": nonfinite_count,
+        "first_nonfinite_paths": nonfinite_paths,
+        "token_id_zero_count": _count_token_id_zero(parsed),
+        "finish_reason": first_choice.get("finish_reason") if isinstance(first_choice, dict) else None,
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "total_tokens": usage.get("total_tokens"),
     }
 
 
@@ -103,6 +161,7 @@ async def _post_one(
     url: str,
     request: dict[str, Any],
     semaphore: asyncio.Semaphore,
+    summary_only: bool,
 ) -> dict[str, Any]:
     started_at = time.time()
     async with semaphore:
@@ -120,8 +179,9 @@ async def _post_one(
                 "status_code": response.status_code,
                 "elapsed_s": time.time() - started_at,
                 "contains_nan_text": "nan" in text.lower(),
-                "text_prefix": text[:1000],
-                "json": parsed,
+                "text_prefix": text[:1000] if not summary_only or response.status_code >= 400 else None,
+                "response_summary": _response_summary(parsed),
+                **({} if summary_only else {"json": parsed}),
             }
         except Exception as exc:
             return {
@@ -167,7 +227,7 @@ async def replay(args: argparse.Namespace) -> None:
         )
     )
     async with httpx.AsyncClient(headers=headers, timeout=timeout) as client:
-        tasks = [_post_one(client, url, request, semaphore) for request in requests]
+        tasks = [_post_one(client, url, request, semaphore, args.summary_only) for request in requests]
         for coro in asyncio.as_completed(tasks):
             result = await coro
             line = json.dumps(result, default=_json_default, sort_keys=True)
@@ -196,6 +256,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--concurrency", type=int, default=1, help="Concurrent requests.")
     parser.add_argument("--timeout-s", type=float, default=900.0, help="Per-request timeout.")
     parser.add_argument("--output", type=Path, default=None, help="Optional JSONL result path.")
+    parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="Write compact response summaries instead of full response JSON payloads.",
+    )
     return parser.parse_args()
 
 
