@@ -134,6 +134,7 @@ from prime_rl.inference.patches import (
     monkey_patch_harmony_stop_token_propagation,
     monkey_patch_load_lora_adapter,
     monkey_patch_tokenize_params_validation,
+    monkey_patch_vllm_padded_input_scrub,
 )
 
 # NOTE: Fix harmony stop token propagation for GPT-OSS models
@@ -145,6 +146,9 @@ monkey_patch_load_lora_adapter()
 # NOTE: Monkeypatch TokenizeParams to fix overly conservative validation
 # Still needed in vLLM 0.20 — upstream rejects prompt_len > max_model_len - max_tokens
 monkey_patch_tokenize_params_validation()
+# NOTE: Optional mitigation for vLLM padded decode inputs until the native fix
+# is available in our pinned runtime.
+monkey_patch_vllm_padded_input_scrub()
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
 

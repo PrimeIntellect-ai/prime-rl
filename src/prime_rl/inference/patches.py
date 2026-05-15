@@ -1,5 +1,7 @@
 import torch
 
+from prime_rl.inference.vllm.padded_input_scrub import monkey_patch_vllm_padded_input_scrub
+
 
 def transformers_v5_compat():
     """vLLM general plugin: patch transformers v5 config attrs that vLLM still expects.
@@ -16,6 +18,7 @@ def transformers_v5_compat():
     _patch_lora_key_prefix()
     monkey_patch_dp_engine_core_pause_resume_deadlock()
     monkey_patch_vllm_layerwise_reload_alias_buffers()
+    monkey_patch_vllm_padded_input_scrub()
 
 
 def monkey_patch_vllm_layerwise_reload_alias_buffers():
