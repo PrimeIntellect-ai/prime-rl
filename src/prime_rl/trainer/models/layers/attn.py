@@ -38,6 +38,7 @@ class AttentionConfig:
     use_qk_norm: bool
     rms_norm_eps: float
     qk_norm_type: Literal["per_head", "per_layer"] = "per_head"
+    output_bias: bool = False
 
 
 # TODO: Does torch compile support config._attn_implementation forking?
@@ -70,7 +71,9 @@ class FlashAttention(nn.Module):
         self.v_proj = nn.Linear(
             config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
         )
-        self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
+        self.o_proj = nn.Linear(
+            config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.output_bias
+        )
         self.use_qk_norm = config.use_qk_norm
         self.qk_norm_type = config.qk_norm_type
         if self.use_qk_norm:
@@ -201,7 +204,9 @@ class SDPAAttention(nn.Module):
         self.v_proj = nn.Linear(
             config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
         )
-        self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
+        self.o_proj = nn.Linear(
+            config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.output_bias
+        )
         self.use_qk_norm = config.use_qk_norm
         self.qk_norm_type = config.qk_norm_type
         if self.use_qk_norm:
