@@ -16,6 +16,8 @@ _OUTPUT_PATCHED = False
 _SCHEDULER_PATCHED = False
 _MODEL_RUNNER_PATCHED = False
 _NEMOTRON_H_LAYERS_PATCHED = False
+_NEMOTRON_H_MIXERS_PATCHED = False
+_ATTENTION_OPS_PATCHED = False
 _MAMBA_MIXER2_OPS_PATCHED = False
 _WRITE_LOCK = threading.Lock()
 _ACTIVE_STATE_DUMPED: set[str] = set()
@@ -33,6 +35,8 @@ def install_vllm_nan_trace() -> None:
         _patch_scheduler()
         _patch_model_runner()
         _patch_nemotron_h_layers()
+        _patch_nemotron_h_mixers()
+        _patch_attention_ops()
         _patch_mamba_mixer2_ops()
 
 
@@ -68,6 +72,14 @@ def _model_runner_batch_gpu_trace_enabled() -> bool:
 
 def _nemotron_h_layer_trace_enabled() -> bool:
     return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_NEMOTRON_H_LAYERS", "0") != "0"
+
+
+def _nemotron_h_mixer_trace_enabled() -> bool:
+    return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_NEMOTRON_H_MIXERS", "0") != "0"
+
+
+def _attention_op_trace_enabled() -> bool:
+    return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_ATTENTION_OPS", "0") != "0"
 
 
 def _mamba_op_trace_enabled() -> bool:
@@ -343,6 +355,111 @@ def _nemotron_h_forward_inputs(
     return hidden_in, residual_in
 
 
+def _patch_nemotron_h_mixers() -> None:
+    global _NEMOTRON_H_MIXERS_PATCHED
+    if _NEMOTRON_H_MIXERS_PATCHED:
+        return
+    if not _nemotron_h_mixer_trace_enabled():
+        return
+
+    try:
+        from vllm.model_executor.models import nemotron_h
+    except Exception:
+        logger.exception("Failed to import vLLM NemotronH mixers for NaN tracing")
+        return
+
+    mixer_specs = (
+        ("NemotronHAttention", "attention"),
+        ("NemotronHMoE", "moe"),
+        ("NemotronHMLP", "mlp"),
+    )
+    for type_name, mixer_kind in mixer_specs:
+        mixer_type = getattr(nemotron_h, type_name, None)
+        if mixer_type is None:
+            continue
+        _patch_nemotron_h_mixer_type(mixer_type, type_name, mixer_kind)
+
+    _NEMOTRON_H_MIXERS_PATCHED = True
+
+
+def _patch_nemotron_h_mixer_type(mixer_type: Any, type_name: str, mixer_kind: str) -> None:
+    original_forward = mixer_type.forward
+
+    def _patched_forward(self, *args, **kwargs):
+        hidden_in = kwargs.get("hidden_states")
+        if hidden_in is None and args:
+            hidden_in = args[0]
+
+        output = original_forward(self, *args, **kwargs)
+        try:
+            if _mamba_trace_context_allows_event() and (
+                _tensor_has_nonfinite(hidden_in) or _tensor_has_nonfinite(output)
+            ):
+                _trace_nemotron_h_mixer_event(
+                    mixer_type=type_name,
+                    mixer_kind=mixer_kind,
+                    layer_name=_nemotron_mixer_layer_name(self),
+                    hidden_in=hidden_in,
+                    output=output,
+                )
+        except Exception:
+            logger.exception("Failed to trace NemotronH mixer output")
+        return output
+
+    mixer_type.forward = _patched_forward
+
+
+def _nemotron_mixer_layer_name(mixer: Any) -> str | None:
+    if hasattr(mixer, "prefix"):
+        return getattr(mixer, "prefix", None)
+    attn = getattr(mixer, "attn", None)
+    if attn is not None and hasattr(attn, "layer_name"):
+        return getattr(attn, "layer_name", None)
+    gate = getattr(mixer, "gate", None)
+    if gate is not None and hasattr(gate, "prefix"):
+        return getattr(gate, "prefix", None)
+    return None
+
+
+def _patch_attention_ops() -> None:
+    global _ATTENTION_OPS_PATCHED
+    if _ATTENTION_OPS_PATCHED:
+        return
+    if not _attention_op_trace_enabled():
+        return
+
+    try:
+        from vllm.model_executor.layers.attention.attention import Attention
+    except Exception:
+        logger.exception("Failed to import vLLM Attention for NaN tracing")
+        return
+
+    original_forward = Attention.forward
+
+    def _patched_forward(self, query, key, value, output_shape=None):
+        output = original_forward(self, query, key, value, output_shape=output_shape)
+        try:
+            if _mamba_trace_context_allows_event() and (
+                _tensor_has_nonfinite(query)
+                or _tensor_has_nonfinite(key)
+                or _tensor_has_nonfinite(value)
+                or _tensor_has_nonfinite(output)
+            ):
+                _trace_attention_op_event(
+                    layer_name=getattr(self, "layer_name", None),
+                    query=query,
+                    key=key,
+                    value=value,
+                    output=output,
+                )
+        except Exception:
+            logger.exception("Failed to trace vLLM attention op")
+        return output
+
+    Attention.forward = _patched_forward
+    _ATTENTION_OPS_PATCHED = True
+
+
 def _patch_mamba_mixer2_ops() -> None:
     global _MAMBA_MIXER2_OPS_PATCHED
     if _MAMBA_MIXER2_OPS_PATCHED:
@@ -370,6 +487,7 @@ def _patch_mamba_mixer2_ops() -> None:
                 "n_groups": getattr(self, "n_groups", None),
                 "ssm_state_size": getattr(self, "ssm_state_size", None),
                 "conv_kernel_size": getattr(self, "conv_kernel_size", None),
+                "projected_states": args[0] if args else None,
             }
             try:
                 return original_conv_ssm_forward(self, *args, **kwargs)
@@ -392,6 +510,9 @@ def _patch_mamba_mixer2_ops() -> None:
                         op_name="causal_conv1d_update",
                         before={
                             "hidden_states_B_C_d": _tensor_total_counts(input_tensor),
+                            "projected_states": _tensor_total_counts(
+                                _mamba_projected_states_from_context()
+                            ),
                             "conv_state": _tensor_meta(args[1]) if len(args) > 1 else None,
                         },
                         after={
@@ -473,6 +594,108 @@ def _patch_mamba_mixer2_ops() -> None:
     _MAMBA_MIXER2_OPS_PATCHED = True
 
 
+def _mamba_projected_states_from_context() -> Any:
+    context = getattr(_MAMBA_TRACE_LOCAL, "context", None)
+    if not isinstance(context, dict):
+        return None
+    return context.get("projected_states")
+
+
+def _trace_nemotron_h_mixer_event(
+    *,
+    mixer_type: str,
+    mixer_kind: str,
+    layer_name: str | None,
+    hidden_in: Any,
+    output: Any,
+) -> None:
+    hidden_counts = _tensor_row_counts(hidden_in) if hasattr(hidden_in, "shape") else None
+    output_counts = _tensor_row_counts(output) if hasattr(output, "shape") else None
+    selected_rows: set[int] = set()
+    if hidden_counts is not None:
+        _add_nonfinite_rows(selected_rows, hidden_counts)
+    if output_counts is not None:
+        _add_nonfinite_rows(selected_rows, output_counts)
+
+    rows = []
+    for row_idx in sorted(selected_rows):
+        rows.append(
+            {
+                "row_index": row_idx,
+                "hidden_in": _row_count_at(hidden_counts, row_idx) if hidden_counts else None,
+                "output": _row_count_at(output_counts, row_idx) if output_counts else None,
+            }
+        )
+
+    _write_jsonl(
+        "nemotron_h_mixer_states",
+        {
+            "schema": "prime_rl.vllm_nemotron_h_mixer_trace.v1",
+            "created_unix": time.time(),
+            "pid": os.getpid(),
+            "mixer_type": mixer_type,
+            "mixer_kind": mixer_kind,
+            "layer_name": layer_name,
+            "hidden_in": _tensor_meta(hidden_in),
+            "output": _tensor_meta(output),
+            "model_runner_context": _current_model_runner_context(),
+            "rows": rows,
+        },
+    )
+
+
+def _trace_attention_op_event(
+    *,
+    layer_name: str | None,
+    query: Any,
+    key: Any,
+    value: Any,
+    output: Any,
+) -> None:
+    tensors = {
+        "query": query,
+        "key": key,
+        "value": value,
+        "output": output,
+    }
+    counts = {
+        name: _tensor_row_counts(tensor) if hasattr(tensor, "shape") else None
+        for name, tensor in tensors.items()
+    }
+    selected_rows: set[int] = set()
+    for item_counts in counts.values():
+        if item_counts is not None:
+            _add_nonfinite_rows(selected_rows, item_counts)
+
+    rows = []
+    for row_idx in sorted(selected_rows):
+        rows.append(
+            {
+                "row_index": row_idx,
+                **{
+                    name: _row_count_at(item_counts, row_idx) if item_counts else None
+                    for name, item_counts in counts.items()
+                },
+            }
+        )
+
+    _write_jsonl(
+        "attention_ops",
+        {
+            "schema": "prime_rl.vllm_attention_op_trace.v1",
+            "created_unix": time.time(),
+            "pid": os.getpid(),
+            "layer_name": layer_name,
+            "query": _tensor_meta(query),
+            "key": _tensor_meta(key),
+            "value": _tensor_meta(value),
+            "output": _tensor_meta(output),
+            "model_runner_context": _current_model_runner_context(),
+            "rows": rows,
+        },
+    )
+
+
 def _trace_mamba_op_event(
     *,
     op_name: str,
@@ -487,13 +710,20 @@ def _trace_mamba_op_event(
             "created_unix": time.time(),
             "pid": os.getpid(),
             "op_name": op_name,
-            "layer_context": getattr(_MAMBA_TRACE_LOCAL, "context", None),
+            "layer_context": _mamba_layer_context_summary(),
             "model_runner_context": _current_model_runner_context(),
             "before": before,
             "after": after,
             "metadata": metadata,
         },
     )
+
+
+def _mamba_layer_context_summary() -> dict[str, Any] | None:
+    context = getattr(_MAMBA_TRACE_LOCAL, "context", None)
+    if not isinstance(context, dict):
+        return None
+    return {key: value for key, value in context.items() if key != "projected_states"}
 
 
 def _current_model_runner_context() -> dict[str, Any] | None:
