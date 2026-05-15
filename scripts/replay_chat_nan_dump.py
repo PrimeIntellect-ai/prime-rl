@@ -226,7 +226,11 @@ async def replay(args: argparse.Namespace) -> None:
             sort_keys=True,
         )
     )
-    async with httpx.AsyncClient(headers=headers, timeout=timeout) as client:
+    limits = httpx.Limits(
+        max_connections=max(args.concurrency, 100),
+        max_keepalive_connections=max(args.concurrency, 20),
+    )
+    async with httpx.AsyncClient(headers=headers, timeout=timeout, limits=limits) as client:
         tasks = [_post_one(client, url, request, semaphore, args.summary_only) for request in requests]
         for coro in asyncio.as_completed(tasks):
             result = await coro
