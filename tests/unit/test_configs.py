@@ -25,8 +25,9 @@ CONFIG_CLASSES = [
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/` or `examples/`"""
-    config_files = list(Path("configs").rglob("*.toml"))
+    """Any TOML file inside `configs/` or `examples/` (skips the configs/private/ submodule)."""
+    private = Path("configs/private")
+    config_files = [p for p in Path("configs").rglob("*.toml") if private not in p.parents]
     example_files = list(Path("examples").rglob("*.toml"))
 
     return config_files + example_files

@@ -197,33 +197,33 @@ dev = [
 
 [tool.uv.workspace]
 members = [
-    "packages/*",
-    "verifiers",
-    "verifiers/environments/*",
-    "renderers",
-    "research-environments/environments/*",
+    "packages/prime-rl-configs",
+    "packages/verifiers",
+    "packages/verifiers/environments/*",
+    "packages/renderers",
+    "packages/research-environments/environments/*",
 ]
 # Env packages excluded from the workspace:
 # - verifiers/environments/bfcl_v3: collides with research-environments/environments/bfcl_v3 (kept)
 # - research-environments/environments/clbench_rlm: pins verifiers to a non-workspace git URL
 # - research-environments/environments/terminal_bench_2: pins verifiers to a non-workspace git URL
 exclude = [
-    "verifiers/environments/bfcl_v3",
-    "research-environments/environments/clbench_rlm",
-    "research-environments/environments/terminal_bench_2",
+    "packages/verifiers/environments/bfcl_v3",
+    "packages/research-environments/environments/clbench_rlm",
+    "packages/research-environments/environments/terminal_bench_2",
     # tau2 package has three incompatible forks across these envs — pick none for now
-    "verifiers/environments/tau2_bench_v1",
-    "research-environments/environments/tau2_bench",
-    "research-environments/environments/tau2_synth",
-    "research-environments/environments/tau3_bench",
-    "research-environments/environments/tau3_bench_rlm",
+    "packages/verifiers/environments/tau2_bench_v1",
+    "packages/research-environments/environments/tau2_bench",
+    "packages/research-environments/environments/tau2_synth",
+    "packages/research-environments/environments/tau3_bench",
+    "packages/research-environments/environments/tau3_bench_rlm",
     # gem-wordle pins nltk==3.9.1 (via gem-llm) but wordle requires nltk>=3.9.2
-    "verifiers/environments/gem_wordle",
+    "packages/verifiers/environments/gem_wordle",
     # scicode-core's google-generativeai pins protobuf incompatibly with mcp-atlas/opencode-deepdive
-    "research-environments/environments/scicode",
+    "packages/research-environments/environments/scicode",
     # verifiers[openenv] requires openenv-core>=0.3.0 but only <=0.2.3 is available
-    "verifiers/environments/openenv_echo",
-    "verifiers/environments/openenv_textarena",
+    "packages/verifiers/environments/openenv_echo",
+    "packages/verifiers/environments/openenv_textarena",
 ]
 
 [tool.uv]
@@ -418,7 +418,7 @@ known-first-party = ["prime_rl"]
 [tool.ruff]
 line-length = 120
 # Submodules have their own style; prime-rl's ruff config should not apply to them.
-extend-exclude = ["verifiers", "renderers", "research-environments"]
+extend-exclude = ["packages/verifiers", "packages/renderers", "packages/research-environments"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers"

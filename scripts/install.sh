@@ -114,9 +114,7 @@ main() {
       git clone git@github.com:PrimeIntellect-ai/${REPO_ID}.git
     else
       log_warn "SSH auth to GitHub not available. Cloning via HTTPS."
-      # Rewrite SSH URLs in .gitmodules to HTTPS for the submodule step below.
-      git -c "url.https://github.com/.insteadOf=git@github.com:" \
-        clone https://github.com/PrimeIntellect-ai/${REPO_ID}.git
+      git clone https://github.com/PrimeIntellect-ai/${REPO_ID}.git
     fi
 
     log_info "Entering project directory..."
