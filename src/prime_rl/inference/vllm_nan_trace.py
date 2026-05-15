@@ -297,8 +297,11 @@ def _patch_nemotron_h_layer_type(layer_type: Any, layer_type_name: str) -> None:
         self._prime_nan_trace_layer_type = layer_type_name
 
     def _patched_forward(self, *args, **kwargs):
-        hidden_in = kwargs.get("hidden_states")
-        residual_in = kwargs.get("residual")
+        hidden_in, residual_in = _nemotron_h_forward_inputs(
+            layer_type_name=layer_type_name,
+            args=args,
+            kwargs=kwargs,
+        )
         output = original_forward(self, *args, **kwargs)
         try:
             _trace_nemotron_h_layer_output(
@@ -314,6 +317,30 @@ def _patch_nemotron_h_layer_type(layer_type: Any, layer_type_name: str) -> None:
 
     layer_type.__init__ = _patched_init
     layer_type.forward = _patched_forward
+
+
+def _nemotron_h_forward_inputs(
+    *,
+    layer_type_name: str,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> tuple[Any, Any]:
+    hidden_in = kwargs.get("hidden_states")
+    residual_in = kwargs.get("residual")
+
+    if hidden_in is None:
+        if "Attention" in layer_type_name:
+            if len(args) >= 2:
+                hidden_in = args[1]
+            if residual_in is None and len(args) >= 3:
+                residual_in = args[2]
+        else:
+            if len(args) >= 1:
+                hidden_in = args[0]
+            if residual_in is None and len(args) >= 2:
+                residual_in = args[1]
+
+    return hidden_in, residual_in
 
 
 def _patch_mamba_mixer2_ops() -> None:
@@ -944,6 +971,8 @@ def _trace_nemotron_h_layer_output(
     residual_in: Any,
     output: Any,
 ) -> None:
+    if not _mamba_trace_context_allows_event():
+        return
     if not isinstance(output, tuple) or len(output) < 2:
         return
 
@@ -987,6 +1016,7 @@ def _trace_nemotron_h_layer_output(
             "residual_in": _tensor_meta(residual_in),
             "hidden_out": _tensor_meta(hidden_out),
             "residual_out": _tensor_meta(residual_out),
+            "model_runner_context": _current_model_runner_context(),
             "rows": rows,
         },
     )
