@@ -156,6 +156,15 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+def test_orchestrator_env_defaults_do_not_force_return_token_ids():
+    config = OrchestratorConfig()
+
+    extra_body = config.train.env[0].sampling.extra_body
+    assert extra_body["top_k"] == -1
+    assert extra_body["min_p"] == 0.0
+    assert "return_token_ids" not in extra_body
+
+
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})

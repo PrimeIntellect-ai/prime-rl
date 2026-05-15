@@ -1339,5 +1339,4 @@ class OrchestratorConfig(BaseConfig):
             if is_vllm:
                 env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)
-                env.sampling.extra_body.setdefault("return_token_ids", True)
         return self
