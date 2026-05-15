@@ -394,12 +394,6 @@ def _patch_cudagraph_replay() -> None:
 
         if pre_summary["nonfinite_tensor_count"] or post_summary["nonfinite_tensor_count"]:
             nonfinite_scope = _cudagraph_replay_nonfinite_scope(trace_info, post_summary)
-            _trace_cudagraph_replay_nonfinite(
-                trace_info=trace_info,
-                pre_summary=pre_summary,
-                post_summary=post_summary,
-                nonfinite_scope=nonfinite_scope,
-            )
             should_fail_fast = _cudagraph_replay_trace_fail_fast() and post_summary[
                 "nonfinite_tensor_count"
             ]
@@ -409,6 +403,18 @@ def _patch_cudagraph_replay() -> None:
                 and not nonfinite_scope.get("has_real_nonfinite", True)
             ):
                 should_fail_fast = False
+            should_write = (
+                pre_summary["nonfinite_tensor_count"] > 0
+                or nonfinite_scope.get("has_real_nonfinite", True)
+                or _cudagraph_replay_trace_take_padded_only_record()
+            )
+            if should_write:
+                _trace_cudagraph_replay_nonfinite(
+                    trace_info=trace_info,
+                    pre_summary=pre_summary,
+                    post_summary=post_summary,
+                    nonfinite_scope=nonfinite_scope,
+                )
             if should_fail_fast:
                 raise RuntimeError(
                     "Prime-RL vLLM NaN trace: FULL CUDA graph replay produced non-finite output"
@@ -443,9 +449,6 @@ def _cudagraph_replay_trace_info(
     entry = entries.get(batch_descriptor)
     if entry is None or getattr(entry, "cudagraph", None) is None:
         return None
-    if not _cudagraph_replay_trace_take_record():
-        return None
-
     return {
         "runtime_mode": _enum_summary(runtime_mode),
         "wrapper_runtime_mode": _enum_summary(wrapper_mode),
@@ -463,8 +466,8 @@ def _cudagraph_replay_trace_info(
     }
 
 
-def _cudagraph_replay_trace_take_record() -> bool:
-    limit = _env_int("PRIME_RL_VLLM_NAN_TRACE_CUDAGRAPH_REPLAY_LIMIT", 0)
+def _cudagraph_replay_trace_take_padded_only_record() -> bool:
+    limit = _env_int("PRIME_RL_VLLM_NAN_TRACE_CUDAGRAPH_REPLAY_PADDED_ONLY_LIMIT", 64)
     if limit is not None and limit <= 0:
         return True
     pid = os.getpid()
