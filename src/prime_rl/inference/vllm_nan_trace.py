@@ -77,6 +77,21 @@ def _active_state_trace_enabled() -> bool:
     return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_ACTIVE_STATES", "1") != "0"
 
 
+def _torch_is_compiling() -> bool:
+    try:
+        import torch
+
+        compiler = getattr(torch, "compiler", None)
+        if compiler is not None and compiler.is_compiling():
+            return True
+        dynamo = getattr(torch, "_dynamo", None)
+        if dynamo is not None and dynamo.is_compiling():
+            return True
+    except Exception:
+        return False
+    return False
+
+
 def _active_output_token_limit() -> int:
     value = os.environ.get("PRIME_RL_VLLM_NAN_TRACE_ACTIVE_OUTPUT_TOKENS", "4096")
     try:
@@ -1069,6 +1084,8 @@ def _tensor_row_counts(tensor: Any) -> dict[str, list[int]]:
 def _tensor_has_nonfinite(tensor: Any) -> bool:
     if tensor is None or not hasattr(tensor, "isfinite"):
         return False
+    if _torch_is_compiling():
+        return False
     return not bool(tensor.isfinite().all().detach().cpu().item())
 
 
@@ -1091,6 +1108,8 @@ def _tensor_meta(tensor: Any) -> dict[str, Any] | None:
 def _tensor_total_counts(tensor: Any) -> dict[str, Any] | None:
     meta = _tensor_meta(tensor)
     if meta is None or not hasattr(tensor, "isfinite"):
+        return meta
+    if _torch_is_compiling():
         return meta
     try:
         finite = tensor.isfinite()
