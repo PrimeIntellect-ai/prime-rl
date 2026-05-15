@@ -59,9 +59,6 @@ flash-attn-cute = [
     "flash-attn-4",
 ]
 envs = [
-    # Union of the envs that prime-rl main installed today and the envs
-    # referenced in research-prod TOMLs. All other env packages remain
-    # workspace members and are installable on demand via `uv add`.
     "aime2024",
     "aime2025",
     "alphabet-sort",
@@ -125,36 +122,41 @@ dev = [
 
 
 [tool.uv.workspace]
+# Workspace members must all be resolvable together, so we list only the env
+# packages we actually install via the `envs` extra. Adding a new env is a
+# two-line change: add it here and to `[project.optional-dependencies] envs`.
 members = [
     "packages/prime-rl-configs",
     "packages/verifiers",
-    "packages/verifiers/environments/*",
     "packages/renderers",
-    "packages/research-environments/environments/*",
-]
-# Env packages excluded from the workspace:
-# - verifiers/environments/bfcl_v3: collides with research-environments/environments/bfcl_v3 (kept)
-# - research-environments/environments/clbench_rlm: pins verifiers to a non-workspace git URL
-# - research-environments/environments/terminal_bench_2: pins verifiers to a non-workspace git URL
-exclude = [
-    "packages/verifiers/environments/bfcl_v3",
-    "packages/research-environments/environments/clbench_rlm",
-    "packages/research-environments/environments/terminal_bench_2",
-    # tau2 package has three incompatible forks across these envs. We keep
-    # tau2-bench (sierra@337326e) since research-prod references it, and
-    # exclude the others. Re-adding any of the excluded ones requires picking
-    # a single canonical tau2 source upstream.
-    "packages/verifiers/environments/tau2_bench_v1",
-    "packages/research-environments/environments/tau2_synth",
-    "packages/research-environments/environments/tau3_bench",
-    "packages/research-environments/environments/tau3_bench_rlm",
-    # gem-wordle pins nltk==3.9.1 (via gem-llm) but wordle requires nltk>=3.9.2
-    "packages/verifiers/environments/gem_wordle",
-    # scicode-core's google-generativeai pins protobuf incompatibly with mcp-atlas/opencode-deepdive
-    "packages/research-environments/environments/scicode",
-    # verifiers[openenv] requires openenv-core>=0.3.0 but only <=0.2.3 is available
-    "packages/verifiers/environments/openenv_echo",
-    "packages/verifiers/environments/openenv_textarena",
+    # Env packages — one entry per item in the `envs` extra.
+    "packages/verifiers/environments/alphabet_sort",
+    "packages/verifiers/environments/math_python",
+    "packages/verifiers/environments/reverse_text",
+    "packages/verifiers/environments/wiki_search",
+    "packages/research-environments/environments/aime2024",
+    "packages/research-environments/environments/aime2025",
+    "packages/research-environments/environments/code_env",
+    "packages/research-environments/environments/color_codeword",
+    "packages/research-environments/environments/deepdive",
+    "packages/research-environments/environments/gpqa",
+    "packages/research-environments/environments/hle",
+    "packages/research-environments/environments/ifeval",
+    "packages/research-environments/environments/livecodebench",
+    "packages/research-environments/environments/logic_env",
+    "packages/research-environments/environments/math500",
+    "packages/research-environments/environments/math_env",
+    "packages/research-environments/environments/mini_swe_agent_plus",
+    "packages/research-environments/environments/mini_swe_agent_plus_rlm",
+    "packages/research-environments/environments/mmlu_pro",
+    "packages/research-environments/environments/opencode_cp",
+    "packages/research-environments/environments/opencode_deepdive",
+    "packages/research-environments/environments/opencode_math",
+    "packages/research-environments/environments/opencode_science",
+    "packages/research-environments/environments/opencode_swe",
+    "packages/research-environments/environments/science_env",
+    "packages/research-environments/environments/simpleqa_verified",
+    "packages/research-environments/environments/tau2_bench",
 ]
 
 [tool.uv]
@@ -349,8 +351,9 @@ known-first-party = ["prime_rl"]
 
 [tool.ruff]
 line-length = 120
-# Submodules have their own style; prime-rl's ruff config should not apply to them.
-extend-exclude = ["packages/verifiers", "packages/renderers", "packages/research-environments"]
+# Packages under packages/ either have their own ruff config (submodules) or
+# are vendored — skip them all from prime-rl's checks.
+extend-exclude = ["packages"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers"
