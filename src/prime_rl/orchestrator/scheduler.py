@@ -448,6 +448,12 @@ class Scheduler:
                     rollouts: list[vf.RolloutOutput] = result if isinstance(result, list) else [result]
                     self.total_rollouts_by_env[env_name] += len(rollouts)
 
+                    if env.requires_group_scoring and not rollouts:
+                        assert group_id is not None
+                        self.dropped_groups_by_env[env_name] += 1
+                        await self.drop_group(group_id)
+                        continue
+
                     # Check for empty/errored rollouts and reschedule
                     valid_rollouts = []
                     has_failures = False
