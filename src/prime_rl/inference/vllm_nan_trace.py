@@ -409,6 +409,12 @@ def _patch_cudagraph_replay() -> None:
                 or _cudagraph_replay_trace_take_padded_only_record()
             )
             if should_write:
+                nonfinite_scope["bad_row_details"] = _cudagraph_replay_bad_row_details(
+                    trace_info,
+                    args,
+                    kwargs,
+                    nonfinite_scope,
+                )
                 _trace_cudagraph_replay_nonfinite(
                     trace_info=trace_info,
                     pre_summary=pre_summary,
@@ -462,6 +468,7 @@ def _cudagraph_replay_trace_info(
         ),
         "input_addresses": _sequence_summary(getattr(entry, "input_addresses", None)),
         "slot_mapping": _slot_mappings_summary(getattr(forward_context, "slot_mapping", None)),
+        "_raw_slot_mapping": getattr(forward_context, "slot_mapping", None),
         "model_runner_context": _current_model_runner_context(),
     }
 
@@ -492,12 +499,16 @@ def _trace_cudagraph_replay_nonfinite(
             "schema": "prime_rl.vllm_cudagraph_replay_nonfinite.v1",
             "created_unix": time.time(),
             "pid": os.getpid(),
-            "trace_info": trace_info,
+            "trace_info": _public_trace_info(trace_info),
             "nonfinite_scope": nonfinite_scope,
             "pre": pre_summary,
             "post": post_summary,
         },
     )
+
+
+def _public_trace_info(trace_info: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in trace_info.items() if not key.startswith("_raw_")}
 
 
 def _cudagraph_replay_nonfinite_scope(
@@ -558,6 +569,63 @@ def _cudagraph_replay_nonfinite_scope(
         "has_unclassified_nonfinite": has_unclassified_nonfinite,
         "bad_rows": rows,
     }
+
+
+def _cudagraph_replay_bad_row_details(
+    trace_info: dict[str, Any],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    nonfinite_scope: dict[str, Any],
+) -> list[dict[str, Any]]:
+    row_indices = []
+    seen = set()
+    for bad_row in nonfinite_scope.get("bad_rows") or []:
+        row_index = bad_row.get("row_index")
+        if isinstance(row_index, int) and row_index not in seen:
+            seen.add(row_index)
+            row_indices.append(row_index)
+    row_indices = row_indices[:16]
+    if not row_indices:
+        return []
+
+    context = trace_info.get("model_runner_context") or {}
+    req_ids = context.get("req_ids") or []
+    input_batch = context.get("input_batch") or {}
+    row_values = input_batch.get("row_values") or {}
+    input_ids = kwargs.get("input_ids")
+    positions = kwargs.get("positions")
+    if input_ids is None and args:
+        input_ids = args[0]
+    if positions is None and len(args) >= 2:
+        positions = args[1]
+
+    details = []
+    slot_mappings = _slot_mappings_selected_rows_summary(
+        trace_info.get("_raw_slot_mapping"),
+        row_indices,
+    )
+    for row_index in row_indices:
+        request_id = _row_value(req_ids, row_index)
+        details.append(
+            {
+                "row_index": row_index,
+                "region": "real"
+                if isinstance(nonfinite_scope.get("actual_num_tokens"), int)
+                and row_index < nonfinite_scope["actual_num_tokens"]
+                else "padded",
+                "request_id": request_id,
+                "external_request_id_guess": _external_request_id_from_internal(request_id)
+                if isinstance(request_id, str)
+                else request_id,
+                "input_id": _indexed_value(input_ids, row_index),
+                "position": _indexed_value(positions, row_index),
+                "input_batch": {
+                    key: _row_value(values, row_index) for key, values in row_values.items()
+                },
+                "slot_mappings": _slot_mapping_detail_for_row(slot_mappings, row_index),
+            }
+        )
+    return details
 
 
 def _patch_nemotron_h_layers() -> None:
@@ -1331,6 +1399,7 @@ def _model_runner_execution_context(model_runner: Any, *, execute_index: int | N
     return {
         "execute_index": execute_index,
         "req_id_count": len(req_ids),
+        "req_ids": req_ids[:num_reqs_int],
         "req_ids_head": req_ids[:16],
         "req_ids_tail": req_ids[-16:] if len(req_ids) > 16 else [],
         "num_reqs": _json_safe(num_reqs),
@@ -1558,10 +1627,31 @@ def _model_runner_scheduler_output_summary(
 def _input_batch_summary(input_batch: Any | None, num_reqs: int) -> dict[str, Any] | None:
     if input_batch is None:
         return None
+    row_values = {
+        "num_prompt_tokens": _sequence_values(getattr(input_batch, "num_prompt_tokens", None), count=num_reqs),
+        "num_tokens_no_spec": _sequence_values(getattr(input_batch, "num_tokens_no_spec", None), count=num_reqs),
+        "num_computed_tokens_cpu": _sequence_values(
+            getattr(input_batch, "num_computed_tokens_cpu", None),
+            count=num_reqs,
+        ),
+        "num_accepted_tokens_cpu": _sequence_values(
+            getattr(input_batch, "num_accepted_tokens_cpu", None),
+            count=num_reqs,
+        ),
+        "seq_lens": _sequence_values(getattr(input_batch, "seq_lens", None), count=num_reqs),
+        "seq_lens_cpu_upper_bound": _sequence_values(
+            getattr(input_batch, "seq_lens_cpu_upper_bound", None),
+            count=num_reqs,
+        ),
+        "is_prefilling_np": _sequence_values(getattr(input_batch, "is_prefilling_np", None), count=num_reqs),
+        "idx_mapping_np": _sequence_values(getattr(input_batch, "idx_mapping_np", None), count=num_reqs),
+    }
+    row_values = {key: value for key, value in row_values.items() if value}
     return {
         "max_num_reqs": getattr(input_batch, "max_num_reqs", None),
         "max_model_len": getattr(input_batch, "max_model_len", None),
         "max_num_batched_tokens": getattr(input_batch, "max_num_batched_tokens", None),
+        "row_values": row_values,
         "num_prompt_tokens": _sequence_summary(getattr(input_batch, "num_prompt_tokens", None), count=num_reqs),
         "num_tokens_no_spec": _sequence_summary(getattr(input_batch, "num_tokens_no_spec", None), count=num_reqs),
         "num_computed_tokens_cpu": _sequence_summary(
@@ -1724,6 +1814,82 @@ def _slot_mappings_rows_summary(
     }
 
 
+def _slot_mappings_selected_rows_summary(slot_mappings: Any, row_indices: list[int]) -> dict[str, Any] | None:
+    if slot_mappings is None:
+        return None
+    if isinstance(slot_mappings, list):
+        return {
+            "type": "list",
+            "count": len(slot_mappings),
+            "items": [_slot_mappings_selected_rows_summary(item, row_indices) for item in slot_mappings[:4]],
+            "truncated": len(slot_mappings) > 4,
+        }
+    if not isinstance(slot_mappings, dict):
+        return {
+            "type": type(slot_mappings).__name__,
+            "values_by_bad_row": _indexed_values(slot_mappings, row_indices),
+        }
+
+    groups: dict[str, dict[str, Any]] = {}
+    for layer_name, tensor in slot_mappings.items():
+        key = _tensor_identity(tensor)
+        group = groups.setdefault(
+            key,
+            {
+                "layer_count": 0,
+                "layer_names": [],
+                "values_by_bad_row": _indexed_values(tensor, row_indices),
+            },
+        )
+        group["layer_count"] += 1
+        if len(group["layer_names"]) < 8:
+            group["layer_names"].append(layer_name)
+
+    return {
+        "type": "dict",
+        "layer_count": len(slot_mappings),
+        "unique_tensor_count": len(groups),
+        "groups": list(groups.values())[:8],
+        "truncated": len(groups) > 8,
+    }
+
+
+def _slot_mapping_detail_for_row(slot_mapping_summary: dict[str, Any] | None, row_index: int) -> Any:
+    if slot_mapping_summary is None:
+        return None
+    if slot_mapping_summary.get("type") == "list":
+        return {
+            **slot_mapping_summary,
+            "items": [
+                _slot_mapping_detail_for_row(item, row_index)
+                for item in slot_mapping_summary.get("items", [])
+            ],
+        }
+    groups = []
+    for group in slot_mapping_summary.get("groups", []):
+        values = ((group.get("values_by_bad_row") or {}).get("values") or [])
+        row_indices = ((group.get("values_by_bad_row") or {}).get("row_indices") or [])
+        value = None
+        for idx, candidate_row in enumerate(row_indices):
+            if candidate_row == row_index and idx < len(values):
+                value = values[idx]
+                break
+        groups.append(
+            {
+                "layer_count": group.get("layer_count"),
+                "layer_names": group.get("layer_names"),
+                "value": value,
+            }
+        )
+    return {
+        "type": slot_mapping_summary.get("type"),
+        "layer_count": slot_mapping_summary.get("layer_count"),
+        "unique_tensor_count": slot_mapping_summary.get("unique_tensor_count"),
+        "groups": groups,
+        "truncated": slot_mapping_summary.get("truncated"),
+    }
+
+
 def _vector_slice_summary(vector: Any, start: Any, end: Any, *, limit: int = 8) -> dict[str, Any] | None:
     start_int = _safe_int(start, None)
     end_int = _safe_int(end, None)
@@ -1764,8 +1930,17 @@ def _indexed_values(vector: Any, indices: list[int | None]) -> dict[str, Any] | 
             values.append("index_failed")
     return {
         "count": len(values),
+        "row_indices": indices,
         "values": values,
     }
+
+
+def _indexed_value(vector: Any, index: int) -> Any:
+    values = _indexed_values(vector, [index])
+    if not values:
+        return None
+    row_values = values.get("values") or []
+    return row_values[0] if row_values else None
 
 
 def _trace_nemotron_h_layer_output(
