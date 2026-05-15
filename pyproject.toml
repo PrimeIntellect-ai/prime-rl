@@ -124,35 +124,35 @@ dev = [
 [tool.uv.workspace]
 members = [
     "packages/prime-rl-configs",
-    "packages/verifiers",
-    "packages/renderers",
-    "packages/verifiers/environments/alphabet_sort",
-    "packages/verifiers/environments/math_python",
-    "packages/verifiers/environments/reverse_text",
-    "packages/verifiers/environments/wiki_search",
-    "packages/research-environments/environments/aime2024",
-    "packages/research-environments/environments/aime2025",
-    "packages/research-environments/environments/code_env",
-    "packages/research-environments/environments/color_codeword",
-    "packages/research-environments/environments/deepdive",
-    "packages/research-environments/environments/gpqa",
-    "packages/research-environments/environments/hle",
-    "packages/research-environments/environments/ifeval",
-    "packages/research-environments/environments/livecodebench",
-    "packages/research-environments/environments/logic_env",
-    "packages/research-environments/environments/math500",
-    "packages/research-environments/environments/math_env",
-    "packages/research-environments/environments/mini_swe_agent_plus",
-    "packages/research-environments/environments/mini_swe_agent_plus_rlm",
-    "packages/research-environments/environments/mmlu_pro",
-    "packages/research-environments/environments/opencode_cp",
-    "packages/research-environments/environments/opencode_deepdive",
-    "packages/research-environments/environments/opencode_math",
-    "packages/research-environments/environments/opencode_science",
-    "packages/research-environments/environments/opencode_swe",
-    "packages/research-environments/environments/science_env",
-    "packages/research-environments/environments/simpleqa_verified",
-    "packages/research-environments/environments/tau2_bench",
+    "deps/verifiers",
+    "deps/renderers",
+    "deps/verifiers/environments/alphabet_sort",
+    "deps/verifiers/environments/math_python",
+    "deps/verifiers/environments/reverse_text",
+    "deps/verifiers/environments/wiki_search",
+    "deps/research-environments/environments/aime2024",
+    "deps/research-environments/environments/aime2025",
+    "deps/research-environments/environments/code_env",
+    "deps/research-environments/environments/color_codeword",
+    "deps/research-environments/environments/deepdive",
+    "deps/research-environments/environments/gpqa",
+    "deps/research-environments/environments/hle",
+    "deps/research-environments/environments/ifeval",
+    "deps/research-environments/environments/livecodebench",
+    "deps/research-environments/environments/logic_env",
+    "deps/research-environments/environments/math500",
+    "deps/research-environments/environments/math_env",
+    "deps/research-environments/environments/mini_swe_agent_plus",
+    "deps/research-environments/environments/mini_swe_agent_plus_rlm",
+    "deps/research-environments/environments/mmlu_pro",
+    "deps/research-environments/environments/opencode_cp",
+    "deps/research-environments/environments/opencode_deepdive",
+    "deps/research-environments/environments/opencode_math",
+    "deps/research-environments/environments/opencode_science",
+    "deps/research-environments/environments/opencode_swe",
+    "deps/research-environments/environments/science_env",
+    "deps/research-environments/environments/simpleqa_verified",
+    "deps/research-environments/environments/tau2_bench",
 ]
 
 [tool.uv]
@@ -270,7 +270,7 @@ known-first-party = ["prime_rl"]
 
 [tool.ruff]
 line-length = 120
-extend-exclude = ["packages"]
+extend-exclude = ["deps"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers"

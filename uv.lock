@@ -15,7 +15,7 @@ conflicts = [[
 ]]
 
 [options]
-exclude-newer = "2026-05-08T23:20:34.306322143Z"
+exclude-newer = "2026-05-08T23:46:46.215125045Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -113,7 +113,7 @@ wheels = [
 [[package]]
 name = "aime2024"
 version = "0.1.20"
-source = { editable = "packages/research-environments/environments/aime2024" }
+source = { editable = "deps/research-environments/environments/aime2024" }
 dependencies = [
     { name = "math-verify", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "verifiers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -128,7 +128,7 @@ requires-dist = [
 [[package]]
 name = "aime2025"
 version = "0.1.20"
-source = { editable = "packages/research-environments/environments/aime2025" }
+source = { editable = "deps/research-environments/environments/aime2025" }
 dependencies = [
     { name = "math-verify", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "verifiers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -204,7 +204,7 @@ wheels = [
 [[package]]
 name = "alphabet-sort"
 version = "0.1.12"
-source = { editable = "packages/verifiers/environments/alphabet_sort" }
+source = { editable = "deps/verifiers/environments/alphabet_sort" }
 dependencies = [
     { name = "verifiers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
 ]
@@ -637,7 +637,7 @@ wheels = [
 [[package]]
 name = "code-env"
 version = "0.3.1"
-source = { editable = "packages/research-environments/environments/code_env" }
+source = { editable = "deps/research-environments/environments/code_env" }
 dependencies = [
     { name = "prime-sandboxes", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "verifiers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -661,7 +661,7 @@ provides-extras = ["dev"]
 [[package]]
 name = "color-codeword"
 version = "0.1.0"
-source = { editable = "packages/research-environments/environments/color_codeword" }
+source = { editable = "deps/research-environments/environments/color_codeword" }
 dependencies = [
     { name = "pillow", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "verifiers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -967,7 +967,7 @@ wheels = [
 [[package]]
 name = "deepdive"
 version = "0.2.7"
-source = { editable = "packages/research-environments/environments/deepdive" }
+source = { editable = "deps/research-environments/environments/deepdive" }
 dependencies = [
     { name = "aiohttp", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "datasets", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -1615,7 +1615,7 @@ wheels = [
 [[package]]
 name = "gpqa"
 version = "0.1.5"
-source = { editable = "packages/research-environments/environments/gpqa" }
+source = { editable = "deps/research-environments/environments/gpqa" }
 dependencies = [
     { name = "math-verify", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "verifiers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -1725,7 +1725,7 @@ wheels = [
 [[package]]
 name = "hle"
 version = "0.2.1"
-source = { editable = "packages/research-environments/environments/hle" }
+source = { editable = "deps/research-environments/environments/hle" }
 dependencies = [
     { name = "pillow", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "verifiers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -1845,7 +1845,7 @@ wheels = [
 [[package]]
 name = "ifeval"
 version = "0.1.1.1"
-source = { editable = "packages/research-environments/environments/ifeval" }
+source = { editable = "deps/research-environments/environments/ifeval" }
 dependencies = [
     { name = "immutabledict", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "langdetect", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -2372,7 +2372,7 @@ wheels = [
 [[package]]
 name = "livecodebench"
 version = "0.2.6"
-source = { editable = "packages/research-environments/environments/livecodebench" }
+source = { editable = "deps/research-environments/environments/livecodebench" }
 dependencies = [
     { name = "prime-sandboxes", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "verifiers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -2422,7 +2422,7 @@ wheels = [
 [[package]]
 name = "logic-env"
 version = "0.1.2"
-source = { editable = "packages/research-environments/environments/logic_env" }
+source = { editable = "deps/research-environments/environments/logic_env" }
 dependencies = [
     { name = "markdown", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "math-verify", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -2515,7 +2515,7 @@ wheels = [
 [[package]]
 name = "math-env"
 version = "0.1.5"
-source = { editable = "packages/research-environments/environments/math_env" }
+source = { editable = "deps/research-environments/environments/math_env" }
 dependencies = [
     { name = "math-verify", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "prime-sandboxes", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -2532,7 +2532,7 @@ requires-dist = [
 [[package]]
 name = "math-python"
 version = "0.1.10"
-source = { editable = "packages/verifiers/environments/math_python" }
+source = { editable = "deps/verifiers/environments/math_python" }
 dependencies = [
     { name = "math-verify", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "prime-sandboxes", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -2561,7 +2561,7 @@ wheels = [
 [[package]]
 name = "math500"
 version = "0.1.17"
-source = { editable = "packages/research-environments/environments/math500" }
+source = { editable = "deps/research-environments/environments/math500" }
 dependencies = [
     { name = "math-verify", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "verifiers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -2655,7 +2655,7 @@ wheels = [
 [[package]]
 name = "mini-swe-agent-plus"
 version = "0.2.24"
-source = { editable = "packages/research-environments/environments/mini_swe_agent_plus" }
+source = { editable = "deps/research-environments/environments/mini_swe_agent_plus" }
 dependencies = [
     { name = "prime-sandboxes", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "swebench", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -2674,7 +2674,7 @@ requires-dist = [
 [[package]]
 name = "mini-swe-agent-plus-rlm"
 version = "0.1.6"
-source = { editable = "packages/research-environments/environments/mini_swe_agent_plus_rlm" }
+source = { editable = "deps/research-environments/environments/mini_swe_agent_plus_rlm" }
 dependencies = [
     { name = "prime-sandboxes", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "swebench", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -2742,7 +2742,7 @@ wheels = [
 [[package]]
 name = "mmlu-pro"
 version = "0.1.3"
-source = { editable = "packages/research-environments/environments/mmlu_pro" }
+source = { editable = "deps/research-environments/environments/mmlu_pro" }
 dependencies = [
     { name = "math-verify", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "verifiers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -3290,7 +3290,7 @@ wheels = [
 [[package]]
 name = "opencode-cp"
 version = "0.3.10"
-source = { editable = "packages/research-environments/environments/opencode_cp" }
+source = { editable = "deps/research-environments/environments/opencode_cp" }
 dependencies = [
     { name = "prime-sandboxes", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "verifiers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -3305,7 +3305,7 @@ requires-dist = [
 [[package]]
 name = "opencode-deepdive"
 version = "0.1.15"
-source = { editable = "packages/research-environments/environments/opencode_deepdive" }
+source = { editable = "deps/research-environments/environments/opencode_deepdive" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "prime-sandboxes", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -3322,7 +3322,7 @@ requires-dist = [
 [[package]]
 name = "opencode-math"
 version = "0.4.11"
-source = { editable = "packages/research-environments/environments/opencode_math" }
+source = { editable = "deps/research-environments/environments/opencode_math" }
 dependencies = [
     { name = "math-verify", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "verifiers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -3337,7 +3337,7 @@ requires-dist = [
 [[package]]
 name = "opencode-science"
 version = "0.3.11"
-source = { editable = "packages/research-environments/environments/opencode_science" }
+source = { editable = "deps/research-environments/environments/opencode_science" }
 dependencies = [
     { name = "math-verify", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "verifiers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -3352,7 +3352,7 @@ requires-dist = [
 [[package]]
 name = "opencode-swe"
 version = "0.4.7"
-source = { editable = "packages/research-environments/environments/opencode_swe" }
+source = { editable = "deps/research-environments/environments/opencode_swe" }
 dependencies = [
     { name = "prime-sandboxes", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "swebench", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -3954,47 +3954,47 @@ mamba-ssm = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aime2024", marker = "extra == 'envs'", editable = "packages/research-environments/environments/aime2024" },
-    { name = "aime2025", marker = "extra == 'envs'", editable = "packages/research-environments/environments/aime2025" },
+    { name = "aime2024", marker = "extra == 'envs'", editable = "deps/research-environments/environments/aime2024" },
+    { name = "aime2025", marker = "extra == 'envs'", editable = "deps/research-environments/environments/aime2025" },
     { name = "aiolimiter", specifier = ">=1.2.1" },
-    { name = "alphabet-sort", marker = "extra == 'envs'", editable = "packages/verifiers/environments/alphabet_sort" },
+    { name = "alphabet-sort", marker = "extra == 'envs'", editable = "deps/verifiers/environments/alphabet_sort" },
     { name = "beartype", specifier = ">=0.21.0" },
-    { name = "code-env", marker = "extra == 'envs'", editable = "packages/research-environments/environments/code_env" },
-    { name = "color-codeword", marker = "extra == 'envs'", editable = "packages/research-environments/environments/color_codeword" },
+    { name = "code-env", marker = "extra == 'envs'", editable = "deps/research-environments/environments/code_env" },
+    { name = "color-codeword", marker = "extra == 'envs'", editable = "deps/research-environments/environments/color_codeword" },
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "deep-ep", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" },
     { name = "deep-gemm", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" },
-    { name = "deepdive", marker = "extra == 'envs'", editable = "packages/research-environments/environments/deepdive" },
+    { name = "deepdive", marker = "extra == 'envs'", editable = "deps/research-environments/environments/deepdive" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=d891eeb" },
     { name = "flash-attn", marker = "platform_machine == 'x86_64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.4/flash_attn-2.8.3+cu128torch2.11-cp312-cp312-linux_x86_64.whl" },
     { name = "flash-attn-3", marker = "extra == 'flash-attn-3'", index = "https://download.pytorch.org/whl/test/cu128" },
     { name = "flash-attn-4", marker = "extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=96bd151" },
     { name = "flash-linear-attention", git = "https://github.com/fla-org/flash-linear-attention" },
-    { name = "gpqa", marker = "extra == 'envs'", editable = "packages/research-environments/environments/gpqa" },
-    { name = "hle", marker = "extra == 'envs'", editable = "packages/research-environments/environments/hle" },
-    { name = "ifeval", marker = "extra == 'envs'", editable = "packages/research-environments/environments/ifeval" },
+    { name = "gpqa", marker = "extra == 'envs'", editable = "deps/research-environments/environments/gpqa" },
+    { name = "hle", marker = "extra == 'envs'", editable = "deps/research-environments/environments/hle" },
+    { name = "ifeval", marker = "extra == 'envs'", editable = "deps/research-environments/environments/ifeval" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "kernels", marker = "extra == 'gpt-oss'" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
-    { name = "livecodebench", marker = "extra == 'envs'", editable = "packages/research-environments/environments/livecodebench" },
-    { name = "logic-env", marker = "extra == 'envs'", editable = "packages/research-environments/environments/logic_env" },
+    { name = "livecodebench", marker = "extra == 'envs'", editable = "deps/research-environments/environments/livecodebench" },
+    { name = "logic-env", marker = "extra == 'envs'", editable = "deps/research-environments/environments/logic_env" },
     { name = "loguru", specifier = ">=0.7.3" },
-    { name = "math-env", marker = "extra == 'envs'", editable = "packages/research-environments/environments/math_env" },
-    { name = "math-python", marker = "extra == 'envs'", editable = "packages/verifiers/environments/math_python" },
-    { name = "math500", marker = "extra == 'envs'", editable = "packages/research-environments/environments/math500" },
-    { name = "mini-swe-agent-plus", marker = "extra == 'envs'", editable = "packages/research-environments/environments/mini_swe_agent_plus" },
-    { name = "mini-swe-agent-plus-rlm", marker = "extra == 'envs'", editable = "packages/research-environments/environments/mini_swe_agent_plus_rlm" },
-    { name = "mmlu-pro", marker = "extra == 'envs'", editable = "packages/research-environments/environments/mmlu_pro" },
+    { name = "math-env", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math_env" },
+    { name = "math-python", marker = "extra == 'envs'", editable = "deps/verifiers/environments/math_python" },
+    { name = "math500", marker = "extra == 'envs'", editable = "deps/research-environments/environments/math500" },
+    { name = "mini-swe-agent-plus", marker = "extra == 'envs'", editable = "deps/research-environments/environments/mini_swe_agent_plus" },
+    { name = "mini-swe-agent-plus-rlm", marker = "extra == 'envs'", editable = "deps/research-environments/environments/mini_swe_agent_plus_rlm" },
+    { name = "mmlu-pro", marker = "extra == 'envs'", editable = "deps/research-environments/environments/mmlu_pro" },
     { name = "nixl", marker = "extra == 'disagg'" },
     { name = "nixl-cu12", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "nvidia-ml-py", specifier = ">=12.575.51" },
     { name = "openai", specifier = ">=1.106.1" },
-    { name = "opencode-cp", marker = "extra == 'envs'", editable = "packages/research-environments/environments/opencode_cp" },
-    { name = "opencode-deepdive", marker = "extra == 'envs'", editable = "packages/research-environments/environments/opencode_deepdive" },
-    { name = "opencode-math", marker = "extra == 'envs'", editable = "packages/research-environments/environments/opencode_math" },
-    { name = "opencode-science", marker = "extra == 'envs'", editable = "packages/research-environments/environments/opencode_science" },
-    { name = "opencode-swe", marker = "extra == 'envs'", editable = "packages/research-environments/environments/opencode_swe" },
+    { name = "opencode-cp", marker = "extra == 'envs'", editable = "deps/research-environments/environments/opencode_cp" },
+    { name = "opencode-deepdive", marker = "extra == 'envs'", editable = "deps/research-environments/environments/opencode_deepdive" },
+    { name = "opencode-math", marker = "extra == 'envs'", editable = "deps/research-environments/environments/opencode_math" },
+    { name = "opencode-science", marker = "extra == 'envs'", editable = "deps/research-environments/environments/opencode_science" },
+    { name = "opencode-swe", marker = "extra == 'envs'", editable = "deps/research-environments/environments/opencode_swe" },
     { name = "prime", specifier = ">=0.6.4" },
     { name = "prime-rl", extras = ["disagg"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["flash-attn"], marker = "extra == 'all'" },
@@ -4005,14 +4005,14 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "quack-kernels", marker = "extra == 'quack'", specifier = ">=0.3.3" },
-    { name = "renderers", editable = "packages/renderers" },
-    { name = "reverse-text", marker = "extra == 'envs'", editable = "packages/verifiers/environments/reverse_text" },
+    { name = "renderers", editable = "deps/renderers" },
+    { name = "reverse-text", marker = "extra == 'envs'", editable = "deps/verifiers/environments/reverse_text" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ring-flash-attn", specifier = ">=0.1.8" },
-    { name = "science-env", marker = "extra == 'envs'", editable = "packages/research-environments/environments/science_env" },
+    { name = "science-env", marker = "extra == 'envs'", editable = "deps/research-environments/environments/science_env" },
     { name = "setproctitle", specifier = ">=1.3.0" },
-    { name = "simpleqa-verified", marker = "extra == 'envs'", editable = "packages/research-environments/environments/simpleqa_verified" },
-    { name = "tau2-bench", marker = "extra == 'envs'", editable = "packages/research-environments/environments/tau2_bench" },
+    { name = "simpleqa-verified", marker = "extra == 'envs'", editable = "deps/research-environments/environments/simpleqa_verified" },
+    { name = "tau2-bench", marker = "extra == 'envs'", editable = "deps/research-environments/environments/tau2_bench" },
     { name = "tenacity", specifier = ">=8.2.0" },
     { name = "tilelang", specifier = ">=0.1.8" },
     { name = "torch", specifier = ">=2.9.0", index = "https://download.pytorch.org/whl/cu128" },
@@ -4022,13 +4022,13 @@ requires-dist = [
     { name = "torchvision", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", editable = "packages/verifiers" },
+    { name = "verifiers", editable = "deps/verifiers" },
     { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'", specifier = ">=0.20.2" },
     { name = "vllm", marker = "platform_machine == 'aarch64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl" },
     { name = "vllm", marker = "platform_machine == 'x86_64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_x86_64.whl" },
     { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "wandb", specifier = ">=0.26.1" },
-    { name = "wiki-search", marker = "extra == 'envs'", editable = "packages/verifiers/environments/wiki_search" },
+    { name = "wiki-search", marker = "extra == 'envs'", editable = "deps/verifiers/environments/wiki_search" },
 ]
 provides-extras = ["flash-attn", "flash-attn-3", "flash-attn-cute", "envs", "disagg", "gpt-oss", "quack", "all"]
 
@@ -4691,7 +4691,7 @@ wheels = [
 
 [[package]]
 name = "renderers"
-source = { editable = "packages/renderers" }
+source = { editable = "deps/renderers" }
 dependencies = [
     { name = "fastokens", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "jinja2", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -4768,7 +4768,7 @@ wheels = [
 [[package]]
 name = "reverse-text"
 version = "0.1.4"
-source = { editable = "packages/verifiers/environments/reverse_text" }
+source = { editable = "deps/verifiers/environments/reverse_text" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "verifiers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -4901,7 +4901,7 @@ wheels = [
 [[package]]
 name = "science-env"
 version = "0.1.4"
-source = { editable = "packages/research-environments/environments/science_env" }
+source = { editable = "deps/research-environments/environments/science_env" }
 dependencies = [
     { name = "math-verify", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "verifiers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -5076,7 +5076,7 @@ wheels = [
 [[package]]
 name = "simpleqa-verified"
 version = "0.1.2"
-source = { editable = "packages/research-environments/environments/simpleqa_verified" }
+source = { editable = "deps/research-environments/environments/simpleqa_verified" }
 dependencies = [
     { name = "verifiers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
 ]
@@ -5280,7 +5280,7 @@ dependencies = [
 [[package]]
 name = "tau2-bench"
 version = "0.2.3"
-source = { editable = "packages/research-environments/environments/tau2_bench" }
+source = { editable = "deps/research-environments/environments/tau2_bench" }
 dependencies = [
     { name = "tau2", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "verifiers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -5814,7 +5814,7 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-source = { editable = "packages/verifiers" }
+source = { editable = "deps/verifiers" }
 dependencies = [
     { name = "aiolimiter", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "anthropic", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -5928,7 +5928,7 @@ requires-dist = [
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "reasoning-gym", marker = "extra == 'rg'" },
     { name = "regex", specifier = "<2026.4.4" },
-    { name = "renderers", marker = "extra == 'renderers'", editable = "packages/renderers" },
+    { name = "renderers", marker = "extra == 'renderers'", editable = "deps/renderers" },
     { name = "requests" },
     { name = "requests", marker = "extra == 'rl'" },
     { name = "rich" },
@@ -5961,7 +5961,7 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "reasoning-gym" },
-    { name = "renderers", editable = "packages/renderers" },
+    { name = "renderers", editable = "deps/renderers" },
     { name = "ruff" },
     { name = "stagehand", specifier = ">=3.0.0" },
     { name = "textarena" },
@@ -6489,7 +6489,7 @@ wheels = [
 [[package]]
 name = "wiki-search"
 version = "0.1.23"
-source = { editable = "packages/verifiers/environments/wiki_search" }
+source = { editable = "deps/verifiers/environments/wiki_search" }
 dependencies = [
     { name = "chromadb", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "datasets", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },

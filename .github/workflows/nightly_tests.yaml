@@ -79,7 +79,7 @@ jobs:
             - name: Init public submodules
               run: |
                   git config --global url."https://github.com/".insteadOf "git@github.com:"
-                  git submodule update --init --recursive -- packages/verifiers packages/renderers packages/research-environments
+                  git submodule update --init --recursive -- deps/verifiers deps/renderers deps/research-environments
             - name: Install uv
               uses: astral-sh/setup-uv@v5
               with:

@@ -1,11 +1,11 @@
 [submodule "verifiers"]
-	path = packages/verifiers
+	path = deps/verifiers
 	url = git@github.com:PrimeIntellect-ai/verifiers.git
 [submodule "renderers"]
-	path = packages/renderers
+	path = deps/renderers
 	url = git@github.com:PrimeIntellect-ai/renderers.git
 [submodule "research-environments"]
-	path = packages/research-environments
+	path = deps/research-environments
 	url = git@github.com:PrimeIntellect-ai/research-environments.git
 [submodule "configs/private"]
 	path = configs/private
