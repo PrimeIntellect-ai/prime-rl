@@ -19,6 +19,7 @@ def transformers_v5_compat():
     monkey_patch_deep_gemm_silu_mul_quant_int64()
     monkey_patch_dp_engine_core_pause_resume_deadlock()
     monkey_patch_vllm_layerwise_reload_alias_buffers()
+    monkey_patch_topk_topp_noncontiguous_logits()
 
 
 def monkey_patch_vllm_layerwise_reload_alias_buffers():
@@ -49,6 +50,62 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
 
     reload_layerwise._copy_and_restore_kernel_tensors = _copy_and_restore_kernel_tensors
     logger.warning("Enabled vLLM layerwise reload alias-buffer patch.")
+
+
+def monkey_patch_topk_topp_noncontiguous_logits():
+    """Make vLLM's native top-k/top-p Triton sampler layout-safe.
+
+    vLLM's native Triton top-k/top-p kernel indexes logits rows with
+    ``row_id * vocab_size``. That is only valid for contiguous ``[batch, vocab]``
+    logits. The fp32 lm-head path can return a legal sliced view with padded
+    physical row stride, e.g. shape ``(192, 100278)`` and stride
+    ``(100288, 1)``. Under ``processed_logprobs``, that layout can make the
+    Triton kernel mask the wrong row and produce all-``-inf`` rows, which become
+    NaNs after ``log_softmax`` and fail JSON rendering.
+
+    The FlashInfer sampling path already makes logits contiguous for this class
+    of issue. This patch applies the same layout precondition to the native
+    Triton path while preserving the returned logits values.
+    """
+    import os
+
+    from vllm.logger import init_logger
+
+    logger = init_logger(__name__)
+
+    if os.environ.get("PRIME_TTP_DISABLE_CONTIGUOUS_GUARD", "0") == "1":
+        logger.warning("PRIME_TTP_DISABLE_CONTIGUOUS_GUARD=1: vLLM top-k/top-p layout guard disabled.")
+        return
+
+    try:
+        import vllm.v1.sample.ops.topk_topp_sampler as sampler_mod
+        import vllm.v1.sample.ops.topk_topp_triton as triton_mod
+    except Exception as exc:
+        logger.warning("Could not install vLLM top-k/top-p layout guard: %r", exc)
+        return
+
+    if getattr(triton_mod, "_prime_ttp_contiguous_guard_installed", False):
+        return
+
+    original_apply_top_k_top_p_triton = triton_mod.apply_top_k_top_p_triton
+    state = {"converted": 0}
+
+    def _layout_safe_apply_top_k_top_p_triton(logits, k, p, mask_value=float("-inf")):
+        if logits.ndim == 2 and not logits.is_contiguous():
+            state["converted"] += 1
+            if state["converted"] <= 8:
+                logger.warning(
+                    "Making non-contiguous logits contiguous before vLLM top-k/top-p Triton kernel: shape=%s stride=%s",
+                    tuple(logits.shape),
+                    tuple(logits.stride()),
+                )
+            logits = logits.contiguous()
+        return original_apply_top_k_top_p_triton(logits, k, p, mask_value=mask_value)
+
+    triton_mod.apply_top_k_top_p_triton = _layout_safe_apply_top_k_top_p_triton
+    sampler_mod.apply_top_k_top_p_triton = _layout_safe_apply_top_k_top_p_triton
+    triton_mod._prime_ttp_contiguous_guard_installed = True
+    logger.warning("Enabled vLLM top-k/top-p non-contiguous logits guard.")
 
 
 @triton.jit

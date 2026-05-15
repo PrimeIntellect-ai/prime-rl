@@ -7,6 +7,7 @@ from prime_rl.inference.patches import (
     monkey_patch_minimax_m2_for_lora,
     monkey_patch_no_moe_lora,
     monkey_patch_skip_lora_module_warnings,
+    monkey_patch_topk_topp_noncontiguous_logits,
 )
 
 logger = logging.getLogger(__name__)
@@ -27,3 +28,6 @@ else:
 
 # Install fp32 lm_head patch; self-gates on additional_config["fp32_lm_head"] at call time
 monkey_patch_fp32_lm_head()
+
+# Keep vLLM's native Triton top-k/top-p sampler safe for sliced fp32 logits.
+monkey_patch_topk_topp_noncontiguous_logits()
