@@ -21,6 +21,11 @@ class InferencePool(Protocol):
     """Protocol for inference pools (static or elastic)."""
 
     @property
+    def model_name(self) -> str:
+        """Get current model name for inference requests."""
+        ...
+
+    @property
     def train_clients(self) -> list[vf.ClientConfig]:
         """Get inference clients."""
         ...

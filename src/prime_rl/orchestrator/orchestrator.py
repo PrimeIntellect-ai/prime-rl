@@ -936,12 +936,18 @@ async def setup_rollout_inference_pool(
       - both False → MITO (``openai_chat_completions``).
     """
     if config.teacher_rollout_model is not None:
-        logger.info("Using external rollout model (MITO) without renderer client")
+        teacher_client_type = config.teacher_rollout_model.client_type
+        teacher_client_label = (
+            "MITO (openai_chat_completions)"
+            if teacher_client_type == "openai_chat_completions"
+            else teacher_client_type
+        )
+        logger.info(f"Using external rollout model ({teacher_client_label}) without renderer client")
         inference_pool = await setup_inference_pool(
             rollout_client_config,
             model_name=rollout_model_name,
-            train_client_type="openai_chat_completions",
-            eval_client_type="openai_chat_completions",
+            train_client_type=teacher_client_type,
+            eval_client_type=teacher_client_type,
         )
         return None, inference_pool
 

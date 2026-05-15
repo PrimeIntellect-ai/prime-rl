@@ -9,7 +9,7 @@ def test_setup_rollout_inference_pool_uses_plain_client_for_external_teacher_rol
     async def run() -> None:
         tokenizer = object()
         config = SimpleNamespace(
-            teacher_rollout_model=SimpleNamespace(),
+            teacher_rollout_model=SimpleNamespace(client_type="custom_chat_client"),
             model=SimpleNamespace(renderer="auto", name="student-model"),
         )
         rollout_client_config = SimpleNamespace(base_url=["https://api.pinference.ai/api/v1"])
@@ -18,8 +18,9 @@ def test_setup_rollout_inference_pool_uses_plain_client_for_external_teacher_rol
 
         with (
             patch(
-                "prime_rl.orchestrator.orchestrator.setup_inference_pool", new=AsyncMock(return_value=inference_pool)
-            ),
+                "prime_rl.orchestrator.orchestrator.setup_inference_pool",
+                new=AsyncMock(return_value=inference_pool),
+            ) as setup_pool_mock,
             patch("prime_rl.orchestrator.orchestrator.create_renderer") as create_renderer_mock,
         ):
             renderer, returned_pool = await setup_rollout_inference_pool(
@@ -33,6 +34,12 @@ def test_setup_rollout_inference_pool_uses_plain_client_for_external_teacher_rol
         assert renderer is None
         assert returned_pool is inference_pool
         create_renderer_mock.assert_not_called()
+        setup_pool_mock.assert_awaited_once_with(
+            rollout_client_config,
+            model_name="teacher-model",
+            train_client_type="custom_chat_client",
+            eval_client_type="custom_chat_client",
+        )
 
     asyncio.run(run())
 
