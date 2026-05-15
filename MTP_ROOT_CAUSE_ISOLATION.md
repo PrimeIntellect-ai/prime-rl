@@ -1,8 +1,10 @@
 # MTP Root Cause Isolation
 
-Investigation date: 2026-05-14
+Investigation date: 2026-05-14 to 2026-05-15 UTC
 
-Branch: `pr-2406-mtp`
+Original feature branch: `pr-2406-mtp`
+
+Isolation branch: `codex/mtp-root-cause-isolation-20260514`
 
 Head: `a3ea6ca68a3f7aa5dcd4c2e3885a72299df0a00d`
 
@@ -10,7 +12,7 @@ Head: `a3ea6ca68a3f7aa5dcd4c2e3885a72299df0a00d`
 
 ## Objective
 
-Run narrow isolations until the root cause of the Qwen3.5 MTP sanity-run crash is firm. Persist intermediate findings in this markdown file. Do not check this file into git.
+Run narrow isolations until the root cause of the Qwen3.5 MTP sanity-run crash is firm. Persist intermediate findings in this markdown file on the isolation branch, not on the feature branch.
 
 ## Known Failure
 
@@ -48,6 +50,44 @@ scheduled_new_reqs=[]
 scheduled_cached_reqs=CachedRequestData(...)
 ```
 
+## Current Finding
+
+The concrete failing value is now known: after a preserved-cache pause/update/resume, vLLM schedules cached Qwen3.5 MTP decode requests with speculative placeholder token id `-1`, and that `-1` reaches `Qwen3NextModel.embed_input_ids`.
+
+The final token-debug run caught the invalid value before CUDA embedding:
+
+```text
+RuntimeError: PRIME_RL_TOKEN_DEBUG invalid input_ids before embedding:
+  input_ids.shape=(56,)
+  input_ids.dtype=torch.int32
+  input_ids.device=cuda:3
+  actual_vocab_size=248320
+  org_vocab_size=248320
+  padded_vocab_size=248320
+  partition_vocab_size=248320
+  min=-1
+  max=35790
+  invalid_count=28
+  semantic_invalid_count=28
+  sample_flat_positions=[1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55]
+  sample_values=[-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
+  sample_unique_values=[-1]
+```
+
+The same worker also logged a variant where all 56 input IDs were `-1`.
+
+The corresponding scheduler output had:
+
+- `scheduled_new_reqs=[]`.
+- 28 cached requests on DP3.
+- `num_scheduled_tokens=2` for every cached request.
+- `scheduled_spec_decode_tokens={...: [-1], ...}` for every cached request.
+- `total_num_scheduled_tokens=56`.
+- `resumed_req_ids=set()`.
+- `kv_cache_usage=0.026730730188806895`.
+
+So the GDN and embedding CUDA asserts are symptoms. The root cause is earlier: invalid speculative decode placeholder IDs are being treated as model input tokens for cached MTP decode requests after an in-flight weight update/resume.
+
 ## Current Working Hypothesis
 
 This is not a trainer crash. It is an inference-side crash when Qwen3.5 MTP speculative decode resumes cached decode requests after an in-place full-weight update.
@@ -59,9 +99,9 @@ The important distinction for PipelineRL:
 - So preserving KV/cache across in-flight updates is intended and is not, by itself, proven broken here.
 - The crash still happens in the Qwen3.5 MTP/GDN speculative decode path, but it appears to need an additional trigger from the full RL workload.
 
-Refined bug statement to validate:
+Refined bug statement:
 
-> Qwen3.5 MTP speculative rollout can hit a vLLM GDN/linear-attention CUDA assert during PrimeRL's preserved-cache weight-update workload, but the trigger is narrower than preserved KV plus an in-place reload. The remaining suspects are exact sampled token content, full scheduler lifecycle churn, or a rare vLLM MTP state bug reached only under the real RL workload.
+> Qwen3.5 MTP speculative rollout can leak `-1` speculative placeholder IDs into target-model input IDs for cached decode requests after PrimeRL's preserved-cache pause/update/resume workload. This is reached intermittently by the full RL scheduler/client lifecycle and manifests as embedding/GDN CUDA asserts.
 
 ## Upstream Code Facts
 
@@ -421,3 +461,153 @@ Next isolation:
 - Added repo-level debug instrumentation around vLLM's GDN `_forward_core` path in `src/prime_rl/inference/patches.py`.
 - The instrumentation is gated behind `PRIME_RL_GDN_DEBUG=1`; it wraps GDN core execution, validates obvious token/state index bounds, and appends the GDN metadata context if the wrapped call or a forced CUDA sync fails.
 - Run the same workload with `CUDA_LAUNCH_BLOCKING=1` and the debug wrapper enabled so a future failure includes GDN metadata: token/state index ranges, query start locs, prefill/decode counts, spec masks, cache shapes, and chunk metadata.
+
+### Isolation 9: CUDA_LAUNCH_BLOCKING plus GDN debug
+
+Status: reproduced, but shifted the stack to embedding.
+
+Config:
+
+- Output dir: `outputs/qwen35-2b-hendrycks-sanity-mtp-non-thinking-8xh200-rootcause-gdn-debug`.
+- W&B run: `https://wandb.ai/primeintellect/mtp-qwen35-hendrycks/runs/0d75ec1f6b05454594fb1c99e9164097`.
+- Environment: `PRIME_RL_GDN_DEBUG=1 CUDA_LAUNCH_BLOCKING=1`.
+
+Result:
+
+- Trainer completed step 8 at 00:09:38 UTC and broadcasted `step_9`.
+- Orchestrator had started step 9 at 00:09:10 UTC.
+- At 00:09:42 UTC, with 8/128 rollouts complete, orchestrator got policy step 9, paused inference, wrote `NCCL_READY`, updated weights in 0.36s, and resumed.
+- Inference died immediately afterward.
+
+Key finding:
+
+- With synchronous CUDA error reporting, the top failing stack was no longer GDN. It was:
+
+```text
+vllm/model_executor/models/qwen3_5.py:695 forward
+vllm/model_executor/models/qwen3_next.py:506 forward
+vllm/model_executor/models/qwen3_next.py:493 embed_input_ids
+vllm/model_executor/layers/vocab_parallel_embedding.py:484 forward
+vllm/model_executor/layers/vocab_parallel_embedding.py:78 embedding
+torch.nn.functional.embedding(...)
+torch.AcceleratorError: CUDA error: device-side assert triggered
+```
+
+- PyTorch also logged repeated vectorized gather bounds asserts:
+
+```text
+/pytorch/aten/src/ATen/native/cuda/IndexKernelUtils.cu:16: vectorized_gather_kernel:
+Assertion `ind >=0 && ind < ind_dim_size && "vectorized gather kernel index out of bounds"` failed.
+```
+
+Scheduler context:
+
+- `scheduled_new_reqs=[]`.
+- `scheduled_cached_reqs` contained 29 cached requests on DP0.
+- `resumed_req_ids=set()`.
+- `num_scheduled_tokens=2` for every cached request; total scheduled tokens was 58.
+- `scheduled_spec_decode_tokens` was `[-1]` for every cached request.
+- `kv_cache_usage=0.02253502064018409`.
+
+Interpretation:
+
+- The GDN stack from Isolation 8 was an asynchronous reporting site, not the root failing operation.
+- The real invalid operation is an embedding gather over token id `-1`.
+- The next run should guard Qwen3.5 embedding directly and print invalid token values before the CUDA kernel runs.
+
+### Isolation 10: token-id guard before Qwen3.5 embedding
+
+Status: reproduced and captured the bad IDs.
+
+Config:
+
+- Tracked config: `debug_configs/mtp_rootcause_full_rl_token_debug.toml`.
+- Output dir: `outputs/qwen35-2b-hendrycks-sanity-mtp-non-thinking-8xh200-rootcause-token-debug`.
+- W&B run: `https://wandb.ai/primeintellect/mtp-qwen35-hendrycks/runs/bedc53600754403e9f77bfe1949f0e59`.
+- Environment: `PRIME_RL_TOKEN_DEBUG=1`.
+- Instrumentation: `src/prime_rl/inference/patches.py` patches `Qwen3NextModel.embed_input_ids` and raises before embedding if any token is `< 0` or `>= vocab_size`.
+
+Result:
+
+- Trainer completed steps 0 through 7.
+- Step throughputs after warmup were stable, around 40k-42k tokens/s:
+  - step 1: 41242 tokens/s;
+  - step 2: 39984 tokens/s;
+  - step 3: 41424 tokens/s;
+  - step 4: 41242 tokens/s;
+  - step 5: 41356 tokens/s;
+  - step 6: 41701 tokens/s;
+  - step 7: 41602 tokens/s.
+- Trainer completed step 7 at 00:29:48 UTC and broadcasted `step_8`.
+- Orchestrator started step 8 at 00:29:26 UTC.
+- At 00:29:52 UTC, with 32/128 rollouts complete, orchestrator got policy step 8, paused inference, created `step_8/NCCL_READY`, resumed, and logged `Updated weights to step 8 in 0.30s`.
+- Inference failed in the same second.
+
+Verbatim root exception:
+
+```text
+RuntimeError: PRIME_RL_TOKEN_DEBUG invalid input_ids before embedding:
+  input_ids.shape=(56,)
+  input_ids.dtype=torch.int32
+  input_ids.device=cuda:3
+  actual_vocab_size=248320
+  org_vocab_size=248320
+  padded_vocab_size=248320
+  partition_vocab_size=248320
+  min=-1
+  max=35790
+  invalid_count=28
+  semantic_invalid_count=28
+  sample_flat_positions=[1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55]
+  sample_values=[-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
+  sample_unique_values=[-1]
+```
+
+The same worker then logged another invalid call:
+
+```text
+RuntimeError: PRIME_RL_TOKEN_DEBUG invalid input_ids before embedding:
+  input_ids.shape=(56,)
+  input_ids.dtype=torch.int32
+  input_ids.device=cuda:3
+  actual_vocab_size=248320
+  org_vocab_size=248320
+  padded_vocab_size=248320
+  partition_vocab_size=248320
+  min=-1
+  max=-1
+  invalid_count=56
+  semantic_invalid_count=56
+  sample_flat_positions=[0, 1, 2, ..., 55]
+  sample_values=[-1, -1, -1, ..., -1]
+  sample_unique_values=[-1]
+```
+
+Scheduler context at the first invalid embedding:
+
+- DP rank: `EngineCore_DP3`.
+- Worker PID: `148914`.
+- `scheduled_new_reqs=[]`.
+- `scheduled_cached_reqs` had 28 cached requests.
+- `all_token_ids_lens` included long near-limit sequences: 8180, 7284, 7150, 7135, 7113, 7110, 7108, and shorter active sequences down to 1227.
+- `num_computed_tokens` was exactly one less than each corresponding `all_token_ids_lens`.
+- `num_output_tokens` ranged from 1118 to 8091.
+- `num_scheduled_tokens=2` for every cached request.
+- `total_num_scheduled_tokens=56`.
+- `scheduled_spec_decode_tokens` was `[-1]` for every cached request.
+- `resumed_req_ids=set()`.
+- `kv_cache_usage=0.026730730188806895`.
+
+Interpretation:
+
+- This confirms the root value precisely: vLLM is passing MTP speculative placeholder token id `-1` into target-model embedding.
+- The alternating invalid positions match the expected flattened layout for 28 cached decode requests with two scheduled tokens each: one real sampled token plus one speculative token per request. The speculative slot is `-1`.
+- The all-`-1` call is consistent with a follow-on speculative/drafter path seeing the same poisoned scheduled batch after the first failure.
+- The bug is not in the trainer, loss, or the Hendrycks reward path.
+- The bug is in the inference-side interaction between preserved cached decode requests, MTP speculative decode bookkeeping, and PrimeRL's pause/update/resume cancellation/update cycle.
+
+Recommended fix direction:
+
+- Short-term validation workaround: disable MTP speculative decode across in-flight weight updates, or force a spec-decode state reset for cached requests while still preserving KV where possible.
+- Safer PrimeRL-side mitigation: around `/pause` or `/update_weights`, clear only pending `request.spec_token_ids` / draft-token state for cached requests, not the KV cache. This preserves the PipelineRL value of keeping generated context while preventing stale or invalid speculative placeholders from being scheduled.
+- Upstream vLLM fix candidate: the scheduler/model-runner should never schedule `-1` speculative placeholders as target-model `input_ids`. If invalid draft tokens are represented with `-1`, the target input preparation path must filter/trim those slots and reduce per-request scheduled token counts, or replace them only in metadata paths that explicitly mask them.
