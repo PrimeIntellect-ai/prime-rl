@@ -24,6 +24,12 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v3
+        with:
+          submodules: false
+      - name: Init public submodules
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive -- deps/verifiers deps/renderers deps/research-environments
       - name: Docker meta
         id: meta
         uses: crazy-max/ghaction-docker-meta@v2
