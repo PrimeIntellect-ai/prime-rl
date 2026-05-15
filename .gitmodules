@@ -1,0 +1,9 @@
+[submodule "verifiers"]
+	path = verifiers
+	url = git@github.com:PrimeIntellect-ai/verifiers.git
+[submodule "renderers"]
+	path = renderers
+	url = git@github.com:PrimeIntellect-ai/renderers.git
+[submodule "research-environments"]
+	path = research-environments
+	url = git@github.com:PrimeIntellect-ai/research-environments.git

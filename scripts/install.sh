@@ -66,6 +66,29 @@ ensure_known_hosts() {
   fi
 }
 
+# Initialize each submodule independently so that a missing private repo
+# (e.g. configs/private when the user lacks access) does not abort the install.
+init_submodules() {
+  if [ ! -f .gitmodules ]; then
+    return 0
+  fi
+  local paths failures
+  paths=$(git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | awk '{print $2}')
+  failures=()
+  for path in $paths; do
+    log_info "Initializing submodule: ${path}"
+    if git submodule update --init --recursive -- "$path"; then
+      :
+    else
+      log_warn "Could not initialize submodule '${path}' (likely no access). Continuing without it."
+      failures+=("$path")
+    fi
+  done
+  if [ "${#failures[@]}" -gt 0 ]; then
+    log_warn "Skipped submodules: ${failures[*]}"
+  fi
+}
+
 main() {
   assert_supported_platform
 
@@ -91,12 +114,22 @@ main() {
       git clone git@github.com:PrimeIntellect-ai/${REPO_ID}.git
     else
       log_warn "SSH auth to GitHub not available. Cloning via HTTPS."
-      git clone https://github.com/PrimeIntellect-ai/${REPO_ID}.git
+      # Rewrite SSH URLs in .gitmodules to HTTPS for the submodule step below.
+      git -c "url.https://github.com/.insteadOf=git@github.com:" \
+        clone https://github.com/PrimeIntellect-ai/${REPO_ID}.git
     fi
 
     log_info "Entering project directory..."
     cd ${REPO_ID}
+
+    # Pin the SSH->HTTPS rewrite locally so submodule updates use HTTPS too.
+    if ! has_ssh_access; then
+      git config url."https://github.com/".insteadOf "git@github.com:"
+    fi
   fi
+
+  log_info "Initializing submodules..."
+  init_submodules
 
   log_info "Installing uv..."
   curl -LsSf https://astral.sh/uv/install.sh | sh

@@ -88,4 +88,5 @@ curl http://localhost:8000/v1/chat/completions \
 - `src/prime_rl/entrypoints/` — top-level entrypoints (`rl`, `sft`, `inference`)
 - `src/prime_rl/configs/` — all config classes
 - `configs/debug/` — minimal configs for quick testing
+- `configs/private/` — private configs submodule (if access granted)
 - `examples/` — full example configs for various tasks

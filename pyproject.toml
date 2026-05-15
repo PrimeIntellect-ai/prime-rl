@@ -31,7 +31,7 @@ dependencies = [
     "uvloop>=0.21.0",
     "torchtitan",
     "verifiers",
-    "renderers==0.1.6",
+    "renderers",
     "dion",
     "tilelang>=0.1.8",
     "flash-linear-attention",
@@ -59,20 +59,107 @@ flash-attn-cute = [
     "flash-attn-4",
 ]
 envs = [
-    "reverse-text",
+    # from verifiers/environments/*
     "alphabet-sort",
-    "wiki-search",
+    "browser-cua-example",
+    "browser-dom-example",
+    "continuation-quality",
+    "doublecheck",
+    "dspy-flights",
+    "dspy-rlm",
+    "gsm8k",
+    "hello-group-reward-v1",
+    "hello-mcp-harbor",
+    "hello-parallel-sandbox-v1",
+    "hello-rlm-v1",
+    "hello-self-judge-v1",
+    "hello-subagent-v1",
+    "langchain-deep-agents-wikispeedia",
+    "math-group",
     "math-python",
-    "math-env",
-    "code-env",
-    "science-env",
-    "logic-env",
-    "color-codeword",
-    "math500",
+    "mcp-search-env",
+    "mmmu",
+    "nested-harness-v1",
+    "openai-agents-env",
+    "opencode-harbor",
+    "reasoning-gym-env",
+    "reverse-text",
+    "rlm-swe-v1",
+    "self-reward",
+    "sentence-repeater",
+    "terminus-harbor",
+    "tool-test",
+    "toxicity-explanation",
+    "wiki-search",
+    "wordle",
+    # from research-environments/environments/*
     "aime2024",
     "aime2025",
-    "mini_swe_agent_plus",
-    "deepdive"
+    "aime2026",
+    "apex-shortlist",
+    "bfcl-v3",
+    "browsecomp",
+    "clbench",
+    "code-env",
+    "color-codeword",
+    "ddbc",
+    "ddbc-rlm",
+    "deepdive",
+    "deepdive-rlm",
+    "frontierscience",
+    "general-agent",
+    "gpqa",
+    "graphwalks",
+    "graphwalks-rlm",
+    "harbor",
+    "hle",
+    "ifbench",
+    "ifeval",
+    "if-summarize-judge",
+    "livecodebench",
+    "logic-env",
+    "longbenchpro-rlm",
+    "longcot-rlm",
+    "math500",
+    "math-env",
+    "math-env-rlm",
+    "mcp-atlas",
+    "mini-swe-agent-plus",
+    "mini-swe-agent-plus-rlm",
+    "mmlu-pro",
+    "mrcr-v2-rlm",
+    "needle-in-haystack-rlm",
+    "nl2repobench",
+    "oolong-rlm",
+    "opencode-cp",
+    "opencode-deepdive",
+    "opencode-lean",
+    "opencode-math",
+    "opencode-science",
+    "opencode-swe",
+    "passthrough",
+    "patterned-needle-in-haystack",
+    "patterned-needle-in-haystack-rlm",
+    "pinchbench",
+    "rlm-browsecomp",
+    "rlm-deepdive",
+    "rlm-graphwalks",
+    "rlm-lean",
+    "rlm-longcot",
+    "rlm-math",
+    "rlm-mrcr-v2",
+    "rlm-oolong",
+    "rlm-science",
+    "rlm-secrets",
+    "rlm-swe",
+    "science-env",
+    "simpleqa",
+    "simpleqa-verified",
+    "swe",
+    "unscramble",
+    "verbatim-copy",
+    "verbatim-copy-rlm",
+    "wikispeedia",
 ]
 disagg = [
     "deep-ep ; platform_machine == 'x86_64'",
@@ -109,7 +196,35 @@ dev = [
 
 
 [tool.uv.workspace]
-members = ["packages/*"]
+members = [
+    "packages/*",
+    "verifiers",
+    "verifiers/environments/*",
+    "renderers",
+    "research-environments/environments/*",
+]
+# Env packages excluded from the workspace:
+# - verifiers/environments/bfcl_v3: collides with research-environments/environments/bfcl_v3 (kept)
+# - research-environments/environments/clbench_rlm: pins verifiers to a non-workspace git URL
+# - research-environments/environments/terminal_bench_2: pins verifiers to a non-workspace git URL
+exclude = [
+    "verifiers/environments/bfcl_v3",
+    "research-environments/environments/clbench_rlm",
+    "research-environments/environments/terminal_bench_2",
+    # tau2 package has three incompatible forks across these envs — pick none for now
+    "verifiers/environments/tau2_bench_v1",
+    "research-environments/environments/tau2_bench",
+    "research-environments/environments/tau2_synth",
+    "research-environments/environments/tau3_bench",
+    "research-environments/environments/tau3_bench_rlm",
+    # gem-wordle pins nltk==3.9.1 (via gem-llm) but wordle requires nltk>=3.9.2
+    "verifiers/environments/gem_wordle",
+    # scicode-core's google-generativeai pins protobuf incompatibly with mcp-atlas/opencode-deepdive
+    "research-environments/environments/scicode",
+    # verifiers[openenv] requires openenv-core>=0.3.0 but only <=0.2.3 is available
+    "verifiers/environments/openenv_echo",
+    "verifiers/environments/openenv_textarena",
+]
 
 [tool.uv]
 exclude-newer = "7 days"
@@ -125,35 +240,22 @@ override-dependencies = [
     "nvidia-cudnn-cu12>=9.15",
     "nvidia-cutlass-dsl>=4.4.1",
     "transformers>=5.1.0.dev0",
+    # verifiers[rl] pins torch<2.9; prime-rl needs torch>=2.9. Force our version.
+    "torch>=2.9.0",
+    # verifiers[openenv] requires openenv-core>=0.3.0 (not yet published); allow current PyPI.
+    "openenv-core",
 ]
 
 [tool.uv.exclude-newer-package]
 # we want latest vllm, remove next patch
 vllm = false
 flash_attn_3 = false
-# Self-vendored packages on our primeintellect index
-reverse-text = false
-alphabet-sort = false
-wiki-search = false
-math-python = false
-math-env = false
-code-env = false
-science-env = false
-logic-env = false
-color-codeword = false
-math500 = false
-aime2024 = false
-aime2025 = false
-deepdive = false
-mini_swe_agent_plus = false
 # PrimeIntellect-published on PyPI (trusted publisher)
 prime = false
 prime-sandboxes = false
 prime-tunnel = false
 prime-evals = false
 # Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
-verifiers = false
-renderers = false
 vllm-router = false
 dion = false
 pydantic-config = false
@@ -163,10 +265,111 @@ nixl-cu12 = false
 
 [tool.uv.sources]
 prime-rl-configs = { workspace = true }
+verifiers = { workspace = true }
+renderers = { workspace = true }
+# Env packages from verifiers/environments/* and research-environments/environments/*
+alphabet-sort = { workspace = true }
+browser-cua-example = { workspace = true }
+browser-dom-example = { workspace = true }
+continuation-quality = { workspace = true }
+doublecheck = { workspace = true }
+dspy-flights = { workspace = true }
+dspy-rlm = { workspace = true }
+gsm8k = { workspace = true }
+hello-group-reward-v1 = { workspace = true }
+hello-mcp-harbor = { workspace = true }
+hello-parallel-sandbox-v1 = { workspace = true }
+hello-rlm-v1 = { workspace = true }
+hello-self-judge-v1 = { workspace = true }
+hello-subagent-v1 = { workspace = true }
+langchain-deep-agents-wikispeedia = { workspace = true }
+math-group = { workspace = true }
+math-python = { workspace = true }
+mcp-search-env = { workspace = true }
+mmmu = { workspace = true }
+nested-harness-v1 = { workspace = true }
+openai-agents-env = { workspace = true }
+opencode-harbor = { workspace = true }
+reasoning-gym-env = { workspace = true }
+reverse-text = { workspace = true }
+rlm-swe-v1 = { workspace = true }
+self-reward = { workspace = true }
+sentence-repeater = { workspace = true }
+terminus-harbor = { workspace = true }
+tool-test = { workspace = true }
+toxicity-explanation = { workspace = true }
+wiki-search = { workspace = true }
+wordle = { workspace = true }
+aime2024 = { workspace = true }
+aime2025 = { workspace = true }
+aime2026 = { workspace = true }
+apex-shortlist = { workspace = true }
+bfcl-v3 = { workspace = true }
+browsecomp = { workspace = true }
+clbench = { workspace = true }
+code-env = { workspace = true }
+color-codeword = { workspace = true }
+ddbc = { workspace = true }
+ddbc-rlm = { workspace = true }
+deepdive = { workspace = true }
+deepdive-rlm = { workspace = true }
+frontierscience = { workspace = true }
+general-agent = { workspace = true }
+gpqa = { workspace = true }
+graphwalks = { workspace = true }
+graphwalks-rlm = { workspace = true }
+harbor = { workspace = true }
+hle = { workspace = true }
+ifbench = { workspace = true }
+ifeval = { workspace = true }
+if-summarize-judge = { workspace = true }
+livecodebench = { workspace = true }
+logic-env = { workspace = true }
+longbenchpro-rlm = { workspace = true }
+longcot-rlm = { workspace = true }
+math500 = { workspace = true }
+math-env = { workspace = true }
+math-env-rlm = { workspace = true }
+mcp-atlas = { workspace = true }
+mini-swe-agent-plus = { workspace = true }
+mini-swe-agent-plus-rlm = { workspace = true }
+mmlu-pro = { workspace = true }
+mrcr-v2-rlm = { workspace = true }
+needle-in-haystack-rlm = { workspace = true }
+nl2repobench = { workspace = true }
+oolong-rlm = { workspace = true }
+opencode-cp = { workspace = true }
+opencode-deepdive = { workspace = true }
+opencode-lean = { workspace = true }
+opencode-math = { workspace = true }
+opencode-science = { workspace = true }
+opencode-swe = { workspace = true }
+passthrough = { workspace = true }
+patterned-needle-in-haystack = { workspace = true }
+patterned-needle-in-haystack-rlm = { workspace = true }
+pinchbench = { workspace = true }
+rlm-browsecomp = { workspace = true }
+rlm-deepdive = { workspace = true }
+rlm-graphwalks = { workspace = true }
+rlm-lean = { workspace = true }
+rlm-longcot = { workspace = true }
+rlm-math = { workspace = true }
+rlm-mrcr-v2 = { workspace = true }
+rlm-oolong = { workspace = true }
+rlm-science = { workspace = true }
+rlm-secrets = { workspace = true }
+rlm-swe = { workspace = true }
+science-env = { workspace = true }
+simpleqa = { workspace = true }
+simpleqa-verified = { workspace = true }
+swe = { workspace = true }
+unscramble = { workspace = true }
+verbatim-copy = { workspace = true }
+verbatim-copy-rlm = { workspace = true }
+wikispeedia = { workspace = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "aa428f3" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "c1c3424" }
@@ -177,20 +380,6 @@ vllm = [
     { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
-reverse-text = { index = "primeintellect" }
-alphabet-sort = { index = "primeintellect" }
-wiki-search = { index = "primeintellect" }
-math-python = { index = "primeintellect" }
-math-env = { index = "primeintellect" }
-code-env = { index = "primeintellect" }
-science-env = { index = "primeintellect" }
-logic-env = { index = "primeintellect" }
-color-codeword = { index = "primeintellect" }
-math500 = { index = "primeintellect" }
-aime2024 = { index = "primeintellect" }
-aime2025 = { index = "primeintellect" }
-deepdive = { index = "primeintellect" }
-mini_swe_agent_plus = { index = "primeintellect" }
 deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }
 deep-gemm = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }
 nixl-cu12 = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
@@ -204,11 +393,6 @@ mamba-ssm = [{ requirement = "torch", match-runtime = true }]
 
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
-
-[[tool.uv.index]]
-name = "primeintellect"
-url = "https://hub.primeintellect.ai/primeintellect/simple/"
-explicit = true
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
