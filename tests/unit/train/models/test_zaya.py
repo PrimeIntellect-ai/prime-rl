@@ -1,3 +1,4 @@
+# This script should be run with "https://github.com/JJJYmmm/transformers.git" which checks against the (likely) merged transformers PR for Zaya
 from pathlib import Path
 
 import pytest

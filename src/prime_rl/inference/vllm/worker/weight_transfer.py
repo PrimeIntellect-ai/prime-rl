@@ -18,39 +18,7 @@ def load_weights_checkpoint_layerwise(
     device = next(model.parameters()).device
     with torch.device(device), set_current_vllm_config(vllm_config):
         if getattr(model_config.hf_config, "model_type", None) == "zaya":
-            weights = list(state_iter)
-            logger.info("Reloading Zaya checkpoint-format weights with model loader (%d tensors)", len(weights))
-            logger.info("Zaya weight chunk keys: %s", [name for name, _ in weights[:20]])
-
-            params_dict = dict(model.named_parameters())
-            buffers_dict = dict(model.named_buffers())
-            for key, buffer in buffers_dict.items():
-                if "cos_sin_cache" not in key:
-                    params_dict[key] = buffer
-
-            missing = [name for name, _ in weights if name not in params_dict and "local_experts" not in name]
-            if missing:
-                logger.warning("Zaya weight chunk has %d non-expert keys not in params: %s", len(missing), missing[:50])
-
-            expert_prefixes = {
-                name for name, module in model.named_modules() if module.__class__.__name__ == "FusedMoE"
-            }
-            missing_experts = []
-            for name, _ in weights:
-                if "local_experts" not in name:
-                    continue
-                prefix = ".".join(name.split(".")[:5])
-                if prefix not in expert_prefixes:
-                    missing_experts.append(name)
-            if missing_experts:
-                logger.warning(
-                    "Zaya weight chunk has %d expert keys with no FusedMoE prefix: %s; known prefixes: %s",
-                    len(missing_experts),
-                    missing_experts[:50],
-                    sorted(expert_prefixes)[:20],
-                )
-
-            model.load_weights(iter(weights))  # type: ignore
+            model.load_weights(state_iter)  # type: ignore
             return
 
         logger.info("Reloading checkpoint-format weights with vLLM layerwise processing")

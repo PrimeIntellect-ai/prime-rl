@@ -16,6 +16,8 @@ import copy
 from typing import Any, Optional, Union
 
 import torch
+import torch.distributed as dist
+import torch.distributed.nn.functional as dist_nn
 import torch.nn.functional as F
 from torch import Tensor, nn
 from transformers.cache_utils import Cache
@@ -35,6 +37,7 @@ from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import ZayaMoE
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig, apply_rotary_pos_emb
+from prime_rl.trainer.models.layers.ulysses_attn import ULYSSES_PARAMS, _all_to_all_head_to_seq, _all_to_all_seq_to_head
 from prime_rl.trainer.models.zaya.configuration_zaya import ZayaConfig
 from prime_rl.trainer.models.zaya.converting_zaya import (
     convert_hf_layer_to_prime,
@@ -46,6 +49,23 @@ from prime_rl.trainer.models.zaya.converting_zaya import is_hf_state_dict as _is
 from prime_rl.trainer.models.zaya.converting_zaya import is_prime_state_dict as _is_prime_state_dict
 from prime_rl.trainer.models.zaya.vllm_postprocessing import convert_prime_to_vllm
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
+
+
+def _all_to_all_seq_to_head_batched(t: torch.Tensor, cp_size: int, cp_group: dist.ProcessGroup) -> torch.Tensor:
+    assert t.shape[0] == 1, f"Zaya CP currently expects batch size 1, got {t.shape[0]}"
+    return _all_to_all_seq_to_head(t.squeeze(0), cp_size, cp_group).unsqueeze(0)
+
+
+def _all_to_all_head_to_seq_batched(t: torch.Tensor, cp_size: int, cp_group: dist.ProcessGroup) -> torch.Tensor:
+    assert t.shape[0] == 1, f"Zaya CP currently expects batch size 1, got {t.shape[0]}"
+    return _all_to_all_head_to_seq(t.squeeze(0), cp_size, cp_group).unsqueeze(0)
+
+
+def _gather_cp_sequence_batched(t: torch.Tensor, cp_size: int, cp_group: dist.ProcessGroup) -> torch.Tensor:
+    assert t.shape[0] == 1, f"Zaya CP currently expects batch size 1, got {t.shape[0]}"
+    chunks = dist_nn.all_gather(t.contiguous(), group=cp_group)
+    assert len(chunks) == cp_size
+    return torch.cat(chunks, dim=1)
 
 
 class ZayaResidualScaling(nn.Module):
@@ -105,12 +125,98 @@ class ZayaCCAProjection(nn.Module):
             padding=0,
             stride=1,
         )
+        self._cp_group = None
+        self._cp_rank = 0
+        self._cp_world_size = 1
+
+    def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
+        self._cp_group = cp_group
+        self._cp_rank = cp_rank
+        self._cp_world_size = cp_world_size
+
+    @property
+    def cp_enabled(self) -> bool:
+        return self._cp_world_size > 1
+
+    def _local_head_channel_indices(self) -> torch.Tensor:
+        local_q = self.num_attention_heads // self._cp_world_size
+        local_kv = self.num_key_value_heads // self._cp_world_size
+        q_start = self._cp_rank * local_q * self.head_dim
+        q_end = q_start + local_q * self.head_dim
+        k_start = self.num_attention_heads * self.head_dim + self._cp_rank * local_kv * self.head_dim
+        k_end = k_start + local_kv * self.head_dim
+        return torch.cat(
+            [
+                torch.arange(q_start, q_end, device=self.conv_qk_depthwise.weight.device),
+                torch.arange(k_start, k_end, device=self.conv_qk_depthwise.weight.device),
+            ]
+        )
+
+    def _forward_context_parallel(self, hidden_states: torch.Tensor, padding_mask: torch.Tensor | None = None):
+        if padding_mask is not None:
+            hidden_states = hidden_states * padding_mask[:, :, None].to(hidden_states.dtype)
+
+        input_shape = hidden_states.shape[:-1]
+        projected_queries = self.q_proj(hidden_states).view(*input_shape, self.num_attention_heads, self.head_dim)
+        projected_keys = self.k_proj(hidden_states).view(*input_shape, self.num_key_value_heads, self.head_dim)
+        value_current = self.v_proj_current(hidden_states)
+        delayed_v_state = self.v_proj_delayed(hidden_states)
+
+        projected_queries = _all_to_all_seq_to_head_batched(projected_queries, self._cp_world_size, self._cp_group)
+        projected_keys = _all_to_all_seq_to_head_batched(projected_keys, self._cp_world_size, self._cp_group)
+
+        local_q_heads = projected_queries.shape[-2]
+        local_kv_heads = projected_keys.shape[-2]
+        local_groups = local_q_heads // local_kv_heads
+        query_residual = projected_queries
+        key_residual = _repeat_kv(projected_keys.transpose(1, 2), local_groups).transpose(1, 2)
+        query_residual = (query_residual + key_residual) * 0.5
+        key_residual = query_residual.view(*query_residual.shape[:2], local_kv_heads, local_groups, self.head_dim).mean(
+            dim=-2
+        )
+
+        qk_states = torch.cat([projected_queries.flatten(-2), projected_keys.flatten(-2)], dim=-1).transpose(1, 2)
+        qk_states = F.pad(qk_states, (self.conv_kernel_size, 0))
+        channel_idx = self._local_head_channel_indices()
+        depthwise_weight = self.conv_qk_depthwise.weight.index_select(0, channel_idx)
+        depthwise_bias = (
+            self.conv_qk_depthwise.bias.index_select(0, channel_idx)
+            if self.conv_qk_depthwise.bias is not None
+            else None
+        )
+        qk_states = F.conv1d(qk_states, depthwise_weight, depthwise_bias, groups=channel_idx.numel())
+        grouped_weight = self.conv_qk_grouped.weight.index_select(0, channel_idx)
+        grouped_bias = (
+            self.conv_qk_grouped.bias.index_select(0, channel_idx) if self.conv_qk_grouped.bias is not None else None
+        )
+        qk_states = F.conv1d(qk_states, grouped_weight, grouped_bias, groups=local_q_heads + local_kv_heads).transpose(
+            1, 2
+        )
+
+        q_size = local_q_heads * self.head_dim
+        query = qk_states[..., :q_size].view(*qk_states.shape[:2], local_q_heads, self.head_dim) + query_residual
+        key = qk_states[..., q_size:].view(*qk_states.shape[:2], local_kv_heads, self.head_dim) + key_residual
+
+        recurrent_v_state = self.v_proj_delayed(hidden_states.new_zeros(input_shape[0], 1, self.hidden_size))
+        delayed_v_state_full = _gather_cp_sequence_batched(delayed_v_state, self._cp_world_size, self._cp_group)
+        value_delayed_full = torch.cat([recurrent_v_state, delayed_v_state_full[:, :-1]], dim=1)
+        seq_start = self._cp_rank * input_shape[1]
+        seq_end = seq_start + input_shape[1]
+        value_delayed = value_delayed_full[:, seq_start:seq_end]
+        value = torch.cat([value_current, value_delayed], dim=-1).view(
+            *input_shape, self.num_key_value_heads, self.head_dim
+        )
+        value = _all_to_all_seq_to_head_batched(value, self._cp_world_size, self._cp_group)
+        return query, key, value
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         padding_mask: torch.Tensor | None = None,
     ):
+        if self.cp_enabled:
+            return self._forward_context_parallel(hidden_states, padding_mask)
+
         if padding_mask is not None:
             hidden_states = hidden_states * padding_mask[:, :, None].to(hidden_states.dtype)
 
@@ -153,6 +259,12 @@ class ZayaQKNorm(nn.Module):
         super().__init__()
         self.head_dim_scale = scaling**-1
         self.temp = nn.Parameter(torch.zeros(config.num_key_value_heads))
+        self._cp_rank = 0
+        self._cp_world_size = 1
+
+    def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
+        self._cp_rank = cp_rank
+        self._cp_world_size = cp_world_size
 
     def forward(self, query_states: torch.Tensor, key_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         norm_eps = torch.finfo(query_states.dtype).eps
@@ -160,7 +272,12 @@ class ZayaQKNorm(nn.Module):
             self.head_dim_scale / query_states.norm(p=2, dim=-1, keepdim=True).clamp_min(norm_eps)
         )
         key_states = key_states * (self.head_dim_scale / key_states.norm(p=2, dim=-1, keepdim=True).clamp_min(norm_eps))
-        key_states = key_states * self.temp[None, None, :, None]
+        temp = self.temp
+        if self._cp_world_size > 1:
+            local_kv_heads = temp.shape[0] // self._cp_world_size
+            start = self._cp_rank * local_kv_heads
+            temp = temp[start : start + local_kv_heads]
+        key_states = key_states * temp[None, None, :, None]
         return query_states, key_states
 
 
@@ -211,6 +328,27 @@ class ZayaSPDAAttention(SDPAAttention):
         self.hidden_size = config.hidden_size
         self.num_attention_heads = config.num_attention_heads
         self.qk_norm = ZayaQKNorm(config, self.scaling)
+        self._cp_group = None
+        self._cp_rank = 0
+        self._cp_world_size = 1
+
+    def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
+        assert self.num_attention_heads % cp_world_size == 0
+        assert self.num_key_value_heads % cp_world_size == 0
+        self._cp_group = cp_group
+        self._cp_rank = cp_rank
+        self._cp_world_size = cp_world_size
+        self.qkv_proj.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
+        self.qk_norm.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
+
+    @property
+    def cp_enabled(self) -> bool:
+        return self._cp_world_size > 1
+
+    def _output_context_parallel(self, attn_output: torch.Tensor) -> torch.Tensor:
+        attn_output = attn_output.view(attn_output.shape[0], attn_output.shape[1], -1, self.head_dim)
+        attn_output = _all_to_all_head_to_seq_batched(attn_output, self._cp_world_size, self._cp_group)
+        return attn_output.flatten(-2)
 
     def _attention_core(
         self,
@@ -257,7 +395,11 @@ class ZayaSPDAAttention(SDPAAttention):
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
+        if self.cp_enabled:
+            causal_mask = None
         attn_output = self._attention_core(query_states, key_states, value_states, causal_mask)
+        if self.cp_enabled:
+            attn_output = self._output_context_parallel(attn_output)
         attn_output = self.o_proj(attn_output)
 
         return attn_output, None
@@ -293,12 +435,33 @@ class ZayaFlashAttention(FlashAttention):
         self.hidden_size = config.hidden_size
         self.num_attention_heads = config.num_attention_heads
         self.qk_norm = ZayaQKNorm(config, self.scaling)
+        self._cp_group = None
+        self._cp_rank = 0
+        self._cp_world_size = 1
 
         self._flash_attn_version = flash_attn_version
         self.func = self._funcs[flash_attn_version]
         self._flash_attn_call = self.func
         if self._flash_attn_version == 4:
             self._flash_attn_call = torch._dynamo.disable(self.func)
+
+    def set_context_parallel_attributes(self, cp_group: dist.ProcessGroup, cp_rank: int, cp_world_size: int) -> None:
+        assert self.num_attention_heads % cp_world_size == 0
+        assert self.num_key_value_heads % cp_world_size == 0
+        self._cp_group = cp_group
+        self._cp_rank = cp_rank
+        self._cp_world_size = cp_world_size
+        self.qkv_proj.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
+        self.qk_norm.set_context_parallel_attributes(cp_group, cp_rank, cp_world_size)
+
+    @property
+    def cp_enabled(self) -> bool:
+        return self._cp_world_size > 1
+
+    def _output_context_parallel(self, attn_output: torch.Tensor) -> torch.Tensor:
+        attn_output = attn_output.view(attn_output.shape[0], attn_output.shape[1], -1, self.head_dim)
+        attn_output = _all_to_all_head_to_seq_batched(attn_output, self._cp_world_size, self._cp_group)
+        return attn_output.flatten(-2)
 
     def forward(
         self,
@@ -326,7 +489,12 @@ class ZayaFlashAttention(FlashAttention):
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
 
+        if self.cp_enabled:
+            cu_seqlens = ULYSSES_PARAMS.get("cu_seqlens", cu_seqlens)
+            max_seqlen = ULYSSES_PARAMS.get("max_seqlen", max_seqlen)
         attn_output = self._attention_core(query_states, key_states, value_states, cu_seqlens, max_seqlen)
+        if self.cp_enabled:
+            attn_output = self._output_context_parallel(attn_output)
         attn_output = self.o_proj(attn_output)
 
         return attn_output, None
@@ -450,6 +618,22 @@ class ZayaModel(ZayaPreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
+    @property
+    def cp_enabled(self) -> bool:
+        return bool(self.layers) and getattr(self.layers[0].self_attn, "cp_enabled", False)
+
+    @property
+    def cp_group(self) -> dist.ProcessGroup | None:
+        if not self.cp_enabled:
+            return None
+        return self.layers[0].self_attn._cp_group
+
+    @property
+    def cp_world_size(self) -> int:
+        if not self.cp_enabled:
+            return 1
+        return self.layers[0].self_attn._cp_world_size
+
     def _prepare_causal_mask(
         self,
         attention_mask: torch.Tensor | None,
@@ -522,7 +706,10 @@ class ZayaModel(ZayaPreTrainedModel):
                 padding_mask = None
 
         hidden_states = inputs_embeds
-        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+        rope_position_ids = position_ids
+        if self.cp_enabled:
+            rope_position_ids = _gather_cp_sequence_batched(position_ids, self.cp_world_size, self.cp_group)
+        position_embeddings = self.rotary_emb(hidden_states, rope_position_ids)
         hidden_states = (hidden_states + self.input_hidden_states_bias) * self.input_hidden_states_scale
         prev_router_hidden_states = None
 

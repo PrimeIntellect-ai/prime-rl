@@ -2,7 +2,7 @@
 
 PrimeRL trains the Transformers-native hybrid decoder layout. The upstream vLLM
 Zaya PR used the original alternating attention/MoE layer layout; this module is
-its in-memory inverse of ``zaya_ref/convert_zaya_weights_to_hf.py``.
+its in-memory inverse of ``convert_zaya_weights_to_hf.py``.
 """
 
 import re
