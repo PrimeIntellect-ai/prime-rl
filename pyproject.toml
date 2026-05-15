@@ -36,6 +36,7 @@ dependencies = [
     "tilelang>=0.1.8",
     "flash-linear-attention",
     "nvidia-ml-py>=12.575.51",
+    "pybase64>=1.4.2",
 ]
 
 [project.scripts]
@@ -72,6 +73,7 @@ envs = [
     "aime2024",
     "aime2025",
     "mini_swe_agent_plus",
+    "rlm-swe",
     "deepdive"
 ]
 disagg = [
@@ -167,13 +169,13 @@ prime-rl-configs = { workspace = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers", rev = "7fdf522" }
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers", rev = "461a730" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "c1c3424" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "96bd151" }
 pydantic-config = { git = "https://github.com/samsja/pydantic_config.git", branch = "main" }
-vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.24/vllm_router-0.1.24-cp38-abi3-manylinux_2_28_x86_64.whl" }
+vllm-router = { git = "https://github.com/PrimeIntellect-ai/router", rev = "510092f" }
 vllm = [
     { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.2rc1.dev354+g24337fb86.cu129-cp38-abi3-manylinux_2_34_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl", marker = "platform_machine == 'aarch64'" },
@@ -192,6 +194,7 @@ aime2024 = { index = "primeintellect" }
 aime2025 = { index = "primeintellect" }
 deepdive = { index = "primeintellect" }
 mini_swe_agent_plus = { index = "primeintellect" }
+rlm-swe = { path = "/shared/research-prod/research-environments/environments/rlm_swe", editable = true }
 deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }
 deep-gemm = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }
 nixl-cu12 = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }

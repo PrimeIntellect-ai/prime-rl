@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pybase64
 import torch
 import verifiers as vf
 from PIL import Image
@@ -27,12 +28,16 @@ from prime_rl.utils.logger import get_logger
 # primitives are immutable. pixel_values/image_grid_thw are not mutated after creation.
 
 
-def _decode_routed_experts(payload: str | None) -> np.ndarray | None:
+def _decode_routed_experts(payload: dict[str, Any] | None) -> np.ndarray | None:
     if payload is None:
         return None
-    routed_experts = np.load(BytesIO(base64.b64decode(payload)), allow_pickle=False)
+    shape = [int(dim) for dim in payload["shape"]]
+    decoded = pybase64.b64decode_as_bytearray(payload["data"])
+    expected_size = int(np.prod(shape, dtype=np.int64))
+    assert len(decoded) == expected_size, (len(decoded), expected_size, shape)
+    routed_experts = np.frombuffer(decoded, dtype=np.uint8).reshape(shape)
     assert routed_experts.ndim == 3
-    return np.ascontiguousarray(routed_experts)
+    return routed_experts
 
 
 def _align_routed_experts(
@@ -322,13 +327,14 @@ def interleave_rollout(
     def prepare_step_tokens(step: vf.TrajectoryStep, step_idx: int) -> dict[str, Any] | None:
         tokens = step["tokens"]
         if tokens is not None:
+            routed_experts = _decode_routed_experts(tokens.get("routed_experts"))
             return {
                 "prompt_ids": list(tokens["prompt_ids"]),
                 "prompt_mask": [bool(i) for i in tokens["prompt_mask"]],
                 "completion_ids": list(tokens["completion_ids"]),
                 "completion_mask": [bool(i) for i in tokens["completion_mask"]],
                 "completion_logprobs": list(tokens["completion_logprobs"]),
-                "routed_experts": _decode_routed_experts(tokens.get("routed_experts")),
+                "routed_experts": routed_experts,
             }
 
         logger.warning(f"Missing rollout tokens for example {output['example_id']} step {step_idx}.")

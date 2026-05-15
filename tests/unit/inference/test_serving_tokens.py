@@ -3,7 +3,7 @@
 The full happy-path is owned upstream by vLLM 0.20's
 ``vllm/entrypoints/serve/disagg`` test suite. We only cover the prime-RL
 deltas here:
-    * ``serialize_routed_experts`` round-trips a numpy array as expected.
+    * ``serialize_routed_experts`` round-trips a compact raw-byte payload.
     * The subclass attaches its overrides without monkey-patching the parent.
     * ``_client_set_max_tokens`` distinguishes raw-body shapes correctly.
 """
@@ -11,16 +11,22 @@ deltas here:
 from __future__ import annotations
 
 import asyncio
-import base64
-from io import BytesIO
 
 import numpy as np
+import pybase64
 
 from prime_rl.inference.vllm.routed_experts import serialize_routed_experts
 from prime_rl.inference.vllm.serving_tokens import (
     PrimeRlServingTokens,
     _client_set_max_tokens,
 )
+
+
+def _decode_routed_experts(encoded: dict) -> np.ndarray:
+    return np.frombuffer(
+        pybase64.b64decode_as_bytearray(encoded["data"]),
+        dtype=np.uint8,
+    ).reshape(encoded["shape"])
 
 
 class _FakeRawRequest:
@@ -42,7 +48,7 @@ def test_subclass_only_overrides_serve_tokens():
     )
 
 
-def test_serialize_routed_experts_uses_compact_numpy_payload():
+def test_serialize_routed_experts_uses_compact_raw_payload():
     routed_experts = np.array(
         [
             [[1, 2], [3, 4]],
@@ -54,25 +60,8 @@ def test_serialize_routed_experts_uses_compact_numpy_payload():
     encoded = serialize_routed_experts(routed_experts)
     assert encoded is not None
 
-    decoded = np.load(BytesIO(base64.b64decode(encoded)), allow_pickle=False)
+    decoded = _decode_routed_experts(encoded)
     assert decoded.dtype == np.uint8
-    np.testing.assert_array_equal(decoded, routed_experts)
-
-
-def test_serialize_routed_experts_uses_int16_for_large_expert_ids():
-    routed_experts = np.array(
-        [
-            [[256, 257], [300, 301]],
-            [[302, 303], [304, 305]],
-        ],
-        dtype=np.int64,
-    )
-
-    encoded = serialize_routed_experts(routed_experts)
-    assert encoded is not None
-
-    decoded = np.load(BytesIO(base64.b64decode(encoded)), allow_pickle=False)
-    assert decoded.dtype == np.int16
     np.testing.assert_array_equal(decoded, routed_experts)
 
 

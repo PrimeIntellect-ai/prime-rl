@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
+import pybase64
 import verifiers as vf
 from PIL import Image
 
@@ -30,11 +31,12 @@ def _decode_pixels(pixel_bytes: bytes, shape: list[int]) -> list[list[float]]:
     return np.frombuffer(pixel_bytes, dtype=np.float32).reshape(shape).tolist()
 
 
-def _routed_experts_payload(data, dtype=np.uint8) -> str:
-    arr = np.asarray(data, dtype=dtype)
-    buffer = BytesIO()
-    np.save(buffer, arr, allow_pickle=False)
-    return base64.b64encode(buffer.getvalue()).decode("ascii")
+def _routed_experts_payload(data) -> dict:
+    arr = np.asarray(data, dtype=np.uint8)
+    return {
+        "data": pybase64.b64encode(memoryview(np.ascontiguousarray(arr))).decode("ascii"),
+        "shape": list(arr.shape),
+    }
 
 
 def _sample_routed_experts(sample) -> np.ndarray:

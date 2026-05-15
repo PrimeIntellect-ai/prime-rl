@@ -11,7 +11,7 @@ we subclass it to add them back:
    inference servers prime-RL runs need this to target a specific replica.
 
 2. Compact ``routed_experts`` export — when the engine emits routing
-   decisions, surface them as base64 NumPy payloads without requiring a vLLM
+   decisions, surface them as base64 raw-byte payloads without requiring a vLLM
    source fork.
 
 3. Server-side ``max_tokens`` defaulting — ``ServingTokens`` hands the
@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from functools import cached_property
+from typing import Any
 
 from fastapi import Request
 from vllm.entrypoints.openai.engine.protocol import ErrorResponse, RequestResponseMetadata
@@ -49,7 +50,7 @@ from prime_rl.inference.vllm.routed_experts import RoutedExpertsCapture
 
 
 class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
-    routed_experts: str | None = None
+    routed_experts: dict[str, Any] | None = None
 
 
 class PrimeRlGenerateResponse(GenerateResponse):
