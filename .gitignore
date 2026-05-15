@@ -207,3 +207,5 @@ outputs/
 .bottleneck-analysis/
 .codex
 /core
+
+third_party/

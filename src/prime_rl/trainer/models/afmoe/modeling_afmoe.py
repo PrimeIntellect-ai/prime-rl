@@ -28,7 +28,7 @@ from prime_rl.trainer.models.layers.rotary_emb import (
     RotaryEmbeddingConfig,
     apply_rotary_pos_emb,
 )
-from prime_rl.utils.sequence_packing import infer_cu_seqlens_from_position_ids
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 
 try:
     from flash_attn import flash_attn_varlen_func
@@ -353,6 +353,7 @@ class AfmoeDecoderLayer(GradientCheckpointingLayer):
             top_k=config.num_experts_per_tok,
             use_grouped_mm=getattr(config, "use_grouped_mm", True),
             load_balance_coeff=getattr(config, "load_balance_coeff", None),
+            fp8=getattr(config, "fp8", False),
         )
         if self.moe_enabled:
             self.mlp = MoE(moe_args, dim=config.hidden_size, hidden_dim=config.moe_intermediate_size)
@@ -473,8 +474,6 @@ class AfmoeModel(AfmoePreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
-        cu_seqlens: Optional[torch.LongTensor] = None,
-        max_seqlen: Optional[int] = None,
     ) -> MoeModelOutputWithPast:
         """
         routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
@@ -492,8 +491,7 @@ class AfmoeModel(AfmoePreTrainedModel):
         use_flash = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
 
         if use_flash:
-            if cu_seqlens is None or max_seqlen is None:
-                cu_seqlens, max_seqlen = infer_cu_seqlens_from_position_ids(position_ids)
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
             causal_mask_mapping = None
         else:
@@ -605,8 +603,6 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
-            cu_seqlens=kwargs.get("cu_seqlens"),
-            max_seqlen=kwargs.get("max_seqlen"),
         )
 
         hidden_states = outputs.last_hidden_state

@@ -12,18 +12,24 @@ from prime_rl.utils.logger import get_logger
 
 class PerfCounter:
     """
-    A class to count throughput (tokens/s) with a rolling window to obtain
-    precise throughput and MFU estimates.
+    Computes throughput (tokens/s) and MFU.
 
-    Inspired from https://github.com/pytorch/torchtitan/blob/4b3f2e41a084bf79a8540068ed525539d1244edd/torchtitan/utils.py#L119
+    Two modes:
+    - Sliding window over full-step wall time: `count_tokens(tokens)` each step,
+      read smoothed values via `get_tokens_per_second()` / `get_mfu()`.
+      Time is measured between successive `count_tokens` calls (full step).
+    - Single point on a caller-provided duration: `get_step_tokens_per_second(tokens, fwd_bwd_time)`
+      / `get_step_mfu(tokens, fwd_bwd_time)`. No smoothing.
+
+    Sliding window inspired by https://github.com/pytorch/torchtitan/blob/4b3f2e41a084bf79a8540068ed525539d1244edd/torchtitan/utils.py#L119
     """
 
-    def __init__(self, model: nn.Module, seq_len: int, window_size: int):
+    def __init__(self, model: nn.Module, seq_len: int, window_size: int = 10):
         self.window_size = window_size
-        self.tokens = []
-        self.trainable_tokens = []
-        self.flops = []
-        self.times = []
+        self.tokens: list[int] = []
+        self.trainable_tokens: list[int] = []
+        self.flops: list[float] = []
+        self.times: list[float] = []
         self.model = model
 
         self._world = get_world()
@@ -40,7 +46,8 @@ class PerfCounter:
         self.non_attention_flop_per_token = self._get_non_attention_flop_per_token(model.config)
         self.num_flop_per_token = self._get_num_flop_per_token(model.config, seq_len=seq_len)
 
-    def count_tokens(self, tokens: int):
+    def count_tokens(self, tokens: int) -> None:
+        """Push a step into the sliding window. Time is recorded internally."""
         self.count_batch(tokens)
 
     def count_batch(
@@ -76,7 +83,19 @@ class PerfCounter:
     def get_mfu(self) -> float | None:
         if len(self.flops) < 2:
             return None
-        return 100 * sum(self.flops[1:]) / (self.times[-1] - self.times[0]) / self.gpu_peak_flops / self._world.world_size
+        return (
+            100 * sum(self.flops[1:]) / (self.times[-1] - self.times[0]) / self.gpu_peak_flops / self._world.world_size
+        )
+
+    def get_step_tokens_per_second(self, tokens: int, fwd_bwd_time: float) -> float:
+        """Single-step throughput from a caller-provided duration."""
+        return tokens / fwd_bwd_time
+
+    def get_step_mfu(self, tokens: int, fwd_bwd_time: float) -> float:
+        return self._mfu_from_tps(self.get_step_tokens_per_second(tokens, fwd_bwd_time))
+
+    def _mfu_from_tps(self, tokens_per_second: float) -> float:
+        return 100 * self.num_flop_per_token * tokens_per_second / self.gpu_peak_flops / self._world.world_size
 
     def estimate_batch_flops(self, processed_tokens: int, sequence_lengths: list[int] | None = None) -> float:
         if sequence_lengths is None:

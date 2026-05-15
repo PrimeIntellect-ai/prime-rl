@@ -41,15 +41,12 @@ from dataclasses import dataclass
 
 import httpx
 
-
 # --------------------------------------------------------------------------- #
 # HTTP helpers
 # --------------------------------------------------------------------------- #
 
 
-async def _load_adapter(
-    client: httpx.AsyncClient, url: str, alias: str, path: str
-) -> None:
+async def _load_adapter(client: httpx.AsyncClient, url: str, alias: str, path: str) -> None:
     """POST /load_lora_adapter. Tolerates the adapter already being loaded
     under a different path (reload behavior under prime-rl's monkeypatch)."""
     r = await client.post(
@@ -105,14 +102,10 @@ class ProbeResult:
     detail: str
 
 
-_PROMPT = (
-    "Explain the Kolmogorov complexity of a constant function in one paragraph."
-)
+_PROMPT = "Explain the Kolmogorov complexity of a constant function in one paragraph."
 
 
-async def probe_mixed_batch(
-    client: httpx.AsyncClient, url: str, base_model: str, adapter_alias: str
-) -> ProbeResult:
+async def probe_mixed_batch(client: httpx.AsyncClient, url: str, base_model: str, adapter_alias: str) -> ProbeResult:
     """Fire concurrent requests to both base and adapter. Both must return
     200, and their outputs must differ (else adapter isn't influencing)."""
     base_task = asyncio.create_task(_complete(client, url, base_model, _PROMPT))
@@ -132,8 +125,7 @@ async def probe_mixed_batch(
     return ProbeResult(
         "mixed_batch_correctness",
         True,
-        f"Base and adapter outputs differ "
-        f"(base first token={base_ids[:1]}, adapter first token={ada_ids[:1]}).",
+        f"Base and adapter outputs differ (base first token={base_ids[:1]}, adapter first token={ada_ids[:1]}).",
     )
 
 
@@ -189,9 +181,7 @@ async def probe_perf_delta(
     server from here (that needs a second launch), but we can at least
     measure the LoRA-enabled baseline and flag if it's absurdly slow."""
     start = time.perf_counter()
-    await asyncio.gather(
-        *[_complete(client, url, base_model, _PROMPT) for _ in range(n_requests)]
-    )
+    await asyncio.gather(*[_complete(client, url, base_model, _PROMPT) for _ in range(n_requests)])
     elapsed = time.perf_counter() - start
     per_req = elapsed / n_requests
     # Heuristic: on a 4B model with 64-token completion, >2s per request
@@ -243,9 +233,7 @@ async def _main(args: argparse.Namespace) -> int:
 
         probes = [
             await probe_mixed_batch(client, url, args.base_model, alias),
-            await probe_hot_swap_idempotence(
-                client, url, alias, args.adapter_a, args.adapter_b
-            ),
+            await probe_hot_swap_idempotence(client, url, alias, args.adapter_a, args.adapter_b),
             await probe_perf_delta(client, url, args.base_model),
         ]
 
@@ -272,8 +260,7 @@ def main() -> None:
     ap.add_argument(
         "--base-model",
         required=True,
-        help="Base model id as advertised by vLLM's /v1/models (e.g. "
-        "'Qwen/Qwen3-4B-Instruct-2507').",
+        help="Base model id as advertised by vLLM's /v1/models (e.g. 'Qwen/Qwen3-4B-Instruct-2507').",
     )
     ap.add_argument(
         "--adapter-a",

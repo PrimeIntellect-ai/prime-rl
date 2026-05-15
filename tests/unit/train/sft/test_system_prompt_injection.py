@@ -1,5 +1,4 @@
 import json
-import tempfile
 from collections import Counter
 
 import pytest
@@ -50,15 +49,17 @@ def _make_single_turn_dataset(n: int = 10, subset: str = "wildchat") -> Dataset:
     """Create a single-turn messages dataset."""
     rows = []
     for i in range(n):
-        rows.append({
-            "messages": [
-                {"role": "user", "content": f"Question {i}"},
-                {"role": "assistant", "content": f"Answer {i}"},
-            ],
-            "__subset": subset,
-            "__split": "train",
-            "__index": i,
-        })
+        rows.append(
+            {
+                "messages": [
+                    {"role": "user", "content": f"Question {i}"},
+                    {"role": "assistant", "content": f"Answer {i}"},
+                ],
+                "__subset": subset,
+                "__split": "train",
+                "__index": i,
+            }
+        )
     return Dataset.from_list(rows)
 
 
@@ -66,17 +67,19 @@ def _make_multi_turn_dataset(n: int = 5, subset: str = "wildchat") -> Dataset:
     """Create a multi-turn messages dataset (>2 messages per sample)."""
     rows = []
     for i in range(n):
-        rows.append({
-            "messages": [
-                {"role": "user", "content": f"Question {i}"},
-                {"role": "assistant", "content": f"First answer {i}"},
-                {"role": "user", "content": f"Follow-up {i}"},
-                {"role": "assistant", "content": f"Second answer {i}"},
-            ],
-            "__subset": subset,
-            "__split": "train",
-            "__index": i,
-        })
+        rows.append(
+            {
+                "messages": [
+                    {"role": "user", "content": f"Question {i}"},
+                    {"role": "assistant", "content": f"First answer {i}"},
+                    {"role": "user", "content": f"Follow-up {i}"},
+                    {"role": "assistant", "content": f"Second answer {i}"},
+                ],
+                "__subset": subset,
+                "__split": "train",
+                "__index": i,
+            }
+        )
     return Dataset.from_list(rows)
 
 
@@ -134,8 +137,11 @@ def test_injection_prepends_system_message(tokenizer, prompt_pool):
     sampler = SystemPromptSampler(pool_path)
     dataset = _make_single_turn_dataset(n=3)
     sft = SFTDataset(
-        dataset, tokenizer=tokenizer, shuffle=False,
-        max_epochs=1, system_prompt_sampler=sampler,
+        dataset,
+        tokenizer=tokenizer,
+        shuffle=False,
+        max_epochs=1,
+        system_prompt_sampler=sampler,
     )
     sample = next(iter(sft))
     assert sample is not None
@@ -152,8 +158,12 @@ def test_injection_deterministic_across_restarts(tokenizer, prompt_pool):
 
     def get_first_sample():
         sft = SFTDataset(
-            dataset, tokenizer=tokenizer, shuffle=False,
-            max_epochs=1, system_prompt_sampler=sampler, seed=0,
+            dataset,
+            tokenizer=tokenizer,
+            shuffle=False,
+            max_epochs=1,
+            system_prompt_sampler=sampler,
+            seed=0,
         )
         return next(iter(sft))
 
@@ -169,8 +179,11 @@ def test_multi_turn_filter(tokenizer, prompt_pool):
     sampler = SystemPromptSampler(pool_path)
     dataset = _make_multi_turn_dataset(n=5)
     sft = SFTDataset(
-        dataset, tokenizer=tokenizer, shuffle=False,
-        max_epochs=1, system_prompt_sampler=sampler,
+        dataset,
+        tokenizer=tokenizer,
+        shuffle=False,
+        max_epochs=1,
+        system_prompt_sampler=sampler,
     )
     samples = list(sft)
     assert len(samples) == 0, f"Expected 0 samples (all multi-turn), got {len(samples)}"
@@ -182,8 +195,11 @@ def test_no_filter_without_injection(tokenizer):
     whose chat templates break incremental tokenization on multi-turn."""
     dataset = _make_single_turn_dataset(n=3)
     sft = SFTDataset(
-        dataset, tokenizer=tokenizer, shuffle=False,
-        max_epochs=1, system_prompt_sampler=None,
+        dataset,
+        tokenizer=tokenizer,
+        shuffle=False,
+        max_epochs=1,
+        system_prompt_sampler=None,
     )
     samples = list(sft)
     assert len(samples) == 3
@@ -192,9 +208,7 @@ def test_no_filter_without_injection(tokenizer):
 def test_subset_to_profile_coverage():
     """All profiles referenced by SUBSET_TO_PROFILE exist in SYSTEM_PROMPT_PROFILES."""
     for subset, profile in SUBSET_TO_PROFILE.items():
-        assert profile in SYSTEM_PROMPT_PROFILES, (
-            f"Subset {subset!r} maps to profile {profile!r} which is not defined"
-        )
+        assert profile in SYSTEM_PROMPT_PROFILES, f"Subset {subset!r} maps to profile {profile!r} which is not defined"
 
 
 def test_empty_pool_raises(tmp_path):

@@ -139,7 +139,13 @@ class LoRAConfig(BaseConfig):
     target_modules: Annotated[
         list[str],
         Field(
-            description="Module names or regex patterns for modules to apply LoRA to. Simple names (e.g., 'q_proj') match any component in the module path. Regex patterns match anywhere in the name.",
+            description=(
+                "Module names or regex patterns for modules to apply LoRA to. Simple names (e.g., 'q_proj') "
+                "match any component in the module path. Regex patterns match anywhere in the name. "
+                "Names unknown to the current model are silently ignored, so defaults cover multiple architectures. "
+                "NemotronH note: 'experts' matches NonGatedGroupedExperts inside LatentMoE; 'fc1_latent_proj' and "
+                "'fc2_latent_proj' adapt the latent up/down projections. Add 'in_proj'/'out_proj' to also LoRA Mamba."
+            ),
         ),
     ] = [
         "q_proj",
@@ -150,6 +156,8 @@ class LoRAConfig(BaseConfig):
         "up_proj",
         "down_proj",
         "experts",
+        "fc1_latent_proj",
+        "fc2_latent_proj",
     ]
 
     modules_to_save: Annotated[
@@ -172,6 +180,13 @@ class DebugModelConfig(BaseConfig):
         bool,
         Field(
             description="Whether to random initialize the model.",
+        ),
+    ] = False
+
+    force_balanced_routing: Annotated[
+        bool,
+        Field(
+            description="If True, override MoE token-choice routing with a round-robin assignment so every expert receives an equal share of tokens. Intended for fake-data smoke tests where untrained routing would otherwise produce severe expert imbalance and OOM. Gating scores are still gathered from the override indices so the forward pass stays consistent.",
         ),
     ] = False
 
@@ -284,6 +299,21 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = 1
 
+    cp_style: Annotated[
+        Literal["ring", "ulysses"],
+        Field(
+            description=(
+                "Context parallelism communication style. "
+                "'ring' uses ring-attention all-gather/reduce-scatter (current default, "
+                "requires custom kernels per attention type). "
+                "'ulysses' uses all-to-all to redistribute Q/K/V from sequence-sharded "
+                "to head-sharded, runs vanilla attention locally on the full sequence, "
+                "then all-to-all back. Works out-of-the-box with any attention kernel "
+                "(softmax FA, linear attention, mamba, etc.)."
+            ),
+        ),
+    ] = "ring"
+
     impl: Annotated[
         Literal["hf", "custom", "auto"],
         Field(
@@ -314,6 +344,14 @@ class ModelConfig(BaseModelConfig):
             description="Whether to use grouped mm for the MoE layers. Require compute capability >= 9.0",
         ),
     ] = True
+
+    fp8: Annotated[
+        bool,
+        Field(
+            description="Whether to use FP8 training via DeepGEMM. Replaces nn.Linear layers with FP8 blockwise linear "
+            "and uses FP8 grouped GEMM for MoE experts. Requires SM90 (Hopper) GPUs and model.impl='custom'.",
+        ),
+    ] = False
 
     freeze_moe_router: Annotated[
         bool,
@@ -371,9 +409,13 @@ class ModelConfig(BaseModelConfig):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "fa4"]:
             raise ValueError("CP is only supported with flash attention 2, flash attention 3, or fa4")
         if self.cp > 1 and self.attn in ("flash_attention_3", "fa4") and self.impl != "custom":
+            # Both ring and ulysses route FA3/FA4 through our custom FlashAttention class:
+            # ring patches `_compute_attention` with the ring kernel, ulysses patches it with
+            # the all-to-all wrapper around the FA3/FA4 kernel. The HF path patches
+            # `_flash_attention_forward` which only wraps FA2.
             raise ValueError(
                 f"CP with {self.attn} requires model.impl='custom' "
-                "(the ring-attention kernel is only implemented for the custom model path)"
+                "(FA3/FA4 paths are only implemented for the custom model attention class)"
             )
         return self
 
@@ -400,6 +442,12 @@ class ModelConfig(BaseModelConfig):
     def flash_attention_4_only_with_custom_impl(self):
         if self.attn == "fa4" and self.impl != "custom":
             raise ValueError("Flash attention 4 is only supported with the custom implementation")
+        return self
+
+    @model_validator(mode="after")
+    def fp8_only_with_custom_impl(self):
+        if self.fp8 and self.impl not in ("custom", "auto"):
+            raise ValueError("FP8 training is only supported with model.impl='custom' or 'auto'.")
         return self
 
     @model_validator(mode="after")

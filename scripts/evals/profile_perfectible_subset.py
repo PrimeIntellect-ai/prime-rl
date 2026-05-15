@@ -29,24 +29,26 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 
-plt.rcParams.update({
-    "figure.dpi": 110,
-    "savefig.dpi": 110,
-    "savefig.bbox": "tight",
-    "axes.spines.top": False,
-    "axes.spines.right": False,
-    "axes.grid": True,
-    "grid.alpha": 0.3,
-    "grid.linestyle": "-",
-    "grid.linewidth": 0.6,
-    "axes.axisbelow": True,
-    "font.size": 11,
-    "axes.titlesize": 13,
-    "axes.titleweight": "bold",
-    "axes.labelsize": 11,
-    "xtick.labelsize": 10,
-    "ytick.labelsize": 10,
-})
+plt.rcParams.update(
+    {
+        "figure.dpi": 110,
+        "savefig.dpi": 110,
+        "savefig.bbox": "tight",
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.grid": True,
+        "grid.alpha": 0.3,
+        "grid.linestyle": "-",
+        "grid.linewidth": 0.6,
+        "axes.axisbelow": True,
+        "font.size": 11,
+        "axes.titlesize": 13,
+        "axes.titleweight": "bold",
+        "axes.labelsize": 11,
+        "xtick.labelsize": 10,
+        "ytick.labelsize": 10,
+    }
+)
 
 
 def primary_domain(domain_field: Any) -> str:
@@ -301,12 +303,23 @@ def main() -> int:
     #    Selected region [args.low, args.high] shaded; selected count + non-selected counts annotated.
     fig, ax = plt.subplots(figsize=(9, 4.6))
     bar_xs = [c - bucket_width / 2 for c in bucket_centers]
-    ax.bar(bar_xs, sampled_hist, width=bucket_width * 0.95, color="#525252", align="edge", edgecolor="white", linewidth=0.4)
-    ax.axvspan(args.low, args.high, color="#2ca02c", alpha=0.18, zorder=0, label=f"selected band [{args.low:.1f}, {args.high:.1f}]")
+    ax.bar(
+        bar_xs, sampled_hist, width=bucket_width * 0.95, color="#525252", align="edge", edgecolor="white", linewidth=0.4
+    )
+    ax.axvspan(
+        args.low,
+        args.high,
+        color="#2ca02c",
+        alpha=0.18,
+        zorder=0,
+        label=f"selected band [{args.low:.1f}, {args.high:.1f}]",
+    )
     ax.set_xlim(0, 1)
     ax.set_xlabel("per-problem mean reward across 40 rollouts")
     ax.set_ylabel("# problems")
-    ax.set_title(f"Solve-rate distribution over {len(sampled_rows)} sampled problems\n({len(selected)} selected / {len(sampled_rows) - len(selected)} discarded)")
+    ax.set_title(
+        f"Solve-rate distribution over {len(sampled_rows)} sampled problems\n({len(selected)} selected / {len(sampled_rows) - len(selected)} discarded)"
+    )
     ax.legend(loc="upper right")
     ax.grid(axis="x", visible=False)
     fig.savefig(plots / "solve_rate_sampled.png")
@@ -314,8 +327,17 @@ def main() -> int:
 
     # 2) Same as above but log-y so the perfectible band is visible despite the left tail.
     fig, ax = plt.subplots(figsize=(9, 4.6))
-    ax.bar(bar_xs, sampled_hist, width=bucket_width * 0.95, color="#525252", align="edge", edgecolor="white", linewidth=0.4)
-    ax.axvspan(args.low, args.high, color="#2ca02c", alpha=0.18, zorder=0, label=f"selected band [{args.low:.1f}, {args.high:.1f}]")
+    ax.bar(
+        bar_xs, sampled_hist, width=bucket_width * 0.95, color="#525252", align="edge", edgecolor="white", linewidth=0.4
+    )
+    ax.axvspan(
+        args.low,
+        args.high,
+        color="#2ca02c",
+        alpha=0.18,
+        zorder=0,
+        label=f"selected band [{args.low:.1f}, {args.high:.1f}]",
+    )
     ax.set_yscale("symlog", linthresh=1)
     ax.set_xlim(0, 1)
     ax.set_xlabel("per-problem mean reward across 40 rollouts")
@@ -389,8 +411,15 @@ def main() -> int:
     ax1.set_ylabel("# problems")
     ax1.set_title("Output token distribution (selected)")
     ax1.axvline(15360, color="red", linestyle="--", linewidth=1, alpha=0.7)
-    ax1.annotate("max_completion_tokens=15360", xy=(15360, ax1.get_ylim()[1] * 0.9), xytext=(-6, 0),
-                 textcoords="offset points", ha="right", fontsize=9, color="red")
+    ax1.annotate(
+        "max_completion_tokens=15360",
+        xy=(15360, ax1.get_ylim()[1] * 0.9),
+        xytext=(-6, 0),
+        textcoords="offset points",
+        ha="right",
+        fontsize=9,
+        color="red",
+    )
     ax1.grid(axis="x", visible=False)
 
     ax2.hist(sel_trunc_rate, bins=20, color="#e377c2", edgecolor="white", linewidth=0.4)
@@ -427,6 +456,7 @@ def main() -> int:
 
     # 11) Solve rate vs difficulty (scatter, with jitter on difficulty)
     import random
+
     rng = random.Random(42)
     sel_difficulty_raw = []
     sel_rate_for_diff = []
@@ -446,7 +476,14 @@ def main() -> int:
     ax.set_xlabel("difficulty (omni-math 1-10 scale, jittered ±0.1)")
     ax.set_ylabel("per-problem solve rate")
     ax.set_title(f"Solve rate vs problem difficulty (selected {len(sel_rate_for_diff)} problems)")
-    ax.axhspan(args.low, args.high, color="#2ca02c", alpha=0.16, zorder=0, label=f"selected band [{args.low:.1f}, {args.high:.1f}]")
+    ax.axhspan(
+        args.low,
+        args.high,
+        color="#2ca02c",
+        alpha=0.16,
+        zorder=0,
+        label=f"selected band [{args.low:.1f}, {args.high:.1f}]",
+    )
     ax.legend(loc="lower left")
     fig.savefig(plots / "solve_rate_vs_difficulty.png")
     plt.close(fig)
@@ -480,13 +517,19 @@ def main() -> int:
     readme.append("## Provenance\n\n")
     readme.append("| | |\n|---|---|\n")
     readme.append(f"| Base model | `{args.model_name}` |\n")
-    readme.append(f"| Source dataset | `omni_math2_train_excluding_baseline600_seed42.jsonl` ({len(source)} problems) |\n")
+    readme.append(
+        f"| Source dataset | `omni_math2_train_excluding_baseline600_seed42.jsonl` ({len(source)} problems) |\n"
+    )
     readme.append(f"| Sampled this run (seed=42) | **{len(sampled_rows)}** problems × 40 rollouts each |\n")
     readme.append(f"| Selected band | `[{args.low}, {args.high}]` mean reward |\n")
     readme.append("| Min rollouts threshold | 8 |\n")
-    readme.append("| Scoring | math_verify (SymPy) + gpt-5.4-mini judge fallback (`omni_math2_hybrid_math_v1` rubric) |\n")
+    readme.append(
+        "| Scoring | math_verify (SymPy) + gpt-5.4-mini judge fallback (`omni_math2_hybrid_math_v1` rubric) |\n"
+    )
     readme.append("| Sampling | t=1.0, top_p=0.95, max_completion_tokens=15360 |\n")
-    readme.append(f"| **Selected** | **{len(selected)}** problems ({len(selected) * 100 / len(sampled_rows):.1f}% of sampled) |\n\n")
+    readme.append(
+        f"| **Selected** | **{len(selected)}** problems ({len(selected) * 100 / len(sampled_rows):.1f}% of sampled) |\n\n"
+    )
 
     # Data-driven tail-shape description (not hardcoded — varies by model)
     frac_all0 = sum(1 for r in sampled_rates if r == 0) / len(sampled_rates)
@@ -517,7 +560,9 @@ def main() -> int:
         f"The selected band [{args.low}, {args.high}] is the central region; everything outside is discarded.\n\n"
     )
     readme.append("![solve_rate_sampled](plots/solve_rate_sampled.png)\n\n")
-    readme.append(f"Log-y view of the same distribution makes the perfectible region readable alongside the dominant {dominant_tail}:\n\n")
+    readme.append(
+        f"Log-y view of the same distribution makes the perfectible region readable alongside the dominant {dominant_tail}:\n\n"
+    )
     readme.append("![solve_rate_sampled_log](plots/solve_rate_sampled_log.png)\n\n")
     readme.append(
         f"Zoomed into the selected band only — the {len(selected)} kept problems are roughly uniformly distributed across [0.2, 0.8] "
@@ -584,9 +629,7 @@ def main() -> int:
 
     # Caveats section
     hmmt_count = sum(c for s, c in sel_sources.items() if s.startswith("HMMT"))
-    top_domain_pct = (
-        max(sel_domains.values()) * 100 / len(selected) if sel_domains and selected else 0
-    )
+    top_domain_pct = max(sel_domains.values()) * 100 / len(selected) if sel_domains and selected else 0
     readme.append("## Coverage caveats\n\n")
     readme.append(
         "Things to know before using this dataset as a generic math-reasoning benchmark "
@@ -602,7 +645,7 @@ def main() -> int:
     )
     top_domain_name, top_domain_count = Counter(sel_domains).most_common(1)[0]
     other_domains = [(d, c) for d, c in Counter(sel_domains).most_common() if d != top_domain_name][:4]
-    other_phrase = ", ".join(f"{d} ({c*100/len(selected):.0f}%)" for d, c in other_domains)
+    other_phrase = ", ".join(f"{d} ({c * 100 / len(selected):.0f}%)" for d, c in other_domains)
     readme.append(
         f"- **Top domain is {top_domain_name}** — {top_domain_count} of "
         f"{len(selected)} = {top_domain_pct:.0f}% of selected problems. "
@@ -630,7 +673,9 @@ def main() -> int:
     readme.append("## Selected problems × source dataset coverage\n\n")
     readme.append("| | Selected | Sampled (1k) | Source (full) |\n|---|---:|---:|---:|\n")
     readme.append(f"| Total | {len(selected)} | {len(sampled_rows)} | {len(source)} |\n")
-    for d in sorted(set(sel_domains) | set(sampled_domains) | set(source_domains), key=lambda x: -sel_domains.get(x, 0))[:10]:
+    for d in sorted(
+        set(sel_domains) | set(sampled_domains) | set(source_domains), key=lambda x: -sel_domains.get(x, 0)
+    )[:10]:
         sel_pct = sel_domains.get(d, 0) * 100 / len(selected) if selected else 0
         samp_pct = sampled_domains.get(d, 0) * 100 / len(sampled_rows) if sampled_rows else 0
         src_pct = source_domains.get(d, 0) * 100 / len(source) if source else 0
@@ -645,7 +690,7 @@ def main() -> int:
     readme.append("```python\n")
     readme.append("from datasets import load_dataset\n")
     if args.hf_repo:
-        readme.append(f"ds = load_dataset(\"{args.hf_repo}\", split=\"train\")\n")
+        readme.append(f'ds = load_dataset("{args.hf_repo}", split="train")\n')
     readme.append("# Each row: id, problem, answer, solution, domain, source, difficulty, tags\n")
     readme.append("```\n\n")
 

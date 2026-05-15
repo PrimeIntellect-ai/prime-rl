@@ -121,9 +121,7 @@ def flatten_output(
     info = _json_or_value(output.get("info"))
     judge_decision = _latest_judge_decision(output)
     posterior_correct = None
-    if isinstance(judge_decision, Mapping) and isinstance(
-        judge_decision.get("p_correct"), int | float
-    ):
+    if isinstance(judge_decision, Mapping) and isinstance(judge_decision.get("p_correct"), int | float):
         posterior_correct = float(judge_decision["p_correct"])
     hard_correct = _hard_correct_from_judge_decision(judge_decision)
 
@@ -161,7 +159,9 @@ def flatten_output(
     }
 
 
-def token_summary_row(records: list[dict[str, Any]], *, model: str, protocol: str, dataset: str, seed: int) -> dict[str, Any]:
+def token_summary_row(
+    records: list[dict[str, Any]], *, model: str, protocol: str, dataset: str, seed: int
+) -> dict[str, Any]:
     input_tokens = sum(float(r.get("input_tokens") or 0.0) for r in records)
     output_tokens = sum(float(r.get("output_tokens") or 0.0) for r in records)
     return {

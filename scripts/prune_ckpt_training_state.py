@@ -36,7 +36,6 @@ import sys
 import time
 from pathlib import Path
 
-
 _STEP_RE = re.compile(r"^step_(\d+)$")
 _RECENT_SECONDS = 900  # 15 min
 
@@ -86,28 +85,28 @@ def run(run_dir: Path, execute: bool = False) -> dict[str, int | list[str]]:
 
     print(f"[prune] run-dir: {run_dir}")
     print(f"[prune] {len(steps)} ckpts, keeping final step_{final_step} ({final_dir})")
-    print(f"[prune] would prune {len(to_prune)} training-state dirs, freeing "
-          f"{bytes_freed / 1e9:.1f} GB")
+    print(f"[prune] would prune {len(to_prune)} training-state dirs, freeing {bytes_freed / 1e9:.1f} GB")
     for p in to_prune:
         print(f"        - {p}")
     if not execute:
-        print(f"[prune] DRY RUN. Re-run with --execute to actually delete.")
-        return {"kept": [str(final_dir)], "pruned": [str(p) for p in to_prune],
-                "bytes_freed": bytes_freed}
+        print("[prune] DRY RUN. Re-run with --execute to actually delete.")
+        return {"kept": [str(final_dir)], "pruned": [str(p) for p in to_prune], "bytes_freed": bytes_freed}
 
     for p in to_prune:
         shutil.rmtree(p)
     print(f"[prune] deleted {len(to_prune)} dirs, freed {bytes_freed / 1e9:.1f} GB")
-    return {"kept": [str(final_dir)], "pruned": [str(p) for p in to_prune],
-            "bytes_freed": bytes_freed}
+    return {"kept": [str(final_dir)], "pruned": [str(p) for p in to_prune], "bytes_freed": bytes_freed}
 
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--run-dir", type=Path, required=True,
-                   help="Training run output dir (containing `checkpoints/` and `weights/`).")
-    p.add_argument("--execute", action="store_true",
-                   help="Actually delete. Default is dry-run.")
+    p.add_argument(
+        "--run-dir",
+        type=Path,
+        required=True,
+        help="Training run output dir (containing `checkpoints/` and `weights/`).",
+    )
+    p.add_argument("--execute", action="store_true", help="Actually delete. Default is dry-run.")
     return p.parse_args()
 
 

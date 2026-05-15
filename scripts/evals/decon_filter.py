@@ -36,9 +36,12 @@ from datasets import load_dataset
 
 from ._server import resolve_path_args
 from .decon import (
-    NGRAM_SIZE, TRAIN_REPO, _extract_training_text, _ngrams, _tokens,
+    NGRAM_SIZE,
+    TRAIN_REPO,
+    _extract_training_text,
+    _ngrams,
+    _tokens,
 )
-
 
 IFEVAL_DATASET = "HuggingFaceH4/ifeval"
 IFEVAL_SPLIT = "train"
@@ -66,13 +69,16 @@ def run(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"[decon_filter] threshold={threshold}  subset={subset}", flush=True)
-    print(f"[decon_filter] loading IFEval prompts and building per-prompt 13-gram sets...", flush=True)
+    print("[decon_filter] loading IFEval prompts and building per-prompt 13-gram sets...", flush=True)
     t0 = time.time()
     ds_if = load_dataset(IFEVAL_DATASET, split=IFEVAL_SPLIT)
     ifeval_grams: list[set] = []
     for r in ds_if:
         ifeval_grams.append(set(_ngrams(_tokens(r["prompt"]))))
-    print(f"  {len(ifeval_grams)} IFEval prompts, median grams/prompt = {sorted(len(g) for g in ifeval_grams)[len(ifeval_grams)//2]}", flush=True)
+    print(
+        f"  {len(ifeval_grams)} IFEval prompts, median grams/prompt = {sorted(len(g) for g in ifeval_grams)[len(ifeval_grams) // 2]}",
+        flush=True,
+    )
 
     # Reverse index: ngram → {ifeval_row_idx, ...}
     rev: dict[tuple[str, ...], set[int]] = defaultdict(set)
@@ -106,15 +112,20 @@ def run(
                 max_frac = frac
                 worst = i
         if max_frac >= threshold:
-            contaminated.append({
-                "fp": _fingerprint(row),
-                "max_frac": round(max_frac, 4),
-                "worst_ifeval_idx": worst,
-                "tr_preview": text[:200],
-            })
+            contaminated.append(
+                {
+                    "fp": _fingerprint(row),
+                    "max_frac": round(max_frac, 4),
+                    "worst_ifeval_idx": worst,
+                    "tr_preview": text[:200],
+                }
+            )
         if total % 20000 == 0:
             rate = 100.0 * len(contaminated) / total
-            print(f"    {total} rows scanned, {len(contaminated)} contaminated ({rate:.2f}%) — {time.time() - t_scan:.0f}s", flush=True)
+            print(
+                f"    {total} rows scanned, {len(contaminated)} contaminated ({rate:.2f}%) — {time.time() - t_scan:.0f}s",
+                flush=True,
+            )
 
     elapsed = time.time() - t0
     result = {
@@ -143,8 +154,9 @@ def run(
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--output-dir", type=Path, default=Path("outputs/decon/ifeval_filter"))
-    p.add_argument("--threshold", type=float, default=0.5,
-                   help="Coverage threshold above which a row is flagged (default 0.5).")
+    p.add_argument(
+        "--threshold", type=float, default=0.5, help="Coverage threshold above which a row is flagged (default 0.5)."
+    )
     p.add_argument("--subset", type=str, default=DEFAULT_SUBSET)
     return p.parse_args()
 

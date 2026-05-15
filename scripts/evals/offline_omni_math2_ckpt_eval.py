@@ -314,6 +314,7 @@ def _run_baseline_process(
     exit_code = 1
     with log_path.open("w", buffering=1) as log, redirect_stdout(log), redirect_stderr(log):
         try:
+
             def report_progress(phase: str, n: int) -> None:
                 status_queue.put({"type": "progress", "index": index, "phase": phase, "n": n})
 
@@ -369,7 +370,9 @@ def _wait_for_shard_processes(
                     process = process_by_index[index]
                     if process.exitcode is not None:
                         process.join()
-                        errors.append(f"shard {index:02d} exited with status {process.exitcode} before reporting status")
+                        errors.append(
+                            f"shard {index:02d} exited with status {process.exitcode} before reporting status"
+                        )
                         pending.remove(index)
                 continue
 
@@ -509,8 +512,10 @@ def _derive_generation_urls(
     admin_urls: list[str],
 ) -> list[str]:
     disable_router = os.environ.get("PRIME_RL_DISABLE_VLLM_ROUTER") == "1"
-    if config is not None and config.launch.mode == "srun_multinode" and (
-        disable_router or _find_vllm_router() is None
+    if (
+        config is not None
+        and config.launch.mode == "srun_multinode"
+        and (disable_router or _find_vllm_router() is None)
     ):
         return [_normal_generation_url(url) for url in admin_urls]
     return [_normal_generation_url(endpoint.base_url)]
@@ -626,7 +631,7 @@ def _run_one_checkpoint(
         run_baseline(eval_config)
     else:
         record_ids = _eval_record_ids(eval_config)
-        shards = [record_ids[index:: len(generation_urls)] for index in range(len(generation_urls))]
+        shards = [record_ids[index :: len(generation_urls)] for index in range(len(generation_urls))]
         shard_dirs = [output_dir / "shards" / f"shard_{index:02d}" for index in range(len(generation_urls))]
 
         shard_configs: list[tuple[int, BaselineConfig]] = []
@@ -712,9 +717,7 @@ def _recompute_existing(output_root: Path, *, ks: tuple[int, ...]) -> None:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Offline Omni-MATH-2 eval for PrimeRL HF weight checkpoints."
-    )
+    parser = argparse.ArgumentParser(description="Offline Omni-MATH-2 eval for PrimeRL HF weight checkpoints.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--run", action="append", type=_parse_run, default=[])
     parser.add_argument("--arm", help="Single-arm name. Use with --run-root.")
@@ -806,8 +809,12 @@ def main() -> None:
     with endpoint_context as endpoint:
         admin_urls = args.admin_url
         if not admin_urls:
-            admin_urls = _derive_admin_urls(server_config, endpoint) if server_config is not None else list(generation_urls)
-        generation_urls = generation_urls if args.base_url else _derive_generation_urls(server_config, endpoint, admin_urls)
+            admin_urls = (
+                _derive_admin_urls(server_config, endpoint) if server_config is not None else list(generation_urls)
+            )
+        generation_urls = (
+            generation_urls if args.base_url else _derive_generation_urls(server_config, endpoint, admin_urls)
+        )
         if args.base_url and len(admin_urls) != len(generation_urls):
             parser.error(
                 "external endpoint mode requires either no --admin-url or exactly one --admin-url per --base-url"

@@ -35,7 +35,9 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Install dependencies
-        run: uv sync --all-extras --locked
+        run: |
+          uv sync --all-extras --locked
+          bash scripts/fix-flash-attn-cute.sh
       - name: Run unit tests
         env:
           USERNAME_CI: CI_RUNNER
@@ -94,7 +96,9 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Install dependencies
-        run: uv sync --all-extras --locked
+        run: |
+          uv sync --all-extras --locked
+          bash scripts/fix-flash-attn-cute.sh
       - name: Run integration tests
         env:
           USERNAME_CI: CI_RUNNER

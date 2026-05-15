@@ -83,9 +83,7 @@ def _build_state(
     state["trajectory_id"] = trajectory_id
     state["sampling_args"] = {"temperature": TEMPERATURE}
     state["mar_score"] = MARScore(
-        members=[
-            MemberScore(member_id=mid, reward=r) for mid, r in members
-        ],
+        members=[MemberScore(member_id=mid, reward=r) for mid, r in members],
         episode_scalar=episode_scalar,
         episode_metrics={"agreement": 1.0},
     )
@@ -299,9 +297,7 @@ def test_mar_score_to_metrics_flat_omits_zero_parse_errors():
 
 def test_mar_score_to_metrics_flat_includes_nonzero_parse_errors():
     mar = MARScore(
-        members=[
-            MemberScore(member_id="A", reward=1.0, parse_error_count=3)
-        ],
+        members=[MemberScore(member_id="A", reward=1.0, parse_error_count=3)],
         episode_scalar=1.0,
     )
     flat = mar.to_metrics_flat()

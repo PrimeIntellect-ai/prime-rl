@@ -8,11 +8,9 @@ Run from the fork venv — see test_debate_env.py docstring for setup.
 from __future__ import annotations
 
 import pytest
-
 from verifiers.envs.debate.fields import (
     BinaryScoring,
     EnumScoring,
-    FieldSpec,
     NumericScoring,
     ScoringMode,
     _resolve_fields,
@@ -26,9 +24,8 @@ from verifiers.envs.debate.fields import (
     resolve_scoring,
     validate_type_scoring,
 )
-from verifiers.envs.debate.mcq import normalize_mcq
 from verifiers.envs.debate.parsing import extract_fields, generate_format_instructions
-
+from verifiers.utils.mcq import normalize_mcq
 
 # ===================================================================
 # _resolve_fields — YAML dict → FieldSpec
@@ -44,13 +41,15 @@ def test_resolve_fields_shorthand_str():
 
 
 def test_resolve_fields_full_dict():
-    specs = _resolve_fields({
-        "verdict": {
-            "type": "str",
-            "description": "Judge verdict",
-            "scoring": "binary",
-        },
-    })
+    specs = _resolve_fields(
+        {
+            "verdict": {
+                "type": "str",
+                "description": "Judge verdict",
+                "scoring": "binary",
+            },
+        }
+    )
     assert specs["verdict"].type is str
     assert specs["verdict"].description == "Judge verdict"
     assert isinstance(specs["verdict"].scoring, BinaryScoring)
@@ -58,12 +57,14 @@ def test_resolve_fields_full_dict():
 
 
 def test_resolve_fields_with_configured_scoring():
-    specs = _resolve_fields({
-        "winner": {
-            "type": "str",
-            "scoring": {"mode": "enum", "values": ["A", "B", "tie"]},
-        },
-    })
+    specs = _resolve_fields(
+        {
+            "winner": {
+                "type": "str",
+                "scoring": {"mode": "enum", "values": ["A", "B", "tie"]},
+            },
+        }
+    )
     assert isinstance(specs["winner"].scoring, EnumScoring)
     assert specs["winner"].scoring.values == ("A", "B", "tie")
 
@@ -418,10 +419,12 @@ def test_normalizer_for_scoring_base():
 
 
 def test_extract_fields_basic():
-    specs = _resolve_fields({
-        "verdict": {"type": "str", "scoring": "binary"},
-        "score": {"type": "float", "scoring": {"mode": "numeric", "min_val": 0, "max_val": 10}},
-    })
+    specs = _resolve_fields(
+        {
+            "verdict": {"type": "str", "scoring": "binary"},
+            "score": {"type": "float", "scoring": {"mode": "numeric", "min_val": 0, "max_val": 10}},
+        }
+    )
     text = "Some reasoning. <verdict>Yes</verdict> <score>7.5</score>"
     result = extract_fields(text, specs)
     assert result is not None
@@ -430,9 +433,11 @@ def test_extract_fields_basic():
 
 
 def test_extract_fields_enum_normalization():
-    specs = _resolve_fields({
-        "winner": {"type": "str", "scoring": {"mode": "enum", "values": ["A", "B", "tie"]}},
-    })
+    specs = _resolve_fields(
+        {
+            "winner": {"type": "str", "scoring": {"mode": "enum", "values": ["A", "B", "tie"]}},
+        }
+    )
     text = "<winner>TIE</winner>"
     result = extract_fields(text, specs)
     assert result is not None
@@ -478,9 +483,7 @@ def test_extract_fields_duplicate_tag_raises():
 def test_extract_fields_duplicate_non_schema_tag_tolerated():
     """Duplicate tags outside the schema are not our concern — don't false-positive."""
     specs = _resolve_fields({"answer": "str"})
-    result = extract_fields(
-        "<foo>x</foo><foo>y</foo><answer>A</answer>", specs
-    )
+    result = extract_fields("<foo>x</foo><foo>y</foo><answer>A</answer>", specs)
     assert result == {"answer": "A"}
 
 
@@ -497,18 +500,22 @@ def test_format_instructions_binary():
 
 
 def test_format_instructions_enum():
-    specs = _resolve_fields({
-        "winner": {"type": "str", "scoring": {"mode": "enum", "values": ["A", "B"]}},
-    })
+    specs = _resolve_fields(
+        {
+            "winner": {"type": "str", "scoring": {"mode": "enum", "values": ["A", "B"]}},
+        }
+    )
     instr = generate_format_instructions(specs)
     assert "WINNER" in instr
     assert "A, B" in instr
 
 
 def test_format_instructions_numeric():
-    specs = _resolve_fields({
-        "score": {"type": "float", "scoring": {"mode": "numeric", "min_val": 1, "max_val": 5}},
-    })
+    specs = _resolve_fields(
+        {
+            "score": {"type": "float", "scoring": {"mode": "numeric", "min_val": 1, "max_val": 5}},
+        }
+    )
     instr = generate_format_instructions(specs)
     assert "1" in instr and "5" in instr
 

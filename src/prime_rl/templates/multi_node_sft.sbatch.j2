@@ -36,6 +36,7 @@ ln -sfn trainer/node_0.log $OUTPUT_DIR/logs/trainer.log
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
+export TRITON_CACHE_DIR=/tmp/triton-cache-$USER-$SLURM_JOB_ID
 
 # Networking
 export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
@@ -63,11 +64,11 @@ cd $PROJECT_DIR && uv sync --all-extras
 # processes and vLLM/torch IPC files under /dev/shm and /tmp can survive SLURM
 # termination and cause the next launch to hang. Harmless on clean nodes.
 srun bash -c '
-    pkill -9 -f "python.*prime_rl" 2>/dev/null
-    pkill -9 -f "torchrun" 2>/dev/null
-    pkill -9 -f "vllm-router" 2>/dev/null
-    pkill -9 -f "vllm" 2>/dev/null
-    pkill -9 -f "prime_rl" 2>/dev/null
+    pkill -9 -f "[p]ython.*prime_rl" 2>/dev/null
+    pkill -9 -f "[t]orchrun" 2>/dev/null
+    pkill -9 -f "[v]llm-router" 2>/dev/null
+    pkill -9 -f "[v]llm" 2>/dev/null
+    pkill -9 -f "[p]rime_rl" 2>/dev/null
     # Also match prctl-set process names (kernel comm) like "vllm::router"
     # which pkill -f does not see because -f only matches the cmdline.
     pkill -9 "vllm" 2>/dev/null

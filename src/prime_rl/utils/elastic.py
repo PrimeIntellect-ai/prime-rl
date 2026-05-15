@@ -106,16 +106,25 @@ class ElasticInferencePool:
         model_name: str,
         train_client_type: str = "openai_chat_completions_token",
         eval_client_type: str = "openai_chat_completions",
+        renderer_name: str = "auto",
+        tool_parser: str | None = None,
+        reasoning_parser: str | None = None,
+        renderer_pool_size: int | None = None,
     ):
         self.logger = get_logger()
         self.client_config = client_config
         self.model_name = model_name
         self.base_model_name = model_name  # Keep original for health checks
+        self.renderer_model_name = model_name if train_client_type == "renderer" else None
         self.hostname = client_config.elastic.hostname
         self.port = client_config.elastic.port
         self.sync_interval = client_config.elastic.sync_interval
         self.train_client_type = train_client_type
         self.eval_client_type = eval_client_type
+        self.renderer_name = renderer_name
+        self.tool_parser = tool_parser
+        self.reasoning_parser = reasoning_parser
+        self.renderer_pool_size = renderer_pool_size
         self.router_url = client_config.router_url
 
         self._servers: dict[str, ServerState] = {}
@@ -139,11 +148,22 @@ class ElasticInferencePool:
         model_name: str,
         train_client_type: str = "openai_chat_completions_token",
         eval_client_type: str = "openai_chat_completions",
+        renderer_name: str = "auto",
+        tool_parser: str | None = None,
+        reasoning_parser: str | None = None,
+        renderer_pool_size: int | None = None,
     ) -> ElasticInferencePool:
         if client_config.elastic is None:
             raise ValueError("Elastic inference pool requires elastic config")
         pool = cls(
-            client_config, model_name=model_name, train_client_type=train_client_type, eval_client_type=eval_client_type
+            client_config,
+            model_name=model_name,
+            train_client_type=train_client_type,
+            eval_client_type=eval_client_type,
+            renderer_name=renderer_name,
+            tool_parser=tool_parser,
+            reasoning_parser=reasoning_parser,
+            renderer_pool_size=renderer_pool_size,
         )
         await pool.start()
         return pool
@@ -185,7 +205,19 @@ class ElasticInferencePool:
                 dp_rank_count=self.client_config.dp_rank_count,
                 extra_headers_from_state=self.client_config.extra_headers_from_state,
             )
-            self._train_clients = setup_clients(url_config, client_type=self.train_client_type) if urls else []
+            self._train_clients = (
+                setup_clients(
+                    url_config,
+                    client_type=self.train_client_type,
+                    renderer_name=self.renderer_name,
+                    renderer_model_name=self.renderer_model_name,
+                    tool_parser=self.tool_parser,
+                    reasoning_parser=self.reasoning_parser,
+                    renderer_pool_size=self.renderer_pool_size,
+                )
+                if urls
+                else []
+            )
             self._eval_clients = setup_clients(url_config, client_type=self.eval_client_type) if urls else []
 
     @property
@@ -454,7 +486,9 @@ class ElasticInferencePool:
             # Sync all servers in parallel for faster weight updates
             await asyncio.gather(*[self._sync_server_adapter(ip) for ip in self._servers.keys()])
 
-    async def wait_for_ready(self, model_name: str = "", timeout: int = 1800, min_servers: int = 1) -> None:
+    async def wait_for_ready(self, model_name: str = "", timeout: int | None = None, min_servers: int = 1) -> None:
+        if timeout is None:
+            timeout = self.client_config.wait_for_ready_timeout
         start = time.time()
         while time.time() - start < timeout:
             await self.sync()

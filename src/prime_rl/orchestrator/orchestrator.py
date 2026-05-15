@@ -6,6 +6,7 @@ from pathlib import Path
 
 import tomli_w
 
+import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
 from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
@@ -37,10 +38,12 @@ monkey_patch_chat_completion_logprobs()
 
 import pandas as pd
 import verifiers as vf
+from renderers.base import create_renderer
 from transformers import AutoProcessor
 from verifiers.rubrics.multi_agent_rubric import MultiAgentRubric
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.metrics.debate import write_step_metrics as write_debate_step_metrics
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.envs import EvalEnv, EvalEnvs, TrainEnvs
@@ -58,7 +61,6 @@ from prime_rl.orchestrator.vf_utils import (
     intercept_vf_logging,
     save_rollouts,
 )
-from prime_rl.metrics.debate import write_step_metrics as write_debate_step_metrics
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.utils.client import (
     init_nccl_broadcast,
@@ -158,14 +160,6 @@ async def orchestrate(config: OrchestratorConfig):
     # Setup rollout inference pool (handles both static and elastic modes)
     rollout_client_config, rollout_model_name, enable_policy_updates = setup_external_rollout_model(config, logger)
 
-    train_client_type = "openai_chat_completions_token" if config.use_token_client else "openai_chat_completions"
-    inference_pool = await setup_inference_pool(
-        rollout_client_config,
-        model_name=rollout_model_name,
-        train_client_type=train_client_type,
-        eval_client_type="openai_chat_completions",
-    )
-
     # Setup teacher inference pool if configured
     if config.teacher_model:
         logger.info(
@@ -194,6 +188,14 @@ async def orchestrate(config: OrchestratorConfig):
             config.model.name, trust_remote_code=config.model.trust_remote_code, use_fast=True
         )
 
+    renderer, inference_pool = await setup_rollout_inference_pool(
+        config=config,
+        rollout_client_config=rollout_client_config,
+        rollout_model_name=rollout_model_name,
+        tokenizer=tokenizer,
+        logger=logger,
+    )
+
     # Setup monitor (may register the run and set RUN_ID in the environment)
     logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
     monitor = setup_monitor(
@@ -202,6 +204,7 @@ async def orchestrate(config: OrchestratorConfig):
         output_dir=config.output_dir,
         tokenizer=tokenizer,
         run_config=config,
+        keep_full_history=config.bench,
     )
 
     # Read run_id AFTER setup_monitor so that newly registered runs are captured
@@ -241,11 +244,7 @@ async def orchestrate(config: OrchestratorConfig):
     )
     logger.success("Train environment(s) ready")
 
-    ma_env_names = {
-        env.name
-        for env in train_envs
-        if isinstance(env.env.rubric, MultiAgentRubric)
-    }
+    ma_env_names = {env.name for env in train_envs if isinstance(env.env.rubric, MultiAgentRubric)}
     non_ma_env_names = set(train_envs.names) - ma_env_names
     if ma_env_names and non_ma_env_names:
         raise NotImplementedError(
@@ -376,9 +375,7 @@ async def orchestrate(config: OrchestratorConfig):
     # must resume with progress/buffer for multi-agent runs.
     progress = Progress()
     advantage_state: RAEState | None = (
-        RAEState(momentum=config.advantage.momentum)
-        if advantage_type == "ema_per_member"
-        else None
+        RAEState(momentum=config.advantage.momentum) if advantage_type == "ema_per_member" else None
     )
 
     if checkpoint_step is not None and ckpt_manager is not None:
@@ -518,7 +515,7 @@ async def orchestrate(config: OrchestratorConfig):
             generate_completions_time += scheduler.last_batch_generation_time
 
             num_rollouts = len(train_rollouts)
-            num_unique_examples = len({r["example_id"] for r in train_rollouts})
+            num_unique_examples = len({(r["env_name"], r["example_id"]) for r in train_rollouts})
 
             if is_ma:
                 training_units, rollout_to_unit_idxs = fan_out_for_multi_agent(
@@ -603,26 +600,43 @@ async def orchestrate(config: OrchestratorConfig):
         # Convert training units to training samples
         parallel_preprocess_start = time.perf_counter()
 
-        # Pretokenize before VLM image cache build (which strips image data from messages)
-        for unit in training_units:
-            pretokenize_rollout_trajectory(unit, tokenizer, processor=processor)
+        # Stage 1: pretokenize + (for VLM) build image cache concurrently.
+        # Pretokenize is a no-op when the renderer client already populated
+        # `tokens` on each trajectory step, but the fallback-tokenizer path
+        # and image-cache build are both CPU-heavy. Running them on threads
+        # and awaiting a single gather lets whichever finishes first free
+        # the event loop immediately and, with max_async_level >= 2, overlaps
+        # this whole stage with inference for the next batch.
+        async def _pretokenize_all() -> None:
+            await asyncio.gather(
+                *(
+                    asyncio.to_thread(
+                        pretokenize_rollout_trajectory,
+                        unit,
+                        tokenizer,
+                        processor=processor,
+                        renderer=renderer,
+                    )
+                    for unit in training_units
+                )
+            )
 
-        # VLM: build image cache in a thread so it doesn't block the event loop.
-        # This lets the scheduler continue servicing inflight rollout requests
-        # and — with max_async_level >= 2 — overlap with the next batch's inference.
         if is_vlm:
-            vlm_cache = await asyncio.to_thread(build_vlm_image_cache, train_rollouts, processor)
             mm_token_type_ids_mapping = {}
             if hasattr(processor, "image_token_id") and processor.image_token_id is not None:
                 mm_token_type_ids_mapping[processor.image_token_id] = 1
             if hasattr(processor, "video_token_id") and processor.video_token_id is not None:
                 mm_token_type_ids_mapping[processor.video_token_id] = 2
-
+            _, vlm_cache = await asyncio.gather(
+                _pretokenize_all(),
+                asyncio.to_thread(build_vlm_image_cache, train_rollouts, processor),
+            )
             logger.info(
                 f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s "
                 f"({vlm_cache.num_unique_images} unique images from {vlm_cache.num_unique_examples} examples)"
             )
         else:
+            await _pretokenize_all()
             vlm_cache = None
             mm_token_type_ids_mapping = None
 
@@ -664,6 +678,8 @@ async def orchestrate(config: OrchestratorConfig):
                 for sample in samples:
                     sample.advantage = unit["advantage"]
                     sample.reward = unit["reward"]
+                    if config.use_sft_loss:
+                        sample.sft_loss = True
                     sample_decode_tokens = sum(sample.completion_mask)
                     sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens
                     rollout_decode_tokens += sample_decode_tokens
@@ -719,14 +735,27 @@ async def orchestrate(config: OrchestratorConfig):
                 "decode_len": rollout_decode_lens,
                 "samples_per_rollout": rollout_samples_per_rollout,
                 "num_turns": [len(rollout["trajectory"]) for rollout in train_rollouts],
-                "generation_ms": [rollout["timing"]["generation_ms"] for rollout in train_rollouts],
-                "scoring_ms": [rollout["timing"]["scoring_ms"] for rollout in train_rollouts],
             }
         )
 
-        # Separate DataFrames for env reward function metrics and filter flags to avoid column name collisions
+        # Separate DataFrames for env reward function metrics, filter flags, and per-rollout timings
+        # to avoid column name collisions
         metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
         filter_df = pd.DataFrame([rollout["filters"] for rollout in train_rollouts])
+        timing_df = pd.DataFrame(
+            [
+                {
+                    "total": rollout["timing"]["total"],
+                    "setup": rollout["timing"]["setup"]["duration"],
+                    "generation": rollout["timing"]["generation"]["duration"],
+                    "model": rollout["timing"]["model"]["duration"],
+                    "env": rollout["timing"]["env"]["duration"],
+                    "scoring": rollout["timing"]["scoring"]["duration"],
+                    "overhead": rollout["timing"]["overhead"],
+                }
+                for rollout in train_rollouts
+            ]
+        )
 
         # Update progress metrics
         num_tokens = int(results_df.seq_len.sum())
@@ -736,13 +765,13 @@ async def orchestrate(config: OrchestratorConfig):
 
         def compute_solve_rates(df):
             """Compute solve_none, solve_all, effective_batch_size for a set of rollouts."""
-            reward_per_problem = df.groupby("example_id").reward.sum()
+            reward_per_problem = df.groupby(["env_name", "example_id"]).reward.sum()
             solve_none = (reward_per_problem == 0).mean()
             solve_all = (reward_per_problem == config.rollouts_per_example).mean()
             return solve_none, solve_all, 1 - solve_none - solve_all
 
-        # Group by example_id to average across rollouts within each problem
-        by_example = results_df.groupby("example_id")
+        # Group by (env_name, example_id) to average across rollouts within each problem
+        by_example = results_df.groupby(["env_name", "example_id"])
 
         solve_none, solve_all, effective_batch_size = compute_solve_rates(results_df)
         to_log = {
@@ -781,12 +810,14 @@ async def orchestrate(config: OrchestratorConfig):
             "num_turns/all/mean": by_example.num_turns.mean().mean(),
             "num_turns/all/max": by_example.num_turns.mean().max(),
             "num_turns/all/min": by_example.num_turns.mean().min(),
-            "generation_ms/all/mean": by_example.generation_ms.mean().mean(),
-            "generation_ms/all/max": by_example.generation_ms.mean().max(),
-            "generation_ms/all/min": by_example.generation_ms.mean().min(),
-            "scoring_ms/all/mean": by_example.scoring_ms.mean().mean(),
-            "scoring_ms/all/max": by_example.scoring_ms.mean().max(),
-            "scoring_ms/all/min": by_example.scoring_ms.mean().min(),
+            **{
+                f"timing/all/{key}/{stat}": getattr(
+                    timing_df[key].groupby([results_df.env_name, results_df.example_id]).mean(),
+                    stat,
+                )()
+                for key in timing_df.columns
+                for stat in ("mean", "max", "min")
+            },
             # Train reward
             "reward/all/mean": by_example.reward.mean().mean(),
             "reward/all/max": by_example.reward.mean().max(),
@@ -823,8 +854,6 @@ async def orchestrate(config: OrchestratorConfig):
             "is_truncated",
             "samples_per_rollout",
             "num_turns",
-            "generation_ms",
-            "scoring_ms",
         ]
 
         for env, env_df in results_df.groupby("env_name"):
@@ -834,6 +863,12 @@ async def orchestrate(config: OrchestratorConfig):
                 to_log[f"{col}/{env}/max"] = env_by_example[col].mean().max()
                 if col != "is_truncated":
                     to_log[f"{col}/{env}/min"] = env_by_example[col].mean().min()
+            env_timing_df = timing_df.loc[env_df.index]
+            for key in timing_df.columns:
+                per_example = env_timing_df.groupby(env_df["example_id"])[key].mean()
+                to_log[f"timing/{env}/{key}/mean"] = per_example.mean()
+                to_log[f"timing/{env}/{key}/max"] = per_example.max()
+                to_log[f"timing/{env}/{key}/min"] = per_example.min()
             to_log[f"reward/{env}/mean"] = env_by_example.reward.mean().mean()
             to_log[f"reward/{env}/max"] = env_by_example.reward.mean().max()
             to_log[f"reward/{env}/min"] = env_by_example.reward.mean().min()
@@ -877,7 +912,7 @@ async def orchestrate(config: OrchestratorConfig):
             )
 
         reward_mean = by_example.reward.mean().mean()
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {reward_mean:.4f} | Seq. Length: {by_example.seq_len.mean().mean():.1f} tokens/sample | Async Level: {scheduler.async_level} | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {reward_mean:.4f} | Seq. Length: {by_example.seq_len.mean().mean():.1f} tokens/sample | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
 
         # Increment step
@@ -923,8 +958,6 @@ async def orchestrate(config: OrchestratorConfig):
                 monitor=monitor,
             )
 
-    # Log final (immutable) samples and distributions to monitor(s)
-    monitor.log_final_samples()
     monitor.save_final_summary()
 
     # Write final checkpoint
@@ -982,6 +1015,75 @@ def main():
     """Main entry-point for orchestrator. Run using `uv run orchestrator`"""
     set_proc_title("Orchestrator")
     asyncio.run(orchestrate(cli(OrchestratorConfig)))
+
+
+async def setup_rollout_inference_pool(
+    *,
+    config: OrchestratorConfig,
+    rollout_client_config,
+    rollout_model_name: str,
+    tokenizer,
+    logger,
+):
+    """Set up rollout inference.
+
+    Routing policy is driven by ``config.use_token_client`` and
+    ``config.use_renderer`` (mutually exclusive — config-level validators
+    block both being True):
+
+      - external teacher rollout → MITO (``openai_chat_completions``),
+        forced regardless of the toggles (config-level validator
+        rejects ``use_token_client`` / ``use_renderer`` in that case)
+      - ``use_renderer=True``  → renderer client (``/v1/generate``).
+        Not allowed for VLMs (validated at config time).
+      - ``use_token_client=True`` → TITO
+        (``openai_chat_completions_token``, ``/v1/chat/completions/tokens``).
+        Default. VLMs land here too.
+      - both False → MITO (``openai_chat_completions``).
+    """
+    if config.teacher_rollout_model is not None:
+        logger.info("Using external rollout model (MITO) without renderer client")
+        inference_pool = await setup_inference_pool(
+            rollout_client_config,
+            model_name=rollout_model_name,
+            train_client_type="openai_chat_completions",
+            eval_client_type="openai_chat_completions",
+        )
+        return None, inference_pool
+
+    if config.use_renderer:
+        renderer = create_renderer(
+            tokenizer,
+            renderer=config.renderer.name,
+            tool_parser=config.renderer.tool_parser,
+            reasoning_parser=config.renderer.reasoning_parser,
+        )
+        logger.info(f"Initialized {type(renderer).__name__} for {config.model.name}")
+        inference_pool = await setup_inference_pool(
+            rollout_client_config,
+            model_name=rollout_model_name,
+            train_client_type="renderer",
+            eval_client_type="openai_chat_completions",
+            renderer_name=config.renderer.name,
+            tool_parser=config.renderer.tool_parser,
+            reasoning_parser=config.renderer.reasoning_parser,
+            renderer_pool_size=config.renderer.pool_size,
+        )
+        logger.info("Using direct renderer rollout client")
+        return renderer, inference_pool
+
+    train_client_type = "openai_chat_completions_token" if config.use_token_client else "openai_chat_completions"
+    if config.use_token_client:
+        logger.info("Using token client (TITO) for rollouts — server-side templating, /v1/chat/completions/tokens")
+    else:
+        logger.info("Using MITO (openai_chat_completions) for rollouts")
+    inference_pool = await setup_inference_pool(
+        rollout_client_config,
+        model_name=rollout_model_name,
+        train_client_type=train_client_type,
+        eval_client_type="openai_chat_completions",
+    )
+    return None, inference_pool
 
 
 if __name__ == "__main__":

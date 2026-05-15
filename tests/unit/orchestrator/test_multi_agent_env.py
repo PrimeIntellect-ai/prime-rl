@@ -3,27 +3,24 @@
 System boundary is the Client (faked). The kernel, schedule, and
 rollout loop are exercised for real. Subclass the abstract base with a
 minimal EchoEnv that just echoes member_id + slot.phase — enough to
-verify ordering, atomic commit, monotonic prompt invariant, stop
-conditions, agent_override routing, and lineage-scoped prefix cache.
+verify ordering, atomic commit, monotonic prompt invariant, and stop
+conditions.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, cast
+from typing import Any
 
 import pytest
 import verifiers as vf
 from verifiers.clients import Client as _VFClient
-from verifiers.clients.openai_chat_completions_token_client import (
-    OpenAIChatCompletionsTokenClient,
-)
+from verifiers.envs.multi_agent_env import MultiAgentEnv
 from verifiers.envs.multi_agent_kernel import (
     StaticSchedule,
     TurnSlot,
 )
-from verifiers.envs.multi_agent_env import MultiAgentEnv
 from verifiers.errors import Error as VFError
 from verifiers.errors import OverlongPromptError
 from verifiers.types import (
@@ -47,9 +44,7 @@ class FakeClient(_VFClient):
         self._responses = list(responses)
         self.calls: list[dict[str, Any]] = []
 
-    async def get_response(
-        self, prompt, model, sampling_args=None, tools=None, **kwargs
-    ) -> Response:
+    async def get_response(self, prompt, model, sampling_args=None, tools=None, **kwargs) -> Response:
         self.calls.append({"prompt": prompt, "model": model})
         if not self._responses:
             raise RuntimeError("FakeClient exhausted")
@@ -93,12 +88,16 @@ def _make_response(content: str) -> Response:
         created=0,
         model="m",
         usage=Usage(
-            prompt_tokens=1, reasoning_tokens=0,
-            completion_tokens=len(content), total_tokens=1 + len(content),
+            prompt_tokens=1,
+            reasoning_tokens=0,
+            completion_tokens=len(content),
+            total_tokens=1 + len(content),
         ),
         message=ResponseMessage(
-            content=content, finish_reason="stop",
-            is_truncated=False, tokens=None,
+            content=content,
+            finish_reason="stop",
+            is_truncated=False,
+            tokens=None,
         ),
     )
 
@@ -181,7 +180,7 @@ def _rollout_input() -> RolloutInput:
     return RolloutInput(
         prompt=[{"role": "user", "content": "echo"}],
         example_id=1,
-        task="echo_test",
+        task={"env_id": "echo_test"},
         answer="",
     )
 
@@ -206,17 +205,6 @@ def test_init_rejects_duplicate_members():
         EchoEnv(
             schedule=StaticSchedule(()),
             members=["A", "A"],
-            rubric=EchoRubric(),
-            dataset=lambda: None,
-        )
-
-
-def test_init_rejects_stray_agent_overrides():
-    with pytest.raises(ValueError, match="not in members"):
-        EchoEnv(
-            schedule=StaticSchedule(()),
-            members=["A", "B"],
-            agent_overrides={"C": (None, "other-model")},
             rubric=EchoRubric(),
             dataset=lambda: None,
         )
@@ -308,6 +296,7 @@ def test_simultaneous_slot_rolls_back_on_error():
         rubric=EchoRubric(),
         dataset=lambda: None,
     )
+
     # First call succeeds; second raises. Since the slot only publishes
     # after all responses are staged, the kernel is untouched.
     class MixedClient(FakeClient):
@@ -392,11 +381,13 @@ def test_simultaneous_slot_rolls_back_on_extract_fields_failure():
         rubric=EchoRubric(),
         dataset=lambda: None,
     )
-    client = FakeClient([
-        _make_response("A says"),
-        _make_response("B says"),
-        _make_response("C says"),
-    ])
+    client = FakeClient(
+        [
+            _make_response("A says"),
+            _make_response("B says"),
+            _make_response("C says"),
+        ]
+    )
     state = _run(env.rollout(_rollout_input(), client, "m"))
     assert state["stop_condition"] == "has_error"
     assert isinstance(state["error"], VFError)
@@ -449,126 +440,3 @@ def test_build_prompt_monotonic_across_slots():
     for mid, seq in per_member.items():
         for prev, curr in zip(seq, seq[1:]):
             _assert_monotonic(prev, curr)
-
-
-# ---------------------------------------------------------------------------
-# 6. agent_overrides routing
-# ---------------------------------------------------------------------------
-
-
-def test_agent_overrides_routes_per_member():
-    """Member B uses override client; A falls through to default."""
-    default = FakeClient([_make_response("A!")])
-    override = FakeClient([_make_response("B!")])
-    slots = (
-        TurnSlot(slot_id=0, agents=("A",), phase="p"),
-        TurnSlot(slot_id=1, agents=("B",), phase="p"),
-    )
-    env = EchoEnv(
-        schedule=StaticSchedule(slots),
-        members=["A", "B"],
-        agent_overrides={"B": (override, "override-model")},
-        rubric=EchoRubric(),
-        dataset=lambda: None,
-    )
-    state = _run(env.rollout(_rollout_input(), default, "default-model"))
-    assert len(state["trajectory"]) == 2
-    assert len(default.calls) == 1
-    assert len(override.calls) == 1
-    assert override.calls[0]["model"] == "override-model"
-
-
-# ---------------------------------------------------------------------------
-# 7. Lineage-scoped prefix cache
-# ---------------------------------------------------------------------------
-
-
-class _LineageProbeClient(OpenAIChatCompletionsTokenClient):
-    """Captures which trajectory step was prefix-matched."""
-
-    def __init__(self):
-        class _Stub:
-            base_url = "http://x/v1"
-            def with_options(self, **kw): return self
-        super().__init__(_Stub())
-
-    async def to_native_prompt(self, messages):
-        return messages, {}
-
-    async def tokenize(self, messages, tools, model, extra_kwargs={}, **kwargs):
-        return [0]
-
-
-def _step(member_id: str, prompt, completion, prompt_ids, completion_ids):
-    return {
-        "prompt": prompt,
-        "completion": completion,
-        "tokens": {
-            "prompt_ids": prompt_ids, "completion_ids": completion_ids,
-            "is_truncated": False,
-        },
-        "response": None,
-        "extras": {"member_id": member_id},
-    }
-
-
-@pytest.mark.asyncio
-async def test_lineage_filter_isolates_per_member_cache():
-    """A's new prompt should only match A's prior step, not B's."""
-    client = _LineageProbeClient()
-
-    # Both steps share the same (user, assistant) prefix, but only A's
-    # step is the correct continuation for A's next turn. Without lineage
-    # filter, the scan would hit B's step first (reversed order) because
-    # of equal prefix length.
-    shared_prompt = [{"role": "user", "content": "u1"}]
-    shared_completion = [{"role": "assistant", "content": "a1"}]
-
-    trajectory = [
-        _step("A", shared_prompt, shared_completion,
-              prompt_ids=[1], completion_ids=[2]),
-        _step("B", shared_prompt, shared_completion,
-              prompt_ids=[100], completion_ids=[200]),
-    ]
-    state = cast(State, {"model": "m", "trajectory": trajectory})
-
-    a_new = [
-        {"role": "user", "content": "u1"},
-        {"role": "assistant", "content": "a1"},
-        {"role": "user", "content": "u-next"},
-    ]
-
-    # With lineage=A, prefix should come from A's step (prompt_ids=[1],
-    # completion_ids=[2]).
-    ids_a = await client.get_prompt_ids(state, a_new, oai_tools=None, lineage_key="A")
-    assert ids_a is not None
-    assert ids_a[:2] == [1, 2], f"lineage A mispicked: {ids_a}"
-
-    # With lineage=B, should come from B's step.
-    ids_b = await client.get_prompt_ids(state, a_new, oai_tools=None, lineage_key="B")
-    assert ids_b is not None
-    assert ids_b[:2] == [100, 200], f"lineage B mispicked: {ids_b}"
-
-
-@pytest.mark.asyncio
-async def test_lineage_none_preserves_default_behavior():
-    """lineage_key=None keeps the original latest-match behavior."""
-    client = _LineageProbeClient()
-    shared_prompt = [{"role": "user", "content": "u1"}]
-    shared_completion = [{"role": "assistant", "content": "a1"}]
-    trajectory = [
-        _step("A", shared_prompt, shared_completion,
-              prompt_ids=[1], completion_ids=[2]),
-        _step("B", shared_prompt, shared_completion,
-              prompt_ids=[100], completion_ids=[200]),
-    ]
-    state = cast(State, {"model": "m", "trajectory": trajectory})
-    new = [
-        {"role": "user", "content": "u1"},
-        {"role": "assistant", "content": "a1"},
-        {"role": "user", "content": "u-next"},
-    ]
-    ids = await client.get_prompt_ids(state, new, oai_tools=None)
-    # Scan is reversed; B is last so its ids win on tie.
-    assert ids is not None
-    assert ids[:2] == [100, 200]

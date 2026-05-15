@@ -40,12 +40,10 @@ def _assert_assigned_before_first_use(fn: ast.AsyncFunctionDef, name: str) -> No
     earlier than first Store, else ``UnboundLocalError``. ``ast.walk`` is
     BFS — take ``min`` of linenumbers, not first-encountered."""
     store_lines = [
-        n.lineno for n in ast.walk(fn)
-        if isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store)
+        n.lineno for n in ast.walk(fn) if isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store)
     ]
     load_lines = [
-        n.lineno for n in ast.walk(fn)
-        if isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load)
+        n.lineno for n in ast.walk(fn) if isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load)
     ]
     if not store_lines and not load_lines:
         return  # name not present, nothing to check
@@ -71,9 +69,7 @@ def test_advantage_type_assigned_before_first_use():
     _assert_assigned_before_first_use(_orchestrate_fn(), "advantage_type")
 
 
-def _assert_all_calls_pass_kwarg(
-    fn: ast.AsyncFunctionDef, receiver: str, method: str, kwarg: str
-) -> None:
+def _assert_all_calls_pass_kwarg(fn: ast.AsyncFunctionDef, receiver: str, method: str, kwarg: str) -> None:
     """Every ``receiver.method(...)`` call inside ``fn`` must include
     ``kwarg=``. Used to enforce that all ``ckpt_manager.save / load`` calls
     pass ``rae_state=`` so single-source-of-truth advantage state is

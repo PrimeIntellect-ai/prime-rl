@@ -10,6 +10,7 @@ enough signal for GRPO advantages to be non-zero, not saturated.
 Run via `sbatch tmp/zebra_probe/probe.sbatch` on Isambard-AI Phase 2.
 Target hardware: GH200 (sm_90 Hopper) → bf16 only, no fp8.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -21,7 +22,6 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 from vllm import LLM, SamplingParams
-
 
 MODEL = "Qwen/Qwen3-4B-Instruct-2507"
 GRIDS = ["3x3", "4x4"]
@@ -63,13 +63,19 @@ def build_chat_prompt(prompt_mcq: str, tokenizer) -> str:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--parquet", type=Path, required=True,
-                    help="path to pre-staged train_canonical parquet shard")
+    ap.add_argument("--parquet", type=Path, required=True, help="path to pre-staged train_canonical parquet shard")
     args = ap.parse_args()
 
-    df = pq.read_table(args.parquet, columns=[
-        "puzzle_id", "grid_size", "prompt_mcq", "choices", "target_label",
-    ]).to_pandas()
+    df = pq.read_table(
+        args.parquet,
+        columns=[
+            "puzzle_id",
+            "grid_size",
+            "prompt_mcq",
+            "choices",
+            "target_label",
+        ],
+    ).to_pandas()
 
     llm = LLM(
         model=MODEL,
@@ -118,8 +124,10 @@ def main():
         parse_rate = 1 - parse_failures / (len(prompts) * N_SAMPLES)
 
         print(f"  pass@1 = {pass_1:.3f}   pass@8 = {pass_8:.3f}")
-        print(f"  solve_none = {solve_none:.3f}   solve_all = {solve_all:.3f}   "
-              f"GRPO effective = {1 - solve_none - solve_all:.3f}")
+        print(
+            f"  solve_none = {solve_none:.3f}   solve_all = {solve_all:.3f}   "
+            f"GRPO effective = {1 - solve_none - solve_all:.3f}"
+        )
         print(f"  parse_rate = {parse_rate:.3f}   label hist = {dict(label_hist)}")
 
         results[grid] = {

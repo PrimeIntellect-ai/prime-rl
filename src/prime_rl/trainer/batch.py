@@ -76,6 +76,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         pixel_values=training_example.pixel_values,
         pixel_values_shape=training_example.pixel_values_shape,
         image_grid_thw=training_example.image_grid_thw,
+        sft_loss=training_example.sft_loss,
     )
 
 
@@ -115,7 +116,10 @@ def packed_samples_into_micro_bs(
             if _is_multimodal_sample(bin_content):
                 continue
             # Check if sequence fits in this bin
-            if len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len:
+            if (
+                len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len
+                and bin_content.sft_loss == sample.sft_loss
+            ):
                 bin_content.input_ids.extend(sample.input_ids)
                 bin_content.loss_mask.extend(sample.loss_mask)
                 bin_content.advantages.extend(sample.advantages)

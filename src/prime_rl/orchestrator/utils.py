@@ -7,7 +7,6 @@ from typing import Any
 
 import pandas as pd
 import verifiers as vf
-from openai.types.chat.chat_completion import ChatCompletion
 from rich.console import Console
 from rich.table import Table
 from verifiers.utils.client_utils import setup_openai_client
@@ -85,28 +84,52 @@ async def compute_teacher_logprobs(
     samples: list[TrainingSample],
 ) -> list[list[float]]:
     """Compute teacher model logprobs for a batch of training samples via prefill."""
+    import httpx
+    from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
 
     async def _compute_single(client_config: vf.ClientConfig, sample: TrainingSample) -> list[float]:
         client = setup_openai_client(client_config)
 
-        response = await client.post(
-            "/chat/completions/tokens",
+        # Two escape hatches from ``AsyncOpenAI.post``:
+        #   1. URL — ``/inference/v1/generate`` is mounted at server root, not
+        #      under ``/v1``. Pass an absolute URL so the SDK's
+        #      ``_prepare_url`` skips the base-url merge (it short-circuits
+        #      when the path passes ``httpx.URL.is_relative_url`` as False).
+        #   2. Parse — vLLM's ``GenerateResponse`` is a plain
+        #      ``pydantic.BaseModel`` and the SDK's parse layer rejects any
+        #      ``cast_to`` that doesn't subclass ``openai.BaseModel``. Use
+        #      ``cast_to=httpx.Response`` so the SDK still builds the request
+        #      (preserving ``auth_headers``, retries, timeouts, idempotency
+        #      keys) and just hands us the raw response to validate ourselves.
+        base = str(client.base_url).rstrip("/").removesuffix("/v1")
+        http_response = await client.post(
+            f"{base}/inference/v1/generate",
+            cast_to=httpx.Response,
             body={
                 "model": model_name,
-                "messages": [{"role": "user", "content": ""}],
-                "tokens": sample.prompt_ids + sample.completion_ids,
-                "max_tokens": 1,
-                "temperature": 1.0,
-                "top_p": 1.0,
-                "skip_special_tokens": False,
-                "prompt_logprobs": True,
+                "token_ids": list(sample.prompt_ids) + list(sample.completion_ids),
+                "sampling_params": {
+                    "max_tokens": 1,
+                    "temperature": 1.0,
+                    "top_p": 1.0,
+                    "prompt_logprobs": 1,
+                },
             },
-            cast_to=ChatCompletion,
         )
-        return [
-            0.0 if lp is None else float(next(iter(lp.values()))["logprob"])
-            for lp in getattr(response, "prompt_logprobs", [])
-        ]
+        response = GenerateResponse.model_validate_json(http_response.content)
+        # ``prompt_logprobs[i]`` is a ``{token_id: Logprob}`` dict for tokens
+        # the engine could score, or ``None`` for the leading token which has
+        # no preceding context. Flatten to ``list[float]`` with 0.0 in the
+        # unscored slot.
+        flat: list[float] = []
+        for entry in response.prompt_logprobs or []:
+            if not entry:
+                flat.append(0.0)
+                continue
+            first = next(iter(entry.values()))
+            lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
+            flat.append(float(lp) if lp is not None else 0.0)
+        return flat
 
     return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
 

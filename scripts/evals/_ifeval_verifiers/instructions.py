@@ -603,9 +603,7 @@ class PostscriptChecker(Instruction):
         Returns:
           A string representing the instruction description.
         """
-        self._postscript_marker = (
-            postscript_marker.strip() if isinstance(postscript_marker, str) else postscript_marker
-        )
+        self._postscript_marker = postscript_marker.strip() if isinstance(postscript_marker, str) else postscript_marker
         if self._postscript_marker is None:
             self._postscript_marker = random.choice(_POSTSCRIPT_MARKER)
 
@@ -1302,8 +1300,7 @@ class LetterFrequencyChecker(Instruction):
             self._comparison_relation = random.choice(_COMPARISON_RELATION)
         elif let_relation not in _COMPARISON_RELATION:
             raise ValueError(
-                "The supported relation for comparison must be in "
-                f"{_COMPARISON_RELATION}, but {let_relation} is given."
+                f"The supported relation for comparison must be in {_COMPARISON_RELATION}, but {let_relation} is given."
             )
         else:
             self._comparison_relation = let_relation
@@ -2263,7 +2260,9 @@ class PunctuationExclamationChecker(Instruction):
 
     def build_description(self):
         """Build the instruction description."""
-        self._description_pattern = "In your entire response, refrain from the use of ! (i.e. exclamation marks) as punctuation and in general."
+        self._description_pattern = (
+            "In your entire response, refrain from the use of ! (i.e. exclamation marks) as punctuation and in general."
+        )
         return self._description_pattern
 
     def get_instruction_args(self):

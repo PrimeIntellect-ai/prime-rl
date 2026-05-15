@@ -53,6 +53,7 @@ With `[model] impl = "auto"` (the default), the trainer selects that custom stac
 | Qwen3 MoE (`qwen3_moe`) | `Qwen/Qwen3-30B-A3B`, … | yes | ✅ | ✅ |
 | Qwen3.5 MoE (`qwen3_5_moe`) | `Qwen/Qwen3.5-35B-A3B`, … | yes | ✅ | ✅ |
 | Qwen3 / Qwen3.5 VLMs | [multimodal.md](docs/multimodal.md) (`qwen3_vl`, `qwen3_5`, `qwen3_5_moe`) | MoE only on MoE VLMs | MoE only | ✅ |
+| Poolside Laguna (`laguna`) | `poolside/Laguna-XS.2` | yes | ✅ | ✅ |
 | MiniMax M2 (`minimax_m2`) | `MiniMax/MiniMax-M2` | yes | ✅ | ✅ |
 | Nemotron H (`nemotron_h`) | `nvidia/Nemotron-3-Nano-30B-A3B`, `nvidia/Nemotron-3-Super-120B-A12B`, … | yes | ✅ | ❌ |
 | Trinity (`afmoe`) | `arcee-ai/Trinity-Mini`, … | yes | ✅ | ✅ |
@@ -126,10 +127,10 @@ Validate your environment setup
 uv run python -V
 ```
 
-2. Check that `flash-attn` is installed
+2. Check that `flash-attn` is installed with the FA2 varlen kernel
 
 ```bash
-uv run python -c "import flash_attn"
+uv run python -c "from flash_attn import flash_attn_varlen_func"
 ```
 
 3. Check that you can run SFT trainer  (*this requires 1 GPU*)

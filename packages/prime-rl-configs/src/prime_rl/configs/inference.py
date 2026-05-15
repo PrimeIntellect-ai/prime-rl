@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_config import BaseConfig
 
 from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
-from prime_rl.utils.utils import rgetattr, rsetattr
+from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
 
 # TODO: Set thinking/ solution budget
 
@@ -16,6 +16,16 @@ class ServerConfig(BaseConfig):
 
     host: Annotated[str | None, Field(description="The host to bind to.")] = None
     port: Annotated[int, Field(description="The port to bind to.")] = 8000
+    liveness_timeout_seconds: Annotated[
+        float,
+        Field(
+            gt=0,
+            description=(
+                "Timeout in seconds for the /liveness endpoint's internal vLLM worker RPC. "
+                "If Kubernetes liveness probes are enabled, keep the probe timeoutSeconds at least this high."
+            ),
+        ),
+    ] = 30.0
 
 
 class ParallelConfig(BaseConfig):
@@ -110,6 +120,16 @@ class WeightBroadcastConfig(BaseConfig):
     )
 
 
+class KVCacheOffloadConfig(BaseModel):
+    """CPU KV cache offloading for vLLM inference workers."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cpu_bytes: Annotated[int, Field(gt=0, description="CPU bytes available for KV cache offloading per worker.")] = (
+        1_000_000_000
+    )
+
+
 # Valid vLLM max_lora_rank values (from vllm/config/lora.py)
 # TODO: on newer vLLM, can import via `get_args(vllm.config.lora.MaxLoRARanks)`
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
@@ -150,20 +170,6 @@ class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     router_policy: Annotated[
         str, Field(description="Routing policy for the vllm-router (e.g. 'consistent_hash', 'round_robin').")
     ] = "consistent_hash"
-
-
-class KVCacheOffloadConfig(BaseModel):
-    """CPU KV cache offloading for disaggregated serving.
-
-    When configured, both prefill and decode nodes use
-    MultiConnector (NixlConnector + OffloadingConnector).
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    cpu_bytes: Annotated[int, Field(ge=0, description="CPU bytes available for KV cache offloading per worker.")] = (
-        1_000_000_000
-    )
 
 
 class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
@@ -213,11 +219,6 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
         dict[str, str],
         Field(description="Extra environment variables exported only on decode nodes."),
     ] = {}
-
-    kv_cache_offload: Annotated[
-        KVCacheOffloadConfig | None,
-        Field(description="CPU KV cache offload config for prefill nodes. None = disabled (NixlConnector only)."),
-    ] = None
 
     @property
     def num_nodes(self) -> int:
@@ -383,10 +384,28 @@ class InferenceConfig(BaseConfig):
         WeightBroadcastConfig()
     )
 
+    kv_cache_offload: Annotated[
+        KVCacheOffloadConfig | None,
+        Field(
+            description=(
+                "CPU KV cache offload config for inference workers. Standard inference uses vLLM's "
+                "OffloadingConnector. Disaggregated P/D deployments combine it with NIXL through "
+                "MultiConnector in the SLURM launcher."
+            ),
+        ),
+    ] = None
+
     enable_return_routed_experts: Annotated[
         bool,
         Field(
             description="Whether to enable return routed experts. Passed to vLLM as `--enable-return-routed-experts`",
+        ),
+    ] = False
+
+    enable_fp32_lm_head: Annotated[
+        bool,
+        Field(
+            description="Run the lm_head projection in fp32 via a native bf16xbf16 -> fp32 GEMM (`torch.mm` with `out_dtype=torch.float32`). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's `--enable-fp32-lm-head`. Implemented as a monkey-patch over vLLM's LogitsProcessor, activated by setting `additional_config[\"fp32_lm_head\"] = True` on the vLLM config.",
         ),
     ] = False
 
@@ -429,6 +448,16 @@ class InferenceConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_kv_cache_offload(self):
+        if self.kv_cache_offload is not None:
+            if self.enable_prefix_caching is False:
+                raise ValueError("KV cache offloading requires inference.enable_prefix_caching to be true.")
+            if "enable_prefix_caching" not in self.model_fields_set:
+                self.enable_prefix_caching = True
+
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_disaggregated(self):
         """Auto-configure inference for disaggregated P/D: enable EP and compute DP."""
         if self.deployment.type == "disaggregated":
@@ -450,10 +479,9 @@ class InferenceConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_slurm_template(self):
         if self.slurm is not None and self.slurm.template_path is None:
-            import prime_rl
-
-            templates_dir = Path(prime_rl.__file__).parent / "templates"
-            self.slurm.template_path = templates_dir / "inference.sbatch.j2"
+            templates_dir = find_package_resource("templates")
+            if templates_dir is not None:
+                self.slurm.template_path = templates_dir / "inference.sbatch.j2"
         return self
 
     @model_validator(mode="after")
@@ -500,6 +528,7 @@ class InferenceConfig(BaseConfig):
         to_vllm = {
             "server.host": "host",
             "server.port": "port",
+            "server.liveness_timeout_seconds": "liveness_timeout_seconds",
             "model.name": "model",
             "model.dtype": "dtype",
             "model.max_model_len": "max_model_len",
@@ -535,6 +564,26 @@ class InferenceConfig(BaseConfig):
 
         # Set `logprobs_mode` to `processed_logprobs` by default
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")
+
+        if self.kv_cache_offload is not None:
+            rsetattr(
+                namespace,
+                "kv_transfer_config",
+                {
+                    "kv_connector": "OffloadingConnector",
+                    "kv_role": "kv_both",
+                    "kv_connector_extra_config": {
+                        "cpu_bytes_to_use": int(self.kv_cache_offload.cpu_bytes),
+                    },
+                },
+            )
+
+        # Pass prime-rl-specific flags through vLLM's additional_config dict;
+        # workers read these via get_current_vllm_config().additional_config.
+        if self.enable_fp32_lm_head:
+            existing = getattr(namespace, "additional_config", None) or {}
+            existing["fp32_lm_head"] = True
+            rsetattr(namespace, "additional_config", existing)
 
         # Remove chat_template if not set (vLLM doesn't accept None)
         if namespace.chat_template is None:

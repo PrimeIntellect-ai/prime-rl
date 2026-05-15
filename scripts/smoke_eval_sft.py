@@ -16,18 +16,15 @@ import argparse
 import atexit
 import json
 import os
-import signal
 import subprocess
-import sys
 import time
+import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
-import tomllib
 from openai import OpenAI
-
 
 DEFAULT_PROMPT_PATH = Path(__file__).with_name("smoke_eval_sft_prompts.json")
 DEFAULT_OUTPUT_ROOT = Path("outputs/smoke_eval_sft")
@@ -350,9 +347,7 @@ def main() -> None:
 
     base_model = args.base_model or infer_base_model(ckpt_dir)
     if base_model is None:
-        raise ValueError(
-            "Could not infer base model from checkpoint config. Pass --base-model explicitly."
-        )
+        raise ValueError("Could not infer base model from checkpoint config. Pass --base-model explicitly.")
 
     enforce_eager = args.enforce_eager and not args.allow_compile
 

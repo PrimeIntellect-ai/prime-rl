@@ -1,4 +1,5 @@
 import math
+import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -11,12 +12,12 @@ from prime_rl.configs.shared import (
     HeartbeatConfig,
     LogConfig,
     PrimeMonitorConfig,
+    RendererConfig,
     TransportConfig,
     WandbWithExtrasConfig,
 )
 from prime_rl.configs.trainer import TokenizerConfig
 from prime_rl.utils.config import BaseConfig
-from prime_rl.utils.logger import get_logger
 
 
 class OptimizerConfig(BaseConfig):
@@ -148,9 +149,11 @@ class TrainSamplingConfig(BaseConfig):
     @classmethod
     def _deprecate_max_tokens(cls, data: Any) -> Any:
         if isinstance(data, dict) and "max_tokens" in data and "max_completion_tokens" not in data:
-            get_logger().warning(
+            warnings.warn(
                 "'max_tokens' is deprecated, use 'max_completion_tokens' instead. "
-                "Auto-translating for now, but this will be removed in a future release."
+                "Auto-translating for now, but this will be removed in a future release.",
+                FutureWarning,
+                stacklevel=2,
             )
         return data
 
@@ -247,9 +250,11 @@ class EvalSamplingConfig(BaseConfig):
     @classmethod
     def _deprecate_max_tokens(cls, data: Any) -> Any:
         if isinstance(data, dict) and "max_tokens" in data and "max_completion_tokens" not in data:
-            get_logger().warning(
+            warnings.warn(
                 "'max_tokens' is deprecated, use 'max_completion_tokens' instead. "
-                "Auto-translating for now, but this will be removed in a future release."
+                "Auto-translating for now, but this will be removed in a future release.",
+                FutureWarning,
+                stacklevel=2,
             )
         return data
 
@@ -324,6 +329,14 @@ class EnvConfig(BaseConfig):
         ),
     ] = -1
 
+    timeout: Annotated[
+        float | None,
+        Field(
+            validation_alias=AliasChoices("timeout", "timeout_seconds"),
+            description="Per-rollout wall-clock timeout in seconds. Set to None (default) to disable.",
+        ),
+    ] = None
+
     @property
     def stripped_id(self) -> str:
         """Environment ID without the @version suffix."""
@@ -344,6 +357,12 @@ class EnvConfig(BaseConfig):
     @model_validator(mode="after")
     def resolve_max_total_completion_tokens(self):
         self.extra_env_kwargs["max_total_completion_tokens"] = self.max_total_completion_tokens
+        return self
+
+    @model_validator(mode="after")
+    def resolve_timeout(self):
+        if self.timeout is not None:
+            self.extra_env_kwargs["timeout_seconds"] = self.timeout
         return self
 
 
@@ -670,22 +689,70 @@ class BufferConfig(BaseConfig):
         return self
 
 
+class TokensLengthPenaltyConfig(BaseModel):
+    """Length penalty by weighted token cost.
+
+    Effective cost = completion_weight * model_completion_tokens
+                   + tool_response_weight * tool_response_tokens.
+
+    Tool-response tokens are read from the rollout's harness metric
+    `*_total_tool_response_tokens` (e.g. `rlm_total_tool_response_tokens`); 0 if absent —
+    so for envs without tool accounting, only the completion term contributes regardless of weight.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["tokens"] = "tokens"
+    completion_weight: Annotated[
+        float,
+        Field(
+            ge=0,
+            allow_inf_nan=False,
+            description="Weight on model completion tokens. Finite and non-negative.",
+        ),
+    ] = 1.0
+    tool_response_weight: Annotated[
+        float,
+        Field(
+            ge=0,
+            allow_inf_nan=False,
+            description="Weight on tool-response tokens. Finite and non-negative.",
+        ),
+    ] = 1.0
+
+
+class TurnsLengthPenaltyConfig(BaseModel):
+    """Length penalty by trajectory turn count."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["turns"] = "turns"
+
+
+LengthPenaltyConfig: TypeAlias = Annotated[
+    TokensLengthPenaltyConfig | TurnsLengthPenaltyConfig,
+    Field(discriminator="type"),
+]
+
+
 class DefaultAdvantageConfig(BaseModel):
     """Config for the default advantage."""
 
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["default"] = "default"
-    length_shaping: Annotated[
-        bool,
+    length_penalty: Annotated[
+        LengthPenaltyConfig | None,
         Field(
             description=(
-                "Enable correctness-gated length shaping. In mixed groups, shorter correct rollouts get "
-                "amplified advantage (up to 2x), longer correct rollouts are unchanged, incorrect untouched. "
-                "In all-correct groups, below-average-length rollouts get advantage in [0, 1], others get 0."
+                "Correctness-gated length penalty. `tokens` shapes by weighted token cost, "
+                "`turns` shapes by trajectory turn count, `None` disables shaping. In mixed "
+                "groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct "
+                "rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost "
+                "rollouts get advantage in [0, 1], others get 0."
             )
         ),
-    ] = False
+    ] = None
 
 
 class CustomAdvantageConfig(BaseModel):
@@ -921,6 +988,9 @@ class OrchestratorConfig(BaseConfig):
     # The tokenizer configuration
     tokenizer: TokenizerConfig = TokenizerConfig()
 
+    # The renderer configuration (only used when use_renderer=True)
+    renderer: RendererConfig = RendererConfig()
+
     # The optimizer configuration (per-run LR for multi-run training)
     optim: OptimizerConfig = OptimizerConfig()
 
@@ -944,6 +1014,17 @@ class OrchestratorConfig(BaseConfig):
             ),
         ),
     ] = None
+
+    # When True, trainer uses SFT loss instead of RL loss (per-run override for hosted multi-tenant training)
+    use_sft_loss: Annotated[
+        bool,
+        Field(
+            description=(
+                "When True, use SFT masked NLL loss instead of the trainer's configured RL loss. "
+                "Requires a teacher_rollout_model to be configured."
+            ),
+        ),
+    ] = False
 
     # The evaluation configuration
     eval: EvalConfig | None = None
@@ -1087,6 +1168,14 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = 8
 
+    max_error_reschedule_attempts: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="The group is dropped from the current step's batch once this many of its dispatch rounds have returned errored or empty rollouts (the trainer proceeds with the rollouts from other groups). Counts rounds, not individual rollouts: a non-group-scoring env that dispatches `rollouts_per_example` rollouts at once still only counts one round per failed batch. `None` means retry indefinitely (legacy behavior). Useful for unblocking single-example hangs in agent envs.",
+        ),
+    ] = None
+
     max_async_level: Annotated[
         int,
         Field(
@@ -1118,9 +1207,23 @@ class OrchestratorConfig(BaseConfig):
     use_token_client: Annotated[
         bool,
         Field(
-            description="Whether to use the token-in-token-out (TITO) client for training across all environments. WARNING: Only use this if your environment has a linear history and the chat template has the extension property (i.e. no tokens are ever removed or inserted by the chat template)"
+            description="Whether to use the token-in-token-out (TITO) client for training across all environments. "
+            "WARNING: Only use this if your environment has a linear history and the chat template has the extension "
+            "property (i.e. no tokens are ever removed or inserted by the chat template). Mutually exclusive with "
+            "``use_renderer``."
         ),
     ] = True
+
+    use_renderer: Annotated[
+        bool,
+        Field(
+            description="Whether to use the renderer client (client-side tokenization via the ``renderers`` package, "
+            "served by ``/v1/generate``). Mutually exclusive with ``use_token_client``. When True, the "
+            "``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) "
+            "applies; when False those fields must be left at their defaults. Not supported for VLMs — "
+            "VLMs must use the token client (TITO) so image preprocessing and chat templating stay server-side."
+        ),
+    ] = False
 
     env_install_prerelease: Annotated[
         bool,
@@ -1144,15 +1247,19 @@ class OrchestratorConfig(BaseConfig):
             train = data.setdefault("train", {})
             if isinstance(train, dict):
                 if "env" in data:
-                    get_logger().warning(
+                    warnings.warn(
                         "'[[orchestrator.env]]' is deprecated, use '[[orchestrator.train.env]]' instead. "
-                        "Auto-translating for now, but this will be removed in a future release."
+                        "Auto-translating for now, but this will be removed in a future release.",
+                        FutureWarning,
+                        stacklevel=2,
                     )
                     train.setdefault("env", data.pop("env"))
                 if "sampling" in data:
-                    get_logger().warning(
+                    warnings.warn(
                         "'[orchestrator.sampling]' is deprecated, use '[orchestrator.train.sampling]' instead. "
-                        "Auto-translating for now, but this will be removed in a future release."
+                        "Auto-translating for now, but this will be removed in a future release.",
+                        FutureWarning,
+                        stacklevel=2,
                     )
                     train.setdefault("sampling", data.pop("sampling"))
         return data
@@ -1170,6 +1277,90 @@ class OrchestratorConfig(BaseConfig):
         types = [f.type for f in self.filters]
         if len(types) != len(set(types)):
             raise ValueError(f"Duplicate filter types: {types}. Each filter type may only appear once.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_sft_distill_mode(self):
+        """Enforce the SFT hard distill invariants that involve only orchestrator fields.
+
+        Runs at ``OrchestratorConfig`` level so hosted deployments (which load this
+        config standalone via the ``orchestrator`` entrypoint) get the same guarantees
+        as the combined ``rl`` entrypoint.
+        """
+        has_teacher = self.teacher_rollout_model is not None
+        if self.use_sft_loss and not has_teacher:
+            raise ValueError(
+                "orchestrator.use_sft_loss = true requires orchestrator.teacher_rollout_model to be configured."
+            )
+        if has_teacher and not self.use_sft_loss:
+            raise ValueError("orchestrator.teacher_rollout_model requires orchestrator.use_sft_loss = true.")
+        if has_teacher and self.use_token_client:
+            raise ValueError(
+                "orchestrator.use_token_client must be false when orchestrator.teacher_rollout_model is configured."
+            )
+        if has_teacher and self.use_renderer:
+            raise ValueError(
+                "orchestrator.use_renderer must be false when orchestrator.teacher_rollout_model is configured "
+                "(external rollout uses MITO)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_client_mode(self):
+        """The two client toggles select among three exclusive modes:
+
+        - ``use_token_client=True``  + ``use_renderer=False`` → TITO  (default)
+        - ``use_token_client=False`` + ``use_renderer=True``  → renderer
+        - ``use_token_client=False`` + ``use_renderer=False`` → MITO
+
+        Both True is invalid: TITO and renderer are different wire protocols
+        (server-side templating vs client-side tokenization).
+        """
+        if self.use_token_client and self.use_renderer:
+            raise ValueError(
+                "orchestrator.use_token_client and orchestrator.use_renderer are mutually exclusive. "
+                "Pick one: token client (TITO, server-side templating) or renderer client (client-side "
+                "tokenization)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_renderer_vs_vlm(self):
+        """The renderer client takes plain message dicts and tokenizes
+        them client-side. VLMs need server-side image preprocessing and
+        chat templating, so they must use the token client (TITO) — fail
+        loudly when both are set."""
+        if self.use_renderer and self.model.vlm is not None:
+            raise ValueError(
+                "orchestrator.use_renderer is not supported for VLMs. Use the token client "
+                "(``use_token_client=true``, the default) so image preprocessing and chat "
+                "templating stay on the inference server."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_renderer_args(self):
+        """``[orchestrator.renderer]`` knobs are only meaningful when
+        ``use_renderer=True``. Reject otherwise so callers don't silently
+        pass them and wonder why they're ignored."""
+        if self.use_renderer:
+            return self
+
+        renderer_args_set = []
+        if self.renderer.name != "auto":
+            renderer_args_set.append(f"renderer.name={self.renderer.name!r}")
+        if self.renderer.tool_parser is not None:
+            renderer_args_set.append(f"renderer.tool_parser={self.renderer.tool_parser!r}")
+        if self.renderer.reasoning_parser is not None:
+            renderer_args_set.append(f"renderer.reasoning_parser={self.renderer.reasoning_parser!r}")
+        if self.renderer.pool_size is not None:
+            renderer_args_set.append(f"renderer.pool_size={self.renderer.pool_size!r}")
+
+        if renderer_args_set:
+            raise ValueError(
+                "Renderer-specific args set without orchestrator.use_renderer=True: "
+                f"{', '.join(renderer_args_set)}. Either enable the renderer client or remove these knobs."
+            )
         return self
 
     @model_validator(mode="after")

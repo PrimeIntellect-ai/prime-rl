@@ -7,10 +7,16 @@ from prime_rl.baselines.provision import DP_COORDINATOR_STARTUP_TIMEOUT, Inferen
 def test_external_provisioner_uses_configured_wait_timeout(monkeypatch, tmp_path: Path):
     seen = {}
 
-    def fake_wait_for_endpoint(base_url: str, api_key_var: str, timeout_s: float) -> None:
+    def fake_wait_for_endpoint(
+        base_url: str,
+        api_key_var: str,
+        timeout_s: float,
+        health_check: str = "models",
+    ) -> None:
         seen["base_url"] = base_url
         seen["api_key_var"] = api_key_var
         seen["timeout_s"] = timeout_s
+        seen["health_check"] = health_check
 
     monkeypatch.setattr("prime_rl.baselines.provision.wait_for_endpoint", fake_wait_for_endpoint)
     config = BaselineConfig(
@@ -29,6 +35,7 @@ def test_external_provisioner_uses_configured_wait_timeout(monkeypatch, tmp_path
         "base_url": "http://127.0.0.1:8000/v1",
         "api_key_var": "VLLM_API_KEY",
         "timeout_s": 123.0,
+        "health_check": "models",
     }
 
 

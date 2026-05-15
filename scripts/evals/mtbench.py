@@ -27,7 +27,6 @@ import httpx
 from ._judge import Judge, JudgeCall
 from ._server import PhaseHandle, complete_batch, infer_base_model, load_sft_tokenizer, paired_run, resolve_path_args
 
-
 MTBENCH_CACHE_ROOT = Path("outputs/evals/_cache/mtbench")
 QUESTION_URL = "https://raw.githubusercontent.com/lm-sys/FastChat/main/fastchat/llm_judge/data/mt_bench/question.jsonl"
 JUDGE_PROMPTS_URL = "https://raw.githubusercontent.com/lm-sys/FastChat/main/fastchat/llm_judge/data/judge_prompts.jsonl"
@@ -82,8 +81,12 @@ def load_references(cache_root: Path = MTBENCH_CACHE_ROOT) -> dict[int, list[str
 
 
 def run_rollouts_batched(
-    handle: PhaseHandle, turns_list: list[list[str]],
-    *, max_tokens: int = 1024, temperature: float = 0.7, top_p: float = 1.0,
+    handle: PhaseHandle,
+    turns_list: list[list[str]],
+    *,
+    max_tokens: int = 1024,
+    temperature: float = 0.7,
+    top_p: float = 1.0,
     max_concurrency: int = 64,
 ) -> list[list[str]]:
     """Batched 2-turn (or N-turn) rollouts. Fires all turn-k prompts concurrently,
@@ -106,14 +109,17 @@ def run_rollouts_batched(
     for t_idx in range(n_turns):
         for i in range(n):
             conv_messages[i].append({"role": "user", "content": turns_list[i][t_idx]})
-        print(f"[mtbench/{handle.phase}] turn-{t_idx+1} batch N={n}...", flush=True)
+        print(f"[mtbench/{handle.phase}] turn-{t_idx + 1} batch N={n}...", flush=True)
         t0 = time.time()
         turn_out = complete_batch(
-            handle, conv_messages,
-            max_tokens=max_tokens, temperature=temperature, top_p=top_p,
+            handle,
+            conv_messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
             max_concurrency=max_concurrency,
         )
-        print(f"[mtbench/{handle.phase}] turn-{t_idx+1} done in {time.time()-t0:.1f}s", flush=True)
+        print(f"[mtbench/{handle.phase}] turn-{t_idx + 1} done in {time.time() - t0:.1f}s", flush=True)
         for i, (text, _) in enumerate(turn_out):
             conv_messages[i].append({"role": "assistant", "content": text})
             responses[i].append(text)
@@ -134,13 +140,20 @@ def _parse_rating(text: str) -> float | None:
 
 
 def _build_judge_call(
-    template: dict, *,
-    question_1: str, answer_1: str, question_2: str, answer_2: str,
-    ref_answer_1: str | None = None, ref_answer_2: str | None = None,
+    template: dict,
+    *,
+    question_1: str,
+    answer_1: str,
+    question_2: str,
+    answer_2: str,
+    ref_answer_1: str | None = None,
+    ref_answer_2: str | None = None,
 ) -> JudgeCall:
     fill: dict[str, str] = {
-        "question_1": question_1, "answer_1": answer_1,
-        "question_2": question_2, "answer_2": answer_2,
+        "question_1": question_1,
+        "answer_1": answer_1,
+        "question_2": question_2,
+        "answer_2": answer_2,
     }
     if ref_answer_1 is not None:
         fill["ref_answer_1"] = ref_answer_1
@@ -149,7 +162,8 @@ def _build_judge_call(
     return JudgeCall(
         prompt=template["prompt_template"].format(**fill),
         system=template.get("system_prompt"),
-        max_tokens=1024, temperature=0.0,
+        max_tokens=1024,
+        temperature=0.0,
     )
 
 
@@ -164,13 +178,20 @@ def _category_template(templates: dict[str, dict], category: str) -> dict:
 
 
 def _generate_rollouts(
-    handle: PhaseHandle, questions: list[dict],
-    *, max_tokens: int, temperature: float, max_concurrency: int = 64,
+    handle: PhaseHandle,
+    questions: list[dict],
+    *,
+    max_tokens: int,
+    temperature: float,
+    max_concurrency: int = 64,
 ) -> list[dict[str, Any]]:
     turns_list = [q["turns"] for q in questions]
     all_responses = run_rollouts_batched(
-        handle, turns_list,
-        max_tokens=max_tokens, temperature=temperature, max_concurrency=max_concurrency,
+        handle,
+        turns_list,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        max_concurrency=max_concurrency,
     )
     return [
         {
@@ -184,8 +205,11 @@ def _generate_rollouts(
 
 
 def _judge_rollouts(
-    rollouts: list[dict], *,
-    judge: Judge, templates: dict, references: dict[int, list[str]],
+    rollouts: list[dict],
+    *,
+    judge: Judge,
+    templates: dict,
+    references: dict[int, list[str]],
     max_concurrency: int = 16,
 ) -> list[dict[str, Any]]:
     """Judge all rollouts concurrently (AsyncAnthropic + semaphore)."""
@@ -198,23 +222,29 @@ def _judge_rollouts(
         template = _category_template(templates, r["category"])
         ref_turns = references.get(r["question_id"])
         ref_1 = ref_turns[0] if ref_turns and r["category"] in NEED_REF_CATS else None
-        ref_2 = (
-            ref_turns[1] if ref_turns and r["category"] in NEED_REF_CATS and len(ref_turns) > 1 else None
+        ref_2 = ref_turns[1] if ref_turns and r["category"] in NEED_REF_CATS and len(ref_turns) > 1 else None
+        calls.append(
+            _build_judge_call(
+                template,
+                question_1=r["turns"][0],
+                answer_1=r["answers"][0],
+                question_2=r["turns"][1],
+                answer_2=r["answers"][1],
+                ref_answer_1=ref_1,
+                ref_answer_2=ref_2,
+            )
         )
-        calls.append(_build_judge_call(
-            template,
-            question_1=r["turns"][0], answer_1=r["answers"][0],
-            question_2=r["turns"][1], answer_2=r["answers"][1],
-            ref_answer_1=ref_1, ref_answer_2=ref_2,
-        ))
 
     # Only send valid calls to the batch; slot in None responses for skipped.
     valid_idxs = [i for i, c in enumerate(calls) if c is not None]
     valid_calls = [calls[i] for i in valid_idxs]
-    print(f"[mtbench/judge] firing {len(valid_calls)} concurrent judge calls (max_concurrency={max_concurrency})", flush=True)
+    print(
+        f"[mtbench/judge] firing {len(valid_calls)} concurrent judge calls (max_concurrency={max_concurrency})",
+        flush=True,
+    )
     t0 = time.time()
     valid_responses = judge.call_batch(valid_calls, max_concurrency=max_concurrency) if valid_calls else []
-    print(f"[mtbench/judge] done in {time.time()-t0:.1f}s", flush=True)
+    print(f"[mtbench/judge] done in {time.time() - t0:.1f}s", flush=True)
 
     responses: list[Any] = [None] * len(rollouts)
     for i, resp in zip(valid_idxs, valid_responses):
@@ -277,23 +307,31 @@ def run(
 
     log_path = output_dir / "inference.log"
     with paired_run(
-        base_model=base, ckpt_dir=ckpt, sft_tokenizer=sft_tokenizer,
-        port=port, max_model_len=max_model_len, log_path=log_path,
+        base_model=base,
+        ckpt_dir=ckpt,
+        sft_tokenizer=sft_tokenizer,
+        port=port,
+        max_model_len=max_model_len,
+        log_path=log_path,
     ) as (enter_base, enter_ckpt):
         t0 = time.time()
 
         base_handle = enter_base()
         print(f"\n[mtbench] BASE rollouts (model_id={base_handle.model_id})\n", flush=True)
         base_rollouts = _generate_rollouts(
-            base_handle, questions,
-            max_tokens=max_gen_tokens, temperature=gen_temperature,
+            base_handle,
+            questions,
+            max_tokens=max_gen_tokens,
+            temperature=gen_temperature,
         )
 
         ckpt_handle = enter_ckpt()
-        print(f"\n[mtbench] CKPT rollouts\n", flush=True)
+        print("\n[mtbench] CKPT rollouts\n", flush=True)
         ckpt_rollouts = _generate_rollouts(
-            ckpt_handle, questions,
-            max_tokens=max_gen_tokens, temperature=gen_temperature,
+            ckpt_handle,
+            questions,
+            max_tokens=max_gen_tokens,
+            temperature=gen_temperature,
         )
         rollout_elapsed = time.time() - t0
 
@@ -325,13 +363,18 @@ def run(
     }
     (output_dir / "mtbench.json").write_text(json.dumps(summary, indent=2))
     print(f"\n[mtbench] wrote {output_dir}/mtbench.json", flush=True)
-    print(json.dumps({
-        "base_overall": base_agg["overall"],
-        "ckpt_overall": ckpt_agg["overall"],
-        "delta_overall": delta_overall,
-        "base_per_category": base_agg["per_category"],
-        "ckpt_per_category": ckpt_agg["per_category"],
-    }, indent=2))
+    print(
+        json.dumps(
+            {
+                "base_overall": base_agg["overall"],
+                "ckpt_overall": ckpt_agg["overall"],
+                "delta_overall": delta_overall,
+                "base_per_category": base_agg["per_category"],
+                "ckpt_per_category": ckpt_agg["per_category"],
+            },
+            indent=2,
+        )
+    )
     return summary
 
 

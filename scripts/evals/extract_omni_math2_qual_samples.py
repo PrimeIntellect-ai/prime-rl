@@ -50,7 +50,9 @@ def unique_append(selected: list[dict[str, Any]], row: dict[str, Any] | None) ->
 
 
 def pick_correct(rows: list[dict[str, Any]], n: int) -> list[dict[str, Any]]:
-    correct = sorted((row for row in rows if row.get("correct") is True), key=lambda row: safe_float(row.get("output_tokens")))
+    correct = sorted(
+        (row for row in rows if row.get("correct") is True), key=lambda row: safe_float(row.get("output_tokens"))
+    )
     if len(correct) <= n:
         return correct
     selected: list[dict[str, Any]] = []

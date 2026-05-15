@@ -76,9 +76,7 @@ def summarize_train_rollouts(run_root: Path, steps: set[int] | None) -> list[dic
             if r.get("reward") is not None and not bool(r.get("is_filtered", False))
         ]
         filtered = [
-            float(r["reward"])
-            for r in rollouts
-            if r.get("reward") is not None and bool(r.get("is_filtered", False))
+            float(r["reward"]) for r in rollouts if r.get("reward") is not None and bool(r.get("is_filtered", False))
         ]
         sidecar = step_dir / "train_filter_metrics.json"
         sidecar_metrics = json.loads(sidecar.read_text()) if sidecar.exists() else {}

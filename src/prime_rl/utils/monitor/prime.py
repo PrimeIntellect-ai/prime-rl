@@ -113,10 +113,12 @@ class PrimeMonitor(Monitor):
         output_dir: Path | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
         run_config: BaseConfig | None = None,
+        keep_full_history: bool = True,
     ):
         self.config = config
         self.logger = get_logger()
         self.history: list[dict[str, Any]] = []
+        self._keep_full_history = keep_full_history
         self.output_dir = output_dir
         self._registered = False
         self._finalized = False
@@ -268,7 +270,10 @@ class PrimeMonitor(Monitor):
         self.logger.info(f"Platform run {self.run_id} marked as {status_label}")
 
     def log(self, metrics: dict[str, Any], step: int) -> None:
-        self.history.append(metrics)
+        if self._keep_full_history:
+            self.history.append(metrics)
+        else:
+            self.history = [metrics]
         if not self.is_master:
             return
         if not self.enabled:
@@ -488,10 +493,6 @@ class PrimeMonitor(Monitor):
         return False
 
     def log_eval_samples(self, rollouts: list[vf.RolloutOutput], env_name: str, step: int) -> None:
-        pass
-
-    def log_final_samples(self) -> None:
-        """Log final samples (no-op - samples are logged per-step only)."""
         pass
 
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:

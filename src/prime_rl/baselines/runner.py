@@ -155,11 +155,7 @@ def _example_id(example: dict[str, Any]) -> str:
 
 
 def _expected_rollout_keys(examples: Sequence[dict[str, Any]], rollouts_per_example: int) -> set[RolloutKey]:
-    return {
-        (_example_id(example), trial_index)
-        for example in examples
-        for trial_index in range(rollouts_per_example)
-    }
+    return {(_example_id(example), trial_index) for example in examples for trial_index in range(rollouts_per_example)}
 
 
 def _rollout_key(trial_index: int, output: Any) -> RolloutKey | None:
@@ -246,8 +242,7 @@ async def _run_rollouts(
     resumed_outputs = _read_partial_outputs(partial_path, expected_keys) if config.resume_partial else {}
     if resumed_outputs:
         print(
-            f"resuming {len(resumed_outputs)}/{len(expected_keys)} completed baseline rollouts "
-            f"from {partial_path}",
+            f"resuming {len(resumed_outputs)}/{len(expected_keys)} completed baseline rollouts from {partial_path}",
             flush=True,
         )
     client = _make_client_config(config, endpoint, config.max_concurrency)

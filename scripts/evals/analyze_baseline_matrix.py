@@ -200,11 +200,7 @@ def looks_looped(text: str) -> bool:
     if not text:
         return False
 
-    lines = [
-        re.sub(r"\s+", " ", line.strip().lower())
-        for line in text.splitlines()
-        if len(line.strip()) >= 24
-    ]
+    lines = [re.sub(r"\s+", " ", line.strip().lower()) for line in text.splitlines() if len(line.strip()) >= 24]
     if lines and Counter(lines).most_common(1)[0][1] >= 3:
         return True
 
@@ -268,17 +264,17 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
     total_ms = [safe_float(row.get("total_ms")) for row in rows]
 
     complete_tag_flags = [bool(stats["answer_tag_complete"]) for stats in tag_rows]
-    tag_start_pcts = [safe_float(stats["answer_tag_start_pct"]) for stats in tag_rows if stats["answer_tag_start_pct"] is not None]
-    tag_end_pcts = [safe_float(stats["answer_tag_end_pct"]) for stats in tag_rows if stats["answer_tag_end_pct"] is not None]
+    tag_start_pcts = [
+        safe_float(stats["answer_tag_start_pct"]) for stats in tag_rows if stats["answer_tag_start_pct"] is not None
+    ]
+    tag_end_pcts = [
+        safe_float(stats["answer_tag_end_pct"]) for stats in tag_rows if stats["answer_tag_end_pct"] is not None
+    ]
     tag_counts = [safe_float(stats["answer_tag_count"]) for stats in tag_rows]
     tag_text_lens = [safe_float(stats["answer_tag_text_len"]) for stats in tag_rows if stats["answer_tag_complete"]]
     multi_tag_flags = [safe_float(stats["answer_tag_open_count"]) > 1 for stats in tag_rows]
 
-    trunc_complete_tags = [
-        complete
-        for row, complete in zip(rows, complete_tag_flags)
-        if id(row) in trunc_indices
-    ]
+    trunc_complete_tags = [complete for row, complete in zip(rows, complete_tag_flags) if id(row) in trunc_indices]
     trunc_tag_start_pcts = [
         safe_float(stats["answer_tag_start_pct"])
         for row, stats in zip(rows, tag_rows)
@@ -300,9 +296,7 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
         return frac(sum(1 for row in group if row.get("correct") is True), len(group))
 
     tokens_per_s = [
-        1000.0 * output / gen
-        for output, gen in zip(output_tokens, generation_ms)
-        if output > 0 and gen > 0
+        1000.0 * output / gen for output, gen in zip(output_tokens, generation_ms) if output > 0 and gen > 0
     ]
 
     row: dict[str, Any] = {
@@ -319,7 +313,9 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
         "sample_accuracy": safe_float(summary.get("mean_sample_accuracy", frac(len(correct), len(rows)))),
         "single_shot_accuracy": safe_float(summary.get("single_shot_accuracy")),
         "correct_rows": len(correct),
-        "error_rate": safe_float(summary.get("error_rate", frac(sum(1 for r in rows if r.get("error") not in (None, "")), len(rows)))),
+        "error_rate": safe_float(
+            summary.get("error_rate", frac(sum(1 for r in rows if r.get("error") not in (None, "")), len(rows)))
+        ),
         "record_error_rate": frac(sum(1 for r in rows if r.get("error") not in (None, "")), len(rows)),
         "truncation_rate": frac(len(trunc_rows), len(rows)),
         "accuracy_truncated": accuracy(trunc_rows),
@@ -328,9 +324,13 @@ def summarize_run(run_dir: Path) -> dict[str, Any]:
         "empty_response_rate": frac(sum(empty_flags), len(rows)),
         "scaffold_leak_rate": frac(sum(scaffold_flags), len(rows)),
         "loop_rate": frac(sum(loop_flags), len(rows)),
-        "loop_rate_truncated": frac(sum(1 for row, flag in zip(rows, loop_flags) if id(row) in trunc_indices and flag), len(trunc_rows)),
+        "loop_rate_truncated": frac(
+            sum(1 for row, flag in zip(rows, loop_flags) if id(row) in trunc_indices and flag), len(trunc_rows)
+        ),
         "multi_answer_tag_rate": frac(sum(multi_tag_flags), len(rows)),
-        "multi_answer_tag_rate_truncated": frac(sum(1 for row, flag in zip(rows, multi_tag_flags) if id(row) in trunc_indices and flag), len(trunc_rows)),
+        "multi_answer_tag_rate_truncated": frac(
+            sum(1 for row, flag in zip(rows, multi_tag_flags) if id(row) in trunc_indices and flag), len(trunc_rows)
+        ),
         "answer_tag_complete_rate": frac(sum(complete_tag_flags), len(rows)),
         "answer_tag_complete_rate_truncated": frac(sum(trunc_complete_tags), len(trunc_complete_tags)),
         "answer_tag_missing_when_truncated": 1.0 - frac(sum(trunc_complete_tags), len(trunc_complete_tags)),
@@ -479,18 +479,22 @@ def write_pass_curve(rows: list[dict[str, Any]], task: str, out: Path, colors: d
         ]
         color = colors[row["model_short"]]
         point_s = " ".join(f"{x:.1f},{y:.1f}" for x, y in points)
-        dash = " stroke-dasharray=\"5 4\"" if row["kind"] == "base" else ""
+        dash = ' stroke-dasharray="5 4"' if row["kind"] == "base" else ""
         parts.append(f'<polyline points="{point_s}" fill="none" stroke="{color}" stroke-width="2.4"{dash}/>')
         for x, y in points:
-            parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4.1" fill="{color}" stroke="#ffffff" stroke-width="1"/>')
+            parts.append(
+                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4.1" fill="{color}" stroke="#ffffff" stroke-width="1"/>'
+            )
 
     legend_x, legend_y = 825, 92
     parts.append(f'<text class="label" x="{legend_x}" y="{legend_y - 18}">Models</text>')
     for idx, row in enumerate(sorted(task_rows, key=run_sort_key)):
         y = legend_y + idx * 26
         color = colors[row["model_short"]]
-        dash = " stroke-dasharray=\"5 4\"" if row["kind"] == "base" else ""
-        parts.append(f'<line x1="{legend_x}" y1="{y}" x2="{legend_x + 24}" y2="{y}" stroke="{color}" stroke-width="3"{dash}/>')
+        dash = ' stroke-dasharray="5 4"' if row["kind"] == "base" else ""
+        parts.append(
+            f'<line x1="{legend_x}" y1="{y}" x2="{legend_x + 24}" y2="{y}" stroke="{color}" stroke-width="3"{dash}/>'
+        )
         parts.append(f'<text class="small" x="{legend_x + 32}" y="{y + 4}">{esc(row["model_short"])}</text>')
 
     out.write_text(svg_doc(width, height, "\n".join(parts)))
@@ -518,12 +522,18 @@ def write_accuracy_cost(rows: list[dict[str, Any]], out: Path, colors: dict[str,
         color = colors[row["model_short"]]
         ring = 5 + 12 * safe_float(row["truncation_rate"])
         if row["task"] == "MCQ":
-            parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{ring:.1f}" fill="none" stroke="#1f2933" stroke-opacity="0.35" stroke-width="1.3"/>')
+            parts.append(
+                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{ring:.1f}" fill="none" stroke="#1f2933" stroke-opacity="0.35" stroke-width="1.3"/>'
+            )
             parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5.1" fill="{color}" stroke="#fff" stroke-width="1"/>')
         else:
             s = 10.2
-            parts.append(f'<rect x="{x - ring:.1f}" y="{y - ring:.1f}" width="{2 * ring:.1f}" height="{2 * ring:.1f}" fill="none" stroke="#1f2933" stroke-opacity="0.35" stroke-width="1.3"/>')
-            parts.append(f'<rect x="{x - s / 2:.1f}" y="{y - s / 2:.1f}" width="{s:.1f}" height="{s:.1f}" fill="{color}" stroke="#fff" stroke-width="1"/>')
+            parts.append(
+                f'<rect x="{x - ring:.1f}" y="{y - ring:.1f}" width="{2 * ring:.1f}" height="{2 * ring:.1f}" fill="none" stroke="#1f2933" stroke-opacity="0.35" stroke-width="1.3"/>'
+            )
+            parts.append(
+                f'<rect x="{x - s / 2:.1f}" y="{y - s / 2:.1f}" width="{s:.1f}" height="{s:.1f}" fill="{color}" stroke="#fff" stroke-width="1"/>'
+            )
         parts.append(f'<text class="small" x="{x + 8:.1f}" y="{y - 8:.1f}">{esc(short_code(row))}</text>')
 
     legend_x, legend_y = 875, 100
@@ -532,7 +542,9 @@ def write_accuracy_cost(rows: list[dict[str, Any]], out: Path, colors: dict[str,
     parts.append(f'<text class="small" x="{legend_x + 24}" y="{legend_y + 4}">MCQ</text>')
     parts.append(f'<rect x="{legend_x + 2}" y="{legend_y + 22}" width="11" height="11" fill="#52616b"/>')
     parts.append(f'<text class="small" x="{legend_x + 24}" y="{legend_y + 32}">Open-ended</text>')
-    parts.append(f'<circle cx="{legend_x + 8}" cy="{legend_y + 61}" r="12" fill="none" stroke="#1f2933" stroke-opacity="0.35"/>')
+    parts.append(
+        f'<circle cx="{legend_x + 8}" cy="{legend_y + 61}" r="12" fill="none" stroke="#1f2933" stroke-opacity="0.35"/>'
+    )
     parts.append(f'<text class="small" x="{legend_x + 24}" y="{legend_y + 65}">ring size ∝ truncation</text>')
     out.write_text(svg_doc(width, height, "\n".join(parts)))
 
@@ -569,8 +581,12 @@ def write_truncation_gap(rows: list[dict[str, Any]], out: Path) -> None:
         x_t = scale(safe_float(a_t), x_domain, (box.x, box.x + box.w))
         x_n = scale(safe_float(a_n), x_domain, (box.x, box.x + box.w))
         color = "#1f77b4" if row["family"] == "Qwen3.5" else "#d62728"
-        parts.append(f'<text class="small" x="{box.x - 10}" y="{y + 4}" text-anchor="end">{esc(short_code(row))}</text>')
-        parts.append(f'<line x1="{x_t}" y1="{y}" x2="{x_n}" y2="{y}" stroke="{color}" stroke-opacity="0.55" stroke-width="2"/>')
+        parts.append(
+            f'<text class="small" x="{box.x - 10}" y="{y + 4}" text-anchor="end">{esc(short_code(row))}</text>'
+        )
+        parts.append(
+            f'<line x1="{x_t}" y1="{y}" x2="{x_n}" y2="{y}" stroke="{color}" stroke-opacity="0.55" stroke-width="2"/>'
+        )
         parts.append(f'<circle cx="{x_t}" cy="{y}" r="4.2" fill="#fbfcfd" stroke="{color}" stroke-width="2"/>')
         parts.append(f'<circle cx="{x_n}" cy="{y}" r="4.8" fill="{color}" stroke="#fff" stroke-width="1"/>')
     out.write_text(svg_doc(width, height, "\n".join(parts)))
@@ -600,8 +616,12 @@ def write_token_quantiles(rows: list[dict[str, Any]], out: Path) -> None:
         x50 = scale(p50, x_domain, (box.x, box.x + box.w))
         x90 = scale(p90, x_domain, (box.x, box.x + box.w))
         x99 = scale(p99, x_domain, (box.x, box.x + box.w))
-        parts.append(f'<text class="small" x="{box.x - 10}" y="{y + 4}" text-anchor="end">{esc(short_code(row))}</text>')
-        parts.append(f'<line x1="{x50}" y1="{y}" x2="{x99}" y2="{y}" stroke="{color}" stroke-opacity="0.58" stroke-width="3"/>')
+        parts.append(
+            f'<text class="small" x="{box.x - 10}" y="{y + 4}" text-anchor="end">{esc(short_code(row))}</text>'
+        )
+        parts.append(
+            f'<line x1="{x50}" y1="{y}" x2="{x99}" y2="{y}" stroke="{color}" stroke-opacity="0.58" stroke-width="3"/>'
+        )
         parts.append(f'<circle cx="{x50}" cy="{y}" r="3.5" fill="#fbfcfd" stroke="{color}" stroke-width="1.5"/>')
         parts.append(f'<circle cx="{x90}" cy="{y}" r="4.4" fill="{color}" stroke="#fff" stroke-width="1"/>')
         parts.append(f'<circle cx="{x99}" cy="{y}" r="3.5" fill="#fbfcfd" stroke="{color}" stroke-width="1.5"/>')
@@ -656,8 +676,12 @@ def write_pathology_heatmap(rows: list[dict[str, Any]], out: Path) -> None:
             value = safe_float(row.get(key))
             color = red_green(value)
             x = x0 + j * cell_w
-            parts.append(f'<rect x="{x}" y="{y}" width="{cell_w - 4}" height="{row_h - 4}" rx="3" fill="{color}" stroke="#ffffff"/>')
-            parts.append(f'<text class="small" x="{x + cell_w / 2 - 2}" y="{y + 17}" text-anchor="middle">{value:.2f}</text>')
+            parts.append(
+                f'<rect x="{x}" y="{y}" width="{cell_w - 4}" height="{row_h - 4}" rx="3" fill="{color}" stroke="#ffffff"/>'
+            )
+            parts.append(
+                f'<text class="small" x="{x + cell_w / 2 - 2}" y="{y + 17}" text-anchor="middle">{value:.2f}</text>'
+            )
     out.write_text(svg_doc(width, height, "\n".join(parts)))
 
 
@@ -683,7 +707,9 @@ def write_pass16_vs_trunc(rows: list[dict[str, Any]], out: Path, colors: dict[st
         if row["task"] == "MCQ":
             parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5.3" fill="{color}" stroke="#fff" stroke-width="1"/>')
         else:
-            parts.append(f'<rect x="{x - 5.1:.1f}" y="{y - 5.1:.1f}" width="10.2" height="10.2" fill="{color}" stroke="#fff" stroke-width="1"/>')
+            parts.append(
+                f'<rect x="{x - 5.1:.1f}" y="{y - 5.1:.1f}" width="10.2" height="10.2" fill="{color}" stroke="#fff" stroke-width="1"/>'
+            )
         parts.append(f'<text class="small" x="{x + 8:.1f}" y="{y - 8:.1f}">{esc(short_code(row))}</text>')
     out.write_text(svg_doc(width, height, "\n".join(parts)))
 
@@ -740,7 +766,9 @@ def write_pass16_cost_frontier(rows: list[dict[str, Any]], out: Path, colors: di
                 f"{scale(safe_float(row['pass_at_16']), y_domain, (box.y + box.h, box.y)):.1f}"
                 for row in frontier_points
             )
-            parts.append(f'<polyline points="{point_s}" fill="none" stroke="#111827" stroke-width="2.5" stroke-opacity="0.55"/>')
+            parts.append(
+                f'<polyline points="{point_s}" fill="none" stroke="#111827" stroke-width="2.5" stroke-opacity="0.55"/>'
+            )
         for row in sorted(task_rows, key=run_sort_key):
             x = scale(safe_float(row["output_tokens_mean"]), x_domain, (box.x, box.x + box.w))
             y = scale(safe_float(row["pass_at_16"]), y_domain, (box.y + box.h, box.y))
@@ -749,8 +777,12 @@ def write_pass16_cost_frontier(rows: list[dict[str, Any]], out: Path, colors: di
             r = 7.4 if is_frontier else 5.2
             stroke = "#111827" if is_frontier else "#ffffff"
             stroke_w = 2.0 if is_frontier else 1.0
-            parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r}" fill="{color}" stroke="{stroke}" stroke-width="{stroke_w}"/>')
-            parts.append(f'<text class="small" x="{x + 9:.1f}" y="{y - 8:.1f}">{esc(short_code(row).replace("/" + task, ""))}</text>')
+            parts.append(
+                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r}" fill="{color}" stroke="{stroke}" stroke-width="{stroke_w}"/>'
+            )
+            parts.append(
+                f'<text class="small" x="{x + 9:.1f}" y="{y - 8:.1f}">{esc(short_code(row).replace("/" + task, ""))}</text>'
+            )
     out.write_text(svg_doc(width, height, "\n".join(parts)))
 
 
@@ -821,7 +853,9 @@ def main() -> None:
     output_dir = args.output_dir or matrix_dir / "analysis"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    run_dirs = sorted(path.parent for path in matrix_dir.glob("*/summary.json") if (path.parent / "records.jsonl").exists())
+    run_dirs = sorted(
+        path.parent for path in matrix_dir.glob("*/summary.json") if (path.parent / "records.jsonl").exists()
+    )
     rows = sorted([summarize_run(run_dir) for run_dir in run_dirs], key=run_sort_key)
     colors = color_map(rows)
 

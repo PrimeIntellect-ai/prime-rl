@@ -104,8 +104,15 @@ def model_family(model: str) -> str:
 
 def model_size(model: str) -> float:
     sizes = {
-        "4B": 4.0, "E4B": 4.5, "9B": 9.0, "26B": 26.0,
-        "27B": 27.0, "31B": 31.0, "35B": 35.0, "7B": 7.0, "8B": 8.0,
+        "4B": 4.0,
+        "E4B": 4.5,
+        "9B": 9.0,
+        "26B": 26.0,
+        "27B": 27.0,
+        "31B": 31.0,
+        "35B": 35.0,
+        "7B": 7.0,
+        "8B": 8.0,
     }
     for marker, value in sizes.items():
         if marker in model:
@@ -219,7 +226,9 @@ def write_pass_curve(rows: list[dict[str, Any]], out: Path, colors: dict[str, st
             point_s = " ".join(f"{x:.1f},{y:.1f}" for x, y in points)
             parts.append(f'<polyline points="{point_s}" fill="none" stroke="{color}" stroke-width="2.2"/>')
         for x, y in points:
-            parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.8" fill="{color}" stroke="#ffffff" stroke-width="1"/>')
+            parts.append(
+                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.8" fill="{color}" stroke="#ffffff" stroke-width="1"/>'
+            )
 
     legend_x, legend_y = 785, 92
     parts.append(f'<text class="label" x="{legend_x}" y="{legend_y - 18}">Models</text>')
@@ -227,7 +236,9 @@ def write_pass_curve(rows: list[dict[str, Any]], out: Path, colors: dict[str, st
         y = legend_y + idx * 22
         label = model_label(row)
         color = colors[label]
-        parts.append(f'<line x1="{legend_x}" y1="{y}" x2="{legend_x + 22}" y2="{y}" stroke="{color}" stroke-width="3"/>')
+        parts.append(
+            f'<line x1="{legend_x}" y1="{y}" x2="{legend_x + 22}" y2="{y}" stroke="{color}" stroke-width="3"/>'
+        )
         parts.append(f'<text class="small" x="{legend_x + 30}" y="{y + 4}">{esc(label)}</text>')
 
     out.write_text(svg_doc(width, height, "\n".join(parts)))
@@ -255,7 +266,9 @@ def write_accuracy_cost(rows: list[dict[str, Any]], out: Path, colors: dict[str,
         label = model_label(row)
         color = colors[label]
         ring = 5 + 14 * safe_float(row["truncation_rate"])
-        parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{ring:.1f}" fill="none" stroke="#1f2933" stroke-opacity="0.35" stroke-width="1.3"/>')
+        parts.append(
+            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{ring:.1f}" fill="none" stroke="#1f2933" stroke-opacity="0.35" stroke-width="1.3"/>'
+        )
         parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5.1" fill="{color}" stroke="#fff" stroke-width="1"/>')
         parts.append(f'<text class="small" x="{x + 8:.1f}" y="{y - 8:.1f}">{esc(label)}</text>')
 
@@ -313,11 +326,15 @@ def write_truncation_gap(rows: list[dict[str, Any]], out: Path, colors: dict[str
         color = colors[label]
         parts.append(f'<text class="small" x="{box.x - 10}" y="{y + 4}" text-anchor="end">{esc(label)}</text>')
         if a_t in (None, "") or a_n in (None, ""):
-            parts.append(f'<circle cx="{scale(safe_float(row.get("sample_accuracy", 0)), x_domain, (box.x, box.x + box.w)):.1f}" cy="{y:.1f}" r="4.8" fill="{color}" stroke="#fff" stroke-width="1"/>')
+            parts.append(
+                f'<circle cx="{scale(safe_float(row.get("sample_accuracy", 0)), x_domain, (box.x, box.x + box.w)):.1f}" cy="{y:.1f}" r="4.8" fill="{color}" stroke="#fff" stroke-width="1"/>'
+            )
             continue
         x_t = scale(safe_float(a_t), x_domain, (box.x, box.x + box.w))
         x_n = scale(safe_float(a_n), x_domain, (box.x, box.x + box.w))
-        parts.append(f'<line x1="{x_t}" y1="{y}" x2="{x_n}" y2="{y}" stroke="{color}" stroke-opacity="0.55" stroke-width="2"/>')
+        parts.append(
+            f'<line x1="{x_t}" y1="{y}" x2="{x_n}" y2="{y}" stroke="{color}" stroke-opacity="0.55" stroke-width="2"/>'
+        )
         parts.append(f'<circle cx="{x_t}" cy="{y}" r="4.2" fill="#fbfcfd" stroke="{color}" stroke-width="2"/>')
         parts.append(f'<circle cx="{x_n}" cy="{y}" r="4.8" fill="{color}" stroke="#fff" stroke-width="1"/>')
 
@@ -352,7 +369,9 @@ def write_token_quantiles(rows: list[dict[str, Any]], out: Path, colors: dict[st
         x90 = scale(p90, x_domain, (box.x, box.x + box.w))
         x99 = scale(p99, x_domain, (box.x, box.x + box.w))
         parts.append(f'<text class="small" x="{box.x - 10}" y="{y + 4}" text-anchor="end">{esc(label)}</text>')
-        parts.append(f'<line x1="{x50}" y1="{y}" x2="{x99}" y2="{y}" stroke="{color}" stroke-opacity="0.58" stroke-width="3"/>')
+        parts.append(
+            f'<line x1="{x50}" y1="{y}" x2="{x99}" y2="{y}" stroke="{color}" stroke-opacity="0.58" stroke-width="3"/>'
+        )
         parts.append(f'<circle cx="{x50}" cy="{y}" r="3.5" fill="#fbfcfd" stroke="{color}" stroke-width="1.5"/>')
         parts.append(f'<circle cx="{x90}" cy="{y}" r="4.4" fill="{color}" stroke="#fff" stroke-width="1"/>')
         parts.append(f'<circle cx="{x99}" cy="{y}" r="3.5" fill="#fbfcfd" stroke="{color}" stroke-width="1.5"/>')
@@ -391,8 +410,12 @@ def write_pathology_heatmap(rows: list[dict[str, Any]], out: Path) -> None:
             value = safe_float(row.get(key))
             color = red_green(value)
             x = x0 + j * cell_w
-            parts.append(f'<rect x="{x}" y="{y}" width="{cell_w - 4}" height="{row_h - 4}" rx="3" fill="{color}" stroke="#ffffff"/>')
-            parts.append(f'<text class="small" x="{x + cell_w / 2 - 2}" y="{y + 17}" text-anchor="middle">{value:.2f}</text>')
+            parts.append(
+                f'<rect x="{x}" y="{y}" width="{cell_w - 4}" height="{row_h - 4}" rx="3" fill="{color}" stroke="#ffffff"/>'
+            )
+            parts.append(
+                f'<text class="small" x="{x + cell_w / 2 - 2}" y="{y + 17}" text-anchor="middle">{value:.2f}</text>'
+            )
 
     out.write_text(svg_doc(width, height, "\n".join(parts)))
 
@@ -443,7 +466,9 @@ def write_pass16_cost_frontier(rows: list[dict[str, Any]], out: Path, colors: di
             f"{scale(safe_float(row['pass_at_16']), y_domain, (box.y + box.h, box.y)):.1f}"
             for row in frontier_points
         )
-        parts.append(f'<polyline points="{point_s}" fill="none" stroke="#111827" stroke-width="2.5" stroke-opacity="0.55"/>')
+        parts.append(
+            f'<polyline points="{point_s}" fill="none" stroke="#111827" stroke-width="2.5" stroke-opacity="0.55"/>'
+        )
     for row in sorted(rows, key=run_sort_key):
         x = scale(safe_float(row["output_tokens_mean"]), x_domain, (box.x, box.x + box.w))
         y = scale(safe_float(row.get("pass_at_16", 0)), y_domain, (box.y + box.h, box.y))
@@ -453,7 +478,9 @@ def write_pass16_cost_frontier(rows: list[dict[str, Any]], out: Path, colors: di
         r = 7.4 if is_frontier else 5.2
         stroke = "#111827" if is_frontier else "#ffffff"
         stroke_w = 2.0 if is_frontier else 1.0
-        parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r}" fill="{color}" stroke="{stroke}" stroke-width="{stroke_w}"/>')
+        parts.append(
+            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r}" fill="{color}" stroke="{stroke}" stroke-width="{stroke_w}"/>'
+        )
         parts.append(f'<text class="small" x="{x + 9:.1f}" y="{y - 8:.1f}">{esc(label)}</text>')
 
     out.write_text(svg_doc(width, height, "\n".join(parts)))
@@ -508,7 +535,9 @@ def write_marginal_gain(rows: list[dict[str, Any]], out: Path, colors: dict[str,
         point_s = " ".join(f"{x:.1f},{y:.1f}" for x, y in points)
         parts.append(f'<polyline points="{point_s}" fill="none" stroke="{color}" stroke-width="2.2"/>')
         for x, y in points:
-            parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.5" fill="{color}" stroke="#ffffff" stroke-width="1"/>')
+            parts.append(
+                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.5" fill="{color}" stroke="#ffffff" stroke-width="1"/>'
+            )
 
     legend_x, legend_y = 785, 92
     parts.append(f'<text class="label" x="{legend_x}" y="{legend_y - 18}">Models</text>')
@@ -521,7 +550,9 @@ def write_marginal_gain(rows: list[dict[str, Any]], out: Path, colors: dict[str,
         seen.add(label)
         y = legend_y + idx * 22
         color = colors[label]
-        parts.append(f'<line x1="{legend_x}" y1="{y}" x2="{legend_x + 22}" y2="{y}" stroke="{color}" stroke-width="3"/>')
+        parts.append(
+            f'<line x1="{legend_x}" y1="{y}" x2="{legend_x + 22}" y2="{y}" stroke="{color}" stroke-width="3"/>'
+        )
         parts.append(f'<text class="small" x="{legend_x + 30}" y="{y + 4}">{esc(label)}</text>')
         idx += 1
 
@@ -563,7 +594,9 @@ def write_cost_efficiency(rows: list[dict[str, Any]], out: Path, colors: dict[st
         color = colors[label]
         x = scale(eff, x_domain, (box.x, box.x + box.w))
         bar_h = row_h * 0.55
-        parts.append(f'<rect x="{box.x}" y="{y - bar_h / 2:.1f}" width="{x - box.x:.1f}" height="{bar_h:.1f}" rx="2" fill="{color}" fill-opacity="0.75"/>')
+        parts.append(
+            f'<rect x="{box.x}" y="{y - bar_h / 2:.1f}" width="{x - box.x:.1f}" height="{bar_h:.1f}" rx="2" fill="{color}" fill-opacity="0.75"/>'
+        )
         parts.append(f'<text class="small" x="{box.x - 10}" y="{y + 4}" text-anchor="end">{esc(label)}</text>')
         parts.append(f'<text class="small" x="{x + 6:.1f}" y="{y + 4}">{eff:.1f}</text>')
 
@@ -596,7 +629,9 @@ def write_effective_sample_size(rows: list[dict[str, Any]], out: Path, colors: d
         color = colors[label]
         x = scale(eff_k, x_domain, (box.x, box.x + box.w))
         bar_h = row_h * 0.55
-        parts.append(f'<rect x="{box.x}" y="{y - bar_h / 2:.1f}" width="{x - box.x:.1f}" height="{bar_h:.1f}" rx="2" fill="{color}" fill-opacity="0.75"/>')
+        parts.append(
+            f'<rect x="{box.x}" y="{y - bar_h / 2:.1f}" width="{x - box.x:.1f}" height="{bar_h:.1f}" rx="2" fill="{color}" fill-opacity="0.75"/>'
+        )
         parts.append(f'<text class="small" x="{box.x - 10}" y="{y + 4}" text-anchor="end">{esc(label)}</text>')
         parts.append(f'<text class="small" x="{x + 6:.1f}" y="{y + 4}">{eff_k:.1f}</text>')
 

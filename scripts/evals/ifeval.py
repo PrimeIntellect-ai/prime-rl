@@ -28,7 +28,6 @@ from datasets import load_dataset
 from ._ifeval_verifiers import instructions_registry
 from ._server import PhaseHandle, complete_batch, paired_eval, resolve_path_args
 
-
 IFEVAL_DATASET = "HuggingFaceH4/ifeval"
 IFEVAL_SPLIT = "train"
 
@@ -47,10 +46,14 @@ def _loose_candidates(response: str) -> list[str]:
     revised_last = remove_last.replace("*", "")
     revised_both = remove_both.replace("*", "")
     return [
-        response, revised,
-        remove_first, revised_first,
-        remove_last, revised_last,
-        remove_both, revised_both,
+        response,
+        revised,
+        remove_first,
+        revised_first,
+        remove_last,
+        revised_last,
+        remove_both,
+        revised_both,
     ]
 
 
@@ -58,7 +61,11 @@ def _loose_candidates(response: str) -> list[str]:
 
 
 def _check_instruction(
-    inst_id: str, inst_kwargs: dict, prompt: str, response: str, loose: bool,
+    inst_id: str,
+    inst_kwargs: dict,
+    prompt: str,
+    response: str,
+    loose: bool,
 ) -> bool:
     """Instantiate the checker, build_description with dataset kwargs, then check."""
     cls = instructions_registry.INSTRUCTION_DICT.get(inst_id)
@@ -123,7 +130,8 @@ class Result:
 
 
 def _score_all(
-    rows: list[dict], responses: list[str],
+    rows: list[dict],
+    responses: list[str],
 ) -> Result:
     result = Result()
     for row, response in zip(rows, responses):
@@ -148,15 +156,17 @@ def _score_all(
         result.inst_strict += sum(strict_flags)
         result.inst_loose += sum(loose_flags)
 
-        result.per_row.append({
-            "key": row.get("key"),
-            "instruction_id_list": inst_ids,
-            "strict_flags": strict_flags,
-            "loose_flags": loose_flags,
-            "prompt_strict": bool(strict_flags and all(strict_flags)),
-            "prompt_loose": bool(loose_flags and all(loose_flags)),
-            "response": response,
-        })
+        result.per_row.append(
+            {
+                "key": row.get("key"),
+                "instruction_id_list": inst_ids,
+                "strict_flags": strict_flags,
+                "loose_flags": loose_flags,
+                "prompt_strict": bool(strict_flags and all(strict_flags)),
+                "prompt_loose": bool(loose_flags and all(loose_flags)),
+                "response": response,
+            }
+        )
     return result
 
 
@@ -178,11 +188,14 @@ def run_phase(
     )
     t0 = time.time()
     batch_out = complete_batch(
-        handle, batch_messages,
-        max_tokens=max_gen_tokens, temperature=0.0, max_concurrency=max_concurrency,
+        handle,
+        batch_messages,
+        max_tokens=max_gen_tokens,
+        temperature=0.0,
+        max_concurrency=max_concurrency,
     )
     elapsed = time.time() - t0
-    print(f"[ifeval/{handle.phase}] gen done in {elapsed:.1f}s ({elapsed/len(rows):.2f}s avg)", flush=True)
+    print(f"[ifeval/{handle.phase}] gen done in {elapsed:.1f}s ({elapsed / len(rows):.2f}s avg)", flush=True)
 
     responses = [text for text, _ in batch_out]
     result = _score_all(rows, responses)
@@ -217,8 +230,10 @@ def run(
         output_dir=output_dir,
         run_phase_fn=run_phase,
         headline_metrics=[
-            "prompt_level_strict_acc", "prompt_level_loose_acc",
-            "inst_level_strict_acc", "inst_level_loose_acc",
+            "prompt_level_strict_acc",
+            "prompt_level_loose_acc",
+            "inst_level_strict_acc",
+            "inst_level_loose_acc",
         ],
         base_model=base_model,
         port=port,

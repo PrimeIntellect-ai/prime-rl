@@ -3,7 +3,7 @@ from vllm.triton_utils import tl, triton
 
 
 def transformers_v5_compat():
-    """vLLM general plugin: patch transformers v5 config attrs that vLLM 0.16 still expects.
+    """vLLM general plugin: patch transformers v5 config attrs that vLLM still expects.
 
     Registered as a ``vllm.general_plugins`` entry-point so it runs automatically
     in every vLLM process, including spawned workers.
@@ -13,9 +13,42 @@ def transformers_v5_compat():
     if not hasattr(Qwen3VLMoeTextConfig, "tie_word_embeddings"):
         Qwen3VLMoeTextConfig.tie_word_embeddings = False
 
+    _patch_qwen35_lora()
     _patch_lora_key_prefix()
     monkey_patch_deep_gemm_ep_scatter()
+    monkey_patch_deep_gemm_silu_mul_quant_int64()
     monkey_patch_dp_engine_core_pause_resume_deadlock()
+    monkey_patch_vllm_layerwise_reload_alias_buffers()
+
+
+def monkey_patch_vllm_layerwise_reload_alias_buffers():
+    # vLLM's layerwise reload materializes each buffer as an independent tensor
+    # and then copies it back into the original kernel storage. When a buffer
+    # aliases a parameter (e.g. NemotronH Mamba's mixer.conv_weights, a view of
+    # mixer.conv1d.weight), the buffer copy stamps garbage into the parameter's
+    # storage *after* the parameter has been correctly reloaded. Skip the copy
+    # for any buffer that shares storage with a parameter; _place_kernel_tensors
+    # re-registers the original view, which trivially reflects the parameter.
+    from vllm.logger import init_logger
+    from vllm.model_executor.model_loader.reload import layerwise as reload_layerwise
+
+    logger = init_logger(__name__)
+
+    def _copy_and_restore_kernel_tensors(layer: torch.nn.Module, info: reload_layerwise.LayerReloadingInfo):
+        assert info.kernel_tensors is not None
+        parameters, buffers = info.kernel_tensors
+        param_storage_ptrs = {p.untyped_storage().data_ptr() for p in layer.parameters(recurse=True)}
+        for name, param in parameters.items():
+            param.data.copy_(getattr(layer, name))
+        for name, buffer in buffers.items():
+            if buffer.untyped_storage().data_ptr() in param_storage_ptrs:
+                continue
+            buffer.data.copy_(getattr(layer, name))
+
+        reload_layerwise._place_kernel_tensors(layer, info)
+
+    reload_layerwise._copy_and_restore_kernel_tensors = _copy_and_restore_kernel_tensors
+    logger.warning("Enabled vLLM layerwise reload alias-buffer patch.")
 
 
 @triton.jit
@@ -172,6 +205,194 @@ def monkey_patch_deep_gemm_ep_scatter():
     logger.warning("Enabled int64-addressing Triton patch for vLLM DeepGEMM ep_scatter.")
 
 
+@triton.jit
+def _silu_mul_per_token_group_quant_fp8_colmajor_int64_kernel(
+    y_ptr,
+    y_q_ptr,
+    y_s_ptr,
+    M: tl.int64,
+    N: tl.int64,
+    y_s_col_stride: tl.int64,
+    eps,
+    fp8_min: tl.constexpr,
+    fp8_max: tl.constexpr,
+    use_ue8m0: tl.constexpr,
+    GROUP_SIZE: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+    N_2 = N // 2
+
+    m_offset = (pid_m * BLOCK_M).to(tl.int64)
+    n_offset = (pid_n * BLOCK_N).to(tl.int64)
+    if m_offset >= M:
+        return
+
+    offs_n = tl.arange(0, BLOCK_N).to(tl.int64)
+    offs_m = tl.arange(0, BLOCK_M).to(tl.int64)
+
+    base_y_ptr = y_ptr + m_offset * N + n_offset
+    act_in_ptrs = base_y_ptr + offs_m[:, None] * N + offs_n[None, :]
+
+    act_in = tl.load(act_in_ptrs)
+    mul_in = tl.load(act_in_ptrs + N_2)
+
+    act_in = act_in.to(tl.float32)
+    one_f32 = tl.cast(1, tl.float32)
+    silu_out = (act_in / (one_f32 + tl.exp(-act_in))).to(y_ptr.dtype.element_ty)
+    y = (silu_out * mul_in).to(tl.float32)
+
+    absmax = tl.maximum(tl.max(tl.abs(y), axis=1), eps)
+    scale_raw = absmax * (1.0 / fp8_max)
+    y_s = tl.math.exp2(tl.ceil(tl.log2(scale_raw))) if use_ue8m0 else scale_raw
+    y_s = tl.reshape(y_s, (BLOCK_M, 1))
+    y_q = tl.clamp(y / y_s, fp8_min, fp8_max).to(y_q_ptr.dtype.element_ty)
+
+    base_y_q_ptr = y_q_ptr + m_offset * N_2 + n_offset
+    y_q_ptrs = base_y_q_ptr + offs_m[:, None] * N_2 + offs_n[None, :]
+    tl.store(y_q_ptrs, y_q)
+
+    group_id = n_offset // GROUP_SIZE
+    base_y_s_ptr = y_s_ptr + group_id * y_s_col_stride + m_offset
+    y_s_ptrs = base_y_s_ptr + offs_m
+    y_s = tl.reshape(y_s, (BLOCK_M,))
+    tl.store(y_s_ptrs, y_s)
+
+
+def _silu_mul_per_token_group_quant_fp8_colmajor_int64(
+    input: torch.Tensor,
+    output: torch.Tensor | None = None,
+    use_ue8m0: bool | None = None,
+    eps: float = 1e-10,
+):
+    from vllm.platforms import current_platform
+    from vllm.utils.deep_gemm import is_deep_gemm_e8m0_used
+
+    group_size = 128
+    assert input.ndim == 2
+    if output is not None:
+        assert output.ndim == 2
+    assert input.size(0) % group_size == 0
+    assert input.size(1) % (group_size * 2) == 0
+
+    if use_ue8m0 is None:
+        use_ue8m0 = is_deep_gemm_e8m0_used()
+
+    M, N = input.size()
+    N_2 = N // 2
+
+    fp8_dtype = current_platform.fp8_dtype()
+    if output is None:
+        output = torch.empty((M, N_2), dtype=fp8_dtype, device=input.device)
+
+    output_scales = torch.empty(((N_2 // group_size), M), dtype=torch.float32, device=input.device).transpose(0, 1)
+
+    block_m = 8
+    block_n = group_size
+    assert M % block_m == 0
+    assert N_2 % block_n == 0
+
+    finfo = torch.finfo(fp8_dtype)
+    fp8_min = -224.0 if current_platform.is_fp8_fnuz() else finfo.min
+    fp8_max = 224.0 if current_platform.is_fp8_fnuz() else finfo.max
+
+    grid = (M // block_m, N_2 // block_n)
+    _silu_mul_per_token_group_quant_fp8_colmajor_int64_kernel[grid](
+        input,
+        output,
+        output_scales,
+        M,
+        N,
+        output_scales.stride(-1),
+        eps,
+        fp8_min,
+        fp8_max,
+        use_ue8m0,
+        group_size,
+        block_m,
+        block_n,
+    )
+
+    return output, output_scales
+
+
+def monkey_patch_deep_gemm_silu_mul_quant_int64():
+    # Temporary local carry for large DeepGEMM profile shapes whose row offsets
+    # exceed signed int32 address arithmetic in vLLM's Triton kernel.
+    import sys
+
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.quantization.utils import fp8_utils
+
+    logger = init_logger(__name__)
+
+    fp8_utils.silu_mul_per_token_group_quant_fp8_colmajor = _silu_mul_per_token_group_quant_fp8_colmajor_int64
+
+    deep_gemm_moe_module = sys.modules.get("vllm.model_executor.layers.fused_moe.experts.deep_gemm_moe")
+    if deep_gemm_moe_module is not None:
+        deep_gemm_moe_module.silu_mul_per_token_group_quant_fp8_colmajor = (
+            _silu_mul_per_token_group_quant_fp8_colmajor_int64
+        )
+
+    logger.warning("Enabled int64-addressing Triton patch for vLLM DeepGEMM SiLU/mul FP8 quant.")
+
+
+def _patch_qwen35_lora():
+    """Fix Qwen3.5 LoRA: align packed_modules_mapping with output_sizes.
+
+    Qwen3.5's GDN layers use create_qkvz_proj with 4 output_sizes (q, k, v, z)
+    but packed_modules_mapping only lists 2 entries, causing an IndexError
+    during LoRA initialization.
+
+    Also generalizes MergedColumnParallelLinearWithLoRA.can_replace_layer
+    to accept any number of packed modules (not just 2), and generalizes
+    MergedColumnParallelLinearWithShardedLoRA.slice_lora_a to handle N
+    subloras instead of the hardcoded 2 (needed for fully_sharded_loras=True).
+
+    Upstream: https://github.com/vllm-project/vllm/issues/36372
+    """
+    from vllm.lora.layers.column_parallel_linear import (
+        MergedColumnParallelLinearWithLoRA,
+        MergedColumnParallelLinearWithShardedLoRA,
+    )
+    from vllm.model_executor.models.qwen3_5 import (
+        Qwen3_5ForCausalLMBase,
+        Qwen3_5ForConditionalGeneration,
+        Qwen3_5MoeForConditionalGeneration,
+    )
+
+    qkvz_fix = ["in_proj_q", "in_proj_k", "in_proj_v", "in_proj_z"]
+
+    Qwen3_5ForCausalLMBase.packed_modules_mapping["in_proj_qkvz"] = qkvz_fix
+    Qwen3_5ForConditionalGeneration.packed_modules_mapping["in_proj_qkvz"] = qkvz_fix
+
+    Qwen3_5MoeForConditionalGeneration.is_3d_moe_weight = False
+
+    from vllm.lora.layers.utils import _not_fully_sharded_can_replace
+
+    @classmethod
+    @_not_fully_sharded_can_replace
+    def can_replace_layer(cls, source_layer, lora_config, packed_modules_list, model_config=None):
+        from vllm.model_executor.layers.linear import MergedColumnParallelLinear
+
+        return type(source_layer) is MergedColumnParallelLinear and len(packed_modules_list) == len(
+            source_layer.output_sizes
+        )
+
+    MergedColumnParallelLinearWithLoRA.can_replace_layer = can_replace_layer
+
+    def slice_lora_a(self, lora_a):
+        output_shard_size = self.lora_a_stacked[0].shape[2]
+        output_start_idx = self.tp_rank * output_shard_size
+        return [
+            a[output_start_idx : output_start_idx + output_shard_size, :] if a is not None else None for a in lora_a
+        ]
+
+    MergedColumnParallelLinearWithShardedLoRA.slice_lora_a = slice_lora_a
+
+
 def _patch_lora_key_prefix():
     """Patch vLLM's LoRA loading to handle keys without base_model.model. prefix.
 
@@ -315,6 +536,177 @@ def _patch_lora_key_prefix():
         )
 
     LoRAModel.from_local_checkpoint = classmethod(_patched_from_local_checkpoint)
+
+
+# Monkeypatch LoadLoRAAdapter to allow loading the same adapter multiple times
+# TODO: may be removable if we pass load_inplace=True (supported since vLLM 0.18, PR #31326)
+def monkey_patch_load_lora_adapter():
+    from http import HTTPStatus
+
+    from vllm.entrypoints.openai.engine.protocol import ErrorResponse
+    from vllm.entrypoints.openai.models.serving import (
+        OpenAIServingModels,
+        create_error_response,
+    )
+    from vllm.entrypoints.serve.lora.protocol import LoadLoRAAdapterRequest
+    from vllm.logger import init_logger
+    from vllm.lora.request import LoRARequest
+
+    logger = init_logger(__name__)
+
+    async def _patched_load_lora_adapter(
+        self: OpenAIServingModels, request: LoadLoRAAdapterRequest, base_model_name: str | None = None
+    ) -> ErrorResponse | str:
+        lora_name = request.lora_name
+
+        # Ensure atomicity based on the lora name
+        async with self.lora_resolver_lock[lora_name]:
+            lora_path = request.lora_path
+            ## START PATCHED CODE
+            if lora_name in self.lora_requests:
+                lora_request = self.lora_requests[lora_name]
+                lora_request.lora_path = lora_path
+            else:
+                unique_id = self.lora_id_counter.inc(1)
+                lora_request = LoRARequest(lora_name=lora_name, lora_int_id=unique_id, lora_path=lora_path)
+            ## END PATCHED CODE
+            if base_model_name is not None and self.is_base_model(base_model_name):
+                lora_request.base_model_name = base_model_name
+
+            # Validate that the adapter can be loaded into the engine
+            # This will also preload it for incoming requests
+            try:
+                await self.engine_client.add_lora(lora_request)
+            except Exception as e:
+                error_type = "BadRequestError"
+                status_code = HTTPStatus.BAD_REQUEST
+                if "No adapter found" in str(e):
+                    error_type = "NotFoundError"
+                    status_code = HTTPStatus.NOT_FOUND
+
+                return create_error_response(message=str(e), err_type=error_type, status_code=status_code)
+
+            self.lora_requests[lora_name] = lora_request
+            logger.info("Loaded new LoRA adapter: name '%s', path '%s'", lora_name, lora_path)
+            return f"Success: LoRA adapter '{lora_name}' added successfully."
+
+    OpenAIServingModels.load_lora_adapter = _patched_load_lora_adapter
+
+
+# Monkeypatch LRUCacheWorkerLoRAManager to allow loading adapter inplace without doing it every request
+# TODO: may be removable if we pass load_inplace=True (supported since vLLM 0.18, PR #31326)
+def monkey_patch_LRUCacheWorkerLoRAManager():
+    from vllm.lora.worker_manager import LoRARequest, LRUCacheLoRAModelManager, LRUCacheWorkerLoRAManager
+
+    # The dunder is intended. It's a private method that we're patching.
+    def _patched__apply_adapters(self: LRUCacheWorkerLoRAManager, lora_requests: set[LoRARequest]) -> None:
+        loras_map = {lora_request.lora_int_id: lora_request for lora_request in lora_requests if lora_request}
+        if len(loras_map) > self._adapter_manager.lora_slots:
+            raise RuntimeError(
+                f"Number of requested LoRAs ({len(loras_map)}) is greater "
+                "than the number of GPU LoRA slots "
+                f"({self._adapter_manager.lora_slots})."
+            )
+        for lora in loras_map.values():
+            ## START PATCHED CODE
+            self.add_adapter(lora, force_load=False)
+            ## END PATCHED CODE
+
+    def _patched_add_adapter(
+        self: LRUCacheWorkerLoRAManager, lora_request: LoRARequest, force_load: bool = True
+    ) -> bool:
+        # Note that this method is not thread-safe. It may be invoked multiple
+        # times for the same adapter when using multiple API servers.
+        # This is ok because it's currently only called from
+        # the single-threaded core engine loop.
+
+        ## START PATCHED CODE
+        if lora_request.lora_int_id not in self.list_adapters() or force_load:
+            ## END PATCHED CODE
+            # Load the new adapter first to ensure it is actually valid, before
+            # evicting any existing adapters.
+            # This may cause the # of loaded lora adapters to very temporarily
+            # exceed `--max-cpu-loras`.
+            lora = self._load_adapter(lora_request)
+            ## START PATCHED CODE
+            self._adapter_manager.remove_adapter(lora.id)
+            ## END PATCHED CODE
+
+            # Loading succeeded, now check if we will exceed cache capacity and
+            # evict if the oldest adapter if so
+            if len(self._adapter_manager) + 1 > self._adapter_manager.capacity:
+                assert isinstance(self._adapter_manager, LRUCacheLoRAModelManager)
+                self._adapter_manager.remove_oldest_adapter()
+            # Then add the new adapter to the cache
+            loaded = self._adapter_manager.add_adapter(lora)
+        else:
+            # If the lora is already loaded, just touch it to
+            # update its position in the caches
+            loaded = self._adapter_manager.get_adapter(lora_request.lora_int_id) is not None
+        self._adapter_manager.activate_adapter(lora_request.lora_int_id)
+        return loaded
+
+    LRUCacheWorkerLoRAManager._apply_adapters = _patched__apply_adapters
+    LRUCacheWorkerLoRAManager.add_adapter = _patched_add_adapter
+
+
+# Monkeypatch WorkerLoRAManager._load_adapter to skip the per-module regex
+# warning loop. On wide MoE models (Qwen3.5-35B-A3B) it spends minutes
+# recompiling regex patterns inside is_supported_lora_module — purely to emit
+# logger.warning_once about modules that will be ignored. Adapter validity is
+# already enforced by from_local_checkpoint, so dropping the warnings is safe.
+def monkey_patch_skip_lora_module_warnings():
+    from vllm.exceptions import LoRAAdapterNotFoundError
+    from vllm.lora.lora_model import LoRAModel
+    from vllm.lora.peft_helper import PEFTHelper
+    from vllm.lora.request import LoRARequest
+    from vllm.lora.utils import get_adapter_absolute_path
+    from vllm.lora.worker_manager import WorkerLoRAManager
+
+    def _patched_load_adapter(self: WorkerLoRAManager, lora_request: LoRARequest) -> LoRAModel:
+        try:
+            supported_lora_modules = self._adapter_manager.supported_lora_modules
+            packed_modules_mapping = self._adapter_manager.packed_modules_mapping
+            expected_lora_lst: list[str] = []
+            for module in supported_lora_modules:
+                if module in packed_modules_mapping:
+                    expected_lora_lst.extend(packed_modules_mapping[module])
+                else:
+                    expected_lora_lst.append(module)
+                if module == "experts":
+                    expected_lora_lst.append(module)
+            expected_lora_modules = set(expected_lora_lst)
+            lora_path = get_adapter_absolute_path(lora_request.lora_path)
+
+            peft_helper = PEFTHelper.from_local_dir(
+                lora_path,
+                self.max_position_embeddings,
+                lora_request.tensorizer_config_dict,
+            )
+            peft_helper.validate_legal(self.lora_config)
+
+            model = self._adapter_manager.model
+            hf_to_vllm_mapper = getattr(model, "hf_to_vllm_mapper", None)
+            lora_skip_prefixes = getattr(model, "lora_skip_prefixes", None)
+
+            lora = self._lora_model_cls.from_local_checkpoint(
+                lora_path,
+                expected_lora_modules,
+                peft_helper=peft_helper,
+                lora_model_id=lora_request.lora_int_id,
+                device="cpu",
+                dtype=self.lora_config.lora_dtype,
+                model_vocab_size=self.vocab_size,
+                tensorizer_config_dict=lora_request.tensorizer_config_dict,
+                weights_mapper=hf_to_vllm_mapper,
+                skip_prefixes=lora_skip_prefixes,
+            )
+        except FileNotFoundError as e:
+            raise LoRAAdapterNotFoundError(lora_request.lora_name, lora_request.lora_path) from e
+
+        return lora
+
+    WorkerLoRAManager._load_adapter = _patched_load_adapter
 
 
 # Monkeypatch TokenizeParams to fix overly conservative validation
@@ -586,3 +978,65 @@ def monkey_patch_no_moe_lora():
         self.is_lora_enabled = False
 
     FusedMoEConfig.__post_init__ = _patched__post_init__
+
+
+def monkey_patch_fp32_lm_head():
+    """Run the lm_head projection in fp32, via a native bf16xbf16 -> fp32 GEMM.
+
+    Uses ``torch.mm(..., out_dtype=torch.float32)`` (PyTorch >= 2.10) so the
+    matmul accumulates and emits fp32 directly without zero-padding the bf16
+    operands or maintaining a separate fp32 weight copy. This avoids the
+    epilogue truncation to bf16 that `F.linear(bf16, bf16)` does, which is
+    where lm_head precision actually leaks before the sampler's softmax.
+
+    Activated by setting ``additional_config["fp32_lm_head"] = True`` on the
+    vLLM namespace; the launcher does this when ``inference.enable_fp32_lm_head``
+    is set. The flag is captured once on ``LogitsProcessor.__init__`` (where
+    vLLM guarantees a ``set_current_vllm_config()`` context) and stored on the
+    instance — reading it from ``_get_logits`` during serving doesn't work
+    because vLLM doesn't keep the context set during forwards.
+
+    Tracks vllm-project/vllm#24567 (which uses the operand-upcast approach).
+    Per @Jackmin801 on PR #2438, native ``out_dtype=fp32`` mm is more efficient
+    and just as correct.
+    """
+    import torch
+    from vllm.config import get_current_vllm_config
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.logits_processor import LogitsProcessor
+
+    logger = init_logger(__name__)
+
+    _original_init = LogitsProcessor.__init__
+    _original_get_logits = LogitsProcessor._get_logits
+
+    def _patched_init(self, *args, **kwargs):
+        _original_init(self, *args, **kwargs)
+        vllm_config = get_current_vllm_config()
+        additional_config = vllm_config.additional_config or {}
+        self._fp32_lm_head_enabled = additional_config.get("fp32_lm_head", False)
+        if self._fp32_lm_head_enabled:
+            logger.warning("fp32 lm_head ENABLED for this LogitsProcessor instance.")
+
+    def _patched_get_logits(self, hidden_states, lm_head, embedding_bias):
+        if not getattr(self, "_fp32_lm_head_enabled", False):
+            return _original_get_logits(self, hidden_states, lm_head, embedding_bias)
+
+        # Native bf16xbf16 -> fp32 GEMM. torch.mm requires 2D inputs; vLLM v1's
+        # generative path passes 2D [num_tokens, hidden_size] hidden_states, but
+        # flatten defensively in case some future caller passes 3D.
+        flat = hidden_states.reshape(-1, hidden_states.shape[-1])
+        logits = torch.mm(flat, lm_head.weight.t(), out_dtype=torch.float32)
+        if embedding_bias is not None:
+            logits = logits + embedding_bias.to(torch.float32)
+        if hidden_states.dim() > 2:
+            logits = logits.reshape(*hidden_states.shape[:-1], -1)
+
+        logits = self._gather_logits(logits)
+        if logits is not None:
+            logits = logits[..., : self.org_vocab_size]
+        return logits
+
+    LogitsProcessor.__init__ = _patched_init
+    LogitsProcessor._get_logits = _patched_get_logits
+    logger.info("Installed fp32 lm_head patch (native out_dtype=fp32 mm).")

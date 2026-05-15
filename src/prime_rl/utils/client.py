@@ -38,7 +38,7 @@ class InferencePool(Protocol):
         """Get next eval client in round-robin fashion."""
         ...
 
-    async def wait_for_ready(self, model_name: str, timeout: int = 1800) -> None:
+    async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
         """Wait for inference pool to be ready."""
         ...
 
@@ -64,11 +64,25 @@ class StaticInferencePool:
         model_name: str,
         train_client_type: str = "openai_chat_completions_token",
         eval_client_type: str = "openai_chat_completions",
+        renderer_name: str = "auto",
+        tool_parser: str | None = None,
+        reasoning_parser: str | None = None,
+        renderer_pool_size: int | None = None,
     ):
-        self._train_clients = setup_clients(client_config, client_type=train_client_type)
+        renderer_model_name = model_name if train_client_type == "renderer" else None
+        self._train_clients = setup_clients(
+            client_config,
+            client_type=train_client_type,
+            renderer_name=renderer_name,
+            renderer_model_name=renderer_model_name,
+            tool_parser=tool_parser,
+            reasoning_parser=reasoning_parser,
+            renderer_pool_size=renderer_pool_size,
+        )
         self._eval_clients = setup_clients(client_config, client_type=eval_client_type)
         self._admin_clients = setup_admin_clients(client_config)
         self._skip_model_check = client_config.skip_model_check
+        self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
         self._eval_cycle = cycle(self._eval_clients)
         self.model_name = model_name
 
@@ -90,8 +104,10 @@ class StaticInferencePool:
     async def get_eval_client(self) -> vf.ClientConfig:
         return next(self._eval_cycle)
 
-    async def wait_for_ready(self, model_name: str, timeout: int = 1800) -> None:
-        await check_health(self._admin_clients, timeout=timeout)
+    async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
+        await check_health(
+            self._admin_clients, timeout=timeout if timeout is not None else self._wait_for_ready_timeout
+        )
         await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
 
     async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
@@ -109,6 +125,10 @@ async def setup_inference_pool(
     model_name: str,
     train_client_type: str = "openai_chat_completions_token",
     eval_client_type: str = "openai_chat_completions",
+    renderer_name: str = "auto",
+    tool_parser: str | None = None,
+    reasoning_parser: str | None = None,
+    renderer_pool_size: int | None = None,
 ) -> InferencePool:
     """Create an inference pool from config (static or elastic)."""
     logger = get_logger()
@@ -124,7 +144,14 @@ async def setup_inference_pool(
         from prime_rl.utils.elastic import ElasticInferencePool
 
         return await ElasticInferencePool.from_config(
-            client_config, model_name=model_name, train_client_type=train_client_type, eval_client_type=eval_client_type
+            client_config,
+            model_name=model_name,
+            train_client_type=train_client_type,
+            eval_client_type=eval_client_type,
+            renderer_name=renderer_name,
+            tool_parser=tool_parser,
+            reasoning_parser=reasoning_parser,
+            renderer_pool_size=renderer_pool_size,
         )
 
     logger.info(
@@ -133,11 +160,26 @@ async def setup_inference_pool(
         f"api_key_var={client_config.api_key_var}, headers={client_config.headers})"
     )
     return StaticInferencePool(
-        client_config, model_name=model_name, train_client_type=train_client_type, eval_client_type=eval_client_type
+        client_config,
+        model_name=model_name,
+        train_client_type=train_client_type,
+        eval_client_type=eval_client_type,
+        renderer_name=renderer_name,
+        tool_parser=tool_parser,
+        reasoning_parser=reasoning_parser,
+        renderer_pool_size=renderer_pool_size,
     )
 
 
-def setup_clients(client_config: ClientConfig, client_type: str = "openai_chat_completions") -> list[vf.ClientConfig]:
+def setup_clients(
+    client_config: ClientConfig,
+    client_type: str = "openai_chat_completions",
+    renderer_name: str = "auto",
+    renderer_model_name: str | None = None,
+    tool_parser: str | None = None,
+    reasoning_parser: str | None = None,
+    renderer_pool_size: int | None = None,
+) -> list[vf.ClientConfig]:
     clients = []
     client_idx = 0
     for base_url in client_config.base_url:
@@ -149,6 +191,11 @@ def setup_clients(client_config: ClientConfig, client_type: str = "openai_chat_c
                 vf.ClientConfig(
                     client_idx=client_idx,
                     client_type=client_type,
+                    renderer=renderer_name,
+                    renderer_model_name=renderer_model_name,
+                    renderer_pool_size=renderer_pool_size,
+                    tool_parser=tool_parser,
+                    reasoning_parser=reasoning_parser,
                     api_base_url=base_url,
                     api_key_var=client_config.api_key_var,
                     timeout=client_config.timeout,

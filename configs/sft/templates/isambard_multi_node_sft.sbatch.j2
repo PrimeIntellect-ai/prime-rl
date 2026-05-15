@@ -93,6 +93,7 @@ srun \
     if [ "$TRAIN_NODE_RANK" = "0" ]; then
         python - <<PY
 import sys, torch, flash_attn  # noqa: F401
+from flash_attn import flash_attn_varlen_func  # noqa: F401
 assert torch.cuda.is_available(), "CUDA not available"
 print(f"[rank0] venv OK: torch={torch.__version__} cuda={torch.version.cuda} gpus={torch.cuda.device_count()}", file=sys.stderr)
 PY

@@ -156,8 +156,7 @@ REQUESTED_MODELS = (
         vllm_extra=TRINITY_VLLM_EXTRA,
         max_model_len=36_864,
         blocked_reason=(
-            "Known cudaErrorUnsupportedPtxVersion in gptq_marlin_moe_repack "
-            "on the current GH200/CUDA/vLLM stack."
+            "Known cudaErrorUnsupportedPtxVersion in gptq_marlin_moe_repack on the current GH200/CUDA/vLLM stack."
         ),
     ),
     ModelSpec(
@@ -321,10 +320,12 @@ def _family_sampling_preset(spec: ModelSpec) -> dict[str, Any]:
     if spec.family == "gemma":
         return dict(GEMMA_HF_SAMPLING)
     if spec.family == "qwen":
-        return copy.deepcopy({
-            **QWEN_HF_NONTHINKING_TEXT_SAMPLING,
-            **QWEN_NONTHINKING_REQUEST_EXTRAS,
-        })
+        return copy.deepcopy(
+            {
+                **QWEN_HF_NONTHINKING_TEXT_SAMPLING,
+                **QWEN_NONTHINKING_REQUEST_EXTRAS,
+            }
+        )
     raise ValueError(f"no sampling preset for family={spec.family!r}")
 
 
@@ -355,7 +356,9 @@ def _server_config(base: BaselineConfig, spec: ModelSpec, args: argparse.Namespa
     config.launch.port = args.port
     config.launch.tp = spec.tp
     config.launch.dp = spec.dp
-    config.launch.api_server_count = 1 if use_multinode_tp else (args.gpus_per_node if use_multinode else config.launch.dp)
+    config.launch.api_server_count = (
+        1 if use_multinode_tp else (args.gpus_per_node if use_multinode else config.launch.dp)
+    )
     config.launch.max_model_len = _effective_max_model_len(base, spec, args)
     if spec.launch_enforce_eager is not None:
         config.launch.enforce_eager = spec.launch_enforce_eager
@@ -363,7 +366,9 @@ def _server_config(base: BaselineConfig, spec: ModelSpec, args: argparse.Namespa
     config.launch.nodes = args.multinode_nodes
     config.launch.gpus_per_node = args.gpus_per_node
     config.launch.srun_job_id = args.srun_job_id
-    config.launch.data_parallel_size_local = None if use_multinode_tp else (args.gpus_per_node if use_multinode else None)
+    config.launch.data_parallel_size_local = (
+        None if use_multinode_tp else (args.gpus_per_node if use_multinode else None)
+    )
     config.launch.enable_expert_parallel = use_multinode and spec.multinode_strategy == "dp_ep"
     config.launch.srun_network = spec.launch_srun_network
     config.launch.srun_cpus_per_task = spec.launch_srun_cpus_per_task
@@ -443,19 +448,11 @@ def main() -> None:
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
-    missing_multinode_specs = [
-        spec for spec in specs if spec.requires_multinode and args.multinode_nodes <= 1
-    ]
+    missing_multinode_specs = [spec for spec in specs if spec.requires_multinode and args.multinode_nodes <= 1]
     if missing_multinode_specs:
-        details = "\n".join(
-            f"- {spec.short_name}: requires --multinode-nodes > 1"
-            for spec in missing_multinode_specs
-        )
+        details = "\n".join(f"- {spec.short_name}: requires --multinode-nodes > 1" for spec in missing_multinode_specs)
         if requested or args.include_blocked:
-            raise SystemExit(
-                "Explicitly selected multi-node model(s) without "
-                f"--multinode-nodes > 1:\n{details}"
-            )
+            raise SystemExit(f"Explicitly selected multi-node model(s) without --multinode-nodes > 1:\n{details}")
         for spec in missing_multinode_specs:
             blocked_summaries[spec.short_name] = {
                 "skipped": True,

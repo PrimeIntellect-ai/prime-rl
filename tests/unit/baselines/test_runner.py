@@ -67,7 +67,6 @@ def test_sampling_args_routes_vllm_only_keys_to_extra_body(tmp_path):
     }
 
 
-
 def test_sampling_args_keeps_runner_owned_fanout_and_explicit_extra_body_precedence(tmp_path):
     config = BaselineConfig(
         env_id="hf_singleturn",

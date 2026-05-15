@@ -10,15 +10,15 @@ F3. DebatePrompts._validate rejects per-turn variables in system and
     question templates at load time (they'd break the monotonic prefix
     invariant silently if rendered per slot).
 """
+
 from __future__ import annotations
 
 import asyncio
 from types import MappingProxyType
 
 import pytest
-
 from verifiers.clients.openai_chat_completions_token_client import _is_valid_env_tail
-from verifiers.envs.debate.prompts import DebatePrompts, _validate, resolve_prompts
+from verifiers.envs.debate.prompts import _validate, resolve_prompts
 from verifiers.envs.debate_env import DebateEnv
 from verifiers.envs.debate_rubric import DebateRubric
 from verifiers.envs.multi_agent_kernel import (
@@ -29,7 +29,6 @@ from verifiers.envs.multi_agent_kernel import (
 )
 from verifiers.types import AssistantMessage, SystemMessage, ToolMessage, UserMessage
 from verifiers.utils.message_utils import fold_consecutive_user_messages
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -177,7 +176,7 @@ async def _run_roundtrip():
 
     # Post-commit form of slot 0 = folded msgs0 + A1 as assistant msg.
     cache_after_0 = list(f0) + [AssistantMessage(content="A1 raw")]
-    tail = f2[len(cache_after_0):]
+    tail = f2[len(cache_after_0) :]
 
     # Prefix stability
     assert f2[: len(cache_after_0)] == cache_after_0
@@ -208,28 +207,21 @@ async def _past_instruction_positional(slot_ids: tuple[int, int, int, int]):
     )
     env = _make_env(schedule)
     commits = [
-        _utt("debater_a",slot_ids[0], "propose", "A1 raw", "A1 pub"),
-        _utt("debater_b",slot_ids[1], "propose", "B1 raw", "B1 pub"),
+        _utt("debater_a", slot_ids[0], "propose", "A1 raw", "A1 pub"),
+        _utt("debater_b", slot_ids[1], "propose", "B1 raw", "B1 pub"),
     ]
     msgs = await env.build_prompt(_state(commits), "debater_a", env.schedule._slots[2])
     # Past-own-turn instruction sits before the assistant msg with A1's raw content.
     past_user_texts = []
     for i, m in enumerate(msgs):
-        if (
-            m["role"] == "assistant"
-            and m.get("content") == "A1 raw"
-            and i > 0
-            and msgs[i - 1]["role"] == "user"
-        ):
+        if m["role"] == "assistant" and m.get("content") == "A1 raw" and i > 0 and msgs[i - 1]["role"] == "user":
             past_user_texts.append(msgs[i - 1]["content"])
     return past_user_texts
 
 
 async def _render_own_ctx(schedule: StaticSchedule, commits: list[Utterance], current_slot_idx: int):
     env = _make_env(schedule)
-    msgs = await env.build_prompt(
-        _state(commits), "debater_a", env.schedule._slots[current_slot_idx]
-    )
+    msgs = await env.build_prompt(_state(commits), "debater_a", env.schedule._slots[current_slot_idx])
     return msgs, env._member_round_count("debater_a")
 
 
@@ -244,10 +236,7 @@ def test_num_rounds_is_per_member_under_simultaneous_schedule():
         )
     )
     _, num_rounds = asyncio.run(_render_own_ctx(schedule, [], 0))
-    assert num_rounds == 2, (
-        f"simultaneous schedule [AB, AB]: expected 2 rounds per member, "
-        f"got {num_rounds}"
-    )
+    assert num_rounds == 2, f"simultaneous schedule [AB, AB]: expected 2 rounds per member, got {num_rounds}"
 
 
 def test_num_rounds_is_per_member_under_asymmetric_schedule():
@@ -277,8 +266,7 @@ def test_sparse_slot_ids_do_not_corrupt_past_round_label():
     # past-instruction text as contiguous (both = round 0, phase=propose).
     sparse = asyncio.run(_past_instruction_positional((10, 20, 30, 40)))
     assert contiguous == sparse, (
-        f"slot_id arithmetic leaked into instruction rendering:\n"
-        f"  contiguous: {contiguous}\n  sparse    : {sparse}"
+        f"slot_id arithmetic leaked into instruction rendering:\n  contiguous: {contiguous}\n  sparse    : {sparse}"
     )
 
 
