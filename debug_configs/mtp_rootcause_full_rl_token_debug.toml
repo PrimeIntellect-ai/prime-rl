@@ -1,0 +1,79 @@
+max_steps = 12
+seq_len = 8192
+max_async_level = 1
+output_dir = "outputs/qwen35-2b-hendrycks-sanity-mtp-non-thinking-8xh200-rootcause-token-debug"
+
+[wandb]
+project = "mtp-qwen35-hendrycks"
+entity = "primeintellect"
+name = "qwen35-2b-mtp-non-thinking-8xh200-rootcause-token-debug"
+group = "qwen35-mtp-rootcause-isolation"
+
+[deployment]
+num_train_gpus = 4
+num_infer_gpus = 4
+
+[model]
+name = "Qwen/Qwen3.5-2B"
+
+[orchestrator]
+batch_size = 128
+max_inflight_rollouts = 128
+rollouts_per_example = 8
+max_off_policy_steps = 8
+strict_async_level = false
+use_token_client = true
+collect_inference_metrics = true
+seed = 42
+filters = [
+    { type = "gibberish", enforce = false, token_id_threshold = 100000, logprob_offset = 2.0 },
+    { type = "repetition", enforce = false, window = 3000, prob_threshold = 0.99 },
+    { type = "zero_advantage", enforce = false },
+]
+
+[orchestrator.train.sampling]
+temperature = 1.0
+repetition_penalty = 1.0
+min_tokens = 0
+extra_body = { enable_thinking = false }
+
+[[orchestrator.train.env]]
+id = "math-env"
+name = "hendrycks-math"
+args = { dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B", dataset_subset = "default" }
+max_retries = 0
+max_total_completion_tokens = -1
+
+[trainer.model]
+name = "Qwen/Qwen3.5-2B"
+trust_remote_code = false
+seq_len = 8192
+attn = "sdpa"
+fused_lm_head_token_chunk_size = 8192
+
+[trainer.model.mtp]
+enabled = true
+loss_scale = 0.2
+enable_rollout = true
+num_speculative_tokens = 1
+
+[trainer.optim]
+lr = 1e-6
+weight_decay = 0.01
+max_norm = 1.0
+
+[inference]
+gpu_memory_utilization = 0.8
+
+[inference.model]
+name = "Qwen/Qwen3.5-2B"
+trust_remote_code = false
+max_model_len = 8192
+enforce_eager = true
+
+[inference.vllm_extra]
+language_model_only = true
+max_num_seqs = 64
+
+[log]
+level = "debug"

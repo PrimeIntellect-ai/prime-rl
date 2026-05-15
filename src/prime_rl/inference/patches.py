@@ -22,6 +22,7 @@ def transformers_v5_compat():
     monkey_patch_dp_engine_core_pause_resume_deadlock()
     monkey_patch_vllm_layerwise_reload_alias_buffers()
     monkey_patch_vllm_gdn_debug()
+    monkey_patch_qwen35_embedding_debug()
 
 
 def monkey_patch_vllm_layerwise_reload_alias_buffers():
@@ -268,6 +269,82 @@ def monkey_patch_vllm_gdn_debug():
     cls._forward_core_decode_non_spec = _forward_core_decode_non_spec_debug
     cls._prime_rl_gdn_debug_patched = True
     logger.warning("Enabled vLLM GDN debug instrumentation.")
+
+
+def monkey_patch_qwen35_embedding_debug():
+    if os.environ.get("PRIME_RL_TOKEN_DEBUG") != "1":
+        return
+
+    from vllm.logger import init_logger
+    from vllm.model_executor.models import qwen3_next
+
+    logger = init_logger(__name__)
+    cls = qwen3_next.Qwen3NextModel
+
+    if getattr(cls, "_prime_rl_token_debug_patched", False):
+        return
+
+    original_embed_input_ids = cls.embed_input_ids
+
+    def _embed_input_ids_debug(self, input_ids: torch.Tensor) -> torch.Tensor:
+        embed_tokens = getattr(self, "embed_tokens", None)
+        weight = getattr(embed_tokens, "weight", None)
+        actual_vocab_size = weight.size(0) if isinstance(weight, torch.Tensor) else None
+        org_vocab_size = getattr(embed_tokens, "org_vocab_size", None)
+        padded_vocab_size = getattr(embed_tokens, "num_embeddings_padded", None)
+        partition_vocab_size = getattr(embed_tokens, "num_embeddings_per_partition", None)
+
+        if input_ids is not None and actual_vocab_size is not None:
+            try:
+                ids_cpu = input_ids.detach().cpu()
+                flat_ids = ids_cpu.reshape(-1)
+                invalid = (flat_ids < 0) | (flat_ids >= actual_vocab_size)
+                if bool(invalid.any().item()):
+                    invalid_positions = invalid.nonzero(as_tuple=False).flatten()
+                    sample_positions = invalid_positions[:64]
+                    sample_values = flat_ids[sample_positions]
+                    unique_values = torch.unique(sample_values, sorted=True)
+                    min_value = int(flat_ids.min().item()) if flat_ids.numel() else None
+                    max_value = int(flat_ids.max().item()) if flat_ids.numel() else None
+                    semantic_invalid_count = None
+                    if org_vocab_size is not None:
+                        semantic_invalid = (flat_ids < 0) | (flat_ids >= org_vocab_size)
+                        semantic_invalid_count = int(semantic_invalid.sum().item())
+
+                    raise RuntimeError(
+                        "\n".join(
+                            [
+                                "PRIME_RL_TOKEN_DEBUG invalid input_ids before embedding:",
+                                f"  input_ids.shape={tuple(input_ids.shape)}",
+                                f"  input_ids.dtype={input_ids.dtype}",
+                                f"  input_ids.device={input_ids.device}",
+                                f"  actual_vocab_size={actual_vocab_size}",
+                                f"  org_vocab_size={org_vocab_size}",
+                                f"  padded_vocab_size={padded_vocab_size}",
+                                f"  partition_vocab_size={partition_vocab_size}",
+                                f"  min={min_value}",
+                                f"  max={max_value}",
+                                f"  invalid_count={int(invalid.sum().item())}",
+                                f"  semantic_invalid_count={semantic_invalid_count}",
+                                f"  sample_flat_positions={sample_positions.tolist()}",
+                                f"  sample_values={sample_values.tolist()}",
+                                f"  sample_unique_values={unique_values.tolist()}",
+                            ]
+                        )
+                    )
+            except RuntimeError:
+                raise
+            except Exception as exc:  # pragma: no cover - debug path
+                raise RuntimeError(
+                    "PRIME_RL_TOKEN_DEBUG failed while validating input_ids "
+                    f"(shape={tuple(input_ids.shape)}, dtype={input_ids.dtype}, device={input_ids.device})"
+                ) from exc
+
+        return original_embed_input_ids(self, input_ids)
+
+    cls.embed_input_ids = _embed_input_ids_debug
+    cls._prime_rl_token_debug_patched = True
+    logger.warning("Enabled vLLM Qwen3.5 embedding token-id debug instrumentation.")
 
 
 @triton.jit
