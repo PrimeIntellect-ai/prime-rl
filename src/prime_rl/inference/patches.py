@@ -26,6 +26,7 @@ def transformers_v5_compat():
     monkey_patch_deep_gemm_silu_mul_quant_int64()
     monkey_patch_dp_engine_core_pause_resume_deadlock()
     monkey_patch_vllm_layerwise_reload_alias_buffers()
+    monkey_patch_vllm_padded_input_scrub()
     monkey_patch_vllm_padded_full_mamba_guard()
     monkey_patch_vllm_nan_trace()
 
@@ -70,6 +71,12 @@ def monkey_patch_vllm_padded_full_mamba_guard():
     from prime_rl.inference.vllm.padded_full_mamba_guard import install_padded_full_mamba_guard
 
     install_padded_full_mamba_guard()
+
+
+def monkey_patch_vllm_padded_input_scrub():
+    from prime_rl.inference.vllm.padded_input_scrub import install_padded_input_scrub
+
+    install_padded_input_scrub()
 
 
 @triton.jit

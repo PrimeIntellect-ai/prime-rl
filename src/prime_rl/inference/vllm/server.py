@@ -143,6 +143,7 @@ from prime_rl.inference.patches import (
     monkey_patch_tokenize_params_validation,
     monkey_patch_vllm_nan_trace,
     monkey_patch_vllm_padded_full_mamba_guard,
+    monkey_patch_vllm_padded_input_scrub,
 )
 from prime_rl.inference.vllm.nan_diagnostics import (
     adapter_path_summary,
@@ -167,6 +168,8 @@ monkey_patch_load_lora_adapter()
 monkey_patch_tokenize_params_validation()
 # NOTE: Capture exact stock /v1/chat/completions requests whose responses contain NaN floats.
 monkey_patch_chat_completion_nan_diagnostics()
+# NOTE: Diagnostic: keep padded FULL graphs enabled but scrub padded model inputs.
+monkey_patch_vllm_padded_input_scrub()
 # NOTE: Avoid padded FULL CUDA graph replay for Mamba/hybrid models when explicitly enabled.
 monkey_patch_vllm_padded_full_mamba_guard()
 # NOTE: Trace vLLM output/logprob/model-runner state for targeted NaN localization.
