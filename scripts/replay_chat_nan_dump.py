@@ -114,21 +114,58 @@ def _response_summary(parsed: Any) -> dict[str, Any]:
     }
 
 
-def collect_requests(path: Path, mode: str, repeat: int) -> list[dict[str, Any]]:
+def _content_length(request: dict[str, Any]) -> int | None:
+    source = request.get("source") or ""
+    if "#recent_requests[" not in source:
+        return None
+    return request.get("content_length")
+
+
+def _apply_body_overrides(
+    requests: list[dict[str, Any]],
+    *,
+    force_ignore_eos: bool,
+    max_completion_tokens: int | None,
+) -> list[dict[str, Any]]:
+    if not force_ignore_eos and max_completion_tokens is None:
+        return requests
+
+    updated = []
+    for request in requests:
+        copied = dict(request)
+        body = dict(copied["body"])
+        if force_ignore_eos:
+            body["ignore_eos"] = True
+        if max_completion_tokens is not None:
+            body["max_completion_tokens"] = max_completion_tokens
+        copied["body"] = body
+        updated.append(copied)
+    return updated
+
+
+def collect_requests(args: argparse.Namespace) -> list[dict[str, Any]]:
     requests: list[dict[str, Any]] = []
-    for dump_path in _dump_paths(path):
+    for dump_path in _dump_paths(args.input):
         dump = _load_json(dump_path)
-        if mode == "ring":
+        if args.mode == "ring":
             for idx, snapshot in enumerate(dump.get("recent_requests") or []):
                 body = snapshot.get("body")
                 if body is not None:
+                    content_length = None
+                    try:
+                        content_length = int((snapshot.get("headers") or {}).get("content-length"))
+                    except (TypeError, ValueError):
+                        pass
                     requests.append(
-                        _request_entry(
-                            body,
-                            source=f"{dump_path}#recent_requests[{idx}]",
-                            request_id=snapshot.get("request_id"),
-                            ordinal=len(requests),
-                        )
+                        {
+                            **_request_entry(
+                                body,
+                                source=f"{dump_path}#recent_requests[{idx}]",
+                                request_id=snapshot.get("request_id"),
+                                ordinal=len(requests),
+                            ),
+                            "content_length": content_length,
+                        }
                     )
         else:
             snapshot = dump.get("request") or {}
@@ -143,12 +180,27 @@ def collect_requests(path: Path, mode: str, repeat: int) -> list[dict[str, Any]]
                     )
                 )
 
-    if mode == "single" and requests:
+    if args.sort_by_content_length != "none":
+        requests.sort(
+            key=lambda request: _content_length(request)
+            if _content_length(request) is not None
+            else (2**63 - 1),
+            reverse=args.sort_by_content_length == "desc",
+        )
+    if args.limit is not None:
+        requests = requests[: args.limit]
+    requests = _apply_body_overrides(
+        requests,
+        force_ignore_eos=args.force_ignore_eos,
+        max_completion_tokens=args.max_completion_tokens,
+    )
+
+    if args.mode == "single" and requests:
         requests = [requests[0]]
-    if repeat > 1:
+    if args.repeat > 1:
         base = list(requests)
         requests = []
-        for _ in range(repeat):
+        for _ in range(args.repeat):
             for request in base:
                 copied = dict(request)
                 copied["ordinal"] = len(requests)
@@ -195,7 +247,7 @@ async def _post_one(
 
 
 async def replay(args: argparse.Namespace) -> None:
-    requests = collect_requests(args.input, args.mode, args.repeat)
+    requests = collect_requests(args)
     if not requests:
         raise SystemExit(f"No request bodies found in {args.input}")
 
@@ -221,6 +273,10 @@ async def replay(args: argparse.Namespace) -> None:
                 "requests": len(requests),
                 "concurrency": args.concurrency,
                 "repeat": args.repeat,
+                "sort_by_content_length": args.sort_by_content_length,
+                "limit": args.limit,
+                "force_ignore_eos": args.force_ignore_eos,
+                "max_completion_tokens": args.max_completion_tokens,
                 "output": str(output) if output else None,
             },
             sort_keys=True,
@@ -257,6 +313,24 @@ def parse_args() -> argparse.Namespace:
         help="single: first failing request; failed: all dump requests; ring: recent request ring from each dump.",
     )
     parser.add_argument("--repeat", type=int, default=1, help="Repeat collected request list this many times.")
+    parser.add_argument("--limit", type=int, default=None, help="Use only the first N collected requests after sorting.")
+    parser.add_argument(
+        "--sort-by-content-length",
+        choices=("none", "asc", "desc"),
+        default="none",
+        help="Sort recent-request ring by captured HTTP content-length before applying --limit.",
+    )
+    parser.add_argument(
+        "--force-ignore-eos",
+        action="store_true",
+        help="Set ignore_eos=true on replayed requests to keep decode rows active for shape localization.",
+    )
+    parser.add_argument(
+        "--max-completion-tokens",
+        type=int,
+        default=None,
+        help="Override max_completion_tokens on replayed requests.",
+    )
     parser.add_argument("--concurrency", type=int, default=1, help="Concurrent requests.")
     parser.add_argument("--timeout-s", type=float, default=900.0, help="Per-request timeout.")
     parser.add_argument("--output", type=Path, default=None, help="Optional JSONL result path.")
