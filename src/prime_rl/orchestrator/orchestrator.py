@@ -153,10 +153,10 @@ async def orchestrate(config: OrchestratorConfig):
     teacher_rollout_model_name = None
     use_teacher_rollout_override = config.teacher_rollout_model is not None and enable_policy_updates
     if use_teacher_rollout_override:
-        logger.info("Using external rollout model (MITO) without renderer client")
+        logger.info(f"Using external rollout model ({config.teacher_rollout_model.client_type})")
         teacher_rollout_clients = setup_clients(
             rollout_client_config,
-            client_type="openai_chat_completions",
+            client_type=config.teacher_rollout_model.client_type,
         )
         teacher_rollout_model_name = rollout_model_name
         renderer = None

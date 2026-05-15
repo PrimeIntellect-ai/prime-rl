@@ -897,6 +897,11 @@ class TeacherModelConfig(BaseConfig):
 class TeacherRolloutModelConfig(BaseConfig):
     """Configures an external teacher model used to generate rollout text."""
 
+    client_type: Annotated[
+        str,
+        Field(description="The verifiers client type to use for rollout generation."),
+    ] = "openai_chat_completions"
+
     client: Annotated[
         ClientConfig,
         Field(description="The OAI client configuration for rollout generation."),

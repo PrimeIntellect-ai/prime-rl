@@ -168,6 +168,7 @@ def test_teacher_rollout_policy_updates_require_inference_config():
             "use_sft_loss": True,
             "use_token_client": False,
             "teacher_rollout_model": {
+                "client_type": "custom_chat_client",
                 "client": {"base_url": ["http://teacher.example/v1"]},
                 "model": {"name": "teacher-model"},
             },
@@ -176,6 +177,7 @@ def test_teacher_rollout_policy_updates_require_inference_config():
 
     config = RLConfig.model_validate(base_config)
     assert config.orchestrator.enable_policy_updates is None
+    assert config.orchestrator.teacher_rollout_model.client_type == "custom_chat_client"
 
     config = RLConfig.model_validate({**base_config, "inference": {}})
     assert config.orchestrator.enable_policy_updates

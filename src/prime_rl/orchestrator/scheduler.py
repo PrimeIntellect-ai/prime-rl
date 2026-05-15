@@ -173,6 +173,8 @@ class Scheduler:
         if self.teacher_rollout_clients is None:
             return client_config, self.model_name
 
+        # Multiple teacher URLs are uncommon, but when configured we spread requests
+        # deterministically using the selected student client's index.
         teacher_client = self.teacher_rollout_clients[client_config.client_idx % len(self.teacher_rollout_clients)]
         assert self.teacher_rollout_model_name is not None
         return teacher_client, self.teacher_rollout_model_name
