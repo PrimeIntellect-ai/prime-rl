@@ -132,10 +132,6 @@ def _cudagraph_replay_eager_compare_enabled() -> bool:
     return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_CUDAGRAPH_REPLAY_EAGER_COMPARE", "0") != "0"
 
 
-def _disable_padded_full_for_mamba() -> bool:
-    return os.environ.get("PRIME_RL_VLLM_DISABLE_PADDED_FULL_FOR_MAMBA", "0") != "0"
-
-
 def _cudagraph_replay_tensor_limit() -> int:
     return _env_int("PRIME_RL_VLLM_NAN_TRACE_CUDAGRAPH_REPLAY_TENSOR_LIMIT", 32) or 32
 
@@ -254,128 +250,10 @@ def _patch_cudagraph_dispatcher() -> None:
     global _CUDAGRAPH_DISPATCHER_PATCHED
     if _CUDAGRAPH_DISPATCHER_PATCHED:
         return
-    if not _disable_padded_full_for_mamba():
-        return
+    from prime_rl.inference.vllm.padded_full_mamba_guard import install_padded_full_mamba_guard
 
-    try:
-        from vllm.config import CUDAGraphMode
-        from vllm.v1.cudagraph_dispatcher import CudagraphDispatcher
-    except Exception:
-        logger.exception("Failed to import vLLM CudagraphDispatcher for NaN mitigation")
-        return
-
-    original_dispatch = CudagraphDispatcher.dispatch
-
-    def _patched_dispatch(self, *args, **kwargs):
-        result = original_dispatch(self, *args, **kwargs)
-        try:
-            cudagraph_mode, batch_descriptor = result
-            if cudagraph_mode != CUDAGraphMode.FULL:
-                return result
-            if not getattr(self, "_prime_rl_has_mamba_layers", False):
-                return result
-
-            num_tokens = _dispatch_num_tokens(args, kwargs)
-            descriptor_tokens = getattr(batch_descriptor, "num_tokens", None)
-            if num_tokens is None or descriptor_tokens is None:
-                return result
-            if int(descriptor_tokens) <= int(num_tokens):
-                return result
-
-            patched_args = list(args)
-            patched_kwargs = dict(kwargs)
-            if len(patched_args) >= 6:
-                invalid_modes = set(patched_args[5] or ())
-            else:
-                invalid_modes = set(patched_kwargs.get("invalid_modes") or ())
-            invalid_modes.add(CUDAGraphMode.FULL)
-            if len(patched_args) >= 6:
-                patched_args[5] = invalid_modes
-            else:
-                patched_kwargs["invalid_modes"] = invalid_modes
-            fallback = original_dispatch(self, *patched_args, **patched_kwargs)
-            _trace_padded_full_mamba_guard(
-                requested_num_tokens=int(num_tokens),
-                original_result=result,
-                fallback_result=fallback,
-                args=args,
-                kwargs=kwargs,
-            )
-            return fallback
-        except Exception:
-            logger.exception("Failed to apply padded FULL Mamba CUDA graph mitigation")
-            return result
-
-    CudagraphDispatcher.dispatch = _patched_dispatch
+    install_padded_full_mamba_guard()
     _CUDAGRAPH_DISPATCHER_PATCHED = True
-
-
-def _dispatch_num_tokens(args: tuple[Any, ...], kwargs: dict[str, Any]) -> int | None:
-    if "num_tokens" in kwargs:
-        try:
-            return int(kwargs["num_tokens"])
-        except (TypeError, ValueError):
-            return None
-    if args:
-        try:
-            return int(args[0])
-        except (TypeError, ValueError):
-            return None
-    return None
-
-
-def _trace_padded_full_mamba_guard(
-    *,
-    requested_num_tokens: int,
-    original_result: Any,
-    fallback_result: Any,
-    args: tuple[Any, ...],
-    kwargs: dict[str, Any],
-) -> None:
-    try:
-        original_mode, original_desc = original_result
-        fallback_mode, fallback_desc = fallback_result
-    except Exception:
-        return
-    _write_jsonl(
-        "padded_full_mamba_guard",
-        {
-            "schema": "prime_rl.vllm_padded_full_mamba_guard.v1",
-            "timestamp": time.time(),
-            "requested_num_tokens": requested_num_tokens,
-            "original_mode": _enum_summary(original_mode),
-            "original_batch_descriptor": _object_attr_summary(
-                original_desc,
-                ("num_tokens", "num_reqs", "uniform", "has_lora", "num_active_loras"),
-            ),
-            "fallback_mode": _enum_summary(fallback_mode),
-            "fallback_batch_descriptor": _object_attr_summary(
-                fallback_desc,
-                ("num_tokens", "num_reqs", "uniform", "has_lora", "num_active_loras"),
-            ),
-            "dispatch_inputs": {
-                "uniform_decode": _json_safe(kwargs.get("uniform_decode")),
-                "has_lora": _json_safe(kwargs.get("has_lora")),
-                "num_active_loras": _json_safe(kwargs.get("num_active_loras")),
-                "valid_modes": _json_safe(kwargs.get("valid_modes")),
-                "invalid_modes": _json_safe(kwargs.get("invalid_modes")),
-                "positional_arg_count": len(args),
-            },
-        },
-    )
-
-
-def _model_runner_has_mamba_layers(model_runner: Any) -> bool:
-    kv_cache_config = getattr(model_runner, "kv_cache_config", None)
-    if bool(getattr(kv_cache_config, "has_mamba_layers", False)):
-        return True
-
-    groups = getattr(kv_cache_config, "kv_cache_groups", None) or []
-    for group in groups:
-        spec = getattr(group, "kv_cache_spec", None)
-        if spec is not None and spec.__class__.__name__ == "MambaSpec":
-            return True
-    return False
 
 
 def _patch_model_runner() -> None:
@@ -396,11 +274,6 @@ def _patch_model_runner() -> None:
     if original_determine_batch is not None:
 
         def _patched_determine_batch_execution_and_padding(self, *args, **kwargs):
-            if _disable_padded_full_for_mamba():
-                try:
-                    self.cudagraph_dispatcher._prime_rl_has_mamba_layers = _model_runner_has_mamba_layers(self)
-                except Exception:
-                    logger.exception("Failed to mark vLLM dispatcher Mamba state")
             result = original_determine_batch(self, *args, **kwargs)
             if _model_runner_trace_enabled() or _model_runner_batch_trace_enabled():
                 try:
