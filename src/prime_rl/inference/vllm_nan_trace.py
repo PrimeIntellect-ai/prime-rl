@@ -16,8 +16,10 @@ _OUTPUT_PATCHED = False
 _SCHEDULER_PATCHED = False
 _MODEL_RUNNER_PATCHED = False
 _NEMOTRON_H_LAYERS_PATCHED = False
+_MAMBA_MIXER2_OPS_PATCHED = False
 _WRITE_LOCK = threading.Lock()
 _ACTIVE_STATE_DUMPED: set[str] = set()
+_MAMBA_TRACE_LOCAL = threading.local()
 
 
 def install_vllm_nan_trace() -> None:
@@ -30,6 +32,7 @@ def install_vllm_nan_trace() -> None:
         _patch_scheduler()
         _patch_model_runner()
         _patch_nemotron_h_layers()
+        _patch_mamba_mixer2_ops()
 
 
 def _trace_dir() -> str | None:
@@ -64,6 +67,10 @@ def _model_runner_batch_gpu_trace_enabled() -> bool:
 
 def _nemotron_h_layer_trace_enabled() -> bool:
     return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_NEMOTRON_H_LAYERS", "0") != "0"
+
+
+def _mamba_op_trace_enabled() -> bool:
+    return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_MAMBA_OPS", "0") != "0"
 
 
 def _active_state_trace_enabled() -> bool:
@@ -282,6 +289,156 @@ def _patch_nemotron_h_layer_type(layer_type: Any, layer_type_name: str) -> None:
 
     layer_type.__init__ = _patched_init
     layer_type.forward = _patched_forward
+
+
+def _patch_mamba_mixer2_ops() -> None:
+    global _MAMBA_MIXER2_OPS_PATCHED
+    if _MAMBA_MIXER2_OPS_PATCHED:
+        return
+    if not _mamba_op_trace_enabled():
+        return
+
+    try:
+        from vllm.model_executor.layers.mamba import mamba_mixer2
+    except Exception:
+        logger.exception("Failed to import vLLM MambaMixer2 for NaN tracing")
+        return
+
+    mixer_type = getattr(mamba_mixer2, "MambaMixer2", None)
+    if mixer_type is not None:
+        original_conv_ssm_forward = mixer_type.conv_ssm_forward
+
+        def _patched_conv_ssm_forward(self, *args, **kwargs):
+            previous_context = getattr(_MAMBA_TRACE_LOCAL, "context", None)
+            _MAMBA_TRACE_LOCAL.context = {
+                "layer_name": getattr(self, "prefix", None),
+                "tp_size": getattr(self, "tp_size", None),
+                "num_heads": getattr(self, "num_heads", None),
+                "head_dim": getattr(self, "head_dim", None),
+                "n_groups": getattr(self, "n_groups", None),
+                "ssm_state_size": getattr(self, "ssm_state_size", None),
+                "conv_kernel_size": getattr(self, "conv_kernel_size", None),
+            }
+            try:
+                return original_conv_ssm_forward(self, *args, **kwargs)
+            finally:
+                _MAMBA_TRACE_LOCAL.context = previous_context
+
+        mixer_type.conv_ssm_forward = _patched_conv_ssm_forward
+
+    original_causal_conv1d_update = getattr(mamba_mixer2, "causal_conv1d_update", None)
+    if original_causal_conv1d_update is not None:
+
+        def _patched_causal_conv1d_update(*args, **kwargs):
+            input_tensor = args[0] if args else None
+            result = original_causal_conv1d_update(*args, **kwargs)
+            try:
+                if _tensor_has_nonfinite(input_tensor) or _tensor_has_nonfinite(result):
+                    _trace_mamba_op_event(
+                        op_name="causal_conv1d_update",
+                        before={
+                            "hidden_states_B_C_d": _tensor_total_counts(input_tensor),
+                            "conv_state": _tensor_meta(args[1]) if len(args) > 1 else None,
+                        },
+                        after={
+                            "hidden_states_B_C_d": _tensor_total_counts(result),
+                        },
+                        metadata={
+                            "conv_state_indices": _tensor_or_sequence_summary(
+                                kwargs.get("conv_state_indices")
+                            ),
+                            "block_idx_last_scheduled_token": _tensor_or_sequence_summary(
+                                kwargs.get("block_idx_last_scheduled_token")
+                            ),
+                            "initial_state_idx": _tensor_or_sequence_summary(
+                                kwargs.get("initial_state_idx")
+                            ),
+                            "num_accepted_tokens": _tensor_or_sequence_summary(
+                                kwargs.get("num_accepted_tokens")
+                            ),
+                            "query_start_loc": _tensor_or_sequence_summary(
+                                kwargs.get("query_start_loc")
+                            ),
+                            "max_query_len": kwargs.get("max_query_len"),
+                        },
+                    )
+            except Exception:
+                logger.exception("Failed to trace Mamba2 causal_conv1d_update")
+            return result
+
+        mamba_mixer2.causal_conv1d_update = _patched_causal_conv1d_update
+
+    original_selective_state_update = getattr(mamba_mixer2, "selective_state_update", None)
+    if original_selective_state_update is not None:
+
+        def _patched_selective_state_update(*args, **kwargs):
+            ssm_state = args[0] if len(args) > 0 else None
+            hidden_states_d = args[1] if len(args) > 1 else None
+            out_tensor = kwargs.get("out")
+            result = original_selective_state_update(*args, **kwargs)
+            try:
+                if (
+                    _tensor_has_nonfinite(hidden_states_d)
+                    or _tensor_has_nonfinite(out_tensor)
+                    or _tensor_has_nonfinite(result)
+                ):
+                    _trace_mamba_op_event(
+                        op_name="selective_state_update",
+                        before={
+                            "hidden_states_d": _tensor_total_counts(hidden_states_d),
+                            "ssm_state": _tensor_meta(ssm_state),
+                        },
+                        after={
+                            "out": _tensor_total_counts(out_tensor),
+                            "result": _tensor_total_counts(result),
+                        },
+                        metadata={
+                            "state_batch_indices": _tensor_or_sequence_summary(
+                                kwargs.get("state_batch_indices")
+                            ),
+                            "dst_state_batch_indices": _tensor_or_sequence_summary(
+                                kwargs.get("dst_state_batch_indices")
+                            ),
+                            "num_accepted_tokens": _tensor_or_sequence_summary(
+                                kwargs.get("num_accepted_tokens")
+                            ),
+                            "cu_seqlens": _tensor_or_sequence_summary(
+                                kwargs.get("cu_seqlens")
+                            ),
+                            "dt": _tensor_total_counts(args[2]) if len(args) > 2 else None,
+                            "B": _tensor_total_counts(args[4]) if len(args) > 4 else None,
+                            "C": _tensor_total_counts(args[5]) if len(args) > 5 else None,
+                        },
+                    )
+            except Exception:
+                logger.exception("Failed to trace Mamba2 selective_state_update")
+            return result
+
+        mamba_mixer2.selective_state_update = _patched_selective_state_update
+
+    _MAMBA_MIXER2_OPS_PATCHED = True
+
+
+def _trace_mamba_op_event(
+    *,
+    op_name: str,
+    before: dict[str, Any],
+    after: dict[str, Any],
+    metadata: dict[str, Any],
+) -> None:
+    _write_jsonl(
+        "mamba_mixer2_ops",
+        {
+            "schema": "prime_rl.vllm_mamba_mixer2_op_trace.v1",
+            "created_unix": time.time(),
+            "pid": os.getpid(),
+            "op_name": op_name,
+            "layer_context": getattr(_MAMBA_TRACE_LOCAL, "context", None),
+            "before": before,
+            "after": after,
+            "metadata": metadata,
+        },
+    )
 
 
 def _trace_engine_core_outputs(output_processor: Any, engine_core_outputs: list[Any], timestamp: float | None) -> None:
@@ -929,6 +1086,24 @@ def _tensor_meta(tensor: Any) -> dict[str, Any] | None:
         "shape": list(tensor.shape),
         "dtype": str(getattr(tensor, "dtype", "")),
     }
+
+
+def _tensor_total_counts(tensor: Any) -> dict[str, Any] | None:
+    meta = _tensor_meta(tensor)
+    if meta is None or not hasattr(tensor, "isfinite"):
+        return meta
+    try:
+        finite = tensor.isfinite()
+        return {
+            **meta,
+            "numel": int(tensor.numel()),
+            "finite": int(finite.sum().detach().cpu().item()),
+            "nan": int(tensor.isnan().sum().detach().cpu().item()),
+            "posinf": int(tensor.isposinf().sum().detach().cpu().item()),
+            "neginf": int(tensor.isneginf().sum().detach().cpu().item()),
+        }
+    except Exception:
+        return meta
 
 
 def _tensor_or_sequence_summary(value: Any, *, limit: int = 16, count: int | None = None) -> dict[str, Any] | None:
