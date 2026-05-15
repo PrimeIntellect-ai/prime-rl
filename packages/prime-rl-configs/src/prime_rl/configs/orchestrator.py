@@ -1223,7 +1223,7 @@ class OrchestratorConfig(BaseConfig):
         if has_teacher and self.use_renderer:
             raise ValueError(
                 "orchestrator.use_renderer must be false when orchestrator.teacher_rollout_model is configured "
-                "(external rollout uses MITO)."
+                "(teacher rollout uses teacher_rollout_model.client_type)."
             )
         return self
 

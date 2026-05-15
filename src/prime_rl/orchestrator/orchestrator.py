@@ -153,10 +153,16 @@ async def orchestrate(config: OrchestratorConfig):
     teacher_rollout_model_name = None
     use_teacher_rollout_override = config.teacher_rollout_model is not None and enable_policy_updates
     if use_teacher_rollout_override:
-        logger.info(f"Using external rollout model ({config.teacher_rollout_model.client_type})")
+        teacher_client_type = config.teacher_rollout_model.client_type
+        teacher_client_label = (
+            "MITO (openai_chat_completions)"
+            if teacher_client_type == "openai_chat_completions"
+            else teacher_client_type
+        )
+        logger.info(f"Using teacher rollout override ({teacher_client_label}, model={rollout_model_name})")
         teacher_rollout_clients = setup_clients(
             rollout_client_config,
-            client_type=config.teacher_rollout_model.client_type,
+            client_type=teacher_client_type,
         )
         teacher_rollout_model_name = rollout_model_name
         renderer = None
@@ -919,8 +925,8 @@ async def setup_rollout_inference_pool(
     ``config.use_renderer`` (mutually exclusive — config-level validators
     block both being True):
 
-      - external teacher rollout → MITO (``openai_chat_completions``),
-        forced regardless of the toggles (config-level validator
+      - external teacher rollout → configured teacher rollout client type,
+        selected independently of the toggles (config-level validator
         rejects ``use_token_client`` / ``use_renderer`` in that case)
       - ``use_renderer=True``  → renderer client (``/v1/generate``).
         Not allowed for VLMs (validated at config time).

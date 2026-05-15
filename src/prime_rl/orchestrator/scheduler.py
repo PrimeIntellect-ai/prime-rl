@@ -173,8 +173,9 @@ class Scheduler:
         if self.teacher_rollout_clients is None:
             return client_config, self.model_name
 
-        # Multiple teacher URLs are uncommon, but when configured we spread requests
-        # deterministically using the selected student client's index.
+        # The scheduler pins/load-balances against the student inference pool.
+        # Map that selected logical client onto the teacher client set, which may
+        # have a different size due to different base_url or dp_rank_count settings.
         teacher_client = self.teacher_rollout_clients[client_config.client_idx % len(self.teacher_rollout_clients)]
         assert self.teacher_rollout_model_name is not None
         return teacher_client, self.teacher_rollout_model_name
