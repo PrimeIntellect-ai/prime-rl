@@ -145,6 +145,8 @@ These tell you whether training is healthy or diverging.
 |--------|--------|-------------|
 | `mismatch_kl/mean` | trainer | KL divergence between trainer and (old) inference policy  |
 | `entropy/mean` | trainer | policy entropy |
+| `masked_advantage_positive/mean` | trainer | fraction of DPPO-masked trainable tokens with positive advantage (W&B) |
+| `masked_advantage_negative/mean` | trainer | fraction of DPPO-masked trainable tokens with negative advantage (W&B) |
 | `optim/grad_norm` | trainer | gradient norm — spikes may precede divergence |
 
 #### Performance
