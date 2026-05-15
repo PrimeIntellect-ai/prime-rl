@@ -417,6 +417,8 @@ known-first-party = ["prime_rl"]
 
 [tool.ruff]
 line-length = 120
+# Submodules have their own style; prime-rl's ruff config should not apply to them.
+extend-exclude = ["verifiers", "renderers", "research-environments"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers"

@@ -16,8 +16,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        # Submodules are excluded from ruff via pyproject.toml; no need to fetch them.
         with:
-          submodules: true
+          submodules: false
       - name: Run ruff
         uses: astral-sh/ruff-action@v3
         with:
