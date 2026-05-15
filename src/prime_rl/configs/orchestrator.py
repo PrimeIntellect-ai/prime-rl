@@ -899,6 +899,16 @@ class OrchestratorConfig(BaseConfig):
     # use the same mask as RL.
     sft_loss_mask: RoleLossMaskConfig | None = None
 
+    # When set, after each rollout batch is generated, score the model's own
+    # log-probabilities on every tool-response token via a `prompt_logprobs`
+    # forward pass, then aggregate the negative log-likelihood per originating
+    # tool-call function name. Logged as `metrics/<env>/tool_nll_<tool_name>`
+    # (and `tool_nll_token_count_<tool_name>` to track sample size). Take
+    # `exp()` at plot time for perplexity. Opt-in because it adds one extra
+    # vllm forward pass per rollout (~5-15% step-time overhead on typical
+    # settings); off by default to preserve behavior.
+    capture_tool_logprobs: bool = False
+
     # Rollout filters (monitor by default, enforce optionally)
     filters: list[FilterConfig] = [GibberishFilterConfig(), RepetitionFilterConfig(), ZeroAdvantageFilterConfig()]
 

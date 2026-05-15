@@ -309,6 +309,167 @@ def _build_role_loss_mask_from_token_stream(
     return mask
 
 
+def _extract_tool_content_spans(
+    full_ids: list[int],
+    tokenizer: PreTrainedTokenizer,
+    tool_call_names_in_order: list[str | None],
+) -> list[tuple[int, int, str]]:
+    """Return ``[(content_start, content_end, tool_name), ...]`` for each
+    tool message in the token stream.
+
+    Span is **content-only**: the indices cover just the actual tool-output
+    tokens *between* ``<tool_response>\\n`` and ``\\n</tool_response>``,
+    excluding the chat-template envelope. Half-open Python slice semantics
+    (``full_ids[content_start:content_end]`` gives the content tokens).
+
+    Tool messages whose originating tool_call name we couldn't resolve
+    (``None`` entries in ``tool_call_names_in_order``) are skipped — there's
+    no useful aggregation bucket for them.
+
+    Used for capturing per-tool token-level logprobs after a rollout (see
+    ``OrchestratorConfig.capture_tool_logprobs``).
+    """
+    im_start = tokenizer.convert_tokens_to_ids("<|im_start|>")
+    im_end = tokenizer.convert_tokens_to_ids("<|im_end|>")
+    tool_response = tokenizer.convert_tokens_to_ids("<tool_response>")
+    tool_response_close = tokenizer.convert_tokens_to_ids("</tool_response>")
+    newline_ids = tokenizer.encode("\n", add_special_tokens=False)
+    if len(newline_ids) != 1:
+        raise RuntimeError(
+            "Expected tokenizer to encode '\\n' as a single token for ChatML "
+            f"parsing, got {newline_ids!r}"
+        )
+    newline = newline_ids[0]
+
+    spans: list[tuple[int, int, str]] = []
+    tool_span_idx = 0
+    n = len(full_ids)
+    i = 0
+    while i < n:
+        if full_ids[i] != im_start:
+            i += 1
+            continue
+        j = i + 1
+        while j < n and full_ids[j] != newline:
+            j += 1
+        is_tool_span = (
+            j + 1 < n
+            and full_ids[j + 1] == tool_response
+            and tokenizer.decode(full_ids[i + 1 : j]).strip() == "user"
+        )
+        if not is_tool_span:
+            i = j + 1
+            continue
+        # Find matching <|im_end|>.
+        k = j + 1
+        while k < n and full_ids[k] != im_end:
+            k += 1
+        if k >= n:
+            break
+
+        # Content start: skip <tool_response> and the optional separating \n.
+        content_start = j + 2
+        if content_start < n and full_ids[content_start] == newline:
+            content_start += 1
+        # Content end: back off </tool_response> (and any preceding \n that
+        # isn't BPE-fused into the last content token).
+        content_end = k
+        if k - 1 >= 0 and full_ids[k - 1] == tool_response_close:
+            content_end = k - 1
+            if k - 2 >= 0 and full_ids[k - 2] == newline:
+                content_end = k - 2
+
+        if (
+            tool_call_names_in_order is not None
+            and tool_span_idx < len(tool_call_names_in_order)
+        ):
+            name = tool_call_names_in_order[tool_span_idx]
+            if name is not None and content_end > content_start:
+                spans.append((content_start, content_end, name))
+        tool_span_idx += 1
+        i = k + 1
+
+    return spans
+
+
+async def annotate_tool_nll_metrics(
+    rollouts: list[vf.RolloutOutput],
+    *,
+    clients: list[Any],
+    model_name: str,
+    tokenizer: PreTrainedTokenizer,
+) -> None:
+    """For each rollout, score the model's own log-probabilities on every
+    tool-response *content* token via a vllm `prompt_logprobs` forward pass,
+    and write per-tool aggregated metrics into ``rollout["metrics"]``:
+
+      * ``tool_nll_<tool_name>``        — mean negative log-likelihood per
+                                          tool-content token (across all tool
+                                          messages of that name in this
+                                          rollout).
+      * ``tool_nll_token_count_<name>`` — number of tokens that went into
+                                          the above mean. Useful as a sanity
+                                          / sample-size denominator.
+
+    Mutates the rollouts in place. The last tool message of a terminating
+    rollout (typically ``submit_code``'s response) is not scored because it
+    never appears in any subsequent prompt; this is documented in the
+    config field's docstring.
+    """
+    # Lazy import to keep utils.py the only place importing httpx/openai.
+    from prime_rl.orchestrator.utils import compute_prompt_logprobs
+
+    # Build the score targets and per-rollout span maps.
+    score_token_seqs: list[list[int]] = []
+    per_rollout_spans: list[list[tuple[int, int, str]]] = []
+    for rollout in rollouts:
+        trajectory = rollout.get("trajectory") or []
+        last_step = trajectory[-1] if trajectory else None
+        tokens = last_step.get("tokens") if last_step else None
+        if not tokens or not tokens.get("prompt_ids"):
+            per_rollout_spans.append([])
+            score_token_seqs.append([])
+            continue
+        # Score the last step's full prompt — this contains every tool
+        # response except the terminating one (which is never re-prompted).
+        full_ids = list(tokens["prompt_ids"])
+        tool_call_names = _tool_call_names_in_order(
+            rollout.get("prompt"), rollout.get("completion")
+        )
+        spans = _extract_tool_content_spans(full_ids, tokenizer, tool_call_names)
+        per_rollout_spans.append(spans)
+        score_token_seqs.append(full_ids if spans else [])
+
+    # Run a single batched scoring pass for rollouts that actually have spans.
+    scorable_idx = [i for i, ids in enumerate(score_token_seqs) if ids]
+    if not scorable_idx:
+        return
+    scoring_inputs = [score_token_seqs[i] for i in scorable_idx]
+    logprobs_lists = await compute_prompt_logprobs(
+        clients=clients, model_name=model_name, token_sequences=scoring_inputs
+    )
+
+    # Aggregate per tool name, write into rollout metrics.
+    for i, logprobs in zip(scorable_idx, logprobs_lists):
+        spans = per_rollout_spans[i]
+        if not spans or not logprobs:
+            continue
+        per_tool_sum: dict[str, float] = {}
+        per_tool_count: dict[str, int] = {}
+        for content_start, content_end, name in spans:
+            content_end = min(content_end, len(logprobs))
+            if content_start >= content_end:
+                continue
+            seg = logprobs[content_start:content_end]
+            per_tool_sum[name] = per_tool_sum.get(name, 0.0) + sum(-lp for lp in seg)
+            per_tool_count[name] = per_tool_count.get(name, 0) + len(seg)
+        metrics = rollouts[i].setdefault("metrics", {})
+        for name, count in per_tool_count.items():
+            if count > 0:
+                metrics[f"tool_nll_{name}"] = per_tool_sum[name] / count
+                metrics[f"tool_nll_token_count_{name}"] = float(count)
+
+
 def _build_role_loss_masks_for_step(
     step: vf.TrajectoryStep,
     tokenizer: PreTrainedTokenizer,

@@ -11,6 +11,7 @@ from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import (
+    annotate_tool_nll_metrics,
     build_vlm_image_cache,
     interleave_rollout,
     offload_images_to_disk,
@@ -581,6 +582,26 @@ async def orchestrate(config: OrchestratorConfig):
                 "model, consider reviewing the task difficulty of your environment(s)"
             )
 
+        # Capture per-tool token-level logprobs (opt-in). Scores each
+        # rollout's tool-response content tokens via a prompt_logprobs
+        # forward pass and aggregates the mean negative log-likelihood per
+        # originating tool-call function name, written into
+        # `rollout["metrics"]["tool_nll_<name>"]` and
+        # `rollout["metrics"]["tool_nll_token_count_<name>"]`. The downstream
+        # aggregation at line ~750 will surface these as
+        # `metrics/<env>/tool_nll_<name>` in wandb.
+        tool_logprobs_time = 0.0
+        if config.capture_tool_logprobs:
+            tool_logprobs_start_time = time.perf_counter()
+            await annotate_tool_nll_metrics(
+                train_rollouts,
+                clients=inference_pool.train_clients,
+                model_name=rollout_model_name,
+                tokenizer=tokenizer,
+            )
+            tool_logprobs_time = time.perf_counter() - tool_logprobs_start_time
+            logger.debug(f"Captured tool-token logprobs in {tool_logprobs_time:.2f}s")
+
         # Compute teacher logprobs if teacher model is configured
         teacher_logprobs_time = 0
         if config.teacher_model and teacher_inference_pool:
@@ -700,6 +721,7 @@ async def orchestrate(config: OrchestratorConfig):
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,
             "time/teacher_logprobs": teacher_logprobs_time,
+            "time/tool_logprobs": tool_logprobs_time,
             "time/save_ckpt": save_ckpt_time,
             "time/parallel_preprocess": parallel_preprocess_time,
             # Scheduler metrics

@@ -79,6 +79,43 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     console.print(table)
 
 
+async def compute_prompt_logprobs(
+    clients: list[vf.ClientConfig],
+    model_name: str,
+    token_sequences: list[list[int]],
+) -> list[list[float]]:
+    """Compute the policy model's per-token logprobs (teacher-forced) for a
+    list of arbitrary token sequences via vllm's `prompt_logprobs` prefill
+    pathway. Returns one list of per-position logprobs per input sequence.
+    Used by `capture_tool_logprobs` to score tool-response content tokens
+    after a rollout has completed."""
+
+    async def _compute_single(client_config: vf.ClientConfig, ids: list[int]) -> list[float]:
+        client = setup_openai_client(client_config)
+        response = await client.post(
+            "/chat/completions/tokens",
+            body={
+                "model": model_name,
+                "messages": [{"role": "user", "content": ""}],
+                "tokens": ids,
+                "max_tokens": 1,
+                "temperature": 1.0,
+                "top_p": 1.0,
+                "skip_special_tokens": False,
+                "prompt_logprobs": True,
+            },
+            cast_to=ChatCompletion,
+        )
+        return [
+            0.0 if lp is None else float(next(iter(lp.values()))["logprob"])
+            for lp in getattr(response, "prompt_logprobs", [])
+        ]
+
+    return await asyncio.gather(
+        *[_compute_single(c, ids) for c, ids in zip(cycle(clients), token_sequences)]
+    )
+
+
 async def compute_teacher_logprobs(
     clients: list[vf.ClientConfig],
     model_name: str,
