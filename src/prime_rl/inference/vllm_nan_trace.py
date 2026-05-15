@@ -19,6 +19,7 @@ _NEMOTRON_H_LAYERS_PATCHED = False
 _MAMBA_MIXER2_OPS_PATCHED = False
 _WRITE_LOCK = threading.Lock()
 _ACTIVE_STATE_DUMPED: set[str] = set()
+_MODEL_RUNNER_TRACE_LOCAL = threading.local()
 _MAMBA_TRACE_LOCAL = threading.local()
 
 
@@ -71,6 +72,10 @@ def _nemotron_h_layer_trace_enabled() -> bool:
 
 def _mamba_op_trace_enabled() -> bool:
     return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_MAMBA_OPS", "0") != "0"
+
+
+def _mamba_op_trace_requires_request_ids() -> bool:
+    return os.environ.get("PRIME_RL_VLLM_NAN_TRACE_MAMBA_OPS_REQUIRE_REQUEST_IDS", "1") != "0"
 
 
 def _active_state_trace_enabled() -> bool:
@@ -189,35 +194,40 @@ def _patch_model_runner() -> None:
         GPUModelRunner._determine_batch_execution_and_padding = _patched_determine_batch_execution_and_padding
 
     def _patched_execute_model(self, *args, **kwargs):
-        result = original_execute_model(self, *args, **kwargs)
-        if _model_runner_batch_trace_enabled():
+        previous_context = getattr(_MODEL_RUNNER_TRACE_LOCAL, "context", None)
+        _MODEL_RUNNER_TRACE_LOCAL.context = _model_runner_execution_context(self)
+        try:
+            result = original_execute_model(self, *args, **kwargs)
+            if _model_runner_batch_trace_enabled():
+                try:
+                    state = getattr(self, "execute_model_state", None)
+                    if state is not None:
+                        _trace_model_runner_batch_state(
+                            self,
+                            state,
+                            getattr(self, "_prime_rl_nan_trace_batch_execution", None),
+                        )
+                except Exception:
+                    logger.exception("Failed to trace vLLM model runner batch state")
+
+            if not _model_runner_trace_enabled():
+                return result
+
             try:
                 state = getattr(self, "execute_model_state", None)
                 if state is not None:
-                    _trace_model_runner_batch_state(
-                        self,
-                        state,
-                        getattr(self, "_prime_rl_nan_trace_batch_execution", None),
+                    _trace_model_runner_logits_state(
+                        req_ids=list(getattr(self.input_batch, "req_ids", []) or []),
+                        logits=getattr(state, "logits", None),
+                        sample_hidden_states=getattr(state, "sample_hidden_states", None),
+                        spec_decode=getattr(state, "spec_decode_metadata", None) is not None,
+                        batch_execution=getattr(self, "_prime_rl_nan_trace_batch_execution", None),
                     )
             except Exception:
-                logger.exception("Failed to trace vLLM model runner batch state")
-
-        if not _model_runner_trace_enabled():
+                logger.exception("Failed to trace vLLM model runner logits state")
             return result
-
-        try:
-            state = getattr(self, "execute_model_state", None)
-            if state is not None:
-                _trace_model_runner_logits_state(
-                    req_ids=list(getattr(self.input_batch, "req_ids", []) or []),
-                    logits=getattr(state, "logits", None),
-                    sample_hidden_states=getattr(state, "sample_hidden_states", None),
-                    spec_decode=getattr(state, "spec_decode_metadata", None) is not None,
-                    batch_execution=getattr(self, "_prime_rl_nan_trace_batch_execution", None),
-                )
-        except Exception:
-            logger.exception("Failed to trace vLLM model runner logits state")
-        return result
+        finally:
+            _MODEL_RUNNER_TRACE_LOCAL.context = previous_context
 
     def _patched_sample(self, logits, spec_decode_metadata):
         if not _model_runner_trace_enabled() or logits is None:
@@ -348,7 +358,9 @@ def _patch_mamba_mixer2_ops() -> None:
             input_tensor = args[0] if args else None
             result = original_causal_conv1d_update(*args, **kwargs)
             try:
-                if _tensor_has_nonfinite(input_tensor) or _tensor_has_nonfinite(result):
+                if _mamba_trace_context_allows_event() and (
+                    _tensor_has_nonfinite(input_tensor) or _tensor_has_nonfinite(result)
+                ):
                     _trace_mamba_op_event(
                         op_name="causal_conv1d_update",
                         before={
@@ -392,7 +404,7 @@ def _patch_mamba_mixer2_ops() -> None:
             out_tensor = kwargs.get("out")
             result = original_selective_state_update(*args, **kwargs)
             try:
-                if (
+                if _mamba_trace_context_allows_event() and (
                     _tensor_has_nonfinite(hidden_states_d)
                     or _tensor_has_nonfinite(out_tensor)
                     or _tensor_has_nonfinite(result)
@@ -449,11 +461,26 @@ def _trace_mamba_op_event(
             "pid": os.getpid(),
             "op_name": op_name,
             "layer_context": getattr(_MAMBA_TRACE_LOCAL, "context", None),
+            "model_runner_context": _current_model_runner_context(),
             "before": before,
             "after": after,
             "metadata": metadata,
         },
     )
+
+
+def _current_model_runner_context() -> dict[str, Any] | None:
+    return getattr(_MODEL_RUNNER_TRACE_LOCAL, "context", None)
+
+
+def _mamba_trace_context_allows_event() -> bool:
+    if not _mamba_op_trace_requires_request_ids():
+        return True
+
+    context = _current_model_runner_context()
+    if context is None:
+        return False
+    return bool(context.get("req_id_count", 0))
 
 
 def _trace_engine_core_outputs(output_processor: Any, engine_core_outputs: list[Any], timestamp: float | None) -> None:
@@ -724,6 +751,18 @@ def _trace_model_runner_logits_state(
             "rows": rows,
         },
     )
+
+
+def _model_runner_execution_context(model_runner: Any) -> dict[str, Any]:
+    input_batch = getattr(model_runner, "input_batch", None)
+    req_ids = list(getattr(input_batch, "req_ids", []) or []) if input_batch is not None else []
+    num_reqs = getattr(input_batch, "num_reqs", len(req_ids)) if input_batch is not None else len(req_ids)
+    return {
+        "req_id_count": len(req_ids),
+        "req_ids_head": req_ids[:16],
+        "num_reqs": _json_safe(num_reqs),
+        "batch_execution": getattr(model_runner, "_prime_rl_nan_trace_batch_execution", None),
+    }
 
 
 def _batch_execution_summary(result: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
