@@ -1,0 +1,139 @@
+#!/bin/bash
+
+#SBATCH --job-name={{ job_name }}
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --gres=gpu:{{ gpus_per_node }}
+#SBATCH --exclusive
+#SBATCH --partition={{ partition }}
+{%- if account %}
+#SBATCH --account={{ account }}
+{%- endif %}
+{%- if time %}
+#SBATCH --time={{ time }}
+{%- endif %}
+{%- if nodelist %}
+#SBATCH --nodelist={{ nodelist }}
+{%- endif %}
+{%- if exclude %}
+#SBATCH --exclude={{ exclude }}
+{%- endif %}
+#SBATCH --output={{ output_dir }}/job_%j.log
+#SBATCH --error={{ output_dir }}/job_%j.log
+
+set -euo pipefail
+
+export PROJECT_DIR={{ project_dir }}
+export OUTPUT_DIR={{ output_dir }}
+export CONFIG_PATH={{ config_path }}
+
+mkdir -p "$OUTPUT_DIR/logs/dynamo"
+
+# Runtime knobs. Override these in the submit shell or your .env file.
+export DYNAMO_VENV="${DYNAMO_VENV:-$PROJECT_DIR/.venv}"
+export DYNAMO_MODEL="${DYNAMO_MODEL:-PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT}"
+export DYNAMO_SERVED_MODEL_NAME="${DYNAMO_SERVED_MODEL_NAME:-$DYNAMO_MODEL}"
+export DYNAMO_GPU="${DYNAMO_GPU:-0}"
+export PRIME_RL_GPU="${PRIME_RL_GPU:-1}"
+export DYN_HTTP_PORT="${DYN_HTTP_PORT:-8000}"
+export DYN_SYSTEM_PORT="${DYN_SYSTEM_PORT:-8081}"
+export DYN_ENABLE_RL="${DYN_ENABLE_RL:-true}"
+export DYNAMO_MAX_MODEL_LEN="${DYNAMO_MAX_MODEL_LEN:-2048}"
+export DYNAMO_MAX_NUM_SEQS="${DYNAMO_MAX_NUM_SEQS:-32}"
+export DYNAMO_STARTUP_ATTEMPTS="${DYNAMO_STARTUP_ATTEMPTS:-180}"
+
+cleanup() {
+    set +e
+    jobs -pr | xargs -r kill
+}
+trap cleanup EXIT
+
+wait_for_url() {
+    local url="$1"
+    local name="$2"
+    local attempts="$DYNAMO_STARTUP_ATTEMPTS"
+
+    for ((i = 1; i <= attempts; i++)); do
+        if curl -fsS "$url" >/dev/null 2>&1; then
+            echo "[dynamo-slurm] $name is ready: $url"
+            return 0
+        fi
+
+        if [[ -n "${FRONTEND_PID:-}" ]] && ! kill -0 "$FRONTEND_PID" 2>/dev/null; then
+            echo "[dynamo-slurm] frontend exited while waiting for $name"
+            tail -n 80 "$OUTPUT_DIR/logs/dynamo/frontend.log" || true
+            return 1
+        fi
+        if [[ -n "${WORKER_PID:-}" ]] && ! kill -0 "$WORKER_PID" 2>/dev/null; then
+            echo "[dynamo-slurm] worker exited while waiting for $name"
+            tail -n 80 "$OUTPUT_DIR/logs/dynamo/vllm.log" || true
+            return 1
+        fi
+
+        sleep 5
+    done
+
+    echo "[dynamo-slurm] timed out waiting for $name: $url"
+    tail -n 80 "$OUTPUT_DIR/logs/dynamo/frontend.log" || true
+    tail -n 80 "$OUTPUT_DIR/logs/dynamo/vllm.log" || true
+    return 1
+}
+
+cd "$PROJECT_DIR"
+[ -f .env ] && source .env
+source .venv/bin/activate
+uv sync --all-extras
+
+{% if pre_run_command %}
+# Pre-run command
+{{ pre_run_command }}
+{% endif %}
+
+echo "[dynamo-slurm] cleaning stale local processes and IPC files"
+pkill -9 -f "python.*prime_rl" 2>/dev/null || true
+pkill -9 -f "torchrun" 2>/dev/null || true
+pkill -9 -f "dynamo.frontend" 2>/dev/null || true
+pkill -9 -f "dynamo.vllm" 2>/dev/null || true
+pkill -9 -f "vllm" 2>/dev/null || true
+rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/vllm_* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null || true
+
+echo "[dynamo-slurm] launching Dynamo frontend on port $DYN_HTTP_PORT"
+(
+    source "$DYNAMO_VENV/bin/activate"
+    export DYN_ENABLE_RL
+    export DYN_HTTP_PORT
+    python -m dynamo.frontend \
+        --discovery-backend file \
+        > "$OUTPUT_DIR/logs/dynamo/frontend.log" 2>&1
+) &
+FRONTEND_PID=$!
+
+sleep 5
+
+echo "[dynamo-slurm] launching Dynamo vLLM worker on GPU $DYNAMO_GPU model=$DYNAMO_MODEL"
+(
+    source "$DYNAMO_VENV/bin/activate"
+    export CUDA_VISIBLE_DEVICES="$DYNAMO_GPU"
+    export DYN_ENABLE_RL
+    export DYN_SYSTEM_PORT
+    export VLLM_WORKER_MULTIPROC_METHOD=spawn
+    python -m dynamo.vllm \
+        --model "$DYNAMO_MODEL" \
+        --served-model-name "$DYNAMO_SERVED_MODEL_NAME" \
+        --discovery-backend file \
+        --kv-events-config '{"enable_kv_cache_events": false}' \
+        --enforce-eager \
+        --max-model-len "$DYNAMO_MAX_MODEL_LEN" \
+        --max-num-seqs "$DYNAMO_MAX_NUM_SEQS" \
+        ${DYNAMO_EXTRA_ARGS:-} \
+        > "$OUTPUT_DIR/logs/dynamo/vllm.log" 2>&1
+) &
+WORKER_PID=$!
+
+wait_for_url "http://127.0.0.1:${DYN_HTTP_PORT}/health" "Dynamo frontend"
+wait_for_url "http://127.0.0.1:${DYN_HTTP_PORT}/v1/models" "Dynamo model registry"
+
+echo "[dynamo-slurm] starting prime-rl on GPU $PRIME_RL_GPU"
+export BENCH_API_KEY="${BENCH_API_KEY:-EMPTY}"
+export CUDA_VISIBLE_DEVICES="$PRIME_RL_GPU"
+uv run rl @ "$CONFIG_PATH"

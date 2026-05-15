@@ -1,0 +1,54 @@
+# Prime-RL + Dynamo single-node SLURM smoke test.
+#
+# Usage:
+#   uv run rl @ tools/dynamo/slurm_smoke/smoke_rl.toml --dry-run
+#   uv run rl @ tools/dynamo/slurm_smoke/smoke_rl.toml
+#
+# The custom SLURM template launches Dynamo on GPU 0, waits for it to become
+# ready, then runs prime-rl against that Dynamo endpoint on GPU 1.
+
+output_dir = "outputs/dynamo-slurm-smoke"
+max_steps = 5
+seq_len = 512
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+offline = true
+shared = false
+project = "prime-rl-dynamo-slurm"
+name = "dynamo-slurm-smoke"
+
+[deployment]
+type = "single_node"
+gpus_per_node = 2
+num_train_gpus = 1
+num_infer_gpus = 0
+
+[slurm]
+job_name = "dynamo-slurm-smoke"
+time = "01:00:00"
+template_path = "tools/dynamo/slurm_smoke/dynamo_single_node_rl.sbatch.j2"
+
+[orchestrator]
+batch_size = 16
+rollouts_per_example = 4
+use_token_client = false
+
+[orchestrator.train.sampling]
+max_completion_tokens = 64
+
+[[orchestrator.train.env]]
+id = "reverse-text"
+
+[orchestrator.client]
+base_url = ["http://127.0.0.1:8000/v1"]
+admin_base_url = ["http://127.0.0.1:8000/v1/rl"]
+api_key_var = "BENCH_API_KEY"
+skip_model_check = true
+
+[trainer.optim]
+lr = 3e-6
+
+[ckpt]
