@@ -53,7 +53,7 @@ prime_rl = "prime_rl.inference.patches:transformers_v5_compat"
 
 [project.optional-dependencies]
 flash-attn = [
-    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.4/flash_attn-2.8.3+cu128torch2.11-cp312-cp312-linux_x86_64.whl ; platform_machine == 'x86_64'",
+    "flash-attn ; sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')",
 ]
 flash-attn-3 = ["flash_attn_3"]
 
@@ -124,8 +124,8 @@ environments = [
 # Override torch's pinned cuDNN to fix Conv3d performance regression (torch 2.9 + cuDNN 9.8-9.14)
 # See: https://github.com/pytorch/pytorch/issues/166122
 override-dependencies = [
-    "nvidia-cudnn-cu12>=9.15",
-    "nvidia-cutlass-dsl>=4.4.1",
+    "nvidia-cudnn-cu13>=9.15",
+    "nvidia-cutlass-dsl>=4.4.2",
     "transformers>=5.1.0.dev0",
 ]
 
@@ -165,20 +165,21 @@ nixl-cu12 = false
 
 [tool.uv.sources]
 prime-rl-configs = { workspace = true }
-torch = { index = "pytorch-cu128" }
-torchvision = { index = "pytorch-cu128" }
-torchaudio = { index = "pytorch-cu128" }
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }
+torchaudio = { index = "pytorch-cu130" }
 verifiers = { git = "https://github.com/joanvelja/verifiers.git", rev = "73fe401" }
 renderers = { git = "https://github.com/joanvelja/renderers.git", rev = "cce74eb" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "c1c3424" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "96bd151" }
+flash-attn = { git = "https://github.com/Dao-AILab/flash-attention.git", rev = "060c918" }
 pydantic-config = { git = "https://github.com/samsja/pydantic_config.git", branch = "main" }
 vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl" }
 vllm = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2-cp38-abi3-manylinux_2_35_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2-cp38-abi3-manylinux_2_35_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 reverse-text = { index = "primeintellect" }
 alphabet-sort = { index = "primeintellect" }
@@ -198,7 +199,7 @@ deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/downlo
 deep-gemm = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }
 nixl-cu12 = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
-flash_attn_3 = { index = "pytorch-cu128-test" }
+flash_attn_3 = { index = "pytorch-cu130-test" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
@@ -206,7 +207,7 @@ flash-attn-3 = [{ requirement = "torch", match-runtime = true }]
 mamba-ssm = [{ requirement = "torch", match-runtime = true }]
 
 [tool.uv.extra-build-variables]
-flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
+flash-attn = { FLASH_ATTENTION_FORCE_BUILD = "TRUE", MAX_JOBS = "32", NVCC_THREADS = "4" }
 
 [[tool.uv.index]]
 name = "primeintellect"
@@ -214,14 +215,14 @@ url = "https://hub.primeintellect.ai/primeintellect/simple/"
 explicit = true
 
 [[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 
 [[tool.uv.index]]
-name = "pytorch-cu128-test"
-url = "https://download.pytorch.org/whl/test/cu128"
+name = "pytorch-cu130-test"
+url = "https://download.pytorch.org/whl/test/cu130"
 explicit = true
 
 [tool.ruff.lint]

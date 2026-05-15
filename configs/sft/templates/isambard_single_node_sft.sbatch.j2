@@ -42,6 +42,7 @@ source .venv/bin/activate
 # Fail-fast venv sanity check — broken venv should crash loudly, not mid-training.
 python - <<'PY'
 import sys, torch, flash_attn  # noqa: F401
+from flash_attn import flash_attn_varlen_func  # noqa: F401
 assert torch.cuda.is_available(), "CUDA not available"
 print(f"venv OK: torch={torch.__version__} cuda={torch.version.cuda} gpus={torch.cuda.device_count()}", file=sys.stderr)
 PY

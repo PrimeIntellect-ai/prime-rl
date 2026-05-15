@@ -127,10 +127,10 @@ Validate your environment setup
 uv run python -V
 ```
 
-2. Check that `flash-attn` is installed
+2. Check that `flash-attn` is installed with the FA2 varlen kernel
 
 ```bash
-uv run python -c "import flash_attn"
+uv run python -c "from flash_attn import flash_attn_varlen_func"
 ```
 
 3. Check that you can run SFT trainer  (*this requires 1 GPU*)

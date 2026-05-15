@@ -15,3 +15,8 @@ export FLASH_ATTENTION_SKIP_CUDA_BUILD=FALSE
 echo "=== reinstalling flash-attn-cute (flash-attn overwrites it with a stub) ==="
 uv pip install --reinstall --no-deps \
     "flash-attn-4 @ git+https://github.com/Dao-AILab/flash-attention.git@96bd151#subdirectory=flash_attn/cute"
+
+echo "=== copying ampere_helpers.py from flash-attn-cute into cutlass-dsl ==="
+SITE_PACKAGES=$(uv run --project /app --no-sync python -c 'import site; print(site.getsitepackages()[0])')
+cp "$SITE_PACKAGES/flash_attn/cute/ampere_helpers.py" \
+   "$SITE_PACKAGES/nvidia_cutlass_dsl/python_packages/cutlass/utils/ampere_helpers.py"
