@@ -28,7 +28,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: true
+          # Explicit init below so CI never tries to fetch private submodules (configs/private).
+          submodules: false
+      - name: Init public submodules
+        run: git submodule update --init --recursive -- verifiers renderers research-environments
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
@@ -87,7 +90,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: true
+          # Explicit init below so CI never tries to fetch private submodules (configs/private).
+          submodules: false
+      - name: Init public submodules
+        run: git submodule update --init --recursive -- verifiers renderers research-environments
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:

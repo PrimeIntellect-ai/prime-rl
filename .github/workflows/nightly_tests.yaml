@@ -25,7 +25,8 @@ jobs:
             - name: Checkout repository
               uses: actions/checkout@v4
               with:
-                  submodules: true
+                  # Matrix-building only needs the repo tree; submodules are irrelevant here.
+                  submodules: false
 
             - name: Build matrix from nightly test files
               id: build-matrix
@@ -75,7 +76,10 @@ jobs:
             - name: Checkout repository
               uses: actions/checkout@v4
               with:
-                  submodules: true
+                  # Explicit init below so CI never tries to fetch private submodules (configs/private).
+                  submodules: false
+            - name: Init public submodules
+              run: git submodule update --init --recursive -- verifiers renderers research-environments
             - name: Install uv
               uses: astral-sh/setup-uv@v5
               with:
