@@ -119,11 +119,10 @@ main() {
 
     log_info "Entering project directory..."
     cd ${REPO_ID}
+  fi
 
-    # Pin the SSH->HTTPS rewrite locally so submodule updates use HTTPS too.
-    if ! has_ssh_access; then
-      git config url."https://github.com/".insteadOf "git@github.com:"
-    fi
+  if ! has_ssh_access; then
+    git config url."https://github.com/".insteadOf "git@github.com:"
   fi
 
   log_info "Initializing submodules..."
