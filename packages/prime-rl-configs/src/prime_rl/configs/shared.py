@@ -186,6 +186,26 @@ class RendererConfig(BaseConfig):
         ),
     ] = None
 
+    preserve_all_thinking: Annotated[
+        bool,
+        Field(
+            description=(
+                "Forward preserve_all_thinking to the renderer client. When true, "
+                "past-assistant reasoning_content is re-emitted on subsequent renders."
+            ),
+        ),
+    ] = False
+
+    preserve_thinking_between_tool_calls: Annotated[
+        bool,
+        Field(
+            description=(
+                "Forward preserve_thinking_between_tool_calls to the renderer client. "
+                "This preserves thinking only inside the active assistant/tool block."
+            ),
+        ),
+    ] = False
+
 
 class ElasticConfig(BaseConfig):
     """Configures elastic inference pool with DNS-based service discovery.

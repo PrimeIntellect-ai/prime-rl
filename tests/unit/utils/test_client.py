@@ -62,10 +62,13 @@ def test_setup_clients_assigns_renderer_and_dp_rank_headers():
         client_config,
         client_type="renderer",
         renderer_name="qwen3_vl",
+        preserve_all_thinking=True,
     )
 
     assert [client.client_type for client in clients] == ["renderer", "renderer"]
     assert [client.renderer for client in clients] == ["qwen3_vl", "qwen3_vl"]
+    assert [client.preserve_all_thinking for client in clients] == [True, True]
+    assert [client.preserve_thinking_between_tool_calls for client in clients] == [False, False]
     assert [client.renderer_model_name for client in clients] == [None, None]
     assert [client.api_base_url for client in clients] == ["http://worker-a:8000/v1"] * 2
     assert [client.extra_headers["X-data-parallel-rank"] for client in clients] == ["0", "1"]
