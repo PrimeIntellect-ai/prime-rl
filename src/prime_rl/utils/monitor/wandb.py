@@ -65,9 +65,8 @@ class WandbMonitor(Monitor):
         else:
             run_id = None
             primary = False
-            settings = wandb.Settings(
-                mode="offline" if config.offline else "online",
-            )
+            mode = os.environ.get("WANDB_MODE", "offline" if config.offline else "online")
+            settings = wandb.Settings(mode=mode)
 
         def init_wandb(max_retries: int):
             for attempt in range(max_retries):
