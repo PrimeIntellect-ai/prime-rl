@@ -47,38 +47,42 @@ jobs:
           PYTEST_OUTPUT_DIR: /tmp/outputs
         run: uv run pytest tests/unit -m gpu
 
-  integration-matrix:
-    name: Integration tests
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
-    outputs:
-      matrix: ${{ steps.set.outputs.matrix }}
-    steps:
-      - id: set
-        run: |
-          echo 'matrix={"include":[
-            {"test":"reverse_text_sft","runner":"vm","pytest_args":"tests/integration/test_reverse_text_sft.py"},
-            {"test":"reverse_text_sft_lora","runner":"vm","pytest_args":"tests/integration/test_reverse_text_sft_lora.py"},
-            {"test":"reverse_text","runner":"vm","pytest_args":"tests/integration/test_reverse_text.py"},
-            {"test":"alphabet_sort","runner":"vm","pytest_args":"tests/integration/test_alphabet_sort.py"},
-            {"test":"reverse_text_lora","runner":"vm","pytest_args":"tests/integration/test_reverse_text_lora.py"},
-            {"test":"reverse_text_moe","runner":"vm","pytest_args":"tests/integration/test_reverse_text_moe.py"},
-            {"test":"reverse_text_multi_run","runner":"4xa6000","pytest_args":"tests/integration/test_reverse_text_multi_run.py"},
-            {"test":"benchmark_regression","runner":"4xa6000","pytest_args":"tests/integration/test_benchmark_regression.py"}
-          ]}' >> $GITHUB_OUTPUT
-
   integration-tests:
     name: Integration tests (${{ matrix.test }})
-    needs: integration-matrix
-    if: needs.integration-matrix.result == 'success'
     runs-on: ${{ matrix.runner }}
     container:
       image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
       options: --gpus all
     timeout-minutes: 60
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.integration-matrix.outputs.matrix) }}
+      matrix:
+        include:
+          - test: reverse_text_sft
+            runner: vm
+            pytest_args: "tests/integration/test_reverse_text_sft.py"
+          - test: reverse_text_sft_lora
+            runner: vm
+            pytest_args: "tests/integration/test_reverse_text_sft_lora.py"
+          - test: reverse_text
+            runner: vm
+            pytest_args: "tests/integration/test_reverse_text.py"
+          - test: alphabet_sort
+            runner: vm
+            pytest_args: "tests/integration/test_alphabet_sort.py"
+          - test: reverse_text_lora
+            runner: vm
+            pytest_args: "tests/integration/test_reverse_text_lora.py"
+          - test: reverse_text_moe
+            runner: vm
+            pytest_args: "tests/integration/test_reverse_text_moe.py"
+          - test: reverse_text_multi_run
+            runner: 4xa6000
+            pytest_args: "tests/integration/test_reverse_text_multi_run.py"
+          - test: benchmark_regression
+            runner: 4xa6000
+            pytest_args: "tests/integration/test_benchmark_regression.py"
     steps:
       - name: Install Git
         run: |
