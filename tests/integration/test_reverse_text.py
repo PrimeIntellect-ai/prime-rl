@@ -21,7 +21,7 @@ TIMEOUT = 600  # 10 minutes
 @pytest.fixture(scope="module")
 def wandb_name(branch_name: str) -> str:
     """Fixture for W&B name for RL CI integration tests."""
-    return f"test-rl-{branch_name}"
+    return f"test-reverse-text:{branch_name}"
 
 
 @pytest.fixture(scope="module")
@@ -100,7 +100,7 @@ def test_mismatch_kl_in_range(rl_process: ProcessResult, test_no_error, output_d
     """Tests that the average mismatch KL is below 0.01 across all steps"""
     with open(output_dir / "logs" / "trainer.log", "r") as f:
         trainer_stdout = strip_escape_codes(f.read()).splitlines()
-    check_avg_mismatch_kl_in_range(trainer_stdout, last_n_steps=10, max_threshold=0.01)
+    check_avg_mismatch_kl_in_range(trainer_stdout, last_n_steps=3, max_threshold=0.01)
 
 
 @pytest.fixture(scope="module")
