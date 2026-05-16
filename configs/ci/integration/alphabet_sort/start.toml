@@ -1,4 +1,4 @@
-max_steps = 10
+max_steps = 8
 seq_len = 2048
 
 [ckpt]
