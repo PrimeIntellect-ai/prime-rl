@@ -97,8 +97,6 @@ cd prime-rl
 git submodule update --init -- deps/verifiers deps/renderers deps/research-environments
 ```
 
-> **Note:** Do not use `git submodule update --init --recursive` without explicit paths — it will also attempt to clone the private `configs/private` submodule and fail for users without access.
-
 3. Install [uv](https://docs.astral.sh/uv/)
 
 ```bash
