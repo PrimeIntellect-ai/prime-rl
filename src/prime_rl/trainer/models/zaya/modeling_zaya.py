@@ -77,9 +77,10 @@ class ZayaResidualScaling(nn.Module):
         self.residual_bias = nn.Parameter(torch.zeros(config.hidden_size))
 
     def forward(self, hidden_states: torch.Tensor, residual: torch.Tensor) -> torch.Tensor:
+        output_dtype = hidden_states.dtype
         hidden_states = (hidden_states + self.hidden_states_bias) * self.hidden_states_scale
         residual = (residual.to(torch.float32) + self.residual_bias) * self.residual_scale
-        return hidden_states + residual
+        return (hidden_states + residual).to(output_dtype)
 
 
 class ZayaCCAProjection(nn.Module):

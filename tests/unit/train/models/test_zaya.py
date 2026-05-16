@@ -1,5 +1,4 @@
 # This script should be run with "https://github.com/JJJYmmm/transformers.git" which checks against the (likely) merged transformers PR for Zaya
-# Only the test_zaya should be run with "https://github.com/nreHieW/transformers"
 from pathlib import Path
 
 import pytest
@@ -7,6 +6,10 @@ import torch
 from huggingface_hub import snapshot_download
 from torch import nn
 from transformers import ZayaForCausalLM as HFZayaForCausalLM
+
+# There is something wrong with the quack RMSNorm vs the FP32 implementation
+import prime_rl.trainer.models.layers.norms as norms
+norms._get_quack_rmsnorm = lambda: None
 
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.zaya import ZayaConfig
@@ -111,10 +114,10 @@ class _PassthroughPrimeZayaBlock(nn.Module):
 
 
 class _PassthroughHfZayaMoe(nn.Module):
-    """HF `ZayaSparseMoeBlock` returns `(hidden_states, prev_router_hidden_states, router_logits)`."""
+    """HF `ZayaSparseMoeBlock` returns `(hidden_states, prev_router_hidden_states)`."""
 
     def forward(self, hidden_states, prev_router_hidden_states=None):
-        return hidden_states, prev_router_hidden_states, hidden_states.new_zeros((1,))
+        return hidden_states, prev_router_hidden_states
 
 
 def test_zaya_attn_only() -> None:
@@ -164,11 +167,7 @@ def test_zaya() -> None:
     dtype = torch.bfloat16
     device = torch.device("cuda")
 
-    # This path here is to use the HF PR version
-    # hf_model = HFZayaForCausalLM.from_pretrained(str(snapshot), torch_dtype=dtype)
-
-    # This path here is to use the official Zyphra version, use transformers from "https://github.com/nreHieW/transformers"
-    hf_model = HFZayaForCausalLM.from_pretrained("Zyphra/ZAYA1-8B", torch_dtype=dtype)
+    hf_model = HFZayaForCausalLM.from_pretrained(str(snapshot), torch_dtype=dtype)
     hf_model.to(device)
     attn_impl = getattr(
         hf_model.config,
