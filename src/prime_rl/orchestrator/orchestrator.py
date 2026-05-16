@@ -148,6 +148,13 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
 
+    if config.capture_tool_logprobs:
+        logger.info(
+            "capture_tool_logprobs ENABLED — per-tool NLL will be logged as "
+            "`metrics/<env>/tool_nll_<tool_name>` (and `tool_nll_token_count_<tool_name>`) "
+            "each step"
+        )
+
     processor = None
     if is_vlm:
         logger.info(f"Loading VLM processor for {config.model.name}")
@@ -447,17 +454,13 @@ async def orchestrate(config: OrchestratorConfig):
             n_trainable = sum(1 for r in train_rollouts if not r["is_filtered"])
 
             empty_reason: str | None = None
+            step_path = None
             if n_trainable == 0:
                 empty_reason = f"filters dropped all {num_rollouts} rollouts"
             else:
-                # Save train rollouts to disk (fire-and-forget background thread)
+                # Resolve the step path here so the tool-logprobs save below
+                # (after annotation) can dump alongside the other artifacts.
                 step_path = get_step_path(get_rollout_dir(config.output_dir), progress.step)
-                await asyncio.to_thread(
-                    save_rollouts,
-                    train_rollouts,
-                    step_path / "train_rollouts.jsonl",
-                    exclude_keys={"trajectory"},
-                )
 
                 # VLM: offload base64 images to disk immediately to free memory
                 if is_vlm:
@@ -593,14 +596,31 @@ async def orchestrate(config: OrchestratorConfig):
         tool_logprobs_time = 0.0
         if config.capture_tool_logprobs:
             tool_logprobs_start_time = time.perf_counter()
-            await annotate_tool_nll_metrics(
+            stats = await annotate_tool_nll_metrics(
                 train_rollouts,
                 clients=inference_pool.train_clients,
                 model_name=rollout_model_name,
                 tokenizer=tokenizer,
             )
             tool_logprobs_time = time.perf_counter() - tool_logprobs_start_time
-            logger.debug(f"Captured tool-token logprobs in {tool_logprobs_time:.2f}s")
+            logger.info(
+                f"tool_logprobs: scored {stats['scored']}/{len(train_rollouts)} rollouts, "
+                f"annotated {stats['annotated']} "
+                f"(skipped: {stats['no_trajectory']} no-trajectory, {stats['no_spans']} no-spans) "
+                f"in {tool_logprobs_time:.2f}s"
+            )
+
+        # Save train rollouts to disk (fire-and-forget background thread).
+        # Done AFTER annotate_tool_nll_metrics so the dumped jsonl includes
+        # any `tool_nll_<name>` / `tool_nll_token_count_<name>` keys for
+        # offline per-tool perplexity analysis.
+        if step_path is not None:
+            await asyncio.to_thread(
+                save_rollouts,
+                train_rollouts,
+                step_path / "train_rollouts.jsonl",
+                exclude_keys={"trajectory"},
+            )
 
         # Compute teacher logprobs if teacher model is configured
         teacher_logprobs_time = 0

@@ -398,7 +398,7 @@ async def annotate_tool_nll_metrics(
     clients: list[Any],
     model_name: str,
     tokenizer: PreTrainedTokenizer,
-) -> None:
+) -> dict[str, int]:
     """For each rollout, score the model's own log-probabilities on every
     tool-response *content* token via a vllm `prompt_logprobs` forward pass,
     and write per-tool aggregated metrics into ``rollout["metrics"]``:
@@ -415,9 +415,15 @@ async def annotate_tool_nll_metrics(
     rollout (typically ``submit_code``'s response) is not scored because it
     never appears in any subsequent prompt; this is documented in the
     config field's docstring.
+
+    Returns a stats dict with skip-reason counters so the caller can log
+    visibility into how many rollouts contributed to the metrics:
+    ``{"scored": N, "no_trajectory": N, "no_spans": N, "annotated": N}``.
     """
     # Lazy import to keep utils.py the only place importing httpx/openai.
     from prime_rl.orchestrator.utils import compute_prompt_logprobs
+
+    stats = {"scored": 0, "no_trajectory": 0, "no_spans": 0, "annotated": 0}
 
     # Build the score targets and per-rollout span maps.
     score_token_seqs: list[list[int]] = []
@@ -429,6 +435,7 @@ async def annotate_tool_nll_metrics(
         if not tokens or not tokens.get("prompt_ids"):
             per_rollout_spans.append([])
             score_token_seqs.append([])
+            stats["no_trajectory"] += 1
             continue
         # Score the last step's full prompt — this contains every tool
         # response except the terminating one (which is never re-prompted).
@@ -438,16 +445,21 @@ async def annotate_tool_nll_metrics(
         )
         spans = _extract_tool_content_spans(full_ids, tokenizer, tool_call_names)
         per_rollout_spans.append(spans)
-        score_token_seqs.append(full_ids if spans else [])
+        if spans:
+            score_token_seqs.append(full_ids)
+        else:
+            score_token_seqs.append([])
+            stats["no_spans"] += 1
 
     # Run a single batched scoring pass for rollouts that actually have spans.
     scorable_idx = [i for i, ids in enumerate(score_token_seqs) if ids]
     if not scorable_idx:
-        return
+        return stats
     scoring_inputs = [score_token_seqs[i] for i in scorable_idx]
     logprobs_lists = await compute_prompt_logprobs(
         clients=clients, model_name=model_name, token_sequences=scoring_inputs
     )
+    stats["scored"] = len(scorable_idx)
 
     # Aggregate per tool name, write into rollout metrics.
     for i, logprobs in zip(scorable_idx, logprobs_lists):
@@ -464,10 +476,15 @@ async def annotate_tool_nll_metrics(
             per_tool_sum[name] = per_tool_sum.get(name, 0.0) + sum(-lp for lp in seg)
             per_tool_count[name] = per_tool_count.get(name, 0) + len(seg)
         metrics = rollouts[i].setdefault("metrics", {})
+        wrote_any = False
         for name, count in per_tool_count.items():
             if count > 0:
                 metrics[f"tool_nll_{name}"] = per_tool_sum[name] / count
                 metrics[f"tool_nll_token_count_{name}"] = float(count)
+                wrote_any = True
+        if wrote_any:
+            stats["annotated"] += 1
+    return stats
 
 
 def _build_role_loss_masks_for_step(
