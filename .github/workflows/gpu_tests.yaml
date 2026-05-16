@@ -59,9 +59,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - test: base
+          - test: reverse_text_sft
             runner: vm
-            pytest_args: "tests/integration --ignore=tests/integration/test_reverse_text.py --ignore=tests/integration/test_reverse_text_lora.py --ignore=tests/integration/test_reverse_text_moe.py --ignore=tests/integration/test_reverse_text_multi_run.py --ignore=tests/integration/test_benchmark_regression.py --ignore=tests/integration/test_alphabet_sort.py"
+            pytest_args: "tests/integration/test_reverse_text_sft.py"
+          - test: reverse_text_sft_lora
+            runner: vm
+            pytest_args: "tests/integration/test_reverse_text_sft_lora.py"
           - test: reverse_text
             runner: vm
             pytest_args: "tests/integration/test_reverse_text.py"
