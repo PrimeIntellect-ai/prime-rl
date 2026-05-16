@@ -13,7 +13,7 @@ TIMEOUT = 900  # 15 minutes
 
 @pytest.fixture(scope="module")
 def wandb_name(branch_name: str) -> str:
-    return f"test-rl-moe-{branch_name}"
+    return f"test-reverse-text-moe:{branch_name}"
 
 
 # --- MoE with HF impl (default) ---
@@ -21,7 +21,7 @@ def wandb_name(branch_name: str) -> str:
 
 @pytest.fixture(scope="module")
 def moe_hf_output_dir(output_dir: Path) -> Path:
-    d = output_dir / "rl_moe_hf"
+    d = output_dir / "hf"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -38,7 +38,7 @@ def moe_hf_process(
         "run",
         "rl",
         "@",
-        "configs/ci/integration/rl_moe/start.toml",
+        "configs/ci/integration/reverse_text_moe/start.toml",
         "--trainer.model.impl",
         "hf",
         "--wandb.project",
@@ -65,7 +65,7 @@ def test_moe_hf_runs(moe_hf_process: ProcessResult, test_no_error_hf):
 
 @pytest.fixture(scope="module")
 def moe_custom_output_dir(output_dir: Path) -> Path:
-    d = output_dir / "rl_moe_custom"
+    d = output_dir / "custom"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -82,7 +82,7 @@ def moe_custom_process(
         "run",
         "rl",
         "@",
-        "configs/ci/integration/rl_moe/start.toml",
+        "configs/ci/integration/reverse_text_moe/start.toml",
         "--trainer.model.impl",
         "custom",
         "--wandb.project",
