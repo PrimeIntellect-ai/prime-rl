@@ -7,21 +7,25 @@ description: How to install prime-rl and its optional dependencies. Use when set
 
 ## Cloning
 
-prime-rl is a monorepo with submodules. Clone with `--recurse-submodules`:
+prime-rl is a monorepo with submodules. Clone the repo first, then initialize submodules explicitly:
 
 ```bash
-git clone --recurse-submodules git@github.com:PrimeIntellect-ai/prime-rl.git
+git clone git@github.com:PrimeIntellect-ai/prime-rl.git
+cd prime-rl
+git submodule update --init -- deps/verifiers deps/renderers deps/research-environments
 ```
 
-For an existing clone, initialize the submodules in place:
+For an existing clone, initialize the public submodules by passing explicit paths:
 
 ```bash
-git submodule update --init --recursive
+git submodule update --init -- deps/verifiers deps/renderers deps/research-environments
 ```
+
+Do **not** use `git submodule update --init --recursive` without explicit paths — it will also attempt to clone `configs/private` (a private submodule) and fail with "Repository not found" for users without access. Git will retry the clone once internally before aborting, which is expected behavior.
 
 The public submodules live under `deps/`: `deps/verifiers/`, `deps/renderers/`, and `deps/research-environments/`. Each is also a uv workspace member, so source edits inside them apply to the prime-rl venv without re-sync.
 
-If a private configs submodule exists at `configs/private/` and you don't have access, the init will fail for that path. That's harmless — `uv sync` does not touch `configs/`.
+The install script (`scripts/install.sh`) handles the private submodule gracefully — it iterates each submodule individually so a failed `configs/private` init does not abort the rest.
 
 ## Basic
 ```bash
