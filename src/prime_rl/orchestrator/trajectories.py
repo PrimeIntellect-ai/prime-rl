@@ -361,12 +361,9 @@ def interleave_rollout(
             mm_kwargs = _pack_mm_kwargs_from_renderer(renderer_mm)
             if mm_kwargs is not None:
                 sample.mm_kwargs = mm_kwargs
-                # ``mm_token_type_ids``: 1 for image-placeholder tokens, 2 for
-                # video, 0 otherwise. The trainer has an auto-compute path
-                # (``_get_qwen3_vl_mm_token_type_ids``) but empirically the
-                # orchestrator-shipped explicit list produces ~30x lower
-                # mismatch KL on color-codeword. Shipping explicit until the
-                # divergence is understood.
+                # ``mm_token_type_ids``: 1 for image-placeholder tokens, 2
+                # for video, 0 otherwise. Renderer-supplied via
+                # ``mm_token_type_id_map`` (single source of truth).
                 if mm_token_type_ids_mapping is not None:
                     sample.mm_token_type_ids = [
                         mm_token_type_ids_mapping.get(token_id, 0)

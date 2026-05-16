@@ -1099,24 +1099,6 @@ def setup_model(
     return model
 
 
-def _get_qwen3_vl_mm_token_type_ids(model: nn.Module, input_ids: Tensor) -> Tensor | None:
-    config = getattr(model, "config", None)
-    if getattr(config, "model_type", None) != "qwen3_vl":
-        return None
-
-    mm_token_type_ids = torch.zeros_like(input_ids)
-
-    image_token_id = getattr(config, "image_token_id", None)
-    if image_token_id is not None:
-        mm_token_type_ids = mm_token_type_ids.masked_fill(input_ids == image_token_id, 1)
-
-    video_token_id = getattr(config, "video_token_id", None)
-    if video_token_id is not None:
-        mm_token_type_ids = mm_token_type_ids.masked_fill(input_ids == video_token_id, 2)
-
-    return mm_token_type_ids
-
-
 def forward(
     model: nn.Module,
     input_ids: Int[Tensor, "batch seq"],
@@ -1141,23 +1123,18 @@ def forward(
     }
 
     if mm_kwargs:
-        # Forward the per-model multimodal tensors verbatim. For Qwen-VL
-        # specifically, ``position_ids`` must be ``None`` for MRoPE to
-        # compute correct 3D positions from ``image_grid_thw``; this
-        # special-case is the only family-specific branch left.
+        # Forward the per-model multimodal tensors verbatim, plus the
+        # renderer-supplied ``mm_token_type_ids`` (renderer owns the
+        # token→modality mapping via ``mm_token_type_id_map``).
         kwargs.update(mm_kwargs)
-        if "image_grid_thw" in mm_kwargs:
-            mm_token_type_ids_auto = _get_qwen3_vl_mm_token_type_ids(model, input_ids)
-            if mm_token_type_ids_auto is not None:
-                kwargs["mm_token_type_ids"] = mm_token_type_ids_auto
-            elif mm_token_type_ids is not None:
-                kwargs["mm_token_type_ids"] = mm_token_type_ids
-            # Skip position_ids — MRoPE in Qwen-VL recomputes them from grid_thw.
-        else:
-            # Other VLM families (Gemma3, LLaVA, ...) still want position_ids.
+        if mm_token_type_ids is not None:
+            kwargs["mm_token_type_ids"] = mm_token_type_ids
+        # ``position_ids`` for MRoPE families: Qwen3-VL's HF forward
+        # recomputes 3D positions from ``image_grid_thw`` and breaks if
+        # given the trainer's pre-computed 1D ``position_ids``. Detect
+        # via the mm_kwargs shape so we don't enumerate model_types.
+        if "image_grid_thw" not in mm_kwargs:
             kwargs["position_ids"] = position_ids
-            if mm_token_type_ids is not None:
-                kwargs["mm_token_type_ids"] = mm_token_type_ids
     else:
         kwargs["position_ids"] = position_ids
 
