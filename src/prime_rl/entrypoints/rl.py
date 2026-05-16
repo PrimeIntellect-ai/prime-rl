@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 from subprocess import Popen
 from threading import Event, Thread
+from urllib.request import urlopen
 
 import pynvml
 import tomli_w
@@ -266,6 +267,91 @@ def rl_local(config: RLConfig):
                 "Is your teacher inference server running? Make sure orchestrator.teacher_model is configured."
             )
 
+        ttt = config.experimental.ttt
+        if ttt.enabled and ttt.mode == "online_lora":
+            adapter_dir = ttt.learner.adapter_dir or (config.output_dir / "ttt" / "adapters")
+            admin_urls = config.orchestrator.client.admin_base_url or config.orchestrator.client.base_url
+            admin_urls = [url.rstrip("/").removesuffix("/v1") for url in admin_urls]
+            ttt_cmd = [
+                "ttt-learner",
+                "--model-name",
+                config.trainer.model.name,
+                "--adapter-dir",
+                adapter_dir.as_posix(),
+                "--target-modules",
+                *ttt.lora.target_modules,
+                "--rank",
+                str(ttt.lora.rank),
+                "--alpha",
+                str(ttt.lora.alpha),
+                "--dropout",
+                str(ttt.lora.dropout),
+                "--lr",
+                str(ttt.optim.lr),
+                "--weight-decay",
+                str(ttt.optim.weight_decay),
+                "--steps-per-update",
+                str(ttt.optim.steps_per_update),
+                "--device",
+                ttt.learner.device,
+                "--dtype",
+                ttt.learner.dtype,
+                "--host",
+                ttt.learner.host,
+                "--port",
+                str(ttt.learner.port),
+                "--session-offload",
+                ttt.learner.session_offload,
+                "--log-level",
+                config.log.level or os.environ.get("PRIME_LOG_LEVEL", "info"),
+            ]
+            if ttt.optim.max_grad_norm is not None:
+                ttt_cmd.extend(["--max-grad-norm", str(ttt.optim.max_grad_norm)])
+            if not ttt.learner.load_adapters_into_vllm:
+                ttt_cmd.append("--no-load-adapters-into-vllm")
+            if not ttt.learner.unload_vllm_adapters:
+                ttt_cmd.append("--no-unload-vllm-adapters")
+            for admin_url in ttt.learner.vllm_admin_base_urls or admin_urls:
+                ttt_cmd.extend(["--vllm-admin-base-url", admin_url])
+
+            logger.info(f"Starting online TTT learner at {ttt.learner.resolved_base_url}")
+            logger.debug(f"TTT learner start command: {' '.join(ttt_cmd)}")
+            ttt_visible_devices = ",".join(map(str, trainer_gpu_ids[:1])) if trainer_gpu_ids else ""
+            with open(log_dir / "ttt-learner.log", "w") as log_file:
+                ttt_process = Popen(
+                    ttt_cmd,
+                    env={
+                        **os.environ,
+                        **({"CUDA_VISIBLE_DEVICES": ttt_visible_devices} if ttt_visible_devices else {}),
+                        "PYTHONUNBUFFERED": "1",
+                        "LOGURU_FORCE_COLORS": "1",
+                    },
+                    stdout=log_file,
+                    stderr=log_file,
+                )
+            processes.append(ttt_process)
+            stop_event = Event()
+            stop_events["ttt-learner"] = stop_event
+            monitor_thread = Thread(
+                target=monitor_process,
+                args=(ttt_process, stop_event, error_queue, "ttt-learner"),
+                daemon=True,
+            )
+            monitor_thread.start()
+            monitor_threads.append(monitor_thread)
+
+            health_url = f"{ttt.learner.resolved_base_url.rstrip('/')}/health"
+            for _ in range(600):
+                if ttt_process.poll() is not None:
+                    raise RuntimeError(f"TTT learner exited before becoming healthy; see {log_dir / 'ttt-learner.log'}")
+                try:
+                    with urlopen(health_url, timeout=1):
+                        break
+                except Exception:
+                    time.sleep(1)
+            else:
+                raise TimeoutError(f"Timed out waiting for TTT learner health at {health_url}")
+
         # Start orchestrator process
         orchestrator_cmd = [
             "orchestrator",
@@ -410,6 +496,27 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
 
     env = Environment(loader=FileSystemLoader(config.slurm.template_path.parent), keep_trailing_newline=True)
     template = env.get_template(config.slurm.template_path.name)
+    ttt = config.experimental.ttt
+    ttt_template_vars = dict(
+        ttt_enabled=ttt.enabled and ttt.mode == "online_lora",
+        ttt_model_name=config.trainer.model.name,
+        ttt_adapter_dir=ttt.learner.adapter_dir or (config.output_dir / "ttt" / "adapters"),
+        ttt_target_modules=ttt.lora.target_modules,
+        ttt_rank=ttt.lora.rank,
+        ttt_alpha=ttt.lora.alpha,
+        ttt_dropout=ttt.lora.dropout,
+        ttt_lr=ttt.optim.lr,
+        ttt_weight_decay=ttt.optim.weight_decay,
+        ttt_steps_per_update=ttt.optim.steps_per_update,
+        ttt_max_grad_norm=ttt.optim.max_grad_norm,
+        ttt_device=ttt.learner.device,
+        ttt_dtype=ttt.learner.dtype,
+        ttt_host=ttt.learner.host,
+        ttt_port=ttt.learner.port,
+        ttt_load_adapters_into_vllm=ttt.learner.load_adapters_into_vllm,
+        ttt_unload_vllm_adapters=ttt.learner.unload_vllm_adapters,
+        ttt_session_offload=ttt.learner.session_offload,
+    )
 
     if config.deployment.type == "single_node":
         script = template.render(
@@ -417,6 +524,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             config_path=config_dir / RL_TOML,
             output_dir=config.output_dir,
             gpus_per_node=config.deployment.gpus_per_node,
+            **ttt_template_vars,
         )
     elif config.inference is not None and config.inference.deployment.type == "disaggregated":
         infer_deploy = config.inference.deployment
@@ -452,6 +560,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             wandb_shared=config.wandb is not None and config.wandb.shared,
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
+            **ttt_template_vars,
         )
     else:
         script = template.render(
@@ -476,6 +585,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             wandb_shared=config.wandb is not None and config.wandb.shared,
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
+            **ttt_template_vars,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,204 @@
+max_steps = 10000000
+seq_len = 8192
+max_model_len = 8192
+max_async_level = 1
+output_dir = "/data/outputs/glm5-ttt-renderer-ctx8k-judge-only"
+
+[log]
+level = "debug"
+
+[wandb]
+project = "TTT-GLM5"
+name = "ttt-8k-window-32k-judge-only"
+group = "ttt-context-ablation"
+
+[model]
+name = "zai-org/GLM-5"
+
+[experimental.ttt]
+enabled = true
+mode = "online_lora"
+window_seq_len = 8192
+total_seq_len = 32768
+update_every_turns = 1
+overlap_turns = 2
+adapter_scope = "rollout"
+train_prompt_lora = true
+train_completion_lora = true
+replay_policy = "turn_snapshots"
+merge_prompt_lora = "never"
+prompt_loss_weight = 1.0
+completion_lora_trains_initial_prompt = true
+prompt_lora_trains_environment_responses = true
+theta_update_policy = "always_newest"
+keep_rollout_loras_across_theta_updates = true
+require_exact_token_ids = true
+
+[experimental.ttt.lora]
+rank = 8
+alpha = 16
+dropout = 0.0
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+[experimental.ttt.optim]
+type = "adamw"
+lr = 1e-4
+weight_decay = 0.0
+max_grad_norm = 1.0
+steps_per_update = 1
+
+[experimental.ttt.learner]
+host = "127.0.0.1"
+port = 9009
+device = "cuda"
+dtype = "bfloat16"
+max_concurrent_sessions = 64
+request_timeout_s = 120.0
+load_adapters_into_vllm = true
+unload_vllm_adapters = true
+session_offload = "cpu_after_request"
+delete_consumed_adapters = true
+trainer_cache_device_tensors = false
+
+[weight_broadcast]
+type = "nccl"
+port = 29502
+timeout = 12000
+quantize_in_weight_transfer = true
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 8
+num_infer_nodes = 16
+gpus_per_node = 8
+num_infer_replicas = 1
+
+[inference.deployment]
+type = "disaggregated"
+num_prefill_nodes = 12
+num_decode_nodes = 4
+num_prefill_replicas = 6
+prefill_env_overrides = {"VLLM_ENABLE_MOE_DP_CHUNK"="0"}
+
+[slurm]
+job_name = "TTT-8K-NOMERGE"
+partition = "cluster"
+
+[ckpt]
+interval = 20
+keep_last = 5
+resume_step = -1
+keep_interval = 40
+
+[trainer]
+dist_timeout_seconds = 7200
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_2"
+fused_lm_head_token_chunk_size = 1024
+cp = 4
+ep = 8
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.compile]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.ckpt]
+skip_optimizer = true
+skip_gather_master_weights = true
+
+[trainer.optim]
+type = "sign_sgd"
+lr = 1e-6
+
+[orchestrator]
+batch_size = 256
+rollouts_per_example = 16
+oversampling_factor = 3
+tasks_per_minute = 3072
+max_off_policy_steps = 16
+use_token_client = false
+use_renderer = true
+
+[orchestrator.train.sampling]
+temperature = 1.05
+max_completion_tokens = 2048
+
+[orchestrator.client]
+extra_headers_from_state = { "X-Session-ID" = "trajectory_id" }
+
+[orchestrator.wandb.log_extras]
+samples = true
+interval = 1
+
+[orchestrator.prime_monitor.log_extras]
+samples = true
+interval = 1
+
+[[orchestrator.train.env]]
+id = "mini-swe-agent-plus-rlm"
+name = "mini-swe-agent-plus-rlm-high"
+num_workers = 4
+max_total_completion_tokens = 32768
+
+[orchestrator.train.env.args]
+repl_language = "bash"
+enable_sub_llms = false
+enable_summarization = true
+min_turns_in_context = 1
+max_turns = 250
+tools_in_repl = false
+tools_on_root = false
+tools_on_sub = false
+code_execution_timeout = 900
+sandbox_timeout_minutes = 600
+sandbox_labels = ["ttt-prod-cluster"]
+
+[orchestrator.buffer]
+online_difficulty_filtering = false
+
+[orchestrator.eval]
+interval = 10
+skip_eval_on_resume = false
+eval_base_model = true
+
+[[orchestrator.eval.env]]
+id = "mini-swe-agent-plus-rlm"
+name = "mini-swe-agent-plus-rlm-high"
+num_workers = 4
+max_total_completion_tokens = 32768
+
+[orchestrator.eval.env.args]
+dataset_name = "PrimeIntellect/SWE-Bench-Verified-Quick"
+repl_language = "bash"
+enable_sub_llms = false
+enable_summarization = true
+min_turns_in_context = 1
+max_turns = 250
+tools_in_repl = false
+tools_on_root = false
+tools_on_sub = false
+code_execution_timeout = 900
+sandbox_timeout_minutes = 600
+sandbox_labels = ["ttt-prod-cluster"]
+
+[inference]
+enable_lora = true
+max_loras = 64
+max_cpu_loras = 512
+max_lora_rank = 16
+api_server_count = 1
+enable_expert_parallel = true
+gpu_memory_utilization = 0.7
+enable_eplb = false
+use_deep_gemm = true
+
+[inference.model]
+name = "zai-org/GLM-5-FP8"
+max_model_len = 8192
+tool_call_parser = "glm47"

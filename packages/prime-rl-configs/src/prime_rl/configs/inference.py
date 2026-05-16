@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_config import BaseConfig
 
 from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
+from prime_rl.configs.ttt import TTTConfig
 from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
 
 # TODO: Set thinking/ solution budget
@@ -247,6 +248,11 @@ InferenceDeploymentConfig: TypeAlias = Annotated[
 
 class InferenceExperimentalConfig(BaseConfig):
     """Experimental features for inference."""
+
+    ttt: Annotated[
+        TTTConfig,
+        Field(description="Per-rollout test-time-training configuration."),
+    ] = TTTConfig()
 
 
 class InferenceConfig(BaseConfig):

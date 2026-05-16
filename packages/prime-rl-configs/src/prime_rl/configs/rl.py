@@ -39,6 +39,7 @@ from prime_rl.configs.trainer import (
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
 )
+from prime_rl.configs.ttt import TTTConfig
 from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
@@ -54,6 +55,11 @@ from prime_rl.utils.validation import (
 
 class RLExperimentalConfig(BaseConfig):
     """Experimental features for RL training."""
+
+    ttt: Annotated[
+        TTTConfig,
+        Field(description="Per-rollout test-time-training configuration."),
+    ] = TTTConfig()
 
 
 class SharedLogConfig(BaseConfig):
@@ -648,6 +654,97 @@ class RLConfig(BaseConfig):
                 f"Trainer model seq_len ({self.trainer.model.seq_len}) must be >= orchestrator seq_len ({self.orchestrator.seq_len}). "
                 f"The trainer needs to be able to handle sequences at least as long as those produced by the orchestrator."
             )
+
+        for env in self.orchestrator.train.env:
+            env.extra_env_kwargs.update(max_seq_len=self.orchestrator.seq_len)
+        if self.orchestrator.eval is not None:
+            for env in self.orchestrator.eval.env:
+                env.extra_env_kwargs.update(max_seq_len=self.orchestrator.seq_len)
+
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_ttt(self):
+        """Propagate renderer-based online TTT config and keep physical/logical length knobs distinct."""
+        ttt = self.experimental.ttt
+        if not ttt.enabled:
+            return self
+
+        self.trainer.experimental.ttt = ttt.model_copy(deep=True)
+        self.orchestrator.experimental.ttt = ttt.model_copy(deep=True)
+        is_vllm_rollout = self.orchestrator.teacher_rollout_model is None
+        if ttt.mode == "online_lora":
+            if not self.orchestrator.use_renderer or self.orchestrator.use_token_client:
+                raise ValueError(
+                    "experimental.ttt.mode='online_lora' requires orchestrator.use_renderer=true "
+                    "and orchestrator.use_token_client=false."
+                )
+            if self.orchestrator.model.vlm is not None:
+                raise ValueError("experimental.ttt.mode='online_lora' does not support VLMs in this migration.")
+            if not ttt.require_exact_token_ids:
+                raise ValueError("experimental.ttt.mode='online_lora' requires require_exact_token_ids=true.")
+
+        ttt_extra_body = {
+            "ttt_enabled": ttt.mode == "online_lora",
+            "ttt_learner_url": ttt.learner.resolved_base_url,
+            "ttt_window_seq_len": ttt.window_seq_len,
+            "ttt_train_prompt_lora": ttt.train_prompt_lora,
+            "ttt_train_completion_lora": ttt.train_completion_lora,
+            "ttt_require_exact_token_ids": ttt.require_exact_token_ids,
+            "ttt_completion_lora_trains_initial_prompt": ttt.completion_lora_trains_initial_prompt,
+            "ttt_prompt_lora_trains_environment_responses": ttt.prompt_lora_trains_environment_responses,
+            "ttt_cache_salt_includes_adapter": ttt.cache_salt_includes_adapter,
+            "ttt_request_timeout_s": ttt.learner.request_timeout_s,
+        }
+        for env in self.orchestrator.train.env:
+            env.extra_env_kwargs.update(max_seq_len=ttt.total_seq_len)
+            if is_vllm_rollout:
+                for key, value in ttt_extra_body.items():
+                    env.sampling.extra_body.setdefault(key, value)
+        if self.orchestrator.eval is not None:
+            for env in self.orchestrator.eval.env:
+                env.extra_env_kwargs.update(max_seq_len=ttt.total_seq_len)
+                if is_vllm_rollout:
+                    for key, value in ttt_extra_body.items():
+                        env.sampling.extra_body.setdefault(key, value)
+
+        if self.inference is not None:
+            self.inference.experimental.ttt = ttt.model_copy(deep=True)
+            if self.inference.model.max_model_len is None:
+                self.inference.model.max_model_len = ttt.window_seq_len
+            self.inference.enable_lora = True
+            required_lora_rank = ttt.lora.rank
+            if ttt.train_prompt_lora and ttt.train_completion_lora:
+                required_lora_rank = 2 * ttt.lora.rank
+            if self.inference.max_lora_rank is None or self.inference.max_lora_rank < required_lora_rank:
+                self.inference.max_lora_rank = required_lora_rank
+        else:
+            warnings.warn(
+                "TTT is enabled, but inference is not configured. When manually starting vLLM, "
+                "make sure to enable LoRA and set max_lora_rank >= 2 * experimental.ttt.lora.rank.",
+                stacklevel=2,
+            )
+
+        if self.trainer.model.lora is not None:
+            raise ValueError(
+                "Do not set trainer.model.lora when experimental.ttt.enabled=true. "
+                "TTT adapters are transient rollout state; Theta must remain trainable for RL."
+            )
+
+        if self.trainer.model.seq_len != ttt.window_seq_len:
+            raise ValueError(
+                f"TTT requires trainer.model.seq_len ({self.trainer.model.seq_len}) "
+                f"to equal experimental.ttt.window_seq_len ({ttt.window_seq_len})."
+            )
+
+        if self.orchestrator.seq_len != ttt.window_seq_len:
+            raise ValueError(
+                f"TTT requires orchestrator.seq_len ({self.orchestrator.seq_len}) "
+                f"to equal experimental.ttt.window_seq_len ({ttt.window_seq_len})."
+            )
+
+        if ttt.mode == "online_lora":
+            self.orchestrator.client.extra_headers_from_state["X-Session-ID"] = "trajectory_id"
 
         return self
 

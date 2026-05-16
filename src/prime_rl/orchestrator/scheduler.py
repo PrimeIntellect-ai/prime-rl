@@ -5,6 +5,7 @@ import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
+import httpx
 import verifiers as vf
 from aiolimiter import AsyncLimiter
 
@@ -314,13 +315,12 @@ class Scheduler:
                 f"Orchestrator resumed: checkpoint {next_ckpt_step} ready (after {self.wait_for_ckpt_time:.2f}s)"
             )
 
-        self.logger.debug(
-            f"Got new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."
-        )
+        self.logger.debug(f"Got new policy with step {next_ckpt_step}. Updating rollout weights.")
 
         update_weights_start_time = time.perf_counter()
         weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
         await self.inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
+        await self._update_ttt_learner_weights(weights_path, next_ckpt_step)
         self.update_weights_time = time.perf_counter() - update_weights_start_time
         self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
@@ -331,6 +331,37 @@ class Scheduler:
 
         self.checkpoint_ready.set()
         await self._update_off_policy()
+
+    async def _update_ttt_learner_weights(self, weights_path, step: int) -> None:
+        ttt = self.config.experimental.ttt
+        if not (ttt.enabled and ttt.mode == "online_lora"):
+            return
+        url = f"{ttt.learner.resolved_base_url.rstrip('/')}/update_base_weights"
+        payload = {"weight_dir": weights_path.as_posix(), "step": step}
+        async with httpx.AsyncClient(timeout=ttt.learner.request_timeout_s) as client:
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+
+    async def _close_ttt_sessions(self, rollouts: list[vf.RolloutOutput], *, abort: bool = False) -> None:
+        ttt = self.config.experimental.ttt
+        if not (ttt.enabled and ttt.mode == "online_lora"):
+            return
+        endpoint = "abort_session" if abort else "finish_session"
+        url = f"{ttt.learner.resolved_base_url.rstrip('/')}/{endpoint}"
+        payloads = [
+            {"session_id": str(rollout.get("trajectory_id"))}
+            for rollout in rollouts
+            if rollout.get("trajectory_id") is not None and rollout.get("ttt_trace")
+        ]
+        if not payloads:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=ttt.learner.request_timeout_s) as client:
+                responses = await asyncio.gather(*(client.post(url, json=payload) for payload in payloads))
+                for response in responses:
+                    response.raise_for_status()
+        except Exception as exc:
+            self.logger.warning(f"Failed to close TTT learner session(s) via /{endpoint}: {exc}")
 
     async def _get_or_start_policy_update_task(self, next_ckpt_step: int) -> asyncio.Task:
         async with self.policy_update_lock:
@@ -364,6 +395,12 @@ class Scheduler:
             await asyncio.shield(task)
 
     async def _update_off_policy(self) -> None:
+        ttt = self.config.experimental.ttt
+        if ttt.enabled and ttt.mode == "online_lora" and ttt.keep_rollout_loras_across_theta_updates:
+            for info in self.inflight_requests.values():
+                info.off_policy_steps += 1
+            return
+
         stale_group_ids = {
             info.group_id
             for info in self.inflight_requests.values()
@@ -457,6 +494,7 @@ class Scheduler:
                             self.errored_rollouts_by_env[env_name] += 1
                             has_failures = True
                             last_failure_reason = rollout["error"]["error_chain_repr"]
+                            await self._close_ttt_sessions([rollout], abort=True)
                             self.logger.warning(
                                 f"Rollout error in group {group_id} ({env_name}), re-scheduling "
                                 f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete): "
@@ -512,14 +550,19 @@ class Scheduler:
                     if len(group.completed_rollouts) < self.rollouts_per_example:
                         continue
                     completed_rollouts = self.groups.pop(group_id).completed_rollouts
+                    await self._close_ttt_sessions(completed_rollouts, abort=False)
 
                 except asyncio.CancelledError:
                     if group_id is not None:
+                        rollouts = self.groups.get(group_id).completed_rollouts if group_id in self.groups else []
+                        await self._close_ttt_sessions(rollouts, abort=True)
                         await self.drop_group(group_id)
                     continue
                 except Exception as e:
                     self.logger.warning(f"Rollout failed: {e}")
                     if group_id is not None:
+                        rollouts = self.groups.get(group_id).completed_rollouts if group_id in self.groups else []
+                        await self._close_ttt_sessions(rollouts, abort=True)
                         await self.drop_group(group_id)
                     continue
 

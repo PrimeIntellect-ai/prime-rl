@@ -1,0 +1,154 @@
+max_steps = 10000000
+seq_len = 8192
+max_model_len = 8192
+max_async_level = 1
+output_dir = "/data/outputs/glm5-ttt-renderer-baseline-8k"
+
+[log]
+level = "debug"
+
+[wandb]
+project = "TTT-GLM5"
+name = "baseline-8k"
+group = "ttt-context-ablation"
+
+[model]
+name = "zai-org/GLM-5"
+
+[weight_broadcast]
+type = "nccl"
+port = 29502
+timeout = 12000
+quantize_in_weight_transfer = true
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 8
+num_infer_nodes = 16
+gpus_per_node = 8
+num_infer_replicas = 1
+
+[inference.deployment]
+type = "disaggregated"
+num_prefill_nodes = 12
+num_decode_nodes = 4
+num_prefill_replicas = 6
+prefill_env_overrides = {"VLLM_ENABLE_MOE_DP_CHUNK"="0"}
+
+[slurm]
+job_name = "TTT-8K"
+partition = "cluster"
+
+[ckpt]
+interval = 20
+keep_last = 5
+resume_step = -1
+keep_interval = 40
+
+[trainer]
+dist_timeout_seconds = 7200
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_2"
+fused_lm_head_token_chunk_size = 1024
+cp = 4
+ep = 8
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.compile]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.ckpt]
+skip_optimizer = true
+skip_gather_master_weights = true
+
+[trainer.optim]
+type = "sign_sgd"
+lr = 1e-6
+
+[orchestrator]
+batch_size = 256
+rollouts_per_example = 16
+oversampling_factor = 3
+tasks_per_minute = 3072
+max_off_policy_steps = 16
+use_token_client = false
+use_renderer = true
+
+[orchestrator.train.sampling]
+temperature = 1.05
+max_completion_tokens = 8192
+
+[orchestrator.client]
+extra_headers_from_state = { "X-Session-ID" = "trajectory_id" }
+
+[orchestrator.wandb.log_extras]
+samples = true
+interval = 1
+
+[orchestrator.prime_monitor.log_extras]
+samples = true
+interval = 1
+
+[[orchestrator.train.env]]
+id = "mini-swe-agent-plus-rlm"
+name = "mini-swe-agent-plus-rlm-high"
+num_workers = 4
+max_total_completion_tokens = 8192
+
+[orchestrator.train.env.args]
+repl_language = "bash"
+enable_sub_llms = false
+enable_summarization = true
+min_turns_in_context = 1
+max_turns = 250
+tools_in_repl = false
+tools_on_root = false
+tools_on_sub = false
+code_execution_timeout = 900
+sandbox_timeout_minutes = 600
+sandbox_labels = ["ttt-prod-cluster"]
+
+[orchestrator.buffer]
+online_difficulty_filtering = false
+
+[orchestrator.eval]
+interval = 10
+skip_eval_on_resume = false
+eval_base_model = true
+
+[[orchestrator.eval.env]]
+id = "mini-swe-agent-plus-rlm"
+name = "mini-swe-agent-plus-rlm-high"
+num_workers = 4
+max_total_completion_tokens = 8192
+
+[orchestrator.eval.env.args]
+dataset_name = "PrimeIntellect/SWE-Bench-Verified-Quick"
+repl_language = "bash"
+enable_sub_llms = false
+enable_summarization = true
+min_turns_in_context = 1
+max_turns = 250
+tools_in_repl = false
+tools_on_root = false
+tools_on_sub = false
+code_execution_timeout = 900
+sandbox_timeout_minutes = 600
+sandbox_labels = ["ttt-prod-cluster"]
+
+[inference]
+enable_expert_parallel = true
+gpu_memory_utilization = 0.7
+enable_eplb = false
+use_deep_gemm = true
+
+[inference.model]
+name = "zai-org/GLM-5-FP8"
+max_model_len = 8192
+tool_call_parser = "glm47"

@@ -279,6 +279,9 @@ def interleave_rollout(
         cache_key: Cache key to use when retrieving images from the VLM cache
     """
     logger = get_logger()
+    ttt_trace = output.get("ttt_trace")
+    ttt_final_prompt_adapter = output.get("ttt_final_prompt_adapter")
+    ttt_requires_exact_tokens = bool(ttt_trace)
 
     trajectory = output["trajectory"]
     if len(trajectory) == 0:
@@ -305,6 +308,10 @@ def interleave_rollout(
                 "routed_experts": tokens.get("routed_experts"),
             }
 
+        if ttt_requires_exact_tokens:
+            raise ValueError(
+                f"TTT rollout for example {output['example_id']} is missing exact token ids at step {step_idx}."
+            )
         logger.warning(f"Missing rollout tokens for example {output['example_id']} step {step_idx}.")
         return None
 
@@ -339,6 +346,11 @@ def interleave_rollout(
             advantage=None,
             routed_experts=routed_experts,
             mm_token_type_ids=None,
+            ttt_prompt_train_mask=[False] * (len(prompt_ids) + len(completion_ids)) if ttt_trace else None,
+            ttt_trace=list(ttt_trace) if isinstance(ttt_trace, list) else None,
+            ttt_final_prompt_adapter=dict(ttt_final_prompt_adapter)
+            if isinstance(ttt_final_prompt_adapter, dict)
+            else None,
         )
 
     def extend_sample(sample: TrainingSample, prefix_len: int, step_idx: int) -> None:
@@ -351,6 +363,8 @@ def interleave_rollout(
         sample.completion_mask.extend([False] * len(new_prompt_ids))
         sample.completion_logprobs.extend([0.0] * len(new_prompt_ids))
         sample.completion_temperatures.extend([temperature] * len(new_prompt_ids))
+        if sample.ttt_prompt_train_mask is not None:
+            sample.ttt_prompt_train_mask.extend([True] * len(new_prompt_ids))
 
         # Extend with new completion tokens
         completion_ids = tokens["completion_ids"]
@@ -361,6 +375,8 @@ def interleave_rollout(
             sample.completion_mask.extend(bool(i) for i in tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
         sample.completion_temperatures.extend([temperature] * len(completion_ids))
+        if sample.ttt_prompt_train_mask is not None:
+            sample.ttt_prompt_train_mask.extend([False] * len(completion_ids))
 
         if tokens.get("routed_experts") is not None and sample.routed_experts is not None:
             step_routed = tokens["routed_experts"]
