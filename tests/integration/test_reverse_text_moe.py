@@ -16,66 +16,12 @@ def wandb_name(branch_name: str) -> str:
     return f"test-reverse-text-moe:{branch_name}"
 
 
-# --- MoE with HF impl (default) ---
-
-
 @pytest.fixture(scope="module")
-def moe_hf_output_dir(output_dir: Path) -> Path:
-    d = output_dir / "hf"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-@pytest.fixture(scope="module")
-def moe_hf_process(
+def rl_process(
     run_process: Callable[..., ProcessResult],
-    moe_hf_output_dir: Path,
     wandb_project: str,
     wandb_name: str,
-) -> ProcessResult:
-    cmd = [
-        "uv",
-        "run",
-        "rl",
-        "@",
-        "configs/ci/integration/reverse_text_moe/start.toml",
-        "--trainer.model.impl",
-        "hf",
-        "--wandb.project",
-        wandb_project,
-        "--wandb.name",
-        f"{wandb_name}-hf",
-        "--output-dir",
-        moe_hf_output_dir.as_posix(),
-    ]
-    return run_process(cmd, timeout=TIMEOUT)
-
-
-@pytest.fixture(scope="module")
-def test_no_error_hf(moe_hf_process: ProcessResult, moe_hf_output_dir: Path):
-    check_no_error(moe_hf_process, moe_hf_output_dir)
-
-
-def test_moe_hf_runs(moe_hf_process: ProcessResult, test_no_error_hf):
-    """MoE RL with HF model impl completes without error."""
-
-
-# --- MoE with custom impl ---
-
-
-@pytest.fixture(scope="module")
-def moe_custom_output_dir(output_dir: Path) -> Path:
-    d = output_dir / "custom"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-@pytest.fixture(scope="module")
-def moe_custom_process(
-    run_process: Callable[..., ProcessResult],
-    moe_custom_output_dir: Path,
-    wandb_project: str,
-    wandb_name: str,
+    output_dir: Path,
 ) -> ProcessResult:
     cmd = [
         "uv",
@@ -90,15 +36,15 @@ def moe_custom_process(
         "--wandb.name",
         f"{wandb_name}-custom",
         "--output-dir",
-        moe_custom_output_dir.as_posix(),
+        output_dir.as_posix(),
     ]
     return run_process(cmd, timeout=TIMEOUT)
 
 
 @pytest.fixture(scope="module")
-def test_no_error_custom(moe_custom_process: ProcessResult, moe_custom_output_dir: Path):
-    check_no_error(moe_custom_process, moe_custom_output_dir)
+def test_no_error(rl_process: ProcessResult, output_dir: Path):
+    check_no_error(rl_process, output_dir)
 
 
-def test_moe_custom_runs(moe_custom_process: ProcessResult, test_no_error_custom):
+def test_moe_runs(rl_process: ProcessResult, test_no_error):
     """MoE RL with custom model impl completes without error."""
