@@ -160,3 +160,115 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
+
+
+def test_shared_model_name_propagates_to_subconfigs():
+    model_name = "PrimeIntellect/test-model"
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": model_name},
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {},
+        }
+    )
+    assert config.trainer.model.name == model_name
+    assert config.orchestrator.model.name == model_name
+    assert config.inference is not None and config.inference.model.name == model_name
+    assert config.trainer.tokenizer.name == model_name
+    assert config.orchestrator.tokenizer.name == model_name
+
+
+def test_shared_tokenizer_propagates_when_subconfigs_unset():
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "tokenizer": {"name": "my-tokenizer"},
+            "trainer": {},
+            "orchestrator": {},
+        }
+    )
+    assert config.trainer.tokenizer.name == "my-tokenizer"
+    assert config.orchestrator.tokenizer.name == "my-tokenizer"
+
+
+def test_subconfig_tokenizer_wins_over_shared():
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "tokenizer": {"name": "shared-tok"},
+            "trainer": {"tokenizer": {"name": "trainer-tok"}},
+            "orchestrator": {},
+        }
+    )
+    assert config.trainer.tokenizer.name == "trainer-tok"
+    assert config.orchestrator.tokenizer.name == "shared-tok"
+
+
+def test_tokenizer_name_falls_back_to_model_name_when_unset():
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "tokenizer": {"trust_remote_code": True},
+            "trainer": {},
+            "orchestrator": {},
+        }
+    )
+    assert config.trainer.tokenizer.name == "my-model"
+    assert config.orchestrator.tokenizer.name == "my-model"
+    assert config.trainer.tokenizer.trust_remote_code is True
+    assert config.orchestrator.tokenizer.trust_remote_code is True
+
+
+def test_tokenizer_chat_template_mismatch_raises():
+    with pytest.raises(ValidationError, match="chat_template"):
+        RLConfig.model_validate(
+            {
+                "trainer": {"tokenizer": {"chat_template": "A"}},
+                "orchestrator": {"tokenizer": {"chat_template": "B"}},
+            }
+        )
+
+
+def test_shared_seq_len_propagates_to_subconfigs():
+    config = RLConfig.model_validate(
+        {
+            "seq_len": 4096,
+            "trainer": {},
+            "orchestrator": {},
+        }
+    )
+    assert config.trainer.model.seq_len == 4096
+    assert config.orchestrator.seq_len == 4096
+
+
+def test_subconfig_seq_len_wins_over_shared():
+    config = RLConfig.model_validate(
+        {
+            "seq_len": 4096,
+            "trainer": {"model": {"seq_len": 8192}},
+            "orchestrator": {},
+        }
+    )
+    assert config.trainer.model.seq_len == 8192
+    assert config.orchestrator.seq_len == 4096
+
+
+def test_shared_output_dir_propagates_through_cli(tmp_path):
+    """Shared output_dir from CLI reaches sub-configs even when tyro constructs sub-configs before the before-validator."""
+    toml_path = tmp_path / "cfg.toml"
+    write_toml(
+        toml_path,
+        {
+            "max_steps": 1,
+            "seq_len": 128,
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "trainer": {},
+            "orchestrator": {"batch_size": 16, "rollouts_per_example": 1},
+            "inference": {},
+        },
+    )
+    shared_out = tmp_path / "shared"
+    config = cli(RLConfig, args=["@", str(toml_path), "--output-dir", str(shared_out)])
+    assert config.trainer.output_dir == shared_out
+    assert config.orchestrator.output_dir == shared_out / "run_default"

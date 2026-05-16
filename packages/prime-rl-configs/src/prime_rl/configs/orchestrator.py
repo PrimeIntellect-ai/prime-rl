@@ -1187,6 +1187,12 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_session_headers(self):
+        """Ensure X-Session-ID header is always set for sticky DP-aware routing at the inference router."""
+        self.client.extra_headers_from_state.setdefault("X-Session-ID", "example_id")
+        return self
+
+    @model_validator(mode="after")
     def validate_unique_filter_types(self):
         types = [f.type for f in self.filters]
         if len(types) != len(set(types)):
