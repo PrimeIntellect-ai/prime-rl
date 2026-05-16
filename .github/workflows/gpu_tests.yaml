@@ -65,7 +65,10 @@ jobs:
         include:
           - test: base
             runner: vm
-            pytest_args: "tests/integration -m gpu --ignore=tests/integration/test_rl_lora.py --ignore=tests/integration/test_rl_multi_run_lora.py --ignore=tests/integration/test_benchmark_regression.py --ignore=tests/integration/test_alphabet_sort.py"
+            pytest_args: "tests/integration -m gpu --ignore=tests/integration/test_reverse_text.py --ignore=tests/integration/test_rl_lora.py --ignore=tests/integration/test_rl_multi_run_lora.py --ignore=tests/integration/test_benchmark_regression.py --ignore=tests/integration/test_alphabet_sort.py"
+          - test: reverse_text
+            runner: vm
+            pytest_args: "tests/integration/test_reverse_text.py"
           - test: rl_lora
             runner: vm
             pytest_args: "tests/integration/test_rl_lora.py -m gpu"
