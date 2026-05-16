@@ -100,7 +100,7 @@ def test_loss_goes_down(sft_lora_process: ProcessResult, output_dir: Path):
 
 def test_adapter_checkpoint_written(sft_lora_process: ProcessResult, output_dir: Path):
     """Tests that the adapter checkpoint is written with valid PEFT-compatible keys."""
-    adapter_dir = output_dir / "weights" / "step_10" / "lora_adapters"
+    adapter_dir = output_dir / "weights" / "step_5" / "lora_adapters"
     assert_adapter_checkpoint(adapter_dir)
 
 
@@ -120,5 +120,5 @@ def test_loss_goes_down_resume(sft_lora_resume_process: ProcessResult, output_di
 
 def test_adapter_checkpoint_written_resume(sft_lora_resume_process: ProcessResult, output_dir: Path):
     """Tests that the adapter checkpoint is written after resuming with valid PEFT-compatible keys."""
-    adapter_dir = output_dir / "weights" / "step_20" / "lora_adapters"
+    adapter_dir = output_dir / "weights" / "step_10" / "lora_adapters"
     assert_adapter_checkpoint(adapter_dir)
