@@ -25,6 +25,8 @@ class MultiMonitor(Monitor):
                 monitor.log(metrics, step=step)
             except Exception as e:
                 self.logger.warning(f"Failed to log metrics to {monitor.__class__.__name__}: {e}")
+                if monitor.required:
+                    raise
 
     def log_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> None:
         for monitor in self.monitors:
@@ -32,6 +34,8 @@ class MultiMonitor(Monitor):
                 monitor.log_samples(rollouts=rollouts, step=step)
             except Exception as e:
                 self.logger.warning(f"Failed to log samples to {monitor.__class__.__name__}: {e}")
+                if monitor.required:
+                    raise
 
     def log_eval_samples(self, rollouts: list[vf.RolloutOutput], env_name: str, step: int) -> None:
         for monitor in self.monitors:
@@ -39,6 +43,8 @@ class MultiMonitor(Monitor):
                 monitor.log_eval_samples(rollouts=rollouts, env_name=env_name, step=step)
             except Exception as e:
                 self.logger.warning(f"Failed to log eval samples to {monitor.__class__.__name__}: {e}")
+                if monitor.required:
+                    raise
 
     def save_final_summary(self, filename: str = "final_summary.json") -> None:
         for monitor in self.monitors:
@@ -46,6 +52,8 @@ class MultiMonitor(Monitor):
                 monitor.save_final_summary(filename=filename)
             except Exception as e:
                 self.logger.warning(f"Failed to save final summary to {monitor.__class__.__name__}: {e}")
+                if monitor.required:
+                    raise
 
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
         for monitor in self.monitors:
@@ -53,6 +61,8 @@ class MultiMonitor(Monitor):
                 monitor.log_distributions(distributions=distributions, step=step)
             except Exception as e:
                 self.logger.warning(f"Failed to log distributions to {monitor.__class__.__name__}: {e}")
+                if monitor.required:
+                    raise
 
     def close(self) -> None:
         for monitor in self.monitors:
@@ -60,3 +70,5 @@ class MultiMonitor(Monitor):
                 monitor.close()
             except Exception as e:
                 self.logger.warning(f"Failed to close {monitor.__class__.__name__}: {e}")
+                if monitor.required:
+                    raise

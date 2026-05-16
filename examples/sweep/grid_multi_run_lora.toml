@@ -1,0 +1,34 @@
+# Grid sweep using the multi_run_lora scheduler.
+#
+# Demonstrates: shared-trainer LoRA sweeps. rl-multi-run launches one
+# trainer + one inference + N orchestrators against pre-materialized
+# run dirs. The trainer's MultiRunManager rotates through each run's
+# LoRA slot; per-trial overrides are restricted to the orchestrator-safe
+# allowlist (orchestrator.optim.*, orchestrator.model.lora.*, sampling,
+# env, batch/buffer/eval).
+#
+# Requires:
+#   - The shared base must be a LoRA-enabled RLConfig with
+#     trainer.max_concurrent_runs >= scheduler.max_concurrent_runs.
+#   - LoRA-enabled inference server (either local via [inference] in the
+#     shared base, or external via orchestrator.client.base_url and
+#     env VLLM_ALLOW_RUNTIME_LORA_UPDATING=True on the inference rig).
+#
+# Run:
+#   uv run sweep @ examples/sweep/grid_multi_run_lora.toml
+name = "reverse-text-multi-run-lora"
+entrypoint = "rl"
+base = ["examples/sweep/rl_multi_run_lora_disagg.toml"]
+output_dir = "outputs/studies/reverse-text-multi-run-lora"
+
+[scheduler]
+type = "multi_run_lora"
+max_concurrent_runs = 3
+shared = ["examples/sweep/rl_multi_run_lora_disagg.toml"]
+
+[objective]
+metric = "reward/reverse-text/mean"
+direction = "maximize"
+
+[parameters."orchestrator.optim.lr"]
+values = [1e-6, 3e-6, 1e-5]

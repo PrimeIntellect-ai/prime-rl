@@ -141,11 +141,16 @@ export MASTER_PORT=29500
 echo "MASTER_ADDR=${MASTER_ADDR}"
 echo "MASTER_PORT=${MASTER_PORT}"
 
-# Setup environment
+# Setup environment. Serialize `uv sync` across concurrent jobs that share
+# this venv (e.g. parallel sweep trials) so they don't clobber each other's
+# installs and leave a half-broken venv behind.
 cd $PROJECT_DIR
 [ -f .env ] && source .env
 source .venv/bin/activate
-uv sync --all-extras
+flock -x $PROJECT_DIR/.uv-sync.lock uv sync --all-extras || { echo "FATAL: uv sync failed" >&2; exit 1; }
+# Block uv from implicitly re-syncing during `uv run`, which would race with
+# concurrent jobs after the locked sync above already finished.
+export UV_NO_SYNC=1
 
 {% if pre_run_command %}
 # Pre-run command
@@ -395,5 +400,18 @@ else
         -m prime_rl.trainer.rl.train \
         @ $CONFIG_DIR/trainer.toml \
         2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
-{% if num_infer_nodes > 0 %}    fi{% endif %}
+
+{% if num_infer_nodes > 0 %}    # Trainer is done. Cancel the SLURM allocation so the inference task
+    # (which holds the allocation indefinitely via `uv run inference`) shuts
+    # down too. Without this, every multi-node RL job hangs until manually
+    # scancel-ed, which is fatal for sweeps that submit many trials back-to-back.
+    #
+    # The sentinel marks this scancel as the expected self-teardown after a
+    # clean trainer exit. Sweep controllers check for it when SLURM reports
+    # CANCELLED so the trial is recorded as completed rather than failed.
+    if [ "$TRAIN_NODE_RANK" -eq 0 ]; then
+        touch "$OUTPUT_DIR/.training_complete"
+        scancel "$SLURM_JOB_ID"
+    fi
+    fi{% endif %}
 '

@@ -51,8 +51,14 @@ echo "MASTER_PORT=${MASTER_PORT}"
 [ -f $PROJECT_DIR/.env ] && source $PROJECT_DIR/.env
 source $PROJECT_DIR/.venv/bin/activate
 
-# Install environment as local package
-cd $PROJECT_DIR && uv sync --all-extras
+# Install environment as local package. Serialize across concurrent jobs that
+# share this venv (e.g. parallel sweep trials) so they don't clobber each
+# other's installs and leave a half-broken venv behind.
+cd $PROJECT_DIR
+flock -x $PROJECT_DIR/.uv-sync.lock uv sync --all-extras || { echo "FATAL: uv sync failed" >&2; exit 1; }
+# Block uv from implicitly re-syncing during `uv run`, which would race with
+# concurrent jobs after the locked sync above already finished.
+export UV_NO_SYNC=1
 
 
 {% if pre_run_command %}

@@ -40,7 +40,9 @@ dependencies = [
 
 [project.scripts]
 rl = "prime_rl.entrypoints.rl:main"
+rl-multi-run = "prime_rl.entrypoints.rl_multi_run:main"
 sft = "prime_rl.entrypoints.sft:main"
+sweep = "prime_rl.entrypoints.sweep:main"
 inference = "prime_rl.entrypoints.inference:main"
 trainer = "prime_rl.trainer.rl.train:main"
 orchestrator = "prime_rl.orchestrator.orchestrator:main"
@@ -57,6 +59,9 @@ flash-attn-3 = ["flash_attn_3"]
 
 flash-attn-cute = [
     "flash-attn-4",
+]
+hpo = [
+    "optuna>=4",
 ]
 envs = [
     "reverse-text",

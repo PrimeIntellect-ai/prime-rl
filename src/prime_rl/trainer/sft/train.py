@@ -588,6 +588,7 @@ def train(config: SFTConfig):
         weight_ckpt_manager.maybe_clean()
 
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
+    monitor.save_final_summary()
     logger.success("SFT trainer finished!")
 
     # Optionally, print benchmark table and export JSON

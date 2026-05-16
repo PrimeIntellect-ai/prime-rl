@@ -1,0 +1,32 @@
+# Disaggregated reverse-text RL: trainer + orchestrator on rig A, vLLM on rig B.
+# No [inference] block here — rig B owns inference; the orchestrator hits it
+# over the LAN.
+max_steps = 5
+seq_len = 2048
+clean_output_dir = true
+
+[deployment]
+type = "single_node"
+num_train_gpus = 1
+num_infer_gpus = 0
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 16
+
+[orchestrator.client]
+base_url = ["http://10.1.0.69:8000/v1"]
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.train.env]]
+id = "reverse-text"
+
+[trainer.optim]
+lr = 3e-6
+
+[ckpt]

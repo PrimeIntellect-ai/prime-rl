@@ -1,0 +1,63 @@
+# SFT entrypoint over synchronous SLURM with parallel trials.
+#
+# Pairs the `sft` entrypoint with scheduler.max_parallel > 1. Each SFT
+# trial is 1 node (no inference disaggregation), so on an N-node cluster
+# you can fit N concurrent trials by setting max_parallel = N.
+#
+# How it works: the controller maintains up to max_parallel concurrent
+# in-flight SLURM jobs via a ThreadPoolExecutor. As each `sbatch --wait`
+# returns, the main thread tells Optuna the outcome and asks for a fresh
+# trial to refill the slot. TPE auto-enables `constant_liar=True` so
+# concurrent asks diversify; pruners are not supported (Optuna trial
+# objects aren't thread-safe to share across polling threads).
+#
+# Why a separate SFT example: the existing optuna_slurm_parallel.toml
+# uses the RL base, which needs 2 nodes per trial (trainer + inference).
+# On a 3-node cluster, that means only 1 RL trial fits at a time even
+# with max_parallel = 3 — no actual parallelism. SFT trials are 1-node
+# so the controller's max_parallel knob produces real concurrency.
+#
+# Requires:
+#   - sbatch on PATH.
+#   - examples/sweep/sft_slurm_base.toml edited for your cluster.
+#   - HF_HOME pointing at a shared cache (see README), or per-node
+#     `wandb login` if you re-enable wandb.
+#
+# Run:
+#   uv run sweep @ examples/sweep/sft_slurm_parallel.toml
+name = "reverse-text-sft-slurm-parallel"
+entrypoint = "sft"
+base = ["examples/reverse_text/sft.toml", "examples/sweep/sft_slurm_base.toml"]
+output_dir = "outputs/studies/reverse-text-sft-slurm-parallel"
+# Wipe stale trial dirs from prior runs so the fresh sweep starts clean.
+clean_output_dir = true
+
+[strategy]
+type = "optuna"
+num_trials = 9
+seed = 42
+sampler = "tpe"
+# Persist the Optuna study to SQLite so the sweep can be resumed if the
+# controller is interrupted (set `resume = true` at the top to reload).
+study_name = "reverse-text-sft-slurm-parallel"
+storage = "sqlite:///outputs/studies/reverse-text-sft-slurm-parallel/optuna.db"
+
+[scheduler]
+type = "slurm"
+synchronous = true
+max_parallel = 3
+
+[objective]
+metric = "loss/mean"
+direction = "minimize"
+
+# Disabled so a fresh cluster can run this example without configuring
+# wandb on every compute node. Flip enabled=true once `wandb login` has
+# been run on each node the sweep might land on.
+[wandb]
+enabled = false
+
+[parameters."optim.lr"]
+distribution = "log_uniform"
+min = 1e-6
+max = 1e-4

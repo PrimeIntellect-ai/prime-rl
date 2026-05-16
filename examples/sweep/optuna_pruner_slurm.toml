@@ -1,0 +1,44 @@
+# Optuna + median pruner over the synchronous SLURM scheduler.
+#
+# How it works: the controller submits each trial with `sbatch --parsable`
+# (captures the job id), polls the shared-FS metrics.jsonl while the job
+# runs, forwards each new (step, value) to `optuna_trial.report`, and on
+# `should_prune()` issues `scancel <jobid>` to terminate the SLURM job.
+# Trials are serialized at the controller (one in-flight at a time);
+# pruning short-circuits before the trial finishes its full step budget.
+#
+# Requires a shared filesystem between the controller and compute nodes
+# so the controller can read metrics.jsonl as the trial writes it.
+#
+# Run:
+#   uv run sweep @ examples/sweep/optuna_pruner_slurm.toml
+name = "reverse-text-optuna-pruner-slurm"
+entrypoint = "rl"
+base = ["examples/reverse_text/rl.toml", "examples/sweep/slurm_base.toml"]
+output_dir = "outputs/studies/reverse-text-optuna-pruner-slurm"
+
+[strategy]
+type = "optuna"
+num_trials = 8
+seed = 42
+sampler = "tpe"
+poll_interval_seconds = 10.0
+
+[strategy.pruner]
+type = "median"
+n_startup_trials = 2
+n_warmup_steps = 5
+interval_steps = 1
+
+[scheduler]
+type = "slurm"
+synchronous = true
+
+[objective]
+metric = "reward/reverse-text/mean"
+direction = "maximize"
+
+[parameters."trainer.optim.lr"]
+distribution = "log_uniform"
+min = 1e-7
+max = 1e-4

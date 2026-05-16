@@ -1,0 +1,35 @@
+# Random search over distributions (log_uniform LR, uniform temperature).
+#
+# Demonstrates: random strategy with typed distributions. Each trial
+# samples a fresh parameter set; results are reproducible across runs
+# because seed is pinned.
+#
+# Run:
+#   uv run sweep @ examples/sweep/random_local.toml
+name = "reverse-text-random"
+entrypoint = "rl"
+base = ["examples/sweep/rl.toml"]
+output_dir = "outputs/studies/reverse-text-random"
+
+[strategy]
+type = "random"
+num_trials = 8
+seed = 7
+
+[scheduler]
+type = "local"
+max_parallel = 1
+
+[objective]
+metric = "reward/reverse-text/mean"
+direction = "maximize"
+
+[parameters."trainer.optim.lr"]
+distribution = "log_uniform"
+min = 1e-7
+max = 1e-4
+
+[parameters."orchestrator.train.sampling.temperature"]
+distribution = "uniform"
+min = 0.6
+max = 1.2

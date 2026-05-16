@@ -1,0 +1,47 @@
+# Optuna (TPE) over the synchronous SLURM scheduler with parallel trials.
+#
+# How it works: the controller maintains up to ``max_parallel`` concurrent
+# in-flight SLURM jobs. As each job exits, the controller tells Optuna the
+# result and immediately asks for one more trial to refill the slot. With
+# TPE, ``constant_liar=True`` is enabled automatically so concurrent asks
+# don't collide on the same region of the search space — a placeholder
+# objective is assigned to running trials, biasing the next ask to
+# diversify rather than re-propose nearby params.
+#
+# Cluster fit: each SLURM job uses whatever resources its `[slurm]`
+# section requests (nodes, GPUs per node). If your trials each need 1
+# node and your cluster has 3 nodes, set ``max_parallel = 3``. Trials
+# wider than 1 node interact normally with the SLURM queue; ``max_parallel``
+# caps the controller-managed in-flight count, not the queue itself.
+#
+# Pruners are intentionally NOT supported in this mode (the pruning loop
+# owns the optuna_trial object for the trial's lifetime and Optuna trial
+# objects are not safe to share across polling threads). For pruned
+# sweeps, fall back to scheduler.synchronous=true with max_parallel=1.
+#
+# Run:
+#   uv run sweep @ examples/sweep/optuna_slurm_parallel.toml
+name = "reverse-text-optuna-slurm-parallel"
+entrypoint = "rl"
+base = ["examples/reverse_text/rl.toml", "examples/sweep/slurm_base.toml"]
+output_dir = "outputs/studies/reverse-text-optuna-slurm-parallel"
+
+[strategy]
+type = "optuna"
+num_trials = 12
+seed = 42
+sampler = "tpe"
+
+[scheduler]
+type = "slurm"
+synchronous = true
+max_parallel = 3
+
+[objective]
+metric = "reward/reverse-text/mean"
+direction = "maximize"
+
+[parameters."trainer.optim.lr"]
+distribution = "log_uniform"
+min = 1e-7
+max = 1e-4

@@ -1,0 +1,32 @@
+# Optuna + multi_run_lora wave driver, self-contained on a single
+# multi-GPU machine.
+#
+# Same as optuna_multi_run_lora.toml but uses a local inference server
+# (rl_multi_run_lora.toml) instead of pointing at a remote rig.
+#
+# Run:
+#   VLLM_ALLOW_RUNTIME_LORA_UPDATING=True uv run sweep @ examples/sweep/optuna_multi_run_lora_local.toml
+name = "reverse-text-optuna-multi-run-lora-local"
+entrypoint = "rl"
+base = ["examples/sweep/rl_multi_run_lora.toml"]
+output_dir = "outputs/studies/reverse-text-optuna-multi-run-lora-local"
+
+[strategy]
+type = "optuna"
+num_trials = 6
+seed = 42
+sampler = "tpe"
+
+[scheduler]
+type = "multi_run_lora"
+max_concurrent_runs = 3
+shared = ["examples/sweep/rl_multi_run_lora.toml"]
+
+[objective]
+metric = "reward/reverse-text/mean"
+direction = "maximize"
+
+[parameters."orchestrator.optim.lr"]
+distribution = "log_uniform"
+min = 1e-7
+max = 1e-4

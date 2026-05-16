@@ -23,11 +23,16 @@
 
 export PROJECT_DIR={{ project_dir }}
 
-# Setup environment
+# Setup environment. Serialize `uv sync` across concurrent jobs that share
+# this venv (e.g. parallel sweep trials) so they don't clobber each other's
+# installs and leave a half-broken venv behind.
 cd $PROJECT_DIR
 [ -f .env ] && source .env
 source .venv/bin/activate
-uv sync --all-extras
+flock -x $PROJECT_DIR/.uv-sync.lock uv sync --all-extras || { echo "FATAL: uv sync failed" >&2; exit 1; }
+# Block uv from implicitly re-syncing during `uv run`, which would race with
+# concurrent jobs after the locked sync above already finished.
+export UV_NO_SYNC=1
 
 {% if pre_run_command %}
 # Pre-run command

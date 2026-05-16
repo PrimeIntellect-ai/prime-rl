@@ -1,0 +1,68 @@
+# Optuna sweep with persistent SQLite storage — survives controller crashes.
+#
+# Demonstrates: `strategy.storage` set to a SQLite URL, so the Optuna
+# study itself persists across controller invocations. Combined with
+# `resume = true`, a sweep that was killed mid-run can be restarted and
+# the controller will:
+#
+#   1. Reload the study from disk (load_if_exists = config.resume).
+#   2. Validate the existing manifest matches the storage trials
+#      (resolve_checksum, base_checksums, ids, parameters).
+#   3. Reconcile any RUNNING trials left over from the previous run:
+#      - status.json says "completed" with an objective → tell Optuna
+#        the value so future asks see it.
+#      - status.json says "pruned" → tell TrialState.PRUNED.
+#      - otherwise → tell TrialState.FAIL and mark status failed.
+#   4. Resume sampling from trial number == len(study.trials).
+#
+# How to test resume:
+#
+#   # First run (resume = false). Let it produce a few completed trials,
+#   # then Ctrl-C the controller.
+#   uv run sweep @ examples/sweep/optuna_slurm_resume.toml
+#
+#   # Edit this file: set `resume = true`. Re-run. The controller should
+#   # print "Reconciled N RUNNING Optuna trial(s) from interrupted resume"
+#   # if the crash happened between ask() and tell(), then continue from
+#   # the next trial index until num_trials are completed.
+#   uv run sweep @ examples/sweep/optuna_slurm_resume.toml
+#
+# In-memory studies (no `storage` field) cannot resume — Optuna keeps the
+# trial history in process memory, so a controller restart starts from
+# scratch. Persistent storage moves that history to SQLite (or any URL
+# Optuna supports: postgres, mysql, redis-backed, etc.) so the next
+# invocation reads it back.
+#
+# Path nuance: the SQLite URL is interpreted relative to the controller's
+# CWD, not output_dir. Storing the .db under output_dir keeps everything
+# for one study in one folder; the URL is `sqlite:///<path>` (note the
+# triple slash for an absolute or relative-to-cwd path).
+#
+# Run:
+#   uv run sweep @ examples/sweep/optuna_slurm_resume.toml
+name = "reverse-text-optuna-resume"
+entrypoint = "rl"
+base = ["examples/reverse_text/rl.toml", "examples/sweep/slurm_base.toml"]
+output_dir = "outputs/studies/reverse-text-optuna-resume"
+resume = false
+
+[strategy]
+type = "optuna"
+num_trials = 6
+seed = 42
+sampler = "tpe"
+study_name = "reverse-text-optuna-resume"
+storage = "sqlite:///outputs/studies/reverse-text-optuna-resume/optuna.db"
+
+[scheduler]
+type = "slurm"
+synchronous = true
+
+[objective]
+metric = "reward/reverse-text/mean"
+direction = "maximize"
+
+[parameters."trainer.optim.lr"]
+distribution = "log_uniform"
+min = 1e-7
+max = 1e-4

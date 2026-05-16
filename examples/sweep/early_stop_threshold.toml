@@ -1,0 +1,37 @@
+# Early stopping (threshold): halt the sweep when a trial's objective
+# crosses to the wrong side of a configured floor.
+#
+# Demonstrates: [early_stopping] type="threshold". With direction=maximize
+# and threshold=0.10, the sweep halts after any completed trial whose
+# objective is below 0.10 (and at least min_trials trials have completed).
+# In-flight trials are not killed; new trials are not submitted.
+#
+# Order matters for grid expansion: trial 0 should pass the threshold,
+# trial 1 has a known-bad LR that collapses the reward, so the controller
+# halts after trial 1 and trial 2 stays state="pending" in the manifest.
+#
+# Run:
+#   uv run sweep @ examples/sweep/early_stop_threshold.toml
+name = "reverse-text-early-stop-threshold"
+entrypoint = "rl"
+base = ["examples/sweep/rl.toml"]
+output_dir = "outputs/studies/reverse-text-early-stop-threshold"
+
+[strategy]
+type = "grid"
+
+[scheduler]
+type = "local"
+max_parallel = 1
+
+[objective]
+metric = "reward/reverse-text/mean"
+direction = "maximize"
+
+[early_stopping]
+type = "threshold"
+threshold = 0.10
+min_trials = 1
+
+[parameters."trainer.optim.lr"]
+values = [3e-6, 1e-3, 1e-5]

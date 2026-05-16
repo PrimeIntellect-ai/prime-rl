@@ -34,6 +34,8 @@ class Monitor(ABC):
     to store logged metrics.
     """
 
+    required: bool = False
+
     @abstractmethod
     def log(self, metrics: dict[str, Any], step: int) -> None:
         pass

@@ -1,0 +1,20 @@
+# SLURM submission settings for SFT sweeps, chained on top of
+# examples/sweep/sft.toml when running examples/sweep/sft_slurm.toml.
+# Edit to match your cluster.
+#
+# SFT uses a different [deployment] shape than RL — num_nodes instead
+# of num_train_nodes + num_infer_nodes — because SFT is trainer-only
+# with no separate inference allocation.
+[slurm]
+job_name = "reverse-text-sft-sweep"
+partition = "gpu"
+# account = "your-account"
+# time = "01:00:00"
+# nodelist = "node-a"
+# template_path = "/path/to/custom_sbatch_template.sh"
+# pre_run_command = "module load cuda/12.8"
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 1
+num_nodes = 1

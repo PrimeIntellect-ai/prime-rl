@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -5,16 +6,21 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.configs.shared import PrimeMonitorConfig, WandbWithExtrasConfig
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.monitor.base import Monitor, NoOpMonitor
+from prime_rl.utils.monitor.file import FileMonitor
 from prime_rl.utils.monitor.multi import MultiMonitor
 from prime_rl.utils.monitor.prime import PrimeMonitor
 from prime_rl.utils.monitor.wandb import WandbMonitor
 
+SWEEP_METRICS_JSONL_ENV = "PRIME_RL_SWEEP_METRICS_JSONL"
+
 __all__ = [
+    "FileMonitor",
     "Monitor",
     "WandbMonitor",
     "PrimeMonitor",
     "MultiMonitor",
     "NoOpMonitor",
+    "SWEEP_METRICS_JSONL_ENV",
     "setup_monitor",
     "get_monitor",
 ]
@@ -75,6 +81,17 @@ def setup_monitor(
                 output_dir=output_dir,
                 tokenizer=tokenizer,
                 run_config=run_config,
+                keep_full_history=keep_full_history,
+            )
+        )
+
+    sweep_metrics_path = os.environ.get(SWEEP_METRICS_JSONL_ENV)
+    if sweep_metrics_path:
+        # Sweep launcher injects the path; trial subprocess inherits it. Off
+        # in non-sweep runs because the env var is unset.
+        monitors.append(
+            FileMonitor(
+                output_path=Path(sweep_metrics_path),
                 keep_full_history=keep_full_history,
             )
         )

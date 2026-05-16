@@ -1,0 +1,52 @@
+# Shared base for a multi_run_lora sweep on a single multi-GPU machine
+# (no disagg — inference runs locally on a separate GPU).
+#
+# rl-multi-run launches one trainer + one inference + N orchestrators
+# against pre-materialized run dirs. Each orchestrator gets a per-trial
+# LoRA name from the sweep; the trainer pushes adapter weights via the
+# /load_lora_adapter HTTP endpoint, so vLLM must be LoRA-enabled.
+#
+# Requires:
+#   - ≥2 GPUs on this machine (num_train_gpus + num_infer_gpus).
+max_steps = 20
+max_async_level = 20
+seq_len = 2048
+clean_output_dir = true
+
+[deployment]
+type = "single_node"
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[trainer]
+max_concurrent_runs = 3
+
+[trainer.model.lora]
+rank = 8
+alpha = 16
+
+[trainer.optim]
+lr = 3e-6
+
+[orchestrator]
+batch_size = 64
+rollouts_per_example = 8
+
+[orchestrator.model.lora]
+rank = 8
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.train.env]]
+id = "reverse-text"
+
+[inference]
+enable_lora = true
+max_lora_rank = 8
+max_loras = 4
+
+[ckpt]
