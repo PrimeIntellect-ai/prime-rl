@@ -14,11 +14,13 @@ import asyncio
 
 import numpy as np
 import pybase64
+from vllm.entrypoints.serve.disagg.protocol import GenerateResponse, GenerateResponseChoice
 
 from prime_rl.inference.vllm.routed_experts import serialize_routed_experts
 from prime_rl.inference.vllm.serving_tokens import (
     PrimeRlServingTokens,
     _client_set_max_tokens,
+    _GenerateRoutedExpertsCapture,
 )
 
 
@@ -38,6 +40,11 @@ class _FakeRawRequest:
         if self._raise:
             raise self._body
         return self._body
+
+
+async def _empty_request_outputs():
+    if False:
+        yield
 
 
 def test_subclass_only_overrides_serve_tokens():
@@ -63,6 +70,26 @@ def test_serialize_routed_experts_uses_compact_raw_payload():
     decoded = _decode_routed_experts(encoded)
     assert decoded.dtype == np.uint8
     np.testing.assert_array_equal(decoded, routed_experts)
+
+
+def test_generate_response_post_process_replaces_upstream_routed_experts():
+    compact_routed_experts = {"data": "AQID", "shape": [1, 1, 3]}
+    capture = _GenerateRoutedExpertsCapture(_empty_request_outputs())
+    capture.routed_experts[0] = compact_routed_experts
+    response = GenerateResponse(
+        request_id="request-id",
+        choices=[
+            GenerateResponseChoice(
+                index=0,
+                token_ids=[1, 2, 3],
+                routed_experts="upstream-npy-payload",
+            )
+        ],
+    )
+
+    processed = capture.post_process(response)
+
+    assert processed.choices[0].routed_experts == compact_routed_experts
 
 
 def test_client_set_max_tokens_recognizes_explicit_value():

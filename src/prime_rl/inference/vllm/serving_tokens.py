@@ -61,7 +61,7 @@ class _GenerateRoutedExpertsCapture(RoutedExpertsCapture):
     def post_process(self, response: GenerateResponse) -> PrimeRlGenerateResponse:
         choices = [
             PrimeRlGenerateResponseChoice(
-                **choice.model_dump(),
+                **choice.model_dump(exclude={"routed_experts"}),
                 routed_experts=self.routed_experts.get(choice.index),
             )
             for choice in response.choices
