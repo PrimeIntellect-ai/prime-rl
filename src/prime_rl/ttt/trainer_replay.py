@@ -13,13 +13,6 @@ import torch.nn as nn
 from safetensors.torch import load_file
 from torch import Tensor
 
-try:
-    from torch.distributed.tensor import DTensor, distribute_tensor
-except Exception:  # pragma: no cover - older torch builds
-    DTensor = None  # type: ignore[assignment]
-    distribute_tensor = None  # type: ignore[assignment]
-
-
 _ACTIVE_TTT_ADAPTER: contextvars.ContextVar["FrozenLoRAAdapter | None"] = contextvars.ContextVar(
     "active_ttt_trainer_adapter", default=None
 )
@@ -164,41 +157,6 @@ class TTTTrainerAdapterManager:
             torch.cuda.empty_cache()
 
 
-def gather_adapter_paths(local_adapters: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Gather final prompt adapter metadata so every rank merges the same deltas."""
-    if not (dist.is_available() and dist.is_initialized()):
-        return _dedupe_adapters(local_adapters)
-
-    gathered: list[list[dict[str, Any]] | None] = [None for _ in range(dist.get_world_size())]
-    dist.all_gather_object(gathered, local_adapters)
-    merged: list[dict[str, Any]] = []
-    for item in gathered:
-        if item:
-            merged.extend(item)
-    return _dedupe_adapters(merged)
-
-
-def _dedupe_adapters(adapters: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[str] = set()
-    result = []
-    for adapter in adapters:
-        path = adapter.get("adapter_path")
-        if not path or path in seen:
-            continue
-        seen.add(path)
-        result.append(adapter)
-    return result
-
-
-def collect_final_prompt_adapters(micro_batches: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    adapters = []
-    for micro_batch in micro_batches:
-        adapter = micro_batch.get("ttt_final_prompt_adapter")
-        if isinstance(adapter, dict) and adapter.get("adapter_path"):
-            adapters.append(adapter)
-    return adapters
-
-
 def collect_trace_adapter_paths(trace: list[dict]) -> list[str]:
     paths = []
     for entry in trace:
@@ -206,14 +164,6 @@ def collect_trace_adapter_paths(trace: list[dict]) -> list[str]:
         if path:
             paths.append(str(path))
     return paths
-
-
-def collect_step_final_prompt_paths(micro_batches: list[dict[str, Any]]) -> list[str]:
-    return [
-        str(adapter["adapter_path"])
-        for adapter in collect_final_prompt_adapters(micro_batches)
-        if adapter.get("adapter_path")
-    ]
 
 
 def gather_consumed_adapter_paths(local_paths: set[str] | list[str]) -> list[str]:
@@ -249,53 +199,3 @@ def cleanup_consumed_adapters(
     if dist.is_available() and dist.is_initialized():
         dist.barrier()
     return deleted
-
-
-def merge_prompt_adapters_into_model(
-    model: nn.Module,
-    manager: TTTTrainerAdapterManager,
-    adapters: list[dict[str, Any]],
-    *,
-    scale: float,
-    reduce: str,
-) -> int:
-    if not adapters or scale == 0:
-        return 0
-    if reduce != "mean":
-        raise ValueError(f"Unsupported TTT prompt LoRA reduce mode: {reduce}")
-
-    loaded = [manager.load_adapter(adapter["adapter_path"]) for adapter in adapters]
-    if not loaded:
-        return 0
-
-    merged_modules = 0
-    denom = float(len(loaded))
-    with torch.no_grad():
-        for module_name, module in model.named_modules():
-            if not isinstance(module, nn.Linear):
-                continue
-            delta: Tensor | None = None
-            for adapter in loaded:
-                state = _find_adapter_state(module_name, adapter)
-                if state is None:
-                    continue
-                part = torch.matmul(state.b.float(), state.a.float())
-                delta = part if delta is None else delta + part
-            if delta is None:
-                continue
-            delta = delta * (scale / denom)
-            weight = module.weight
-            if DTensor is not None and isinstance(weight, DTensor):
-                assert distribute_tensor is not None
-                dt_delta = distribute_tensor(
-                    delta,
-                    device_mesh=weight.device_mesh,
-                    placements=weight.placements,
-                ).to(dtype=weight.dtype)
-                weight.data.add_(dt_delta)
-            else:
-                if tuple(weight.shape) != tuple(delta.shape):
-                    continue
-                weight.data.add_(delta.to(device=weight.device, dtype=weight.dtype))
-            merged_modules += 1
-    return merged_modules

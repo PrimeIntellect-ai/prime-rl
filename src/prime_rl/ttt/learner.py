@@ -19,8 +19,7 @@ class PrepareTurnRequest(BaseModel):
     turn_idx: int
     model: str
     prompt_ids: list[int]
-    new_prompt_ids: list[int]
-    token_role: Literal["completion_initial_prompt", "prompt_environment"]
+    new_token_ids: list[int]
 
 
 class CompleteTurnRequest(BaseModel):
@@ -30,6 +29,7 @@ class CompleteTurnRequest(BaseModel):
     completion_ids: list[int]
     completion_logprobs: list[float] = []
     prepare_version: int | None = None
+    adapter_name: str | None = None
 
 
 class UpdateBaseWeightsRequest(BaseModel):
@@ -93,31 +93,29 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
         async with lock_for(request.session_id):
             session = activate_session(request.session_id)
             try:
-                kind: Literal["prompt", "completion"] = (
-                    "completion" if request.token_role == "completion_initial_prompt" else "prompt"
-                )
-                token_ids = request.new_prompt_ids
-                loss = await asyncio.to_thread(engine.train_tokens, session, kind, token_ids)
-                adapter_name = (
-                    f"ttt-{request.session_id[:12]}-t{request.turn_idx}"
-                    f"-p{session.prompt_version}-c{session.completion_version}-b{engine.base_step}"
-                )
-                meta = await engine.materialize(
-                    session,
-                    name=adapter_name,
-                    kinds=("prompt", "completion"),
-                    load_into_vllm=True,
-                    adapter_kind="combined",
-                    turn_idx=request.turn_idx,
-                )
+                train_stats = await asyncio.to_thread(engine.append_and_train, session, request.new_token_ids)
+                meta = session.latest_adapter
+                if session.version > 0 and meta is None:
+                    adapter_name = (
+                        f"ttt-{request.session_id[:12]}-t{request.turn_idx}-v{session.version}-b{engine.base_step}"
+                    )
+                    meta = await engine.materialize(
+                        session,
+                        name=adapter_name,
+                        load_into_vllm=True,
+                        turn_idx=request.turn_idx,
+                    )
+                elif meta is not None:
+                    await engine.ensure_vllm_loaded(meta)
+                meta = dict(meta or {})
                 return {
                     **meta,
                     "status": "ok",
-                    "version": request.turn_idx,
-                    "token_role": request.token_role,
-                    "trained_lora": kind,
-                    "trained_token_count": len(token_ids),
-                    "loss": loss,
+                    "version": session.version,
+                    "trained_token_count": train_stats["trained_token_count"],
+                    "trained_chunks": train_stats["trained_chunks"],
+                    "pending_token_count": train_stats["pending_token_count"],
+                    "loss": train_stats["loss"],
                 }
             finally:
                 offload_session(session)
@@ -127,29 +125,18 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
         async with lock_for(request.session_id):
             session = activate_session(request.session_id)
             try:
-                loss = await asyncio.to_thread(engine.train_tokens, session, "completion", request.completion_ids)
-                prompt_adapter_name = (
-                    f"ttt-{request.session_id[:12]}-final-p{session.prompt_version}-b{engine.base_step}"
-                )
-                final_prompt = await engine.materialize(
-                    session,
-                    name=prompt_adapter_name,
-                    kinds=("prompt",),
-                    load_into_vllm=False,
-                    adapter_kind="final_prompt",
-                    turn_idx=request.turn_idx,
-                )
-                session.final_prompt_adapter = final_prompt
-                combined = session.combined_adapters()
-                if combined:
-                    await engine.unload_vllm_adapter(str(combined[-1]["adapter_name"]))
+                train_stats = await asyncio.to_thread(engine.append_and_train, session, request.completion_ids)
+                if request.adapter_name:
+                    await engine.unload_vllm_adapter(request.adapter_name)
+                    engine.mark_vllm_unloaded(session, request.adapter_name)
                 return {
                     "status": "ok",
                     "base_step": engine.base_step,
-                    "completion_version": session.completion_version,
-                    "trained_token_count": len(request.completion_ids),
-                    "loss": loss,
-                    "final_prompt_adapter": final_prompt,
+                    "version": session.version,
+                    "trained_token_count": train_stats["trained_token_count"],
+                    "trained_chunks": train_stats["trained_chunks"],
+                    "pending_token_count": train_stats["pending_token_count"],
+                    "loss": train_stats["loss"],
                 }
             finally:
                 offload_session(session)
@@ -157,18 +144,17 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
     @app.post("/finish_session")
     async def finish_session(request: FinishSessionRequest) -> dict[str, Any]:
         session = engine.sessions.pop(request.session_id, None)
-        await engine.unload_session_combined_adapters(session)
+        await engine.unload_session_loaded_adapters(session)
         locks.pop(request.session_id, None)
         return {
             "status": "ok",
             "session_id": request.session_id,
-            "final_prompt_adapter": session.final_prompt_adapter if session else None,
         }
 
     @app.post("/abort_session")
     async def abort_session(request: FinishSessionRequest) -> dict[str, Any]:
         session = engine.sessions.pop(request.session_id, None)
-        await engine.unload_session_combined_adapters(session)
+        await engine.unload_session_loaded_adapters(session)
         locks.pop(request.session_id, None)
         return {"status": "ok", "session_id": request.session_id}
 
@@ -186,9 +172,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--steps-per-update", type=int, default=1)
+    parser.add_argument("--update-every-tokens", type=int, default=1024)
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
-    parser.add_argument("--prompt-loss-weight", type=float, default=1.0)
-    parser.add_argument("--completion-loss-weight", type=float, default=1.0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
     parser.add_argument("--host", default="127.0.0.1")
@@ -214,9 +199,8 @@ def main() -> None:
         lr=args.lr,
         weight_decay=args.weight_decay,
         steps_per_update=args.steps_per_update,
+        update_every_tokens=args.update_every_tokens,
         max_grad_norm=args.max_grad_norm,
-        prompt_loss_weight=args.prompt_loss_weight,
-        completion_loss_weight=args.completion_loss_weight,
         device=args.device,
         dtype=_dtype(args.dtype),
         vllm_admin_base_urls=args.vllm_admin_base_url,

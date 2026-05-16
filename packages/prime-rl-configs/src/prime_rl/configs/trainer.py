@@ -13,7 +13,7 @@ from prime_rl.configs.shared import (
     TransportConfig,
     WandbConfig,
 )
-from prime_rl.configs.ttt import TTTConfig
+from prime_rl.configs.ttt import ToolOutputTrainingConfig, TTTConfig
 from prime_rl.utils.config import BaseConfig
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
@@ -775,6 +775,11 @@ class TrainerExperimentalConfig(BaseConfig):
         TTTConfig,
         Field(description="Per-rollout test-time-training configuration."),
     ] = TTTConfig()
+
+    tool_output_training: Annotated[
+        ToolOutputTrainingConfig,
+        Field(description="Permanent trainer-side SFT on renderer-attributed tool-output content tokens."),
+    ] = ToolOutputTrainingConfig()
 
 
 class TrainerConfig(BaseConfig):

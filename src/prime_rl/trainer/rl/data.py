@@ -42,9 +42,8 @@ class TensorMicroBatch(TypedDict):
     # When True, trainer uses SFT loss instead of RL loss for this batch
     sft_loss: bool
 
-    ttt_prompt_train_mask: Bool[Tensor, "batch seq"] | None
+    tool_output_train_mask: Bool[Tensor, "batch seq"] | None
     ttt_trace: list[dict] | None
-    ttt_final_prompt_adapter: dict | None
 
 
 class FakeDataLoader:
@@ -119,9 +118,8 @@ class FakeDataLoader:
             "image_grid_thw": None,
             "mm_token_type_ids": None,
             "sft_loss": False,
-            "ttt_prompt_train_mask": None,
+            "tool_output_train_mask": None,
             "ttt_trace": None,
-            "ttt_final_prompt_adapter": None,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -149,9 +147,8 @@ class FakeDataLoader:
             "image_grid_thw": None,
             "mm_token_type_ids": None,
             "sft_loss": False,
-            "ttt_prompt_train_mask": None,
+            "tool_output_train_mask": None,
             "ttt_trace": None,
-            "ttt_final_prompt_adapter": None,
         }
 
 
@@ -234,9 +231,8 @@ class DataLoader:
             if micro_batch.routed_experts is not None
             else None,
             sft_loss=micro_batch.sft_loss,
-            ttt_prompt_train_mask=torch.tensor(micro_batch.ttt_prompt_train_mask, dtype=torch.bool).unsqueeze(0)
-            if micro_batch.ttt_prompt_train_mask is not None
+            tool_output_train_mask=torch.tensor(micro_batch.tool_output_train_mask, dtype=torch.bool).unsqueeze(0)
+            if micro_batch.tool_output_train_mask is not None
             else None,
             ttt_trace=micro_batch.ttt_trace,
-            ttt_final_prompt_adapter=micro_batch.ttt_final_prompt_adapter,
         )

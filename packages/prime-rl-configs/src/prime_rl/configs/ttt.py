@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import AliasChoices, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from prime_rl.utils.config import BaseConfig
 
@@ -11,12 +11,12 @@ class TTTLoRAConfig(BaseConfig):
 
     rank: Annotated[
         Literal[8, 16, 32, 64, 128, 256, 320, 512],
-        Field(description="Rank for the per-rollout prompt and completion TTT LoRAs."),
+        Field(description="Rank for the per-rollout online TTT LoRA."),
     ] = 8
 
     alpha: Annotated[
         int,
-        Field(gt=0, description="LoRA alpha for the per-rollout prompt and completion TTT LoRAs."),
+        Field(gt=0, description="LoRA alpha for the per-rollout online TTT LoRA."),
     ] = 16
 
     dropout: Annotated[
@@ -182,13 +182,13 @@ class TTTConfig(BaseConfig):
 
     update_every_turns: Annotated[
         int | None,
-        Field(gt=0, description="Train TTT LoRAs every N environment turns."),
-    ] = 1
+        Field(gt=0, description="Deprecated. Online TTT now updates by tokens."),
+    ] = None
 
     update_every_tokens: Annotated[
-        int | None,
-        Field(gt=0, description="Train TTT LoRAs every N new tokens instead of turns."),
-    ] = None
+        int,
+        Field(ge=2, description="Run one online TTT LoRA optimizer update per N exact rollout tokens."),
+    ] = 1024
 
     overlap_turns: Annotated[
         int | None,
@@ -205,41 +205,10 @@ class TTTConfig(BaseConfig):
         Field(description="Scope for TTT adapters. Only per-rollout adapters are currently represented."),
     ] = "rollout"
 
-    train_prompt_lora: Annotated[
-        bool,
-        Field(
-            validation_alias=AliasChoices("train_prompt_lora", "prompt_lora_enabled"),
-            description="Train Phi_p on prompt/environment tokens.",
-        ),
-    ] = True
-
-    train_completion_lora: Annotated[
-        bool,
-        Field(
-            validation_alias=AliasChoices("train_completion_lora", "completion_lora_enabled"),
-            description="Train Phi_c on model completion tokens.",
-        ),
-    ] = True
-
     replay_policy: Annotated[
         Literal["turn_snapshots"],
         Field(description="How RL replay should recover active TTT adapter versions."),
     ] = "turn_snapshots"
-
-    merge_prompt_lora: Annotated[
-        Literal["after_trainer_step", "after_trainer_update", "never"],
-        Field(description="Whether final Phi_p adapters are merged into Theta after an RL optimizer step."),
-    ] = "never"
-
-    completion_lora_trains_initial_prompt: Annotated[
-        bool,
-        Field(description="Train Phi_c on the initial system/user prompt."),
-    ] = True
-
-    prompt_lora_trains_environment_responses: Annotated[
-        bool,
-        Field(description="Train Phi_p on tool outputs and environment/user responses after the rollout starts."),
-    ] = True
 
     theta_update_policy: Annotated[
         Literal["always_newest"],
@@ -256,66 +225,10 @@ class TTTConfig(BaseConfig):
         Field(description="Fail TTT rollouts instead of using fallback trajectory retokenization."),
     ] = True
 
-    require_content_mask: Annotated[
-        bool,
-        Field(
-            description=(
-                "Require renderer content_mask for TTT LoRA training tokens so prompt-side "
-                "environment SFT excludes renderer separators and role/control tags."
-            )
-        ),
-    ] = True
-
     cache_salt_includes_adapter: Annotated[
         bool,
         Field(description="Include active adapter version in vLLM cache salt."),
     ] = True
-
-    merge_prompt_lora_scale: Annotated[
-        float,
-        Field(ge=0.0, description="Scale applied when final prompt LoRAs are merged into Theta."),
-    ] = 1.0
-
-    merge_prompt_lora_reduce: Annotated[
-        Literal["mean"],
-        Field(description="Reduction used across final prompt LoRAs before merge."),
-    ] = "mean"
-
-    prompt_loss_weight: Annotated[
-        float,
-        Field(
-            ge=0.0,
-            description=(
-                "Weight for the trainer-side hard-target prompt loss used by the runnable "
-                "after_trainer_step merge approximation."
-            ),
-        ),
-    ] = 1.0
-
-    prompt_lora_loss_weight: Annotated[
-        float,
-        Field(
-            ge=0.0,
-            description="Multiplier for online TTT Phi_p SFT loss on tool/environment prompt tokens.",
-        ),
-    ] = 1.0
-
-    completion_lora_loss_weight: Annotated[
-        float,
-        Field(
-            ge=0.0,
-            description="Multiplier for online TTT Phi_c SFT loss on initial prompt and completion tokens.",
-        ),
-    ] = 1.0
-
-    tool_output_train_names: Annotated[
-        list[str] | None,
-        Field(
-            description=(
-                "Optional allowlist of tool names whose tool outputs train Phi_p. None trains on all tool outputs."
-            )
-        ),
-    ] = None
 
     lora: Annotated[
         TTTLoRAConfig,
@@ -340,12 +253,46 @@ class TTTConfig(BaseConfig):
             raise ValueError(
                 f"TTT total_seq_len ({self.total_seq_len}) must be >= window_seq_len ({self.window_seq_len})."
             )
-        if (self.update_every_turns is None) == (self.update_every_tokens is None):
-            raise ValueError("Set exactly one of update_every_turns or update_every_tokens for TTT.")
+        if self.update_every_turns is not None:
+            raise ValueError("TTT update_every_turns is no longer supported; set update_every_tokens instead.")
         if (self.overlap_turns is None) == (self.overlap_tokens is None):
             raise ValueError("Set exactly one of overlap_turns or overlap_tokens for TTT.")
-        if not self.train_prompt_lora and not self.train_completion_lora:
-            raise ValueError("TTT must train at least one of prompt or completion LoRA.")
         if self.mode == "online_lora" and not self.keep_rollout_loras_across_theta_updates:
             raise ValueError("online_lora TTT requires keep_rollout_loras_across_theta_updates=true.")
         return self
+
+
+class ToolOutputTrainingConfig(BaseConfig):
+    """Permanent trainer-side SFT on rendered tool-output content tokens."""
+
+    enabled: Annotated[
+        bool,
+        Field(description="Enable auxiliary trainer-side SFT on prompt-side tool-output content tokens."),
+    ] = False
+
+    weight: Annotated[
+        float,
+        Field(ge=0.0, description="Scalar weight for the auxiliary tool-output NLL."),
+    ] = 1.0
+
+    tool_names: Annotated[
+        list[str] | None,
+        Field(description="Optional allowlist of tool names to train on. None trains on all tool outputs."),
+    ] = None
+
+    content_only: Annotated[
+        bool,
+        Field(description="Use renderer content_mask so role/control/separator tokens are excluded."),
+    ] = True
+
+    @field_validator("tool_names")
+    @classmethod
+    def validate_tool_names(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        names = []
+        for item in value:
+            if not isinstance(item, str) or not item:
+                raise ValueError("tool_names must contain non-empty strings.")
+            names.append(item)
+        return names

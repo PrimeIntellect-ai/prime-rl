@@ -39,7 +39,7 @@ from prime_rl.configs.trainer import (
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
 )
-from prime_rl.configs.ttt import TTTConfig
+from prime_rl.configs.ttt import ToolOutputTrainingConfig, TTTConfig
 from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
     validate_shared_ckpt_config,
@@ -60,6 +60,11 @@ class RLExperimentalConfig(BaseConfig):
         TTTConfig,
         Field(description="Per-rollout test-time-training configuration."),
     ] = TTTConfig()
+
+    tool_output_training: Annotated[
+        ToolOutputTrainingConfig,
+        Field(description="Permanent trainer-side SFT on renderer-attributed tool-output content tokens."),
+    ] = ToolOutputTrainingConfig()
 
 
 class SharedLogConfig(BaseConfig):
@@ -667,7 +672,43 @@ class RLConfig(BaseConfig):
     def auto_setup_ttt(self):
         """Propagate renderer-based online TTT config and keep physical/logical length knobs distinct."""
         ttt = self.experimental.ttt
+        tool_output_training = self.experimental.tool_output_training
+        if not ttt.enabled and not tool_output_training.enabled:
+            return self
+
+        self.trainer.experimental.tool_output_training = tool_output_training.model_copy(deep=True)
+        self.orchestrator.experimental.tool_output_training = tool_output_training.model_copy(deep=True)
+
+        if tool_output_training.enabled:
+            if not self.orchestrator.use_renderer or self.orchestrator.use_token_client:
+                raise ValueError(
+                    "experimental.tool_output_training.enabled=true requires orchestrator.use_renderer=true "
+                    "and orchestrator.use_token_client=false."
+                )
+            if (
+                tool_output_training.content_only
+                and tool_output_training.tool_names is not None
+                and len(set(tool_output_training.tool_names)) != len(tool_output_training.tool_names)
+            ):
+                raise ValueError("experimental.tool_output_training.tool_names contains duplicates.")
+
         if not ttt.enabled:
+            tool_output_extra_body = {
+                "tool_output_training_enabled": tool_output_training.enabled,
+                "tool_output_training_weight": tool_output_training.weight,
+                "tool_output_train_names": tool_output_training.tool_names,
+                "tool_output_content_only": tool_output_training.content_only,
+                "tool_output_require_content_mask": tool_output_training.content_only,
+            }
+            is_vllm_rollout = self.orchestrator.teacher_rollout_model is None
+            if is_vllm_rollout:
+                for env in self.orchestrator.train.env:
+                    for key, value in tool_output_extra_body.items():
+                        env.sampling.extra_body.setdefault(key, value)
+                if self.orchestrator.eval is not None:
+                    for env in self.orchestrator.eval.env:
+                        for key, value in tool_output_extra_body.items():
+                            env.sampling.extra_body.setdefault(key, value)
             return self
 
         self.trainer.experimental.ttt = ttt.model_copy(deep=True)
@@ -688,15 +729,14 @@ class RLConfig(BaseConfig):
             "ttt_enabled": ttt.mode == "online_lora",
             "ttt_learner_url": ttt.learner.resolved_base_url,
             "ttt_window_seq_len": ttt.window_seq_len,
-            "ttt_train_prompt_lora": ttt.train_prompt_lora,
-            "ttt_train_completion_lora": ttt.train_completion_lora,
             "ttt_require_exact_token_ids": ttt.require_exact_token_ids,
-            "ttt_require_content_mask": ttt.require_content_mask,
-            "ttt_tool_output_train_names": ttt.tool_output_train_names,
-            "ttt_completion_lora_trains_initial_prompt": ttt.completion_lora_trains_initial_prompt,
-            "ttt_prompt_lora_trains_environment_responses": ttt.prompt_lora_trains_environment_responses,
             "ttt_cache_salt_includes_adapter": ttt.cache_salt_includes_adapter,
             "ttt_request_timeout_s": ttt.learner.request_timeout_s,
+            "tool_output_training_enabled": tool_output_training.enabled,
+            "tool_output_training_weight": tool_output_training.weight,
+            "tool_output_train_names": tool_output_training.tool_names,
+            "tool_output_content_only": tool_output_training.content_only,
+            "tool_output_require_content_mask": tool_output_training.content_only,
         }
         for env in self.orchestrator.train.env:
             env.extra_env_kwargs.update(max_seq_len=ttt.total_seq_len)
@@ -716,14 +756,12 @@ class RLConfig(BaseConfig):
                 self.inference.model.max_model_len = ttt.window_seq_len
             self.inference.enable_lora = True
             required_lora_rank = ttt.lora.rank
-            if ttt.train_prompt_lora and ttt.train_completion_lora:
-                required_lora_rank = 2 * ttt.lora.rank
             if self.inference.max_lora_rank is None or self.inference.max_lora_rank < required_lora_rank:
                 self.inference.max_lora_rank = required_lora_rank
         else:
             warnings.warn(
                 "TTT is enabled, but inference is not configured. When manually starting vLLM, "
-                "make sure to enable LoRA and set max_lora_rank >= 2 * experimental.ttt.lora.rank.",
+                "make sure to enable LoRA and set max_lora_rank >= experimental.ttt.lora.rank.",
                 stacklevel=2,
             )
 

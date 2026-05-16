@@ -6,7 +6,7 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import httpx
 import torch
@@ -17,7 +17,7 @@ from transformers import AutoModelForCausalLM
 
 from prime_rl.trainer.weights import load_state_dict
 
-ActiveAdapters = tuple[str, tuple[Literal["prompt", "completion"], ...]] | None
+ActiveAdapters = str | None
 _ACTIVE_ADAPTERS: contextvars.ContextVar[ActiveAdapters] = contextvars.ContextVar("ttt_active_adapters", default=None)
 
 
@@ -36,29 +36,26 @@ class LoRAWeights:
 @dataclass
 class TTTSession:
     session_id: str
-    prompt: dict[str, LoRAWeights]
-    completion: dict[str, LoRAWeights]
-    prompt_optimizer: torch.optim.Optimizer
-    completion_optimizer: torch.optim.Optimizer
-    prompt_version: int = 0
-    completion_version: int = 0
+    adapter: dict[str, LoRAWeights]
+    optimizer: torch.optim.Optimizer
+    version: int = 0
     turn_idx: int = 0
-    final_prompt_adapter: dict[str, Any] | None = None
+    pending_token_ids: list[int] = field(default_factory=list)
+    latest_adapter: dict[str, Any] | None = None
     materialized_adapters: list[dict[str, Any]] = field(default_factory=list)
     lock: Any = field(default=None, repr=False)
 
     def to_device(self, device: torch.device) -> None:
-        for weights in [*self.prompt.values(), *self.completion.values()]:
+        for weights in self.adapter.values():
             weights.to(device)
-        for optimizer in (self.prompt_optimizer, self.completion_optimizer):
-            for state in optimizer.state.values():
-                self._move_optimizer_state(state, device)
+        for state in self.optimizer.state.values():
+            self._move_optimizer_state(state, device)
 
     def to_cpu(self) -> None:
         self.to_device(torch.device("cpu"))
 
-    def combined_adapters(self) -> list[dict[str, Any]]:
-        return [adapter for adapter in self.materialized_adapters if adapter.get("adapter_kind") == "combined"]
+    def loaded_adapters(self) -> list[dict[str, Any]]:
+        return [adapter for adapter in self.materialized_adapters if adapter.get("loaded_into_vllm")]
 
     @classmethod
     def _move_optimizer_state(cls, value: Any, device: torch.device) -> Any:
@@ -96,9 +93,8 @@ class HookedLoRAEngine:
         lr: float,
         weight_decay: float,
         steps_per_update: int,
+        update_every_tokens: int,
         max_grad_norm: float | None,
-        prompt_loss_weight: float,
-        completion_loss_weight: float,
         device: str,
         dtype: torch.dtype,
         vllm_admin_base_urls: list[str],
@@ -115,9 +111,8 @@ class HookedLoRAEngine:
         self.lr = lr
         self.weight_decay = weight_decay
         self.steps_per_update = steps_per_update
+        self.update_every_tokens = update_every_tokens
         self.max_grad_norm = max_grad_norm
-        self.prompt_loss_weight = prompt_loss_weight
-        self.completion_loss_weight = completion_loss_weight
         self.device = torch.device(device)
         self.dtype = dtype
         self.vllm_admin_base_urls = [url.rstrip("/") for url in vllm_admin_base_urls]
@@ -154,21 +149,15 @@ class HookedLoRAEngine:
             active = _ACTIVE_ADAPTERS.get()
             if active is None:
                 return output
-            session_id, kinds = active
-            session = self.sessions.get(session_id)
+            session = self.sessions.get(active)
             if session is None:
                 return output
             x = inputs[0]
-            delta = None
-            for kind in kinds:
-                weights = getattr(session, kind).get(module_name)
-                if weights is None:
-                    continue
-                x2 = torch.matmul(x.to(torch.float32), weights.a.to(torch.float32).transpose(0, 1))
-                part = torch.matmul(x2, weights.b.to(torch.float32).transpose(0, 1)) * self.scaling
-                delta = part if delta is None else delta + part
-            if delta is None:
+            weights = session.adapter.get(module_name)
+            if weights is None:
                 return output
+            x2 = torch.matmul(x.to(torch.float32), weights.a.to(torch.float32).transpose(0, 1))
+            delta = torch.matmul(x2, weights.b.to(torch.float32).transpose(0, 1)) * self.scaling
             return output + delta.to(dtype=output.dtype, device=output.device)
 
         return hook
@@ -186,16 +175,12 @@ class HookedLoRAEngine:
         session = self.sessions.get(session_id)
         if session is not None:
             return session
-        prompt = self._new_lora_dict()
-        completion = self._new_lora_dict()
-        prompt_params = [p for weights in prompt.values() for p in (weights.a, weights.b)]
-        completion_params = [p for weights in completion.values() for p in (weights.a, weights.b)]
+        adapter = self._new_lora_dict()
+        params = [p for weights in adapter.values() for p in (weights.a, weights.b)]
         session = TTTSession(
             session_id=session_id,
-            prompt=prompt,
-            completion=completion,
-            prompt_optimizer=torch.optim.AdamW(prompt_params, lr=self.lr, weight_decay=self.weight_decay),
-            completion_optimizer=torch.optim.AdamW(completion_params, lr=self.lr, weight_decay=self.weight_decay),
+            adapter=adapter,
+            optimizer=torch.optim.AdamW(params, lr=self.lr, weight_decay=self.weight_decay),
         )
         self.sessions[session_id] = session
         return session
@@ -210,42 +195,48 @@ class HookedLoRAEngine:
         self.model.train()
 
     @contextlib.contextmanager
-    def active(self, session_id: str, kinds: tuple[Literal["prompt", "completion"], ...]):
-        token = _ACTIVE_ADAPTERS.set((session_id, kinds))
+    def active(self, session_id: str):
+        token = _ACTIVE_ADAPTERS.set(session_id)
         try:
             yield
         finally:
             _ACTIVE_ADAPTERS.reset(token)
 
-    def train_tokens(self, session: TTTSession, kind: Literal["prompt", "completion"], token_ids: list[int]) -> float:
+    def append_and_train(self, session: TTTSession, token_ids: list[int]) -> dict[str, Any]:
+        session.pending_token_ids.extend(int(token_id) for token_id in token_ids)
+        losses: list[float] = []
+        trained_token_count = 0
+        while len(session.pending_token_ids) >= self.update_every_tokens:
+            chunk = session.pending_token_ids[: self.update_every_tokens]
+            del session.pending_token_ids[: self.update_every_tokens]
+            losses.append(self._train_chunk(session, chunk))
+            trained_token_count += len(chunk)
+            session.version += 1
+            session.latest_adapter = None
+        return {
+            "trained_chunks": len(losses),
+            "trained_token_count": trained_token_count,
+            "pending_token_count": len(session.pending_token_ids),
+            "loss": losses[-1] if losses else 0.0,
+        }
+
+    def _train_chunk(self, session: TTTSession, token_ids: list[int]) -> float:
         if len(token_ids) < 2:
             return 0.0
-        loss_weight = self.prompt_loss_weight if kind == "prompt" else self.completion_loss_weight
-        if loss_weight <= 0:
-            return 0.0
-        optimizer = session.prompt_optimizer if kind == "prompt" else session.completion_optimizer
         loss_value = 0.0
         input_ids = torch.tensor([token_ids], dtype=torch.long, device=self.device)
-        active_kinds: tuple[Literal["prompt", "completion"], ...] = ("prompt", "completion")
         for _ in range(self.steps_per_update):
-            session.prompt_optimizer.zero_grad(set_to_none=True)
-            session.completion_optimizer.zero_grad(set_to_none=True)
-            optimizer.zero_grad(set_to_none=True)
-            with self.active(session.session_id, active_kinds):
+            session.optimizer.zero_grad(set_to_none=True)
+            with self.active(session.session_id):
                 out = self.model(input_ids=input_ids, labels=input_ids)
                 loss = out.loss
-            (loss * loss_weight).backward()
+            loss.backward()
             if self.max_grad_norm is not None:
-                params = [p for weights in getattr(session, kind).values() for p in (weights.a, weights.b)]
+                params = [p for weights in session.adapter.values() for p in (weights.a, weights.b)]
                 torch.nn.utils.clip_grad_norm_(params, self.max_grad_norm)
-            optimizer.step()
-            session.prompt_optimizer.zero_grad(set_to_none=True)
-            session.completion_optimizer.zero_grad(set_to_none=True)
+            session.optimizer.step()
+            session.optimizer.zero_grad(set_to_none=True)
             loss_value = float(loss.detach().cpu())
-        if kind == "prompt":
-            session.prompt_version += 1
-        else:
-            session.completion_version += 1
         return loss_value
 
     def _adapter_config(self, rank: int, alpha: int) -> dict[str, Any]:
@@ -261,19 +252,12 @@ class HookedLoRAEngine:
             "modules_to_save": None,
         }
 
-    def _state_for_kinds(
-        self, session: TTTSession, kinds: tuple[Literal["prompt", "completion"], ...]
-    ) -> dict[str, Tensor]:
+    def _adapter_state(self, session: TTTSession) -> dict[str, Tensor]:
         state: dict[str, Tensor] = {}
         for module_name in self.modules:
-            a_parts = []
-            b_parts = []
-            for kind in kinds:
-                weights = getattr(session, kind)[module_name]
-                a_parts.append(weights.a.detach().to("cpu"))
-                b_parts.append((weights.b.detach().to("cpu") * self.scaling))
-            a = torch.cat(a_parts, dim=0).contiguous()
-            b = torch.cat(b_parts, dim=1).contiguous()
+            weights = session.adapter[module_name]
+            a = weights.a.detach().to("cpu").contiguous()
+            b = (weights.b.detach().to("cpu") * self.scaling).contiguous()
             prefix = f"base_model.model.{module_name}"
             state[f"{prefix}.lora_A.weight"] = a
             state[f"{prefix}.lora_B.weight"] = b
@@ -283,32 +267,29 @@ class HookedLoRAEngine:
         self,
         session: TTTSession,
         name: str,
-        kinds: tuple[Literal["prompt", "completion"], ...],
         load_into_vllm: bool,
-        adapter_kind: Literal["combined", "final_prompt"],
         turn_idx: int,
     ) -> dict[str, Any]:
         path = self.adapter_dir / name
         path.mkdir(parents=True, exist_ok=True)
-        rank = self.rank * len(kinds)
-        save_file(self._state_for_kinds(session, kinds), path / "adapter_model.safetensors", metadata={"format": "pt"})
+        save_file(self._adapter_state(session), path / "adapter_model.safetensors", metadata={"format": "pt"})
         with open(path / "adapter_config.json", "w", encoding="utf-8") as f:
-            json.dump(self._adapter_config(rank=rank, alpha=rank), f, indent=2)
+            json.dump(self._adapter_config(rank=self.rank, alpha=self.rank), f, indent=2)
         meta = {
             "adapter_name": name,
             "adapter_path": path.as_posix(),
-            "adapter_kind": adapter_kind,
+            "adapter_kind": "snapshot",
             "loaded_into_vllm": bool(load_into_vllm and self.load_adapters_into_vllm),
-            "rank": rank,
+            "rank": self.rank,
             "base_step": self.base_step,
-            "prompt_version": session.prompt_version,
-            "completion_version": session.completion_version,
+            "version": session.version,
             "session_id": session.session_id,
             "turn_idx": turn_idx,
         }
         if load_into_vllm and self.load_adapters_into_vllm:
             await self._load_vllm_adapter(name, path)
         session.materialized_adapters.append(meta)
+        session.latest_adapter = meta
         return meta
 
     async def _load_vllm_adapter(self, name: str, path: Path) -> None:
@@ -323,6 +304,16 @@ class HookedLoRAEngine:
             )
             for response in results:
                 response.raise_for_status()
+
+    async def ensure_vllm_loaded(self, meta: dict[str, Any] | None) -> None:
+        if not meta or meta.get("loaded_into_vllm") or not self.load_adapters_into_vllm:
+            return
+        name = meta.get("adapter_name")
+        path = meta.get("adapter_path")
+        if not name or not path:
+            return
+        await self._load_vllm_adapter(str(name), Path(str(path)))
+        meta["loaded_into_vllm"] = True
 
     async def unload_vllm_adapter(self, name: str) -> None:
         if not (self.unload_vllm_adapters and self.vllm_admin_base_urls):
@@ -341,9 +332,16 @@ class HookedLoRAEngine:
                 if response.status_code not in (200, 404):
                     response.raise_for_status()
 
-    async def unload_session_combined_adapters(self, session: TTTSession | None) -> None:
+    def mark_vllm_unloaded(self, session: TTTSession, name: str) -> None:
+        for adapter in session.materialized_adapters:
+            if adapter.get("adapter_name") == name:
+                adapter["loaded_into_vllm"] = False
+        if session.latest_adapter and session.latest_adapter.get("adapter_name") == name:
+            session.latest_adapter["loaded_into_vllm"] = False
+
+    async def unload_session_loaded_adapters(self, session: TTTSession | None) -> None:
         if session is None:
             return
-        for adapter in session.combined_adapters():
+        for adapter in session.loaded_adapters():
             if adapter.get("loaded_into_vllm"):
                 await self.unload_vllm_adapter(str(adapter["adapter_name"]))

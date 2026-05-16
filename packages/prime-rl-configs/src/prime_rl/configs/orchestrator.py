@@ -17,7 +17,7 @@ from prime_rl.configs.shared import (
     WandbWithExtrasConfig,
 )
 from prime_rl.configs.trainer import TokenizerConfig
-from prime_rl.configs.ttt import TTTConfig
+from prime_rl.configs.ttt import ToolOutputTrainingConfig, TTTConfig
 from prime_rl.utils.config import BaseConfig
 
 
@@ -884,6 +884,11 @@ class OrchestratorExperimentalConfig(BaseConfig):
         TTTConfig,
         Field(description="Per-rollout test-time-training configuration."),
     ] = TTTConfig()
+
+    tool_output_training: Annotated[
+        ToolOutputTrainingConfig,
+        Field(description="Permanent trainer-side SFT on renderer-attributed tool-output content tokens."),
+    ] = ToolOutputTrainingConfig()
 
 
 class TeacherModelConfig(BaseConfig):
