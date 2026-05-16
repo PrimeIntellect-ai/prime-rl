@@ -4,7 +4,13 @@ from typing import Callable
 import pytest
 
 from tests.conftest import ProcessResult
-from tests.utils import check_no_error, check_reward_goes_up, check_reward_in_range, strip_escape_codes
+from tests.utils import (
+    check_avg_mismatch_kl_in_range,
+    check_no_error,
+    check_reward_goes_up,
+    check_reward_in_range,
+    strip_escape_codes,
+)
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
@@ -88,6 +94,13 @@ def test_reward_in_range(rl_process: ProcessResult, test_no_error, output_dir: P
     with open(output_dir / "logs" / "orchestrator.log", "r") as f:
         orchestrator_stdout = strip_escape_codes(f.read()).splitlines()
     check_reward_in_range(orchestrator_stdout, min_threshold=0.65)
+
+
+def test_mismatch_kl_in_range(rl_process: ProcessResult, test_no_error, output_dir: Path):
+    """Tests that the average mismatch KL is below 0.01 across all steps"""
+    with open(output_dir / "logs" / "trainer.log", "r") as f:
+        trainer_stdout = strip_escape_codes(f.read()).splitlines()
+    check_avg_mismatch_kl_in_range(trainer_stdout, last_n_steps=10, max_threshold=0.01)
 
 
 @pytest.fixture(scope="module")

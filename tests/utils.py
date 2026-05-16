@@ -157,6 +157,39 @@ def check_avg_reward_in_range(
         )
 
 
+def check_avg_mismatch_kl_in_range(
+    lines: list[str],
+    last_n_steps: int,
+    min_threshold: float | None = None,
+    max_threshold: float | None = None,
+):
+    """Helper to assert that the average mismatch KL over the last N steps is within a threshold"""
+    pattern = r"Mismatch KL:\s*(\d+\.\d{4})"
+    step_lines = [line for line in lines if "SUCCESS" in line and "Step" in line and re.search(pattern, line)]
+    assert len(step_lines) >= last_n_steps, (
+        f"Not enough step lines found. Expected at least {last_n_steps}, got {len(step_lines)}"
+    )
+
+    recent_lines = step_lines[-last_n_steps:]
+    kl_values = []
+    for line in recent_lines:
+        match = re.search(pattern, line)
+        assert match is not None, f"Could not find Mismatch KL in line: {line}"
+        kl_values.append(float(match.group(1)))
+
+    avg_kl = sum(kl_values) / len(kl_values)
+    if min_threshold is not None:
+        assert avg_kl >= min_threshold, (
+            f"Average mismatch KL over last {last_n_steps} steps did not reach minimum threshold. "
+            f"Found avg_kl={avg_kl:.4f} < {min_threshold} (kl_values={kl_values})"
+        )
+    if max_threshold is not None:
+        assert avg_kl <= max_threshold, (
+            f"Average mismatch KL over last {last_n_steps} steps exceeded maximum threshold. "
+            f"Found avg_kl={avg_kl:.4f} > {max_threshold} (kl_values={kl_values})"
+        )
+
+
 def check_mismatch_kl_in_range(
     lines: list[str],
     step: int = -1,
