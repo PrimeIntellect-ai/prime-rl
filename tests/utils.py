@@ -14,10 +14,10 @@ def check_no_error(process: ProcessResult, output_dir: Path) -> None:
     if process.returncode != 0:
         print("=== Inference Outputs ===")
         with open(output_dir / "logs" / "inference.log", "r") as f:
-            print(*f.readlines()[-100:], sep="\n")
+            print(*f.readlines()[-100:], sep="")
         print("=== Orchestrator Outputs ===")
         with open(output_dir / "logs" / "orchestrator.log", "r") as f:
-            print(*f.readlines()[-1000:], sep="\n")
+            print(*f.readlines()[-1000:], sep="")
     assert process.returncode == 0, f"Process has non-zero return code ({process})"
 
 

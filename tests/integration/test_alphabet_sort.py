@@ -43,7 +43,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "configs/ci/integration/alphabet_sort/start.toml",
+        "configs/ci/integration/alphabet_sort.toml",
         "--wandb.project",
         wandb_project,
         "--wandb.name",
