@@ -97,6 +97,8 @@ class HookedLoRAEngine:
         weight_decay: float,
         steps_per_update: int,
         max_grad_norm: float | None,
+        prompt_loss_weight: float,
+        completion_loss_weight: float,
         device: str,
         dtype: torch.dtype,
         vllm_admin_base_urls: list[str],
@@ -114,6 +116,8 @@ class HookedLoRAEngine:
         self.weight_decay = weight_decay
         self.steps_per_update = steps_per_update
         self.max_grad_norm = max_grad_norm
+        self.prompt_loss_weight = prompt_loss_weight
+        self.completion_loss_weight = completion_loss_weight
         self.device = torch.device(device)
         self.dtype = dtype
         self.vllm_admin_base_urls = [url.rstrip("/") for url in vllm_admin_base_urls]
@@ -216,6 +220,9 @@ class HookedLoRAEngine:
     def train_tokens(self, session: TTTSession, kind: Literal["prompt", "completion"], token_ids: list[int]) -> float:
         if len(token_ids) < 2:
             return 0.0
+        loss_weight = self.prompt_loss_weight if kind == "prompt" else self.completion_loss_weight
+        if loss_weight <= 0:
+            return 0.0
         optimizer = session.prompt_optimizer if kind == "prompt" else session.completion_optimizer
         loss_value = 0.0
         input_ids = torch.tensor([token_ids], dtype=torch.long, device=self.device)
@@ -227,7 +234,7 @@ class HookedLoRAEngine:
             with self.active(session.session_id, active_kinds):
                 out = self.model(input_ids=input_ids, labels=input_ids)
                 loss = out.loss
-            loss.backward()
+            (loss * loss_weight).backward()
             if self.max_grad_norm is not None:
                 params = [p for weights in getattr(session, kind).values() for p in (weights.a, weights.b)]
                 torch.nn.utils.clip_grad_norm_(params, self.max_grad_norm)

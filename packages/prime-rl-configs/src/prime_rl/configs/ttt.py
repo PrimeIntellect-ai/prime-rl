@@ -292,6 +292,31 @@ class TTTConfig(BaseConfig):
         ),
     ] = 1.0
 
+    prompt_lora_loss_weight: Annotated[
+        float,
+        Field(
+            ge=0.0,
+            description="Multiplier for online TTT Phi_p SFT loss on tool/environment prompt tokens.",
+        ),
+    ] = 1.0
+
+    completion_lora_loss_weight: Annotated[
+        float,
+        Field(
+            ge=0.0,
+            description="Multiplier for online TTT Phi_c SFT loss on initial prompt and completion tokens.",
+        ),
+    ] = 1.0
+
+    tool_output_train_names: Annotated[
+        list[str] | None,
+        Field(
+            description=(
+                "Optional allowlist of tool names whose tool outputs train Phi_p. None trains on all tool outputs."
+            )
+        ),
+    ] = None
+
     lora: Annotated[
         TTTLoRAConfig,
         Field(description="LoRA adapter configuration for TTT."),

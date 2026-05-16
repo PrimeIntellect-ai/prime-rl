@@ -34,6 +34,9 @@ theta_update_policy = "always_newest"
 keep_rollout_loras_across_theta_updates = true
 require_exact_token_ids = true
 require_content_mask = true
+prompt_lora_loss_weight = 1.0
+completion_lora_loss_weight = 1.0
+tool_output_train_names = null
 
 [experimental.ttt.lora]
 rank = 8

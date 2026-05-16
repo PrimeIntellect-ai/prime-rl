@@ -187,6 +187,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--steps-per-update", type=int, default=1)
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
+    parser.add_argument("--prompt-loss-weight", type=float, default=1.0)
+    parser.add_argument("--completion-loss-weight", type=float, default=1.0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
     parser.add_argument("--host", default="127.0.0.1")
@@ -213,6 +215,8 @@ def main() -> None:
         weight_decay=args.weight_decay,
         steps_per_update=args.steps_per_update,
         max_grad_norm=args.max_grad_norm,
+        prompt_loss_weight=args.prompt_loss_weight,
+        completion_loss_weight=args.completion_loss_weight,
         device=args.device,
         dtype=_dtype(args.dtype),
         vllm_admin_base_urls=args.vllm_admin_base_url,

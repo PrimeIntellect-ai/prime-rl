@@ -367,6 +367,7 @@ else
         TTT_ARGS="--model-name {{ ttt_model_name }} --adapter-dir {{ ttt_adapter_dir }} --target-modules{% for module in ttt_target_modules %} {{ module }}{% endfor %}"
         TTT_ARGS="$TTT_ARGS --rank {{ ttt_rank }} --alpha {{ ttt_alpha }} --dropout {{ ttt_dropout }}"
         TTT_ARGS="$TTT_ARGS --lr {{ ttt_lr }} --weight-decay {{ ttt_weight_decay }} --steps-per-update {{ ttt_steps_per_update }}"
+        TTT_ARGS="$TTT_ARGS --prompt-loss-weight {{ ttt_prompt_loss_weight }} --completion-loss-weight {{ ttt_completion_loss_weight }}"
         {% if ttt_max_grad_norm is not none -%}
         TTT_ARGS="$TTT_ARGS --max-grad-norm {{ ttt_max_grad_norm }}"
         {% endif -%}
