@@ -349,10 +349,10 @@ def rl_local(config: RLConfig):
         monitor_threads.append(monitor_thread)
 
         # Monitor all processes for failures
-        logger.success("Startup complete. Showing trainer logs...")
+        logger.success("Startup complete. Showing orchestrator logs...")
 
         tail_process = Popen(
-            f"tail -F '{log_dir / 'trainer.log'}' | sed -u 's/^\\[[a-zA-Z]*[0-9]*\\]://'",
+            f"tail -F '{log_dir / 'orchestrator.log'}'",
             shell=True,
         )
         processes.append(tail_process)
