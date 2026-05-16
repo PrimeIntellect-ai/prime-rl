@@ -14,7 +14,7 @@ TIMEOUT = 300  # 5 minutes
 @pytest.fixture(scope="module")
 def wandb_name(branch_name: str) -> str:
     """Fixture for W&B name for SFT CI integration tests."""
-    return f"test-sft-{branch_name}"
+    return f"test-reverse-text-sft:{branch_name}"
 
 
 @pytest.fixture(scope="module")

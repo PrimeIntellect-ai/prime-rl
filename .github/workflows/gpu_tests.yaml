@@ -39,12 +39,8 @@ jobs:
       - name: Run unit tests
         env:
           USERNAME_CI: CI_RUNNER
-          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-          # Disable W&B on PRs entirely to avoid "run ID in use" collisions and missing API key
-          # crashes. On main, use online if the key is available, offline otherwise.
-          WANDB_MODE: ${{ github.event_name == 'pull_request' && 'disabled' || secrets.WANDB_API_KEY && 'online' || 'offline' }}
+          WANDB_MODE: offline
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_HEAD_REF: ${{ github.head_ref }}
@@ -65,25 +61,25 @@ jobs:
         include:
           - test: base
             runner: vm
-            pytest_args: "tests/integration -m gpu --ignore=tests/integration/test_reverse_text.py --ignore=tests/integration/test_reverse_text_lora.py --ignore=tests/integration/test_reverse_text_moe.py --ignore=tests/integration/test_reverse_text_multi_run.py --ignore=tests/integration/test_benchmark_regression.py --ignore=tests/integration/test_alphabet_sort.py"
+            pytest_args: "tests/integration --ignore=tests/integration/test_reverse_text.py --ignore=tests/integration/test_reverse_text_lora.py --ignore=tests/integration/test_reverse_text_moe.py --ignore=tests/integration/test_reverse_text_multi_run.py --ignore=tests/integration/test_benchmark_regression.py --ignore=tests/integration/test_alphabet_sort.py"
           - test: reverse_text
             runner: vm
             pytest_args: "tests/integration/test_reverse_text.py"
-          - test: reverse_text_lora
-            runner: vm
-            pytest_args: "tests/integration/test_reverse_text_lora.py -m gpu"
-          - test: reverse_text_moe
-            runner: vm
-            pytest_args: "tests/integration/test_reverse_text_moe.py -m gpu"
           - test: alphabet_sort
             runner: vm
-            pytest_args: "tests/integration/test_alphabet_sort.py -m gpu"
+            pytest_args: "tests/integration/test_alphabet_sort.py"
+          - test: reverse_text_lora
+            runner: vm
+            pytest_args: "tests/integration/test_reverse_text_lora.py"
+          - test: reverse_text_moe
+            runner: vm
+            pytest_args: "tests/integration/test_reverse_text_moe.py"
           - test: reverse_text_multi_run
             runner: 4xa6000
-            pytest_args: "tests/integration/test_reverse_text_multi_run.py -m gpu"
+            pytest_args: "tests/integration/test_reverse_text_multi_run.py"
           - test: benchmark_regression
             runner: 4xa6000
-            pytest_args: "tests/integration/test_benchmark_regression.py -m gpu"
+            pytest_args: "tests/integration/test_benchmark_regression.py"
     steps:
       - name: Install Git
         run: |
@@ -104,12 +100,8 @@ jobs:
       - name: Run integration tests
         env:
           USERNAME_CI: CI_RUNNER
-          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-          # Disable W&B on PRs entirely to avoid "run ID in use" collisions and missing API key
-          # crashes. On main, use online if the key is available, offline otherwise.
-          WANDB_MODE: ${{ github.event_name == 'pull_request' && 'disabled' || secrets.WANDB_API_KEY && 'online' || 'offline' }}
+          WANDB_MODE: offline
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
           PRIME_BASE_URL: ${{ secrets.PRIME_BASE_URL }}
           PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}

@@ -88,7 +88,7 @@ def wait_for_log(
 @pytest.fixture(scope="module")
 def wandb_name(branch_name: str) -> str:
     """Fixture for W&B name for multi-run RL CI integration tests."""
-    return f"test-rl-multi-run-{branch_name}"
+    return f"test-reverse-text-multi-run:{branch_name}"
 
 
 INFERENCE_PORTS = [8000, 8001]

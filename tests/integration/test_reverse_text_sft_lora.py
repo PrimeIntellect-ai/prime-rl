@@ -24,7 +24,7 @@ def assert_adapter_checkpoint(adapter_dir: Path) -> None:
 @pytest.fixture(scope="module")
 def wandb_name(branch_name: str) -> str:
     """Fixture for W&B name for SFT LoRA CI integration tests."""
-    return f"test-sft-lora-{branch_name}"
+    return f"test-reverse-text-sft-lora:{branch_name}"
 
 
 @pytest.fixture(scope="module")
