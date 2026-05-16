@@ -997,9 +997,10 @@ def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
     mm_token_type_ids onto the TrainingSample from that sidecar — no
     VLMImageCache lookup required.
 
-    The bridge in the renderer merges previous-turn images into the new
-    turn's mm_data, so the last merged step's sidecar covers every image
-    in the sample (cumulative semantics, matching VLMImageCache).
+    verifiers' ``_delta_intermediate_mm_data`` ships per-step *delta*
+    mm_data (each step contains only items not present in the prior
+    step's cumulative set). Prime-rl unions across the sample's step
+    range to recover the cumulative set in image-placeholder order.
     """
     import torch as _torch
     from renderers.base import MultiModalData, PlaceholderRange
@@ -1011,25 +1012,19 @@ def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
     item1_thw = _torch.tensor([[1, 2, 3]], dtype=_torch.int64)
     item2_thw = _torch.tensor([[1, 4, 4]], dtype=_torch.int64)
 
+    # Step 0: image h1 (first time it's seen, included in delta).
     mm_step_0 = MultiModalData(
         mm_hashes={"image": ["h1"]},
         mm_placeholders={"image": [PlaceholderRange(offset=1, length=1)]},
         mm_items={"image": [{"pixel_values": item1_pv, "image_grid_thw": item1_thw}]},
     )
+    # Step 1: post-delta — only h2 (h1 was dropped because it was in
+    # the prior step's cumulative set). Renderer's bridge would have
+    # produced cumulative [h1, h2] before verifiers' delta rewrite.
     mm_step_1 = MultiModalData(
-        mm_hashes={"image": ["h1", "h2"]},
-        mm_placeholders={
-            "image": [
-                PlaceholderRange(offset=1, length=1),
-                PlaceholderRange(offset=4, length=1),
-            ]
-        },
-        mm_items={
-            "image": [
-                {"pixel_values": item1_pv, "image_grid_thw": item1_thw},
-                {"pixel_values": item2_pv, "image_grid_thw": item2_thw},
-            ]
-        },
+        mm_hashes={"image": ["h2"]},
+        mm_placeholders={"image": [PlaceholderRange(offset=4, length=1)]},
+        mm_items={"image": [{"pixel_values": item2_pv, "image_grid_thw": item2_thw}]},
     )
 
     output = vf.RolloutOutput(
@@ -1086,11 +1081,11 @@ def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
 
     assert rollouts is not None and len(rollouts) == 1
     sample = rollouts[0]
-    # Extension holds; both steps merge into one sample with the last
-    # step's cumulative mm_data.
+    # Extension holds; both steps merge into one sample. mm_data is
+    # the union of step 0's delta ([h1]) and step 1's delta ([h2]).
     assert sample.prompt_ids == [1, 2]
     assert sample.completion_ids == [3, 4, 5, 6, 7]
-    # Pixel values packed from step 1's two items, concatenated.
+    # Pixel values packed by concatenating step 0's item then step 1's.
     assert _decode_mm_pixels(sample) == [
         [1.0, 2.0],
         [3.0, 4.0],

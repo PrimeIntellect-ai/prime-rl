@@ -319,12 +319,12 @@ def interleave_rollout(
             expected_len = len(sample.prompt_ids) + len(sample.completion_ids)
             sample.routed_experts = _align_routed_experts(sample.routed_experts, expected_len)
 
-    # Track [prefix_tokens, sample, last_step_idx] per active sample
-    active_samples: list[tuple[list[int], TrainingSample, int]] = []
+    # Track [prefix_tokens, sample, start_step_idx, last_step_idx] per active sample
+    active_samples: list[tuple[list[int], TrainingSample, int, int]] = []
 
     first_tokens = prepared_steps[0]
     first_prefix = first_tokens["prompt_ids"] + first_tokens["completion_ids"]
-    active_samples.append((first_prefix, make_sample(first_tokens), 0))
+    active_samples.append((first_prefix, make_sample(first_tokens), 0, 0))
 
     for step_idx, _step in enumerate(trajectory[1:], start=1):
         tokens = prepared_steps[step_idx]
@@ -332,16 +332,21 @@ def interleave_rollout(
 
         # Check if this step extends ANY active prefix
         matched_idx = None
-        for idx, (prefix_tokens, _, _) in enumerate(active_samples):
+        for idx, (prefix_tokens, _, _, _) in enumerate(active_samples):
             if step_prompt_ids[: len(prefix_tokens)] == prefix_tokens:
                 matched_idx = idx
                 break
 
         if matched_idx is not None:
             # Extension holds - merge into matched sample
-            prefix_tokens, sample, _ = active_samples[matched_idx]
+            prefix_tokens, sample, start_step_idx, _ = active_samples[matched_idx]
             extend_sample(sample, len(prefix_tokens), step_idx=step_idx)
-            active_samples[matched_idx] = (tokens["prompt_ids"] + tokens["completion_ids"], sample, step_idx)
+            active_samples[matched_idx] = (
+                tokens["prompt_ids"] + tokens["completion_ids"],
+                sample,
+                start_step_idx,
+                step_idx,
+            )
         else:
             # No prefix matches - start a new sample
             logger.debug(
@@ -349,14 +354,17 @@ def interleave_rollout(
                 f"Starting new sample (active_prefixes={len(active_samples)}, step_prompt_len={len(step_prompt_ids)})."
             )
             new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
-            active_samples.append((new_prefix, make_sample(tokens), step_idx))
+            active_samples.append((new_prefix, make_sample(tokens), step_idx, step_idx))
 
-    # Attach images once per sample using only the last merged step's
-    # renderer-emitted mm_data. The bridge merges previous-turn images
-    # into the new turn's mm_data so the last step's sidecar covers
-    # every image in the sample.
-    for _, sample, last_step_idx in active_samples:
-        renderer_mm = prepared_steps[last_step_idx].get("multi_modal_data")
+    # Attach images by concatenating mm_items across every step the
+    # sample covers. verifiers' ``state_to_output`` ships per-step
+    # *delta* mm_data (each step contains only items not present in the
+    # prior step's cumulative set, with multiset-aware dedup), so
+    # reading the last step alone would miss every earlier-turn image.
+    # Concat in step order recovers the per-sample cumulative set;
+    # deduping again here would drop legitimate duplicate placeholders.
+    for _, sample, start_step_idx, last_step_idx in active_samples:
+        renderer_mm = _union_step_mm_data(prepared_steps, start_step_idx, last_step_idx)
         if renderer_mm is not None:
             mm_kwargs = _pack_mm_kwargs_from_renderer(renderer_mm)
             if mm_kwargs is not None:
@@ -370,7 +378,43 @@ def interleave_rollout(
                         for token_id in sample.prompt_ids + sample.completion_ids
                     ]
 
-    return [sample for _, sample, _ in active_samples]
+    return [sample for _, sample, _, _ in active_samples]
+
+
+def _union_step_mm_data(
+    prepared_steps: list[dict[str, Any]],
+    start_idx: int,
+    end_idx: int,
+) -> "dict[str, Any] | None":
+    """Concatenate renderer-emitted mm_items across steps ``[start_idx, end_idx]``.
+
+    Verifiers ≥ c7731bbb ships per-step *delta* mm_data instead of
+    cumulative — see ``verifiers/utils/save_utils.py::_delta_intermediate_mm_data``.
+    The cross-step dedup is already done there with multiset semantics
+    (preserving multiplicity for an image that appears in multiple
+    placeholder runs in the token stream). We just concatenate in step
+    order to recover the per-sample cumulative; deduping again here
+    would drop legitimate duplicate placeholders.
+    """
+    union_items: dict[str, list] = {}
+    union_hashes: dict[str, list] = {}
+    has_any = False
+    for i in range(start_idx, end_idx + 1):
+        mm = prepared_steps[i].get("multi_modal_data")
+        if mm is None:
+            continue
+        items = mm.mm_items if hasattr(mm, "mm_items") else (mm or {}).get("mm_items") or {}
+        hashes = mm.mm_hashes if hasattr(mm, "mm_hashes") else (mm or {}).get("mm_hashes") or {}
+        for modality, item_lst in items.items():
+            hash_lst = hashes.get(modality, []) or []
+            for j, item in enumerate(item_lst or []):
+                h = hash_lst[j] if j < len(hash_lst) else None
+                union_items.setdefault(modality, []).append(item)
+                union_hashes.setdefault(modality, []).append(h)
+                has_any = True
+    if not has_any:
+        return None
+    return {"mm_items": union_items, "mm_hashes": union_hashes}
 
 
 def _pack_mm_kwargs_from_renderer(mm_data: Any) -> "dict[str, Any] | None":
