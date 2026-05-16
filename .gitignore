@@ -202,4 +202,3 @@ debug_I2_zero_band
 outputs/
 
 third_party/
-deps/renderers/renderers/_version.py
