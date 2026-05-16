@@ -11,7 +11,7 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-05-08T23:56:37.663000296Z"
+exclude-newer = "2026-05-09T00:08:02.236395708Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -2902,7 +2902,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "quack-kernels", marker = "extra == 'quack'", specifier = ">=0.3.3" },
-    { name = "renderers", specifier = ">=0.1.8.dev2" },
+    { name = "renderers" },
     { name = "reverse-text", marker = "extra == 'envs'", index = "https://hub.primeintellect.ai/primeintellect/simple/" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ring-flash-attn", specifier = ">=0.1.8" },

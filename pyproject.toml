@@ -31,7 +31,7 @@ dependencies = [
     "uvloop>=0.21.0",
     "torchtitan",
     "verifiers",
-    "renderers>=0.1.8.dev2",
+    "renderers",
     "dion",
     "tilelang>=0.1.8",
     "flash-linear-attention",
