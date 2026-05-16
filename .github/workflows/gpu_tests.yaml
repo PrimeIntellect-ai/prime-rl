@@ -40,9 +40,9 @@ jobs:
         env:
           USERNAME_CI: CI_RUNNER
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-          # Set WANDB_MODE to online only if WANDB_API_KEY is available, otherwise set to offline
-          # This is to allow running tests on forks without WANDB_API_KEY
-          WANDB_MODE: ${{ secrets.WANDB_API_KEY && 'online' || 'offline' }}
+          # Disable W&B on PRs entirely to avoid "run ID in use" collisions and missing API key
+          # crashes. On main, use online if the key is available, offline otherwise.
+          WANDB_MODE: ${{ github.event_name == 'pull_request' && 'disabled' || secrets.WANDB_API_KEY && 'online' || 'offline' }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
@@ -99,9 +99,9 @@ jobs:
         env:
           USERNAME_CI: CI_RUNNER
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-          # Set WANDB_MODE to online only if WANDB_API_KEY is available, otherwise set to offline
-          # This is to allow running tests on forks without WANDB_API_KEY
-          WANDB_MODE: ${{ secrets.WANDB_API_KEY && 'online' || 'offline' }}
+          # Disable W&B on PRs entirely to avoid "run ID in use" collisions and missing API key
+          # crashes. On main, use online if the key is available, offline otherwise.
+          WANDB_MODE: ${{ github.event_name == 'pull_request' && 'disabled' || secrets.WANDB_API_KEY && 'online' || 'offline' }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
