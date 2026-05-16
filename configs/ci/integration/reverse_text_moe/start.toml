@@ -9,6 +9,9 @@ name = "samsja/mini-glm-moe"
 [trainer.optim]
 lr = 3e-6
 
+[trainer.model]
+impl = "custom"
+
 [orchestrator]
 batch_size = 128
 rollouts_per_example = 16
