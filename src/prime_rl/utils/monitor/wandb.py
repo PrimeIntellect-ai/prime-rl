@@ -47,7 +47,10 @@ class WandbMonitor(Monitor):
         self.logger.info(f"Initializing {self.__class__.__name__} ({config})")
         self._maybe_overwrite_wandb_command()
 
-        shared_mode = os.environ.get("WANDB_SHARED_MODE") == "1"
+        # WANDB_MODE=disabled/offline takes precedence over shared mode — shared mode
+        # requires a server connection and can't work offline.
+        _wandb_mode = os.environ.get("WANDB_MODE")
+        shared_mode = os.environ.get("WANDB_SHARED_MODE") == "1" and _wandb_mode not in ("disabled", "offline")
         if shared_mode:
             run_id = os.environ.get("WANDB_SHARED_RUN_ID")
             label = os.environ.get("WANDB_SHARED_LABEL")
