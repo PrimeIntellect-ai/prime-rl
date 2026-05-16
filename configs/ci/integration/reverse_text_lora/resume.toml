@@ -2,6 +2,7 @@ max_steps = 20
 seq_len = 2048
 
 [ckpt]
+resume_step = 15
 
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"

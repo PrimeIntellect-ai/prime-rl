@@ -15,7 +15,7 @@ TIMEOUT = 600  # 10 minutes
 @pytest.fixture(scope="module")
 def wandb_name(branch_name: str) -> str:
     """Fixture for W&B name for RL CI integration tests."""
-    return f"test-rl-{branch_name}"
+    return f"test-reverse-text-lora:{branch_name}"
 
 
 @pytest.fixture(scope="module")
@@ -30,7 +30,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "configs/ci/integration/rl/start.toml",
+        "configs/ci/integration/reverse_text_lora/start.toml",
         "--clean-output-dir",
         "--wandb.project",
         wandb_project,
@@ -39,7 +39,7 @@ def rl_process(
         "--output-dir",
         output_dir.as_posix(),
     ]
-    return run_process(cmd, timeout=TIMEOUT)
+    return run_process(cmd, env={"VLLM_ALLOW_RUNTIME_LORA_UPDATING": "True"}, timeout=TIMEOUT)
 
 
 @pytest.fixture(scope="module")
@@ -52,13 +52,13 @@ def rl_resume_process(
 ) -> ProcessResult:
     if rl_process.returncode != 0:
         pytest.skip("Full weight RL process failed")
-    wandb_name = f"{wandb_name}-resume"
+    wandb_name += "-resume"
     cmd = [
         "uv",
         "run",
         "rl",
         "@",
-        "configs/ci/integration/rl/resume.toml",
+        "configs/ci/integration/reverse_text_lora/resume.toml",
         "--wandb.project",
         wandb_project,
         "--wandb.name",
@@ -67,7 +67,7 @@ def rl_resume_process(
         output_dir.as_posix(),
     ]
 
-    return run_process(cmd, timeout=TIMEOUT)
+    return run_process(cmd, env={"VLLM_ALLOW_RUNTIME_LORA_UPDATING": "True"}, timeout=TIMEOUT)
 
 
 @pytest.fixture(scope="module")
