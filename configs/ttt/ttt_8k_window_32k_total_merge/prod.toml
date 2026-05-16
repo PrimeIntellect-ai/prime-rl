@@ -33,6 +33,7 @@ prompt_lora_trains_environment_responses = true
 theta_update_policy = "always_newest"
 keep_rollout_loras_across_theta_updates = true
 require_exact_token_ids = true
+require_content_mask = true
 
 [experimental.ttt.lora]
 rank = 8

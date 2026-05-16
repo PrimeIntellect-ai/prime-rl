@@ -256,6 +256,16 @@ class TTTConfig(BaseConfig):
         Field(description="Fail TTT rollouts instead of using fallback trajectory retokenization."),
     ] = True
 
+    require_content_mask: Annotated[
+        bool,
+        Field(
+            description=(
+                "Require renderer content_mask for TTT LoRA training tokens so prompt-side "
+                "environment SFT excludes renderer separators and role/control tags."
+            )
+        ),
+    ] = True
+
     cache_salt_includes_adapter: Annotated[
         bool,
         Field(description="Include active adapter version in vLLM cache salt."),

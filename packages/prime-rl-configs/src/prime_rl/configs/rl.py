@@ -691,6 +691,7 @@ class RLConfig(BaseConfig):
             "ttt_train_prompt_lora": ttt.train_prompt_lora,
             "ttt_train_completion_lora": ttt.train_completion_lora,
             "ttt_require_exact_token_ids": ttt.require_exact_token_ids,
+            "ttt_require_content_mask": ttt.require_content_mask,
             "ttt_completion_lora_trains_initial_prompt": ttt.completion_lora_trains_initial_prompt,
             "ttt_prompt_lora_trains_environment_responses": ttt.prompt_lora_trains_environment_responses,
             "ttt_cache_salt_includes_adapter": ttt.cache_salt_includes_adapter,
