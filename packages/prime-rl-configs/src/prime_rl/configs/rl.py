@@ -67,9 +67,11 @@ class SharedLogConfig(BaseConfig):
     ] = None
 
     json_logging: Annotated[
-        bool,
-        Field(description="Emit JSON logs (newline-delimited) for log aggregation (Loki, Grafana, etc.)."),
-    ] = False
+        bool | None,
+        Field(
+            description="Emit JSON logs (newline-delimited) for log aggregation (Loki, Grafana, etc.). When unset, the per-component json_logging values are used as-is (each defaults to False).",
+        ),
+    ] = None
 
 
 class SharedWandbConfig(BaseConfig):
@@ -462,13 +464,18 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_logs(self):
-        """Auto-setup shared log config for trainer and orchestrator."""
+        """Auto-setup shared log config for trainer, orchestrator, and inference."""
         if self.log is not None:
             if self.log.level is not None:
                 self.trainer.log.level = self.log.level
                 self.orchestrator.log.level = self.log.level
-            self.trainer.log.json_logging = self.log.json_logging
-            self.orchestrator.log.json_logging = self.log.json_logging
+                if self.inference is not None:
+                    self.inference.log.level = self.log.level
+            if self.log.json_logging is not None:
+                self.trainer.log.json_logging = self.log.json_logging
+                self.orchestrator.log.json_logging = self.log.json_logging
+                if self.inference is not None:
+                    self.inference.log.json_logging = self.log.json_logging
 
         return self
 
@@ -968,6 +975,12 @@ class RLConfig(BaseConfig):
         port = self.teacher_inference.server.port
         self.orchestrator.teacher_model.client.base_url = [f"http://{host}:{port}/v1"]
         self.orchestrator.teacher_model.model.name = self.teacher_inference.model.name
+
+        if self.log is not None:
+            if self.log.level is not None:
+                self.teacher_inference.log.level = self.log.level
+            if self.log.json_logging is not None:
+                self.teacher_inference.log.json_logging = self.log.json_logging
 
         return self
 
