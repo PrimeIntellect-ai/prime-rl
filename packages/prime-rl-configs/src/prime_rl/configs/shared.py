@@ -135,7 +135,7 @@ class BaseModelConfig(BaseConfig):
 class RendererConfig(BaseConfig):
     """Configures the client-side renderer (chat-template + response parsing).
 
-    Only consumed when ``orchestrator.use_renderer = true``. The renderer
+    Consumed when ``use_renderer = true``. The renderer
     owns both directions: render messages → token ids on the client, and
     parse model output tokens → structured ``content`` / ``reasoning_content``
     / ``tool_calls``.
