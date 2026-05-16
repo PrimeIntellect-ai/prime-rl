@@ -15,6 +15,7 @@ from prime_rl.orchestrator.trajectories import (
     _extract_images_from_examples,
     _extract_images_from_messages,
     _ImageStore,
+    _tool_call_names_in_order,
     build_vlm_image_cache,
     interleave_rollout,
 )
@@ -84,6 +85,59 @@ def test_deserialize_tool_calls_parses_arguments_when_present():
     deserialized = _deserialize_tool_calls(messages)
 
     assert deserialized[0]["tool_calls"][0]["function"]["arguments"] == {"x": 1}
+
+
+def test_tool_call_names_in_order_handles_json_string_entries():
+    # Real RL rollouts have tool_calls as a list of JSON strings in the flat
+    # {id,name,arguments} shape — verifiers' serialization roundtrip. The
+    # extractor must parse them; otherwise tool messages downstream get
+    # `name=None` and capture_tool_logprobs silently skips every span.
+    completion = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                '{"id": "c1", "name": "run_code", "arguments": "{\\"code\\": \\": dbl dup + ;\\"}"}',
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "stack: [4]"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                '{"id": "c2", "name": "lookup_doc", "arguments": "{\\"word\\": \\"dup\\"}"}',
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c2", "content": "duplicates"},
+    ]
+    names = _tool_call_names_in_order(prompt=None, completion=completion)
+    assert names == ["run_code", "lookup_doc"]
+
+
+def test_tool_call_names_in_order_handles_openai_nested_dicts():
+    # OpenAI's nested shape: {id, type, function: {name, arguments}}.
+    completion = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "run_code", "arguments": '{"code": "..."}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "result"},
+    ]
+    names = _tool_call_names_in_order(prompt=None, completion=completion)
+    assert names == ["run_code"]
+
+
+def test_tool_call_names_in_order_returns_none_for_unresolvable_tool_id():
+    # A tool message whose tool_call_id was never bound by any assistant
+    # message above it: caller should see None (not crash, not silently
+    # mislabel).
+    completion = [{"role": "tool", "tool_call_id": "orphan", "content": "x"}]
+    names = _tool_call_names_in_order(prompt=None, completion=completion)
+    assert names == [None]
 
 
 @pytest.fixture

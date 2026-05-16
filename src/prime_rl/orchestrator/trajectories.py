@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
@@ -114,6 +115,27 @@ def _tool_call_function_name(tc: dict[str, Any] | Any) -> str | None:
     return name
 
 
+def _normalize_tool_call(tc: Any) -> dict[str, Any] | None:
+    """Coerce a tool_call entry to a dict.
+
+    Verifiers' RL rollouts serialize each tool_call as a JSON-encoded string
+    (flat ``{"id", "name", "arguments"}``) when round-tripping through the
+    chat-completion API; the OpenAI client returns dicts (or pydantic
+    objects exposing ``.id``/``.function``). Accept all three.
+    """
+    if isinstance(tc, dict):
+        return tc
+    if isinstance(tc, str):
+        try:
+            parsed = json.loads(tc)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    if hasattr(tc, "model_dump"):
+        return tc.model_dump()
+    return None
+
+
 def _tool_call_names_in_order(
     prompt: list[dict[str, Any]] | None,
     completion: list[dict[str, Any]] | None,
@@ -132,10 +154,13 @@ def _tool_call_names_in_order(
             if not isinstance(m, dict) or m.get("role") != "assistant":
                 continue
             for tc in m.get("tool_calls") or []:
-                tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                tc_dict = _normalize_tool_call(tc)
+                if tc_dict is None:
+                    continue
+                tc_id = tc_dict.get("id")
                 if tc_id is None:
                     continue
-                id_to_name[tc_id] = _tool_call_function_name(tc)
+                id_to_name[tc_id] = _tool_call_function_name(tc_dict)
 
     names: list[str | None] = []
     for messages in (prompt or [], completion or []):
