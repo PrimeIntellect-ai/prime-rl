@@ -186,6 +186,37 @@ class RendererConfig(BaseConfig):
         ),
     ] = None
 
+    preserve_all_thinking: Annotated[
+        bool,
+        Field(
+            description=(
+                "Override flag forwarded to the renderer at construction. When "
+                "True, every past-assistant turn's ``reasoning_content`` is "
+                "re-emitted between ``<think>``/``</think>`` (or the model's "
+                "equivalent), even if the underlying chat template would drop "
+                "it. Off by default — preserves byte-identical output to the "
+                "stock template. Strict superset of "
+                "``preserve_thinking_between_tool_calls``."
+            ),
+        ),
+    ] = False
+
+    preserve_thinking_between_tool_calls: Annotated[
+        bool,
+        Field(
+            description=(
+                "Override flag forwarded to the renderer at construction. When "
+                "True, preserves past-assistant ``reasoning_content`` only "
+                "inside the *current* tool cycle — the contiguous "
+                "assistant→tool→…→assistant block after the most recent user "
+                "message, when that block contains at least one tool response. "
+                "A new user turn closes the block; older blocks fall back to "
+                "the template default (typically dropped). Use "
+                "``preserve_all_thinking`` to keep older blocks too."
+            ),
+        ),
+    ] = False
+
 
 class ElasticConfig(BaseConfig):
     """Configures elastic inference pool with DNS-based service discovery.
