@@ -15,6 +15,7 @@ from transformers import ZayaForCausalLM as HFZayaForCausalLM
 
 # There is something wrong with the quack RMSNorm vs the FP32 implementation at least on (SM120)
 import prime_rl.trainer.models.layers.norms as norms
+
 norms._get_quack_rmsnorm = lambda: None
 
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
@@ -207,7 +208,7 @@ def test_zaya() -> None:
     device = torch.device("cuda")
 
     # hf_model = HFZayaForCausalLM.from_pretrained("Zyphra/ZAYA1-8B", torch_dtype=dtype) # Original Zyphra weights (official)
-    hf_model = HFZayaForCausalLM.from_pretrained("JJJYmmm/ZAYA1-8B-HF", torch_dtype=dtype) # HF PR 
+    hf_model = HFZayaForCausalLM.from_pretrained("JJJYmmm/ZAYA1-8B-HF", torch_dtype=dtype)  # HF PR
     hf_model.to(device)
     attn_impl = getattr(
         hf_model.config,
@@ -337,6 +338,7 @@ def _run_zaya_moe_expert_parallel_parity(rank: int, world_size: int, init_file: 
         assert torch.allclose(ep_hidden_states.grad, hidden_states.grad, atol=1e-5, rtol=1e-5), max_hidden_grad_diff
     finally:
         dist.destroy_process_group()
+
 
 @pytest.mark.gpu
 def test_zaya_moe_expert_parallel_matches_local_output_and_backward(tmp_path) -> None:
@@ -518,6 +520,7 @@ def _run_zaya_attention_cp_parity(
                 assert torch.allclose(cp_param.grad, full_param.grad, atol=atol, rtol=rtol), (name, max_grad_diff)
     finally:
         dist.destroy_process_group()
+
 
 def test_zaya_sdpa_context_parallel_matches_non_cp_output_and_backward(tmp_path):
     if torch.cuda.device_count() < 2:

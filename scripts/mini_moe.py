@@ -237,7 +237,7 @@ ARCH_PRESETS = {
         "hf_model_class": HFZayaForCausalLM,
         "prime_model_class": PrimeRLZayaForCausalLM,
         # Different weight format from official release but this the 'official' HF supported version
-        "tokenizer_source": "JJJYmmm/ZAYA1-8B-HF", 
+        "tokenizer_source": "JJJYmmm/ZAYA1-8B-HF",
     },
     # glm_moe_dsa: HF implementation is incorrect, not supported here
 }

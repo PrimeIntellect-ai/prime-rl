@@ -74,6 +74,7 @@ class ZayaResidualScaling(nn.Module):
         residual = (residual + self.residual_bias) * self.residual_scale
         return hidden_states + residual
 
+
 class ZayaCCAProjection(nn.Module):
     def __init__(self, config: ZayaConfig, layer_idx: int):
         super().__init__()
@@ -144,7 +145,7 @@ class ZayaCCAProjection(nn.Module):
         )
 
     def _forward_context_parallel(self, hidden_states: torch.Tensor, padding_mask: torch.Tensor | None = None):
-         # TODO: support packed sequences in Context Parallel
+        # TODO: support packed sequences in Context Parallel
         if padding_mask is not None:
             hidden_states = hidden_states * padding_mask[:, :, None].to(hidden_states.dtype)
 
@@ -258,9 +259,7 @@ class ZayaCCAProjection(nn.Module):
         #     outputs.append(torch.cat([recurrent_v_state, segment[:, :-1]], dim=1))
         # return torch.cat(outputs, dim=1)
         input_shape = hidden_states.shape[:-1]
-        recurrent_v_state = self.v_proj_delayed(
-            hidden_states.new_zeros(input_shape[0], 1, self.hidden_size)
-        )
+        recurrent_v_state = self.v_proj_delayed(hidden_states.new_zeros(input_shape[0], 1, self.hidden_size))
 
         if cu_seqlens is None or cu_seqlens.numel() <= 2:
             return torch.cat([recurrent_v_state, delayed_v_state[:, :-1]], dim=1)
@@ -804,7 +803,9 @@ class ZayaModel(ZayaPreTrainedModel):
         if self.cp_enabled:
             rope_position_ids = gather_for_cp(position_ids.contiguous(), self.cp_group)
         position_embeddings = self.rotary_emb(hidden_states, rope_position_ids)
-        hidden_states = ((hidden_states + self.input_hidden_states_bias) * self.input_hidden_states_scale).to(torch.float32)
+        hidden_states = ((hidden_states + self.input_hidden_states_bias) * self.input_hidden_states_scale).to(
+            torch.float32
+        )
         prev_router_hidden_states = None
 
         for layer_idx, decoder_layer in enumerate(self.layers):
