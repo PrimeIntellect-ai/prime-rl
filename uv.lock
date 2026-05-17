@@ -71,7 +71,7 @@ overrides = [
     { name = "nvidia-cutlass-dsl", specifier = ">=4.4.1" },
     { name = "openenv-core" },
     { name = "torch", specifier = ">=2.9.0", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "transformers", git = "https://github.com/JJJYmmm/transformers?branch=add_zaya1" },
+    { name = "transformers", git = "https://github.com/JJJYmmm/transformers?rev=d362c90c378b4b32b54513f1627b6d9d59ccc6a1" },
 ]
 
 [[package]]
@@ -4019,7 +4019,7 @@ requires-dist = [
     { name = "torchdata", specifier = ">=0.11.0" },
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "torchvision", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "transformers", git = "https://github.com/JJJYmmm/transformers?branch=add_zaya1" },
+    { name = "transformers", git = "https://github.com/JJJYmmm/transformers?rev=d362c90c378b4b32b54513f1627b6d9d59ccc6a1" },
     { name = "uvloop", specifier = ">=0.21.0" },
     { name = "verifiers", editable = "deps/verifiers" },
     { name = "vllm", git = "https://github.com/Zyphra/vllm.git?branch=zaya1-pr" },
@@ -4719,7 +4719,7 @@ requires-dist = [
     { name = "openai", specifier = ">=1.108.1" },
     { name = "openai-harmony", specifier = ">=0.0.8" },
     { name = "tiktoken" },
-    { name = "transformers", git = "https://github.com/JJJYmmm/transformers?branch=add_zaya1" },
+    { name = "transformers", git = "https://github.com/JJJYmmm/transformers?rev=d362c90c378b4b32b54513f1627b6d9d59ccc6a1" },
 ]
 
 [package.metadata.requires-dev]
@@ -5612,7 +5612,7 @@ wheels = [
 [[package]]
 name = "transformers"
 version = "5.8.0.dev0"
-source = { git = "https://github.com/JJJYmmm/transformers?branch=add_zaya1#d362c90c378b4b32b54513f1627b6d9d59ccc6a1" }
+source = { git = "https://github.com/JJJYmmm/transformers?rev=d362c90c378b4b32b54513f1627b6d9d59ccc6a1#d362c90c378b4b32b54513f1627b6d9d59ccc6a1" }
 dependencies = [
     { name = "huggingface-hub", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "numpy", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -5935,7 +5935,7 @@ requires-dist = [
     { name = "textual" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "torch", marker = "extra == 'rl'", specifier = ">=2.8.0,<2.9.0", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "transformers", marker = "extra == 'rl'", git = "https://github.com/JJJYmmm/transformers?branch=add_zaya1" },
+    { name = "transformers", marker = "extra == 'rl'", git = "https://github.com/JJJYmmm/transformers?rev=d362c90c378b4b32b54513f1627b6d9d59ccc6a1" },
     { name = "typing-extensions", marker = "python_full_version < '3.12'" },
     { name = "vllm", marker = "extra == 'rl'", git = "https://github.com/Zyphra/vllm.git?branch=zaya1-pr" },
     { name = "wandb", marker = "extra == 'rl'" },
