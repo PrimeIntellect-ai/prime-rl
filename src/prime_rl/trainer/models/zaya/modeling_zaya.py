@@ -263,8 +263,9 @@ class ZayaCCAProjection(nn.Module):
 
 
 class ZayaQKNorm(nn.Module):
-    def __init__(self, config: ZayaConfig, scaling: float):
+    def __init__(self, config: ZayaConfig):
         super().__init__()
+        scaling = config.head_dim**-0.5
         self.head_dim_scale = scaling**-1
         self.temp = nn.Parameter(torch.zeros(config.num_key_value_heads))
         self._cp_rank = 0
@@ -335,7 +336,7 @@ class ZayaSPDAAttention(SDPAAttention):
         )
         self.hidden_size = config.hidden_size
         self.num_attention_heads = config.num_attention_heads
-        self.qk_norm = ZayaQKNorm(config, self.scaling)
+        self.qk_norm = ZayaQKNorm(config)
         self._cp_group = None
         self._cp_rank = 0
         self._cp_world_size = 1
@@ -442,7 +443,7 @@ class ZayaFlashAttention(FlashAttention):
         )
         self.hidden_size = config.hidden_size
         self.num_attention_heads = config.num_attention_heads
-        self.qk_norm = ZayaQKNorm(config, self.scaling)
+        self.qk_norm = ZayaQKNorm(config)
         self._cp_group = None
         self._cp_rank = 0
         self._cp_world_size = 1
@@ -571,7 +572,7 @@ class ZayaDecoderLayer(nn.Module):
         residual = self.post_attention_residual_scale(hidden_states, residual)
         hidden_states = self.post_attention_layernorm(residual.to(dtype=self.post_attention_layernorm.weight.dtype))
 
-        hidden_states, prev_router_hidden_states, _ = self.mlp(
+        hidden_states, prev_router_hidden_states = self.mlp(
             hidden_states,
             prev_router_hidden_states,
             routed_experts=routed_experts,

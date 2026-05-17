@@ -125,7 +125,7 @@ def _assert_logits_and_embed_grads_close(hf_model, prime_model, input_ids, posit
 
 class _PassthroughPrimeZayaBlock(nn.Module):
     def forward(self, hidden_states, prev_router_hidden_states=None, routed_experts=None):
-        return hidden_states, None, prev_router_hidden_states
+        return hidden_states, prev_router_hidden_states
 
 
 class _PassthroughHfZayaMoe(nn.Module):
@@ -388,7 +388,7 @@ def test_zaya_cca_cp_channel_indices_preserve_q_then_k_order():
 
 def test_zaya_qk_norm_slices_temperature_for_local_kv_heads():
     config = _tiny_zaya_config()
-    qk_norm = ZayaQKNorm(config, scaling=config.head_dim**-0.5)
+    qk_norm = ZayaQKNorm(config)
     qk_norm.temp.data = torch.tensor([2.0, 3.0])
     qk_norm.set_context_parallel_attributes(object(), cp_rank=1, cp_world_size=2)
 
@@ -487,20 +487,18 @@ def _run_zaya_attention_cp_parity(
     finally:
         dist.destroy_process_group()
 
-@pytest.mark.gpu
 def test_zaya_sdpa_context_parallel_matches_non_cp_output_and_backward(tmp_path):
     world_size = 2
     init_file = tmp_path / "dist_init"
 
     mp.spawn(
         _run_zaya_attention_cp_parity,
-        args=(world_size, init_file.as_posix(), "sdpa", "nccl", "cuda", True),
+        args=(world_size, init_file.as_posix(), "sdpa", "gloo", "cpu", True),
         nprocs=world_size,
         join=True,
     )
 
 
-@pytest.mark.gpu
 def test_zaya_flash_context_parallel_matches_non_cp_output_and_backward(tmp_path):
     pytest.importorskip("flash_attn")
     if torch.cuda.device_count() < 2:

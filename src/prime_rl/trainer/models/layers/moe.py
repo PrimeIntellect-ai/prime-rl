@@ -1543,8 +1543,8 @@ class ZayaMoE(nn.Module):
         hidden_states: torch.Tensor,
         prev_router_hidden_states: torch.Tensor | None = None,
         routed_experts: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]:
-        router_logits, route_prob, expert_choice, prev_router_hidden_states = self.router(
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        _, route_prob, expert_choice, prev_router_hidden_states = self.router(
             hidden_states, router_states=prev_router_hidden_states, routed_experts=routed_experts
         )
         batch_size, seq_length, hidden_size = hidden_states.shape
@@ -1572,14 +1572,14 @@ class ZayaMoE(nn.Module):
             out[skip_tokens] = hidden_states_flat[skip_tokens] * route_prob[skip_tokens]
 
         if hidden_states_routed.shape[0] == 0:
-            return out.reshape(batch_size, seq_length, hidden_size), prev_router_hidden_states, router_logits
+            return out.reshape(batch_size, seq_length, hidden_size), prev_router_hidden_states
 
         if self.ep_comm_backend == "deepep":
             expert_output = self._run_deepep_routed_experts(
                 hidden_states_routed, expert_choice_routed, route_prob_routed
             )
             out[non_skip_tokens] = expert_output
-            return out.reshape(batch_size, seq_length, hidden_size), prev_router_hidden_states, router_logits
+            return out.reshape(batch_size, seq_length, hidden_size), prev_router_hidden_states
 
         top_scores_experts_sorted, token_indices_experts_sorted, num_tokens_per_expert = self.reorderer(
             route_prob_routed, expert_choice_routed
@@ -1592,7 +1592,7 @@ class ZayaMoE(nn.Module):
         token_indices_full = token_indices_experts_sorted.reshape(-1, 1).expand(-1, hidden_size)
         routed_out = routed_out.scatter_add(dim=0, index=token_indices_full, src=routed_output)
         out[non_skip_tokens] = routed_out
-        return out.reshape(batch_size, seq_length, hidden_size), prev_router_hidden_states, router_logits
+        return out.reshape(batch_size, seq_length, hidden_size), prev_router_hidden_states
 
     def init_weights(self, init_std: float, buffer_device: torch.device):
         self.experts.init_weights(init_std)
