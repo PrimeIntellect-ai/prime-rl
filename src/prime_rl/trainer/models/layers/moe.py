@@ -1398,7 +1398,9 @@ class ZayaGroupedExperts(nn.Module):
             return self._forward_deepep(x, num_tokens_per_expert)
 
         num_tokens_per_expert = num_tokens_per_expert.to(torch.int32)
-        # This DTensor check is basically to ensure accuracy when comparing with local HF
+        # This DTensor check is basically to ensure accuracy when comparing with local HF for 
+        # tests/unit/train/models/test_zaya.py::test_zaya 
+        # Bascially @expert_parallel does permutations which are not necessary on single GPU
         if not isinstance(self.gate_up_proj, DTensor):
             if self.use_grouped_mm:
                 return _run_zaya_experts_grouped_mm_impl(
@@ -1483,7 +1485,7 @@ class ZayaMoE(nn.Module):
     ) -> torch.Tensor:
         routed_indices = token_indices_experts_sorted.reshape(-1, 1).expand(-1, x.shape[-1])
         routed_input = torch.gather(x, dim=0, index=routed_indices)
-        routed_output = self.experts(routed_input, num_tokens_per_expert)
+        routed_output = self.experts(routed_input, num_tokens_per_expert.to(torch.int32))
         return routed_output * top_scores_experts_sorted.reshape(-1, 1)
 
     def _run_local_routed_experts(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
