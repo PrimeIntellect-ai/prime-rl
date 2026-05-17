@@ -189,7 +189,6 @@ class WandbMonitor(Monitor):
             self.samples_table.add_data(*sample.values())
 
         wandb.log({"samples": self.samples_table, "step": step})
-        self.samples_table = wandb.Table(columns=self.samples_cols, log_mode="INCREMENTAL")
         self.last_log_samples_step = step
         self.logger.debug(f"Logged samples at step {step} to W&B table in {time.perf_counter() - start_time:.2f}s")
 
@@ -225,7 +224,6 @@ class WandbMonitor(Monitor):
             self.eval_samples_table.add_data(*sample.values())
 
         wandb.log({"eval/samples": self.eval_samples_table, "step": step})
-        self.eval_samples_table = wandb.Table(columns=self.eval_samples_cols, log_mode="INCREMENTAL")
 
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
         """Log distributions (no-op for W&B)."""
