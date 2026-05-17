@@ -36,6 +36,7 @@ pytestmark = [pytest.mark.gpu]
 
 LOGITS_ATOL = 2e-2
 EMBED_GRAD_ATOL = 2
+_REQUIRES_TWO_CUDA_DEVICES_MSG = "Zaya distributed parity tests require at least two CUDA devices"
 
 
 def _tiny_config(attn_implementation: str = "sdpa"):
@@ -316,6 +317,8 @@ def _run_zaya_moe_expert_parallel_parity(rank: int, world_size: int, init_file: 
 
 @pytest.mark.gpu
 def test_zaya_moe_expert_parallel_matches_local_output_and_backward(tmp_path) -> None:
+    if torch.cuda.device_count() < 2:
+        pytest.skip(_REQUIRES_TWO_CUDA_DEVICES_MSG)
     world_size = 2
     init_file = tmp_path / "dist_init"
 
@@ -488,12 +491,14 @@ def _run_zaya_attention_cp_parity(
         dist.destroy_process_group()
 
 def test_zaya_sdpa_context_parallel_matches_non_cp_output_and_backward(tmp_path):
+    if torch.cuda.device_count() < 2:
+        pytest.skip(_REQUIRES_TWO_CUDA_DEVICES_MSG)
     world_size = 2
     init_file = tmp_path / "dist_init"
 
     mp.spawn(
         _run_zaya_attention_cp_parity,
-        args=(world_size, init_file.as_posix(), "sdpa", "gloo", "cpu", True),
+        args=(world_size, init_file.as_posix(), "sdpa", "nccl", "cuda", True),
         nprocs=world_size,
         join=True,
     )
@@ -502,7 +507,7 @@ def test_zaya_sdpa_context_parallel_matches_non_cp_output_and_backward(tmp_path)
 def test_zaya_flash_context_parallel_matches_non_cp_output_and_backward(tmp_path):
     pytest.importorskip("flash_attn")
     if torch.cuda.device_count() < 2:
-        pytest.skip("Zaya FlashAttention CP parity test requires at least two CUDA devices")
+        pytest.skip(_REQUIRES_TWO_CUDA_DEVICES_MSG)
 
     world_size = 2
     init_file = tmp_path / "dist_init"
