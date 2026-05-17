@@ -127,11 +127,14 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     probs_diff = trainer_probs - inference_probs
     dppo_invalid_mask_high = probs_diff > loss_config.dppo_mask_high
     dppo_invalid_mask_low = probs_diff < -loss_config.dppo_mask_low
-    dppo_invalid_mask = torch.where(advantages > 0, dppo_invalid_mask_high, dppo_invalid_mask_low)
+    positive_advantages = advantages > 0
+    negative_advantages = advantages < 0
+    dppo_invalid_mask = torch.where(positive_advantages, dppo_invalid_mask_high, dppo_invalid_mask_low)
 
     is_masked = dppo_invalid_mask
-    is_masked_high = (advantages > 0) & dppo_invalid_mask_high
-    is_masked_low = (advantages < 0) & dppo_invalid_mask_low
+    is_masked_high = positive_advantages & dppo_invalid_mask_high
+    is_masked_low = negative_advantages & dppo_invalid_mask_low
+    drop_mask = loss_mask & is_masked
     keep_mask = loss_mask & ~is_masked
 
     log_importance_ratio = trainer_logprobs - inference_logprobs
@@ -156,6 +159,8 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
         "is_masked": _safe_mean(is_masked, loss_mask),
         "is_masked_low": _safe_mean(is_masked_low, loss_mask),
         "is_masked_high": _safe_mean(is_masked_high, loss_mask),
+        "masked_advantage_positive": _safe_mean(positive_advantages, drop_mask),
+        "masked_advantage_negative": _safe_mean(negative_advantages, drop_mask),
     }
     if teacher_kl is not None:
         metrics["teacher_kl"] = _safe_mean(teacher_kl, loss_mask)

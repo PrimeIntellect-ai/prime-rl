@@ -1269,6 +1269,12 @@ class OrchestratorConfig(BaseConfig):
             renderer_args_set.append(f"renderer.reasoning_parser={self.renderer.reasoning_parser!r}")
         if self.renderer.pool_size is not None:
             renderer_args_set.append(f"renderer.pool_size={self.renderer.pool_size!r}")
+        if self.renderer.preserve_all_thinking:
+            renderer_args_set.append(f"renderer.preserve_all_thinking={self.renderer.preserve_all_thinking!r}")
+        if self.renderer.preserve_thinking_between_tool_calls:
+            renderer_args_set.append(
+                f"renderer.preserve_thinking_between_tool_calls={self.renderer.preserve_thinking_between_tool_calls!r}"
+            )
 
         if renderer_args_set:
             raise ValueError(

@@ -91,14 +91,20 @@ git clone https://github.com/PrimeIntellect-ai/prime-rl.git
 cd prime-rl
 ```
 
-2. Install [uv](https://docs.astral.sh/uv/)
+2. Initialize submodules
+
+```bash
+git submodule update --init -- deps/verifiers deps/renderers deps/research-environments
+```
+
+3. Install [uv](https://docs.astral.sh/uv/)
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source $HOME/.local/bin/env
 ```
 
-3. Install dependencies from the lock file
+4. Install dependencies from the lock file
 
 ```bash
 uv sync --all-extras

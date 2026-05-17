@@ -14,7 +14,7 @@ TIMEOUT = 300  # 5 minutes
 @pytest.fixture(scope="module")
 def wandb_name(branch_name: str) -> str:
     """Fixture for W&B name for SFT CI integration tests."""
-    return f"test-sft-{branch_name}"
+    return f"test-reverse-text-sft:{branch_name}"
 
 
 @pytest.fixture(scope="module")
@@ -30,7 +30,7 @@ def sft_process(
         "run",
         "sft",
         "@",
-        "configs/ci/integration/sft/start.toml",
+        "configs/ci/integration/reverse_text_sft/start.toml",
         "--deployment.num-gpus",
         "2",
         "--clean-output-dir",
@@ -60,7 +60,7 @@ def sft_resume_process(
         "run",
         "sft",
         "@",
-        "configs/ci/integration/sft/resume.toml",
+        "configs/ci/integration/reverse_text_sft/resume.toml",
         "--deployment.num-gpus",
         "2",
         "--wandb.project",

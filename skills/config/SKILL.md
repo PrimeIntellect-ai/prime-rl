@@ -177,4 +177,5 @@ In TOML, an empty section header does the same:
 - `src/prime_rl/utils/config.py` — re-exports `BaseConfig` and `cli` from pydantic_config
 - `src/prime_rl/configs/` — all domain-specific config classes
 - `configs/debug/` — minimal debug configs for testing
+- `configs/private/` — private configs via git submodule (internal only)
 - `examples/` — full example configs for various tasks

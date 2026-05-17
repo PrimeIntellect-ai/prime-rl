@@ -2,9 +2,10 @@ max_steps = 20
 seq_len = 2048
 
 [ckpt]
+resume_step = 15
 
 [model]
-name = "samsja/mini-glm-moe"
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [trainer.optim]
 lr = 3e-6
@@ -20,7 +21,3 @@ max_completion_tokens = 128
 id = "reverse-text"
 
 [inference]
-gpu_memory_utilization = 0.7
-
-[inference.model]
-max_model_len = 2048
