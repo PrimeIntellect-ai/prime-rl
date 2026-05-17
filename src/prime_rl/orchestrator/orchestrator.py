@@ -1,4 +1,5 @@
 import asyncio
+import ctypes
 import gc
 import os
 import time
@@ -797,6 +798,10 @@ async def orchestrate(config: OrchestratorConfig):
         del train_rollouts, train_examples, training_batch, vlm_cache
         del results_df, metrics_df
         gc.collect()
+        # Return free glibc heap pages to the OS. numpy/pandas allocate array data
+        # via malloc (outside Python's allocator), so gc.collect() alone doesn't
+        # reclaim the RSS. malloc_trim(0) forces glibc to return freed pages.
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
 
         event_loop_lag_monitor.reset()
 
