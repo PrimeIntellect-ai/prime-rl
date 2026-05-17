@@ -1,0 +1,24 @@
+output_dir = "/beegfs/mika/glm-51-infer"
+enable_expert_parallel = true
+gpu_memory_utilization = 0.75
+enable_eplb = false
+use_deep_gemm = true
+
+[model]
+name = "zai-org/GLM-5.1-FP8"
+
+[deployment]
+type = "disaggregated"
+num_prefill_nodes = 4
+num_decode_nodes = 4
+gpus_per_node = 8
+
+# [deployment.kv_cache_offload]
+# cpu_bytes = 103_079_215_104  # 96 GiB per worker
+
+[slurm]
+job_name = "glm-51-infer"
+partition = "cluster"
+# Nodes where UCX/IBGDA is broken (cuStreamCreate fails: invalid device context).
+# -2, -65 from matej's prod.toml; -55 confirmed broken via jobs 5661/5664/5667.
+exclude = "ltc-idc3-hgx8-h200-2,ltc-idc3-hgx8-h200-65,ltc-idc3-hgx8-h200-55"

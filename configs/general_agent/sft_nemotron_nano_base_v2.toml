@@ -1,0 +1,63 @@
+output_dir = "/beegfs/mika/general-agent-sft-nemotron-nano-base-v2"
+max_steps = 200
+dist_timeout_seconds = 1800
+loss_impl = "liger_fused"
+
+[slurm]
+job_name = "general-agent-sft-nemotron-nano-base-v2"
+partition = "cluster"
+pre_run_command = "uv sync --all-extras --group mamba-ssm"
+
+[deployment]
+type = "multi_node"
+num_nodes = 2
+gpus_per_node = 8
+
+[optim]
+type = "adamw"
+lr = 5e-5
+weight_decay = 0.01
+
+[scheduler]
+type = "linear"
+warmup = 50
+
+[model]
+name = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-Base-BF16"
+impl = "custom"
+attn = "flash_attention_2"
+fused_lm_head_token_chunk_size = "disabled"
+ep = 2
+cp = 2
+cp_style = "ulysses"
+
+[model.compile]
+
+[model.ac]
+freq = 1
+
+[model.ac_offloading]
+max_inflight_activations = 5
+
+[tokenizer]
+name = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+
+[data]
+type = "sft"
+name = "PrimeIntellect/INTELLECT-5-SFT-Raw"
+subsets = ["general_agent"]
+splits = ["train"]
+seq_len = 65536
+batch_size = 8
+seed = 42
+
+[wandb]
+project = "general-agent"
+name = "sft-nemotron-nano-base-v2-p3"
+
+[log]
+level = "debug"
+
+[ckpt]
+interval = 20
+weights_only = true

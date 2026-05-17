@@ -1,0 +1,25 @@
+# Full eval (non-base) — tool-call benchmarks, 128k context
+# Usage: uv run vf-eval configs/general_agent/eval_nemotron_nano.toml
+
+model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+api_base_url = "http://ltc-idc3-hgx8-h200-51:8000/v1"
+
+max_tokens = 131072
+max_concurrent = 128
+max_retries = 1
+output_dir = "/beegfs/outputs/nemotron-nano-eval"
+independent_scoring = true
+save_results = true
+verbose = true
+
+# BFCL-v3: all examples x 1 rollout
+[[eval]]
+env_id = "bfcl-v3"
+num_examples = -1
+rollouts_per_example = 1
+
+# MCP-Atlas: all examples x 4 rollouts
+[[eval]]
+env_id = "mcp-atlas"
+num_examples = -1
+rollouts_per_example = 4

@@ -1,0 +1,20 @@
+output_dir = "/beegfs/mika/nemotron-nano-infer"
+gpu_memory_utilization = 0.8
+
+[slurm]
+job_name = "nemotron-nano"
+
+[deployment]
+type = "single_node"
+
+[model]
+name = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+trust_remote_code = true
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "nano_v3"
+
+[parallel]
+tp = 8
+
+[vllm_extra]
+reasoning_parser_plugin = "/beegfs/huggingface/hub/models--nvidia--NVIDIA-Nemotron-3-Nano-30B-A3B-BF16/snapshots/cbd3fa9f933d55ef16a84236559f4ee2a0526848/nano_v3_reasoning_parser.py"

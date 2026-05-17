@@ -1,0 +1,77 @@
+output_dir = "/beegfs/outputs/general-agent-qwen3-30b-a3b-thinking-lp"
+max_steps = 1000
+seq_len = 32768
+
+[slurm]
+job_name = "general-agent-qwen3-30b-a3b-thinking-lp"
+project_dir = "."
+pre_run_command = "srun bash -c 'pkill -9 -f torchrun; pkill -9 -f vllm; true'"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 2
+num_infer_nodes = 2
+
+[log]
+level = "debug"
+
+[wandb]
+project = "general-agent"
+name = "qwen3-30b-a3b-thinking-lp"
+
+[weight_broadcast]
+type = "nccl"
+
+[ckpt]
+interval = 50
+keep_last = 1
+resume_step = -1
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+
+# --- Trainer ---
+
+[trainer]
+
+[trainer.model]
+cp = 2
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.compile]
+
+# --- Orchestrator ---
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 16
+max_off_policy_steps = 32
+
+[[orchestrator.train.env]]
+id = "general-agent-solver-rlm"
+num_workers = 4
+max_retries = 3
+
+[orchestrator.train.env.args]
+rlm_ref = "55fe64a98abc02b03c5c578e79d14a975f2a0ecf"
+labels = ["qwen3-30b-a3b-thinking-lp"]
+
+[orchestrator.advantage]
+length_shaping = true
+
+[orchestrator.prime_monitor]
+
+# --- Inference ---
+
+[inference]
+gpu_memory_utilization = 0.85
+
+[inference.model]
+max_model_len = 32768
+tool_call_parser = "hermes"
+
+[inference.parallel]
+dp = 2
+tp = 4

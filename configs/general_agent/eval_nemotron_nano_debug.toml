@@ -1,0 +1,29 @@
+# Debug eval (non-base) — 5 examples x 3 rollouts, 16k context
+# Usage: uv run vf-eval configs/general_agent/eval_nemotron_nano_debug.toml
+
+model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+api_base_url = "http://ltc-idc3-hgx8-h200-51:8000/v1"
+
+max_tokens = 16384
+max_concurrent = 32
+max_retries = 1
+output_dir = "/beegfs/outputs/nemotron-nano-eval-debug"
+independent_scoring = true
+save_results = true
+verbose = true
+
+[[eval]]
+env_id = "bfcl-v3"
+num_examples = 5
+rollouts_per_example = 3
+
+[[eval]]
+env_id = "tau2-bench"
+num_examples = 5
+rollouts_per_example = 3
+env_args = { domain = "telecom", user_model = "gpt-4.1", user_base_url = "https://api.openai.com/v1", user_api_key_var = "OPENAI_API_KEY" }
+
+[[eval]]
+env_id = "mcp-atlas"
+num_examples = 5
+rollouts_per_example = 3

@@ -1,0 +1,96 @@
+output_dir = "/beegfs/outputs/general-agent-rl-nemotron-nano"
+max_steps = 300
+seq_len = 65536
+
+[slurm]
+job_name = "general-agent-rl-nemotron-nano"
+project_dir = "."
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 2
+num_infer_nodes = 2
+
+[log]
+level = "debug"
+
+[wandb]
+project = "general-agent"
+name = "rl-nemotron-nano"
+
+[weight_broadcast]
+type = "nccl"
+
+[ckpt]
+interval = 50
+keep_last = 1
+resume_step = -1
+
+[model]
+name = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+
+# --- Trainer ---
+
+[trainer]
+dist_timeout_seconds = 1800
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_2"
+ep = 8
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 5
+
+[trainer.model.compile]
+
+# --- Orchestrator ---
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 16
+max_off_policy_steps = 32
+use_token_client = false
+
+[[orchestrator.train.env]]
+id = "general-agent-solver-local"
+num_workers = 8
+max_retries = 1
+
+[orchestrator.prime_monitor]
+
+[orchestrator.eval]
+interval = 50
+eval_base_model = false
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 16384
+
+[[orchestrator.eval.env]]
+id = "bfcl-v3"
+rollouts_per_example = 1
+
+[[orchestrator.eval.env]]
+id = "mcp-atlas"
+rollouts_per_example = 4
+
+# --- Inference ---
+
+[inference]
+gpu_memory_utilization = 0.85
+
+[inference.model]
+max_model_len = 131072
+trust_remote_code = true
+tool_call_parser = "qwen3_coder"
+reasoning_parser = "nano_v3"
+
+[inference.parallel]
+dp = 2
+tp = 4
+
+[inference.vllm_extra]
+reasoning_parser_plugin = "/beegfs/huggingface/hub/models--nvidia--NVIDIA-Nemotron-3-Nano-30B-A3B-BF16/snapshots/cbd3fa9f933d55ef16a84236559f4ee2a0526848/nano_v3_reasoning_parser.py"
