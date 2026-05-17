@@ -73,6 +73,8 @@ class StaticInferencePool:
         tool_parser: str | None = None,
         reasoning_parser: str | None = None,
         renderer_pool_size: int | None = None,
+        preserve_all_thinking: bool = False,
+        preserve_thinking_between_tool_calls: bool = False,
     ):
         renderer_model_name = model_name if train_client_type == "renderer" else None
         self._train_clients = setup_clients(
@@ -83,6 +85,8 @@ class StaticInferencePool:
             tool_parser=tool_parser,
             reasoning_parser=reasoning_parser,
             renderer_pool_size=renderer_pool_size,
+            preserve_all_thinking=preserve_all_thinking,
+            preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
         )
         self._eval_clients = setup_clients(client_config, client_type=eval_client_type)
         self._admin_clients = setup_admin_clients(client_config)
@@ -134,6 +138,8 @@ async def setup_inference_pool(
     tool_parser: str | None = None,
     reasoning_parser: str | None = None,
     renderer_pool_size: int | None = None,
+    preserve_all_thinking: bool = False,
+    preserve_thinking_between_tool_calls: bool = False,
 ) -> InferencePool:
     """Create an inference pool from config (static or elastic)."""
     logger = get_logger()
@@ -157,6 +163,8 @@ async def setup_inference_pool(
             tool_parser=tool_parser,
             reasoning_parser=reasoning_parser,
             renderer_pool_size=renderer_pool_size,
+            preserve_all_thinking=preserve_all_thinking,
+            preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
         )
 
     logger.info(
@@ -173,6 +181,8 @@ async def setup_inference_pool(
         tool_parser=tool_parser,
         reasoning_parser=reasoning_parser,
         renderer_pool_size=renderer_pool_size,
+        preserve_all_thinking=preserve_all_thinking,
+        preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
     )
 
 
@@ -184,9 +194,20 @@ def setup_clients(
     tool_parser: str | None = None,
     reasoning_parser: str | None = None,
     renderer_pool_size: int | None = None,
+    preserve_all_thinking: bool = False,
+    preserve_thinking_between_tool_calls: bool = False,
 ) -> list[vf.ClientConfig]:
     clients = []
     client_idx = 0
+    # Only forward preserve flags when the client actually uses a renderer —
+    # MITO/TITO clients ignore them and the verifiers ClientConfig may reject
+    # unknown extras on older versions.
+    renderer_extra: dict = {}
+    if client_type == "renderer":
+        renderer_extra = {
+            "preserve_all_thinking": preserve_all_thinking,
+            "preserve_thinking_between_tool_calls": preserve_thinking_between_tool_calls,
+        }
     for base_url in client_config.base_url:
         for dp_rank in range(client_config.dp_rank_count):
             headers = client_config.headers.copy()
@@ -210,6 +231,7 @@ def setup_clients(
                     max_retries=10,
                     extra_headers=headers,
                     extra_headers_from_state=client_config.extra_headers_from_state,
+                    **renderer_extra,
                 )
             )
             client_idx += 1

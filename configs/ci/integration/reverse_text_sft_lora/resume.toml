@@ -1,7 +1,7 @@
-max_steps = 20
+max_steps = 10
 
 [ckpt]
-resume_step = 10
+resume_step = 5
 
 [ckpt.weights]
 save_adapter_separately = true

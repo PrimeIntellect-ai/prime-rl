@@ -25,8 +25,9 @@ CONFIG_CLASSES = [
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/` or `examples/`"""
-    config_files = list(Path("configs").rglob("*.toml"))
+    """Any TOML file inside `configs/` or `examples/` (skips the configs/private/ submodule)."""
+    private = Path("configs/private")
+    config_files = [p for p in Path("configs").rglob("*.toml") if private not in p.parents]
     example_files = list(Path("examples").rglob("*.toml"))
 
     return config_files + example_files
@@ -156,19 +157,49 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+def test_orchestrator_vlm_configs_must_disable_renderer():
+    with pytest.raises(ValidationError, match="orchestrator.use_renderer is not supported for VLMs"):
+        OrchestratorConfig.model_validate(
+            {
+                "model": {
+                    "vlm": {
+                        "vision_encoder_attr": "model.visual",
+                        "language_model_attr": "model.language_model",
+                    }
+                }
+            }
+        )
+
+    config = OrchestratorConfig.model_validate(
+        {
+            "model": {
+                "vlm": {
+                    "vision_encoder_attr": "model.visual",
+                    "language_model_attr": "model.language_model",
+                }
+            },
+            "use_token_client": False,
+            "use_renderer": False,
+        }
+    )
+
+    assert config.use_token_client is False
+    assert config.use_renderer is False
+
+
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
 
 
-def test_teacher_rollout_policy_updates_require_inference_config():
+def test_teacher_rollout_weight_updates_require_inference_config_or_explicit_opt_in():
     base_config = {
         "trainer": {},
         "orchestrator": {
             "use_sft_loss": True,
             "use_token_client": False,
+            "use_renderer": False,
             "teacher_rollout_model": {
-                "client_type": "custom_chat_client",
                 "client": {"base_url": ["http://teacher.example/v1"]},
                 "model": {"name": "teacher-model"},
             },
@@ -176,8 +207,17 @@ def test_teacher_rollout_policy_updates_require_inference_config():
     }
 
     config = RLConfig.model_validate(base_config)
-    assert config.orchestrator.enable_policy_updates is None
-    assert config.orchestrator.teacher_rollout_model.client_type == "custom_chat_client"
+    assert config.orchestrator.update_student_inference_weights is None
 
     config = RLConfig.model_validate({**base_config, "inference": {}})
-    assert config.orchestrator.enable_policy_updates
+    assert config.orchestrator.update_student_inference_weights
+
+    explicit_config = {
+        **base_config,
+        "orchestrator": {
+            **base_config["orchestrator"],
+            "update_student_inference_weights": True,
+        },
+    }
+    config = RLConfig.model_validate(explicit_config)
+    assert config.orchestrator.update_student_inference_weights

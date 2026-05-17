@@ -43,6 +43,7 @@ COPY uv.lock /app/uv.lock
 COPY README.md /app/README.md
 COPY src/ /app/src/
 COPY packages/ /app/packages/
+COPY deps/ /app/deps/
 COPY configs /app/configs
 COPY examples /app/examples
 COPY benchmarks/scripts /app/benchmarks/scripts

@@ -157,7 +157,11 @@ If you wish to configure values of the default variant, you don't need to set th
 
 For hosted multi-tenant runs where the trainer image's `trainer.loss.type` is fixed, the orchestrator exposes a per-run override that forces SFT loss on every micro-batch without rebuilding the trainer. Set `orchestrator.use_sft_loss = true` alongside `orchestrator.teacher_rollout_model`; both must be configured together (the orchestrator validator enforces this). The orchestrator stamps each `TrainingSample.sft_loss = True`, which the trainer's `compute_loss` honors by dispatching to `sft_loss_fn` per batch, independent of the trainer's configured default loss.
 
-When hard distill also needs online evals or policy weight sync against the student model, configure `[inference]` in the RL config. `RLConfig` then points `orchestrator.client` at the standard student inference server for evals and weight updates, while `orchestrator.teacher_rollout_model` is scoped to training rollout generation only. If `[inference]` is omitted, hard distill keeps the teacher-only rollout behavior and does not wait for a local student inference server.
+When hard distill also needs online evals or policy weight sync against the student model, point `orchestrator.client` at the student inference server and `orchestrator.teacher_rollout_model.client` at the teacher. In the RL entrypoint this is usually done by configuring `[inference]`, which starts the student inference server, enables `orchestrator.update_student_inference_weights`, and leaves `teacher_rollout_model` scoped to training rollout generation only. For externally started student inference, set `orchestrator.update_student_inference_weights = true` explicitly. If weight updates are not enabled, hard distill keeps the teacher-only rollout behavior and skips policy updates.
+
+### RL rollout client defaults
+
+For text-only RL rollouts, the orchestrator defaults to renderer-backed TITO (`use_renderer = true`, `use_token_client = false`). VLM configs must explicitly use MITO (`use_token_client = false`, `use_renderer = false`) so image preprocessing and chat templating stay server-side. External teacher rollouts must also set `use_renderer = false`.
 
 ### Model fields
 
@@ -179,4 +183,5 @@ In TOML, an empty section header does the same:
 - `src/prime_rl/utils/config.py` — re-exports `BaseConfig` and `cli` from pydantic_config
 - `src/prime_rl/configs/` — all domain-specific config classes
 - `configs/debug/` — minimal debug configs for testing
+- `configs/private/` — private configs via git submodule (internal only)
 - `examples/` — full example configs for various tasks

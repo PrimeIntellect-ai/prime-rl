@@ -14,12 +14,14 @@ dependencies = [
     "pyarrow>=21.0.0",
     "numpy>=2.2.6",
     "torch>=2.9.0",
+    "torchvision",
+    "torchaudio",
     "torchdata>=0.11.0",
     "transformers",
-    "vllm>=0.19.0",
+    "vllm>=0.20.2",
     "wandb>=0.26.1",
     "ring-flash-attn>=0.1.8",
-    "prime>=0.5.73",
+    "prime>=0.6.4",
     "pyzmq>=27.1.0",
     "aiolimiter>=1.2.1",
     "tenacity>=8.2.0",
@@ -29,6 +31,7 @@ dependencies = [
     "uvloop>=0.21.0",
     "torchtitan",
     "verifiers",
+    "renderers",
     "dion",
     "tilelang>=0.1.8",
     "flash-linear-attention",
@@ -48,7 +51,7 @@ prime_rl = "prime_rl.inference.patches:transformers_v5_compat"
 
 [project.optional-dependencies]
 flash-attn = [
-    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.10-cp312-cp312-linux_x86_64.whl ; platform_machine == 'x86_64'",
+    "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.4/flash_attn-2.8.3+cu128torch2.11-cp312-cp312-linux_x86_64.whl ; platform_machine == 'x86_64'",
 ]
 flash-attn-3 = ["flash_attn_3"]
 
@@ -56,20 +59,33 @@ flash-attn-cute = [
     "flash-attn-4",
 ]
 envs = [
-    "reverse-text",
-    "alphabet-sort",
-    "wiki-search",
-    "math-python",
-    "math-env",
-    "code-env",
-    "science-env",
-    "logic-env",
-    "color-codeword",
-    "math500",
     "aime2024",
     "aime2025",
-    "mini_swe_agent_plus",
-    "deepdive"
+    "alphabet-sort",
+    "code-env",
+    "color-codeword",
+    "deepdive",
+    "gpqa",
+    "hle",
+    "ifeval",
+    "livecodebench",
+    "logic-env",
+    "math-env",
+    "math-python",
+    "math500",
+    "mini-swe-agent-plus",
+    "mini-swe-agent-plus-rlm",
+    "mmlu-pro",
+    "opencode-cp",
+    "opencode-deepdive",
+    "opencode-math",
+    "opencode-science",
+    "opencode-swe",
+    "reverse-text",
+    "science-env",
+    "simpleqa-verified",
+    "tau2-bench",
+    "wiki-search",
 ]
 disagg = [
     "deep-ep ; platform_machine == 'x86_64'",
@@ -106,7 +122,38 @@ dev = [
 
 
 [tool.uv.workspace]
-members = ["packages/*"]
+members = [
+    "packages/prime-rl-configs",
+    "deps/verifiers",
+    "deps/renderers",
+    "deps/verifiers/environments/alphabet_sort",
+    "deps/verifiers/environments/math_python",
+    "deps/verifiers/environments/reverse_text",
+    "deps/verifiers/environments/wiki_search",
+    "deps/research-environments/environments/aime2024",
+    "deps/research-environments/environments/aime2025",
+    "deps/research-environments/environments/code_env",
+    "deps/research-environments/environments/color_codeword",
+    "deps/research-environments/environments/deepdive",
+    "deps/research-environments/environments/gpqa",
+    "deps/research-environments/environments/hle",
+    "deps/research-environments/environments/ifeval",
+    "deps/research-environments/environments/livecodebench",
+    "deps/research-environments/environments/logic_env",
+    "deps/research-environments/environments/math500",
+    "deps/research-environments/environments/math_env",
+    "deps/research-environments/environments/mini_swe_agent_plus",
+    "deps/research-environments/environments/mini_swe_agent_plus_rlm",
+    "deps/research-environments/environments/mmlu_pro",
+    "deps/research-environments/environments/opencode_cp",
+    "deps/research-environments/environments/opencode_deepdive",
+    "deps/research-environments/environments/opencode_math",
+    "deps/research-environments/environments/opencode_science",
+    "deps/research-environments/environments/opencode_swe",
+    "deps/research-environments/environments/science_env",
+    "deps/research-environments/environments/simpleqa_verified",
+    "deps/research-environments/environments/tau2_bench",
+]
 
 [tool.uv]
 exclude-newer = "7 days"
@@ -122,34 +169,20 @@ override-dependencies = [
     "nvidia-cudnn-cu12>=9.15",
     "nvidia-cutlass-dsl>=4.4.1",
     "transformers>=5.1.0.dev0",
+    "torch>=2.9.0",
+    "openenv-core",
 ]
 
 [tool.uv.exclude-newer-package]
-# pytorch-cu128 / pytorch-cu128-test indexes don't publish upload dates
-torch = false
+# we want latest vllm, remove next patch
+vllm = false
 flash_attn_3 = false
-# Self-vendored packages on our primeintellect index
-reverse-text = false
-alphabet-sort = false
-wiki-search = false
-math-python = false
-math-env = false
-code-env = false
-science-env = false
-logic-env = false
-color-codeword = false
-math500 = false
-aime2024 = false
-aime2025 = false
-deepdive = false
-mini_swe_agent_plus = false
 # PrimeIntellect-published on PyPI (trusted publisher)
 prime = false
 prime-sandboxes = false
 prime-tunnel = false
 prime-evals = false
 # Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
-verifiers = false
 vllm-router = false
 dion = false
 pydantic-config = false
@@ -159,32 +192,50 @@ nixl-cu12 = false
 
 [tool.uv.sources]
 prime-rl-configs = { workspace = true }
+verifiers = { workspace = true }
+renderers = { workspace = true }
+aime2024 = { workspace = true }
+aime2025 = { workspace = true }
+alphabet-sort = { workspace = true }
+code-env = { workspace = true }
+color-codeword = { workspace = true }
+deepdive = { workspace = true }
+gpqa = { workspace = true }
+hle = { workspace = true }
+ifeval = { workspace = true }
+livecodebench = { workspace = true }
+logic-env = { workspace = true }
+math-env = { workspace = true }
+math-python = { workspace = true }
+math500 = { workspace = true }
+mini-swe-agent-plus = { workspace = true }
+mini-swe-agent-plus-rlm = { workspace = true }
+mmlu-pro = { workspace = true }
+opencode-cp = { workspace = true }
+opencode-deepdive = { workspace = true }
+opencode-math = { workspace = true }
+opencode-science = { workspace = true }
+opencode-swe = { workspace = true }
+reverse-text = { workspace = true }
+science-env = { workspace = true }
+simpleqa-verified = { workspace = true }
+tau2-bench = { workspace = true }
+wiki-search = { workspace = true }
 torch = { index = "pytorch-cu128" }
-verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "3b77145" }
+torchvision = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "c1c3424" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "96bd151" }
 pydantic-config = { git = "https://github.com/samsja/pydantic_config.git", branch = "main" }
 vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl" }
-reverse-text = { index = "primeintellect" }
-alphabet-sort = { index = "primeintellect" }
-wiki-search = { index = "primeintellect" }
-math-python = { index = "primeintellect" }
-math-env = { index = "primeintellect" }
-code-env = { index = "primeintellect" }
-science-env = { index = "primeintellect" }
-logic-env = { index = "primeintellect" }
-color-codeword = { index = "primeintellect" }
-math500 = { index = "primeintellect" }
-aime2024 = { index = "primeintellect" }
-aime2025 = { index = "primeintellect" }
-deepdive = { index = "primeintellect" }
-mini_swe_agent_plus = { index = "primeintellect" }
-deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+73b6ea4-cp312-cp312-linux_x86_64.whl" }
-# DeepGEMM bumped from 477618c to d30fc36 (newer kernel APIs needed by the
-# FP8 grouped-GEMM training path). Rebuild via scripts/install_deep_gemm.sh.
-deep-gemm = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.3.0+d30fc36-cp312-cp312-linux_x86_64.whl" }
+vllm = [
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+]
+deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }
+deep-gemm = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }
 nixl-cu12 = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
 flash_attn_3 = { index = "pytorch-cu128-test" }
@@ -198,15 +249,9 @@ mamba-ssm = [{ requirement = "torch", match-runtime = true }]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
 
 [[tool.uv.index]]
-name = "primeintellect"
-url = "https://hub.primeintellect.ai/primeintellect/simple/"
-explicit = true
-
-[[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
-
 
 [[tool.uv.index]]
 name = "pytorch-cu128-test"
@@ -225,6 +270,7 @@ known-first-party = ["prime_rl"]
 
 [tool.ruff]
 line-length = 120
+extend-exclude = ["deps"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers"

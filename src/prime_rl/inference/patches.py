@@ -3,7 +3,7 @@ from vllm.triton_utils import tl, triton
 
 
 def transformers_v5_compat():
-    """vLLM general plugin: patch transformers v5 config attrs that vLLM 0.16 still expects.
+    """vLLM general plugin: patch transformers v5 config attrs that vLLM still expects.
 
     Registered as a ``vllm.general_plugins`` entry-point so it runs automatically
     in every vLLM process, including spawned workers.
@@ -16,8 +16,39 @@ def transformers_v5_compat():
     _patch_qwen35_lora()
     _patch_lora_key_prefix()
     monkey_patch_deep_gemm_ep_scatter()
+    monkey_patch_deep_gemm_silu_mul_quant_int64()
     monkey_patch_dp_engine_core_pause_resume_deadlock()
-    monkey_patch_offloading_connector_cpu_block_count()
+    monkey_patch_vllm_layerwise_reload_alias_buffers()
+
+
+def monkey_patch_vllm_layerwise_reload_alias_buffers():
+    # vLLM's layerwise reload materializes each buffer as an independent tensor
+    # and then copies it back into the original kernel storage. When a buffer
+    # aliases a parameter (e.g. NemotronH Mamba's mixer.conv_weights, a view of
+    # mixer.conv1d.weight), the buffer copy stamps garbage into the parameter's
+    # storage *after* the parameter has been correctly reloaded. Skip the copy
+    # for any buffer that shares storage with a parameter; _place_kernel_tensors
+    # re-registers the original view, which trivially reflects the parameter.
+    from vllm.logger import init_logger
+    from vllm.model_executor.model_loader.reload import layerwise as reload_layerwise
+
+    logger = init_logger(__name__)
+
+    def _copy_and_restore_kernel_tensors(layer: torch.nn.Module, info: reload_layerwise.LayerReloadingInfo):
+        assert info.kernel_tensors is not None
+        parameters, buffers = info.kernel_tensors
+        param_storage_ptrs = {p.untyped_storage().data_ptr() for p in layer.parameters(recurse=True)}
+        for name, param in parameters.items():
+            param.data.copy_(getattr(layer, name))
+        for name, buffer in buffers.items():
+            if buffer.untyped_storage().data_ptr() in param_storage_ptrs:
+                continue
+            buffer.data.copy_(getattr(layer, name))
+
+        reload_layerwise._place_kernel_tensors(layer, info)
+
+    reload_layerwise._copy_and_restore_kernel_tensors = _copy_and_restore_kernel_tensors
+    logger.warning("Enabled vLLM layerwise reload alias-buffer patch.")
 
 
 @triton.jit
@@ -172,6 +203,140 @@ def monkey_patch_deep_gemm_ep_scatter():
 
     deep_gemm_utils.ep_scatter = torch.no_grad()(_triton_ep_scatter_int64)
     logger.warning("Enabled int64-addressing Triton patch for vLLM DeepGEMM ep_scatter.")
+
+
+@triton.jit
+def _silu_mul_per_token_group_quant_fp8_colmajor_int64_kernel(
+    y_ptr,
+    y_q_ptr,
+    y_s_ptr,
+    M: tl.int64,
+    N: tl.int64,
+    y_s_col_stride: tl.int64,
+    eps,
+    fp8_min: tl.constexpr,
+    fp8_max: tl.constexpr,
+    use_ue8m0: tl.constexpr,
+    GROUP_SIZE: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+    N_2 = N // 2
+
+    m_offset = (pid_m * BLOCK_M).to(tl.int64)
+    n_offset = (pid_n * BLOCK_N).to(tl.int64)
+    if m_offset >= M:
+        return
+
+    offs_n = tl.arange(0, BLOCK_N).to(tl.int64)
+    offs_m = tl.arange(0, BLOCK_M).to(tl.int64)
+
+    base_y_ptr = y_ptr + m_offset * N + n_offset
+    act_in_ptrs = base_y_ptr + offs_m[:, None] * N + offs_n[None, :]
+
+    act_in = tl.load(act_in_ptrs)
+    mul_in = tl.load(act_in_ptrs + N_2)
+
+    act_in = act_in.to(tl.float32)
+    one_f32 = tl.cast(1, tl.float32)
+    silu_out = (act_in / (one_f32 + tl.exp(-act_in))).to(y_ptr.dtype.element_ty)
+    y = (silu_out * mul_in).to(tl.float32)
+
+    absmax = tl.maximum(tl.max(tl.abs(y), axis=1), eps)
+    scale_raw = absmax * (1.0 / fp8_max)
+    y_s = tl.math.exp2(tl.ceil(tl.log2(scale_raw))) if use_ue8m0 else scale_raw
+    y_s = tl.reshape(y_s, (BLOCK_M, 1))
+    y_q = tl.clamp(y / y_s, fp8_min, fp8_max).to(y_q_ptr.dtype.element_ty)
+
+    base_y_q_ptr = y_q_ptr + m_offset * N_2 + n_offset
+    y_q_ptrs = base_y_q_ptr + offs_m[:, None] * N_2 + offs_n[None, :]
+    tl.store(y_q_ptrs, y_q)
+
+    group_id = n_offset // GROUP_SIZE
+    base_y_s_ptr = y_s_ptr + group_id * y_s_col_stride + m_offset
+    y_s_ptrs = base_y_s_ptr + offs_m
+    y_s = tl.reshape(y_s, (BLOCK_M,))
+    tl.store(y_s_ptrs, y_s)
+
+
+def _silu_mul_per_token_group_quant_fp8_colmajor_int64(
+    input: torch.Tensor,
+    output: torch.Tensor | None = None,
+    use_ue8m0: bool | None = None,
+    eps: float = 1e-10,
+):
+    from vllm.platforms import current_platform
+    from vllm.utils.deep_gemm import is_deep_gemm_e8m0_used
+
+    group_size = 128
+    assert input.ndim == 2
+    if output is not None:
+        assert output.ndim == 2
+    assert input.size(0) % group_size == 0
+    assert input.size(1) % (group_size * 2) == 0
+
+    if use_ue8m0 is None:
+        use_ue8m0 = is_deep_gemm_e8m0_used()
+
+    M, N = input.size()
+    N_2 = N // 2
+
+    fp8_dtype = current_platform.fp8_dtype()
+    if output is None:
+        output = torch.empty((M, N_2), dtype=fp8_dtype, device=input.device)
+
+    output_scales = torch.empty(((N_2 // group_size), M), dtype=torch.float32, device=input.device).transpose(0, 1)
+
+    block_m = 8
+    block_n = group_size
+    assert M % block_m == 0
+    assert N_2 % block_n == 0
+
+    finfo = torch.finfo(fp8_dtype)
+    fp8_min = -224.0 if current_platform.is_fp8_fnuz() else finfo.min
+    fp8_max = 224.0 if current_platform.is_fp8_fnuz() else finfo.max
+
+    grid = (M // block_m, N_2 // block_n)
+    _silu_mul_per_token_group_quant_fp8_colmajor_int64_kernel[grid](
+        input,
+        output,
+        output_scales,
+        M,
+        N,
+        output_scales.stride(-1),
+        eps,
+        fp8_min,
+        fp8_max,
+        use_ue8m0,
+        group_size,
+        block_m,
+        block_n,
+    )
+
+    return output, output_scales
+
+
+def monkey_patch_deep_gemm_silu_mul_quant_int64():
+    # Temporary local carry for large DeepGEMM profile shapes whose row offsets
+    # exceed signed int32 address arithmetic in vLLM's Triton kernel.
+    import sys
+
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.quantization.utils import fp8_utils
+
+    logger = init_logger(__name__)
+
+    fp8_utils.silu_mul_per_token_group_quant_fp8_colmajor = _silu_mul_per_token_group_quant_fp8_colmajor_int64
+
+    deep_gemm_moe_module = sys.modules.get("vllm.model_executor.layers.fused_moe.experts.deep_gemm_moe")
+    if deep_gemm_moe_module is not None:
+        deep_gemm_moe_module.silu_mul_per_token_group_quant_fp8_colmajor = (
+            _silu_mul_per_token_group_quant_fp8_colmajor_int64
+        )
+
+    logger.warning("Enabled int64-addressing Triton patch for vLLM DeepGEMM SiLU/mul FP8 quant.")
 
 
 def _patch_qwen35_lora():
@@ -715,239 +880,6 @@ def monkey_patch_harmony_stop_token_propagation():
     ChatCompletionRequest.to_sampling_params = _patched_to_sampling_params
 
 
-def monkey_patch_fused_moe_lora_dp():
-    """Fix: LoRA + MoE + DP>1 produces corrupted output in vLLM 0.17.0.
-
-    Two bugs:
-    1. LoRA injection sets supports_internal_mk=True (via moe_kernel not None),
-       causing the MoE runner to skip DP dispatch/combine. But the LoRA kernel
-       uses NoDPEP and doesn't handle DP internally.
-    2. LoRA decorators capture full-batch tensors but fire per-chunk inside the
-       kernel's chunk loop. At DP>=3, dispatched batch > CHUNK_SIZE causes
-       shape mismatches.
-
-    Fix: Replace _inject_lora_into_fused_moe with a version that:
-    (a) sets moe_kernel=None so the runner correctly dispatches
-    (b) makes decorators chunk-aware by tracking chunk offsets
-
-    Upstream: https://github.com/vllm-project/vllm/issues/23244
-    """
-    import types
-
-    from vllm import envs
-    from vllm.distributed.utils import divide
-    from vllm.lora.layers.fused_moe import FusedMoEWithLoRA
-    from vllm.model_executor.layers.fused_moe.config import _get_config_dtype_str
-    from vllm.model_executor.layers.fused_moe.fused_marlin_moe import MarlinExperts
-    from vllm.model_executor.layers.fused_moe.fused_moe import TritonExperts
-    from vllm.model_executor.layers.fused_moe.fused_moe_modular_method import FusedMoEModularMethod
-    from vllm.model_executor.layers.fused_moe.gpt_oss_triton_kernels_moe import UnfusedOAITritonExperts
-    from vllm.model_executor.layers.fused_moe.modular_kernel import FusedMoEKernel
-    from vllm.model_executor.layers.fused_moe.prepare_finalize import MoEPrepareAndFinalizeNoDPEPModular
-
-    def _fixed_inject(self):
-        moe_state_dict = {}
-        top_k = self.base_layer.top_k
-
-        self.base_layer.ensure_moe_quant_config_init()
-        quant_config = self.base_layer.quant_method.moe_quant_config
-
-        if getattr(self.base_layer.quant_method, "supports_internal_mk", False):
-            m_fused_moe_fn = self.base_layer.quant_method.moe_kernel
-            m_fused_moe_fn.shared_experts = None
-        else:
-            prepare_finalize = MoEPrepareAndFinalizeNoDPEPModular()
-            m_fused_moe_fn = FusedMoEKernel(
-                prepare_finalize,
-                self.base_layer.quant_method.select_gemm_impl(prepare_finalize, self.base_layer),
-            )
-
-        if quant_config.use_mxfp4_w4a16:
-            assert isinstance(m_fused_moe_fn.impl.fused_experts, (MarlinExperts, UnfusedOAITritonExperts))
-        else:
-            assert isinstance(m_fused_moe_fn.impl.fused_experts, TritonExperts)
-
-        # --- Decorators (chunk-aware) ---
-
-        def fwd_decorator(layer, func):
-            def wrapper(*args, **kwargs):
-                moe_state_dict["hidden_states"] = kwargs["hidden_states"]
-                moe_state_dict["topk_ids"] = kwargs["topk_ids"]
-                moe_state_dict["topk_weights"] = kwargs["topk_weights"]
-                moe_state_dict["expert_map"] = kwargs["expert_map"]
-                moe_state_dict["apply_router_weight_on_input"] = kwargs["apply_router_weight_on_input"]
-                moe_state_dict["_chunk_offset"] = 0
-                return func(*args, **kwargs)
-
-            return wrapper
-
-        def act_decorator(layer, func):
-            def wrapper(*args, **kwargs):
-                _, output, input = args
-                chunk_M = input.view(-1, top_k, input.shape[-1]).shape[0]
-                chunk_offset = moe_state_dict.get("_chunk_offset", 0)
-                hidden_states = moe_state_dict["hidden_states"][chunk_offset : chunk_offset + chunk_M]
-                topk_weights = moe_state_dict["topk_weights"][chunk_offset : chunk_offset + chunk_M]
-                curr_topk_ids = moe_state_dict["topk_ids"][chunk_offset : chunk_offset + chunk_M]
-                expert_map = moe_state_dict["expert_map"]
-                config_dtype = _get_config_dtype_str(
-                    dtype=hidden_states.dtype, use_fp8_w8a8=False, use_int8_w8a16=False, use_int4_w4a16=False
-                )
-                num_tokens = hidden_states.size(0)
-                M = min(num_tokens, envs.VLLM_FUSED_MOE_CHUNK_SIZE)
-                max_lora_rank = self.w13_lora_a_stacked[0].shape[-2]
-                shrink_config, expand_config = self._get_lora_moe_configs(
-                    op_prefix="w13",
-                    num_loras=self.max_loras,
-                    rank=max_lora_rank,
-                    num_slices=self._w13_slices,
-                    M=M,
-                    layer=layer,
-                    top_k=top_k,
-                    config_dtype=config_dtype,
-                )
-                SPARSITY_FACTOR = 8
-                naive_block_assignment = (
-                    expert_map is None
-                    and num_tokens * top_k * SPARSITY_FACTOR <= self.base_layer.local_num_experts * self.max_loras
-                )
-                token_lora_mapping, sorted_token_ids_lora, expert_ids_lora, num_tokens_post_padded_lora = (
-                    self.punica_wrapper.moe_lora_align_block_size(
-                        curr_topk_ids,
-                        num_tokens,
-                        shrink_config["BLOCK_SIZE_M"],
-                        self.base_layer.local_num_experts,
-                        self.max_loras,
-                        self.adapter_enabled,
-                        expert_map,
-                        naive_block_assignment=naive_block_assignment,
-                    )
-                )
-                moe_state_dict["sorted_token_ids_lora"] = sorted_token_ids_lora
-                moe_state_dict["expert_ids_lora"] = expert_ids_lora
-                moe_state_dict["num_tokens_post_padded_lora"] = num_tokens_post_padded_lora
-                moe_state_dict["token_lora_mapping"] = token_lora_mapping
-                if sorted_token_ids_lora is not None:
-                    expert_ids_lora = expert_ids_lora.view(self.max_loras, -1)
-                    sorted_token_ids_lora = sorted_token_ids_lora.view(self.max_loras, -1)
-                self.punica_wrapper.add_lora_fused_moe(
-                    input.view(-1, top_k, input.shape[-1]),
-                    hidden_states,
-                    self.w13_lora_a_stacked,
-                    self.w13_lora_b_stacked,
-                    topk_weights,
-                    sorted_token_ids_lora,
-                    expert_ids_lora,
-                    num_tokens_post_padded_lora,
-                    max_lora_rank,
-                    top_k,
-                    shrink_config,
-                    expand_config,
-                    self.adapter_enabled,
-                    fully_sharded=self.fully_sharded,
-                    token_lora_mapping=token_lora_mapping,
-                )
-                result = func(*args, **kwargs)
-                moe_state_dict["intermediate_cache2"] = output
-                moe_state_dict["_chunk_M"] = chunk_M
-                return result
-
-            return wrapper
-
-        def moe_sum_decorator(layer, func):
-            def wrapper(*args, **kwargs):
-                chunk_offset = moe_state_dict.get("_chunk_offset", 0)
-                chunk_M = moe_state_dict.get("_chunk_M", moe_state_dict["hidden_states"].size(0))
-                hidden_states = moe_state_dict["hidden_states"][chunk_offset : chunk_offset + chunk_M]
-                topk_weights = moe_state_dict["topk_weights"][chunk_offset : chunk_offset + chunk_M]
-                config_dtype = _get_config_dtype_str(
-                    dtype=hidden_states.dtype, use_fp8_w8a8=False, use_int8_w8a16=False, use_int4_w4a16=False
-                )
-                num_tokens = hidden_states.size(0)
-                M = min(num_tokens, envs.VLLM_FUSED_MOE_CHUNK_SIZE)
-                max_lora_rank = self.w2_lora_a_stacked[0].shape[-2]
-                shrink_config, expand_config = self._get_lora_moe_configs(
-                    op_prefix="w2",
-                    num_loras=self.max_loras,
-                    rank=max_lora_rank,
-                    num_slices=1,
-                    M=M,
-                    layer=layer,
-                    top_k=top_k,
-                    config_dtype=config_dtype,
-                )
-                sorted_token_ids_lora = moe_state_dict["sorted_token_ids_lora"]
-                expert_ids_lora = moe_state_dict["expert_ids_lora"]
-                num_tokens_post_padded_lora = moe_state_dict["num_tokens_post_padded_lora"]
-                token_lora_mapping = moe_state_dict.get("token_lora_mapping")
-                if sorted_token_ids_lora is not None:
-                    expert_ids_lora = expert_ids_lora.view(self.max_loras, -1)
-                    sorted_token_ids_lora = sorted_token_ids_lora.view(self.max_loras, -1)
-                intermediate_cache2 = moe_state_dict["intermediate_cache2"]
-                intermediate_cache3 = args[0]
-                shard_size_w2 = divide(self.base_layer.hidden_size, self.tp_size)
-                self.punica_wrapper.add_lora_fused_moe(
-                    intermediate_cache3,
-                    intermediate_cache2,
-                    self.w2_lora_a_stacked,
-                    self.w2_lora_b_stacked,
-                    topk_weights,
-                    sorted_token_ids_lora,
-                    expert_ids_lora,
-                    num_tokens_post_padded_lora,
-                    max_lora_rank,
-                    top_k,
-                    shrink_config,
-                    expand_config,
-                    self.adapter_enabled,
-                    True,
-                    fully_sharded=self.fully_sharded,
-                    offset=shard_size_w2 * self.tp_rank if self.fully_sharded else 0,
-                    token_lora_mapping=token_lora_mapping,
-                )
-                result = func(*args, **kwargs)
-                moe_state_dict["_chunk_offset"] = chunk_offset + chunk_M
-                return result
-
-            return wrapper
-
-        # --- Install decorators and replace quant method ---
-
-        fused_experts = m_fused_moe_fn.impl.fused_experts
-        m_fused_moe_fn.apply = fwd_decorator(self.base_layer, m_fused_moe_fn.apply)
-        fused_experts.activation = act_decorator(self.base_layer, fused_experts.activation)
-        fused_experts.moe_sum = moe_sum_decorator(self.base_layer, fused_experts.moe_sum)
-
-        new_method = FusedMoEModularMethod(self.base_layer.quant_method, m_fused_moe_fn)
-
-        # Bug 1 fix: NoDPEP kernel makes supports_internal_mk=True, causing the
-        # runner to skip DP dispatch/combine. Set moe_kernel=None and patch apply().
-        if isinstance(m_fused_moe_fn.prepare_finalize, MoEPrepareAndFinalizeNoDPEPModular):
-            saved_kernel = new_method.moe_kernel
-            saved_disable_expert_map = new_method.disable_expert_map
-            new_method.moe_kernel = None
-
-            def _apply_with_saved_kernel(self, layer, x, topk_weights, topk_ids, shared_experts_input):
-                return saved_kernel.apply(
-                    hidden_states=x,
-                    w1=layer.w13_weight,
-                    w2=layer.w2_weight,
-                    topk_weights=topk_weights,
-                    topk_ids=topk_ids,
-                    activation=layer.activation,
-                    global_num_experts=layer.global_num_experts,
-                    apply_router_weight_on_input=layer.apply_router_weight_on_input,
-                    expert_map=None if saved_disable_expert_map else layer.expert_map,
-                    shared_experts_input=shared_experts_input,
-                )
-
-            new_method.apply = types.MethodType(_apply_with_saved_kernel, new_method)
-
-        self.base_layer._replace_quant_method(new_method)
-
-    FusedMoEWithLoRA._inject_lora_into_fused_moe = _fixed_inject
-
-
 def monkey_patch_dp_engine_core_pause_resume_deadlock():
     """Fix DP pause/resume deadlocks around weight updates.
 
@@ -1020,46 +952,6 @@ def monkey_patch_dp_engine_core_pause_resume_deadlock():
     DPEngineCoreProc._has_global_unfinished_reqs = _patched_has_global_unfinished_reqs
 
 
-def monkey_patch_offloading_connector_cpu_block_count():
-    """Fix CPU block count miscalculation in OffloadingConnector.
-
-    CPUOffloadingSpec derives kv_bytes_per_block from page_size_bytes multiplied
-    by len(kv_cache_config.kv_cache_tensors), which double-counts: page_size is
-    already aggregated across layers in the group. The undersized CPU pool then
-    produces out-of-bounds block mappings and swap_blocks segfaults.
-
-    Fix: derive kv_bytes_per_block from the actual total GPU KV tensor size
-    divided by num_blocks, matching the upstream PR.
-
-    Upstream: https://github.com/vllm-project/vllm/pull/39617
-    """
-    from vllm.v1.kv_offload.cpu.spec import CPUOffloadingSpec
-
-    _original_init = CPUOffloadingSpec.__init__
-
-    def _patched_init(self, vllm_config, kv_cache_config):
-        _original_init(self, vllm_config, kv_cache_config)
-
-        cpu_bytes_to_use = self.extra_config.get("cpu_bytes_to_use")
-        if not cpu_bytes_to_use:
-            return
-
-        if kv_cache_config.num_blocks > 0:
-            total_gpu_kv_bytes = sum(t.size for t in kv_cache_config.kv_cache_tensors)
-            kv_bytes_per_block = (
-                total_gpu_kv_bytes // kv_cache_config.num_blocks
-            ) * vllm_config.parallel_config.world_size
-        else:
-            kv_bytes_per_block = 0
-
-        kv_bytes_per_offloaded_block = kv_bytes_per_block * self.block_size_factor
-        self.num_blocks = (
-            int(cpu_bytes_to_use) // kv_bytes_per_offloaded_block if kv_bytes_per_offloaded_block > 0 else 0
-        )
-
-    CPUOffloadingSpec.__init__ = _patched_init
-
-
 def monkey_patch_no_moe_lora():
     """This disables LoRA for MoE layers and makes them pick better kernels.
 
@@ -1086,3 +978,65 @@ def monkey_patch_no_moe_lora():
         self.is_lora_enabled = False
 
     FusedMoEConfig.__post_init__ = _patched__post_init__
+
+
+def monkey_patch_fp32_lm_head():
+    """Run the lm_head projection in fp32, via a native bf16xbf16 -> fp32 GEMM.
+
+    Uses ``torch.mm(..., out_dtype=torch.float32)`` (PyTorch >= 2.10) so the
+    matmul accumulates and emits fp32 directly without zero-padding the bf16
+    operands or maintaining a separate fp32 weight copy. This avoids the
+    epilogue truncation to bf16 that `F.linear(bf16, bf16)` does, which is
+    where lm_head precision actually leaks before the sampler's softmax.
+
+    Activated by setting ``additional_config["fp32_lm_head"] = True`` on the
+    vLLM namespace; the launcher does this when ``inference.enable_fp32_lm_head``
+    is set. The flag is captured once on ``LogitsProcessor.__init__`` (where
+    vLLM guarantees a ``set_current_vllm_config()`` context) and stored on the
+    instance — reading it from ``_get_logits`` during serving doesn't work
+    because vLLM doesn't keep the context set during forwards.
+
+    Tracks vllm-project/vllm#24567 (which uses the operand-upcast approach).
+    Per @Jackmin801 on PR #2438, native ``out_dtype=fp32`` mm is more efficient
+    and just as correct.
+    """
+    import torch
+    from vllm.config import get_current_vllm_config
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.logits_processor import LogitsProcessor
+
+    logger = init_logger(__name__)
+
+    _original_init = LogitsProcessor.__init__
+    _original_get_logits = LogitsProcessor._get_logits
+
+    def _patched_init(self, *args, **kwargs):
+        _original_init(self, *args, **kwargs)
+        vllm_config = get_current_vllm_config()
+        additional_config = vllm_config.additional_config or {}
+        self._fp32_lm_head_enabled = additional_config.get("fp32_lm_head", False)
+        if self._fp32_lm_head_enabled:
+            logger.warning("fp32 lm_head ENABLED for this LogitsProcessor instance.")
+
+    def _patched_get_logits(self, hidden_states, lm_head, embedding_bias):
+        if not getattr(self, "_fp32_lm_head_enabled", False):
+            return _original_get_logits(self, hidden_states, lm_head, embedding_bias)
+
+        # Native bf16xbf16 -> fp32 GEMM. torch.mm requires 2D inputs; vLLM v1's
+        # generative path passes 2D [num_tokens, hidden_size] hidden_states, but
+        # flatten defensively in case some future caller passes 3D.
+        flat = hidden_states.reshape(-1, hidden_states.shape[-1])
+        logits = torch.mm(flat, lm_head.weight.t(), out_dtype=torch.float32)
+        if embedding_bias is not None:
+            logits = logits + embedding_bias.to(torch.float32)
+        if hidden_states.dim() > 2:
+            logits = logits.reshape(*hidden_states.shape[:-1], -1)
+
+        logits = self._gather_logits(logits)
+        if logits is not None:
+            logits = logits[..., : self.org_vocab_size]
+        return logits
+
+    LogitsProcessor.__init__ = _patched_init
+    LogitsProcessor._get_logits = _patched_get_logits
+    logger.info("Installed fp32 lm_head patch (native out_dtype=fp32 mm).")

@@ -1,31 +1,46 @@
 import asyncio
+import json
 
+import httpx
 import verifiers as vf
 
-from prime_rl.inference.vllm.serving_generate import GenerateResponse
 from prime_rl.orchestrator import utils as orchestrator_utils
 from prime_rl.transport import TrainingSample
 
 
 class _FakeOpenAIClient:
-    def __init__(self):
-        self.calls = []
+    """Stand-in for ``AsyncOpenAI`` that captures the sole ``.post()`` call and
+    returns a synthesized ``httpx.Response`` so ``cast_to=httpx.Response`` is
+    handed back verbatim, mirroring the real SDK's short-circuit at
+    ``AsyncAPIClient._process_response``."""
 
-    async def post(self, path, *, cast_to, body):
-        self.calls.append({"path": path, "cast_to": cast_to, "body": body})
-        return GenerateResponse(
-            id="gen-test",
-            model=body["model"],
-            prompt_token_ids=list(body["prompt_token_ids"]),
-            choices=[],
-            usage={"prompt_tokens": 3, "completion_tokens": 0, "total_tokens": 3},
-            prompt_logprobs=[None, -0.7, -0.3],
+    def __init__(self, payload: dict):
+        # Match what AsyncOpenAI exposes — utils.py reads ``str(client.base_url)``.
+        self.base_url = "http://fake-host:8000/v1"
+        self._payload = payload
+        self.calls: list[dict] = []
+
+    async def post(self, url, *, cast_to, body):
+        self.calls.append({"url": url, "cast_to": cast_to, "body": body})
+        request = httpx.Request("POST", url, json=body)
+        return httpx.Response(
+            status_code=200,
+            content=json.dumps(self._payload).encode(),
+            request=request,
         )
 
 
-def test_compute_teacher_logprobs_uses_generate_endpoint(monkeypatch):
+def test_compute_teacher_logprobs_uses_inference_generate(monkeypatch):
     async def _run():
-        fake_client = _FakeOpenAIClient()
+        fake_client = _FakeOpenAIClient(
+            {
+                "request_id": "gen-test",
+                "choices": [],
+                # Upstream wire shape: list[dict[token_id, Logprob] | None]
+                "prompt_logprobs": [None, {"11": {"logprob": -0.7}}, {"12": {"logprob": -0.3}}],
+                "kv_transfer_params": None,
+            }
+        )
         monkeypatch.setattr(orchestrator_utils, "setup_openai_client", lambda _: fake_client)
 
         sample = TrainingSample(
@@ -46,15 +61,17 @@ def test_compute_teacher_logprobs_uses_generate_endpoint(monkeypatch):
         assert result == [[0.0, -0.7, -0.3]]
         assert fake_client.calls == [
             {
-                "path": "/generate",
-                "cast_to": GenerateResponse,
+                "url": "http://fake-host:8000/inference/v1/generate",
+                "cast_to": httpx.Response,
                 "body": {
                     "model": "teacher-model",
-                    "prompt_token_ids": [1, 2, 3],
-                    "max_tokens": 1,
-                    "temperature": 1.0,
-                    "top_p": 1.0,
-                    "prompt_logprobs": True,
+                    "token_ids": [1, 2, 3],
+                    "sampling_params": {
+                        "max_tokens": 1,
+                        "temperature": 1.0,
+                        "top_p": 1.0,
+                        "prompt_logprobs": 1,
+                    },
                 },
             }
         ]

@@ -897,11 +897,6 @@ class TeacherModelConfig(BaseConfig):
 class TeacherRolloutModelConfig(BaseConfig):
     """Configures an external teacher model used to generate rollout text."""
 
-    client_type: Annotated[
-        str,
-        Field(description="The verifiers client type to use for rollout generation."),
-    ] = "openai_chat_completions"
-
     client: Annotated[
         ClientConfig,
         Field(description="The OAI client configuration for rollout generation."),
@@ -966,13 +961,14 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = False
 
-    enable_policy_updates: Annotated[
+    update_student_inference_weights: Annotated[
         bool | None,
         Field(
             description=(
-                "Whether the orchestrator should receive policy weight updates. "
-                "Defaults to False for teacher_rollout_model runs and True otherwise; the RL config enables it "
-                "for teacher_rollout_model runs when [inference] is configured."
+                "Whether teacher_rollout_model runs should push trained student weights to the student inference "
+                "server. Leave unset for the usual [inference] path; RLConfig enables it automatically. Set True "
+                "when teacher_rollout_model is configured and orchestrator.client points to an externally started "
+                "student inference server. Defaults to False for teacher_rollout_model runs and True otherwise."
             ),
         ),
     ] = None
@@ -1098,6 +1094,14 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = 8
 
+    max_error_reschedule_attempts: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="The group is dropped from the current step's batch once this many of its dispatch rounds have returned errored or empty rollouts (the trainer proceeds with the rollouts from other groups). Counts rounds, not individual rollouts: a non-group-scoring env that dispatches `rollouts_per_example` rollouts at once still only counts one round per failed batch. `None` means retry indefinitely (legacy behavior). Useful for unblocking single-example hangs in agent envs.",
+        ),
+    ] = None
+
     max_async_level: Annotated[
         int,
         Field(
@@ -1129,23 +1133,23 @@ class OrchestratorConfig(BaseConfig):
     use_token_client: Annotated[
         bool,
         Field(
-            description="Whether to use the token-in-token-out (TITO) client for training across all environments. "
+            description="Whether to use the server-tokenized token-in-token-out (TITO) client for training across all environments. "
             "WARNING: Only use this if your environment has a linear history and the chat template has the extension "
             "property (i.e. no tokens are ever removed or inserted by the chat template). Mutually exclusive with "
             "``use_renderer``."
         ),
-    ] = True
+    ] = False
 
     use_renderer: Annotated[
         bool,
         Field(
-            description="Whether to use the renderer client (client-side tokenization via the ``renderers`` package, "
+            description="Whether to use the renderer-backed TITO client (client-side tokenization via the ``renderers`` package, "
             "served by ``/v1/generate``). Mutually exclusive with ``use_token_client``. When True, the "
-            "``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) "
-            "applies; when False those fields must be left at their defaults. Not supported for VLMs — "
-            "VLMs must use the token client (TITO) so image preprocessing and chat templating stay server-side."
+            "``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) applies. "
+            "This is the default for text-only rollouts. Not supported for VLMs — VLMs must use MITO so "
+            "image preprocessing and chat templating stay server-side."
         ),
-    ] = False
+    ] = True
 
     env_install_prerelease: Annotated[
         bool,
@@ -1223,7 +1227,7 @@ class OrchestratorConfig(BaseConfig):
         if has_teacher and self.use_renderer:
             raise ValueError(
                 "orchestrator.use_renderer must be false when orchestrator.teacher_rollout_model is configured "
-                "(teacher rollout uses teacher_rollout_model.client_type)."
+                "(teacher rollout uses the plain OpenAI chat-completions client)."
             )
         return self
 
@@ -1231,18 +1235,18 @@ class OrchestratorConfig(BaseConfig):
     def validate_client_mode(self):
         """The two client toggles select among three exclusive modes:
 
-        - ``use_token_client=True``  + ``use_renderer=False`` → TITO  (default)
-        - ``use_token_client=False`` + ``use_renderer=True``  → renderer
+        - ``use_token_client=False`` + ``use_renderer=True``  → renderer-backed TITO (default)
+        - ``use_token_client=True``  + ``use_renderer=False`` → server-tokenized TITO
         - ``use_token_client=False`` + ``use_renderer=False`` → MITO
 
-        Both True is invalid: TITO and renderer are different wire protocols
-        (server-side templating vs client-side tokenization).
+        Both True is invalid: renderer-backed TITO and server-tokenized TITO are
+        different wire protocols (client-side vs server-side tokenization).
         """
         if self.use_token_client and self.use_renderer:
             raise ValueError(
                 "orchestrator.use_token_client and orchestrator.use_renderer are mutually exclusive. "
-                "Pick one: token client (TITO, server-side templating) or renderer client (client-side "
-                "tokenization)."
+                "Pick one TITO path: renderer client (client-side tokenization) or token client "
+                "(server-side tokenization)."
             )
         return self
 
@@ -1250,12 +1254,12 @@ class OrchestratorConfig(BaseConfig):
     def validate_renderer_vs_vlm(self):
         """The renderer client takes plain message dicts and tokenizes
         them client-side. VLMs need server-side image preprocessing and
-        chat templating, so they must use the token client (TITO) — fail
+        chat templating, so they must use MITO — fail
         loudly when both are set."""
         if self.use_renderer and self.model.vlm is not None:
             raise ValueError(
-                "orchestrator.use_renderer is not supported for VLMs. Use the token client "
-                "(``use_token_client=true``, the default) so image preprocessing and chat "
+                "orchestrator.use_renderer is not supported for VLMs. Use MITO "
+                "(``use_token_client=false`` and ``use_renderer=false``) so image preprocessing and chat "
                 "templating stay on the inference server."
             )
         return self
@@ -1277,6 +1281,12 @@ class OrchestratorConfig(BaseConfig):
             renderer_args_set.append(f"renderer.reasoning_parser={self.renderer.reasoning_parser!r}")
         if self.renderer.pool_size is not None:
             renderer_args_set.append(f"renderer.pool_size={self.renderer.pool_size!r}")
+        if self.renderer.preserve_all_thinking:
+            renderer_args_set.append(f"renderer.preserve_all_thinking={self.renderer.preserve_all_thinking!r}")
+        if self.renderer.preserve_thinking_between_tool_calls:
+            renderer_args_set.append(
+                f"renderer.preserve_thinking_between_tool_calls={self.renderer.preserve_thinking_between_tool_calls!r}"
+            )
 
         if renderer_args_set:
             raise ValueError(

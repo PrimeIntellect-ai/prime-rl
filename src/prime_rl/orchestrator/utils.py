@@ -84,24 +84,52 @@ async def compute_teacher_logprobs(
     samples: list[TrainingSample],
 ) -> list[list[float]]:
     """Compute teacher model logprobs for a batch of training samples via prefill."""
-    from prime_rl.inference.vllm.serving_generate import GenerateResponse
+    import httpx
+    from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
 
     async def _compute_single(client_config: vf.ClientConfig, sample: TrainingSample) -> list[float]:
         client = setup_openai_client(client_config)
 
-        response = await client.post(
-            "/generate",
-            cast_to=GenerateResponse,
+        # Two escape hatches from ``AsyncOpenAI.post``:
+        #   1. URL — ``/inference/v1/generate`` is mounted at server root, not
+        #      under ``/v1``. Pass an absolute URL so the SDK's
+        #      ``_prepare_url`` skips the base-url merge (it short-circuits
+        #      when the path passes ``httpx.URL.is_relative_url`` as False).
+        #   2. Parse — vLLM's ``GenerateResponse`` is a plain
+        #      ``pydantic.BaseModel`` and the SDK's parse layer rejects any
+        #      ``cast_to`` that doesn't subclass ``openai.BaseModel``. Use
+        #      ``cast_to=httpx.Response`` so the SDK still builds the request
+        #      (preserving ``auth_headers``, retries, timeouts, idempotency
+        #      keys) and just hands us the raw response to validate ourselves.
+        base = str(client.base_url).rstrip("/").removesuffix("/v1")
+        http_response = await client.post(
+            f"{base}/inference/v1/generate",
+            cast_to=httpx.Response,
             body={
                 "model": model_name,
-                "prompt_token_ids": sample.prompt_ids + sample.completion_ids,
-                "max_tokens": 1,
-                "temperature": 1.0,
-                "top_p": 1.0,
-                "prompt_logprobs": True,
+                "token_ids": list(sample.prompt_ids) + list(sample.completion_ids),
+                "sampling_params": {
+                    "max_tokens": 1,
+                    "temperature": 1.0,
+                    "top_p": 1.0,
+                    "prompt_logprobs": 1,
+                },
             },
         )
-        return [0.0 if lp is None else float(lp) for lp in response.prompt_logprobs or []]
+        response = GenerateResponse.model_validate_json(http_response.content)
+        # ``prompt_logprobs[i]`` is a ``{token_id: Logprob}`` dict for tokens
+        # the engine could score, or ``None`` for the leading token which has
+        # no preceding context. Flatten to ``list[float]`` with 0.0 in the
+        # unscored slot.
+        flat: list[float] = []
+        for entry in response.prompt_logprobs or []:
+            if not entry:
+                flat.append(0.0)
+                continue
+            first = next(iter(entry.values()))
+            lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
+            flat.append(float(lp) if lp is not None else 0.0)
+        return flat
 
     return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
 
@@ -155,12 +183,14 @@ def setup_external_rollout_model(config: OrchestratorConfig, logger) -> tuple[An
     """Resolve rollout client/model and whether policy updates should be enabled."""
     rollout_client_config = config.client
     rollout_model_name = config.model.name
-    enable_policy_updates = config.enable_policy_updates if config.enable_policy_updates is not None else True
+    enable_policy_updates = (
+        config.update_student_inference_weights if config.update_student_inference_weights is not None else True
+    )
 
     if config.teacher_rollout_model is not None:
         rollout_client_config = config.teacher_rollout_model.client
         rollout_model_name = config.teacher_rollout_model.model.name
-        if config.enable_policy_updates is None:
+        if config.update_student_inference_weights is None:
             enable_policy_updates = False
         logger.info(
             f"Using external teacher rollout model (base_url={', '.join(rollout_client_config.base_url)}, "
