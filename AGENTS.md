@@ -55,4 +55,5 @@ Write tests as plain functions with pytest fixtures. Don't use class-based tests
 ## GitHub
 
 - **Draft PRs**: always create PRs as drafts (`gh pr create --draft`) to avoid triggering CI unnecessarily.
-- **PR descriptions**: always start with `## Summary` and bullet points for what was implemented. If a specific bug was fixed, add `## Verification` with before/after repro. Only include test/command verification when it was actually run or explicitly requested. Keep descriptions current after branch changes without being prompted, and preserve auto-generated blocks (e.g. `<!-- CURSOR_SUMMARY -->`).
+- **Pull requests**: do not include a "test plan" section in PR descriptions unless you actually ran tests to verify the changes or the user explicitly asked for one.
+- **Keep PR descriptions in sync**: every time you push commits to a PR, also update the PR description (`gh pr edit <num> --body-file ...`) so it reflects the current state of the branch — not just what was true when the PR was opened. Preserve any auto-generated blocks (e.g. `<!-- CURSOR_SUMMARY -->`).
