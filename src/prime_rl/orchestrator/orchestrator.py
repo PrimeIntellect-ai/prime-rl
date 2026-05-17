@@ -903,12 +903,13 @@ async def setup_rollout_inference_pool(
       - external teacher rollout → MITO (``openai_chat_completions``),
         forced regardless of the toggles (config-level validator
         rejects ``use_token_client`` / ``use_renderer`` in that case)
-      - ``use_renderer=True``  → renderer client (``/v1/generate``).
+      - ``use_renderer=True``  → renderer-backed TITO client (``/v1/generate``).
+        Default for text-only rollouts.
         Not allowed for VLMs (validated at config time).
-      - ``use_token_client=True`` → TITO
+      - ``use_token_client=True`` → server-tokenized TITO
         (``openai_chat_completions_token``, ``/v1/chat/completions/tokens``).
-        Default. VLMs land here too.
       - both False → MITO (``openai_chat_completions``).
+        VLMs land here too.
     """
     if config.teacher_rollout_model is not None:
         logger.info("Using external rollout model (MITO) without renderer client")
@@ -947,7 +948,7 @@ async def setup_rollout_inference_pool(
 
     train_client_type = "openai_chat_completions_token" if config.use_token_client else "openai_chat_completions"
     if config.use_token_client:
-        logger.info("Using token client (TITO) for rollouts — server-side templating, /v1/chat/completions/tokens")
+        logger.info("Using server-tokenized TITO for rollouts — /v1/chat/completions/tokens")
     else:
         logger.info("Using MITO (openai_chat_completions) for rollouts")
     inference_pool = await setup_inference_pool(

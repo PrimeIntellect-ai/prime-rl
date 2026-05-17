@@ -157,6 +157,36 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+def test_orchestrator_vlm_configs_must_disable_renderer():
+    with pytest.raises(ValidationError, match="orchestrator.use_renderer is not supported for VLMs"):
+        OrchestratorConfig.model_validate(
+            {
+                "model": {
+                    "vlm": {
+                        "vision_encoder_attr": "model.visual",
+                        "language_model_attr": "model.language_model",
+                    }
+                }
+            }
+        )
+
+    config = OrchestratorConfig.model_validate(
+        {
+            "model": {
+                "vlm": {
+                    "vision_encoder_attr": "model.visual",
+                    "language_model_attr": "model.language_model",
+                }
+            },
+            "use_token_client": False,
+            "use_renderer": False,
+        }
+    )
+
+    assert config.use_token_client is False
+    assert config.use_renderer is False
+
+
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
