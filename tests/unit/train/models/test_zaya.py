@@ -43,38 +43,30 @@ def _tiny_config(attn_implementation: str = "sdpa"):
     config = ZayaConfig(
         vocab_size=128,
         hidden_size=32,
-        ffn_hidden_size=16,
         num_hidden_layers=4,
         num_experts=3,
         num_attention_heads=4,
-        num_query_groups=2,
         num_key_value_heads=2,
         head_dim=8,
         max_position_embeddings=64,
-        norm_epsilon=1e-5,
-        rope_theta=10000.0,
+        rms_norm_eps=1e-5,
         partial_rotary_factor=0.5,
-        moe_router_topk=1,
-        zaya_mlp_expansion=8,
-        zaya_use_mod=True,
         zaya_use_eda=True,
-        add_bias_linear=False,
         attention_bias=False,
         lm_head_bias=False,
         tie_word_embeddings=True,
         use_cache=False,
         use_grouped_mm=False,
+        layer_types=["hybrid"] * 4,
+        rope_parameters={
+            "hybrid": {
+                "rope_type": "default",
+                "rope_theta": 10000.0,
+                "partial_rotary_factor": 0.5,
+            }
+        },
     )
     config._attn_implementation = attn_implementation
-    # HF `ZayaModel` uses `layer_types` and `rope_parameters[layer_type]`; Prime expects `rope_parameters["hybrid"]`.
-    config.layer_types = ["hybrid"] * config.num_hidden_layers
-    config.rope_parameters = {
-        "hybrid": {
-            "rope_type": "default",
-            "rope_theta": float(config.rope_theta),
-            "partial_rotary_factor": float(config.partial_rotary_factor),
-        }
-    }
     return config
 
 
@@ -377,16 +369,22 @@ def _tiny_zaya_config() -> ZayaConfig:
     config = ZayaConfig(
         vocab_size=32,
         hidden_size=16,
-        ffn_hidden_size=32,
         num_hidden_layers=1,
         num_experts=2,
         num_attention_heads=4,
         num_key_value_heads=2,
-        num_query_groups=2,
         head_dim=4,
         moe_intermediate_size=8,
         router_hidden_size=4,
         use_grouped_mm=False,
+        layer_types=["hybrid"],
+        rope_parameters={
+            "hybrid": {
+                "rope_type": "default",
+                "rope_theta": 10000.0,
+                "partial_rotary_factor": 0.5,
+            }
+        },
     )
     config._attn_implementation = "sdpa"
     return config

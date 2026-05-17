@@ -69,20 +69,10 @@ class ZayaResidualScaling(nn.Module):
         self.residual_scale = nn.Parameter(torch.ones(config.hidden_size))
         self.residual_bias = nn.Parameter(torch.zeros(config.hidden_size))
 
-    # # The original version does not convert the residual to float32 
-    # # https://github.com/Zyphra/transformers/blob/zaya1/src/transformers/models/zaya/modeling_zaya.py#L899
-    # def forward(self, hidden_states: torch.Tensor, residual: torch.Tensor) -> torch.Tensor:
-    #     hidden_states = (hidden_states + self.hidden_states_bias) * self.hidden_states_scale
-    #     residual = (residual.to(torch.float32) + self.residual_bias) * self.residual_scale
-    #     return hidden_states + residual
-
-    # The huggingface PR version converts the residual to float32
-    # https://github.com/JJJYmmm/transformers/blob/b315ae07e07ae1c50f5d841842ad7306555973d3/src/transformers/models/zaya/modeling_zaya.py#L496
     def forward(self, hidden_states: torch.Tensor, residual: torch.Tensor) -> torch.Tensor:
-        output_dtype = hidden_states.dtype
         hidden_states = (hidden_states + self.hidden_states_bias) * self.hidden_states_scale
-        residual = (residual.to(torch.float32) + self.residual_bias) * self.residual_scale
-        return (hidden_states + residual).to(output_dtype)
+        residual = (residual + self.residual_bias) * self.residual_scale
+        return hidden_states + residual
 
 class ZayaCCAProjection(nn.Module):
     def __init__(self, config: ZayaConfig, layer_idx: int):
@@ -764,7 +754,7 @@ class ZayaModel(ZayaPreTrainedModel):
         if self.cp_enabled:
             rope_position_ids = gather_for_cp(position_ids.contiguous(), self.cp_group)
         position_embeddings = self.rotary_emb(hidden_states, rope_position_ids)
-        hidden_states = (hidden_states + self.input_hidden_states_bias) * self.input_hidden_states_scale
+        hidden_states = ((hidden_states + self.input_hidden_states_bias) * self.input_hidden_states_scale).to(torch.float32)
         prev_router_hidden_states = None
 
         for layer_idx, decoder_layer in enumerate(self.layers):

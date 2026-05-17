@@ -7,9 +7,6 @@ Usage:
     # Create and verify
     uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe
 
-    # Zaya (CCA + MoE) — same roundtrip checks as other arches
-    uv run python scripts/mini_moe.py --arch zaya --output-dir ./mini-zaya
-
     # Verify only (on an existing checkpoint)
     uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe --verify-only
 """
