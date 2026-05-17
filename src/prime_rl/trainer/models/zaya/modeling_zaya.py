@@ -202,17 +202,48 @@ class ZayaCCAProjection(nn.Module):
         return query, key, value
 
     def _conv_qk_by_sequence(self, qk_states: torch.Tensor, cu_seqlens: torch.Tensor | None) -> torch.Tensor:
+        # Vectorized version of:
+        # outputs = []
+        # for start, end in zip(cu[:-1], cu[1:]):
+        #     segment = F.pad(qk_states[:, :, start:end], (self.conv_kernel_size, 0))
+        #     outputs.append(self.conv_qk_grouped(self.conv_qk_depthwise(segment)))
+        # return torch.cat(outputs, dim=-1).transpose(1, 2)
         qk_states = qk_states.transpose(1, 2)
+
         if cu_seqlens is None or cu_seqlens.numel() <= 2:
             qk_states = F.pad(qk_states, (self.conv_kernel_size, 0))
             return self.conv_qk_grouped(self.conv_qk_depthwise(qk_states)).transpose(1, 2)
 
-        cu = cu_seqlens.tolist()
-        outputs = []
-        for start, end in zip(cu[:-1], cu[1:]):
-            segment = F.pad(qk_states[:, :, start:end], (self.conv_kernel_size, 0))
-            outputs.append(self.conv_qk_grouped(self.conv_qk_depthwise(segment)))
-        return torch.cat(outputs, dim=-1).transpose(1, 2)
+        B, C, S = qk_states.shape
+        device = qk_states.device
+        K = self.conv_kernel_size
+
+        nseq = cu_seqlens.numel() - 1
+        lengths = cu_seqlens[1:] - cu_seqlens[:-1]
+
+        seg_id = torch.repeat_interleave(
+            torch.arange(nseq, device=device, dtype=cu_seqlens.dtype),
+            lengths,
+        )
+
+        orig_idx = torch.arange(S, device=device, dtype=cu_seqlens.dtype)
+        expanded_idx = orig_idx + K * (seg_id + 1)
+
+        expanded_len = S + K * nseq
+        expanded = qk_states.new_zeros(B, C, expanded_len)
+
+        expanded.scatter_(
+            dim=2,
+            index=expanded_idx.to(torch.long)[None, None, :].expand(B, C, S),
+            src=qk_states,
+        )
+
+        out = self.conv_qk_grouped(self.conv_qk_depthwise(expanded))
+
+        gather_idx = (expanded_idx - K).to(torch.long)
+        out = out.index_select(dim=2, index=gather_idx)
+
+        return out.transpose(1, 2)
 
     def _delay_value_by_sequence(
         self,
@@ -220,17 +251,36 @@ class ZayaCCAProjection(nn.Module):
         delayed_v_state: torch.Tensor,
         cu_seqlens: torch.Tensor | None,
     ) -> torch.Tensor:
+        # Vectorized version of:
+        # outputs = []
+        # for start, end in zip(cu[:-1], cu[1:]):
+        #     segment = delayed_v_state[:, start:end]
+        #     outputs.append(torch.cat([recurrent_v_state, segment[:, :-1]], dim=1))
+        # return torch.cat(outputs, dim=1)
         input_shape = hidden_states.shape[:-1]
-        recurrent_v_state = self.v_proj_delayed(hidden_states.new_zeros(input_shape[0], 1, self.hidden_size)) # delayed token for position 0
+        recurrent_v_state = self.v_proj_delayed(
+            hidden_states.new_zeros(input_shape[0], 1, self.hidden_size)
+        )
+
         if cu_seqlens is None or cu_seqlens.numel() <= 2:
             return torch.cat([recurrent_v_state, delayed_v_state[:, :-1]], dim=1)
 
-        cu = cu_seqlens.tolist()
-        outputs = []
-        for start, end in zip(cu[:-1], cu[1:]):
-            segment = delayed_v_state[:, start:end]
-            outputs.append(torch.cat([recurrent_v_state, segment[:, :-1]], dim=1))
-        return torch.cat(outputs, dim=1)
+        B, S, D = delayed_v_state.shape
+        device = delayed_v_state.device
+
+        idx = torch.arange(S, device=device)
+
+        is_start = torch.zeros(S, device=device, dtype=torch.bool)
+        is_start[cu_seqlens[:-1].to(torch.long)] = True
+
+        prev_idx = (idx - 1).clamp_min(0)
+        shifted = delayed_v_state.index_select(dim=1, index=prev_idx)
+
+        return torch.where(
+            is_start[None, :, None],
+            recurrent_v_state.expand(B, S, D),
+            shifted,
+        )
 
     def forward(
         self,
