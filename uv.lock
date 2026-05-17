@@ -52,7 +52,7 @@ members = [
 overrides = [
     { name = "nvidia-cudnn-cu12", specifier = ">=9.15" },
     { name = "nvidia-cutlass-dsl", specifier = ">=4.4.1" },
-    { name = "transformers", git = "https://github.com/JJJYmmm/transformers.git?branch=add_zaya1" },
+    { name = "transformers", git = "https://github.com/JJJYmmm/transformers?branch=add_zaya1" },
 ]
 
 [[package]]
@@ -2904,7 +2904,7 @@ requires-dist = [
     { name = "torchdata", specifier = ">=0.11.0" },
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "torchvision", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "transformers", git = "https://github.com/JJJYmmm/transformers.git?branch=add_zaya1" },
+    { name = "transformers", git = "https://github.com/JJJYmmm/transformers?branch=add_zaya1" },
     { name = "uvloop", specifier = ">=0.21.0" },
     { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=aa428f3" },
     { name = "vllm", git = "https://github.com/Zyphra/vllm.git?branch=zaya1-pr" },
@@ -4007,7 +4007,7 @@ wheels = [
 [[package]]
 name = "transformers"
 version = "5.8.0.dev0"
-source = { git = "https://github.com/JJJYmmm/transformers.git?branch=add_zaya1#7bb5122a923b786e892b7d49a1c021b933cc3b0c" }
+source = { git = "https://github.com/JJJYmmm/transformers?branch=add_zaya1#0df3204dbd5e00058e8c8b74283dfdb136f6e96f" }
 dependencies = [
     { name = "huggingface-hub", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "numpy", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },

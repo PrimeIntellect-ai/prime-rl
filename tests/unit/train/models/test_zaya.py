@@ -177,6 +177,37 @@ def test_zaya_mlp_only() -> None:
     _assert_logits_and_embed_grads_close(hf_model, prime_model, input_ids, position_ids)
 
 
+def test_zaya_packed_matches_unpacked() -> None:
+    _, prime_model = get_model_pairs()
+    prime_model.eval()
+
+    with torch.device("cuda"), default_dtype(torch.float32), torch.no_grad():
+        first_ids = torch.randint(0, prime_model.config.vocab_size, (1, 5))
+        second_ids = torch.randint(0, prime_model.config.vocab_size, (1, 7))
+        packed_ids = torch.cat([first_ids, second_ids], dim=1)
+        packed_position_ids = torch.cat(
+            [
+                torch.arange(first_ids.shape[1]),
+                torch.arange(second_ids.shape[1]),
+            ]
+        ).unsqueeze(0)
+
+        first_logits = prime_model(input_ids=first_ids, position_ids=torch.arange(first_ids.shape[1]).unsqueeze(0))[
+            "logits"
+        ]
+        second_logits = prime_model(
+            input_ids=second_ids,
+            position_ids=torch.arange(second_ids.shape[1]).unsqueeze(0),
+        )["logits"]
+        packed_logits = prime_model(input_ids=packed_ids, position_ids=packed_position_ids)["logits"]
+
+    expected_logits = torch.cat([first_logits, second_logits], dim=1)
+    logits_diff = packed_logits - expected_logits
+    assert torch.allclose(logits_diff, torch.zeros_like(logits_diff), atol=LOGITS_ATOL), (
+        f"Max logits diff: {logits_diff.abs().max()}"
+    )
+
+
 @pytest.mark.slow
 def test_zaya() -> None:
     snapshot = Path(snapshot_download(repo_id="JJJYmmm/ZAYA1-8B-HF", repo_type="model"))

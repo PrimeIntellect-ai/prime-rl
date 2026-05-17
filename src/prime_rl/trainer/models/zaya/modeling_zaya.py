@@ -17,7 +17,6 @@ from typing import Any, Optional, Union
 
 import torch
 import torch.distributed as dist
-import torch.distributed.nn.functional as dist_nn
 import torch.nn.functional as F
 from torch import Tensor, nn
 from transformers.cache_utils import Cache
@@ -48,6 +47,7 @@ from prime_rl.trainer.models.zaya.converting_zaya import (
 from prime_rl.trainer.models.zaya.converting_zaya import is_hf_state_dict as _is_hf_state_dict
 from prime_rl.trainer.models.zaya.converting_zaya import is_prime_state_dict as _is_prime_state_dict
 from prime_rl.trainer.models.zaya.vllm_postprocessing import convert_prime_to_vllm
+from prime_rl.utils.cp import gather_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 
 
@@ -59,13 +59,6 @@ def _all_to_all_seq_to_head_batched(t: torch.Tensor, cp_size: int, cp_group: dis
 def _all_to_all_head_to_seq_batched(t: torch.Tensor, cp_size: int, cp_group: dist.ProcessGroup) -> torch.Tensor:
     assert t.shape[0] == 1, f"Zaya CP currently expects batch size 1, got {t.shape[0]}"
     return _all_to_all_head_to_seq(t.squeeze(0), cp_size, cp_group).unsqueeze(0)
-
-
-def _gather_cp_sequence_batched(t: torch.Tensor, cp_size: int, cp_group: dist.ProcessGroup) -> torch.Tensor:
-    assert t.shape[0] == 1, f"Zaya CP currently expects batch size 1, got {t.shape[0]}"
-    chunks = dist_nn.all_gather(t.contiguous(), group=cp_group)
-    assert len(chunks) == cp_size
-    return torch.cat(chunks, dim=1)
 
 
 class ZayaResidualScaling(nn.Module):
@@ -161,6 +154,7 @@ class ZayaCCAProjection(nn.Module):
         )
 
     def _forward_context_parallel(self, hidden_states: torch.Tensor, padding_mask: torch.Tensor | None = None):
+         # TODO: support packed sequences in Context Parallel
         if padding_mask is not None:
             hidden_states = hidden_states * padding_mask[:, :, None].to(hidden_states.dtype)
 
@@ -206,7 +200,7 @@ class ZayaCCAProjection(nn.Module):
         key = qk_states[..., q_size:].view(*qk_states.shape[:2], local_kv_heads, self.head_dim) + key_residual
 
         recurrent_v_state = self.v_proj_delayed(hidden_states.new_zeros(input_shape[0], 1, self.hidden_size))
-        delayed_v_state_full = _gather_cp_sequence_batched(delayed_v_state, self._cp_world_size, self._cp_group)
+        delayed_v_state_full = gather_for_cp(delayed_v_state.contiguous(), self._cp_group)
         value_delayed_full = torch.cat([recurrent_v_state, delayed_v_state_full[:, :-1]], dim=1)
         seq_start = self._cp_rank * input_shape[1]
         seq_end = seq_start + input_shape[1]
@@ -217,10 +211,42 @@ class ZayaCCAProjection(nn.Module):
         value = _all_to_all_seq_to_head_batched(value, self._cp_world_size, self._cp_group)
         return query, key, value
 
+    def _conv_qk_by_sequence(self, qk_states: torch.Tensor, cu_seqlens: torch.Tensor | None) -> torch.Tensor:
+        qk_states = qk_states.transpose(1, 2)
+        if cu_seqlens is None or cu_seqlens.numel() <= 2:
+            qk_states = F.pad(qk_states, (self.conv_kernel_size, 0))
+            return self.conv_qk_grouped(self.conv_qk_depthwise(qk_states)).transpose(1, 2)
+
+        cu = cu_seqlens.tolist()
+        outputs = []
+        for start, end in zip(cu[:-1], cu[1:]):
+            segment = F.pad(qk_states[:, :, start:end], (self.conv_kernel_size, 0))
+            outputs.append(self.conv_qk_grouped(self.conv_qk_depthwise(segment)))
+        return torch.cat(outputs, dim=-1).transpose(1, 2)
+
+    def _delay_value_by_sequence(
+        self,
+        hidden_states: torch.Tensor,
+        delayed_v_state: torch.Tensor,
+        cu_seqlens: torch.Tensor | None,
+    ) -> torch.Tensor:
+        input_shape = hidden_states.shape[:-1]
+        recurrent_v_state = self.v_proj_delayed(hidden_states.new_zeros(input_shape[0], 1, self.hidden_size)) # delayed token for position 0
+        if cu_seqlens is None or cu_seqlens.numel() <= 2:
+            return torch.cat([recurrent_v_state, delayed_v_state[:, :-1]], dim=1)
+
+        cu = cu_seqlens.tolist()
+        outputs = []
+        for start, end in zip(cu[:-1], cu[1:]):
+            segment = delayed_v_state[:, start:end]
+            outputs.append(torch.cat([recurrent_v_state, segment[:, :-1]], dim=1))
+        return torch.cat(outputs, dim=1)
+
     def forward(
         self,
         hidden_states: torch.Tensor,
         padding_mask: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
     ):
         if self.cp_enabled:
             return self._forward_context_parallel(hidden_states, padding_mask)
@@ -241,11 +267,7 @@ class ZayaCCAProjection(nn.Module):
         query_residual = (query_residual + key_residual) * 0.5
         key_residual = query_residual.view(*input_shape, -1, self.num_key_value_groups, self.head_dim).mean(dim=-2)
 
-        qk_states = qk_states.transpose(1, 2)
-        qk_states = F.pad(qk_states, (self.conv_kernel_size, 0))
-
-        qk_states = self.conv_qk_depthwise(qk_states)
-        qk_states = self.conv_qk_grouped(qk_states).transpose(1, 2)
+        qk_states = self._conv_qk_by_sequence(qk_states, cu_seqlens)
 
         query_hidden_size = query_residual.shape[-2] * query_residual.shape[-1]
         query = qk_states[..., :query_hidden_size].view(*hidden_shape) + query_residual
@@ -253,9 +275,7 @@ class ZayaCCAProjection(nn.Module):
 
         value_current = self.v_proj_current(hidden_states)
         delayed_v_state = self.v_proj_delayed(hidden_states)
-
-        recurrent_v_state = self.v_proj_delayed(hidden_states.new_zeros(input_shape[0], 1, self.hidden_size))
-        value_delayed = torch.cat([recurrent_v_state, delayed_v_state[:, :-1]], dim=1)
+        value_delayed = self._delay_value_by_sequence(hidden_states, delayed_v_state, cu_seqlens)
 
         value = torch.cat([value_current, value_delayed], dim=-1).view(*hidden_shape)
 
@@ -394,7 +414,7 @@ class ZayaSPDAAttention(SDPAAttention):
         causal_mask = mask_mapping.get("causal")
         padding_mask = mask_mapping.get("padding")
 
-        query_states, key_states, value_states = self.qkv_proj(hidden_states, padding_mask)
+        query_states, key_states, value_states = self.qkv_proj(hidden_states, padding_mask, cu_seqlens)
 
         query_states, key_states = self.qk_norm(query_states, key_states)
         query_states = query_states.transpose(1, 2)
@@ -404,7 +424,8 @@ class ZayaSPDAAttention(SDPAAttention):
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
-        if self.cp_enabled:
+        if self.cp_enabled and cu_seqlens is None:
+            # TODO: support packed sequences in Context Parallel
             causal_mask = None
         attn_output = self._attention_core(query_states, key_states, value_states, causal_mask)
         if self.cp_enabled:
@@ -485,7 +506,7 @@ class ZayaFlashAttention(FlashAttention):
         mask_mapping = attention_mask or {}
         padding_mask = mask_mapping.get("padding")
 
-        query_states, key_states, value_states = self.qkv_proj(hidden_states, padding_mask)
+        query_states, key_states, value_states = self.qkv_proj(hidden_states, padding_mask, cu_seqlens)
 
         query_states, key_states = self.qk_norm(query_states, key_states)
         query_states = query_states.transpose(1, 2)
@@ -686,27 +707,51 @@ class ZayaModel(ZayaPreTrainedModel):
                 "ZAYA CCA projection requires a 2D `attention_mask` to mask padding tokens before convolution."
             )
 
+        flat_position_ids = position_ids.reshape(-1)
+        is_packed = position_ids.shape[0] == 1 and (
+            (flat_position_ids[1:] == 0).any() if flat_position_ids.numel() > 1 else False
+        )
         use_flash = self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4")
-        if use_flash:
+        if use_flash or is_packed:
             cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
-            causal_mask_mapping = dict.fromkeys(set(self.config.layer_types), None)
         else:
             cu_seqlens = None
             max_seqlen = None
-            if isinstance(attention_mask, dict):
-                causal_mask_mapping = attention_mask
-            else:
-                mask_kwargs = {
-                    "config": self.config,
-                    "inputs_embeds": inputs_embeds,
-                    "attention_mask": attention_mask,
-                    "past_key_values": None,
-                    "position_ids": position_ids,
-                }
-                causal_mask_mapping = {
-                    "hybrid": create_causal_mask(**mask_kwargs),
-                }
+
+        if use_flash:
+            causal_mask_mapping = dict.fromkeys(set(self.config.layer_types), None)
+        elif isinstance(attention_mask, dict):
+            causal_mask_mapping = attention_mask
+        elif is_packed:
+            seq_length = inputs_embeds.shape[1]
+            min_dtype = torch.finfo(inputs_embeds.dtype).min
+            causal_mask = torch.full(
+                (seq_length, seq_length),
+                min_dtype,
+                device=inputs_embeds.device,
+                dtype=inputs_embeds.dtype,
+            )
+            causal_mask = torch.triu(causal_mask, diagonal=1)
+            segment_ids = (flat_position_ids == 0).cumsum(dim=0) - 1
+            same_segment = segment_ids[:, None] == segment_ids[None, :]
+            causal_mask = causal_mask.masked_fill(~same_segment, min_dtype)
+            causal_mask = causal_mask[None, None, :, :]
+            if attention_mask is not None:
+                padding_mask_for_attn = attention_mask[:, None, None, -seq_length:].to(torch.bool)
+                causal_mask = causal_mask.masked_fill(~padding_mask_for_attn, min_dtype)
+            causal_mask_mapping = {"hybrid": causal_mask}
+        else:
+            mask_kwargs = {
+                "config": self.config,
+                "inputs_embeds": inputs_embeds,
+                "attention_mask": attention_mask,
+                "past_key_values": None,
+                "position_ids": position_ids,
+            }
+            causal_mask_mapping = {
+                "hybrid": create_causal_mask(**mask_kwargs),
+            }
 
         padding_mask = None
         if attention_mask is not None and not isinstance(attention_mask, dict):
@@ -717,7 +762,7 @@ class ZayaModel(ZayaPreTrainedModel):
         hidden_states = inputs_embeds
         rope_position_ids = position_ids
         if self.cp_enabled:
-            rope_position_ids = _gather_cp_sequence_batched(position_ids, self.cp_world_size, self.cp_group)
+            rope_position_ids = gather_for_cp(position_ids.contiguous(), self.cp_group)
         position_embeddings = self.rotary_emb(hidden_states, rope_position_ids)
         hidden_states = (hidden_states + self.input_hidden_states_bias) * self.input_hidden_states_scale
         prev_router_hidden_states = None
