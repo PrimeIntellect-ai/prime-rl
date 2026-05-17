@@ -172,6 +172,69 @@ class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     ] = "consistent_hash"
 
 
+class NixlTransportConfig(BaseModel):
+    """Configures NIXL KV transfer for disaggregated inference deployments."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["nixl"] = "nixl"
+
+    enable_bidirectional: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether Prefill workers can pull Decode-side KV through NIXL for later requests "
+                "in the same conversation."
+            ),
+        ),
+    ] = False
+    num_threads: Annotated[
+        int,
+        Field(ge=1, description="Number of NIXL connector threads."),
+    ] = 1
+    kv_recompute_threshold: Annotated[
+        int,
+        Field(
+            ge=0,
+            description=(
+                "Minimum number of remote Decode-side KV tokens required before a Prefill worker pulls "
+                "KV through NIXL instead of recomputing locally. Passed to NixlConnector extra config."
+            ),
+        ),
+    ] = 64
+    abort_timeout_seconds: Annotated[
+        int,
+        Field(
+            gt=0,
+            description=(
+                "Seconds vLLM NIXL waits for the peer to fetch held KV blocks before aborting and freeing them. "
+                "Exported as NIXL_ABORT_TIMEOUT and vLLM's VLLM_NIXL_ABORT_REQUEST_TIMEOUT."
+            ),
+        ),
+    ] = 480
+    router_cache_ttl_seconds: Annotated[
+        int | None,
+        Field(
+            gt=0,
+            description=(
+                "Seconds vllm-router keeps Decode-side KV metadata for bidirectional P/D reuse. "
+                "Defaults to 95% of abort_timeout_seconds."
+            ),
+        ),
+    ] = None
+
+    @model_validator(mode="after")
+    def validate_router_cache_ttl(self):
+        if self.router_cache_ttl_seconds is None:
+            self.router_cache_ttl_seconds = int(self.abort_timeout_seconds * 0.95)
+        if self.router_cache_ttl_seconds >= self.abort_timeout_seconds:
+            raise ValueError(
+                "router_cache_ttl_seconds must be less than abort_timeout_seconds "
+                f"({self.router_cache_ttl_seconds} >= {self.abort_timeout_seconds})"
+            )
+        return self
+
+
 class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     """Configures a disaggregated prefill/decode inference deployment.
 
@@ -210,6 +273,11 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     router_policy: Annotated[
         str, Field(description="Routing policy for the vllm-router (e.g. 'consistent_hash', 'round_robin').")
     ] = "consistent_hash"
+
+    kv_transport_config: Annotated[
+        NixlTransportConfig,
+        Field(description="KV transport settings for disaggregated P/D deployments."),
+    ] = NixlTransportConfig()
 
     prefill_env_overrides: Annotated[
         dict[str, str],

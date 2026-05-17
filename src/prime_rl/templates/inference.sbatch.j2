@@ -36,6 +36,8 @@ export PREFILL_PORT={{ prefill_port }}
 export DECODE_PORT={{ decode_port }}
 export ROUTER_PORT={{ router_port }}
 export RPC_PORT={{ data_parallel_rpc_port }}
+export NIXL_ABORT_TIMEOUT={{ kv_transport_config.abort_timeout_seconds }}
+export VLLM_NIXL_ABORT_REQUEST_TIMEOUT={{ kv_transport_config.abort_timeout_seconds }}
 {%- elif num_nodes > 1 %}
 export ROUTER_PORT={{ router_port }}
 export BACKEND_PORT={{ backend_port }}
@@ -171,15 +173,15 @@ srun bash -c '
     export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
 
 {%- if kv_offload %}
-    PREFILL_KV_CFG='"'"'{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}},{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":{{ kv_offload_cpu_bytes }}}}]}}'"'"'
+    PREFILL_KV_CFG='"'"'{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":{{ kv_transport_config.num_threads }},"bidirectional_kv_xfer":{{ "true" if kv_transport_config.enable_bidirectional else "false" }},"kv_recompute_threshold":{{ kv_transport_config.kv_recompute_threshold }}}},{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":{{ kv_offload_cpu_bytes }}}}]}}'"'"'
 {%- else %}
-    PREFILL_KV_CFG='"'"'{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}}'"'"'
+    PREFILL_KV_CFG='"'"'{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":{{ kv_transport_config.num_threads }},"bidirectional_kv_xfer":{{ "true" if kv_transport_config.enable_bidirectional else "false" }},"kv_recompute_threshold":{{ kv_transport_config.kv_recompute_threshold }}}}'"'"'
 {%- endif %}
 
 {%- if kv_offload %}
-    DECODE_KV_CFG='"'"'{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}},{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":{{ kv_offload_cpu_bytes }}}}]}}'"'"'
+    DECODE_KV_CFG='"'"'{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":{{ kv_transport_config.num_threads }},"bidirectional_kv_xfer":{{ "true" if kv_transport_config.enable_bidirectional else "false" }},"kv_recompute_threshold":{{ kv_transport_config.kv_recompute_threshold }}}},{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":{{ kv_offload_cpu_bytes }}}}]}}'"'"'
 {%- else %}
-    DECODE_KV_CFG='"'"'{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}}'"'"'
+    DECODE_KV_CFG='"'"'{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":{{ kv_transport_config.num_threads }},"bidirectional_kv_xfer":{{ "true" if kv_transport_config.enable_bidirectional else "false" }},"kv_recompute_threshold":{{ kv_transport_config.kv_recompute_threshold }}}}'"'"'
 {%- endif %}
 
     DECODE_COMPILE_CFG='"'"'{"cudagraph_mode":"FULL_DECODE_ONLY"}'"'"'
@@ -250,6 +252,7 @@ srun bash -c '
             --host 0.0.0.0 \
             --port $ROUTER_PORT \
             --intra-node-data-parallel-size {{ dp_per_node }} \
+            --pd-kv-cache-ttl-secs {{ kv_transport_config.router_cache_ttl_seconds if kv_transport_config.enable_bidirectional else 0 }} \
             --worker-startup-timeout-secs 4200 \
             --log-level debug \
             >> $ROUTER_LOG 2>&1 &
