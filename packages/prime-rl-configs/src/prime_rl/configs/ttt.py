@@ -115,7 +115,7 @@ class TTTLearnerConfig(BaseConfig):
     request_timeout_s: Annotated[
         float,
         Field(gt=0, description="HTTP request timeout for rollout-to-learner calls."),
-    ] = 120.0
+    ] = 600.0
 
     load_adapters_into_vllm: Annotated[
         bool,
