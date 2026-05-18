@@ -1,6 +1,7 @@
 # Start the teacher inference server first (on a separate GPU):
-#   CUDA_VISIBLE_DEVICES=1 uv run vllm serve PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
-#     --port 8001 --gpu-memory-utilization 0.5 --enforce-eager
+#   CUDA_VISIBLE_DEVICES=1 uv run inference \
+#     --model.name PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
+#     --server.port 8001 --gpu-memory-utilization 0.5 --model.enforce-eager
 # Then:
 #   uv run rl @ configs/reverse_text/debug_opd.toml
 

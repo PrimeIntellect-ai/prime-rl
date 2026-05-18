@@ -78,26 +78,6 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
             tomli_w.dump(teacher_inference.model_dump(exclude_none=True, mode="json"), f)
 
 
-def check_gpus_available(gpu_ids: list[int]) -> None:
-    """Raise error if there are existing processes on the specified GPUs."""
-    pynvml.nvmlInit()
-
-    occupied = []
-    for gpu_id in gpu_ids:
-        handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_id)
-        processes = pynvml.nvmlDeviceGetComputeRunningProcesses(handle)
-        if processes:
-            pids = [p.pid for p in processes]
-            occupied.append((gpu_id, pids))
-
-    if occupied:
-        msg = "Existing processes found on GPUs:\n"
-        for gpu_id, pids in occupied:
-            msg += f"  GPU {gpu_id}: PIDs {pids}\n"
-        msg += "Kill these processes or use different GPUs."
-        raise RuntimeError(msg)
-
-
 def rl_local(config: RLConfig):
     assert config.deployment.type == "single_node"
 
@@ -147,10 +127,6 @@ def rl_local(config: RLConfig):
     if config.wandb and config.wandb.shared:
         wandb_shared_env["WANDB_SHARED_MODE"] = "1"
         wandb_shared_env["WANDB_SHARED_RUN_ID"] = os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex)
-
-    # Check for existing processes on GPUs
-    all_gpu_ids = list(set(infer_gpu_ids + trainer_gpu_ids + teacher_gpu_ids))
-    check_gpus_available(all_gpu_ids)
 
     # Validate client port matches inference server port
     if config.inference is not None and not config.orchestrator.student.client.is_elastic:

@@ -13,10 +13,11 @@ The student inference server is auto-launched on GPU 0 at `http://localhost:8000
 ## Start the teacher (only needed for opd/sft)
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 uv run vllm serve PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
-  --port 8001 \
+CUDA_VISIBLE_DEVICES=1 uv run inference \
+  --model.name PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
+  --server.port 8001 \
   --gpu-memory-utilization 0.5 \
-  --enforce-eager
+  --model.enforce-eager
 ```
 
 ## Run the debug configs
