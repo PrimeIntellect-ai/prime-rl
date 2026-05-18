@@ -33,4 +33,4 @@ uv sync --all-extras
 # Pre-run command
 {{ pre_run_command }}
 {% endif %}
-source ~/.env && uv run rl @ {{ config_path }}
+uv run rl @ {{ config_path }}
