@@ -182,7 +182,7 @@ The `BEHAVIORS` tuple defines the rubric keys, titles, descriptions, positive cu
 - Reward aggregation: unsolved rollouts get `0.0`; solved rollouts get `1.0 + behavior_reward_alpha * behavior_applicable_mean`.
 - Metrics: every behavior becomes a separate metric named `behavior_<key>`, for example `behavior_tool_contract_discovery`. Aggregate metrics include `behavior_applicable_mean`, `behavior_applicable_count`, and `solution_score`.
 
-Behavior rewards are solution-gated. If `solution_score` is not exactly `1.0`, the behavior reward and all behavior metrics return `0.0`. `solution_score` is the max of the existing `db_hash` and `verify` metrics, so behavior shaping cannot reward unsolved rollouts.
+Behavior rewards are solution-gated. If `solution_score` is not exactly `1.0`, the rollout reward is `0.0` even though behavior judging still runs and logs behavior metrics for audit. `solution_score` is the max of the existing `db_hash` and `verify` metrics, so behavior shaping cannot reward unsolved rollouts.
 
 The env args are exposed by `general_agent.solver.rlm.env.load_environment`:
 
