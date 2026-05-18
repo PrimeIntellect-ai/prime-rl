@@ -1,5 +1,5 @@
 output_dir = "/beegfs/outputs/behavior-learning/qwen3-4b-rlm-prompt"
-max_steps = 1000
+max_steps = 200
 seq_len = 32768
 
 [slurm]
