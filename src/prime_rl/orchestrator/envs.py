@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import atexit
 import multiprocessing as mp
+import shutil
 import time
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import Generic, TypeVar
 
+import httpx
 import pandas as pd
 import verifiers as vf
 from verifiers.serve import ZMQEnvClient, ZMQEnvServer
@@ -173,6 +175,60 @@ class EvalEnv(Env):
         self.sampling_args = config.sampling.to_sampling_args()
         self.examples = self.env.get_eval_dataset(n=config.num_examples).to_list()
 
+    async def _finish_ttt_eval_sessions(self, outputs: list[vf.RolloutOutput]) -> None:
+        extra_body = self.sampling_args.get("extra_body") or {}
+        if not (extra_body.get("ttt_enabled") and extra_body.get("ttt_learner_url")):
+            return
+
+        session_ids: set[str] = set()
+        adapter_paths: set[Path] = set()
+        for output in outputs:
+            trajectory_id = output.get("trajectory_id")
+            if trajectory_id is not None:
+                session_ids.add(str(trajectory_id))
+            trace = output.get("ttt_trace")
+            if not isinstance(trace, list):
+                continue
+            for entry in trace:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("session_id") is not None:
+                    session_ids.add(str(entry["session_id"]))
+                if entry.get("adapter_path") is not None:
+                    adapter_paths.add(Path(str(entry["adapter_path"])))
+
+        learner_url = str(extra_body["ttt_learner_url"]).rstrip("/")
+        timeout = float(extra_body.get("ttt_request_timeout_s") or 120.0)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                responses = await asyncio.gather(
+                    *(
+                        client.post(f"{learner_url}/finish_session", json={"session_id": session_id})
+                        for session_id in sorted(session_ids)
+                    ),
+                    return_exceptions=True,
+                )
+                for response in responses:
+                    if isinstance(response, Exception):
+                        raise response
+                    response.raise_for_status()
+        except Exception as exc:
+            get_logger().warning(f"Failed to finish eval TTT learner session(s) for {self.name}: {exc}")
+
+        deleted = 0
+        for adapter_path in adapter_paths:
+            try:
+                if adapter_path.exists():
+                    shutil.rmtree(adapter_path)
+                    deleted += 1
+            except Exception as exc:
+                get_logger().warning(f"Failed to delete eval TTT adapter {adapter_path}: {exc}")
+        if session_ids or deleted:
+            get_logger().info(
+                f"Closed {len(session_ids)} eval TTT learner session(s) and deleted {deleted} adapter dir(s) "
+                f"for {self.name}"
+            )
+
     async def evaluate(
         self,
         model_name: str,
@@ -236,6 +292,7 @@ class EvalEnv(Env):
         successful_outputs = [o for group in results if group is not None for o in group]
         failed_count = total_rollouts - len(successful_outputs)
         eval_time = time.perf_counter() - eval_start
+        await self._finish_ttt_eval_sessions(successful_outputs)
 
         if failed_count:
             get_logger().warning(
