@@ -117,18 +117,23 @@ def test_qwen3_5_moe_cp_patching():
     """Verify substitute_ring_attn patches Qwen3_5MoeGatedFlashAttention._compute_attention."""
     from unittest.mock import MagicMock
 
-    from prime_rl.trainer.models.layers.attn import substitute_ring_attn
+    from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoeFlashAttention
+    from prime_rl.trainer.models.layers.attn import FlashAttention, substitute_ring_attn
     from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeGatedFlashAttention
 
-    original_method = Qwen3_5MoeGatedFlashAttention._compute_attention
+    original_flash_method = FlashAttention._compute_attention
+    original_afmoe_method = AfmoeFlashAttention._compute_attention
+    original_qwen3_5_moe_method = Qwen3_5MoeGatedFlashAttention._compute_attention
 
     mock_group = MagicMock()
-    substitute_ring_attn(process_group=mock_group, heads_k_stride=1)
+    try:
+        substitute_ring_attn(process_group=mock_group, heads_k_stride=1)
 
-    assert Qwen3_5MoeGatedFlashAttention._compute_attention is not original_method
-
-    # Restore to avoid polluting other tests
-    Qwen3_5MoeGatedFlashAttention._compute_attention = original_method
+        assert Qwen3_5MoeGatedFlashAttention._compute_attention is not original_qwen3_5_moe_method
+    finally:
+        FlashAttention._compute_attention = original_flash_method
+        AfmoeFlashAttention._compute_attention = original_afmoe_method
+        Qwen3_5MoeGatedFlashAttention._compute_attention = original_qwen3_5_moe_method
 
 
 if __name__ == "__main__":
