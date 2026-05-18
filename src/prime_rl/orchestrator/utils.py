@@ -133,6 +133,59 @@ async def compute_teacher_logprobs(
     return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
 
 
+async def probe_teacher_logprobs(clients: list[vf.ClientConfig], model_name: str) -> None:
+    """Probe the teacher endpoint for vLLM `prompt_logprobs` support.
+
+    OPD requires the vLLM-specific ``/inference/v1/generate`` endpoint with
+    ``prompt_logprobs=1`` (see ``compute_teacher_logprobs``). External
+    OAI-compatible endpoints (PI inference, OpenAI, Anthropic) don't expose
+    this and would 404 mid-training. Probe once at startup with a tiny
+    request and raise a clear error if the endpoint can't serve it.
+    """
+    import httpx
+    from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
+
+    client_config = clients[0]
+    client = setup_openai_client(client_config)
+    base = str(client.base_url).rstrip("/").removesuffix("/v1")
+    url = f"{base}/inference/v1/generate"
+
+    hint = (
+        "OPD requires a self-hosted vLLM teacher exposing /inference/v1/generate with "
+        "prompt_logprobs. External OAI-compatible endpoints (PI inference, OpenAI, Anthropic) "
+        "are not supported. See docs/training_modes.md."
+    )
+
+    try:
+        http_response = await client.post(
+            url,
+            cast_to=httpx.Response,
+            body={
+                "model": model_name,
+                "token_ids": [1, 2, 3],
+                "sampling_params": {
+                    "max_tokens": 1,
+                    "temperature": 1.0,
+                    "top_p": 1.0,
+                    "prompt_logprobs": 1,
+                },
+            },
+        )
+    except Exception as e:
+        raise RuntimeError(f"OPD teacher probe failed: {url} - {type(e).__name__}: {e}\n{hint}") from e
+
+    try:
+        response = GenerateResponse.model_validate_json(http_response.content)
+    except Exception as e:
+        snippet = http_response.content[:200] if hasattr(http_response, "content") else ""
+        raise RuntimeError(
+            f"OPD teacher probe failed: {url} returned a non-vLLM response (got {snippet!r}).\n{hint}"
+        ) from e
+
+    if not response.prompt_logprobs:
+        raise RuntimeError(f"OPD teacher probe failed: {url} returned no prompt_logprobs in the response.\n{hint}")
+
+
 def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_timeout: int | None = None) -> Path:
     """Get the weight directory for a given checkpoint step.
 

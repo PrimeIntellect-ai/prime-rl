@@ -46,6 +46,7 @@ from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
     get_weight_dir,
     print_benchmark,
+    probe_teacher_logprobs,
     set_default_executor,
 )
 from prime_rl.orchestrator.vf_utils import (
@@ -275,6 +276,10 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info("Waiting for teacher inference pool to be ready")
         await teacher_inference.wait_for_ready(config.teacher.model.name)
         logger.success("Teacher inference pool ready")
+        if config.training_mode == "opd":
+            logger.info("Probing teacher for prompt_logprobs support")
+            await probe_teacher_logprobs(teacher_inference.train_clients, config.teacher.model.name)
+            logger.success("Teacher supports prompt_logprobs")
 
     # Start inference metrics collector (requires W&B + student inference pool)
     inference_metrics_collector = None
