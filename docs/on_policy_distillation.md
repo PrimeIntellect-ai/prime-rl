@@ -72,6 +72,8 @@ type = "sft"
 
 [orchestrator]
 use_token_client = false
+use_renderer = false
+use_sft_loss = true
 
 [orchestrator.teacher_rollout_model.client]
 base_url = ["https://your-openai-compatible-endpoint/v1"]

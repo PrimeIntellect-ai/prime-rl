@@ -1026,10 +1026,11 @@ class OrchestratorConfig(BaseConfig):
     oversampling_factor: Annotated[
         float | None,
         Field(
-            ge=1,
+            gt=0,
             description=(
                 "Rollout-mode batching only. Multiplier used to derive max_inflight_rollouts from batch_size "
-                "when max_inflight_rollouts is unset."
+                "when max_inflight_rollouts is unset. Values below 1.0 intentionally cap in-flight rollout "
+                "capacity below batch_size."
             ),
         ),
     ] = None
@@ -1121,23 +1122,23 @@ class OrchestratorConfig(BaseConfig):
     use_token_client: Annotated[
         bool,
         Field(
-            description="Whether to use the token-in-token-out (TITO) client for training across all environments. "
+            description="Whether to use the server-tokenized token-in-token-out (TITO) client for training across all environments. "
             "WARNING: Only use this if your environment has a linear history and the chat template has the extension "
             "property (i.e. no tokens are ever removed or inserted by the chat template). Mutually exclusive with "
             "``use_renderer``."
         ),
-    ] = True
+    ] = False
 
     use_renderer: Annotated[
         bool,
         Field(
-            description="Whether to use the renderer client (client-side tokenization via the ``renderers`` package, "
+            description="Whether to use the renderer-backed TITO client (client-side tokenization via the ``renderers`` package, "
             "served by ``/v1/generate``). Mutually exclusive with ``use_token_client``. When True, the "
-            "``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) "
-            "applies; when False those fields must be left at their defaults. Not supported for VLMs — "
-            "VLMs must use the token client (TITO) so image preprocessing and chat templating stay server-side."
+            "``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) applies. "
+            "This is the default for text-only rollouts. Not supported for VLMs — VLMs must use MITO so "
+            "image preprocessing and chat templating stay server-side."
         ),
-    ] = False
+    ] = True
 
     env_install_prerelease: Annotated[
         bool,
@@ -1223,18 +1224,18 @@ class OrchestratorConfig(BaseConfig):
     def validate_client_mode(self):
         """The two client toggles select among three exclusive modes:
 
-        - ``use_token_client=True``  + ``use_renderer=False`` → TITO  (default)
-        - ``use_token_client=False`` + ``use_renderer=True``  → renderer
+        - ``use_token_client=False`` + ``use_renderer=True``  → renderer-backed TITO (default)
+        - ``use_token_client=True``  + ``use_renderer=False`` → server-tokenized TITO
         - ``use_token_client=False`` + ``use_renderer=False`` → MITO
 
-        Both True is invalid: TITO and renderer are different wire protocols
-        (server-side templating vs client-side tokenization).
+        Both True is invalid: renderer-backed TITO and server-tokenized TITO are
+        different wire protocols (client-side vs server-side tokenization).
         """
         if self.use_token_client and self.use_renderer:
             raise ValueError(
                 "orchestrator.use_token_client and orchestrator.use_renderer are mutually exclusive. "
-                "Pick one: token client (TITO, server-side templating) or renderer client (client-side "
-                "tokenization)."
+                "Pick one TITO path: renderer client (client-side tokenization) or token client "
+                "(server-side tokenization)."
             )
         return self
 
@@ -1242,12 +1243,12 @@ class OrchestratorConfig(BaseConfig):
     def validate_renderer_vs_vlm(self):
         """The renderer client takes plain message dicts and tokenizes
         them client-side. VLMs need server-side image preprocessing and
-        chat templating, so they must use the token client (TITO) — fail
+        chat templating, so they must use MITO — fail
         loudly when both are set."""
         if self.use_renderer and self.model.vlm is not None:
             raise ValueError(
-                "orchestrator.use_renderer is not supported for VLMs. Use the token client "
-                "(``use_token_client=true``, the default) so image preprocessing and chat "
+                "orchestrator.use_renderer is not supported for VLMs. Use MITO "
+                "(``use_token_client=false`` and ``use_renderer=false``) so image preprocessing and chat "
                 "templating stay on the inference server."
             )
         return self
@@ -1310,13 +1311,17 @@ class OrchestratorConfig(BaseConfig):
             assert self.batch_size is not None
             if self.batch_size % self.rollouts_per_example != 0:
                 raise ValueError("Batch size must be divisible by the number of samples per problem")
+            oversampling_factor = self.oversampling_factor if self.oversampling_factor is not None else 1.0
+            resolved_max_inflight_rollouts = max(
+                self.rollouts_per_example,
+                int(self.batch_size * oversampling_factor),
+            )
             if self.max_inflight_rollouts is not None and self.oversampling_factor is not None:
-                expected_max_inflight_rollouts = int(self.batch_size * self.oversampling_factor)
+                expected_max_inflight_rollouts = resolved_max_inflight_rollouts
                 if self.max_inflight_rollouts != expected_max_inflight_rollouts:
                     raise ValueError("max_inflight_rollouts conflicts with oversampling_factor * batch_size")
             if self.max_inflight_rollouts is None:
-                oversampling_factor = self.oversampling_factor if self.oversampling_factor is not None else 1.0
-                self.max_inflight_rollouts = int(self.batch_size * oversampling_factor)
+                self.max_inflight_rollouts = resolved_max_inflight_rollouts
 
         if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.rollouts_per_example:
             raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")
