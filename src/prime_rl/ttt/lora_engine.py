@@ -16,6 +16,7 @@ from torch import Tensor
 from transformers import AutoModelForCausalLM
 
 from prime_rl.trainer.weights import load_state_dict
+from prime_rl.utils.logger import get_logger
 
 ActiveAdapters = str | None
 _ACTIVE_ADAPTERS: contextvars.ContextVar[ActiveAdapters] = contextvars.ContextVar("ttt_active_adapters", default=None)
@@ -121,11 +122,15 @@ class HookedLoRAEngine:
         self.base_step = 0
         self.sessions: dict[str, TTTSession] = {}
 
+        logger = get_logger()
+        logger.info(f"Loading TTT learner base model from {model_name}")
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=dtype,
+            dtype=dtype,
             trust_remote_code=True,
+            low_cpu_mem_usage=True,
         ).to(self.device)
+        logger.info(f"TTT learner base model loaded on {self.device}")
         self.model.train()
         for param in self.model.parameters():
             param.requires_grad = False
@@ -137,6 +142,7 @@ class HookedLoRAEngine:
                 module.register_forward_hook(self._make_hook(name))
         if not self.modules:
             raise ValueError(f"No linear TTT LoRA target modules matched {target_modules!r}.")
+        logger.info(f"Registered TTT LoRA hooks for {len(self.modules)} linear modules")
 
         self.adapter_dir.mkdir(parents=True, exist_ok=True)
 

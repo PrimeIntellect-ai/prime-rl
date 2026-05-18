@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from prime_rl.ttt.lora_engine import HookedLoRAEngine
-from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.logger import get_logger, setup_logger
 
 
 class PrepareTurnRequest(BaseModel):
@@ -189,6 +189,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     setup_logger(args.log_level)
+    logger = get_logger()
+    logger.info(
+        f"Starting TTT learner model={args.model_name} device={args.device} dtype={args.dtype} "
+        f"adapter_dir={args.adapter_dir}"
+    )
     engine = HookedLoRAEngine(
         model_name=args.model_name,
         adapter_dir=Path(args.adapter_dir),
@@ -207,6 +212,7 @@ def main() -> None:
         load_adapters_into_vllm=not args.no_load_adapters_into_vllm,
         unload_vllm_adapters=not args.no_unload_vllm_adapters,
     )
+    logger.info(f"TTT learner engine initialized; serving on {args.host}:{args.port}")
     uvicorn.run(create_app(engine, session_offload=args.session_offload), host=args.host, port=args.port)
 
 

@@ -676,6 +676,11 @@ class RLConfig(BaseConfig):
         if not ttt.enabled and not tool_output_training.enabled:
             return self
 
+        def set_extra_body_defaults(extra_body: dict, defaults: dict) -> None:
+            for key, value in defaults.items():
+                if value is not None:
+                    extra_body.setdefault(key, value)
+
         self.trainer.experimental.tool_output_training = tool_output_training.model_copy(deep=True)
         self.orchestrator.experimental.tool_output_training = tool_output_training.model_copy(deep=True)
 
@@ -703,12 +708,10 @@ class RLConfig(BaseConfig):
             is_vllm_rollout = self.orchestrator.teacher_rollout_model is None
             if is_vllm_rollout:
                 for env in self.orchestrator.train.env:
-                    for key, value in tool_output_extra_body.items():
-                        env.sampling.extra_body.setdefault(key, value)
+                    set_extra_body_defaults(env.sampling.extra_body, tool_output_extra_body)
                 if self.orchestrator.eval is not None:
                     for env in self.orchestrator.eval.env:
-                        for key, value in tool_output_extra_body.items():
-                            env.sampling.extra_body.setdefault(key, value)
+                        set_extra_body_defaults(env.sampling.extra_body, tool_output_extra_body)
             return self
 
         self.trainer.experimental.ttt = ttt.model_copy(deep=True)
@@ -741,14 +744,12 @@ class RLConfig(BaseConfig):
         for env in self.orchestrator.train.env:
             env.extra_env_kwargs.update(max_seq_len=ttt.total_seq_len)
             if is_vllm_rollout:
-                for key, value in ttt_extra_body.items():
-                    env.sampling.extra_body.setdefault(key, value)
+                set_extra_body_defaults(env.sampling.extra_body, ttt_extra_body)
         if self.orchestrator.eval is not None:
             for env in self.orchestrator.eval.env:
                 env.extra_env_kwargs.update(max_seq_len=ttt.total_seq_len)
                 if is_vllm_rollout:
-                    for key, value in ttt_extra_body.items():
-                        env.sampling.extra_body.setdefault(key, value)
+                    set_extra_body_defaults(env.sampling.extra_body, ttt_extra_body)
 
         if self.inference is not None:
             self.inference.experimental.ttt = ttt.model_copy(deep=True)
@@ -785,6 +786,8 @@ class RLConfig(BaseConfig):
 
         if ttt.mode == "online_lora":
             self.orchestrator.client.extra_headers_from_state["X-Session-ID"] = "trajectory_id"
+            if self.deployment.type == "multi_node" and self.deployment.gpus_per_node < 2:
+                raise ValueError("multi-node online TTT reserves one train-node GPU for the learner.")
 
         return self
 
@@ -952,7 +955,10 @@ class RLConfig(BaseConfig):
                     self.inference.api_server_count = dp
 
         elif self.deployment.type == "multi_node":  # multi-node
-            self.orchestrator.num_train_workers = self.deployment.num_train_nodes * self.deployment.gpus_per_node
+            train_gpus_per_node = self.deployment.gpus_per_node
+            if self.experimental.ttt.enabled and self.experimental.ttt.mode == "online_lora":
+                train_gpus_per_node -= 1
+            self.orchestrator.num_train_workers = self.deployment.num_train_nodes * train_gpus_per_node
 
             if self.deployment.nodes_per_fsdp_group is not None:
                 if self.deployment.num_train_nodes % self.deployment.nodes_per_fsdp_group != 0:

@@ -27,6 +27,13 @@ export NUM_INFER_NODES={{ num_infer_nodes }}
 export NODES_PER_INFER_REPLICA={{ nodes_per_infer_replica }}
 export NUM_INFER_REPLICAS={{ num_infer_replicas }}
 export GPUS_PER_NODE={{ gpus_per_node }}
+{% if ttt_enabled -%}
+export TRAINER_GPUS_PER_NODE=$((GPUS_PER_NODE - 1))
+export TRAINER_CUDA_VISIBLE_DEVICES=$(seq -s, 1 $((GPUS_PER_NODE - 1)))
+{%- else -%}
+export TRAINER_GPUS_PER_NODE=$GPUS_PER_NODE
+export TRAINER_CUDA_VISIBLE_DEVICES=$(seq -s, 0 $((GPUS_PER_NODE - 1)))
+{%- endif %}
 {% if num_infer_nodes > 0 -%}
 export ROUTER_PORT={{ router_port }}
 export INFERENCE_TP={{ inference_tp }}
@@ -135,6 +142,8 @@ echo "USE_DISTRIBUTED_EP=${USE_DISTRIBUTED_EP}"
 
 echo "HOSTNAMES=${HOSTNAMES[*]}"
 echo "TRAIN_HOSTS=${TRAIN_HOSTS[*]}"
+echo "TRAINER_GPUS_PER_NODE=${TRAINER_GPUS_PER_NODE}"
+echo "TRAINER_CUDA_VISIBLE_DEVICES=${TRAINER_CUDA_VISIBLE_DEVICES}"
 
 export MASTER_ADDR="${HOSTNAMES[$NUM_INFER_NODES]}"
 export MASTER_PORT=29500
@@ -418,10 +427,10 @@ else
 
     echo $HOSTNAMES_STR | tee $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
 
-    {% if wandb_shared %}WANDB_SHARED_LABEL=trainer {% endif %}"$PROJECT_DIR/.venv/bin/torchrun" \
+    {% if wandb_shared %}WANDB_SHARED_LABEL=trainer {% endif %}CUDA_VISIBLE_DEVICES="$TRAINER_CUDA_VISIBLE_DEVICES" "$PROJECT_DIR/.venv/bin/torchrun" \
         --role=trainer \
         --nnodes=$NUM_TRAIN_NODES \
-        --nproc-per-node=$GPUS_PER_NODE \
+        --nproc-per-node=$TRAINER_GPUS_PER_NODE \
         --node-rank=$TRAIN_NODE_RANK \
         --rdzv-endpoint=$MASTER_ADDR:$MASTER_PORT \
         --rdzv-id=job_$SLURM_JOB_ID \
