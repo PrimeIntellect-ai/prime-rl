@@ -23,3 +23,7 @@ args = { dataset_name = "openai/gsm8k", dataset_subset = "main", math_verify_max
 [trainer] # Default trainer config
 
 [inference] # Default inference config
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"

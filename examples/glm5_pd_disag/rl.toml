@@ -95,3 +95,7 @@ use_deep_gemm = true
 [inference.model]
 name = "zai-org/GLM-5-FP8"
 tool_call_parser = "glm47"
+
+# zai-org/GLM-5-FP8 — template-identical to GLM-5 (mapped).
+[orchestrator.renderer]
+name = "glm-5"

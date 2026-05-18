@@ -190,3 +190,50 @@ def test_orchestrator_vlm_configs_must_disable_renderer():
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
+
+
+def test_orchestrator_renderer_auto_rejects_unmapped_model():
+    """use_renderer=True with renderer.name='auto' must reject models not in MODEL_RENDERER_MAP."""
+    with pytest.raises(ValidationError, match="silently fall back to DefaultRenderer"):
+        OrchestratorConfig.model_validate({"model": {"name": "not-a-real-org/not-a-real-model"}})
+
+
+def test_orchestrator_renderer_auto_accepts_mapped_model():
+    """The default Qwen model is in MODEL_RENDERER_MAP and should validate cleanly."""
+    config = OrchestratorConfig.model_validate({"model": {"name": "Qwen/Qwen3-0.6B"}})
+    assert config.use_renderer is True
+    assert config.renderer.name == "auto"
+
+
+def test_orchestrator_explicit_renderer_skips_unmapped_check():
+    """Explicit renderer.name bypasses the auto-resolution check — user opted in."""
+    config = OrchestratorConfig.model_validate(
+        {
+            "model": {"name": "not-a-real-org/not-a-real-model"},
+            "renderer": {"name": "qwen3"},
+        }
+    )
+    assert config.renderer.name == "qwen3"
+
+
+def test_orchestrator_use_renderer_false_skips_unmapped_check():
+    """use_renderer=False means the renderer client isn't used, so MODEL_RENDERER_MAP doesn't apply."""
+    config = OrchestratorConfig.model_validate(
+        {
+            "model": {"name": "not-a-real-org/not-a-real-model"},
+            "use_renderer": False,
+        }
+    )
+    assert config.use_renderer is False
+
+
+def test_orchestrator_explicit_default_renderer_with_unmapped_model():
+    """renderer.name='default' is an explicit opt-in to DefaultRenderer and must pass."""
+    config = OrchestratorConfig.model_validate(
+        {
+            "model": {"name": "not-a-real-org/not-a-real-model"},
+            "renderer": {"name": "default", "tool_parser": "qwen3"},
+        }
+    )
+    assert config.renderer.name == "default"
+    assert config.renderer.tool_parser == "qwen3"

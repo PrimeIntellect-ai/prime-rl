@@ -46,3 +46,8 @@ rollouts_per_example = 32
 
 [inference.parallel]
 dp = 6
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"
+reasoning_parser = "think"
