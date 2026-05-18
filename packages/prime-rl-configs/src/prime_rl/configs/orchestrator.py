@@ -1299,11 +1299,8 @@ class OrchestratorConfig(BaseConfig):
         """
         if not self.use_renderer or self.renderer.name != "auto":
             return self
-        try:
-            from renderers.base import MODEL_RENDERER_MAP
-        except ImportError:
-            # Slim configs use without renderers installed — nothing to validate against.
-            return self
+        from renderers.base import MODEL_RENDERER_MAP
+
         model_id = self.tokenizer.name or self.model.name
         if model_id in MODEL_RENDERER_MAP:
             return self
