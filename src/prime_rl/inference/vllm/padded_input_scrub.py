@@ -35,13 +35,22 @@ def monkey_patch_vllm_padded_input_scrub() -> None:
         def _patched_preprocess(
             self: Any,
             scheduler_output: Any,
-            intermediate_tensors: Any | None,
+            num_input_tokens: int,
+            intermediate_tensors: Any | None = None,
         ) -> tuple[Any, ...]:
-            result = original_preprocess(self, scheduler_output, intermediate_tensors)
+            result = original_preprocess(
+                self,
+                scheduler_output,
+                num_input_tokens,
+                intermediate_tensors,
+            )
 
             num_scheduled_tokens = int(scheduler_output.total_num_scheduled_tokens)
-            num_input_tokens = int(result[0])
-            _zero_padded_model_inputs(result, num_scheduled_tokens, num_input_tokens)
+            _zero_padded_model_inputs(
+                result,
+                num_scheduled_tokens,
+                int(num_input_tokens),
+            )
             return result
 
         GPUModelRunner._preprocess = _patched_preprocess
@@ -60,9 +69,9 @@ def _zero_padded_model_inputs(
     if num_input_tokens <= num_scheduled_tokens:
         return
 
-    input_ids = preprocess_result[1]
-    inputs_embeds = preprocess_result[2]
-    positions = preprocess_result[3]
+    input_ids = preprocess_result[0]
+    inputs_embeds = preprocess_result[1]
+    positions = preprocess_result[2]
     pad_slice = slice(num_scheduled_tokens, num_input_tokens)
 
     if input_ids is not None:
