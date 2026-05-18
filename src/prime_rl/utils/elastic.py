@@ -116,6 +116,7 @@ class ElasticInferencePool:
         self.model_name = model_name
         self.base_model_name = model_name  # Keep original for health checks
         self.renderer_model_name = model_name if train_client_type == "renderer" else None
+        self.eval_renderer_model_name = model_name if eval_client_type == "renderer" else None
         self.hostname = client_config.elastic.hostname
         self.port = client_config.elastic.port
         self.sync_interval = client_config.elastic.sync_interval
@@ -218,7 +219,19 @@ class ElasticInferencePool:
                 if urls
                 else []
             )
-            self._eval_clients = setup_clients(url_config, client_type=self.eval_client_type) if urls else []
+            self._eval_clients = (
+                setup_clients(
+                    url_config,
+                    client_type=self.eval_client_type,
+                    renderer_name=self.renderer_name,
+                    renderer_model_name=self.eval_renderer_model_name,
+                    tool_parser=self.tool_parser,
+                    reasoning_parser=self.reasoning_parser,
+                    renderer_pool_size=self.renderer_pool_size,
+                )
+                if urls
+                else []
+            )
 
     @property
     def train_clients(self) -> list[vf.ClientConfig]:

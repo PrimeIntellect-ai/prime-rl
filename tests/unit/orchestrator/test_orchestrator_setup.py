@@ -84,7 +84,7 @@ def test_setup_rollout_inference_pool_uses_direct_renderer_client_for_local_vllm
             rollout_client_config,
             model_name="student-model",
             train_client_type="renderer",
-            eval_client_type="openai_chat_completions",
+            eval_client_type="renderer",
             renderer_name="qwen3_vl",
             tool_parser=None,
             reasoning_parser=None,

@@ -70,6 +70,7 @@ class StaticInferencePool:
         renderer_pool_size: int | None = None,
     ):
         renderer_model_name = model_name if train_client_type == "renderer" else None
+        eval_renderer_model_name = model_name if eval_client_type == "renderer" else None
         self._train_clients = setup_clients(
             client_config,
             client_type=train_client_type,
@@ -79,7 +80,15 @@ class StaticInferencePool:
             reasoning_parser=reasoning_parser,
             renderer_pool_size=renderer_pool_size,
         )
-        self._eval_clients = setup_clients(client_config, client_type=eval_client_type)
+        self._eval_clients = setup_clients(
+            client_config,
+            client_type=eval_client_type,
+            renderer_name=renderer_name,
+            renderer_model_name=eval_renderer_model_name,
+            tool_parser=tool_parser,
+            reasoning_parser=reasoning_parser,
+            renderer_pool_size=renderer_pool_size,
+        )
         self._admin_clients = setup_admin_clients(client_config)
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout

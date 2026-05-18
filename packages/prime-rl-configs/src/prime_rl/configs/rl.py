@@ -741,6 +741,11 @@ class RLConfig(BaseConfig):
             "tool_output_content_only": tool_output_training.content_only,
             "tool_output_require_content_mask": tool_output_training.content_only,
         }
+        ttt_eval_extra_body = {
+            **ttt_extra_body,
+            "ttt_enabled": False,
+            "ttt_learner_url": None,
+        }
         for env in self.orchestrator.train.env:
             env.extra_env_kwargs.update(max_seq_len=ttt.total_seq_len)
             if is_vllm_rollout:
@@ -749,7 +754,9 @@ class RLConfig(BaseConfig):
             for env in self.orchestrator.eval.env:
                 env.extra_env_kwargs.update(max_seq_len=ttt.total_seq_len)
                 if is_vllm_rollout:
-                    set_extra_body_defaults(env.sampling.extra_body, ttt_extra_body)
+                    set_extra_body_defaults(env.sampling.extra_body, ttt_eval_extra_body)
+                    env.sampling.extra_body["ttt_enabled"] = False
+                    env.sampling.extra_body.pop("ttt_learner_url", None)
 
         if self.inference is not None:
             self.inference.experimental.ttt = ttt.model_copy(deep=True)
