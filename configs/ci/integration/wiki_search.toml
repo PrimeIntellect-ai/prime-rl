@@ -19,5 +19,8 @@ max_completion_tokens = 512
 [[orchestrator.train.env]]
 id = "wiki-search"
 
+[orchestrator.renderer]
+tool_parser = "hermes"
+
 [inference.model]
 tool_call_parser = "hermes"
