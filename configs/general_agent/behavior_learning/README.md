@@ -14,6 +14,7 @@ This folder contains the configs, prompt appendices, uploaded-run links, and rol
   - [6. Use The Evidence Review](#6-use-the-evidence-review)
 - [Harness-Specific Task-Agnostic Behavior Rubrics](#harness-specific-task-agnostic-behavior-rubrics)
 - [How The Rubrics Are Wired Into The Env](#how-the-rubrics-are-wired-into-the-env)
+- [RL Ablation Configs](#rl-ablation-configs)
 - [Judge Calibration Runs](#judge-calibration-runs)
 - [Prompt Variants](#prompt-variants)
 - [Curated Evidence Highlights](#curated-evidence-highlights)
@@ -22,9 +23,10 @@ This folder contains the configs, prompt appendices, uploaded-run links, and rol
 
 - `eval_rlm_gpt55_discovery.toml`: preserved GPT-5.5 discovery eval config.
 - `README.md`: this walkthrough and curated evidence review.
-- `rl_qwen3_30b_a3b_rlm_baseline.toml`: Qwen3-30B-A3B RLM baseline config.
-- `rl_qwen3_30b_a3b_rlm_behavior.toml`: behavior-reward config.
-- `rl_qwen3_30b_a3b_rlm_extended_prompt.toml`: extended-prompt ablation config.
+- `rl_qwen3_4b_rlm_baseline.toml`: Qwen3-4B-Instruct RLM baseline config.
+- `rl_qwen3_4b_rlm_prompt.toml`: extended-prompt ablation config.
+- `rl_qwen3_4b_rlm_behavior_shaping.toml`: behavior-shaping ablation config.
+- `rl_qwen3_4b_rlm_prompt_behavior_shaping.toml`: extended-prompt plus behavior-shaping ablation config.
 - `prompts/standard.md`: task-solving guidance plus compact operational guidance.
 - `prompts/extended.md`: standard guidance plus generic metapattern code examples.
 
@@ -229,6 +231,24 @@ For additional behavior guidance, set `append_to_system_prompt` to one of the pr
 
 The README and `behavior.py` should stay aligned. The README documents the rubrics and evidence; `behavior.py` is what training and judge scoring execute.
 
+## RL Ablation Configs
+
+The four training configs use the WandB project `general-agent-behavior-learning`, train `Qwen/Qwen3-4B-Instruct-2507`, and run on a single node split into 4 train GPUs and 4 inference GPUs. They share `batch_size = 256`, `rollouts_per_example = 8`, `max_retries = 1`, `seq_len = 32768`, and the `general-agent-solver-rlm` environment.
+
+```bash
+uv run rl @ configs/general_agent/behavior_learning/rl_qwen3_4b_rlm_baseline.toml
+uv run rl @ configs/general_agent/behavior_learning/rl_qwen3_4b_rlm_prompt.toml
+uv run rl @ configs/general_agent/behavior_learning/rl_qwen3_4b_rlm_behavior_shaping.toml
+uv run rl @ configs/general_agent/behavior_learning/rl_qwen3_4b_rlm_prompt_behavior_shaping.toml
+```
+
+Only the ablation-specific env args differ:
+
+- baseline: no additional RLM env args.
+- prompt: `append_to_system_prompt = "configs/general_agent/behavior_learning/prompts/extended.md"`.
+- behavior shaping: `behavior_judge_model = "openai/gpt-5-mini"` and `behavior_reward_alpha = 1.0`.
+- prompt plus behavior shaping: both the extended prompt and behavior-shaping args.
+
 ## Judge Calibration Runs
 
 These paired evals sanity-check whether the behavior rubric separates a strong harness agent from the target base model. Both runs use GPT-5.5 as the behavior judge and save the raw judge state with `-C`. The expectation is that GPT-5.5 as the solver should earn materially higher behavior reward than Qwen3-30B-A3B-Instruct before RL. After this check, repeat the same comparison with a weaker judge and compare whether the ranking and per-behavior scores match.
@@ -262,11 +282,10 @@ The prompt variants live in `configs/general_agent/behavior_learning/prompts` in
 - `standard.md` enumerates the eight harness-specific task-agnostic guidance items with short descriptions and operational guidance.
 - `extended.md` includes the standard guidance plus generic metapattern code examples.
 
-The extended-prompt ablation config uses:
+The prompt and prompt-plus-behavior-shaping ablation configs use:
 
 ```toml
 [orchestrator.train.env.args]
-local_checkout = "~/rlm"
 append_to_system_prompt = "configs/general_agent/behavior_learning/prompts/extended.md"
 ```
 

@@ -1,0 +1,73 @@
+output_dir = "/beegfs/outputs/general-agent-behavior-learning/qwen3-4b-rlm-prompt-behavior-shaping"
+max_steps = 1000
+seq_len = 32768
+
+[slurm]
+job_name = "general-agent-behavior-learning-qwen3-4b-rlm-prompt-behavior-shaping"
+project_dir = "."
+pre_run_command = "srun bash -c 'pkill -9 -f torchrun; pkill -9 -f vllm; true'"
+
+[deployment]
+num_train_gpus = 4
+num_infer_gpus = 4
+
+[log]
+level = "debug"
+
+[wandb]
+project = "general-agent-behavior-learning"
+name = "qwen3-4b-rlm-prompt-behavior-shaping"
+
+[weight_broadcast]
+type = "nccl"
+
+[ckpt]
+interval = 50
+keep_last = 1
+resume_step = -1
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+# --- Trainer ---
+
+[trainer]
+
+[trainer.model]
+cp = 2
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.compile]
+
+# --- Orchestrator ---
+
+[orchestrator]
+batch_size = 256
+rollouts_per_example = 8
+max_off_policy_steps = 32
+
+[[orchestrator.train.env]]
+id = "general-agent-solver-rlm"
+num_workers = 4
+max_retries = 1
+
+[orchestrator.train.env.args]
+append_to_system_prompt = "configs/general_agent/behavior_learning/prompts/extended.md"
+behavior_judge_model = "openai/gpt-5-mini"
+behavior_reward_alpha = 1.0
+
+[orchestrator.prime_monitor]
+
+# --- Inference ---
+
+[inference]
+gpu_memory_utilization = 0.85
+
+[inference.model]
+max_model_len = 32768
+tool_call_parser = "hermes"
+
+[inference.parallel]
+dp = 4
