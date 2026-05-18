@@ -356,6 +356,12 @@ def interleave_rollout(
             ttt_trace=list(ttt_trace) if isinstance(ttt_trace, list) else None,
         )
 
+    if ttt_trace:
+        # TTT replay consumes the rollout-level trace directly. Returning one
+        # carrier sample prevents context-window splitting from replaying the
+        # same adapter timeline more than once.
+        return [make_sample(prepared_steps[0])]
+
     def extend_sample(sample: TrainingSample, prefix_len: int, step_idx: int) -> None:
         """Extend an existing sample with a new trajectory step (extension property holds)."""
         tokens = prepared_steps[step_idx]

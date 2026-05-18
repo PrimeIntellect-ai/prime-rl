@@ -99,6 +99,7 @@ class HookedLoRAEngine:
         device: str,
         dtype: torch.dtype,
         vllm_admin_base_urls: list[str],
+        max_concurrent_sessions: int = 64,
         load_adapters_into_vllm: bool = True,
         unload_vllm_adapters: bool = True,
     ) -> None:
@@ -117,6 +118,7 @@ class HookedLoRAEngine:
         self.device = torch.device(device)
         self.dtype = dtype
         self.vllm_admin_base_urls = [url.rstrip("/") for url in vllm_admin_base_urls]
+        self.max_concurrent_sessions = max_concurrent_sessions
         self.load_adapters_into_vllm = load_adapters_into_vllm
         self.unload_vllm_adapters = unload_vllm_adapters
         self.base_step = 0
@@ -181,6 +183,11 @@ class HookedLoRAEngine:
         session = self.sessions.get(session_id)
         if session is not None:
             return session
+        if len(self.sessions) >= self.max_concurrent_sessions:
+            raise RuntimeError(
+                f"TTT learner has {len(self.sessions)} active sessions, "
+                f"which reaches max_concurrent_sessions={self.max_concurrent_sessions}."
+            )
         adapter = self._new_lora_dict()
         params = [p for weights in adapter.values() for p in (weights.a, weights.b)]
         session = TTTSession(

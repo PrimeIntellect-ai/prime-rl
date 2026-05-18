@@ -457,22 +457,32 @@ def train(config: TrainerConfig):
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
         # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
-        loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
+        normal_loss_scale = sum(
+            micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches if not micro_batch["ttt_trace"]
+        )
+        ttt_loss_scale = sum(
+            min(len(entry.get("completion_ids") or []), len(entry.get("completion_logprobs") or []))
+            for micro_batch in micro_batches
+            for entry in (micro_batch["ttt_trace"] or [])
+        )
+        loss_scale = normal_loss_scale + ttt_loss_scale
         loss_scale = max(loss_scale, 1)
         pad_token_id = getattr(model.config, "pad_token_id", None) or 1
         tool_output_training = config.experimental.tool_output_training
         tool_output_loss_scale = 1
         if tool_output_training.enabled and tool_output_training.weight > 0:
-            tool_output_loss_scale = sum(
-                (
-                    micro_batch["tool_output_train_mask"]
-                    if micro_batch["tool_output_train_mask"] is not None
-                    else torch.zeros_like(micro_batch["loss_mask"])
-                )
-                .sum()
-                .item()
+            normal_tool_output_count = sum(
+                int(micro_batch["tool_output_train_mask"].sum().item())
                 for micro_batch in micro_batches
+                if not micro_batch["ttt_trace"] and micro_batch["tool_output_train_mask"] is not None
             )
+            ttt_tool_output_count = sum(
+                bool(item)
+                for micro_batch in micro_batches
+                for entry in (micro_batch["ttt_trace"] or [])
+                for item in (entry.get("prompt_tool_output_train_mask") or [])[: len(entry.get("prompt_ids") or [])]
+            )
+            tool_output_loss_scale = normal_tool_output_count + ttt_tool_output_count
             tool_output_loss_scale = max(tool_output_loss_scale, 1)
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")

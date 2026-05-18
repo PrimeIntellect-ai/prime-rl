@@ -348,11 +348,19 @@ class Scheduler:
             return
         endpoint = "abort_session" if abort else "finish_session"
         url = f"{ttt.learner.resolved_base_url.rstrip('/')}/{endpoint}"
-        payloads = [
-            {"session_id": str(rollout.get("trajectory_id"))}
-            for rollout in rollouts
-            if rollout.get("trajectory_id") is not None and rollout.get("ttt_trace")
-        ]
+
+        session_ids: set[str] = set()
+        for rollout in rollouts:
+            trajectory_id = rollout.get("trajectory_id")
+            if trajectory_id is not None:
+                session_ids.add(str(trajectory_id))
+            trace = rollout.get("ttt_trace")
+            if isinstance(trace, list):
+                for entry in trace:
+                    if isinstance(entry, dict) and entry.get("session_id") is not None:
+                        session_ids.add(str(entry["session_id"]))
+
+        payloads = [{"session_id": session_id} for session_id in sorted(session_ids)]
         if not payloads:
             return
         try:

@@ -3,15 +3,17 @@ from __future__ import annotations
 import argparse
 import asyncio
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import torch
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from prime_rl.ttt.lora_engine import HookedLoRAEngine
 from prime_rl.utils.logger import get_logger, setup_logger
+
+if TYPE_CHECKING:
+    from prime_rl.ttt.lora_engine import HookedLoRAEngine
 
 
 class PrepareTurnRequest(BaseModel):
@@ -52,6 +54,7 @@ def _dtype(name: str) -> torch.dtype:
 def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_after_request"]) -> FastAPI:
     app = FastAPI(title="Prime-RL TTT learner")
     locks: dict[str, asyncio.Lock] = {}
+    engine_lock = asyncio.Lock()
 
     def lock_for(session_id: str) -> asyncio.Lock:
         lock = locks.get(session_id)
@@ -61,7 +64,10 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
         return lock
 
     def activate_session(session_id: str):
-        session = engine.get_or_create_session(session_id)
+        try:
+            session = engine.get_or_create_session(session_id)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
         if session_offload == "cpu_after_request":
             session.to_device(engine.device)
         return session
@@ -79,12 +85,14 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
     @app.post("/update_base_weights")
     async def update_base_weights(request: UpdateBaseWeightsRequest) -> dict[str, Any]:
         weight_dir = Path(request.weight_dir) if request.weight_dir else None
-        await asyncio.to_thread(engine.load_base_weights, weight_dir, request.step)
+        async with engine_lock:
+            await asyncio.to_thread(engine.load_base_weights, weight_dir, request.step)
         return {"status": "ok", "base_step": engine.base_step, "sessions": len(engine.sessions)}
 
     @app.post("/start_session")
     async def start_session(request: FinishSessionRequest) -> dict[str, Any]:
-        session = engine.get_or_create_session(request.session_id)
+        async with engine_lock:
+            session = activate_session(request.session_id)
         offload_session(session)
         return {"status": "ok", "session_id": request.session_id}
 
@@ -93,20 +101,21 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
         async with lock_for(request.session_id):
             session = activate_session(request.session_id)
             try:
-                train_stats = await asyncio.to_thread(engine.append_and_train, session, request.new_token_ids)
-                meta = session.latest_adapter
-                if session.version > 0 and meta is None:
-                    adapter_name = (
-                        f"ttt-{request.session_id[:12]}-t{request.turn_idx}-v{session.version}-b{engine.base_step}"
-                    )
-                    meta = await engine.materialize(
-                        session,
-                        name=adapter_name,
-                        load_into_vllm=True,
-                        turn_idx=request.turn_idx,
-                    )
-                elif meta is not None:
-                    await engine.ensure_vllm_loaded(meta)
+                async with engine_lock:
+                    train_stats = await asyncio.to_thread(engine.append_and_train, session, request.new_token_ids)
+                    meta = session.latest_adapter
+                    if session.version > 0 and meta is None:
+                        adapter_name = (
+                            f"ttt-{request.session_id[:12]}-t{request.turn_idx}-v{session.version}-b{engine.base_step}"
+                        )
+                        meta = await engine.materialize(
+                            session,
+                            name=adapter_name,
+                            load_into_vllm=True,
+                            turn_idx=request.turn_idx,
+                        )
+                    elif meta is not None:
+                        await engine.ensure_vllm_loaded(meta)
                 meta = dict(meta or {})
                 return {
                     **meta,
@@ -125,7 +134,8 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
         async with lock_for(request.session_id):
             session = activate_session(request.session_id)
             try:
-                train_stats = await asyncio.to_thread(engine.append_and_train, session, request.completion_ids)
+                async with engine_lock:
+                    train_stats = await asyncio.to_thread(engine.append_and_train, session, request.completion_ids)
                 if request.adapter_name:
                     await engine.unload_vllm_adapter(request.adapter_name)
                     engine.mark_vllm_unloaded(session, request.adapter_name)
@@ -143,9 +153,11 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
 
     @app.post("/finish_session")
     async def finish_session(request: FinishSessionRequest) -> dict[str, Any]:
-        session = engine.sessions.pop(request.session_id, None)
-        await engine.unload_session_loaded_adapters(session)
-        locks.pop(request.session_id, None)
+        lock = lock_for(request.session_id)
+        async with lock:
+            async with engine_lock:
+                session = engine.sessions.pop(request.session_id, None)
+            await engine.unload_session_loaded_adapters(session)
         return {
             "status": "ok",
             "session_id": request.session_id,
@@ -153,9 +165,11 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
 
     @app.post("/abort_session")
     async def abort_session(request: FinishSessionRequest) -> dict[str, Any]:
-        session = engine.sessions.pop(request.session_id, None)
-        await engine.unload_session_loaded_adapters(session)
-        locks.pop(request.session_id, None)
+        lock = lock_for(request.session_id)
+        async with lock:
+            async with engine_lock:
+                session = engine.sessions.pop(request.session_id, None)
+            await engine.unload_session_loaded_adapters(session)
         return {"status": "ok", "session_id": request.session_id}
 
     return app
@@ -173,6 +187,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--steps-per-update", type=int, default=1)
     parser.add_argument("--update-every-tokens", type=int, default=1024)
+    parser.add_argument("--max-concurrent-sessions", type=int, default=64)
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
@@ -190,6 +205,10 @@ def main() -> None:
     args = parse_args()
     setup_logger(args.log_level)
     logger = get_logger()
+    logger.info("Importing TTT LoRA engine")
+    from prime_rl.ttt.lora_engine import HookedLoRAEngine
+
+    logger.info("Imported TTT LoRA engine")
     logger.info(
         f"Starting TTT learner model={args.model_name} device={args.device} dtype={args.dtype} "
         f"adapter_dir={args.adapter_dir}"
@@ -209,6 +228,7 @@ def main() -> None:
         device=args.device,
         dtype=_dtype(args.dtype),
         vllm_admin_base_urls=args.vllm_admin_base_url,
+        max_concurrent_sessions=args.max_concurrent_sessions,
         load_adapters_into_vllm=not args.no_load_adapters_into_vllm,
         unload_vllm_adapters=not args.no_unload_vllm_adapters,
     )

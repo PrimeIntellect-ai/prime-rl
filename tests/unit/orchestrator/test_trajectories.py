@@ -1,4 +1,5 @@
 import base64
+import copy
 from io import BytesIO
 from unittest.mock import MagicMock
 
@@ -342,6 +343,33 @@ def test_branching_equivalent_multi_step_trajectory(multi_step_trajectory_extens
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.3, -0.4]
     assert rollout.completion_temperatures == [1.0, 1.0]
+
+
+def test_interleave_rollout_with_ttt_trace_returns_single_replay_carrier(
+    multi_step_trajectory_extension_never_holds,
+):
+    output = copy.deepcopy(multi_step_trajectory_extension_never_holds)
+    output["trajectory_id"] = "traj-ttt"
+    output["ttt_trace"] = [
+        {
+            "session_id": "traj-ttt",
+            "prompt_ids": [1, 2],
+            "completion_ids": [3, 4],
+            "completion_logprobs": [-0.1, -0.2],
+        },
+        {
+            "session_id": "traj-ttt",
+            "prompt_ids": [10, 20, 30, 40, 50, 60],
+            "completion_ids": [7, 8],
+            "completion_logprobs": [-0.3, -0.4],
+        },
+    ]
+
+    rollouts = interleave_rollout(output)
+
+    assert rollouts is not None
+    assert len(rollouts) == 1
+    assert rollouts[0].ttt_trace == output["ttt_trace"]
 
 
 def test_branching_equivalent_multi_step_trajectory_with_tool_calls(

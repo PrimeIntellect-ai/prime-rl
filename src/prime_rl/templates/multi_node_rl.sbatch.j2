@@ -377,6 +377,7 @@ else
 	        TTT_ARGS="$TTT_ARGS --rank {{ ttt_rank }} --alpha {{ ttt_alpha }} --dropout {{ ttt_dropout }}"
 	        TTT_ARGS="$TTT_ARGS --lr {{ ttt_lr }} --weight-decay {{ ttt_weight_decay }} --steps-per-update {{ ttt_steps_per_update }}"
 	        TTT_ARGS="$TTT_ARGS --update-every-tokens {{ ttt_update_every_tokens }}"
+	        TTT_ARGS="$TTT_ARGS --max-concurrent-sessions {{ ttt_max_concurrent_sessions }}"
         {% if ttt_max_grad_norm is not none -%}
         TTT_ARGS="$TTT_ARGS --max-grad-norm {{ ttt_max_grad_norm }}"
         {% endif -%}

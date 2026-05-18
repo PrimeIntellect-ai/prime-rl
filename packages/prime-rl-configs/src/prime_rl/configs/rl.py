@@ -717,20 +717,20 @@ class RLConfig(BaseConfig):
         self.trainer.experimental.ttt = ttt.model_copy(deep=True)
         self.orchestrator.experimental.ttt = ttt.model_copy(deep=True)
         is_vllm_rollout = self.orchestrator.teacher_rollout_model is None
-        if ttt.mode == "online_lora":
-            if not self.orchestrator.use_renderer or self.orchestrator.use_token_client:
-                raise ValueError(
-                    "experimental.ttt.mode='online_lora' requires orchestrator.use_renderer=true "
-                    "and orchestrator.use_token_client=false."
-                )
-            if self.orchestrator.model.vlm is not None:
-                raise ValueError("experimental.ttt.mode='online_lora' does not support VLMs in this migration.")
-            if not ttt.require_exact_token_ids:
-                raise ValueError("experimental.ttt.mode='online_lora' requires require_exact_token_ids=true.")
+        if not self.orchestrator.use_renderer or self.orchestrator.use_token_client:
+            raise ValueError(
+                "experimental.ttt.enabled=true requires orchestrator.use_renderer=true "
+                "and orchestrator.use_token_client=false."
+            )
+        if self.orchestrator.model.vlm is not None:
+            raise ValueError("experimental.ttt.enabled=true does not support VLMs in this migration.")
+        if not ttt.require_exact_token_ids:
+            raise ValueError("experimental.ttt.enabled=true requires require_exact_token_ids=true.")
 
         ttt_extra_body = {
             "ttt_enabled": ttt.mode == "online_lora",
-            "ttt_learner_url": ttt.learner.resolved_base_url,
+            "ttt_windowing_enabled": True,
+            "ttt_learner_url": ttt.learner.resolved_base_url if ttt.mode == "online_lora" else None,
             "ttt_window_seq_len": ttt.window_seq_len,
             "ttt_require_exact_token_ids": ttt.require_exact_token_ids,
             "ttt_cache_salt_includes_adapter": ttt.cache_salt_includes_adapter,
@@ -755,10 +755,11 @@ class RLConfig(BaseConfig):
             self.inference.experimental.ttt = ttt.model_copy(deep=True)
             if self.inference.model.max_model_len is None:
                 self.inference.model.max_model_len = ttt.window_seq_len
-            self.inference.enable_lora = True
-            required_lora_rank = ttt.lora.rank
-            if self.inference.max_lora_rank is None or self.inference.max_lora_rank < required_lora_rank:
-                self.inference.max_lora_rank = required_lora_rank
+            if ttt.mode == "online_lora":
+                self.inference.enable_lora = True
+                required_lora_rank = ttt.lora.rank
+                if self.inference.max_lora_rank is None or self.inference.max_lora_rank < required_lora_rank:
+                    self.inference.max_lora_rank = required_lora_rank
         else:
             warnings.warn(
                 "TTT is enabled, but inference is not configured. When manually starting vLLM, "
@@ -766,7 +767,7 @@ class RLConfig(BaseConfig):
                 stacklevel=2,
             )
 
-        if self.trainer.model.lora is not None:
+        if ttt.mode == "online_lora" and self.trainer.model.lora is not None:
             raise ValueError(
                 "Do not set trainer.model.lora when experimental.ttt.enabled=true. "
                 "TTT adapters are transient rollout state; Theta must remain trainable for RL."

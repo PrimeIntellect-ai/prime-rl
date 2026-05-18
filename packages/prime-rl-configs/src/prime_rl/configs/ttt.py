@@ -109,7 +109,7 @@ class TTTLearnerConfig(BaseConfig):
 
     max_concurrent_sessions: Annotated[
         int,
-        Field(gt=0, description="Maximum active rollout-local LoRA sessions."),
+        Field(gt=0, description="Maximum active rollout-local LoRA sessions retained by the learner."),
     ] = 64
 
     request_timeout_s: Annotated[
@@ -192,12 +192,12 @@ class TTTConfig(BaseConfig):
 
     overlap_turns: Annotated[
         int | None,
-        Field(ge=0, description="Minimum already-trained turn overlap retained in the physical window."),
+        Field(ge=0, description="Reserved for future overlap-aware window selection; currently not applied."),
     ] = 2
 
     overlap_tokens: Annotated[
         int | None,
-        Field(ge=0, description="Minimum already-trained token overlap retained in the physical window."),
+        Field(ge=0, description="Reserved for future overlap-aware window selection; currently not applied."),
     ] = None
 
     adapter_scope: Annotated[
@@ -255,8 +255,6 @@ class TTTConfig(BaseConfig):
             )
         if self.update_every_turns is not None:
             raise ValueError("TTT update_every_turns is no longer supported; set update_every_tokens instead.")
-        if (self.overlap_turns is None) == (self.overlap_tokens is None):
-            raise ValueError("Set exactly one of overlap_turns or overlap_tokens for TTT.")
         if self.mode == "online_lora" and not self.keep_rollout_loras_across_theta_updates:
             raise ValueError("online_lora TTT requires keep_rollout_loras_across_theta_updates=true.")
         return self

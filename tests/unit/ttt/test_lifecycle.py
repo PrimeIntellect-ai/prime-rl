@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 import torch.nn as nn
 from safetensors.torch import load_file
@@ -26,29 +27,27 @@ def test_materialize_honors_adapter_dir_and_records_stable_metadata(tmp_path: Pa
     engine.load_adapters_into_vllm = False
     engine.materialized = []
 
-    def state_for_kinds(_session, _kinds):
+    def adapter_state(_session):
         return {
             "base_model.model.layers.0.self_attn.q_proj.lora_A.weight": torch.ones(2, 3),
             "base_model.model.layers.0.self_attn.q_proj.lora_B.weight": torch.ones(4, 2),
         }
 
-    engine._state_for_kinds = state_for_kinds
+    engine._adapter_state = adapter_state
     engine._adapter_config = lambda rank, alpha: {"r": rank, "lora_alpha": alpha}
 
     session = SimpleNamespace(
         session_id="rollout-123",
-        prompt_version=3,
-        completion_version=5,
+        version=5,
         materialized_adapters=[],
+        latest_adapter=None,
     )
 
     meta = asyncio.run(
         engine.materialize(
             session,
             name="adapter-a",
-            kinds=("prompt", "completion"),
             load_into_vllm=True,
-            adapter_kind="combined",
             turn_idx=2,
         )
     )
@@ -57,19 +56,28 @@ def test_materialize_honors_adapter_dir_and_records_stable_metadata(tmp_path: Pa
     assert meta == {
         "adapter_name": "adapter-a",
         "adapter_path": adapter_path.as_posix(),
-        "adapter_kind": "combined",
+        "adapter_kind": "snapshot",
         "loaded_into_vllm": False,
-        "rank": 4,
+        "rank": 2,
         "base_step": 17,
-        "prompt_version": 3,
-        "completion_version": 5,
+        "version": 5,
         "session_id": "rollout-123",
         "turn_idx": 2,
     }
     assert session.materialized_adapters == [meta]
+    assert session.latest_adapter == meta
     assert (adapter_path / "adapter_model.safetensors").exists()
     assert load_file(adapter_path / "adapter_model.safetensors", device="cpu")
-    assert json.loads((adapter_path / "adapter_config.json").read_text()) == {"r": 4, "lora_alpha": 4}
+    assert json.loads((adapter_path / "adapter_config.json").read_text()) == {"r": 2, "lora_alpha": 2}
+
+
+def test_get_or_create_session_enforces_max_concurrent_sessions():
+    engine = HookedLoRAEngine.__new__(HookedLoRAEngine)
+    engine.sessions = {"existing": object()}
+    engine.max_concurrent_sessions = 1
+
+    with pytest.raises(RuntimeError, match="max_concurrent_sessions=1"):
+        engine.get_or_create_session("new")
 
 
 def test_trainer_cleanup_evicts_cache_and_deletes_directories(tmp_path: Path):

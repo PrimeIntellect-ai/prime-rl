@@ -90,6 +90,57 @@ def test_update_off_policy_does_not_increment_interleaved_on_policy_tasks():
     asyncio.run(run())
 
 
+def test_close_ttt_sessions_uses_trajectory_id_and_trace_fallbacks():
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeAsyncClient:
+        calls: list[tuple[str, dict]] = []
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, json):
+            self.calls.append((url, json))
+            return FakeResponse()
+
+    async def run() -> None:
+        scheduler = make_scheduler()
+        scheduler.config = SimpleNamespace(
+            experimental=SimpleNamespace(
+                ttt=SimpleNamespace(
+                    enabled=True,
+                    mode="online_lora",
+                    learner=SimpleNamespace(
+                        resolved_base_url="http://ttt-learner",
+                        request_timeout_s=1.0,
+                    ),
+                )
+            )
+        )
+
+        rollouts = [
+            {"trajectory_id": "traj-a"},
+            {"ttt_trace": [{"session_id": "traj-b"}, {"session_id": "traj-a"}]},
+        ]
+        with patch("prime_rl.orchestrator.scheduler.httpx.AsyncClient", FakeAsyncClient):
+            await scheduler._close_ttt_sessions(rollouts, abort=False)
+
+        assert FakeAsyncClient.calls == [
+            ("http://ttt-learner/finish_session", {"session_id": "traj-a"}),
+            ("http://ttt-learner/finish_session", {"session_id": "traj-b"}),
+        ]
+
+    asyncio.run(run())
+
+
 def test_maybe_update_policy_reuses_inflight_update_after_cancellation():
     async def run() -> None:
         scheduler = make_scheduler()
