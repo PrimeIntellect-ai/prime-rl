@@ -10,6 +10,12 @@ dependencies = [
     # doesn't expose `BaseConfig` / `cli`. Pin to samsja's fork so plain
     # `pip install prime-rl-configs` (no uv workspace context) resolves it.
     "pydantic-config @ git+https://github.com/samsja/pydantic_config.git",
+    # OrchestratorConfig validates renderer.name='auto' against
+    # renderers.base.MODEL_RENDERER_MAP. Renderers itself is light; its only
+    # weighty transitive (transformers) is lazy-imported via the validator,
+    # so plain `from prime_rl.configs.orchestrator import OrchestratorConfig`
+    # still doesn't pull it into sys.modules.
+    "renderers>=0.1.8.dev4",
     "tomli>=2.2.1",
     "tomli-w>=1.2.0",
 ]
