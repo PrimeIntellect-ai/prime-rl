@@ -35,6 +35,9 @@ id = "reverse-text"
 base_url = ["https://api.pinference.ai/api/v1"]
 api_key_var = "PRIME_API_KEY"
 
+[orchestrator.teacher.client.headers_from_env]
+X-Prime-Team-ID = "PRIME_TEAM_ID"
+
 [orchestrator.teacher.model]
 name = "qwen/qwen3-30b-a3b-instruct-2507"
 

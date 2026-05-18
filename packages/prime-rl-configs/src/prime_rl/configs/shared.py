@@ -299,6 +299,13 @@ class ClientConfig(BaseConfig):
         ),
     ] = {}
 
+    headers_from_env: Annotated[
+        dict[str, str],
+        Field(
+            description='Maps HTTP header names to environment variable names. At runtime each entry is resolved via os.getenv and merged into the request headers. e.g. {"X-Prime-Team-ID": "PRIME_TEAM_ID"}.',
+        ),
+    ] = {}
+
     extra_headers_from_state: Annotated[
         dict[str, str],
         Field(
