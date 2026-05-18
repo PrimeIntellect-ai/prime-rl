@@ -1,11 +1,11 @@
-output_dir = "/beegfs/outputs/general-agent-behavior-learning/qwen3-4b-rlm-baseline"
+output_dir = "/beegfs/outputs/behavior-learning/qwen3-4b-rlm-baseline"
 max_steps = 1000
 seq_len = 32768
 
 [slurm]
-job_name = "general-agent-behavior-learning-qwen3-4b-rlm-baseline"
+job_name = "behavior-learning-qwen3-4b-rlm-baseline"
 project_dir = "."
-pre_run_command = "srun bash -c 'pkill -9 -f torchrun; pkill -9 -f vllm; true'"
+pre_run_command = "prime sandbox delete --label behavior-learning-baseline -y --plain; srun bash -c 'pkill -9 -f torchrun; pkill -9 -f vllm; true'"
 
 [deployment]
 num_train_gpus = 4
@@ -15,7 +15,7 @@ num_infer_gpus = 4
 level = "debug"
 
 [wandb]
-project = "general-agent-behavior-learning"
+project = "behavior-learning"
 name = "qwen3-4b-rlm-baseline"
 
 [weight_broadcast]
@@ -51,6 +51,7 @@ num_workers = 4
 max_retries = 1
 
 [orchestrator.train.env.args]
+rlm_ref = "62b3f25f2ad27e760ab60ccff0f385b9de2d04ff"
 labels = ["behavior-learning-baseline"]
 
 [orchestrator.prime_monitor]
