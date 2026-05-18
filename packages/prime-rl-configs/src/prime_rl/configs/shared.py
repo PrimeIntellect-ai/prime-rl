@@ -362,6 +362,12 @@ class ClientConfig(BaseConfig):
         ),
     ] = None
 
+    @model_validator(mode="after")
+    def auto_setup_pinference_team_header(self):
+        if any("pinference.ai" in url for url in self.base_url):
+            self.headers_from_env.setdefault("X-Prime-Team-ID", "PRIME_TEAM_ID")
+        return self
+
     @property
     def is_elastic(self) -> bool:
         """Check if elastic mode is enabled."""
