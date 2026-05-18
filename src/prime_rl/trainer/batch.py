@@ -14,6 +14,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     advantages = [training_example.advantage] * len(input_ids)
     position_ids = list(range(len(input_ids)))
     mm_token_type_ids = training_example.mm_token_type_ids
+    assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
     env_names = [training_example.env_name] * len(input_ids)
 
     # Per-token temperatures: prompt tokens use first completion temp (masked out anyway)
