@@ -327,6 +327,8 @@ def rl_local(config: RLConfig):
                     env={
                         **os.environ,
                         **({"CUDA_VISIBLE_DEVICES": ttt_visible_devices} if ttt_visible_devices else {}),
+                        "HF_HUB_OFFLINE": "1",
+                        "TRANSFORMERS_OFFLINE": "1",
                         "PYTHONUNBUFFERED": "1",
                         "LOGURU_FORCE_COLORS": "1",
                     },

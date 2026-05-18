@@ -189,6 +189,8 @@ srun bash -c '
     [ -f .env ] && source .env
     source .venv/bin/activate
     # Do not sync to avoid conflicts with lockfile
+    export HF_HUB_OFFLINE=1
+    export TRANSFORMERS_OFFLINE=1
 
     # Higher ulimit
     ulimit -n 65536
@@ -420,8 +422,6 @@ else
 {%- else %}
     TRAIN_NODE_RANK=$SLURM_PROCID
 {%- endif %}
-
-    export HF_HUB_OFFLINE=1
 
     # This is required for compilation to work correctly
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"

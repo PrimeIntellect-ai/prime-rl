@@ -4,6 +4,7 @@ import contextlib
 import contextvars
 import json
 import math
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -131,6 +132,7 @@ class HookedLoRAEngine:
             dtype=dtype,
             trust_remote_code=True,
             low_cpu_mem_usage=True,
+            local_files_only=os.environ.get("HF_HUB_OFFLINE") == "1" or os.environ.get("TRANSFORMERS_OFFLINE") == "1",
         ).to(self.device)
         logger.info(f"TTT learner base model loaded on {self.device}")
         self.model.train()
