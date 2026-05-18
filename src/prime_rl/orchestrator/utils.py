@@ -11,7 +11,6 @@ from rich.console import Console
 from rich.table import Table
 from verifiers.utils.client_utils import setup_openai_client
 
-from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import (
@@ -177,23 +176,3 @@ def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_
         return broadcast_weight_dir
 
     raise FileNotFoundError(f"No weight directory found for checkpoint step {step}")
-
-
-def setup_external_rollout_model(config: OrchestratorConfig, logger) -> tuple[Any, str, bool]:
-    """Resolve rollout client/model and whether student policy updates are enabled.
-
-    - rl/opd: student generates rollouts, policy updates always enabled.
-    - sft: teacher generates rollouts; policy updates enabled iff the student
-      inference client is configured (non-empty base_url).
-    """
-    if config.training_mode in ("rl", "opd"):
-        return config.student.client, config.student.model.name, True
-
-    assert config.teacher is not None  # validated by validate_training_mode
-    rollout_client_config = config.teacher.client
-    rollout_model_name = config.teacher.model.name
-    enable_policy_updates = "base_url" in config.student.client.model_fields_set
-    logger.info(
-        f"Using teacher rollout model (base_url={', '.join(rollout_client_config.base_url)}, model={rollout_model_name})"
-    )
-    return rollout_client_config, rollout_model_name, enable_policy_updates

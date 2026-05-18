@@ -47,7 +47,6 @@ from prime_rl.orchestrator.utils import (
     get_weight_dir,
     print_benchmark,
     set_default_executor,
-    setup_external_rollout_model,
 )
 from prime_rl.orchestrator.vf_utils import (
     get_seq_len,
@@ -57,7 +56,6 @@ from prime_rl.orchestrator.vf_utils import (
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.utils.client import (
     init_nccl_broadcast,
-    setup_clients,
     setup_inference_pool,
 )
 from prime_rl.utils.config import cli
@@ -95,6 +93,12 @@ async def orchestrate(config: OrchestratorConfig):
     )
     intercept_vf_logging(logger="verifiers.serve", level="WARN")  # show logs from env clients
     logger.info("Starting orchestrator")
+    _MODE_DESCRIPTIONS = {
+        "rl": "student generates rollouts, trained with reward-based advantage",
+        "opd": "student generates rollouts, trained on reward + KL to teacher logprobs (on-policy distillation)",
+        "sft": "teacher generates rollouts, student trained on teacher tokens (hard distillation)",
+    }
+    logger.info(f"Training mode: {config.training_mode} - {_MODE_DESCRIPTIONS[config.training_mode]}")
     set_default_executor()
 
     event_loop_lag_monitor = EventLoopLagMonitor()
@@ -119,24 +123,6 @@ async def orchestrate(config: OrchestratorConfig):
     for env_id in env_ids_to_install:
         install_env(env_id, prerelease=config.env_install_prerelease)
 
-    # Setup rollout inference pool (handles both static and elastic modes)
-    rollout_client_config, rollout_model_name, enable_policy_updates = setup_external_rollout_model(config, logger)
-
-    # Setup teacher inference pool (opd: logprob distillation)
-    if config.training_mode == "opd":
-        assert config.teacher is not None
-        logger.info(
-            f"Initializing teacher inference pool (base_url={', '.join(config.teacher.client.base_url)}, "
-            f"model={config.teacher.model.name})"
-        )
-        teacher_inference_pool = await setup_inference_pool(
-            config.teacher.client,
-            model_name=config.teacher.model.name,
-            train_client_type="openai_chat_completions",
-        )
-    else:
-        teacher_inference_pool = None
-
     # Check if this is a vision-language model (used throughout for VLM-specific paths)
     is_vlm = config.student.model.vlm is not None
 
@@ -151,31 +137,41 @@ async def orchestrate(config: OrchestratorConfig):
             config.student.model.name, trust_remote_code=config.student.model.trust_remote_code, use_fast=True
         )
 
-    teacher_clients = None
-    teacher_model_name = None
-    use_sft_override = config.training_mode == "sft" and enable_policy_updates
-    if use_sft_override:
-        logger.info(f"Using teacher rollout override (MITO, model={rollout_model_name})")
-        teacher_clients = setup_clients(
-            rollout_client_config,
-            client_type="openai_chat_completions",
+    # Set up student inference pool. Required for rl/opd; optional for sft (only
+    # configured when the user wrote [inference] - signal: student.client.base_url
+    # is in model_fields_set, set by auto_setup_inference_client). When absent,
+    # SFT runs in teacher-only mode: no online evals, no weight sync.
+    has_student_inference = config.training_mode != "sft" or "base_url" in config.student.client.model_fields_set
+    student_inference = None
+    renderer = None
+    if has_student_inference:
+        logger.info(
+            f"Initializing student inference pool (base_url={', '.join(config.student.client.base_url)}, "
+            f"model={config.student.model.name})"
         )
-        teacher_model_name = rollout_model_name
-        renderer = None
-        inference_pool = await setup_inference_pool(
-            config.student.client,
-            model_name=config.student.model.name,
-            train_client_type="openai_chat_completions",
-            eval_client_type="openai_chat_completions",
-        )
-    else:
-        renderer, inference_pool = await setup_rollout_inference_pool(
+        renderer, student_inference = await setup_student_inference_pool(
             config=config,
-            rollout_client_config=rollout_client_config,
-            rollout_model_name=rollout_model_name,
             tokenizer=tokenizer,
             logger=logger,
         )
+
+    # Set up teacher inference pool (configured for opd or sft). Always MITO for
+    # simplicity - this also keeps external OAI-compatible teachers (PI inference,
+    # OpenAI) working as drop-in endpoints.
+    teacher_inference = None
+    if config.teacher is not None:
+        logger.info(
+            f"Initializing teacher inference pool (base_url={', '.join(config.teacher.client.base_url)}, "
+            f"model={config.teacher.model.name})"
+        )
+        teacher_inference = await setup_inference_pool(
+            config.teacher.client,
+            model_name=config.teacher.model.name,
+            train_client_type="openai_chat_completions",
+        )
+
+    # Weight sync is only possible when a student inference pool exists.
+    enable_policy_updates = student_inference is not None
 
     # Setup monitor (may register the run and set RUN_ID in the environment)
     logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
@@ -256,9 +252,8 @@ async def orchestrate(config: OrchestratorConfig):
     scheduler = Scheduler(
         train_envs=train_envs,
         buffer=buffer,
-        inference_pool=inference_pool,
-        teacher_clients=teacher_clients,
-        teacher_model_name=teacher_model_name,
+        student_inference=student_inference,
+        teacher_inference=teacher_inference,
         max_inflight_rollouts=config.max_inflight_rollouts,
         max_async_level=config.max_async_level,
         max_off_policy_steps=config.max_off_policy_steps,
@@ -268,33 +263,31 @@ async def orchestrate(config: OrchestratorConfig):
         lora_name=config.student.model.lora.name if config.student.model.lora else None,
         config=config,
     )
-    scheduler.model_name = config.student.model.name if use_sft_override else rollout_model_name
 
-    # Check health of the inference pool
-    logger.info("Waiting for inference pool to be ready")
-    inference_model_name = config.student.model.name if use_sft_override else rollout_model_name
-    await inference_pool.wait_for_ready(inference_model_name)
-    logger.success("Inference pool ready")
-
-    # Start inference metrics collector (requires W&B)
-    inference_metrics_collector = None
-    if config.wandb is not None and config.collect_inference_metrics:
-        inference_metrics_collector = InferenceMetricsCollector(inference_pool.admin_clients)
-        await inference_metrics_collector.start()
-
-    # Check health of teacher inference server if configured (opd mode)
-    if config.training_mode == "opd" and teacher_inference_pool:
+    # Wait for pools to be ready
+    if student_inference is not None:
+        logger.info("Waiting for student inference pool to be ready")
+        await student_inference.wait_for_ready(config.student.model.name)
+        logger.success("Student inference pool ready")
+    if teacher_inference is not None:
         assert config.teacher is not None
         logger.info("Waiting for teacher inference pool to be ready")
-        await teacher_inference_pool.wait_for_ready(config.teacher.model.name)
+        await teacher_inference.wait_for_ready(config.teacher.model.name)
         logger.success("Teacher inference pool ready")
 
-    # Set up weight broadcast backend
+    # Start inference metrics collector (requires W&B + student inference pool)
+    inference_metrics_collector = None
+    if config.wandb is not None and config.collect_inference_metrics and student_inference is not None:
+        inference_metrics_collector = InferenceMetricsCollector(student_inference.admin_clients)
+        await inference_metrics_collector.start()
+
+    # Set up weight broadcast backend (targets student inference)
     if enable_policy_updates:
+        assert student_inference is not None
         logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
         if config.weight_broadcast.type == "nccl":
             await init_nccl_broadcast(
-                inference_pool.admin_clients,
+                student_inference.admin_clients,
                 config.weight_broadcast.host,
                 config.weight_broadcast.port,
                 config.weight_broadcast.timeout,
@@ -302,7 +295,7 @@ async def orchestrate(config: OrchestratorConfig):
                 quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
             )
     else:
-        logger.info("Skipping weight broadcast initialization (SFT distillation mode)")
+        logger.info("Skipping weight broadcast initialization (no student inference pool)")
 
     # Setup training batch sender for sending training examples to trainer
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
@@ -329,6 +322,7 @@ async def orchestrate(config: OrchestratorConfig):
             prev_ckpt_step = scheduler.ckpt_step - 1
 
         if enable_policy_updates:
+            assert student_inference is not None
             # In NCCL mode, skip existence check - weights are broadcasted, not stored on disk
             check_exists = config.weight_broadcast.type != "nccl"
             wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
@@ -336,10 +330,11 @@ async def orchestrate(config: OrchestratorConfig):
                 config.output_dir, scheduler.ckpt_step, check_exists=check_exists, wait_timeout=wait_timeout
             )
             lora_name = config.student.model.lora.name if config.student.model.lora else None
-            await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
+            await student_inference.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
             if lora_name is not None:
-                inference_pool.update_model_name(lora_name)
-                scheduler.model_name = lora_name
+                student_inference.update_model_name(lora_name)
+                if scheduler.rollout_inference is student_inference:
+                    scheduler.model_name = lora_name
     else:
         logger.info("Training from scratch")
 
@@ -383,7 +378,7 @@ async def orchestrate(config: OrchestratorConfig):
         # scheduler.checkpoint_ready during eval to ensure consistent weights.
         # Each eval env has its own interval, so we check each independently.
         envs_to_eval: list[EvalEnv] = []
-        if config.eval:
+        if config.eval and student_inference is not None:
             assert eval_envs is not None
             for eval_env in eval_envs:
                 eval_ckpt_step = compute_eval_ckpt_step(
@@ -398,6 +393,7 @@ async def orchestrate(config: OrchestratorConfig):
                     envs_to_eval.append(eval_env)
 
         if envs_to_eval:
+            assert student_inference is not None
             env_names = ", ".join(e.name for e in envs_to_eval)
             logger.info(f"Running evals at {ckpt_step=} for {env_names}")
 
@@ -413,8 +409,8 @@ async def orchestrate(config: OrchestratorConfig):
             eval_results = await asyncio.gather(
                 *[
                     eval_env.evaluate(
-                        model_name=inference_pool.model_name,
-                        get_client=inference_pool.get_eval_client,
+                        model_name=student_inference.model_name,
+                        get_client=student_inference.get_eval_client,
                         ckpt_step=ckpt_step,
                         step=progress.step,
                         cache_salt=str(ckpt_step),
@@ -594,13 +590,14 @@ async def orchestrate(config: OrchestratorConfig):
             f"to {len(train_examples)} training examples"
         )
 
-        # Compute teacher logprobs if teacher model is configured
+        # Compute teacher logprobs (opd only - sft trains on teacher tokens directly)
         teacher_logprobs_time = 0
-        if config.teacher and teacher_inference_pool:
+        if config.training_mode == "opd" and teacher_inference is not None:
+            assert config.teacher is not None
             logger.info(f"Computing teacher logprobs for {len(train_examples)} training examples")
             teacher_logprobs_start_time = time.perf_counter()
             teacher_logprobs_list = await compute_teacher_logprobs(
-                clients=teacher_inference_pool.train_clients,
+                clients=teacher_inference.train_clients,
                 model_name=config.teacher.model.name,
                 samples=train_examples,
             )
@@ -834,13 +831,13 @@ async def orchestrate(config: OrchestratorConfig):
         if heart is not None:
             heart.beat()
 
-    if config.eval and eval_envs is not None:
+    if config.eval and eval_envs is not None and student_inference is not None:
         logger.info("Running final evals")
         eval_results = await asyncio.gather(
             *[
                 eval_env.evaluate(
-                    model_name=inference_pool.model_name,
-                    get_client=inference_pool.get_eval_client,
+                    model_name=student_inference.model_name,
+                    get_client=student_inference.get_eval_client,
                     ckpt_step=ckpt_step,
                     step=progress.step,
                     cache_salt=str(ckpt_step),
@@ -876,9 +873,10 @@ async def orchestrate(config: OrchestratorConfig):
         await scheduler.stop()
         if inference_metrics_collector is not None:
             await inference_metrics_collector.stop()
-        await inference_pool.stop()
-        if teacher_inference_pool is not None:
-            await teacher_inference_pool.stop()
+        if student_inference is not None:
+            await student_inference.stop()
+        if teacher_inference is not None:
+            await teacher_inference.stop()
         event_loop_lag_monitor_task.cancel()
         # Shutdown env processes (also registered as atexit handler for crash safety)
         train_envs.shutdown()
@@ -916,40 +914,28 @@ def main():
     asyncio.run(orchestrate(cli(OrchestratorConfig)))
 
 
-async def setup_rollout_inference_pool(
+async def setup_student_inference_pool(
     *,
     config: OrchestratorConfig,
-    rollout_client_config,
-    rollout_model_name: str,
     tokenizer,
     logger,
 ):
-    """Set up rollout inference.
+    """Set up the student inference pool (rollouts when rl/opd, evals + weight sync always).
 
     Routing policy is driven by ``config.use_token_client`` and
     ``config.use_renderer`` (mutually exclusive — config-level validators
     block both being True):
 
-      - external teacher rollout → MITO (``openai_chat_completions``),
-        selected independently of the toggles (config-level validator rejects
-        ``use_token_client`` / ``use_renderer`` in that case)
       - ``use_renderer=True``  → renderer-backed TITO client (``/v1/generate``).
-        Default for text-only rollouts.
-        Not allowed for VLMs (validated at config time).
-      - ``use_token_client=True`` → server-tokenized TITO
-        (``openai_chat_completions_token``, ``/v1/chat/completions/tokens``).
-      - both False → MITO (``openai_chat_completions``).
-        VLMs land here too.
+        Default for text-only rollouts. Not allowed for VLMs (validated at config time).
+      - ``use_token_client=True`` → server-tokenized TITO (``/v1/chat/completions/tokens``).
+      - both False → MITO (``openai_chat_completions``). VLMs land here too.
+
+    Eval clients always use MITO. In sft mode the renderer/tito knobs are forced
+    off by config validators, so the student pool is plain MITO end-to-end.
     """
-    if config.training_mode == "sft":
-        logger.info("Using external rollout model (MITO) without renderer client")
-        inference_pool = await setup_inference_pool(
-            rollout_client_config,
-            model_name=rollout_model_name,
-            train_client_type="openai_chat_completions",
-            eval_client_type="openai_chat_completions",
-        )
-        return None, inference_pool
+    client_config = config.student.client
+    model_name = config.student.model.name
 
     if config.use_renderer:
         renderer = create_renderer(
@@ -960,10 +946,10 @@ async def setup_rollout_inference_pool(
             preserve_all_thinking=config.renderer.preserve_all_thinking,
             preserve_thinking_between_tool_calls=config.renderer.preserve_thinking_between_tool_calls,
         )
-        logger.info(f"Initialized {type(renderer).__name__} for {config.student.model.name}")
+        logger.info(f"Initialized {type(renderer).__name__} for {model_name}")
         inference_pool = await setup_inference_pool(
-            rollout_client_config,
-            model_name=rollout_model_name,
+            client_config,
+            model_name=model_name,
             train_client_type="renderer",
             eval_client_type="openai_chat_completions",
             renderer_name=config.renderer.name,
@@ -982,8 +968,8 @@ async def setup_rollout_inference_pool(
     else:
         logger.info("Using MITO (openai_chat_completions) for rollouts")
     inference_pool = await setup_inference_pool(
-        rollout_client_config,
-        model_name=rollout_model_name,
+        client_config,
+        model_name=model_name,
         train_client_type=train_client_type,
         eval_client_type="openai_chat_completions",
     )

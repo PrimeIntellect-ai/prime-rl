@@ -73,7 +73,8 @@ class Scheduler:
     def __init__(
         self,
         train_envs: TrainEnvs,
-        inference_pool: InferencePool,
+        student_inference: InferencePool | None,
+        teacher_inference: InferencePool | None,
         buffer: Buffer,
         config: OrchestratorConfig,
         max_inflight_rollouts: int,
@@ -83,8 +84,6 @@ class Scheduler:
         tasks_per_minute: int | None,
         enable_policy_updates: bool = True,
         lora_name: str | None = None,
-        teacher_clients: list[vf.ClientConfig] | None = None,
-        teacher_model_name: str | None = None,
     ):
         self.logger = get_logger()
         if tasks_per_minute is not None:
@@ -103,12 +102,18 @@ class Scheduler:
         self.strict_async_level = strict_async_level
         self.enable_policy_updates = enable_policy_updates
         self.lora_name = lora_name
-        self.model_name = self.config.student.model.name
         self.json_logging = config.log.json_logging
 
-        self.inference_pool = inference_pool
-        self.teacher_clients = teacher_clients
-        self.teacher_model_name = teacher_model_name
+        # student_inference is the weight-sync target (None = no policy updates).
+        # teacher_inference is set in opd (for logprobs) and sft (for rollouts).
+        # rollout_inference is whichever pool serves train rollouts for this mode.
+        self.student_inference = student_inference
+        self.teacher_inference = teacher_inference
+        rollout = teacher_inference if config.training_mode == "sft" else student_inference
+        assert rollout is not None, "rollout_inference resolved to None - config validation should prevent this"
+        self.rollout_inference: InferencePool = rollout
+        # model_name is the name to send on rollout requests - matches the rollout pool
+        self.model_name = self.rollout_inference.model_name
 
         group_scoring_envs = [env.name for env in train_envs if env.requires_group_scoring]
         if group_scoring_envs:
@@ -178,23 +183,12 @@ class Scheduler:
         Uses (api_base_url, dp_rank) as identity rather than client_idx so that
         load tracking survives elastic pool refreshes (which reassign indices).
         """
-        clients = self.inference_pool.train_clients
+        clients = self.rollout_inference.train_clients
         while not clients:
             await asyncio.sleep(1)
-            clients = self.inference_pool.train_clients
+            clients = self.rollout_inference.train_clients
         inflight = Counter(self._client_identity(info.client_config) for info in self.inflight_requests.values())
         return min(clients, key=lambda c: inflight[self._client_identity(c)])
-
-    def _resolve_rollout_request_target(self, client_config: vf.ClientConfig) -> tuple[vf.ClientConfig, str]:
-        if self.teacher_clients is None:
-            return client_config, self.model_name
-
-        # The scheduler pins/load-balances against the student inference pool.
-        # Map that selected logical client onto the teacher client set, which may
-        # have a different size due to different base_url or dp_rank_count settings.
-        teacher_client = self.teacher_clients[client_config.client_idx % len(self.teacher_clients)]
-        assert self.teacher_model_name is not None
-        return teacher_client, self.teacher_model_name
 
     async def drop_group(self, group_id: int) -> int:
         """Drop a group and cancel any remaining in-flight rollouts for it. Returns the number of cancelled rollouts."""
@@ -229,16 +223,15 @@ class Scheduler:
         env_name = group.example["env_name"]
         env = self.train_envs.get(env_name)
 
-        request_client_config, request_model_name = self._resolve_rollout_request_target(client_config)
         cache_salt = str(self.ckpt_step)
         if env.requires_group_scoring:
             rollout_count = group.rollouts_to_schedule
             group.rollouts_to_schedule = 0
             task = asyncio.create_task(
                 env.run_group(
-                    client=request_client_config,
+                    client=client_config,
                     example=group.example,
-                    model_name=request_model_name,
+                    model_name=self.model_name,
                     rollouts_per_example=rollout_count,
                     cache_salt=cache_salt,
                 )
@@ -248,9 +241,9 @@ class Scheduler:
             group.rollouts_to_schedule -= 1
             task = asyncio.create_task(
                 env.run_rollout(
-                    client=request_client_config,
+                    client=client_config,
                     example=group.example,
-                    model_name=request_model_name,
+                    model_name=self.model_name,
                     cache_salt=cache_salt,
                 )
             )
@@ -335,14 +328,21 @@ class Scheduler:
 
         update_weights_start_time = time.perf_counter()
         weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
-        await self.inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
+        assert self.student_inference is not None, (
+            "weight sync requires student_inference - guard with enable_policy_updates"
+        )
+        await self.student_inference.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
         self.update_weights_time = time.perf_counter() - update_weights_start_time
         self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
         self.ckpt_step = next_ckpt_step
         if self.lora_name is not None:
-            self.inference_pool.update_model_name(self.lora_name)
-            self.model_name = self.lora_name
+            self.student_inference.update_model_name(self.lora_name)
+            # Only redirect rollout requests to the new LoRA when rollouts come from
+            # student inference (rl/opd). In sft, rollouts go to the teacher and
+            # the student's LoRA name is irrelevant to them.
+            if self.rollout_inference is self.student_inference:
+                self.model_name = self.lora_name
 
         self.checkpoint_ready.set()
         await self._update_off_policy()
@@ -613,7 +613,7 @@ class Scheduler:
         self.total_rollouts_by_env.clear()
         self.dropped_groups_by_env.clear()
 
-        # Add inference pool metrics (e.g. elastic pool server counts)
-        metrics.update(self.inference_pool.get_metrics())
+        # Add train pool metrics (e.g. elastic pool server counts)
+        metrics.update(self.rollout_inference.get_metrics())
 
         return metrics
