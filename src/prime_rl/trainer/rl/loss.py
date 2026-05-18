@@ -104,6 +104,15 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
     return values[mask].sum() / denom
 
 
+def compute_importance_ratio_and_mismatch_kl(
+    trainer_logprobs: Tensor, inference_logprobs: Tensor
+) -> tuple[Tensor, Tensor, Tensor]:
+    log_importance_ratio = trainer_logprobs - inference_logprobs
+    importance_ratio = torch.exp(log_importance_ratio)
+    mismatch_kl = importance_ratio - log_importance_ratio - 1
+    return log_importance_ratio, importance_ratio, mismatch_kl
+
+
 def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutputs:
     """
     DPPO+KL loss, combining:
@@ -122,9 +131,11 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     advantages = inputs.advantages
     loss_mask = inputs.loss_mask
 
-    trainer_probs = torch.exp(trainer_logprobs)
-    inference_probs = torch.exp(inference_logprobs)
-    probs_diff = trainer_probs - inference_probs
+    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+        trainer_logprobs, inference_logprobs
+    )
+
+    probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
     dppo_invalid_mask_high = probs_diff > loss_config.dppo_mask_high
     dppo_invalid_mask_low = probs_diff < -loss_config.dppo_mask_low
     positive_advantages = advantages > 0
@@ -136,10 +147,6 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     is_masked_low = negative_advantages & dppo_invalid_mask_low
     drop_mask = loss_mask & is_masked
     keep_mask = loss_mask & ~is_masked
-
-    log_importance_ratio = trainer_logprobs - inference_logprobs
-    importance_ratio = torch.exp(log_importance_ratio)
-    mismatch_kl = importance_ratio - log_importance_ratio - 1
 
     advantages = loss_config.adv_tau * advantages
     if teacher_logprobs is not None:
@@ -153,7 +160,6 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
 
     metrics = {
-        "mismatch_kl": _safe_mean(mismatch_kl, loss_mask),  # all trainable tokens
         "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
         "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
         "is_masked": _safe_mean(is_masked, loss_mask),
@@ -235,7 +241,11 @@ def compute_loss(
         teacher_logprobs = [None] * len(trainer_logprobs)
 
     for t_logp, i_logp, teach_logp, adv, mask in zip(
-        trainer_logprobs, inference_logprobs, teacher_logprobs, advantages, loss_mask
+        trainer_logprobs,
+        inference_logprobs,
+        teacher_logprobs,
+        advantages,
+        loss_mask,
     ):
         inputs = LossInputs(
             trainer_logprobs=t_logp,

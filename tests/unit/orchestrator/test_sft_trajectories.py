@@ -60,6 +60,7 @@ def test_pretokenize_rollout_trajectory_for_sft():
     tokenizer = SimpleChatTokenizer()
     output = vf.RolloutOutput(
         example_id=42,
+        env_name="test-env",
         trajectory=[
             vf.TrajectoryStep(
                 prompt=[{"role": "user", "content": "U1"}],
