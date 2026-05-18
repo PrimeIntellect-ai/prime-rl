@@ -30,8 +30,8 @@ resume_step = -1
 [model]
 name = "Qwen/Qwen3.5-35B-A3B"
 
-[orchestrator.model]
-renderer = "qwen3.5"
+[orchestrator.renderer]
+name = "qwen3.5"
 
 # --- Trainer ---
 

@@ -59,7 +59,9 @@ rlm_ref = "55fe64a98abc02b03c5c578e79d14a975f2a0ecf"
 labels = ["qwen3-30b-a3b-thinking-lp"]
 
 [orchestrator.advantage]
-length_shaping = true
+
+[orchestrator.advantage.length_penalty]
+type = "turns"
 
 [orchestrator.prime_monitor]
 

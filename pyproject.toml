@@ -83,7 +83,6 @@ envs = [
     "opencode-science",
     "opencode-swe",
     "reverse-text",
-    "rlm",
     "science-env",
     "simpleqa-verified",
     "tau2-bench",
@@ -190,7 +189,6 @@ prime-evals = false
 vllm-router = false
 dion = false
 pydantic-config = false
-rlm = false
 deep-ep = false
 deep-gemm = false
 nixl-cu12 = false
@@ -223,7 +221,6 @@ opencode-math = { workspace = true }
 opencode-science = { workspace = true }
 opencode-swe = { workspace = true }
 reverse-text = { workspace = true }
-rlm = { git = "https://github.com/PrimeIntellect-ai/rlm.git", rev = "1968c8a" }
 science-env = { workspace = true }
 simpleqa-verified = { workspace = true }
 tau2-bench = { workspace = true }

@@ -34,13 +34,13 @@ This folder contains the configs, prompt appendices, uploaded-run links, and rol
 
 ### 1. Prepare The Harness
 
-The PR wires `general-agent` and `rlm` into the root dependency graph, adds behavior-reward plumbing plus prompt loading from config-side text files in `deps/research-environments`, and adds matched Qwen3 RLM ablation configs in this folder.
+The PR wires `general-agent` into the root dependency graph, adds behavior-reward plumbing plus prompt loading from config-side text files in `deps/research-environments`, and adds matched Qwen3 RLM ablation configs in this folder.
 
 Install and import checks:
 
 ```bash
 uv sync --all-extras
-uv run --no-sync python -c "import general_agent, rlm"
+uv run --no-sync python -c "import general_agent"
 ```
 
 ### 2. Run GPT-5.5 Discovery Rollouts
@@ -64,7 +64,7 @@ Repeat the tier sweep for `min_tier = max_tier = 0..4`. The saved runs used 10 t
 The preserved TOML config is kept for reproducible discovery runs:
 
 ```bash
-uv run vf-eval configs/general_agent/behavior_learning/eval_rlm_gpt55_discovery.toml
+uv run vf-eval configs/behavior_learning/eval_rlm_gpt55_discovery.toml
 ```
 
 ### 3. Upload The Saved Evals
@@ -219,7 +219,7 @@ Prompt guidance is configured through `append_to_system_prompt`, which can be ei
 
 ```toml
 [orchestrator.train.env.args]
-append_to_system_prompt = "configs/general_agent/behavior_learning/prompts/extended.md"
+append_to_system_prompt = "configs/behavior_learning/prompts/extended.md"
 ```
 
 The env first tries to load the configured value as a path. If no file exists at that path, it treats the value as literal prompt text. In both cases, it forwards the final text to RLM as `append_to_system_prompt`, so RLM's generated base prompt still includes the dynamic cwd, skills, and message context. This is different from RLM's `system_prompt_path`, which replaces the generated prompt.
@@ -236,16 +236,16 @@ The README and `behavior.py` should stay aligned. The README documents the rubri
 The four training configs use the WandB project `general-agent-behavior-learning`, train `Qwen/Qwen3-4B-Instruct-2507`, and run on a single node split into 4 train GPUs and 4 inference GPUs. They share `batch_size = 256`, `rollouts_per_example = 8`, `max_retries = 1`, `seq_len = 32768`, and the `general-agent-solver-rlm` environment.
 
 ```bash
-uv run rl @ configs/general_agent/behavior_learning/rl_qwen3_4b_rlm_baseline.toml
-uv run rl @ configs/general_agent/behavior_learning/rl_qwen3_4b_rlm_prompt.toml
-uv run rl @ configs/general_agent/behavior_learning/rl_qwen3_4b_rlm_behavior_shaping.toml
-uv run rl @ configs/general_agent/behavior_learning/rl_qwen3_4b_rlm_prompt_behavior_shaping.toml
+uv run rl @ configs/behavior_learning/rl_qwen3_4b_rlm_baseline.toml
+uv run rl @ configs/behavior_learning/rl_qwen3_4b_rlm_prompt.toml
+uv run rl @ configs/behavior_learning/rl_qwen3_4b_rlm_behavior_shaping.toml
+uv run rl @ configs/behavior_learning/rl_qwen3_4b_rlm_prompt_behavior_shaping.toml
 ```
 
 Only the ablation-specific env args differ:
 
 - baseline: no additional RLM env args.
-- prompt: `append_to_system_prompt = "configs/general_agent/behavior_learning/prompts/extended.md"`.
+- prompt: `append_to_system_prompt = "configs/behavior_learning/prompts/extended.md"`.
 - behavior shaping: `behavior_judge_model = "openai/gpt-5-mini"` and `behavior_reward_alpha = 1.0`.
 - prompt plus behavior shaping: both the extended prompt and behavior-shaping args.
 
@@ -259,7 +259,7 @@ GPT-5.5 solver, GPT-5.5 behavior judge:
 uv run vf-eval general-agent-solver-rlm \
   -n10 -r1 -c 10 -d -v -A -i -s \
   -m openai/gpt-5.5 \
-  -a '{"append_to_system_prompt":"configs/general_agent/behavior_learning/prompts/extended.md", "behavior_judge_model":"openai/gpt-5.5"}' \
+  -a '{"append_to_system_prompt":"configs/behavior_learning/prompts/extended.md", "behavior_judge_model":"openai/gpt-5.5"}' \
   -C trajectory,task_reward,behavior_reward,final_reward,behavior_judge_summary,behavior_judge_response,behavior_results \
   -o outputs/evals/general-agent-rlm-gpt55-solver-gpt55-judge-n10
 ```
@@ -270,14 +270,14 @@ Qwen3-30B-A3B-Instruct solver, GPT-5.5 behavior judge:
 uv run vf-eval general-agent-solver-rlm \
   -n10 -r1 -c 10 -d -v -A -i -s \
   -m qwen/qwen3-30b-a3b-instruct-2507 \
-  -a '{"append_to_system_prompt":"configs/general_agent/behavior_learning/prompts/extended.md", "behavior_judge_model":"openai/gpt-5.5"}' \
+  -a '{"append_to_system_prompt":"configs/behavior_learning/prompts/extended.md", "behavior_judge_model":"openai/gpt-5.5"}' \
   -C trajectory,task_reward,behavior_reward,final_reward,behavior_judge_summary,behavior_judge_response,behavior_results \
   -o outputs/evals/general-agent-rlm-qwen3-30b-instruct-solver-gpt55-judge-n10
 ```
 
 ## Prompt Variants
 
-The prompt variants live in `configs/general_agent/behavior_learning/prompts` instead of the `general-agent` package:
+The prompt variants live in `configs/behavior_learning/prompts` instead of the `general-agent` package:
 
 - `standard.md` enumerates the eight harness-specific task-agnostic guidance items with short descriptions and operational guidance.
 - `extended.md` includes the standard guidance plus generic metapattern code examples.
@@ -286,7 +286,7 @@ The prompt and prompt-plus-behavior-shaping ablation configs use:
 
 ```toml
 [orchestrator.train.env.args]
-append_to_system_prompt = "configs/general_agent/behavior_learning/prompts/extended.md"
+append_to_system_prompt = "configs/behavior_learning/prompts/extended.md"
 ```
 
 ## Curated Evidence Highlights

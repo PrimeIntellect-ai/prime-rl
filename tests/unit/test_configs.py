@@ -1,3 +1,4 @@
+import tomllib
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -33,9 +34,19 @@ def get_config_files() -> list[Path]:
     return config_files + example_files
 
 
+def is_vf_eval_config(path: Path) -> bool:
+    """vf-eval TOMLs live under configs but are not prime-rl entrypoint configs."""
+    with path.open("rb") as f:
+        data = tomllib.load(f)
+    return isinstance(data.get("eval"), list)
+
+
 @pytest.mark.parametrize("config_file", get_config_files(), ids=lambda x: x.as_posix())
 def test_load_configs(config_file: Path):
     """Tests that all config files can be loaded by at least one config class."""
+    if is_vf_eval_config(config_file):
+        pytest.skip("vf-eval TOML files are not prime-rl entrypoint configs")
+
     could_parse = []
     for config_cls in CONFIG_CLASSES:
         try:

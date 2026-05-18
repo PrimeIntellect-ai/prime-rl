@@ -19,13 +19,13 @@ uv run rl @ configs/general_agent/rl_qwen3_30b_a3b.toml
 ### general-agent-behavior-learning — Qwen3-4B-Instruct RLM ablations
 
 Four matched RLM runs for prompt and behavior-shaping ablations. They train `Qwen/Qwen3-4B-Instruct-2507` on a single node split into 4 train GPUs and 4 inference GPUs, with `batch_size = 256`, `rollouts_per_example = 8`, and `max_retries = 1`. The baseline uses the current RLM prompt, the prompt run loads explicit IPython/programmatic-control guidance from `behavior_learning/prompts/extended.md`, the behavior-shaping run gates judge rewards on solved rollouts using `openai/gpt-5-mini` through Prime inference, and the combined run enables both.
-See `configs/general_agent/behavior_learning/README.md` for the GPT-5.5 discovery walkthrough, uploaded eval links, and curated behavior evidence.
+See `configs/behavior_learning/README.md` for the GPT-5.5 discovery walkthrough, uploaded eval links, and curated behavior evidence.
 
 ```bash
-uv run rl @ configs/general_agent/behavior_learning/rl_qwen3_4b_rlm_baseline.toml
-uv run rl @ configs/general_agent/behavior_learning/rl_qwen3_4b_rlm_prompt.toml
-uv run rl @ configs/general_agent/behavior_learning/rl_qwen3_4b_rlm_behavior_shaping.toml
-uv run rl @ configs/general_agent/behavior_learning/rl_qwen3_4b_rlm_prompt_behavior_shaping.toml
+uv run rl @ configs/behavior_learning/rl_qwen3_4b_rlm_baseline.toml
+uv run rl @ configs/behavior_learning/rl_qwen3_4b_rlm_prompt.toml
+uv run rl @ configs/behavior_learning/rl_qwen3_4b_rlm_behavior_shaping.toml
+uv run rl @ configs/behavior_learning/rl_qwen3_4b_rlm_prompt_behavior_shaping.toml
 ```
 
 The behavior-shaping configs use `behavior_judge_model = "openai/gpt-5-mini"` and `behavior_reward_alpha = 1.0`. The judge provider defaults to Prime inference with `PRIME_API_KEY`, the behavior reward is solution-gated, and the environment fails early if the key is missing.
@@ -95,7 +95,7 @@ uv run inference @ configs/general_agent/infer_glm51.toml
 Generate and run the GPT-5.5 discovery eval used to mine solved RLM behavior examples:
 
 ```bash
-uv run vf-eval configs/general_agent/behavior_learning/eval_rlm_gpt55_discovery.toml
+uv run vf-eval configs/behavior_learning/eval_rlm_gpt55_discovery.toml
 ```
 
 ## General tips
