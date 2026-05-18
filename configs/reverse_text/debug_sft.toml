@@ -25,6 +25,9 @@ id = "reverse-text"
 interval = 5
 num_examples = 64
 
+[orchestrator.eval.sampling]
+max_completion_tokens = 128
+
 [[orchestrator.eval.env]]
 id = "reverse-text"
 
