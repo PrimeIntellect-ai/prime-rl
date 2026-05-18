@@ -65,7 +65,3 @@ seed = 42
 
 [inference.parallel]
 tp = 8
-
-# Qwen/Qwen3-30B-A3B-Thinking-2507 — template-identical to Qwen3-4B-Thinking-2507 (mapped).
-[orchestrator.renderer]
-name = "qwen3"
