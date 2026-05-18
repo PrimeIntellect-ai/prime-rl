@@ -178,11 +178,19 @@ Runtime source of truth: `deps/research-environments/environments/general_agent/
 The `BEHAVIORS` tuple defines the rubric keys, titles, descriptions, positive cues, and negative cues. `BehaviorRewardRubric` uses that tuple in three places:
 
 - Judge prompt construction: `_judge_system_prompt()` renders every behavior in `BEHAVIORS` and asks the judge to return JSON with a top-level `summary` plus a top-level `behaviors` object.
-- Applicability: every behavior judgment includes `applicable`, `score`, and `evidence`; inapplicable behaviors are excluded from the behavior mean.
-- Reward aggregation: unsolved rollouts get `0.0`; solved rollouts get `1.0 + behavior_reward_alpha * behavior_applicable_mean`.
-- Metrics: every behavior becomes a separate metric named `behavior_<key>`, for example `behavior_tool_contract_discovery`. Aggregate metrics include `behavior_applicable_mean`, `behavior_applicable_count`, and `solution_score`.
+- Applicability: every behavior judgment includes `applicable`, `score`, and `evidence`; inapplicable behaviors are excluded from the behavior mean. Parsed state also records whether each behavior key was present as `judged`.
+- Reward aggregation: `task_reward = max(db_hash, verify)`, `behavior_reward` is the solution-gated applicable behavior mean in `[0, 1]`, and `final_reward = task_reward + behavior_reward_alpha * behavior_reward`.
+- Metrics: every behavior becomes a separate metric named `behavior_<key>`, for example `behavior_tool_contract_discovery`. Aggregate metrics include `task_reward`, `behavior_reward`, `final_reward`, `behavior_applicable_mean`, `behavior_applicable_count`, and `behavior_judged_count`.
 
-Behavior rewards are solution-gated. If `solution_score` is not exactly `1.0`, the rollout reward is `0.0` even though behavior judging still runs and logs behavior metrics for audit. `solution_score` is the max of the existing `db_hash` and `verify` metrics, so behavior shaping cannot reward unsolved rollouts.
+Behavior rewards are solution-gated. If `task_reward` is not exactly `1.0`, `behavior_reward` is `0.0` even though behavior judging still runs and logs behavior metrics for audit. `task_reward` is the max of the existing `db_hash` and `verify` metrics, so behavior shaping cannot reward unsolved rollouts.
+
+The behavior judge scores only operating strategy, not task correctness. For applicable behaviors it uses these score anchors:
+
+- `0.0`: absent or harmful.
+- `0.25`: weak, accidental, or mostly ineffective evidence.
+- `0.5`: partial evidence with important gaps.
+- `0.75`: solid useful evidence with minor omissions or limited opportunity.
+- `1.0`: exemplary use for the available opportunity.
 
 The env args are exposed by `general_agent.solver.rlm.env.load_environment`:
 
@@ -193,7 +201,7 @@ behavior_reward_alpha = 1.0
 behavior_judge_sampling_args = { temperature = 0.0 }
 ```
 
-Behavior judging is enabled when `behavior_judge_model` is set. Omit `behavior_judge_model` to disable behavior rewards. The judge defaults to Prime inference at `https://api.pinference.ai/api/v1` using `PRIME_API_KEY`; override `behavior_judge_base_url` and `behavior_judge_api_key_var` only for a different provider. Judge mode fails early if the configured API key env var is missing. One judge JSON response is cached per rollout and reused for all behavior metrics. The parsed judge response is kept in `state["behavior_judge_response"]`, and the top-level summary is copied to `state["behavior_judge_summary"]`.
+Behavior judging is enabled when `behavior_judge_model` is set. Omit `behavior_judge_model` to disable behavior rewards. The judge defaults to Prime inference at `https://api.pinference.ai/api/v1` using `PRIME_API_KEY`; override `behavior_judge_base_url` and `behavior_judge_api_key_var` only for a different provider. Judge mode fails early if the configured API key env var is missing. One judge JSON response is cached per rollout and reused for all behavior metrics. The parsed judge response is kept in `state["behavior_judge_response"]`, the normalized per-behavior state is kept in `state["behavior_results"]`, and the top-level summary is copied to `state["behavior_judge_summary"]`.
 
 To save the judge artifacts from `vf-eval`, enable result saving and pass comma-separated state columns:
 
