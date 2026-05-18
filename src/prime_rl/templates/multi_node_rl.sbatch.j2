@@ -306,7 +306,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             >> $ROUTER_LOG 2>&1 &
     fi
 
-    uv run inference \
+    "$PROJECT_DIR/.venv/bin/inference" \
         @ $CONFIG_DIR/inference.toml \
         --server.host 0.0.0.0 \
         --server.port $PORT \
@@ -343,7 +343,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             VLLM_EXTRA="{\"data_parallel_address\": \"$REPLICA_HEAD_HOST\", \"data_parallel_start_rank\": $INFER_DP_START_RANK, \"data_parallel_hybrid_lb\": true}"
         fi
 
-        uv run inference \
+        "$PROJECT_DIR/.venv/bin/inference" \
             @ $CONFIG_DIR/inference.toml \
             --server.host 0.0.0.0 \
             --server.port $BACKEND_PORT \
@@ -351,7 +351,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             --vllm-extra "$VLLM_EXTRA" \
             2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
     else
-        uv run inference \
+        "$PROJECT_DIR/.venv/bin/inference" \
             @ $CONFIG_DIR/inference.toml \
             --server.host 0.0.0.0 \
             --server.port $BACKEND_PORT \
@@ -383,22 +383,28 @@ else
             TTT_ARGS="$TTT_ARGS --vllm-admin-base-url ${admin_url%/v1}"
         done
         echo "Starting TTT learner on train node 0" | tee $OUTPUT_DIR/logs/ttt/learner.log
-        CUDA_VISIBLE_DEVICES=0 uv run ttt-learner $TTT_ARGS \
+        CUDA_VISIBLE_DEVICES=0 "$PROJECT_DIR/.venv/bin/ttt-learner" $TTT_ARGS \
             2>&1 | tee -a $OUTPUT_DIR/logs/ttt/learner.log &
 
+        TTT_READY=0
         for i in {1..600}; do
             if curl -fsS "http://{{ ttt_host }}:{{ ttt_port }}/health" >/dev/null 2>&1; then
+                TTT_READY=1
                 break
             fi
             sleep 1
         done
+        if [ "$TTT_READY" -ne 1 ]; then
+            echo "TTT learner failed to become healthy on http://{{ ttt_host }}:{{ ttt_port }}/health" | tee -a $OUTPUT_DIR/logs/ttt/learner.log
+            exit 1
+        fi
         {% endif -%}
 
         ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.toml"
         ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --client.base-url $INFER_URLS"
         ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --client.admin-base-url $ADMIN_URLS"
         {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
-        {% endif %}{% if wandb_shared %}WANDB_SHARED_LABEL=orchestrator {% endif %}uv run orchestrator $ORCHESTRATOR_ARGS \
+        {% endif %}{% if wandb_shared %}WANDB_SHARED_LABEL=orchestrator {% endif %}"$PROJECT_DIR/.venv/bin/orchestrator" $ORCHESTRATOR_ARGS \
             2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &
     fi
 {%- else %}
@@ -412,7 +418,7 @@ else
 
     echo $HOSTNAMES_STR | tee $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
 
-    {% if wandb_shared %}WANDB_SHARED_LABEL=trainer {% endif %}uv run torchrun \
+    {% if wandb_shared %}WANDB_SHARED_LABEL=trainer {% endif %}"$PROJECT_DIR/.venv/bin/torchrun" \
         --role=trainer \
         --nnodes=$NUM_TRAIN_NODES \
         --nproc-per-node=$GPUS_PER_NODE \
