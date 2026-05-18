@@ -27,7 +27,7 @@ keep_last = 1
 resume_step = -1
 
 [model]
-name = "Qwen/Qwen3-4B-Instruct-2507"
+name = "Qwen/Qwen3-4B-Thinking-2507"
 
 # --- Trainer ---
 
