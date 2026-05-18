@@ -32,6 +32,7 @@ class SparseMlaAttentionArgs:
     index_n_heads: int
     index_head_dim: int
     index_topk: int
+    use_index_cache: bool = False
     skip_topk: bool = False
 
 
@@ -158,6 +159,7 @@ class GlmMoeDsaAttention(nn.Module):
 
         self.o_proj = nn.Linear(self.num_heads * self.v_head_dim, args.hidden_size, bias=args.attention_bias)
         self.indexer = Indexer(args)
+        self.use_index_cache = args.use_index_cache
         self.skip_topk = args.skip_topk
         self.scaling = self.qk_head_dim ** (-0.5)
 
@@ -266,4 +268,5 @@ class GlmMoeDsaAttention(nn.Module):
         )
 
         out = _SparseMLA.apply(sparse_q, sparse_kv, indices, self.scaling)
-        return self.output_proj(out, w_v), indices
+        cached_indices = indices if self.use_index_cache else None
+        return self.output_proj(out, w_v), cached_indices

@@ -58,6 +58,7 @@ def _sparse_mla_attention_args(config: GlmMoeDsaConfig, layer_idx: int) -> Spars
         index_n_heads=config.index_n_heads,
         index_head_dim=config.index_head_dim,
         index_topk=config.index_topk,
+        use_index_cache=getattr(config, "use_index_cache", False),
         skip_topk=_index_cache_skip_topk(config, layer_idx),
     )
 
@@ -272,9 +273,10 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
             ks, ke = ks_full, ke_full
 
         cached_indices = None
+        use_index_cache = getattr(self.config, "use_index_cache", False)
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
-            hidden_states, cached_indices = decoder_layer(
+            hidden_states, next_cached_indices = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
                 ks=ks,
@@ -282,6 +284,7 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
                 cached_indices=cached_indices,
                 routed_experts=routed_experts_layer,
             )
+            cached_indices = next_cached_indices if use_index_cache else None
 
         hidden_states = self.norm(hidden_states)
         return BaseModelOutputWithPast(last_hidden_state=hidden_states)
