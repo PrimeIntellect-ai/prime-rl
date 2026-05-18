@@ -313,6 +313,15 @@ class RLConfig(BaseConfig):
         ),
     ] = None
 
+    training_mode: Annotated[
+        Literal["rl", "opd", "sft"] | None,
+        Field(
+            description="Shared training mode. Propagates to orchestrator.training_mode and, "
+            "for 'sft', switches trainer.loss to SFTLossConfig. "
+            "Explicitly set per-component values always take precedence."
+        ),
+    ] = None
+
     max_steps: Annotated[
         int | None,
         Field(
@@ -421,6 +430,34 @@ class RLConfig(BaseConfig):
             raise ValueError("weight_broadcast.quantize_in_weight_transfer requires trainer.model.impl = 'custom'.")
 
         return self
+
+    @model_validator(mode="before")
+    @classmethod
+    def auto_setup_training_mode(cls, data):
+        """Propagate shared training_mode into orchestrator.training_mode and trainer.loss.type.
+
+        Runs before nested validation so that OrchestratorConfig.validate_training_mode
+        sees the propagated value. Only propagates to components that don't already set
+        the field explicitly. For 'sft' mode, defaults trainer.loss.type to 'sft'.
+        """
+        if not isinstance(data, dict):
+            return data
+        mode = data.get("training_mode")
+        if mode is None:
+            return data
+
+        orch = data.setdefault("orchestrator", {})
+        if isinstance(orch, dict) and "training_mode" not in orch:
+            orch["training_mode"] = mode
+
+        if mode == "sft":
+            trainer = data.setdefault("trainer", {})
+            if isinstance(trainer, dict):
+                loss = trainer.setdefault("loss", {})
+                if isinstance(loss, dict) and "type" not in loss:
+                    loss["type"] = "sft"
+
+        return data
 
     @model_validator(mode="after")
     def validate_teacher_model(self):

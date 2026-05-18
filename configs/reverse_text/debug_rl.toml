@@ -35,3 +35,4 @@ lr = 3e-6
 [ckpt]
 
 [inference]
+gpu_memory_utilization = 0.5

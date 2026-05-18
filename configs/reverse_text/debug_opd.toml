@@ -1,5 +1,12 @@
+# Start the teacher inference server first (on a separate GPU):
+#   CUDA_VISIBLE_DEVICES=1 uv run vllm serve PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
+#     --port 8001 --gpu-memory-utilization 0.5 --enforce-eager
+# Then:
+#   uv run rl @ configs/reverse_text/debug_opd.toml
+
 max_steps = 20
 seq_len = 2048
+training_mode = "opd"
 
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
@@ -8,11 +15,7 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 project = "reverse-text-debug"
 name = "debug-opd"
 
-[deployment]
-num_teacher_gpus = 1
-
 [orchestrator]
-training_mode = "opd"
 batch_size = 128
 rollouts_per_example = 16
 
@@ -32,7 +35,11 @@ max_completion_tokens = 128
 [[orchestrator.eval.env]]
 id = "reverse-text"
 
-[orchestrator.teacher]
+[orchestrator.teacher.model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+
+[orchestrator.teacher.client]
+base_url = ["http://localhost:8001/v1"]
 
 [trainer.optim]
 lr = 3e-6
@@ -43,3 +50,4 @@ teacher_tau = 0.5
 [ckpt]
 
 [inference]
+gpu_memory_utilization = 0.5
