@@ -1,0 +1,42 @@
+max_steps = 20
+seq_len = 2048
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+project = "reverse-text-debug"
+name = "debug-sft"
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 4
+use_token_client = false
+use_renderer = false
+training_mode = "sft"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.train.env]]
+id = "reverse-text"
+
+[orchestrator.eval]
+interval = 5
+
+[[orchestrator.eval.env]]
+id = "reverse-text"
+
+[orchestrator.teacher.client]
+base_url = ["https://api.pinference.ai/api/v1"]
+api_key_var = "PRIME_API_KEY"
+
+[orchestrator.teacher.model]
+name = "qwen/qwen3-4b-instruct"
+
+[trainer.optim]
+lr = 3e-6
+
+[ckpt]
+
+[inference]

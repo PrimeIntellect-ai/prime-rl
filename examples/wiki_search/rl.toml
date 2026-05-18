@@ -34,7 +34,7 @@ batch_size = 512
 rollouts_per_example = 16
 oversampling_factor = 2.0
 
-[orchestrator.model.lora]
+[orchestrator.student.model.lora]
 name = "qwen3-4b-wiki-search"
 
 [orchestrator.train.sampling]

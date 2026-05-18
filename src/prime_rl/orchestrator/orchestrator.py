@@ -122,22 +122,23 @@ async def orchestrate(config: OrchestratorConfig):
     # Setup rollout inference pool (handles both static and elastic modes)
     rollout_client_config, rollout_model_name, enable_policy_updates = setup_external_rollout_model(config, logger)
 
-    # Setup teacher inference pool if configured
-    if config.teacher_model:
+    # Setup teacher inference pool (opd: logprob distillation)
+    if config.training_mode == "opd":
+        assert config.teacher is not None
         logger.info(
-            f"Initializing teacher inference pool (base_url={', '.join(config.teacher_model.client.base_url)}, "
-            f"model={config.teacher_model.model.name})"
+            f"Initializing teacher inference pool (base_url={', '.join(config.teacher.client.base_url)}, "
+            f"model={config.teacher.model.name})"
         )
         teacher_inference_pool = await setup_inference_pool(
-            config.teacher_model.client,
-            model_name=config.teacher_model.model.name,
+            config.teacher.client,
+            model_name=config.teacher.model.name,
             train_client_type="openai_chat_completions",
         )
     else:
         teacher_inference_pool = None
 
     # Check if this is a vision-language model (used throughout for VLM-specific paths)
-    is_vlm = config.model.vlm is not None
+    is_vlm = config.student.model.vlm is not None
 
     # Load tokenizer and processor (processor only for VLM models)
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
@@ -145,25 +146,25 @@ async def orchestrate(config: OrchestratorConfig):
 
     processor = None
     if is_vlm:
-        logger.info(f"Loading VLM processor for {config.model.name}")
+        logger.info(f"Loading VLM processor for {config.student.model.name}")
         processor = AutoProcessor.from_pretrained(
-            config.model.name, trust_remote_code=config.model.trust_remote_code, use_fast=True
+            config.student.model.name, trust_remote_code=config.student.model.trust_remote_code, use_fast=True
         )
 
-    teacher_rollout_clients = None
-    teacher_rollout_model_name = None
-    use_teacher_rollout_override = config.teacher_rollout_model is not None and enable_policy_updates
-    if use_teacher_rollout_override:
+    teacher_clients = None
+    teacher_model_name = None
+    use_sft_override = config.training_mode == "sft" and enable_policy_updates
+    if use_sft_override:
         logger.info(f"Using teacher rollout override (MITO, model={rollout_model_name})")
-        teacher_rollout_clients = setup_clients(
+        teacher_clients = setup_clients(
             rollout_client_config,
             client_type="openai_chat_completions",
         )
-        teacher_rollout_model_name = rollout_model_name
+        teacher_model_name = rollout_model_name
         renderer = None
         inference_pool = await setup_inference_pool(
-            config.client,
-            model_name=config.model.name,
+            config.student.client,
+            model_name=config.student.model.name,
             train_client_type="openai_chat_completions",
             eval_client_type="openai_chat_completions",
         )
@@ -256,22 +257,22 @@ async def orchestrate(config: OrchestratorConfig):
         train_envs=train_envs,
         buffer=buffer,
         inference_pool=inference_pool,
-        teacher_rollout_clients=teacher_rollout_clients,
-        teacher_rollout_model_name=teacher_rollout_model_name,
+        teacher_clients=teacher_clients,
+        teacher_model_name=teacher_model_name,
         max_inflight_rollouts=config.max_inflight_rollouts,
         max_async_level=config.max_async_level,
         max_off_policy_steps=config.max_off_policy_steps,
         strict_async_level=config.strict_async_level,
         tasks_per_minute=config.tasks_per_minute,
         enable_policy_updates=enable_policy_updates,
-        lora_name=config.model.lora.name if config.model.lora else None,
+        lora_name=config.student.model.lora.name if config.student.model.lora else None,
         config=config,
     )
-    scheduler.model_name = config.model.name if use_teacher_rollout_override else rollout_model_name
+    scheduler.model_name = config.student.model.name if use_sft_override else rollout_model_name
 
     # Check health of the inference pool
     logger.info("Waiting for inference pool to be ready")
-    inference_model_name = config.model.name if use_teacher_rollout_override else rollout_model_name
+    inference_model_name = config.student.model.name if use_sft_override else rollout_model_name
     await inference_pool.wait_for_ready(inference_model_name)
     logger.success("Inference pool ready")
 
@@ -281,10 +282,11 @@ async def orchestrate(config: OrchestratorConfig):
         inference_metrics_collector = InferenceMetricsCollector(inference_pool.admin_clients)
         await inference_metrics_collector.start()
 
-    # Check health of teacher inference server if configured
-    if config.teacher_model and teacher_inference_pool:
+    # Check health of teacher inference server if configured (opd mode)
+    if config.training_mode == "opd" and teacher_inference_pool:
+        assert config.teacher is not None
         logger.info("Waiting for teacher inference pool to be ready")
-        await teacher_inference_pool.wait_for_ready(config.teacher_model.model.name)
+        await teacher_inference_pool.wait_for_ready(config.teacher.model.name)
         logger.success("Teacher inference pool ready")
 
     # Set up weight broadcast backend
@@ -333,7 +335,7 @@ async def orchestrate(config: OrchestratorConfig):
             weights_path = get_weight_dir(
                 config.output_dir, scheduler.ckpt_step, check_exists=check_exists, wait_timeout=wait_timeout
             )
-            lora_name = config.model.lora.name if config.model.lora else None
+            lora_name = config.student.model.lora.name if config.student.model.lora else None
             await inference_pool.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
             if lora_name is not None:
                 inference_pool.update_model_name(lora_name)
@@ -573,7 +575,7 @@ async def orchestrate(config: OrchestratorConfig):
             for sample in samples:
                 sample.advantage = rollout["advantage"]
                 sample.reward = rollout["reward"]
-                if config.use_sft_loss:
+                if config.training_mode == "sft":
                     sample.sft_loss = True
                 sample_decode_tokens = sum(sample.completion_mask)
                 sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens
@@ -594,12 +596,12 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Compute teacher logprobs if teacher model is configured
         teacher_logprobs_time = 0
-        if config.teacher_model and teacher_inference_pool:
+        if config.teacher and teacher_inference_pool:
             logger.info(f"Computing teacher logprobs for {len(train_examples)} training examples")
             teacher_logprobs_start_time = time.perf_counter()
             teacher_logprobs_list = await compute_teacher_logprobs(
                 clients=teacher_inference_pool.train_clients,
-                model_name=config.teacher_model.model.name,
+                model_name=config.teacher.model.name,
                 samples=train_examples,
             )
             for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):
@@ -939,7 +941,7 @@ async def setup_rollout_inference_pool(
       - both False → MITO (``openai_chat_completions``).
         VLMs land here too.
     """
-    if config.teacher_rollout_model is not None:
+    if config.training_mode == "sft":
         logger.info("Using external rollout model (MITO) without renderer client")
         inference_pool = await setup_inference_pool(
             rollout_client_config,
@@ -958,7 +960,7 @@ async def setup_rollout_inference_pool(
             preserve_all_thinking=config.renderer.preserve_all_thinking,
             preserve_thinking_between_tool_calls=config.renderer.preserve_thinking_between_tool_calls,
         )
-        logger.info(f"Initialized {type(renderer).__name__} for {config.model.name}")
+        logger.info(f"Initialized {type(renderer).__name__} for {config.student.model.name}")
         inference_pool = await setup_inference_pool(
             rollout_client_config,
             model_name=rollout_model_name,

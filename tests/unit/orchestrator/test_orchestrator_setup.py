@@ -6,12 +6,12 @@ from prime_rl.orchestrator.orchestrator import setup_rollout_inference_pool
 from prime_rl.orchestrator.utils import setup_external_rollout_model
 
 
-def test_setup_rollout_inference_pool_uses_plain_client_for_external_teacher_rollout():
+def test_setup_rollout_inference_pool_uses_plain_client_for_sft_mode():
     async def run() -> None:
         tokenizer = object()
         config = SimpleNamespace(
-            teacher_rollout_model=SimpleNamespace(),
-            model=SimpleNamespace(renderer="auto", name="student-model"),
+            training_mode="sft",
+            student=SimpleNamespace(renderer="auto", model=SimpleNamespace(name="student-model")),
         )
         rollout_client_config = SimpleNamespace(base_url=["https://api.pinference.ai/api/v1"])
         logger = MagicMock()
@@ -45,26 +45,26 @@ def test_setup_rollout_inference_pool_uses_plain_client_for_external_teacher_rol
     asyncio.run(run())
 
 
-def test_setup_external_rollout_model_uses_explicit_weight_update_opt_in():
+def test_setup_external_rollout_model_sft_uses_teacher_and_checks_student_client():
+    from prime_rl.configs.orchestrator import ClientConfig, RolloutModelConfig
+
     teacher_client = SimpleNamespace(base_url=["https://teacher.example/v1"])
-    student_client = SimpleNamespace(base_url=["http://localhost:8000/v1"])
-    config = SimpleNamespace(
-        client=student_client,
-        model=SimpleNamespace(name="student-model"),
-        update_student_inference_weights=None,
-        teacher_rollout_model=SimpleNamespace(
-            client=teacher_client,
-            model=SimpleNamespace(name="teacher-model"),
-        ),
-    )
     logger = MagicMock()
 
+    # SFT mode, student client has default base_url (not in model_fields_set) → policy updates disabled
+    config = SimpleNamespace(
+        training_mode="sft",
+        student=RolloutModelConfig(),  # default client — base_url not explicitly set
+        teacher=SimpleNamespace(client=teacher_client, model=SimpleNamespace(name="teacher-model")),
+    )
     rollout_client, rollout_model, enable_policy_updates = setup_external_rollout_model(config, logger)
     assert rollout_client is teacher_client
     assert rollout_model == "teacher-model"
     assert not enable_policy_updates
 
-    config.update_student_inference_weights = True
+    # SFT mode, student client base_url explicitly set → policy updates enabled
+    student_model = RolloutModelConfig(client=ClientConfig(base_url=["http://localhost:8000/v1"]))
+    config.student = student_model
     rollout_client, rollout_model, enable_policy_updates = setup_external_rollout_model(config, logger)
     assert rollout_client is teacher_client
     assert rollout_model == "teacher-model"
@@ -75,10 +75,10 @@ def test_setup_rollout_inference_pool_uses_direct_renderer_client_for_local_vllm
     async def run() -> None:
         tokenizer = object()
         config = SimpleNamespace(
-            teacher_rollout_model=None,
+            training_mode="rl",
             use_renderer=True,
             use_token_client=False,
-            model=SimpleNamespace(name="student-model"),
+            student=SimpleNamespace(model=SimpleNamespace(name="student-model")),
             renderer=SimpleNamespace(
                 name="qwen3_vl",
                 tool_parser=None,

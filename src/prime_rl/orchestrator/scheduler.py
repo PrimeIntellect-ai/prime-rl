@@ -83,8 +83,8 @@ class Scheduler:
         tasks_per_minute: int | None,
         enable_policy_updates: bool = True,
         lora_name: str | None = None,
-        teacher_rollout_clients: list[vf.ClientConfig] | None = None,
-        teacher_rollout_model_name: str | None = None,
+        teacher_clients: list[vf.ClientConfig] | None = None,
+        teacher_model_name: str | None = None,
     ):
         self.logger = get_logger()
         if tasks_per_minute is not None:
@@ -103,12 +103,12 @@ class Scheduler:
         self.strict_async_level = strict_async_level
         self.enable_policy_updates = enable_policy_updates
         self.lora_name = lora_name
-        self.model_name = self.config.model.name
+        self.model_name = self.config.student.model.name
         self.json_logging = config.log.json_logging
 
         self.inference_pool = inference_pool
-        self.teacher_rollout_clients = teacher_rollout_clients
-        self.teacher_rollout_model_name = teacher_rollout_model_name
+        self.teacher_clients = teacher_clients
+        self.teacher_model_name = teacher_model_name
 
         group_scoring_envs = [env.name for env in train_envs if env.requires_group_scoring]
         if group_scoring_envs:
@@ -186,15 +186,15 @@ class Scheduler:
         return min(clients, key=lambda c: inflight[self._client_identity(c)])
 
     def _resolve_rollout_request_target(self, client_config: vf.ClientConfig) -> tuple[vf.ClientConfig, str]:
-        if self.teacher_rollout_clients is None:
+        if self.teacher_clients is None:
             return client_config, self.model_name
 
         # The scheduler pins/load-balances against the student inference pool.
         # Map that selected logical client onto the teacher client set, which may
         # have a different size due to different base_url or dp_rank_count settings.
-        teacher_client = self.teacher_rollout_clients[client_config.client_idx % len(self.teacher_rollout_clients)]
-        assert self.teacher_rollout_model_name is not None
-        return teacher_client, self.teacher_rollout_model_name
+        teacher_client = self.teacher_clients[client_config.client_idx % len(self.teacher_clients)]
+        assert self.teacher_model_name is not None
+        return teacher_client, self.teacher_model_name
 
     async def drop_group(self, group_id: int) -> int:
         """Drop a group and cancel any remaining in-flight rollouts for it. Returns the number of cancelled rollouts."""

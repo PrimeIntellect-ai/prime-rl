@@ -73,18 +73,18 @@ type = "sft"
 [orchestrator]
 use_token_client = false
 use_renderer = false
-use_sft_loss = true
+training_mode = "sft"
 
-[orchestrator.teacher_rollout_model.client]
+[orchestrator.teacher_model.client]
 base_url = ["https://your-openai-compatible-endpoint/v1"]
 skip_model_check = true
 
-[orchestrator.teacher_rollout_model.model]
+[orchestrator.teacher_model.model]
 name = "teacher-model-name"
 ```
 
 In this mode:
-- Rollouts are generated from `orchestrator.teacher_rollout_model`
+- Rollouts are generated from `orchestrator.teacher_model`
 - The orchestrator uses text-level reconstruction with the student tokenizer
 - The RL trainer optimizes masked NLL (`trainer.loss.type = "sft"`)
 - Omit `[inference]` (no local inference server required)

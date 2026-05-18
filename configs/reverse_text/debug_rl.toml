@@ -1,26 +1,16 @@
-max_steps = 15
+max_steps = 20
 seq_len = 2048
-
-[ckpt]
 
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
-[trainer.optim]
-lr = 5e-5
-
-[trainer.model.lora]
-rank = 8
-
-[trainer.ckpt.weights]
-save_adapter_separately = true
+[wandb]
+project = "reverse-text-debug"
+name = "debug-rl"
 
 [orchestrator]
 batch_size = 128
 rollouts_per_example = 16
-
-[orchestrator.student.model.lora]
-name = "r8-1e-4"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 128
@@ -28,6 +18,15 @@ max_completion_tokens = 128
 [[orchestrator.train.env]]
 id = "reverse-text"
 
+[orchestrator.eval]
+interval = 5
+
+[[orchestrator.eval.env]]
+id = "reverse-text"
+
+[trainer.optim]
+lr = 3e-6
+
+[ckpt]
+
 [inference]
-enable_lora = true
-gpu_memory_utilization = 0.7

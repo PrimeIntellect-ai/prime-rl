@@ -153,16 +153,16 @@ def rl_local(config: RLConfig):
     check_gpus_available(all_gpu_ids)
 
     # Validate client port matches inference server port
-    if config.inference is not None and not config.orchestrator.client.is_elastic:
+    if config.inference is not None and not config.orchestrator.student.client.is_elastic:
         from urllib.parse import urlparse
 
-        base_url = config.orchestrator.client.base_url[0]
+        base_url = config.orchestrator.student.client.base_url[0]
         parsed = urlparse(base_url)
         client_port = parsed.port
         expected_port = config.inference.server.port
         if client_port != expected_port:
             raise ValueError(
-                f"orchestrator.client.base_url port ({client_port}) does not match "
+                f"orchestrator.student.client.base_url port ({client_port}) does not match "
                 f"inference.server.port ({expected_port}). "
                 f"Update the base_url to use port {expected_port} to match the inference server."
             )
@@ -215,14 +215,12 @@ def rl_local(config: RLConfig):
             monitor_thread.start()
             monitor_threads.append(monitor_thread)
         else:
-            if config.orchestrator.teacher_rollout_model is None:
+            if config.orchestrator.training_mode != "sft":
                 logger.warning(
                     "No inference config specified, skipping starting inference server. Make sure your inference server is running."
                 )
             else:
-                logger.info(
-                    "No inference config specified, using orchestrator.teacher_rollout_model for rollout generation."
-                )
+                logger.info("No inference config specified, using teacher model for rollout generation (sft mode).")
 
         # Optionally, start teacher inference process
         if config.teacher_inference:
@@ -230,7 +228,7 @@ def rl_local(config: RLConfig):
                 raise ValueError(
                     "teacher_inference is configured but deployment.num_teacher_gpus is not set. "
                     "Either set deployment.num_teacher_gpus to start a teacher inference server, "
-                    "or omit teacher_inference and configure orchestrator.teacher_model to use an existing server."
+                    "or omit teacher_inference and configure orchestrator.teacher to use an existing server."
                 )
 
             teacher_inference_cmd = ["inference", "@", (config_dir / TEACHER_INFERENCE_TOML).as_posix()]
@@ -260,10 +258,10 @@ def rl_local(config: RLConfig):
             monitor_threads.append(monitor_thread)
         elif (
             config.trainer.loss.type == "default" and config.trainer.loss.teacher_tau > 0
-        ) or config.orchestrator.teacher_model:
+        ) or config.orchestrator.teacher:
             logger.warning(
                 "No teacher_inference config specified, skipping starting teacher inference server. "
-                "Is your teacher inference server running? Make sure orchestrator.teacher_model is configured."
+                "Is your teacher inference server running? Make sure orchestrator.teacher is configured."
             )
 
         # Start orchestrator process

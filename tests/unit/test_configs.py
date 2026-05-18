@@ -161,10 +161,12 @@ def test_orchestrator_vlm_configs_must_disable_renderer():
     with pytest.raises(ValidationError, match="orchestrator.use_renderer is not supported for VLMs"):
         OrchestratorConfig.model_validate(
             {
-                "model": {
-                    "vlm": {
-                        "vision_encoder_attr": "model.visual",
-                        "language_model_attr": "model.language_model",
+                "student": {
+                    "model": {
+                        "vlm": {
+                            "vision_encoder_attr": "model.visual",
+                            "language_model_attr": "model.language_model",
+                        }
                     }
                 }
             }
@@ -172,10 +174,12 @@ def test_orchestrator_vlm_configs_must_disable_renderer():
 
     config = OrchestratorConfig.model_validate(
         {
-            "model": {
-                "vlm": {
-                    "vision_encoder_attr": "model.visual",
-                    "language_model_attr": "model.language_model",
+            "student": {
+                "model": {
+                    "vlm": {
+                        "vision_encoder_attr": "model.visual",
+                        "language_model_attr": "model.language_model",
+                    }
                 }
             },
             "use_token_client": False,
@@ -192,32 +196,24 @@ def test_selective_activation_checkpointing_requires_custom_impl():
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
 
 
-def test_teacher_rollout_weight_updates_require_inference_config_or_explicit_opt_in():
+def test_sft_training_mode_enables_student_pool_when_inference_configured():
     base_config = {
         "trainer": {},
         "orchestrator": {
-            "use_sft_loss": True,
+            "training_mode": "sft",
             "use_token_client": False,
             "use_renderer": False,
-            "teacher_rollout_model": {
+            "teacher": {
                 "client": {"base_url": ["http://teacher.example/v1"]},
                 "model": {"name": "teacher-model"},
             },
         },
     }
 
+    # Without inference, student client base_url not explicitly set → policy updates disabled
     config = RLConfig.model_validate(base_config)
-    assert config.orchestrator.update_student_inference_weights is None
+    assert "base_url" not in config.orchestrator.student.client.model_fields_set
 
+    # With inference, student client base_url is auto-set → policy updates enabled
     config = RLConfig.model_validate({**base_config, "inference": {}})
-    assert config.orchestrator.update_student_inference_weights
-
-    explicit_config = {
-        **base_config,
-        "orchestrator": {
-            **base_config["orchestrator"],
-            "update_student_inference_weights": True,
-        },
-    }
-    config = RLConfig.model_validate(explicit_config)
-    assert config.orchestrator.update_student_inference_weights
+    assert "base_url" in config.orchestrator.student.client.model_fields_set

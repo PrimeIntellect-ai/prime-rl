@@ -180,21 +180,20 @@ def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_
 
 
 def setup_external_rollout_model(config: OrchestratorConfig, logger) -> tuple[Any, str, bool]:
-    """Resolve rollout client/model and whether policy updates should be enabled."""
-    rollout_client_config = config.client
-    rollout_model_name = config.model.name
-    enable_policy_updates = (
-        config.update_student_inference_weights if config.update_student_inference_weights is not None else True
+    """Resolve rollout client/model and whether student policy updates are enabled.
+
+    - rl/opd: student generates rollouts, policy updates always enabled.
+    - sft: teacher generates rollouts; policy updates enabled iff the student
+      inference client is configured (non-empty base_url).
+    """
+    if config.training_mode in ("rl", "opd"):
+        return config.student.client, config.student.model.name, True
+
+    assert config.teacher is not None  # validated by validate_training_mode
+    rollout_client_config = config.teacher.client
+    rollout_model_name = config.teacher.model.name
+    enable_policy_updates = "base_url" in config.student.client.model_fields_set
+    logger.info(
+        f"Using teacher rollout model (base_url={', '.join(rollout_client_config.base_url)}, model={rollout_model_name})"
     )
-
-    if config.teacher_rollout_model is not None:
-        rollout_client_config = config.teacher_rollout_model.client
-        rollout_model_name = config.teacher_rollout_model.model.name
-        if config.update_student_inference_weights is None:
-            enable_policy_updates = False
-        logger.info(
-            f"Using external teacher rollout model (base_url={', '.join(rollout_client_config.base_url)}, "
-            f"model={rollout_model_name})"
-        )
-
     return rollout_client_config, rollout_model_name, enable_policy_updates

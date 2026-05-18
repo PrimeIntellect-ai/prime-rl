@@ -35,7 +35,7 @@ rollouts_per_example = 8
 [orchestrator.train.sampling]
 max_completion_tokens = 768
 
-[orchestrator.client.elastic]
+[orchestrator.model.client.elastic]
 hostname = "localhost"
 port = 8000
 sync_interval = 5.0

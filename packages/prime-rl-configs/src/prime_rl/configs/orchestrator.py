@@ -880,32 +880,18 @@ class OrchestratorExperimentalConfig(BaseConfig):
     """Experimental features for the orchestrator."""
 
 
-class TeacherModelConfig(BaseConfig):
-    """Configures the teacher model for computing teacher logprobs (e.g. for distillation)."""
-
-    client: Annotated[
-        ClientConfig,
-        Field(description="The OAI client configuration for the teacher model."),
-    ] = ClientConfig()
+class RolloutModelConfig(BaseConfig):
+    """Model + client pair for a rollout participant (student or teacher)."""
 
     model: Annotated[
         ModelConfig,
-        Field(description="The model configuration for the teacher model."),
+        Field(description="The model configuration."),
     ] = ModelConfig()
-
-
-class TeacherRolloutModelConfig(BaseConfig):
-    """Configures an external teacher model used to generate rollout text."""
 
     client: Annotated[
         ClientConfig,
-        Field(description="The OAI client configuration for rollout generation."),
+        Field(description="The OAI client configuration."),
     ] = ClientConfig()
-
-    model: Annotated[
-        ModelConfig,
-        Field(description="The model configuration for rollout generation."),
-    ] = ModelConfig()
 
 
 class OrchestratorConfig(BaseConfig):
@@ -914,11 +900,14 @@ class OrchestratorConfig(BaseConfig):
     # Training environments and sampling
     train: TrainConfig = TrainConfig()
 
-    # The OAI client configuration
-    client: ClientConfig = ClientConfig()
-
-    # The model configuration
-    model: ModelConfig = ModelConfig()
+    # Student model + client (the model being trained)
+    student: Annotated[
+        RolloutModelConfig,
+        Field(
+            validation_alias=AliasChoices("student", "model"),
+            description="Student model configuration (the model being trained).",
+        ),
+    ] = RolloutModelConfig()
 
     # The tokenizer configuration
     tokenizer: TokenizerConfig = TokenizerConfig()
@@ -929,49 +918,30 @@ class OrchestratorConfig(BaseConfig):
     # The optimizer configuration (per-run LR for multi-run training)
     optim: OptimizerConfig = OptimizerConfig()
 
-    # The teacher model configuration (optional)
-    teacher_model: Annotated[
-        TeacherModelConfig | None,
+    # Teacher model + client (optional; role determined by training_mode)
+    teacher: Annotated[
+        RolloutModelConfig | None,
         Field(
-            description="The teacher model configuration for computing teacher logprobs (e.g. for distillation). "
-            "If provided, teacher logprobs will be computed using the specified model. "
-            "If None, no teacher model will be used."
-        ),
-    ] = None
-
-    # External teacher rollout model configuration (optional)
-    teacher_rollout_model: Annotated[
-        TeacherRolloutModelConfig | None,
-        Field(
+            validation_alias=AliasChoices("teacher", "teacher_model"),
             description=(
-                "Optional external teacher model used for rollout generation. "
-                "When set, rollouts are generated from this endpoint/model instead of the student inference server."
+                "Teacher model configuration. Role depends on training_mode: "
+                "opd — teacher computes logprobs; sft — teacher generates rollouts."
             ),
         ),
     ] = None
 
-    # When True, trainer uses SFT loss instead of RL loss (per-run override for hosted multi-tenant training)
-    use_sft_loss: Annotated[
-        bool,
+    # Training mode: drives validation and runtime wiring
+    training_mode: Annotated[
+        Literal["rl", "opd", "sft"],
         Field(
             description=(
-                "When True, use SFT masked NLL loss instead of the trainer's configured RL loss. "
-                "Requires a teacher_rollout_model to be configured."
+                "Training mode. "
+                "rl: student generates rollouts, no teacher. "
+                "opd: student generates rollouts, teacher computes logprobs (teacher_tau > 0). "
+                "sft: teacher generates rollouts, student inference pool used for evals and weight sync."
             ),
         ),
-    ] = False
-
-    update_student_inference_weights: Annotated[
-        bool | None,
-        Field(
-            description=(
-                "Whether teacher_rollout_model runs should push trained student weights to the student inference "
-                "server. Leave unset for the usual [inference] path; RLConfig enables it automatically. Set True "
-                "when teacher_rollout_model is configured and orchestrator.client points to an externally started "
-                "student inference server. Defaults to False for teacher_rollout_model runs and True otherwise."
-            ),
-        ),
-    ] = None
+    ] = "rl"
 
     # The evaluation configuration
     eval: EvalConfig | None = None
@@ -1194,9 +1164,9 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):
         if self.tokenizer.name is None:
-            self.tokenizer.name = self.model.name
+            self.tokenizer.name = self.student.model.name
         if self.tokenizer.trust_remote_code is None:
-            self.tokenizer.trust_remote_code = self.model.trust_remote_code
+            self.tokenizer.trust_remote_code = self.student.model.trust_remote_code
         return self
 
     @model_validator(mode="after")
@@ -1207,27 +1177,21 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_sft_distill_mode(self):
-        """Enforce the SFT hard distill invariants that involve only orchestrator fields.
-
-        Runs at ``OrchestratorConfig`` level so hosted deployments (which load this
-        config standalone via the ``orchestrator`` entrypoint) get the same guarantees
-        as the combined ``rl`` entrypoint.
-        """
-        has_teacher = self.teacher_rollout_model is not None
-        if self.use_sft_loss and not has_teacher:
+    def validate_training_mode(self):
+        """Enforce training mode invariants that involve only orchestrator fields."""
+        has_teacher = self.teacher is not None
+        if self.training_mode == "rl" and has_teacher:
+            raise ValueError("orchestrator.teacher must not be set when training_mode = 'rl'.")
+        if self.training_mode in ("opd", "sft") and not has_teacher:
+            raise ValueError(f"orchestrator.teacher must be configured when training_mode = '{self.training_mode}'.")
+        if self.training_mode == "sft" and self.use_token_client:
             raise ValueError(
-                "orchestrator.use_sft_loss = true requires orchestrator.teacher_rollout_model to be configured."
+                "orchestrator.use_token_client must be false when training_mode = 'sft' "
+                "(teacher rollout uses the plain OpenAI chat-completions client)."
             )
-        if has_teacher and not self.use_sft_loss:
-            raise ValueError("orchestrator.teacher_rollout_model requires orchestrator.use_sft_loss = true.")
-        if has_teacher and self.use_token_client:
+        if self.training_mode == "sft" and self.use_renderer:
             raise ValueError(
-                "orchestrator.use_token_client must be false when orchestrator.teacher_rollout_model is configured."
-            )
-        if has_teacher and self.use_renderer:
-            raise ValueError(
-                "orchestrator.use_renderer must be false when orchestrator.teacher_rollout_model is configured "
+                "orchestrator.use_renderer must be false when training_mode = 'sft' "
                 "(teacher rollout uses the plain OpenAI chat-completions client)."
             )
         return self
@@ -1257,7 +1221,7 @@ class OrchestratorConfig(BaseConfig):
         them client-side. VLMs need server-side image preprocessing and
         chat templating, so they must use MITO — fail
         loudly when both are set."""
-        if self.use_renderer and self.model.vlm is not None:
+        if self.use_renderer and self.student.model.vlm is not None:
             raise ValueError(
                 "orchestrator.use_renderer is not supported for VLMs. Use MITO "
                 "(``use_token_client=false`` and ``use_renderer=false``) so image preprocessing and chat "
@@ -1364,7 +1328,7 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def resolve_env_config(self):
         """Populate extra_env_kwargs and vLLM sampling defaults from top-level fields."""
-        is_vllm = self.teacher_rollout_model is None
+        is_vllm = self.training_mode != "sft"
         for env in self.train.env:
             env.extra_env_kwargs.update(max_seq_len=self.seq_len)
             if is_vllm:

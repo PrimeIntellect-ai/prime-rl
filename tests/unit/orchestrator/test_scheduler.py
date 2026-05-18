@@ -32,8 +32,8 @@ def make_scheduler() -> Scheduler:
     scheduler.update_policy_task = None
     scheduler.enable_policy_updates = True
     scheduler.rate_limiter = None
-    scheduler.teacher_rollout_clients = None
-    scheduler.teacher_rollout_model_name = None
+    scheduler.teacher_clients = None
+    scheduler.teacher_model_name = None
     return scheduler
 
 
@@ -184,7 +184,7 @@ def test_lora_policy_update_keeps_student_model_name_with_teacher_rollout_overri
         scheduler = make_scheduler()
         scheduler.model_name = "student-model"
         scheduler.lora_name = "student-lora"
-        scheduler.teacher_rollout_model_name = "teacher-model"
+        scheduler.teacher_model_name = "teacher-model"
 
         scheduler.inference_pool = SimpleNamespace(
             update_weights=AsyncMock(),
@@ -201,7 +201,7 @@ def test_lora_policy_update_keeps_student_model_name_with_teacher_rollout_overri
         scheduler.inference_pool.update_weights.assert_awaited_once()
         scheduler.inference_pool.update_model_name.assert_called_once_with("student-lora")
         assert scheduler.model_name == "student-lora"
-        assert scheduler.teacher_rollout_model_name == "teacher-model"
+        assert scheduler.teacher_model_name == "teacher-model"
 
     asyncio.run(run())
 
@@ -216,8 +216,8 @@ def test_schedule_rollout_applies_teacher_override_at_request_submission():
             run_rollout=AsyncMock(return_value=[]),
         )
         scheduler.inference_pool = SimpleNamespace(train_clients=[student_client])
-        scheduler.teacher_rollout_clients = [teacher_client]
-        scheduler.teacher_rollout_model_name = "teacher-model"
+        scheduler.teacher_clients = [teacher_client]
+        scheduler.teacher_model_name = "teacher-model"
         scheduler.train_envs = SimpleNamespace(get=MagicMock(return_value=env))
         scheduler.groups = {
             0: GroupState(
