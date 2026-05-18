@@ -20,6 +20,7 @@ id = "reverse-text"
 
 [orchestrator.eval]
 interval = 5
+num_examples = 64
 
 [[orchestrator.eval.env]]
 id = "reverse-text"
