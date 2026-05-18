@@ -156,33 +156,28 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
-def test_orchestrator_accepts_fractional_oversampling_factor():
-    config = OrchestratorConfig.model_validate(
-        {"batch_size": 256, "rollouts_per_example": 8, "oversampling_factor": 0.377}
-    )
-
-    assert config.max_inflight_rollouts == 96
-
-
-def test_orchestrator_keeps_enough_capacity_for_one_group_when_undersampling():
-    config = OrchestratorConfig.model_validate(
-        {"batch_size": 128, "rollouts_per_example": 16, "oversampling_factor": 0.01}
-    )
-
-    assert config.max_inflight_rollouts == 16
-
-
-def test_orchestrator_accepts_matching_explicit_max_inflight_rollouts():
+@pytest.mark.parametrize(
+    ("batch_size", "rollouts_per_example", "oversampling_factor", "expected_max_inflight"),
+    [
+        (256, 8, 0.377, 96),
+        (128, 16, 0.01, 16),
+    ],
+)
+def test_orchestrator_resolves_fractional_oversampling_factor(
+    batch_size: int,
+    rollouts_per_example: int,
+    oversampling_factor: float,
+    expected_max_inflight: int,
+):
     config = OrchestratorConfig.model_validate(
         {
-            "batch_size": 256,
-            "rollouts_per_example": 8,
-            "oversampling_factor": 0.377,
-            "max_inflight_rollouts": 96,
+            "batch_size": batch_size,
+            "rollouts_per_example": rollouts_per_example,
+            "oversampling_factor": oversampling_factor,
         }
     )
 
-    assert config.max_inflight_rollouts == 96
+    assert config.max_inflight_rollouts == expected_max_inflight
 
 
 def test_orchestrator_rejects_conflicting_explicit_max_inflight_rollouts():
