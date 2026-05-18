@@ -65,6 +65,7 @@ envs = [
     "alphabet-sort",
     "code-env",
     "color-codeword",
+    "ddbc",
     "deepdive",
     "gpqa",
     "hle",
@@ -135,6 +136,7 @@ members = [
     "deps/research-environments/environments/aime2025",
     "deps/research-environments/environments/code_env",
     "deps/research-environments/environments/color_codeword",
+    "deps/research-environments/environments/ddbc",
     "deps/research-environments/environments/deepdive",
     "deps/research-environments/environments/gpqa",
     "deps/research-environments/environments/hle",
@@ -200,6 +202,7 @@ aime2025 = { workspace = true }
 alphabet-sort = { workspace = true }
 code-env = { workspace = true }
 color-codeword = { workspace = true }
+ddbc = { workspace = true }
 deepdive = { workspace = true }
 gpqa = { workspace = true }
 hle = { workspace = true }
