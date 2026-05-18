@@ -105,8 +105,8 @@ def test_kl_zero_when_identical():
         )
         result = default_loss_fn(inputs, DefaultLossConfig())
 
-        assert result.metrics["mismatch_kl"].item() == pytest.approx(0.0, abs=1e-6), (
-            f"Expected zero KL for identical models, got {result.metrics['mismatch_kl'].item()}"
+        assert result.metrics["unmasked_mismatch_kl"].item() == pytest.approx(0.0, abs=1e-6), (
+            f"Expected zero KL for identical models, got {result.metrics['unmasked_mismatch_kl'].item()}"
         )
 
 
@@ -138,7 +138,7 @@ def test_kl_positive_after_perturbation():
             loss_mask=loss_mask,
         )
         result = default_loss_fn(inputs, DefaultLossConfig())
-        kl = result.metrics["mismatch_kl"].item()
+        kl = result.metrics["unmasked_mismatch_kl"].item()
 
         assert kl > 0, f"Expected positive KL after perturbation, got {kl}"
         assert kl < 100, f"KL unexpectedly large: {kl}"
