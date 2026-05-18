@@ -1026,10 +1026,11 @@ class OrchestratorConfig(BaseConfig):
     oversampling_factor: Annotated[
         float | None,
         Field(
-            ge=1,
+            gt=0,
             description=(
                 "Rollout-mode batching only. Multiplier used to derive max_inflight_rollouts from batch_size "
-                "when max_inflight_rollouts is unset."
+                "when max_inflight_rollouts is unset. Values below 1.0 intentionally cap in-flight rollout "
+                "capacity below batch_size."
             ),
         ),
     ] = None
@@ -1310,13 +1311,17 @@ class OrchestratorConfig(BaseConfig):
             assert self.batch_size is not None
             if self.batch_size % self.rollouts_per_example != 0:
                 raise ValueError("Batch size must be divisible by the number of samples per problem")
+            oversampling_factor = self.oversampling_factor if self.oversampling_factor is not None else 1.0
+            resolved_max_inflight_rollouts = max(
+                self.rollouts_per_example,
+                int(self.batch_size * oversampling_factor),
+            )
             if self.max_inflight_rollouts is not None and self.oversampling_factor is not None:
-                expected_max_inflight_rollouts = int(self.batch_size * self.oversampling_factor)
+                expected_max_inflight_rollouts = resolved_max_inflight_rollouts
                 if self.max_inflight_rollouts != expected_max_inflight_rollouts:
                     raise ValueError("max_inflight_rollouts conflicts with oversampling_factor * batch_size")
             if self.max_inflight_rollouts is None:
-                oversampling_factor = self.oversampling_factor if self.oversampling_factor is not None else 1.0
-                self.max_inflight_rollouts = int(self.batch_size * oversampling_factor)
+                self.max_inflight_rollouts = resolved_max_inflight_rollouts
 
         if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.rollouts_per_example:
             raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")
