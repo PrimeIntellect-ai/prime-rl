@@ -14,6 +14,7 @@ This folder contains the configs, prompt appendices, uploaded-run links, and rol
   - [6. Use The Evidence Review](#6-use-the-evidence-review)
 - [Harness-Specific Task-Agnostic Behavior Rubrics](#harness-specific-task-agnostic-behavior-rubrics)
 - [How The Rubrics Are Wired Into The Env](#how-the-rubrics-are-wired-into-the-env)
+- [Judge Calibration Runs](#judge-calibration-runs)
 - [Prompt Variants](#prompt-variants)
 - [Curated Evidence Highlights](#curated-evidence-highlights)
 
@@ -227,6 +228,32 @@ For additional behavior guidance, set `append_to_system_prompt` to one of the pr
 - `prompts/extended.md`: append the standard prompt plus generic metapattern code examples.
 
 The README and `behavior.py` should stay aligned. The README documents the rubrics and evidence; `behavior.py` is what training and judge scoring execute.
+
+## Judge Calibration Runs
+
+These paired evals sanity-check whether the behavior rubric separates a strong harness agent from the target base model. Both runs use GPT-5.5 as the behavior judge and save the raw judge state with `-C`. The expectation is that GPT-5.5 as the solver should earn materially higher behavior reward than Qwen3-30B-A3B-Instruct before RL. After this check, repeat the same comparison with a weaker judge and compare whether the ranking and per-behavior scores match.
+
+GPT-5.5 solver, GPT-5.5 behavior judge:
+
+```bash
+uv run vf-eval general-agent-solver-rlm \
+  -n10 -r1 -c 10 -d -v -A -i -s \
+  -m openai/gpt-5.5 \
+  -a '{"append_to_system_prompt":"configs/general_agent/behavior_learning/prompts/extended.md", "behavior_judge_model":"openai/gpt-5.5"}' \
+  -C trajectory,task_reward,behavior_reward,final_reward,behavior_judge_summary,behavior_judge_response,behavior_results \
+  -o outputs/evals/general-agent-rlm-gpt55-solver-gpt55-judge-n10
+```
+
+Qwen3-30B-A3B-Instruct solver, GPT-5.5 behavior judge:
+
+```bash
+uv run vf-eval general-agent-solver-rlm \
+  -n10 -r1 -c 10 -d -v -A -i -s \
+  -m qwen/qwen3-30b-a3b-instruct-2507 \
+  -a '{"append_to_system_prompt":"configs/general_agent/behavior_learning/prompts/extended.md", "behavior_judge_model":"openai/gpt-5.5"}' \
+  -C trajectory,task_reward,behavior_reward,final_reward,behavior_judge_summary,behavior_judge_response,behavior_results \
+  -o outputs/evals/general-agent-rlm-qwen3-30b-instruct-solver-gpt55-judge-n10
+```
 
 ## Prompt Variants
 
