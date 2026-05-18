@@ -180,9 +180,9 @@ The `BEHAVIORS` tuple defines the rubric keys, titles, descriptions, positive cu
 - Judge prompt construction: `_judge_system_prompt()` renders every behavior in `BEHAVIORS` and asks the judge to return JSON with a top-level `summary` plus a top-level `behaviors` object.
 - Applicability: every behavior judgment includes `applicable`, `score`, and `evidence`; inapplicable behaviors are excluded from the behavior mean. Parsed state also records whether each behavior key was present as `judged`.
 - Reward aggregation: `task_reward = max(db_hash, verify)`, `behavior_reward` is the solution-gated applicable behavior mean in `[0, 1]`, and `final_reward = task_reward + behavior_reward_alpha * behavior_reward`.
-- Metrics: every behavior becomes a separate metric named `behavior_<key>`, for example `behavior_tool_contract_discovery`. Aggregate metrics include `task_reward`, `behavior_reward`, `final_reward`, `behavior_applicable_mean`, `behavior_applicable_count`, and `behavior_judged_count`.
+- Metrics: every behavior becomes a separate metric named `behavior_<key>`, for example `behavior_tool_contract_discovery`. Aggregate metrics include `task_reward`, `behavior_reward`, `final_reward`, `behavior_applicable_mean`, and `behavior_judged_count`.
 
-Behavior rewards are solution-gated. If `task_reward` is not exactly `1.0`, `behavior_reward` is `0.0` even though behavior judging still runs and logs behavior metrics for audit. `task_reward` is the max of the existing `db_hash` and `verify` metrics, so behavior shaping cannot reward unsolved rollouts.
+Behavior rewards are solution-gated. If `task_reward` is not exactly `1.0`, `behavior_reward` is `0.0` even though behavior judging still runs and logs behavior metrics for audit. `task_reward` is the max of the existing `db_hash` and `verify` checks, so behavior shaping cannot reward unsolved rollouts.
 
 The behavior judge scores only operating strategy, not task correctness. For applicable behaviors it uses these score anchors:
 
