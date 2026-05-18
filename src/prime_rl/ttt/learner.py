@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import torch
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from prime_rl.utils.logger import get_logger, setup_logger
@@ -69,12 +69,11 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
         return lock
 
     async def activate_session(session_id: str):
-        while True:
-            async with engine_lock:
-                if session_id in engine.sessions or len(engine.sessions) < engine.max_concurrent_sessions:
-                    session = engine.get_or_create_session(session_id)
-                    break
-            await asyncio.sleep(0.05)
+        async with engine_lock:
+            try:
+                session = engine.get_or_create_session(session_id)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
         if session_offload == "cpu_after_request":
             session.to_device(engine.device)
         return session

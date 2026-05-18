@@ -543,11 +543,13 @@ class Scheduler:
                                 f"orchestrator.max_error_reschedule_attempts higher (or to None) "
                                 f"to retry more aggressively."
                             )
+                            await self._close_ttt_sessions([*group.completed_rollouts, *rollouts], abort=True)
                             await self.drop_group(group_id)
                             continue
 
                     if has_failures and env.requires_group_scoring:
                         # Group scoring requires all rollouts — discard partial results, reschedule full group
+                        await self._close_ttt_sessions([*group.completed_rollouts, *rollouts], abort=True)
                         group.completed_rollouts.clear()
                         group.rollouts_to_schedule = self.rollouts_per_example
                         continue
