@@ -38,6 +38,33 @@ class ChatCompletionRequestWithTokens(ChatCompletionRequest):
 class OpenAIServingChatWithTokens(OpenAIServingChat):
     """OpenAI-compatible generate API that allows token-in and routed experts capture."""
 
+    def _validate_prompt_has_generation_room(self, engine_prompt) -> int:
+        prompt_len = self._extract_prompt_len(engine_prompt)
+        max_model_len = self.model_config.max_model_len
+        if prompt_len >= max_model_len:
+            raise VLLMValidationError(
+                f"This model's maximum context length is "
+                f"{max_model_len} tokens. However, your request has "
+                f"{prompt_len} input tokens. Please reduce the length of "
+                "the input messages.",
+                parameter="input_tokens",
+                value=prompt_len,
+            )
+        return prompt_len
+
+    async def render_chat_request(self, request: ChatCompletionRequest):
+        result = await super().render_chat_request(request)
+        if isinstance(result, ErrorResponse) or isinstance(request, ChatCompletionRequestWithTokens):
+            return result
+
+        _, engine_prompts = result
+        try:
+            for engine_prompt in engine_prompts:
+                self._validate_prompt_has_generation_room(engine_prompt)
+        except ValueError as e:
+            return self.create_error_response(e)
+        return result
+
     async def chat_completion_full_generator(
         self,
         request: ChatCompletionRequest,
@@ -146,21 +173,12 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                 # have unique request ids.
                 sub_request_id = request_id if len(engine_prompts) == 1 else f"{request_id}_{i}"
 
-                prompt_len = self._extract_prompt_len(engine_prompt)
-                if prompt_len >= max_model_len:
-                    raise VLLMValidationError(
-                        f"This model's maximum context length is "
-                        f"{max_model_len} tokens. However, your request has "
-                        f"{prompt_len} input tokens. Please reduce the length of "
-                        "the input messages.",
-                        parameter="input_tokens",
-                        value=prompt_len,
-                    )
+                prompt_len = self._validate_prompt_has_generation_room(engine_prompt)
 
                 max_tokens = get_max_tokens(
                     max_model_len,
                     request.max_completion_tokens if request.max_completion_tokens is not None else request.max_tokens,
-                    self._extract_prompt_len(engine_prompt),
+                    prompt_len,
                     self.default_sampling_params,
                     self.override_max_tokens,
                 )
