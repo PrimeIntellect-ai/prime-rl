@@ -116,6 +116,14 @@ id = "math-env"
 
 On the CLI, list items are indexed: `--env.0.id reverse-text --env.1.id math-env`.
 
+When composing multiple TOML files, list fields are replaced wholesale by the later file. To change one
+`orchestrator.filters` entry in an overlay, include the full desired filter list in that overlay.
+
+For quick KL smoke runs with very small rollout batches, enforced `zero_advantage` filtering can remove
+every rollout and stop the orchestrator. If the goal is only trainer/inference mismatch KL, keep the
+filter present but set `enforce = false` in a temporary overlay and call out that the run is not a reward
+learning validation.
+
 ### Dict fields
 
 In TOML, use a section:
@@ -157,6 +165,10 @@ If you wish to configure values of the default variant, you don't need to set th
 
 For hosted multi-tenant runs where the trainer image's `trainer.loss.type` is fixed, the orchestrator exposes a per-run override that forces SFT loss on every micro-batch without rebuilding the trainer. Set `orchestrator.use_sft_loss = true` alongside `orchestrator.teacher_rollout_model`; both must be configured together (the orchestrator validator enforces this). The orchestrator stamps each `TrainingSample.sft_loss = True`, which the trainer's `compute_loss` honors by dispatching to `sft_loss_fn` per batch — independent of the trainer's configured default loss.
 
+### RL rollout client defaults
+
+The orchestrator defaults to renderer-backed TITO (`use_renderer = true`, `use_token_client = false`) for both text-only and VLM rollouts. VLMs require `use_renderer = true` — the renderer owns the HF processor per-slot and ships multimodal tensors as generic `mm_kwargs` to the trainer. External teacher rollouts must set `use_renderer = false` (validator-enforced).
+
 ### Model fields
 
 For `BaseModel | None` fields (like `[ckpt]`, `[wandb]`, `[compile]`), a bare flag enables them with defaults:
@@ -177,4 +189,5 @@ In TOML, an empty section header does the same:
 - `src/prime_rl/utils/config.py` — re-exports `BaseConfig` and `cli` from pydantic_config
 - `src/prime_rl/configs/` — all domain-specific config classes
 - `configs/debug/` — minimal debug configs for testing
+- `configs/private/` — private configs via git submodule (internal only)
 - `examples/` — full example configs for various tasks

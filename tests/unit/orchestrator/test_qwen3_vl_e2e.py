@@ -173,10 +173,9 @@ def test_renderer_client_qwen3_vl_e2e_features_payload_roundtrips_through_vllm()
     item = decode_mm_kwargs_item(encoded_items[0])
     assert set(item.keys()) == {"pixel_values", "image_grid_thw"}
 
-    # The image_grid_thw must match what the processor would have produced
-    # for the same PIL image — byte-identity with the MITO path on this
-    # field is the strongest signal that the engine will see the same
-    # image features either way.
+    # The image_grid_thw must match what the HF processor would have
+    # produced for the same PIL image — strongest signal that the engine
+    # sees the same image features the trainer will.
     direct_proc_out = processor.image_processor(images=[img], return_tensors="pt")
     expected_grid = direct_proc_out["image_grid_thw"][0].tolist()
     assert item["image_grid_thw"].data.tolist() == expected_grid

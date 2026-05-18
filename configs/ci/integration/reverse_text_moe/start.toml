@@ -9,6 +9,9 @@ name = "samsja/mini-glm-moe"
 [trainer.optim]
 lr = 3e-6
 
+[trainer.model]
+impl = "custom"
+
 [orchestrator]
 batch_size = 128
 rollouts_per_example = 16
@@ -24,3 +27,7 @@ gpu_memory_utilization = 0.7
 
 [inference.model]
 max_model_len = 2048
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"

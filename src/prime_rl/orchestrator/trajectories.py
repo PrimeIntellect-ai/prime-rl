@@ -282,6 +282,7 @@ def interleave_rollout(
             completion_temperatures=[temperature] * len(completion_ids),
             teacher_logprobs=None,
             advantage=None,
+            env_name=output["env_name"],
             routed_experts=routed_experts,
             mm_token_type_ids=None,
         )

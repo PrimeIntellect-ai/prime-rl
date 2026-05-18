@@ -4,7 +4,13 @@ from typing import Callable
 import pytest
 
 from tests.conftest import ProcessResult
-from tests.utils import check_no_error, check_reward_goes_up, check_reward_in_range, strip_escape_codes
+from tests.utils import (
+    check_avg_mismatch_kl_in_range,
+    check_no_error,
+    check_reward_goes_up,
+    check_reward_in_range,
+    strip_escape_codes,
+)
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
@@ -15,7 +21,7 @@ TIMEOUT = 600  # 10 minutes
 @pytest.fixture(scope="module")
 def wandb_name(branch_name: str) -> str:
     """Fixture for W&B name for RL CI integration tests."""
-    return f"test-rl-lora-{branch_name}"
+    return f"test-reverse-text:{branch_name}"
 
 
 @pytest.fixture(scope="module")
@@ -30,7 +36,7 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "configs/ci/integration/rl_lora/start.toml",
+        "configs/ci/integration/reverse_text/start.toml",
         "--clean-output-dir",
         "--wandb.project",
         wandb_project,
@@ -39,7 +45,7 @@ def rl_process(
         "--output-dir",
         output_dir.as_posix(),
     ]
-    return run_process(cmd, env={"VLLM_ALLOW_RUNTIME_LORA_UPDATING": "True"}, timeout=TIMEOUT)
+    return run_process(cmd, timeout=TIMEOUT)
 
 
 @pytest.fixture(scope="module")
@@ -52,13 +58,13 @@ def rl_resume_process(
 ) -> ProcessResult:
     if rl_process.returncode != 0:
         pytest.skip("Full weight RL process failed")
-    wandb_name += "-resume"
+    wandb_name = f"{wandb_name}-resume"
     cmd = [
         "uv",
         "run",
         "rl",
         "@",
-        "configs/ci/integration/rl_lora/resume.toml",
+        "configs/ci/integration/reverse_text/resume.toml",
         "--wandb.project",
         wandb_project,
         "--wandb.name",
@@ -67,7 +73,7 @@ def rl_resume_process(
         output_dir.as_posix(),
     ]
 
-    return run_process(cmd, env={"VLLM_ALLOW_RUNTIME_LORA_UPDATING": "True"}, timeout=TIMEOUT)
+    return run_process(cmd, timeout=TIMEOUT)
 
 
 @pytest.fixture(scope="module")
@@ -88,6 +94,13 @@ def test_reward_in_range(rl_process: ProcessResult, test_no_error, output_dir: P
     with open(output_dir / "logs" / "orchestrator.log", "r") as f:
         orchestrator_stdout = strip_escape_codes(f.read()).splitlines()
     check_reward_in_range(orchestrator_stdout, min_threshold=0.65)
+
+
+def test_mismatch_kl_in_range(rl_process: ProcessResult, test_no_error, output_dir: Path):
+    """Tests that the average mismatch KL is below 0.01 across all steps"""
+    with open(output_dir / "logs" / "trainer.log", "r") as f:
+        trainer_stdout = strip_escape_codes(f.read()).splitlines()
+    check_avg_mismatch_kl_in_range(trainer_stdout, last_n_steps=3, max_threshold=0.01)
 
 
 @pytest.fixture(scope="module")

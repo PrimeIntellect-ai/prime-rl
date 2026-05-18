@@ -47,13 +47,11 @@ To add permanent support for a new model family, add an entry to `VLM_REGISTRY` 
 
 ## How Multi-Turn VLM RL Training Works
 
-VLM training uses the same `interleave_rollout` path as text-only models. Multi-turn trajectory steps are merged into a single training sample wherever the extension property holds.
+VLM rollouts go through the renderer-backed TITO client (`orchestrator.use_renderer = true`, the default and required for VLMs). The renderer owns the HuggingFace processor per-slot and emits multimodal tensors alongside tokens.
 
-Images are handled via a `VLMImageCache` built once per batch:
-
-1. **Extract**: Base64 images are decoded from trajectory step prompts into PIL images.
-2. **Preprocess**: Images are processed through the HuggingFace image processor, producing `pixel_values` and `image_grid_thw`.
-3. **Attach**: Each training sample receives the cumulative `pixel_values` up to its last merged step.
+1. **Render**: For each trajectory step, the renderer tokenizes messages and emits per-image multimodal tensors (e.g. `pixel_values`, `image_grid_thw` for Qwen3-VL) as `multi_modal_data`.
+2. **Pack**: `interleave_rollout` concatenates the per-image tensors emitted across a sample's merged step range into a single `mm_kwargs` dict on the `TrainingSample`. Per-token `mm_token_type_ids` (0=text, 1=image, 2=video) come from `renderer.mm_token_type_id_map`.
+3. **Forward**: The trainer `**`-unpacks `mm_kwargs` into the model's `forward` signature, so any VLM whose HF processor and forward agree on kwarg names works without touching the transport.
 
 Each multimodal sample becomes its own micro-batch during training (no packing) since image tensor sizes vary.
 

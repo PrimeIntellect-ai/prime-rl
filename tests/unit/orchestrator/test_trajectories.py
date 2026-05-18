@@ -10,6 +10,13 @@ from prime_rl.orchestrator.trajectories import (
     interleave_rollout,
 )
 
+_interleave_rollout = interleave_rollout
+
+
+def interleave_rollout(output, *args, **kwargs):
+    output.setdefault("env_name", "test-env")
+    return _interleave_rollout(output, *args, **kwargs)
+
 
 def _decode_mm_pixels(sample) -> list:
     """Decode ``sample.mm_kwargs['pixel_values']`` to a nested list."""
@@ -365,6 +372,7 @@ def test_branching_equivalent_multi_step_trajectory_with_tool_calls(
 
 
 def test_interleave_rollout_single_step_trajectory(single_step_trajectory_output):
+    single_step_trajectory_output["env_name"] = "test-env"
     rollouts = interleave_rollout(single_step_trajectory_output)
     assert rollouts is not None
     assert len(rollouts) == 1
@@ -376,6 +384,7 @@ def test_interleave_rollout_single_step_trajectory(single_step_trajectory_output
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2]
     assert rollout.completion_temperatures == [1.0, 1.0]
+    assert rollout.env_name == "test-env"
 
 
 def test_interleave_rollout_multi_step_trajectory(multi_step_trajectory_output):
@@ -983,19 +992,14 @@ def test_interleave_rollout_none_routed_experts_stays_none():
 
 
 # =============================================================================
-# _ImageStore and store-backed VLMImageCache tests
+# Renderer-emitted multimodal data
 # =============================================================================
 
 
-# ── Renderer-emitted multimodal data ───────────────────────────────────
-
-
 def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
-    """When the rollout's trajectory step carries renderer-emitted
-    ``multi_modal_data`` (e.g. from Qwen3VLRenderer via RendererClient),
-    ``interleave_rollout`` packs pixel_values / image_grid_thw /
-    mm_token_type_ids onto the TrainingSample from that sidecar — no
-    VLMImageCache lookup required.
+    """``interleave_rollout`` packs renderer-emitted ``multi_modal_data``
+    (pixel_values / image_grid_thw / mm_token_type_ids) onto the
+    TrainingSample.
 
     verifiers' ``_delta_intermediate_mm_data`` ships per-step *delta*
     mm_data (each step contains only items not present in the prior

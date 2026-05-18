@@ -25,8 +25,9 @@ CONFIG_CLASSES = [
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/` or `examples/`"""
-    config_files = list(Path("configs").rglob("*.toml"))
+    """Any TOML file inside `configs/` or `examples/` (skips the configs/private/ submodule)."""
+    private = Path("configs/private")
+    config_files = [p for p in Path("configs").rglob("*.toml") if private not in p.parents]
     example_files = list(Path("examples").rglob("*.toml"))
 
     return config_files + example_files
@@ -156,6 +157,84 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+def test_orchestrator_vlm_requires_renderer():
+    with pytest.raises(ValidationError, match="orchestrator.use_renderer must be true when model.vlm is set"):
+        OrchestratorConfig.model_validate(
+            {
+                "model": {
+                    "name": "Qwen/Qwen3-VL-4B-Instruct",
+                    "vlm": {
+                        "vision_encoder_attr": "model.visual",
+                        "language_model_attr": "model.language_model",
+                    },
+                },
+                "use_renderer": False,
+            }
+        )
+
+    config = OrchestratorConfig.model_validate(
+        {
+            "model": {
+                "name": "Qwen/Qwen3-VL-4B-Instruct",
+                "vlm": {
+                    "vision_encoder_attr": "model.visual",
+                    "language_model_attr": "model.language_model",
+                },
+            },
+        }
+    )
+
+    assert config.use_token_client is False
+    assert config.use_renderer is True
+
+
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
+
+
+def test_orchestrator_renderer_auto_rejects_unmapped_model():
+    """use_renderer=True with renderer.name='auto' must reject models not in MODEL_RENDERER_MAP."""
+    with pytest.raises(ValidationError, match="silently fall back to DefaultRenderer"):
+        OrchestratorConfig.model_validate({"model": {"name": "not-a-real-org/not-a-real-model"}})
+
+
+def test_orchestrator_renderer_auto_accepts_mapped_model():
+    """The default Qwen model is in MODEL_RENDERER_MAP and should validate cleanly."""
+    config = OrchestratorConfig.model_validate({"model": {"name": "Qwen/Qwen3-0.6B"}})
+    assert config.use_renderer is True
+    assert config.renderer.name == "auto"
+
+
+def test_orchestrator_explicit_renderer_skips_unmapped_check():
+    """Explicit renderer.name bypasses the auto-resolution check — user opted in."""
+    config = OrchestratorConfig.model_validate(
+        {
+            "model": {"name": "not-a-real-org/not-a-real-model"},
+            "renderer": {"name": "qwen3"},
+        }
+    )
+    assert config.renderer.name == "qwen3"
+
+
+def test_orchestrator_use_renderer_false_skips_unmapped_check():
+    """use_renderer=False means the renderer client isn't used, so MODEL_RENDERER_MAP doesn't apply."""
+    config = OrchestratorConfig.model_validate(
+        {
+            "model": {"name": "not-a-real-org/not-a-real-model"},
+            "use_renderer": False,
+        }
+    )
+    assert config.use_renderer is False
+
+
+def test_orchestrator_explicit_default_renderer_with_unmapped_model():
+    """renderer.name='default' is an explicit opt-in to DefaultRenderer and must pass."""
+    config = OrchestratorConfig.model_validate(
+        {
+            "model": {"name": "not-a-real-org/not-a-real-model"},
+            "renderer": {"name": "default", "tool_parser": "qwen3"},
+        }
+    )
+    assert config.renderer.name == "default"
+    assert config.renderer.tool_parser == "qwen3"

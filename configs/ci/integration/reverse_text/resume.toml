@@ -1,8 +1,8 @@
-max_steps = 25
+max_steps = 20
 seq_len = 2048
 
 [ckpt]
-resume_step = 20
+resume_step = 15
 
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
@@ -21,3 +21,7 @@ max_completion_tokens = 128
 id = "reverse-text"
 
 [inference]
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"

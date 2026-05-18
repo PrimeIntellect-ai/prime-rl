@@ -2,6 +2,7 @@ max_steps = 20
 seq_len = 2048
 
 [ckpt]
+resume_step = 15
 
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
@@ -31,3 +32,7 @@ id = "reverse-text"
 [inference]
 enable_lora = true
 gpu_memory_utilization = 0.7
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"

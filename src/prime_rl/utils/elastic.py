@@ -110,6 +110,8 @@ class ElasticInferencePool:
         tool_parser: str | None = None,
         reasoning_parser: str | None = None,
         renderer_pool_size: int | None = None,
+        preserve_all_thinking: bool = False,
+        preserve_thinking_between_tool_calls: bool = False,
     ):
         self.logger = get_logger()
         self.client_config = client_config
@@ -125,6 +127,8 @@ class ElasticInferencePool:
         self.tool_parser = tool_parser
         self.reasoning_parser = reasoning_parser
         self.renderer_pool_size = renderer_pool_size
+        self.preserve_all_thinking = preserve_all_thinking
+        self.preserve_thinking_between_tool_calls = preserve_thinking_between_tool_calls
         self.router_url = client_config.router_url
 
         self._servers: dict[str, ServerState] = {}
@@ -152,6 +156,8 @@ class ElasticInferencePool:
         tool_parser: str | None = None,
         reasoning_parser: str | None = None,
         renderer_pool_size: int | None = None,
+        preserve_all_thinking: bool = False,
+        preserve_thinking_between_tool_calls: bool = False,
     ) -> ElasticInferencePool:
         if client_config.elastic is None:
             raise ValueError("Elastic inference pool requires elastic config")
@@ -164,6 +170,8 @@ class ElasticInferencePool:
             tool_parser=tool_parser,
             reasoning_parser=reasoning_parser,
             renderer_pool_size=renderer_pool_size,
+            preserve_all_thinking=preserve_all_thinking,
+            preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
         )
         await pool.start()
         return pool
@@ -214,6 +222,8 @@ class ElasticInferencePool:
                     tool_parser=self.tool_parser,
                     reasoning_parser=self.reasoning_parser,
                     renderer_pool_size=self.renderer_pool_size,
+                    preserve_all_thinking=self.preserve_all_thinking,
+                    preserve_thinking_between_tool_calls=self.preserve_thinking_between_tool_calls,
                 )
                 if urls
                 else []

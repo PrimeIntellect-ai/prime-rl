@@ -24,7 +24,7 @@ def assert_adapter_checkpoint(adapter_dir: Path) -> None:
 @pytest.fixture(scope="module")
 def wandb_name(branch_name: str) -> str:
     """Fixture for W&B name for SFT LoRA CI integration tests."""
-    return f"test-sft-lora-{branch_name}"
+    return f"test-reverse-text-sft-lora:{branch_name}"
 
 
 @pytest.fixture(scope="module")
@@ -40,7 +40,7 @@ def sft_lora_process(
         "run",
         "sft",
         "@",
-        "configs/ci/integration/sft_lora/start.toml",
+        "configs/ci/integration/reverse_text_sft_lora/start.toml",
         "--deployment.num-gpus",
         "2",
         "--clean-output-dir",
@@ -70,7 +70,7 @@ def sft_lora_resume_process(
         "run",
         "sft",
         "@",
-        "configs/ci/integration/sft_lora/resume.toml",
+        "configs/ci/integration/reverse_text_sft_lora/resume.toml",
         "--deployment.num-gpus",
         "2",
         "--wandb.project",
@@ -100,7 +100,7 @@ def test_loss_goes_down(sft_lora_process: ProcessResult, output_dir: Path):
 
 def test_adapter_checkpoint_written(sft_lora_process: ProcessResult, output_dir: Path):
     """Tests that the adapter checkpoint is written with valid PEFT-compatible keys."""
-    adapter_dir = output_dir / "weights" / "step_10" / "lora_adapters"
+    adapter_dir = output_dir / "weights" / "step_5" / "lora_adapters"
     assert_adapter_checkpoint(adapter_dir)
 
 
@@ -120,5 +120,5 @@ def test_loss_goes_down_resume(sft_lora_resume_process: ProcessResult, output_di
 
 def test_adapter_checkpoint_written_resume(sft_lora_resume_process: ProcessResult, output_dir: Path):
     """Tests that the adapter checkpoint is written after resuming with valid PEFT-compatible keys."""
-    adapter_dir = output_dir / "weights" / "step_20" / "lora_adapters"
+    adapter_dir = output_dir / "weights" / "step_10" / "lora_adapters"
     assert_adapter_checkpoint(adapter_dir)

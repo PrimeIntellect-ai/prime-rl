@@ -88,7 +88,7 @@ def wait_for_log(
 @pytest.fixture(scope="module")
 def wandb_name(branch_name: str) -> str:
     """Fixture for W&B name for multi-run RL CI integration tests."""
-    return f"test-rl-multi-run-{branch_name}"
+    return f"test-reverse-text-multi-run:{branch_name}"
 
 
 INFERENCE_PORTS = [8000, 8001]
@@ -111,7 +111,7 @@ def start_inference_and_trainer(
                     "run",
                     "inference",
                     "@",
-                    "configs/ci/integration/rl_multi_run/inference.toml",
+                    "configs/ci/integration/reverse_text_multi_run/inference.toml",
                     "--server.port",
                     str(port),
                 ],
@@ -134,7 +134,7 @@ def start_inference_and_trainer(
                 "-m",
                 "prime_rl.trainer.rl.train",
                 "@",
-                "configs/ci/integration/rl_multi_run/trainer.toml",
+                "configs/ci/integration/reverse_text_multi_run/trainer.toml",
                 "--output-dir",
                 output_dir.as_posix(),
                 "--wandb.project",
@@ -200,7 +200,7 @@ def start_orchestrator(
         "run",
         "orchestrator",
         "@",
-        "configs/ci/integration/rl_multi_run/orchestrator.toml",
+        "configs/ci/integration/reverse_text_multi_run/orchestrator.toml",
         "--output-dir",
         run_dir.as_posix(),
         "--max-steps",

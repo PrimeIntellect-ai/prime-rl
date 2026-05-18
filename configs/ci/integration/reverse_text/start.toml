@@ -1,4 +1,4 @@
-max_steps = 20
+max_steps = 15
 seq_len = 2048
 
 [ckpt]
@@ -20,3 +20,7 @@ max_completion_tokens = 128
 id = "reverse-text"
 
 [inference]
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"

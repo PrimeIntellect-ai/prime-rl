@@ -5,12 +5,38 @@ description: How to install prime-rl and its optional dependencies. Use when set
 
 # Installation
 
+## Cloning
+
+prime-rl is a monorepo with submodules. Clone the repo first, then initialize submodules explicitly:
+
+```bash
+git clone git@github.com:PrimeIntellect-ai/prime-rl.git
+cd prime-rl
+git submodule update --init -- deps/verifiers deps/renderers deps/research-environments
+```
+
+For an existing clone, initialize the public submodules by passing explicit paths:
+
+```bash
+git submodule update --init -- deps/verifiers deps/renderers deps/research-environments
+```
+
+Do **not** use `git submodule update --init --recursive` without explicit paths — it will also attempt to clone `configs/private` (a private submodule) and fail with "Repository not found" for users without access. Git will retry the clone once internally before aborting, which is expected behavior.
+
+The public submodules live under `deps/`: `deps/verifiers/`, `deps/renderers/`, and `deps/research-environments/`. Each is also a uv workspace member, so source edits inside them apply to the prime-rl venv without re-sync.
+
+The install script (`scripts/install.sh`) handles the private submodule gracefully — it iterates each submodule individually so a failed `configs/private` init does not abort the rest.
+
 ## Basic
 ```bash
 uv sync              # core dependencies only
 uv sync --group dev  # dev tools: pytest, ruff, pre-commit
-uv sync --all-extras # recommended: includes flash-attn, flash-attn-cute, etc.
+uv sync --all-extras # recommended: includes envs, flash-attn, flash-attn-cute, etc.
 ```
+
+The `envs` extra installs the env packages listed in `pyproject.toml > [tool.uv.workspace] members`. Adding a new env means adding it there, in the `envs` extra, and in `[tool.uv.sources]`.
+
+When intentionally bumping a package to a release newer than the workspace-wide `exclude-newer = "7 days"` window, add that package and any newly required transitive packages to `[tool.uv.exclude-newer-package]` before refreshing `uv.lock`.
 
 ## Advanced
 
