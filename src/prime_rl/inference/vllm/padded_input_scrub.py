@@ -18,6 +18,9 @@ def monkey_patch_vllm_padded_input_scrub() -> None:
     model-input tensors past the scheduled-token prefix, so stale values in the
     padded tail can affect replayed decode graphs. Keep this shim until the
     vLLM-side fix is available in the pinned runtime.
+
+    Remove this patch once https://github.com/vllm-project/vllm/pull/42779 is
+    included in the vLLM release we pin/use.
     """
     global _INSTALLED
     with _INSTALL_LOCK:

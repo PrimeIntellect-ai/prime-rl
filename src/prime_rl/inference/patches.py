@@ -29,6 +29,8 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
     # storage *after* the parameter has been correctly reloaded. Skip the copy
     # for any buffer that shares storage with a parameter; _place_kernel_tensors
     # re-registers the original view, which trivially reflects the parameter.
+    # Remove this patch once https://github.com/vllm-project/vllm/pull/42481 is
+    # included in the vLLM release we pin/use.
     from vllm.logger import init_logger
     from vllm.model_executor.model_loader.reload import layerwise as reload_layerwise
 
