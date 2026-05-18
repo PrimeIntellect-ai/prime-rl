@@ -433,6 +433,29 @@ class RLConfig(BaseConfig):
             )
         return self
 
+    @model_validator(mode="after")
+    def validate_training_mode_loss_consistency(self):
+        """Cross-config invariants between orchestrator.training_mode and trainer.loss."""
+        mode = self.orchestrator.training_mode
+        loss_type = self.trainer.loss.type
+
+        if mode == "sft" and loss_type != "sft":
+            raise ValueError(
+                f"training_mode = 'sft' requires trainer.loss.type = 'sft' (got '{loss_type}'). "
+                "Either set trainer.loss.type = 'sft' or change training_mode."
+            )
+        if mode in ("rl", "opd") and loss_type == "sft":
+            raise ValueError(
+                f"trainer.loss.type = 'sft' requires training_mode = 'sft' (got '{mode}'). "
+                "The sft loss path expects teacher-generated rollouts."
+            )
+        if mode == "opd" and loss_type == "default" and self.trainer.loss.teacher_tau <= 0:
+            raise ValueError(
+                "training_mode = 'opd' requires trainer.loss.teacher_tau > 0. "
+                "Either set teacher_tau > 0 or change training_mode to 'rl'."
+            )
+        return self
+
     ### Auto-setup and validate shared configs
 
     @model_validator(mode="after")
