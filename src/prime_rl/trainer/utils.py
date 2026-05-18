@@ -119,7 +119,11 @@ def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
     monitor.log(...) call (once per step).
     """
     ckpt_dir = get_ckpt_dir(output_dir)
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+    except FileExistsError:
+        # BeegFS can surface FileExistsError from exist_ok=True when another rank wins the mkdir race.
+        pass
     usage = shutil.disk_usage(str(ckpt_dir))
     total = float(usage.total) if usage.total else 0.0
     return {
