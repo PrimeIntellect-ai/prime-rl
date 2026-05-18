@@ -105,6 +105,40 @@ def test_prepare_batch_does_not_pack_mixed_sft_loss(make_training_example):
     assert {batch.sft_loss for batch in flat_batches} == {False, True}
 
 
+def test_prepare_batch_aligns_ttt_replay_rows_across_workers(make_training_example):
+    normal_example = make_training_example()
+    ttt_examples = []
+    for trace_len in (1, 2, 3):
+        example = make_training_example()
+        example.ttt_trace = [
+            {
+                "prompt_ids": [1, 2],
+                "completion_ids": [3],
+                "completion_logprobs": [-0.1],
+            }
+            for _ in range(trace_len)
+        ]
+        ttt_examples.append(example)
+
+    batches_per_gpu = prepare_batch(
+        rollouts=[ttt_examples[0], normal_example, ttt_examples[1], ttt_examples[2]],
+        seq_len=16,
+        num_train_workers=2,
+        idxs=[0, 0, 0, 0],
+        num_loras=1,
+    )
+
+    rows = list(zip(*batches_per_gpu, strict=True))
+    assert rows
+    for row in rows:
+        row_is_ttt = [batch.ttt_trace is not None for batch in row]
+        assert all(is_ttt == row_is_ttt[0] for is_ttt in row_is_ttt)
+
+    ttt_rows = [row for row in rows if row[0].ttt_trace is not None]
+    assert ttt_rows
+    assert any(batch.ttt_trace == [] for row in ttt_rows for batch in row)
+
+
 def test_prepare_sample_with_routed_experts():
     """Routed experts are passed through prepare_sample and match input_ids length."""
     # 2 prompt + 2 completion = 4 tokens, 2 layers, topk=2

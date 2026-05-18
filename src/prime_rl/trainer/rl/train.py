@@ -74,6 +74,46 @@ from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
 
 
+def _dist_max_int(value: int) -> int:
+    if not dist.is_available() or not dist.is_initialized():
+        return value
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    tensor = torch.tensor(value, dtype=torch.int64, device=device)
+    dist.all_reduce(tensor, op=dist.ReduceOp.MAX)
+    return int(tensor.item())
+
+
+def _valid_ttt_replay_entries(trace: list[dict]) -> list[tuple[dict, int]]:
+    entries: list[tuple[dict, int]] = []
+    for entry in trace:
+        prompt_ids = entry.get("prompt_ids") or []
+        completion_ids = entry.get("completion_ids") or []
+        completion_logprobs = entry.get("completion_logprobs") or []
+        n = min(len(completion_ids), len(completion_logprobs))
+        if prompt_ids and n > 0:
+            entries.append((entry, n))
+    return entries
+
+
+def _ttt_dummy_replay_loss(model, pad_token_id: int, default_temperature: torch.Tensor) -> torch.Tensor:
+    input_ids = torch.tensor([[pad_token_id, pad_token_id]], dtype=torch.long, device="cuda")
+    position_ids = torch.arange(input_ids.shape[1], dtype=torch.long, device="cuda").unsqueeze(0)
+    labels = shift_tensor_left(input_ids)
+    temperatures = torch.full(
+        input_ids.shape,
+        float(default_temperature.detach().cpu()),
+        dtype=torch.float,
+        device="cuda",
+    )
+    out = forward(model, input_ids, position_ids, labels=labels, temperature=temperatures)
+    if out.get("logprobs") is not None:
+        zero_source = out["logprobs"]
+    else:
+        assert out.get("logits") is not None, "Logits must be provided for dummy TTT replay forward"
+        zero_source = out["logits"]
+    return zero_source.sum() * 0.0
+
+
 def _compute_ttt_replay_loss(
     *,
     model,
@@ -91,18 +131,20 @@ def _compute_ttt_replay_loss(
 ):
     total_loss = None
     tensors = Tensors()
-    for entry in trace:
+    entries = _valid_ttt_replay_entries(trace)
+    max_entries = _dist_max_int(len(entries))
+    for entry_idx in range(max_entries):
+        if entry_idx >= len(entries):
+            dummy_loss = _ttt_dummy_replay_loss(model, pad_token_id, default_temperature)
+            total_loss = dummy_loss if total_loss is None else total_loss + dummy_loss
+            continue
+
+        entry, n = entries[entry_idx]
         adapter_path = entry.get("adapter_path")
         prompt_ids = entry.get("prompt_ids") or []
         prompt_tool_output_train_mask = entry.get("prompt_tool_output_train_mask") or []
         completion_ids = entry.get("completion_ids") or []
         completion_logprobs = entry.get("completion_logprobs") or []
-        if not prompt_ids or not completion_ids:
-            continue
-
-        n = min(len(completion_ids), len(completion_logprobs))
-        if n <= 0:
-            continue
         if adapter_path:
             consumed_adapter_paths.add(str(adapter_path))
         if n < len(completion_ids):
@@ -458,7 +500,7 @@ def train(config: TrainerConfig):
 
         # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
         normal_loss_scale = sum(
-            micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches if not micro_batch["ttt_trace"]
+            micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches if micro_batch["ttt_trace"] is None
         )
         ttt_loss_scale = sum(
             min(len(entry.get("completion_ids") or []), len(entry.get("completion_logprobs") or []))
@@ -474,7 +516,7 @@ def train(config: TrainerConfig):
             normal_tool_output_count = sum(
                 int(micro_batch["tool_output_train_mask"].sum().item())
                 for micro_batch in micro_batches
-                if not micro_batch["ttt_trace"] and micro_batch["tool_output_train_mask"] is not None
+                if micro_batch["ttt_trace"] is None and micro_batch["tool_output_train_mask"] is not None
             )
             ttt_tool_output_count = sum(
                 bool(item)
@@ -564,7 +606,7 @@ def train(config: TrainerConfig):
                 temperatures = shard_for_cp(temperatures, cp_rank=cp_rank, cp_world_size=cp_size)
 
             ttt_trace = micro_batch["ttt_trace"]
-            if ttt_adapter_manager is not None and ttt_trace:
+            if ttt_adapter_manager is not None and ttt_trace is not None:
                 if cp_enabled:
                     raise NotImplementedError("TTT adapter snapshot replay is not supported with context parallelism.")
                 with (
@@ -706,7 +748,7 @@ def train(config: TrainerConfig):
         ttt_deleted_adapters = 0
         if ttt_adapter_manager is not None:
             for micro_batch in micro_batches:
-                if micro_batch["ttt_trace"]:
+                if micro_batch["ttt_trace"] is not None:
                     consumed_ttt_adapter_paths.update(collect_trace_adapter_paths(micro_batch["ttt_trace"]))
             ttt_deleted_adapters = cleanup_consumed_adapters(
                 ttt_adapter_manager,

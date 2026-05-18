@@ -95,7 +95,7 @@ def _is_multimodal_sample(sample: MicroBatch) -> bool:
 
 
 def _is_ttt_sample(sample: MicroBatch) -> bool:
-    return bool(sample.ttt_trace)
+    return sample.ttt_trace is not None
 
 
 def packed_samples_into_micro_bs(
@@ -202,22 +202,24 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     return micro_batch
 
 
-def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
+def _make_dummy_batch(source: MicroBatch, *, preserve_ttt: bool = False) -> MicroBatch:
     """Create a zero-loss dummy batch from an existing batch, preserving its modality."""
     dummy = copy.deepcopy(source)
     dummy.advantages = [0.0] * len(dummy.input_ids)
     dummy.loss_mask = [False] * len(dummy.input_ids)
     if dummy.tool_output_train_mask is not None:
         dummy.tool_output_train_mask = [False] * len(dummy.input_ids)
-    dummy.ttt_trace = None
+    dummy.ttt_trace = [] if preserve_ttt else None
     return dummy
 
 
-def _pad_group_for_distribution(group: list[MicroBatch], num_train_workers: int) -> list[MicroBatch]:
+def _pad_group_for_distribution(
+    group: list[MicroBatch], num_train_workers: int, *, preserve_ttt: bool = False
+) -> list[MicroBatch]:
     """Pad a group of micro batches so its length is divisible by num_train_workers."""
     num_padding = -len(group) % num_train_workers
     if num_padding > 0 and len(group) > 0:
-        dummy = _make_dummy_batch(group[0])
+        dummy = _make_dummy_batch(group[0], preserve_ttt=preserve_ttt)
         group.extend([dummy] * num_padding)
     return group
 
@@ -244,17 +246,21 @@ def prepare_batch(
     micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
 
-    # Separate by modality so each step index has uniform modality across all ranks
-    mm_batches = [b for b in micro_batches if _is_multimodal_sample(b)]
-    text_batches = [b for b in micro_batches if not _is_multimodal_sample(b)]
+    # Separate by execution path so each step index has uniform collectives across all ranks.
+    # TTT replay may run multiple forwards per microbatch, so it must not share a row with
+    # normal text or multimodal batches.
+    ttt_batches = [b for b in micro_batches if _is_ttt_sample(b)]
+    mm_batches = [b for b in micro_batches if _is_multimodal_sample(b) and not _is_ttt_sample(b)]
+    text_batches = [b for b in micro_batches if not _is_multimodal_sample(b) and not _is_ttt_sample(b)]
 
     # Pad each group independently so its count is divisible by num_train_workers
     mm_batches = _pad_group_for_distribution(mm_batches, num_train_workers)
+    ttt_batches = _pad_group_for_distribution(ttt_batches, num_train_workers, preserve_ttt=True)
     text_batches = _pad_group_for_distribution(text_batches, num_train_workers)
 
-    # Combine: all multimodal first, then all text-only. Since each group's length is
-    # divisible by num_train_workers, the modality boundary aligns with distribution rows.
-    ordered = mm_batches + text_batches
+    # Combine: each group's length is divisible by num_train_workers, so execution-path
+    # boundaries align with distribution rows.
+    ordered = mm_batches + ttt_batches + text_batches
 
     assert len(ordered) % num_train_workers == 0, "Number of micro batches is not divisible by number of data ranks"
 
