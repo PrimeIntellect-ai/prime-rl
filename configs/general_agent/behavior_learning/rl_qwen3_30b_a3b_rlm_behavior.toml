@@ -57,6 +57,7 @@ max_retries = 3
 [orchestrator.train.env.args]
 local_checkout = "~/rlm"
 behavior_judge_model = "openai/gpt-5-mini"
+behavior_reward_alpha = 1.0
 
 [orchestrator.prime_monitor]
 

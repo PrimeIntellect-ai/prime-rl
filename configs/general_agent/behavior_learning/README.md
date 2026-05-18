@@ -177,9 +177,10 @@ Runtime source of truth: `deps/research-environments/environments/general_agent/
 
 The `BEHAVIORS` tuple defines the rubric keys, titles, descriptions, positive cues, and negative cues. `BehaviorRewardRubric` uses that tuple in three places:
 
-- Judge prompt construction: `_judge_system_prompt()` renders every behavior in `BEHAVIORS` and asks the judge to return JSON under a top-level `behaviors` object.
-- Reward aggregation: solved rollouts get the equally weighted mean of all behavior scores.
-- Metrics: every behavior becomes a separate metric named `behavior_<key>`, for example `behavior_tool_contract_discovery`.
+- Judge prompt construction: `_judge_system_prompt()` renders every behavior in `BEHAVIORS` and asks the judge to return JSON with a top-level `summary` plus a top-level `behaviors` object.
+- Applicability: every behavior judgment includes `applicable`, `score`, and `evidence`; inapplicable behaviors are excluded from the behavior mean.
+- Reward aggregation: unsolved rollouts get `0.0`; solved rollouts get `1.0 + behavior_reward_alpha * behavior_applicable_mean`.
+- Metrics: every behavior becomes a separate metric named `behavior_<key>`, for example `behavior_tool_contract_discovery`. Aggregate metrics include `behavior_applicable_mean`, `behavior_applicable_count`, and `solution_score`.
 
 Behavior rewards are solution-gated. If `solution_score` is not exactly `1.0`, the behavior reward and all behavior metrics return `0.0`. `solution_score` is the max of the existing `db_hash` and `verify` metrics, so behavior shaping cannot reward unsolved rollouts.
 
@@ -188,10 +189,20 @@ The env args are exposed by `general_agent.solver.rlm.env.load_environment`:
 ```toml
 [orchestrator.train.env.args]
 behavior_judge_model = "..."
+behavior_reward_alpha = 1.0
 behavior_judge_sampling_args = { temperature = 0.0 }
 ```
 
-Behavior judging is enabled when `behavior_judge_model` is set. Omit `behavior_judge_model` to disable behavior rewards. The judge defaults to Prime inference at `https://api.pinference.ai/api/v1` using `PRIME_API_KEY`; override `behavior_judge_base_url` and `behavior_judge_api_key_var` only for a different provider. Judge mode fails early if the configured API key env var is missing. One judge JSON response is cached per rollout and reused for all behavior metrics.
+Behavior judging is enabled when `behavior_judge_model` is set. Omit `behavior_judge_model` to disable behavior rewards. The judge defaults to Prime inference at `https://api.pinference.ai/api/v1` using `PRIME_API_KEY`; override `behavior_judge_base_url` and `behavior_judge_api_key_var` only for a different provider. Judge mode fails early if the configured API key env var is missing. One judge JSON response is cached per rollout and reused for all behavior metrics. The parsed judge response is kept in `state["behavior_judge_response"]`, and the top-level summary is copied to `state["behavior_judge_summary"]`.
+
+To save the judge artifacts from `vf-eval`, enable result saving and pass comma-separated state columns:
+
+```bash
+uv run vf-eval general-agent-solver-rlm -n1 -r1 -s -d -v \
+  -m openai/gpt-5-mini \
+  -C trajectory,behavior_judge_summary,behavior_judge_response,behavior_results \
+  -a '{"behavior_judge_model":"openai/gpt-5-mini"}'
+```
 
 Prompt guidance is configured through `append_to_system_prompt`, which can be either literal prompt text or a path to a prompt file:
 
