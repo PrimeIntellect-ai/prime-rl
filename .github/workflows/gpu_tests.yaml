@@ -72,6 +72,9 @@ jobs:
           - test: alphabet_sort
             runner: vm
             pytest_args: "tests/integration/test_alphabet_sort.py"
+          - test: wiki_search
+            runner: vm
+            pytest_args: "tests/integration/test_wiki_search.py"
           - test: reverse_text_lora
             runner: vm
             pytest_args: "tests/integration/test_reverse_text_lora.py"
