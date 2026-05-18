@@ -240,7 +240,7 @@ vllm = [
 deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }
 deep-gemm = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }
 nixl-cu12 = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
-flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
+flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention", rev = "02af88ef8aa7f7043a899c9ca6fde168e1cf8c7e" }
 flash_attn_3 = { index = "pytorch-cu128-test" }
 
 [tool.uv.extra-build-dependencies]

@@ -1418,13 +1418,12 @@ dependencies = [
 
 [[package]]
 name = "flash-linear-attention"
-version = "0.5.1"
-source = { git = "https://github.com/fla-org/flash-linear-attention#bb324a329e58c06367e043ce4f8b195f490f9144" }
+version = "0.4.2"
+source = { git = "https://github.com/fla-org/flash-linear-attention?rev=02af88ef8aa7f7043a899c9ca6fde168e1cf8c7e#02af88ef8aa7f7043a899c9ca6fde168e1cf8c7e" }
 dependencies = [
     { name = "einops", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "torch", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "transformers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "triton", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
 ]
 
 [[package]]
@@ -4018,7 +4017,7 @@ requires-dist = [
     { name = "flash-attn", marker = "platform_machine == 'x86_64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.4/flash_attn-2.8.3+cu128torch2.11-cp312-cp312-linux_x86_64.whl" },
     { name = "flash-attn-3", marker = "extra == 'flash-attn-3'", index = "https://download.pytorch.org/whl/test/cu128" },
     { name = "flash-attn-4", marker = "extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=96bd151" },
-    { name = "flash-linear-attention", git = "https://github.com/fla-org/flash-linear-attention" },
+    { name = "flash-linear-attention", git = "https://github.com/fla-org/flash-linear-attention?rev=02af88ef8aa7f7043a899c9ca6fde168e1cf8c7e" },
     { name = "gpqa", marker = "extra == 'envs'", editable = "deps/research-environments/environments/gpqa" },
     { name = "hle", marker = "extra == 'envs'", editable = "deps/research-environments/environments/hle" },
     { name = "ifeval", marker = "extra == 'envs'", editable = "deps/research-environments/environments/ifeval" },
