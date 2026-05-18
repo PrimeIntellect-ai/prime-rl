@@ -33,9 +33,6 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [trainer]
 
-[trainer.model]
-cp = 2
-
 [trainer.model.ac]
 freq = 1
 
@@ -52,6 +49,9 @@ max_off_policy_steps = 32
 id = "general-agent-solver-rlm"
 num_workers = 4
 max_retries = 1
+
+[orchestrator.train.env.args]
+labels = ["behavior-learning-baseline"]
 
 [orchestrator.prime_monitor]
 

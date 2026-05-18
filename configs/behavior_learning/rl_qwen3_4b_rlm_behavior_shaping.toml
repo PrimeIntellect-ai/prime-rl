@@ -33,9 +33,6 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [trainer]
 
-[trainer.model]
-cp = 2
-
 [trainer.model.ac]
 freq = 1
 
@@ -56,6 +53,7 @@ max_retries = 1
 [orchestrator.train.env.args]
 behavior_judge_model = "openai/gpt-5-mini"
 behavior_reward_alpha = 1.0
+labels = ["behavior-learning-behavior-shaping"]
 
 [orchestrator.prime_monitor]
 
