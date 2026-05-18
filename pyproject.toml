@@ -98,7 +98,7 @@ gpt-oss = [
     "kernels",
 ]
 quack = [
-    "quack-kernels>=0.3.3",
+    "quack-kernels>=0.4.1",
 ]
 all = [
     "prime-rl[flash-attn]",

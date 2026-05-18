@@ -4005,7 +4005,7 @@ requires-dist = [
     { name = "prime-rl-configs", editable = "packages/prime-rl-configs" },
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pyzmq", specifier = ">=27.1.0" },
-    { name = "quack-kernels", marker = "extra == 'quack'", specifier = ">=0.3.3" },
+    { name = "quack-kernels", marker = "extra == 'quack'", specifier = ">=0.4.1" },
     { name = "renderers", editable = "deps/renderers" },
     { name = "reverse-text", marker = "extra == 'envs'", editable = "deps/verifiers/environments/reverse_text" },
     { name = "rich", specifier = ">=14.0.0" },
