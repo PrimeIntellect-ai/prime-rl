@@ -20,7 +20,7 @@ max_completion_tokens = 512
 id = "wiki-search"
 
 [orchestrator.renderer]
-tool_parser = "hermes"
+tool_parser = "qwen3"
 
 [inference.model]
 tool_call_parser = "hermes"
