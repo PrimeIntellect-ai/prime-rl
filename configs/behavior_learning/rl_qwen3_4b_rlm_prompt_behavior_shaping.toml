@@ -1,6 +1,6 @@
 output_dir = "/beegfs/outputs/behavior-learning/qwen3-4b-rlm-prompt-behavior-shaping"
 max_steps = 200
-seq_len = 32768
+seq_len = 65536
 
 [slurm]
 job_name = "behavior-learning-qwen3-4b-rlm-prompt-behavior-shaping"
@@ -32,6 +32,9 @@ name = "Qwen/Qwen3-4B-Thinking-2507"
 # --- Trainer ---
 
 [trainer]
+
+[trainer.model]
+cp = 2
 
 [trainer.model.ac]
 freq = 1
@@ -65,7 +68,7 @@ labels = ["behavior-learning-prompt-behavior-shaping"]
 gpu_memory_utilization = 0.85
 
 [inference.model]
-max_model_len = 32768
+max_model_len = 65536
 tool_call_parser = "hermes"
 
 [inference.parallel]
