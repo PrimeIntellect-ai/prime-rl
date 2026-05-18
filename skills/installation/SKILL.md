@@ -36,6 +36,8 @@ uv sync --all-extras # recommended: includes envs, flash-attn, flash-attn-cute, 
 
 The `envs` extra installs the env packages listed in `pyproject.toml > [tool.uv.workspace] members`. Adding a new env means adding it there, in the `envs` extra, and in `[tool.uv.sources]`.
 
+When intentionally bumping a package to a release newer than the workspace-wide `exclude-newer = "7 days"` window, add that package and any newly required transitive packages to `[tool.uv.exclude-newer-package]` before refreshing `uv.lock`.
+
 ## Advanced
 
 ### Mamba-SSM (NemotronH models)

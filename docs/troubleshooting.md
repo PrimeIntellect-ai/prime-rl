@@ -12,7 +12,7 @@ ulimit -n 32000
 
 Assuming this is happening on the RL or SFT trainer, you can try the following:
 - Use full activation checkpointing (`--model.ac`)
-- Reduce the the micro batch size (`--data.micro-batch-size`) and sequence length (`--data.seq-len`)
+- Reduce the micro batch size (`--data.micro-batch-size`) and sequence length (`--data.seq-len`)
 - (*Experimental*) Use context parallelism with `--model.cp`
 
 > I cannot pass my TOML config file
