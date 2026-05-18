@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import torch
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from pydantic import BaseModel
 
 from prime_rl.utils.logger import get_logger, setup_logger
@@ -63,11 +63,13 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
             locks[session_id] = lock
         return lock
 
-    def activate_session(session_id: str):
-        try:
-            session = engine.get_or_create_session(session_id)
-        except RuntimeError as exc:
-            raise HTTPException(status_code=429, detail=str(exc)) from exc
+    async def activate_session(session_id: str):
+        while True:
+            async with engine_lock:
+                if session_id in engine.sessions or len(engine.sessions) < engine.max_concurrent_sessions:
+                    session = engine.get_or_create_session(session_id)
+                    break
+            await asyncio.sleep(0.05)
         if session_offload == "cpu_after_request":
             session.to_device(engine.device)
         return session
@@ -91,15 +93,14 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
 
     @app.post("/start_session")
     async def start_session(request: FinishSessionRequest) -> dict[str, Any]:
-        async with engine_lock:
-            session = activate_session(request.session_id)
+        session = await activate_session(request.session_id)
         offload_session(session)
         return {"status": "ok", "session_id": request.session_id}
 
     @app.post("/prepare_turn")
     async def prepare_turn(request: PrepareTurnRequest) -> dict[str, Any]:
         async with lock_for(request.session_id):
-            session = activate_session(request.session_id)
+            session = await activate_session(request.session_id)
             try:
                 async with engine_lock:
                     train_stats = await asyncio.to_thread(engine.append_and_train, session, request.new_token_ids)
@@ -132,7 +133,7 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
     @app.post("/complete_turn")
     async def complete_turn(request: CompleteTurnRequest) -> dict[str, Any]:
         async with lock_for(request.session_id):
-            session = activate_session(request.session_id)
+            session = await activate_session(request.session_id)
             try:
                 async with engine_lock:
                     train_stats = await asyncio.to_thread(engine.append_and_train, session, request.completion_ids)
