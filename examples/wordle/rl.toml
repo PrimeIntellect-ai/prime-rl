@@ -30,6 +30,9 @@ max_completion_tokens = 1024
 [inference.parallel]
 dp = 6
 
-# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+# Qwen3 finetune with the standard PI template patch (byte-identical to
+# PrimeIntellect/Qwen3-0.6B base); always re-emits prior <think> blocks.
+# Match that with the qwen3 renderer's preserve_all_thinking.
 [orchestrator.renderer]
-name = "default"
+name = "qwen3"
+preserve_all_thinking = true
