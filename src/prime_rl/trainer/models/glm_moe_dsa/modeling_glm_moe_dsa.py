@@ -13,7 +13,7 @@ from transformers.utils import TransformersKwargs, auto_docstring
 from transformers.utils.deprecation import deprecate_kwarg
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig
+from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig, _index_cache_skip_topk
 from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import (
     convert_hf_layer_to_tt,
     convert_hf_to_tt_moe,
@@ -27,18 +27,6 @@ from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
-
-
-def _index_cache_skip_topk(config: GlmMoeDsaConfig, layer_idx: int) -> bool:
-    if not getattr(config, "use_index_cache", False):
-        return False
-
-    index_topk_pattern = getattr(config, "index_topk_pattern", None)
-    if index_topk_pattern is not None:
-        return layer_idx < len(index_topk_pattern) and index_topk_pattern[layer_idx] == "S"
-
-    index_topk_freq = getattr(config, "index_topk_freq", 1)
-    return max(layer_idx - 1, 0) % index_topk_freq != 0
 
 
 def _sparse_mla_attention_args(config: GlmMoeDsaConfig, layer_idx: int) -> SparseMlaAttentionArgs:

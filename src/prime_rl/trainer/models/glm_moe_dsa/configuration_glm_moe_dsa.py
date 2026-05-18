@@ -3,6 +3,17 @@ import warnings
 from transformers.configuration_utils import PretrainedConfig
 
 
+def _index_cache_skip_topk(config, layer_idx: int) -> bool:
+    if not getattr(config, "use_index_cache", False):
+        return False
+
+    index_topk_pattern = getattr(config, "index_topk_pattern", None)
+    if index_topk_pattern is not None:
+        return layer_idx < len(index_topk_pattern) and index_topk_pattern[layer_idx] == "S"
+
+    return layer_idx % getattr(config, "index_topk_freq", 1) != 0
+
+
 class GlmMoeDsaConfig(PretrainedConfig):
     r"""
     Configuration class for the GLM-5 (GlmMoeDsa) model.
