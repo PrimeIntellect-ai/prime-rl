@@ -52,6 +52,8 @@ max_retries = 1
 
 [orchestrator.train.env.args]
 rlm_ref = "62b3f25f2ad27e760ab60ccff0f385b9de2d04ff"
+behavior_judge_model = "openai/gpt-5-mini"
+behavior_reward_alpha = 0.0
 labels = ["behavior-learning-baseline"]
 
 [orchestrator.prime_monitor]
