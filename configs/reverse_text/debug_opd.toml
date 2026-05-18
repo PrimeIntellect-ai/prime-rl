@@ -7,7 +7,6 @@
 
 max_steps = 20
 seq_len = 2048
-training_mode = "opd"
 
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
@@ -17,6 +16,7 @@ project = "reverse-text-debug"
 name = "debug-opd"
 
 [orchestrator]
+training_mode = "opd"
 batch_size = 128
 rollouts_per_example = 16
 

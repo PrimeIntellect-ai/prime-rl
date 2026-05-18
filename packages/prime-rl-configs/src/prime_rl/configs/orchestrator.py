@@ -893,6 +893,25 @@ class RolloutModelConfig(BaseConfig):
         Field(description="The OAI client configuration."),
     ] = ClientConfig()
 
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_flat_model_layout(cls, data):
+        """Accept legacy flat ModelConfig layout (e.g. [orchestrator.model.lora]).
+
+        Pre-refactor, orchestrator.model was a ModelConfig directly (name, lora,
+        trust_remote_code, vlm). Now it's a RolloutModelConfig wrapping ModelConfig
+        + ClientConfig. Detect dicts whose only keys are ModelConfig fields and
+        re-nest them under "model" so existing configs keep working.
+        """
+        if not isinstance(data, dict):
+            return data
+        model_only_keys = {"name", "trust_remote_code", "vlm", "lora"}
+        if "model" in data or "client" in data:
+            return data
+        if any(k in model_only_keys for k in data.keys()):
+            return {"model": data}
+        return data
+
 
 class OrchestratorConfig(BaseConfig):
     """Configures the orchestrator for RL training."""

@@ -1,5 +1,6 @@
 max_steps = 24
 seq_len = 2048
+training_mode = "sft"
 
 [deployment]
 type = "single_node"
@@ -31,7 +32,6 @@ batch_size = 256
 rollouts_per_example = 4
 use_token_client = false
 use_renderer = false
-training_mode = "sft"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 512

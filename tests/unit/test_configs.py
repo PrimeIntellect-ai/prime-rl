@@ -198,9 +198,9 @@ def test_selective_activation_checkpointing_requires_custom_impl():
 
 def test_sft_training_mode_enables_student_pool_when_inference_configured():
     base_config = {
+        "training_mode": "sft",
         "trainer": {},
         "orchestrator": {
-            "training_mode": "sft",
             "use_token_client": False,
             "use_renderer": False,
             "teacher": {

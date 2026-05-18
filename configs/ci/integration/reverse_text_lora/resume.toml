@@ -20,7 +20,7 @@ save_adapter_separately = true
 batch_size = 128
 rollouts_per_example = 16
 
-[orchestrator.student.model.lora]
+[orchestrator.model.lora]
 name = "r8-1e-4"
 
 [orchestrator.train.sampling]
