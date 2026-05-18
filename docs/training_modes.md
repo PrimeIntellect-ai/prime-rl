@@ -1,9 +1,9 @@
 # Training Modes
 
-prime-rl supports three training modes, selected via `orchestrator.training_mode`:
+prime-rl supports three training modes, selected via `training_mode`:
 
 - **`rl`** — standard reinforcement learning from rewards
-- **`opd`** — on-policy distillation: RL with an extra KL term toward a teacher's logprobs
+- **`opd`** — on-policy distillation: RL with an extra KL term toward a teacher's logprobs ([Thinking Machines blog post](https://thinkingmachines.ai/blog/on-policy-distillation/))
 - **`sft`** — hard distillation: supervised fine-tuning on teacher-generated rollouts
 
 The mode determines who generates rollouts, what role the teacher plays, and what must be configured.
@@ -44,25 +44,93 @@ training_mode = "rl"
 ```
 
 ```toml
-# opd
+# opd — auto-launched local teacher
 training_mode = "opd"
 [deployment]
-num_teacher_gpus = 1
-[orchestrator.teacher]      # empty block; auto-wired from teacher_inference
+num_teacher_gpus = 1            # spin up a teacher vLLM
+[orchestrator.teacher]          # empty block; client + model auto-wired
 [trainer.loss]
 teacher_tau = 0.5
 [inference]
-# Override [teacher_inference.model] to use a different teacher model.
+# Override [teacher_inference.model] to use a different teacher model than the student.
 ```
 
 ```toml
-# sft
+# sft — external teacher (PI inference)
 training_mode = "sft"
 [orchestrator.teacher.client]
 base_url = ["https://api.pinference.ai/api/v1"]
 [orchestrator.teacher.model]
 name = "qwen/qwen3-30b-a3b-instruct-2507"
-[inference]                 # optional — drop if you don't want student-side evals
+[inference]                     # optional — drop if you don't want student-side evals
 ```
 
-See [On-Policy Distillation](on_policy_distillation) for OPD/SFT-specific details (pure distillation, VLM support, parameters).
+## OPD details
+
+### Using an external (already-running) teacher
+
+Skip `num_teacher_gpus` and point at the existing endpoint. The teacher **must** be a vLLM server (for the `/inference/v1/generate` + `prompt_logprobs` endpoint):
+
+```toml
+training_mode = "opd"
+[trainer.loss]
+teacher_tau = 0.5
+
+[orchestrator.teacher.client]
+base_url = ["http://teacher-server:8000/v1"]
+
+[orchestrator.teacher.model]
+name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+```
+
+### Pure distillation (no verification)
+
+For agentic environments where verification is expensive (code execution, tool use, multi-turn interactions), skip verification and use only the teacher signal:
+
+```toml
+training_mode = "opd"
+[deployment]
+num_teacher_gpus = 2
+
+[trainer.loss]
+teacher_tau = 1.0
+adv_tau = 0.0                   # disable reward-based learning
+
+[orchestrator.verification]
+enabled = false                 # skip expensive verification
+```
+
+The student learns to match the teacher without needing any reward signal.
+
+### Monitoring
+
+The `teacher_kl` metric shows the KL divergence from teacher to student. Lower means the student is closer to the teacher.
+
+## SFT details
+
+### VLM support
+
+Image input is supported in SFT mode when the student is a VLM:
+
+- Prompts can include OpenAI-style image items in `message.content`, e.g. `{"type": "image_url", "image_url": {"url": "data:image/..."}}`
+- The orchestrator extracts and preprocesses images from trajectory prompts and attaches `pixel_values` / `image_grid_thw` to training samples
+- No teacher token IDs / logprobs are required; reconstruction still happens from messages
+
+Notes:
+- This path currently expects `data:image/...` payloads in message content
+- The teacher rollout endpoint must also handle the same multimodal prompts during generation
+
+### Reference configs
+
+- `configs/alphabet_sort/sft_distill_hard_qwen4b_lora_prime_teacher.toml`
+- `examples/alphabet_sort/sft_distill_hard.toml`
+
+## Parameter reference
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `training_mode` | `"rl"` | One of `rl`, `opd`, `sft`. Propagates to `orchestrator.training_mode` and (for sft) `trainer.loss.type`. |
+| `deployment.num_teacher_gpus` | `None` | Number of GPUs for the teacher vLLM server. Auto-starts when set. OPD only. |
+| `trainer.loss.teacher_tau` | `0.0` | Distillation strength. Must be `> 0` in OPD. |
+| `trainer.loss.adv_tau` | `1.0` | Weight for the RL advantage signal. Set `0` for pure distillation. |
+| `orchestrator.verification.enabled` | `true` | Enable/disable verification. Set to `false` for pure distillation with `adv_tau = 0`. |

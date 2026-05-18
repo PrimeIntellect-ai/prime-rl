@@ -916,8 +916,18 @@ class RolloutModelConfig(BaseConfig):
 class OrchestratorConfig(BaseConfig):
     """Configures the orchestrator for RL training."""
 
-    # Training environments and sampling
-    train: TrainConfig = TrainConfig()
+    # Training mode: drives validation and runtime wiring
+    training_mode: Annotated[
+        Literal["rl", "opd", "sft"],
+        Field(
+            description=(
+                "Training mode. "
+                "rl: student generates rollouts, no teacher. "
+                "opd: student generates rollouts, teacher computes logprobs (teacher_tau > 0). "
+                "sft: teacher generates rollouts, student inference pool used for evals and weight sync."
+            ),
+        ),
+    ] = "rl"
 
     # Student model + client (the model being trained)
     student: Annotated[
@@ -927,15 +937,6 @@ class OrchestratorConfig(BaseConfig):
             description="Student model configuration (the model being trained).",
         ),
     ] = RolloutModelConfig()
-
-    # The tokenizer configuration
-    tokenizer: TokenizerConfig = TokenizerConfig()
-
-    # The renderer configuration (only used when use_renderer=True)
-    renderer: RendererConfig = RendererConfig()
-
-    # The optimizer configuration (per-run LR for multi-run training)
-    optim: OptimizerConfig = OptimizerConfig()
 
     # Teacher model + client (optional; role determined by training_mode)
     teacher: Annotated[
@@ -949,18 +950,17 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = None
 
-    # Training mode: drives validation and runtime wiring
-    training_mode: Annotated[
-        Literal["rl", "opd", "sft"],
-        Field(
-            description=(
-                "Training mode. "
-                "rl: student generates rollouts, no teacher. "
-                "opd: student generates rollouts, teacher computes logprobs (teacher_tau > 0). "
-                "sft: teacher generates rollouts, student inference pool used for evals and weight sync."
-            ),
-        ),
-    ] = "rl"
+    # Training environments and sampling
+    train: TrainConfig = TrainConfig()
+
+    # The tokenizer configuration
+    tokenizer: TokenizerConfig = TokenizerConfig()
+
+    # The renderer configuration (only used when use_renderer=True)
+    renderer: RendererConfig = RendererConfig()
+
+    # The optimizer configuration (per-run LR for multi-run training)
+    optim: OptimizerConfig = OptimizerConfig()
 
     # The evaluation configuration
     eval: EvalConfig | None = None
@@ -1152,6 +1152,23 @@ class OrchestratorConfig(BaseConfig):
         OrchestratorExperimentalConfig,
         Field(description="Experimental features for the orchestrator."),
     ] = OrchestratorExperimentalConfig()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_top_level_client(cls, data: Any) -> Any:
+        """Accept legacy [orchestrator.client] as shorthand for [orchestrator.student.client].
+
+        Pre-refactor, OrchestratorConfig had a top-level `client` field. After the
+        student/teacher rename it moved under `student.client`. Re-nest a top-level
+        `client` dict so existing configs keep working.
+        """
+        if not isinstance(data, dict) or "client" not in data:
+            return data
+        student = data.setdefault("student", {})
+        # If the user already nested model+client under student/model, leave it alone.
+        if isinstance(student, dict) and "client" not in student:
+            student["client"] = data.pop("client")
+        return data
 
     @model_validator(mode="before")
     @classmethod

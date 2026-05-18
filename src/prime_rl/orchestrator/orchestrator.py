@@ -92,15 +92,16 @@ async def orchestrate(config: OrchestratorConfig):
         json_logging=config.log.json_logging,
     )
     intercept_vf_logging(logger="verifiers.serve", level="WARN")  # show logs from env clients
-    logger.info("Starting orchestrator")
-    _MODE_DESCRIPTIONS = {
-        "rl": "student generates rollouts, trained with reward-based advantage",
-        "opd": "student generates rollouts, trained on reward + KL to teacher logprobs (on-policy distillation)",
-        "sft": "teacher generates rollouts, student trained on teacher tokens (hard distillation)",
-    }
-    logger.info(f"Training mode: {config.training_mode} - {_MODE_DESCRIPTIONS[config.training_mode]}")
-    set_default_executor()
 
+    # Print start message
+    mode_descriptions = {
+        "rl": "student generates rollouts, no teacher",
+        "opd": "student generates rollouts, teacher judges",
+        "sft": "teacher generates rollouts, student trains on teacher tokens",
+    }
+    logger.info(f"Starting orchestrator in {config.training_mode} mode ({mode_descriptions[config.training_mode]})")
+
+    set_default_executor()
     event_loop_lag_monitor = EventLoopLagMonitor()
     event_loop_lag_monitor_task = asyncio.create_task(event_loop_lag_monitor.run())
 

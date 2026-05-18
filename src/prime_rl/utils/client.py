@@ -167,11 +167,6 @@ async def setup_inference_pool(
             preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
         )
 
-    logger.info(
-        f"Initializing static inference pool (base_url={', '.join(client_config.base_url)}, "
-        f"dp_rank_count={client_config.dp_rank_count}, "
-        f"api_key_var={client_config.api_key_var}, headers={client_config.headers})"
-    )
     return StaticInferencePool(
         client_config,
         model_name=model_name,
