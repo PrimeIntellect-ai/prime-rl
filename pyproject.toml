@@ -65,6 +65,7 @@ envs = [
     "code-env",
     "color-codeword",
     "deepdive",
+    "general-agent",
     "gpqa",
     "hle",
     "ifeval",
@@ -82,6 +83,7 @@ envs = [
     "opencode-science",
     "opencode-swe",
     "reverse-text",
+    "rlm",
     "science-env",
     "simpleqa-verified",
     "tau2-bench",
@@ -117,6 +119,7 @@ dev = [
     "ipywidgets>=8.1.7",
     "pre-commit>=4.2.0",
     "pytest>=8.4.1",
+    "pytest-asyncio>=0.23",
     "ruff>=0.12.1",
 ]
 
@@ -135,6 +138,7 @@ members = [
     "deps/research-environments/environments/code_env",
     "deps/research-environments/environments/color_codeword",
     "deps/research-environments/environments/deepdive",
+    "deps/research-environments/environments/general_agent",
     "deps/research-environments/environments/gpqa",
     "deps/research-environments/environments/hle",
     "deps/research-environments/environments/ifeval",
@@ -186,6 +190,7 @@ prime-evals = false
 vllm-router = false
 dion = false
 pydantic-config = false
+rlm = false
 deep-ep = false
 deep-gemm = false
 nixl-cu12 = false
@@ -200,6 +205,7 @@ alphabet-sort = { workspace = true }
 code-env = { workspace = true }
 color-codeword = { workspace = true }
 deepdive = { workspace = true }
+general-agent = { workspace = true }
 gpqa = { workspace = true }
 hle = { workspace = true }
 ifeval = { workspace = true }
@@ -217,6 +223,7 @@ opencode-math = { workspace = true }
 opencode-science = { workspace = true }
 opencode-swe = { workspace = true }
 reverse-text = { workspace = true }
+rlm = { git = "https://github.com/PrimeIntellect-ai/rlm.git", rev = "1968c8a" }
 science-env = { workspace = true }
 simpleqa-verified = { workspace = true }
 tau2-bench = { workspace = true }

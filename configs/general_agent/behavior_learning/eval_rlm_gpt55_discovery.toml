@@ -1,0 +1,364 @@
+# GPT-5.5 RLM discovery eval: 10 tasks per tier, 5 rollouts each.
+# 10 tasks per tier, 5 rollouts each, selected by GLM-5.1 RLM pass@50 quantiles.
+model = "openai/gpt-5.5"
+api_base_url = "https://api.pinference.ai/api/v1"
+api_key_var = "PRIME_API_KEY"
+
+max_tokens = 32768
+max_concurrent = 50
+max_retries = 1
+output_dir = "/beegfs/outputs/general-agent-rlm-gpt55-discovery"
+independent_scoring = true
+save_results = true
+state_columns = ["trajectory"]
+verbose = true
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-chess_tournament_t1"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "chess_tournament_t1", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t0"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-bbq_competition_t0"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "bbq_competition_t0", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t0"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-mural_project_t0"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "mural_project_t0", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t0"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-jewelry_store_t1"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "jewelry_store_t1", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t0"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-aesthetic_clinic_t0"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "aesthetic_clinic_t0", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t0"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-coral_reef_t0"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "coral_reef_t0", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t0"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-gem_lab_t0"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "gem_lab_t0", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t0"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-moving_company_t0"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "moving_company_t0", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t0"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-school_lunch_t0"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "school_lunch_t0", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t0"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-zipline_tour_t0"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "zipline_tour_t0", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t0"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-art_restoration_t1"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "art_restoration_t1", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t1"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-kite_design_t1"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "kite_design_t1", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t1"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-christmas_tree_t1"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "christmas_tree_t1", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t1"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-loyalty_rewards_t1"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "loyalty_rewards_t1", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t1"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-band_tour_t1"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "band_tour_t1", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t1"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-dog_training_t1"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "dog_training_t1", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t1"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-ice_carving_t1"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "ice_carving_t1", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t1"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-paintball_arena_t1"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "paintball_arena_t1", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t1"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-smoothie_bar_t1"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "smoothie_bar_t1", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t1"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-zoo_t1"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "zoo_t1", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t1"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-family_reunion_t2"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "family_reunion_t2", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t2"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-leather_workshop_t2"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "leather_workshop_t2", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t2"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-candle_making_t2"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "candle_making_t2", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t2"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-customs_checkpoint_t2"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "customs_checkpoint_t2", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t2"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-aquaponics_farm_t2"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "aquaponics_farm_t2", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t2"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-craft_soda_t2"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "craft_soda_t2", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t2"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-geocaching_t2"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "geocaching_t2", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t2"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-obedience_school_t2"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "obedience_school_t2", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t2"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-self_storage_t2"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "self_storage_t2", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t2"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-yoga_studio_t3"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "yoga_studio_t3", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t2"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-antiquarian_bookshop_t3"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "antiquarian_bookshop_t3", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t3"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-cloud_seeding_t3"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "cloud_seeding_t3", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t3"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-dinner_party_t3"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "dinner_party_t3", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t3"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-cinema_t3"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "cinema_t3", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t3"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-food_truck_festival_t3"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "food_truck_festival_t3", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t3"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-aqueduct_t3"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "aqueduct_t3", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t3"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-election_campaign_t3"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "election_campaign_t3", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t3"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-marionette_theater_t3"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "marionette_theater_t3", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t3"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-salvage_yard_t3"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "salvage_yard_t3", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t3"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-zipline_park_t3"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "zipline_park_t3", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t3"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-aesthetic_clinic_t4"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "aesthetic_clinic_t4", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t4"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-ren_faire_t4"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "ren_faire_t4", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t4"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-film_dubbing_t4"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "film_dubbing_t4", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t4"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-forensic_lab_t4"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "forensic_lab_t4", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t4"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-city_council_t4"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "city_council_t4", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t4"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-ham_radio_t4"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "ham_radio_t4", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t4"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-campground_reservation_t4"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "campground_reservation_t4", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t4"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-game_night_t4"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "game_night_t4", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t4"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-poison_control_t4"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "poison_control_t4", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t4"] }
+
+[[eval]]
+id = "general-agent-solver-rlm"
+name = "rlm-gpt55-discovery-wine_judging_t4"
+num_examples = 1
+rollouts_per_example = 5
+env_args = { task = "wine_judging_t4", local_checkout = "~/rlm", labels = ["gpt55-discovery", "t4"] }

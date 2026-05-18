@@ -16,6 +16,19 @@ Two-node RL run (1 train + 1 infer, 8+8 GPUs) on the same env with the Qwen3-30B
 uv run rl @ configs/general_agent/rl_qwen3_30b_a3b.toml
 ```
 
+### general-agent — Qwen3-30B-A3B-Instruct RLM ablations
+
+Three matched RLM runs for prompt and behavior-reward ablations. The baseline uses the current RLM prompt, the behavior run gates judge rewards on solved rollouts using `openai/gpt-5-mini` through Prime inference, and the extended-prompt run loads explicit IPython/programmatic-control guidance from `behavior_learning/prompts/extended.md`.
+See `configs/general_agent/behavior_learning/README.md` for the GPT-5.5 discovery walkthrough, uploaded eval links, and curated behavior evidence.
+
+```bash
+uv run rl @ configs/general_agent/behavior_learning/rl_qwen3_30b_a3b_rlm_baseline.toml
+uv run rl @ configs/general_agent/behavior_learning/rl_qwen3_30b_a3b_rlm_behavior.toml
+uv run rl @ configs/general_agent/behavior_learning/rl_qwen3_30b_a3b_rlm_extended_prompt.toml
+```
+
+The behavior config uses `behavior_judge_model = "openai/gpt-5-mini"`. The judge provider defaults to Prime inference with `PRIME_API_KEY`, and the environment fails early if the key is missing.
+
 ### general-agent — Qwen3.5-35B-A3B (four nodes, local solver)
 
 Four-node RL run (2 train + 2 infer, 16+16 GPUs) on the same env with the Qwen3.5-35B-A3B MoE.
@@ -74,6 +87,14 @@ uv run inference @ configs/general_agent/infer_nemotron_nano.toml
 
 ```bash
 uv run inference @ configs/general_agent/infer_glm51.toml
+```
+
+### RLM discovery eval
+
+Generate and run the GPT-5.5 discovery eval used to mine solved RLM behavior examples:
+
+```bash
+uv run vf-eval configs/general_agent/behavior_learning/eval_rlm_gpt55_discovery.toml
 ```
 
 ## General tips
