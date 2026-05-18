@@ -156,6 +156,47 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+def test_orchestrator_accepts_fractional_oversampling_factor():
+    config = OrchestratorConfig.model_validate(
+        {"batch_size": 256, "rollouts_per_example": 8, "oversampling_factor": 0.377}
+    )
+
+    assert config.max_inflight_rollouts == 96
+
+
+def test_orchestrator_keeps_enough_capacity_for_one_group_when_undersampling():
+    config = OrchestratorConfig.model_validate(
+        {"batch_size": 128, "rollouts_per_example": 16, "oversampling_factor": 0.01}
+    )
+
+    assert config.max_inflight_rollouts == 16
+
+
+def test_orchestrator_accepts_matching_explicit_max_inflight_rollouts():
+    config = OrchestratorConfig.model_validate(
+        {
+            "batch_size": 256,
+            "rollouts_per_example": 8,
+            "oversampling_factor": 0.377,
+            "max_inflight_rollouts": 96,
+        }
+    )
+
+    assert config.max_inflight_rollouts == 96
+
+
+def test_orchestrator_rejects_conflicting_explicit_max_inflight_rollouts():
+    with pytest.raises(ValidationError, match="max_inflight_rollouts conflicts"):
+        OrchestratorConfig.model_validate(
+            {
+                "batch_size": 256,
+                "rollouts_per_example": 8,
+                "oversampling_factor": 0.375,
+                "max_inflight_rollouts": 95,
+            }
+        )
+
+
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
