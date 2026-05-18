@@ -116,6 +116,14 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.ref }}
           fetch-depth: 0
+          submodules: false
+
+      - name: Init public submodules
+        run: |
+          if [ -f .gitmodules ]; then
+            git config --global url."https://github.com/".insteadOf "git@github.com:"
+            git submodule update --init --recursive -- deps/verifiers deps/renderers deps/research-environments
+          fi
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
