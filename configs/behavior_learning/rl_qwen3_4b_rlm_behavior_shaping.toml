@@ -5,7 +5,7 @@ seq_len = 32768
 [slurm]
 job_name = "general-agent-behavior-learning-qwen3-4b-rlm-behavior-shaping"
 project_dir = "."
-pre_run_command = "srun bash -c 'pkill -9 -f torchrun; pkill -9 -f vllm; true'"
+pre_run_command = "source ~/.env && srun bash -c 'pkill -9 -f torchrun; pkill -9 -f vllm; true'"
 
 [deployment]
 num_train_gpus = 4
