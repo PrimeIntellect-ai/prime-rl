@@ -73,6 +73,13 @@ class GlmMoeDsaConfig(PretrainedConfig):
             Whether to use interleaved RoPE style in the sparse indexer.
         index_topk (`int`, defaults to 2048):
             Number of top tokens selected by the sparse indexer.
+        use_index_cache (`bool`, defaults to `False`):
+            Whether to reuse sparse attention top-k indices across DSA layers.
+        index_topk_freq (`int`, defaults to 1):
+            Frequency for recomputing top-k indices when IndexCache is enabled.
+        index_topk_pattern (`str`, *optional*):
+            Optional per-layer pattern where ``"F"`` computes fresh indices and
+            ``"S"`` reuses the cached indices from the previous full layer.
         scoring_func (`str`, defaults to `"sigmoid"`):
             Scoring function for MoE router. Must match the vLLM inference
             server's expectation (vLLM defaults to ``"softmax"`` when this
@@ -141,6 +148,9 @@ class GlmMoeDsaConfig(PretrainedConfig):
         indexer_rope_interleave=True,
         pad_token_id=154820,
         index_topk=2048,
+        use_index_cache=False,
+        index_topk_freq=1,
+        index_topk_pattern=None,
         scoring_func="sigmoid",
         topk_method="noaux_tc",
         use_grouped_mm=True,
@@ -194,6 +204,9 @@ class GlmMoeDsaConfig(PretrainedConfig):
         self.index_head_dim = index_head_dim
         self.indexer_rope_interleave = indexer_rope_interleave
         self.index_topk = index_topk
+        self.use_index_cache = use_index_cache
+        self.index_topk_freq = index_topk_freq
+        self.index_topk_pattern = index_topk_pattern
         self.scoring_func = scoring_func
         self.topk_method = topk_method
         self.use_grouped_mm = use_grouped_mm

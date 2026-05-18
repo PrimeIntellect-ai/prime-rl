@@ -473,6 +473,10 @@ def get_model(
     model_config.use_grouped_mm = config.moe_use_grouped_mm
     model_config.fp8 = config.fp8
 
+    for field_name in ("use_index_cache", "index_topk_freq", "index_topk_pattern"):
+        if field_name in config.model_fields_set or not hasattr(model_config, field_name):
+            setattr(model_config, field_name, getattr(config, field_name))
+
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
     # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
     if not hasattr(model_config, "pad_token_id") or model_config.pad_token_id is None:

@@ -29,7 +29,19 @@ from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 
 
-def _sparse_mla_attention_args(config: GlmMoeDsaConfig) -> SparseMlaAttentionArgs:
+def _index_cache_skip_topk(config: GlmMoeDsaConfig, layer_idx: int) -> bool:
+    if not getattr(config, "use_index_cache", False):
+        return False
+
+    index_topk_pattern = getattr(config, "index_topk_pattern", None)
+    if index_topk_pattern is not None:
+        return layer_idx < len(index_topk_pattern) and index_topk_pattern[layer_idx] == "S"
+
+    index_topk_freq = getattr(config, "index_topk_freq", 1)
+    return max(layer_idx - 1, 0) % index_topk_freq != 0
+
+
+def _sparse_mla_attention_args(config: GlmMoeDsaConfig, layer_idx: int) -> SparseMlaAttentionArgs:
     if config.q_lora_rank is None:
         raise ValueError("Sparse MLA attention requires q_lora_rank to be set")
     return SparseMlaAttentionArgs(
@@ -46,6 +58,7 @@ def _sparse_mla_attention_args(config: GlmMoeDsaConfig) -> SparseMlaAttentionArg
         index_n_heads=config.index_n_heads,
         index_head_dim=config.index_head_dim,
         index_topk=config.index_topk,
+        skip_topk=_index_cache_skip_topk(config, layer_idx),
     )
 
 
@@ -53,7 +66,7 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config: GlmMoeDsaConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
-        self.self_attn = GlmMoeDsaAttention(_sparse_mla_attention_args(config))
+        self.self_attn = GlmMoeDsaAttention(_sparse_mla_attention_args(config, layer_idx))
 
         moe_args = MoEArgs(
             num_experts=config.n_routed_experts,
@@ -95,15 +108,17 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
         ks: Optional[torch.Tensor] = None,
         ke: Optional[torch.Tensor] = None,
+        cached_indices: Optional[torch.Tensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states, _ = self.self_attn(
+        hidden_states, cached_indices = self.self_attn(
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
             ks=ks,
             ke=ke,
+            cached_indices=cached_indices,
         )
         hidden_states = residual + hidden_states
 
@@ -111,7 +126,7 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states, routed_experts=routed_experts)
         hidden_states = residual + hidden_states
-        return hidden_states
+        return hidden_states, cached_indices
 
 
 @auto_docstring
@@ -256,13 +271,15 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         else:
             ks, ke = ks_full, ke_full
 
+        cached_indices = None
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
-            hidden_states = decoder_layer(
+            hidden_states, cached_indices = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
                 ks=ks,
                 ke=ke,
+                cached_indices=cached_indices,
                 routed_experts=routed_experts_layer,
             )
 

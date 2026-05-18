@@ -345,6 +345,27 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = True
 
+    use_index_cache: Annotated[
+        bool,
+        Field(
+            description="Enable DSA IndexCache by reusing sparse attention top-k indices across layers. Matches vLLM's use_index_cache HF override.",
+        ),
+    ] = False
+
+    index_topk_freq: Annotated[
+        int,
+        Field(
+            description="DSA IndexCache frequency for recomputing top-k indices. 1 computes every layer; 4 computes on the vLLM PR's example schedule.",
+        ),
+    ] = 1
+
+    index_topk_pattern: Annotated[
+        str | None,
+        Field(
+            description="Optional DSA IndexCache per-layer pattern where 'F' computes fresh top-k indices and 'S' reuses the previous full layer.",
+        ),
+    ] = None
+
     fp8: Annotated[
         bool,
         Field(

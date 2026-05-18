@@ -32,6 +32,7 @@ class SparseMlaAttentionArgs:
     index_n_heads: int
     index_head_dim: int
     index_topk: int
+    skip_topk: bool = False
 
 
 class _SparseMLA(torch.autograd.Function):
@@ -157,6 +158,7 @@ class GlmMoeDsaAttention(nn.Module):
 
         self.o_proj = nn.Linear(self.num_heads * self.v_head_dim, args.hidden_size, bias=args.attention_bias)
         self.indexer = Indexer(args)
+        self.skip_topk = args.skip_topk
         self.scaling = self.qk_head_dim ** (-0.5)
 
         self._cp_group: dist.ProcessGroup | None = None
@@ -234,6 +236,7 @@ class GlmMoeDsaAttention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         ks: torch.Tensor | None = None,
         ke: torch.Tensor | None = None,
+        cached_indices: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         q_latent, k_compressed_normed, k_rope = self.attn_projections(hidden_states)
 
@@ -241,17 +244,19 @@ class GlmMoeDsaAttention(nn.Module):
             k_compressed_normed = gather_for_cp(k_compressed_normed, self._cp_group)
             k_rope = gather_for_cp(k_rope, self._cp_group)
 
-        indices = self.indexer.compute_sparse_indices(
-            hidden_states_local=hidden_states,
-            q_latent_local=q_latent,
-            ks=ks,
-            ke=ke,
-            index_topk=self.args.index_topk,
-            position_embeddings_full=position_embeddings,
-            cp_group=self._cp_group,
-            cp_world_size=self._cp_world_size,
-            cp_rank=self._cp_rank,
-        )
+        indices = cached_indices
+        if not self.skip_topk:
+            indices = self.indexer.compute_sparse_indices(
+                hidden_states_local=hidden_states,
+                q_latent_local=q_latent,
+                ks=ks,
+                ke=ke,
+                index_topk=self.args.index_topk,
+                position_embeddings_full=position_embeddings,
+                cp_group=self._cp_group,
+                cp_world_size=self._cp_world_size,
+                cp_rank=self._cp_rank,
+            )
 
         sparse_q, sparse_kv, w_v = self.mla_up_proj(
             q_latent_local=q_latent,
@@ -261,4 +266,4 @@ class GlmMoeDsaAttention(nn.Module):
         )
 
         out = _SparseMLA.apply(sparse_q, sparse_kv, indices, self.scaling)
-        return self.output_proj(out, w_v), None
+        return self.output_proj(out, w_v), indices
