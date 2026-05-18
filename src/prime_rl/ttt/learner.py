@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -55,6 +56,10 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
     app = FastAPI(title="Prime-RL TTT learner")
     locks: dict[str, asyncio.Lock] = {}
     engine_lock = asyncio.Lock()
+    logger = get_logger()
+
+    def elapsed(start: float) -> float:
+        return time.perf_counter() - start
 
     def lock_for(session_id: str) -> asyncio.Lock:
         lock = locks.get(session_id)
@@ -86,9 +91,14 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
 
     @app.post("/update_base_weights")
     async def update_base_weights(request: UpdateBaseWeightsRequest) -> dict[str, Any]:
+        start = time.perf_counter()
         weight_dir = Path(request.weight_dir) if request.weight_dir else None
         async with engine_lock:
             await asyncio.to_thread(engine.load_base_weights, weight_dir, request.step)
+        logger.info(
+            f"TTT timing update_base_weights step={request.step} weight_dir={weight_dir} "
+            f"elapsed={elapsed(start):.3f}s sessions={len(engine.sessions)}"
+        )
         return {"status": "ok", "base_step": engine.base_step, "sessions": len(engine.sessions)}
 
     @app.post("/start_session")
@@ -99,9 +109,13 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
 
     @app.post("/prepare_turn")
     async def prepare_turn(request: PrepareTurnRequest) -> dict[str, Any]:
+        request_start = time.perf_counter()
         async with lock_for(request.session_id):
+            activate_start = time.perf_counter()
             session = await activate_session(request.session_id)
+            activate_elapsed = elapsed(activate_start)
             try:
+                train_start = time.perf_counter()
                 async with engine_lock:
                     train_stats = await asyncio.to_thread(engine.append_and_train, session, request.new_token_ids)
                     meta = session.latest_adapter
@@ -117,7 +131,18 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
                         )
                     elif meta is not None:
                         await engine.ensure_vllm_loaded(meta)
+                train_elapsed = elapsed(train_start)
                 meta = dict(meta or {})
+                logger.info(
+                    f"TTT timing prepare_turn session={request.session_id} turn={request.turn_idx} "
+                    f"new_tokens={len(request.new_token_ids)} prompt_tokens={len(request.prompt_ids)} "
+                    f"trained_chunks={train_stats['trained_chunks']} "
+                    f"trained_tokens={train_stats['trained_token_count']} "
+                    f"pending_tokens={train_stats['pending_token_count']} version={session.version} "
+                    f"adapter={meta.get('adapter_name')} activate={activate_elapsed:.3f}s "
+                    f"train_materialize={train_elapsed:.3f}s total={elapsed(request_start):.3f}s "
+                    f"loss={train_stats['loss']:.6f}"
+                )
                 return {
                     **meta,
                     "status": "ok",
@@ -128,18 +153,41 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
                     "loss": train_stats["loss"],
                 }
             finally:
+                offload_start = time.perf_counter()
                 offload_session(session)
+                logger.info(
+                    f"TTT timing prepare_turn_offload session={request.session_id} "
+                    f"turn={request.turn_idx} elapsed={elapsed(offload_start):.3f}s"
+                )
 
     @app.post("/complete_turn")
     async def complete_turn(request: CompleteTurnRequest) -> dict[str, Any]:
+        request_start = time.perf_counter()
         async with lock_for(request.session_id):
+            activate_start = time.perf_counter()
             session = await activate_session(request.session_id)
+            activate_elapsed = elapsed(activate_start)
             try:
+                train_start = time.perf_counter()
                 async with engine_lock:
                     train_stats = await asyncio.to_thread(engine.append_and_train, session, request.completion_ids)
+                train_elapsed = elapsed(train_start)
+                unload_elapsed = 0.0
                 if request.adapter_name:
+                    unload_start = time.perf_counter()
                     await engine.unload_vllm_adapter(request.adapter_name)
                     engine.mark_vllm_unloaded(session, request.adapter_name)
+                    unload_elapsed = elapsed(unload_start)
+                logger.info(
+                    f"TTT timing complete_turn session={request.session_id} turn={request.turn_idx} "
+                    f"completion_tokens={len(request.completion_ids)} adapter={request.adapter_name} "
+                    f"trained_chunks={train_stats['trained_chunks']} "
+                    f"trained_tokens={train_stats['trained_token_count']} "
+                    f"pending_tokens={train_stats['pending_token_count']} version={session.version} "
+                    f"activate={activate_elapsed:.3f}s train={train_elapsed:.3f}s "
+                    f"unload={unload_elapsed:.3f}s total={elapsed(request_start):.3f}s "
+                    f"loss={train_stats['loss']:.6f}"
+                )
                 return {
                     "status": "ok",
                     "base_step": engine.base_step,
@@ -150,15 +198,25 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
                     "loss": train_stats["loss"],
                 }
             finally:
+                offload_start = time.perf_counter()
                 offload_session(session)
+                logger.info(
+                    f"TTT timing complete_turn_offload session={request.session_id} "
+                    f"turn={request.turn_idx} elapsed={elapsed(offload_start):.3f}s"
+                )
 
     @app.post("/finish_session")
     async def finish_session(request: FinishSessionRequest) -> dict[str, Any]:
+        start = time.perf_counter()
         lock = lock_for(request.session_id)
         async with lock:
             async with engine_lock:
                 session = engine.sessions.pop(request.session_id, None)
             await engine.unload_session_loaded_adapters(session)
+        logger.info(
+            f"TTT timing finish_session session={request.session_id} "
+            f"had_session={session is not None} elapsed={elapsed(start):.3f}s"
+        )
         return {
             "status": "ok",
             "session_id": request.session_id,
@@ -166,11 +224,16 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
 
     @app.post("/abort_session")
     async def abort_session(request: FinishSessionRequest) -> dict[str, Any]:
+        start = time.perf_counter()
         lock = lock_for(request.session_id)
         async with lock:
             async with engine_lock:
                 session = engine.sessions.pop(request.session_id, None)
             await engine.unload_session_loaded_adapters(session)
+        logger.info(
+            f"TTT timing abort_session session={request.session_id} "
+            f"had_session={session is not None} elapsed={elapsed(start):.3f}s"
+        )
         return {"status": "ok", "session_id": request.session_id}
 
     return app

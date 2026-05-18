@@ -5,6 +5,7 @@ import contextvars
 import json
 import math
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -201,6 +202,7 @@ class HookedLoRAEngine:
         return session
 
     def load_base_weights(self, weight_dir: Path | None, step: int) -> None:
+        start = time.perf_counter()
         if weight_dir is not None and weight_dir.exists():
             state = load_state_dict(weight_dir)
             self.model.load_state_dict(state, strict=False)
@@ -208,6 +210,9 @@ class HookedLoRAEngine:
         for param in self.model.parameters():
             param.requires_grad = False
         self.model.train()
+        get_logger().info(
+            f"TTT timing load_base_weights step={step} weight_dir={weight_dir} elapsed={time.perf_counter() - start:.3f}s"
+        )
 
     @contextlib.contextmanager
     def active(self, session_id: str):
@@ -218,9 +223,11 @@ class HookedLoRAEngine:
             _ACTIVE_ADAPTERS.reset(token)
 
     def append_and_train(self, session: TTTSession, token_ids: list[int]) -> dict[str, Any]:
+        start = time.perf_counter()
         session.pending_token_ids.extend(int(token_id) for token_id in token_ids)
         losses: list[float] = []
         trained_token_count = 0
+        initial_pending = len(session.pending_token_ids)
         while len(session.pending_token_ids) >= self.update_every_tokens:
             chunk = session.pending_token_ids[: self.update_every_tokens]
             del session.pending_token_ids[: self.update_every_tokens]
@@ -228,6 +235,14 @@ class HookedLoRAEngine:
             trained_token_count += len(chunk)
             session.version += 1
             session.latest_adapter = None
+        elapsed = time.perf_counter() - start
+        if losses or elapsed > 1.0:
+            get_logger().info(
+                f"TTT timing append_and_train session={session.session_id} input_tokens={len(token_ids)} "
+                f"initial_pending={initial_pending} trained_chunks={len(losses)} "
+                f"trained_tokens={trained_token_count} pending_tokens={len(session.pending_token_ids)} "
+                f"version={session.version} elapsed={elapsed:.3f}s loss={(losses[-1] if losses else 0.0):.6f}"
+            )
         return {
             "trained_chunks": len(losses),
             "trained_token_count": trained_token_count,
@@ -238,6 +253,7 @@ class HookedLoRAEngine:
     def _train_chunk(self, session: TTTSession, token_ids: list[int]) -> float:
         if len(token_ids) < 2:
             return 0.0
+        start = time.perf_counter()
         loss_value = 0.0
         input_ids = torch.tensor([token_ids], dtype=torch.long, device=self.device)
         for _ in range(self.steps_per_update):
@@ -252,6 +268,10 @@ class HookedLoRAEngine:
             session.optimizer.step()
             session.optimizer.zero_grad(set_to_none=True)
             loss_value = float(loss.detach().cpu())
+        get_logger().info(
+            f"TTT timing train_chunk session={session.session_id} tokens={len(token_ids)} "
+            f"steps={self.steps_per_update} elapsed={time.perf_counter() - start:.3f}s loss={loss_value:.6f}"
+        )
         return loss_value
 
     def _adapter_config(self, rank: int, alpha: int) -> dict[str, Any]:
@@ -285,9 +305,12 @@ class HookedLoRAEngine:
         load_into_vllm: bool,
         turn_idx: int,
     ) -> dict[str, Any]:
+        start = time.perf_counter()
         path = self.adapter_dir / name
         path.mkdir(parents=True, exist_ok=True)
+        state_start = time.perf_counter()
         save_file(self._adapter_state(session), path / "adapter_model.safetensors", metadata={"format": "pt"})
+        state_elapsed = time.perf_counter() - state_start
         with open(path / "adapter_config.json", "w", encoding="utf-8") as f:
             json.dump(self._adapter_config(rank=self.rank, alpha=self.rank), f, indent=2)
         meta = {
@@ -302,14 +325,24 @@ class HookedLoRAEngine:
             "turn_idx": turn_idx,
         }
         if load_into_vllm and self.load_adapters_into_vllm:
+            load_start = time.perf_counter()
             await self._load_vllm_adapter(name, path)
+            load_elapsed = time.perf_counter() - load_start
+        else:
+            load_elapsed = 0.0
         session.materialized_adapters.append(meta)
         session.latest_adapter = meta
+        get_logger().info(
+            f"TTT timing materialize session={session.session_id} turn={turn_idx} adapter={name} "
+            f"version={session.version} path={path} save={state_elapsed:.3f}s "
+            f"vllm_load={load_elapsed:.3f}s total={time.perf_counter() - start:.3f}s"
+        )
         return meta
 
     async def _load_vllm_adapter(self, name: str, path: Path) -> None:
         if not self.vllm_admin_base_urls:
             return
+        start = time.perf_counter()
         payload = {"lora_name": name, "lora_path": path.as_posix()}
         async with httpx.AsyncClient(timeout=120.0) as client:
             import asyncio
@@ -319,6 +352,10 @@ class HookedLoRAEngine:
             )
             for response in results:
                 response.raise_for_status()
+        get_logger().info(
+            f"TTT timing vllm_load adapter={name} urls={len(self.vllm_admin_base_urls)} "
+            f"elapsed={time.perf_counter() - start:.3f}s"
+        )
 
     async def ensure_vllm_loaded(self, meta: dict[str, Any] | None) -> None:
         if not meta or meta.get("loaded_into_vllm") or not self.load_adapters_into_vllm:
@@ -333,6 +370,7 @@ class HookedLoRAEngine:
     async def unload_vllm_adapter(self, name: str) -> None:
         if not (self.unload_vllm_adapters and self.vllm_admin_base_urls):
             return
+        start = time.perf_counter()
         payload = {"lora_name": name}
         async with httpx.AsyncClient(timeout=120.0) as client:
             import asyncio
@@ -346,6 +384,10 @@ class HookedLoRAEngine:
                     continue
                 if response.status_code not in (200, 404):
                     response.raise_for_status()
+        get_logger().info(
+            f"TTT timing vllm_unload adapter={name} urls={len(self.vllm_admin_base_urls)} "
+            f"elapsed={time.perf_counter() - start:.3f}s"
+        )
 
     def mark_vllm_unloaded(self, session: TTTSession, name: str) -> None:
         for adapter in session.materialized_adapters:
