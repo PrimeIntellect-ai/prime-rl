@@ -1285,6 +1285,42 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_renderer_auto_resolves(self):
+        """Reject the silent DefaultRenderer fallback at config time.
+
+        When ``use_renderer=True`` with ``renderer.name='auto'`` and the
+        model isn't in ``MODEL_RENDERER_MAP``, ``create_renderer`` would
+        fall back to ``DefaultRenderer``. That fallback doesn't fix the
+        position-dependent chat-template bug the renderer client exists to
+        solve, and rejects envs that pass tools (the rollout dies with
+        "RendererPool does not support tools") unless
+        ``renderer.tool_parser`` is configured. Surface at config time so
+        ``--dry-run`` reports the error.
+        """
+        if not self.use_renderer or self.renderer.name != "auto":
+            return self
+        from renderers.base import MODEL_RENDERER_MAP
+
+        model_id = self.tokenizer.name or self.model.name
+        if model_id in MODEL_RENDERER_MAP:
+            return self
+        raise ValueError(
+            f"orchestrator.use_renderer=True with renderer.name='auto' but "
+            f"{model_id!r} is not in renderers.base.MODEL_RENDERER_MAP, so it "
+            f"would silently fall back to DefaultRenderer. Pick one: "
+            f"(a) [orchestrator.renderer] name='default' — for fine-tunes / "
+            f"vendored mirrors with custom chat templates (DefaultRenderer "
+            f"calls apply_chat_template); pair with tool_parser=<name> if "
+            f"the env uses tools. "
+            f"(b) [orchestrator.renderer] name=<model-specific renderer> — "
+            f"if {model_id!r} is template-identical to a mapped family "
+            f"(and ideally also add it upstream to "
+            f"renderers.base.MODEL_RENDERER_MAP). "
+            f"(c) orchestrator.use_renderer=false — opt out of the renderer "
+            f"client entirely."
+        )
+
+    @model_validator(mode="after")
     def nccl_max_async_level(self):
         if self.weight_broadcast.type == "nccl":
             if not self.max_async_level == 1:
