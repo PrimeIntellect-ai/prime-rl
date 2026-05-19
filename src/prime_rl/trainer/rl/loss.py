@@ -165,14 +165,6 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     return LossOutputs(loss=loss, metrics=metrics)
 
 
-# OPD knobs are baked into opd_loss_fn (not user-configurable via trainer.loss,
-# which only applies to rl). Defaults mirror DefaultLossConfig's so the dppo/kl
-# behavior matches the rl path.
-_OPD_DPPO_MASK_HIGH = 0.2
-_OPD_DPPO_MASK_LOW = 0.2
-_OPD_KL_TAU = 1e-3
-
-
 def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
     """
     On-policy distillation loss: the default DPPO+KL math with the tau knobs
@@ -182,11 +174,8 @@ def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
     paths read as distinct losses.
 
     Self-contained: doesn't read ``trainer.loss`` (which is rl-only). The
-    dppo/kl knobs are baked in.
+    dppo/kl knobs are inlined to match DefaultLossConfig's defaults.
     """
-    adv_tau = 0.0
-    teacher_tau = 1.0
-
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
     teacher_logprobs = inputs.teacher_logprobs
@@ -201,8 +190,8 @@ def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
     )
 
     probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
-    dppo_invalid_mask_high = probs_diff > _OPD_DPPO_MASK_HIGH
-    dppo_invalid_mask_low = probs_diff < -_OPD_DPPO_MASK_LOW
+    dppo_invalid_mask_high = probs_diff > 0.2
+    dppo_invalid_mask_low = probs_diff < -0.2
     positive_advantages = advantages > 0
     negative_advantages = advantages < 0
     dppo_invalid_mask = torch.where(positive_advantages, dppo_invalid_mask_high, dppo_invalid_mask_low)
@@ -214,11 +203,11 @@ def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
     keep_mask = loss_mask & ~is_masked
 
     teacher_kl = teacher_logprobs - trainer_logprobs
-    advantages = adv_tau * advantages + teacher_tau * teacher_kl.detach()
+    advantages = 0.0 * advantages + 1.0 * teacher_kl.detach()
 
     pg_loss = keep_mask * advantages * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
-    loss = (-pg_loss + _OPD_KL_TAU * kl_loss).sum()
+    loss = (-pg_loss + 1e-3 * kl_loss).sum()
 
     metrics = {
         "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),
