@@ -197,7 +197,7 @@ For back-compat, a single `[inference]` block is auto-wrapped to `[{tag = "stude
 
 Per-tag log files land at `logs/inference_<tag>.log` (was `inference.log` / `teacher_inference.log`).
 
-**Co-locating two deployments on one GPU** is not first-class. Use a separate `uv run inference` process (started by the caller) and point `orchestrator.teacher.client.base_url` at it — the CI OPD/SFT smoke tests do this for the teacher.
+**Co-locating two deployments on one GPU** is not first-class. Start the second one as a separate `uv run inference` process (at a small `gpu_memory_utilization` so the rl-managed deployment still has headroom) and point `orchestrator.teacher.client.base_url` at it.
 
 ### RL rollout client defaults
 
