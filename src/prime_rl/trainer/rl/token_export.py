@@ -114,7 +114,7 @@ class TokenExporter:
                 flat=flat,
                 start=start,
                 end=end,
-                sft_loss=bool(micro_batch["sft_loss"]),
+                training_mode=str(micro_batch["training_mode"]),
             )
             start = end
             if record is None:
@@ -176,7 +176,7 @@ class TokenExporter:
         flat: dict[str, list[Any]],
         start: int,
         end: int,
-        sft_loss: bool,
+        training_mode: str,
     ) -> dict[str, Any] | None:
         end = _trim_padding(flat, start, end)
         if start >= end:
@@ -223,7 +223,7 @@ class TokenExporter:
             "micro_sequence_idx": micro_sequence_idx,
             "export_sequence_idx": self._sequences_this_step,
             "env_name": env_name,
-            "sft_loss": sft_loss,
+            "training_mode": training_mode,
             "tokens": tokens,
         }
 
@@ -254,7 +254,7 @@ def _compute_export_tensors(
         "is_masked_high": None,
         "is_masked_low": None,
     }
-    if micro_batch["sft_loss"]:
+    if micro_batch["training_mode"] == "sft":
         return fields
 
     inference_logprobs = micro_batch["inference_logprobs"].to(trainer_logprobs.device)

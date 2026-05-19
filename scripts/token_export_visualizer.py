@@ -55,8 +55,9 @@ def main() -> None:
         initial_index = 0
 
     if args.tokenizer:
+        tokenizer = _load_tokenizer(args.tokenizer, trust_remote_code=args.trust_remote_code)
         for record in selected_records:
-            _decode_token_texts(record, args.tokenizer, trust_remote_code=args.trust_remote_code)
+            _decode_token_texts(record, tokenizer)
     for record in selected_records:
         _add_derived_token_fields(record)
 
@@ -128,10 +129,13 @@ def _select_record(records: list[dict[str, Any]], record_index: int) -> dict[str
     return records[record_index]
 
 
-def _decode_token_texts(record: dict[str, Any], tokenizer_name: str, trust_remote_code: bool) -> None:
+def _load_tokenizer(tokenizer_name: str, trust_remote_code: bool) -> Any:
     from transformers import AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=trust_remote_code)
+    return AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=trust_remote_code)
+
+
+def _decode_token_texts(record: dict[str, Any], tokenizer: Any) -> None:
     tokens = record.get("tokens", [])
     token_ids = [int(token["id"]) for token in tokens]
     token_texts = tokenizer.batch_decode(
