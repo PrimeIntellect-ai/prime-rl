@@ -191,12 +191,13 @@ def rl_local(config: RLConfig):
             monitor_thread.start()
             monitor_threads.append(monitor_thread)
         else:
-            if config.orchestrator.training_mode != "sft":
-                logger.warning(
-                    "No inference config specified, skipping starting inference server. Make sure your inference server is running."
-                )
-            else:
-                logger.info("No inference config specified, using teacher model for rollout generation (sft mode).")
+            logger.warning(
+                "No [inference] block configured - the student inference server will not be started here. "
+                "All training modes (rl/opd/sft) require a student inference pool for evals + weight sync; "
+                "make sure one is running at orchestrator.student.client.base_url "
+                f"({', '.join(config.orchestrator.student.client.base_url)}), otherwise the orchestrator "
+                "will hang waiting for it."
+            )
 
         # Optionally, start teacher inference process
         if config.teacher_inference:
