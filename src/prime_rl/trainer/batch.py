@@ -3,19 +3,41 @@ import copy
 from prime_rl.transport.types import MicroBatch, TrainingSample
 
 
-def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch:
+def prepare_sample(training_example: TrainingSample, seq_len: int, disable_echo: bool = False) -> MicroBatch:
     """
     Prepare a problem for sequence packing training.
     Tokenize and prepare tensors.
+
+    When ``training_example`` carries an ``sft_mask`` + ``sft_alpha`` (the
+    SFT-on-tool-body overlay), the masked prompt-side tool body tokens get
+    their advantage overwritten to ``alpha / n_sft_tokens`` (length-normalized
+    per rollout — the ECHO objective) and are flipped into ``loss_mask=True``
+    so they contribute to the loss. When ``disable_echo`` is True, the weight
+    is constant ``alpha`` instead of ``alpha / n``.
     """
     input_ids = training_example.prompt_ids + training_example.completion_ids
-    loss_mask = training_example.prompt_mask + training_example.completion_mask
+    loss_mask = list(training_example.prompt_mask) + list(training_example.completion_mask)
     inference_logprobs = [0.0] * len(training_example.prompt_ids) + training_example.completion_logprobs
     advantages = [training_example.advantage] * len(input_ids)
     position_ids = list(range(len(input_ids)))
     mm_token_type_ids = training_example.mm_token_type_ids
     assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
     env_names = [training_example.env_name] * len(input_ids)
+    sft_mask = list(training_example.sft_mask) if training_example.sft_mask is not None else None
+
+    # SFT-on-tool-body overlay: rewrite the advantage on masked tool body
+    # tokens and flip them into the loss mask so they contribute. The
+    # constant alpha (or alpha/n under ECHO) lives on the advantage tensor;
+    # ``loss.default_loss_fn`` then forces IS ratio = 1 and zero KL on the
+    # same positions so the gradient direction matches SFT.
+    if sft_mask is not None and training_example.sft_alpha is not None:
+        n_sft = sum(sft_mask)
+        if n_sft > 0:
+            weight = training_example.sft_alpha if disable_echo else training_example.sft_alpha / n_sft
+            for k in range(len(input_ids)):
+                if sft_mask[k]:
+                    advantages[k] = weight
+                    loss_mask[k] = True
 
     # Per-token temperatures: prompt tokens use first completion temp (masked out anyway)
     # Default to 1.0 if completion is empty (e.g., model generated only tool calls with no text)
@@ -41,6 +63,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:seq_len]
         env_names = env_names[:seq_len]
+        if sft_mask is not None:
+            sft_mask = sft_mask[:seq_len]
 
     assert (
         len(input_ids)
@@ -52,6 +76,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     ), (
         f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}, temperatures: {len(temperatures)}"
     )
+    if sft_mask is not None:
+        assert len(sft_mask) == len(input_ids), f"sft_mask: {len(sft_mask)}, input_ids: {len(input_ids)}"
     if teacher_logprobs is not None:
         assert len(teacher_logprobs) == len(input_ids), f"teacher_logprobs: {len(teacher_logprobs)}"
 
@@ -82,6 +108,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         pixel_values_shape=training_example.pixel_values_shape,
         image_grid_thw=training_example.image_grid_thw,
         sft_loss=training_example.sft_loss,
+        sft_mask=sft_mask,
     )
 
 
@@ -125,6 +152,15 @@ def packed_samples_into_micro_bs(
                 len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len
                 and bin_content.sft_loss == sample.sft_loss
             ):
+                # NOTE: extend ``sft_mask`` BEFORE ``input_ids`` so we can size
+                # the all-False backfill (when this is the first SFT sample in
+                # the bin) off the bin's pre-extension length.
+                if sample.sft_mask is not None:
+                    if bin_content.sft_mask is None:
+                        bin_content.sft_mask = [False] * len(bin_content.input_ids)
+                    bin_content.sft_mask.extend(sample.sft_mask)
+                elif bin_content.sft_mask is not None:
+                    bin_content.sft_mask.extend([False] * len(sample.input_ids))
                 bin_content.input_ids.extend(sample.input_ids)
                 bin_content.loss_mask.extend(sample.loss_mask)
                 bin_content.advantages.extend(sample.advantages)
@@ -190,6 +226,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     )
     if micro_batch.mm_token_type_ids is not None:
         micro_batch.mm_token_type_ids.extend([0] * padding_size)
+    if micro_batch.sft_mask is not None:
+        micro_batch.sft_mask.extend([False] * padding_size)
     micro_batch.env_names.extend([""] * padding_size)
 
     return micro_batch
@@ -200,6 +238,8 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy = copy.deepcopy(source)
     dummy.advantages = [0.0] * len(dummy.input_ids)
     dummy.loss_mask = [False] * len(dummy.input_ids)
+    if dummy.sft_mask is not None:
+        dummy.sft_mask = [False] * len(dummy.input_ids)
     return dummy
 
 
@@ -219,6 +259,7 @@ def prepare_batch(
     idxs: list[int],
     num_loras: int,
     pad_to_multiple_of: int = 1,
+    disable_echo: bool = False,
 ) -> list[list[MicroBatch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
@@ -228,8 +269,12 @@ def prepare_batch(
     processes a multimodal batch (triggering the vision encoder) while another processes
     a text-only batch, the all-gather will hang. We separate micro batches by modality
     and distribute them so that at each step index, all ranks see the same modality.
+
+    ``disable_echo`` controls the SFT-on-tool-body advantage shape (see ``prepare_sample``).
     """
-    all_samples = [(idx, prepare_sample(rollout, seq_len)) for idx, rollout in zip(idxs, rollouts)]
+    all_samples = [
+        (idx, prepare_sample(rollout, seq_len, disable_echo=disable_echo)) for idx, rollout in zip(idxs, rollouts)
+    ]
 
     micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
