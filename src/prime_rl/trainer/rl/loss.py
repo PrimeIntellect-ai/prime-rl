@@ -169,12 +169,7 @@ def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
     """
     On-policy distillation loss: the default DPPO+KL math with the tau knobs
     hardcoded to drop the reward signal and use the teacher KL as the
-    per-token policy-gradient signal. Equivalent to ``default_loss_fn`` with
-    ``adv_tau = 0`` and ``teacher_tau = 1``; we inline both here so the two
-    paths read as distinct losses.
-
-    Self-contained: doesn't read ``trainer.loss`` (which is rl-only). The
-    dppo/kl knobs are inlined to match DefaultLossConfig's defaults.
+    per-token policy-gradient signal.
     """
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
