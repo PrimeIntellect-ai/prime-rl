@@ -313,15 +313,6 @@ class RLConfig(BaseConfig):
         ),
     ] = None
 
-    training_mode: Annotated[
-        Literal["rl", "opd", "sft"] | None,
-        Field(
-            description="Shared training mode. Propagates to orchestrator.training_mode and, "
-            "for 'sft', switches trainer.loss to SFTLossConfig. "
-            "Explicitly set per-component values always take precedence."
-        ),
-    ] = None
-
     max_steps: Annotated[
         int | None,
         Field(
@@ -429,63 +420,6 @@ class RLConfig(BaseConfig):
         if self.trainer.model.impl != "custom":
             raise ValueError("weight_broadcast.quantize_in_weight_transfer requires trainer.model.impl = 'custom'.")
 
-        return self
-
-    @model_validator(mode="before")
-    @classmethod
-    def auto_setup_training_mode(cls, data):
-        """Propagate shared training_mode into orchestrator.training_mode and trainer.loss.
-
-        Runs before nested validation so that OrchestratorConfig.validate_training_mode
-        sees the propagated value. For sft mode, defaults trainer.loss.type to "sft".
-        The actual loss dispatch is batch-driven (TrainingSample.training_mode); this
-        only keeps the trainer's static loss_fn consistent with the run's mode.
-        """
-        if not isinstance(data, dict):
-            return data
-        mode = data.get("training_mode")
-        if mode is None:
-            # Also accept training_mode set only inside [orchestrator]
-            orch_candidate = data.get("orchestrator")
-            if isinstance(orch_candidate, dict):
-                mode = orch_candidate.get("training_mode")
-        if mode is None:
-            return data
-
-        orch = data.setdefault("orchestrator", {})
-        if isinstance(orch, dict) and "training_mode" not in orch:
-            orch["training_mode"] = mode
-
-        if mode == "sft":
-            trainer = data.setdefault("trainer", {})
-            if isinstance(trainer, dict):
-                loss = trainer.setdefault("loss", {})
-                if isinstance(loss, dict):
-                    loss.setdefault("type", "sft")
-
-        return data
-
-    @model_validator(mode="after")
-    def validate_training_mode_loss_consistency(self):
-        """Cross-config invariants between orchestrator.training_mode and trainer.loss.type."""
-        mode = self.orchestrator.training_mode
-        loss_type = self.trainer.loss.type
-
-        if mode == "sft" and loss_type != "sft":
-            raise ValueError(
-                f"training_mode = 'sft' requires trainer.loss.type = 'sft' (got '{loss_type}'). "
-                "Either set trainer.loss.type = 'sft' or change training_mode."
-            )
-        if mode in ("rl", "opd") and loss_type == "sft":
-            raise ValueError(
-                f"trainer.loss.type = 'sft' requires training_mode = 'sft' (got '{mode}'). "
-                "The sft loss path expects teacher-generated rollouts."
-            )
-        if mode == "opd" and loss_type != "default":
-            raise ValueError(
-                f"training_mode = 'opd' requires trainer.loss.type = 'default' (got '{loss_type}'). "
-                "opd_loss_fn reuses the dppo_mask_* and kl_tau knobs from DefaultLossConfig."
-            )
         return self
 
     ### Auto-setup and validate shared configs

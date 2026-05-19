@@ -6,7 +6,7 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, LossConfig, SFTLossConfig
+from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig
 from prime_rl.utils.utils import import_object
 
 
@@ -229,38 +229,36 @@ def sft_loss_fn(inputs: LossInputs) -> LossOutputs:
     return LossOutputs(loss=loss, metrics=metrics)
 
 
-def setup_loss_fns(loss_config: LossConfig) -> dict[str, LossFn]:
+def setup_loss_fns(
+    loss_config: DefaultLossConfig,
+    custom_loss: CustomLossConfig | None = None,
+) -> dict[str, LossFn]:
     """Build the per-training-mode loss fn dispatch table.
 
-    - ``"sft"`` is always available (sft_loss_fn, ignores loss_config).
-    - ``"rl"`` uses the configured loss (default / custom).
-    - ``"opd"`` is available only with DefaultLossConfig and uses opd_loss_fn.
-    """
-    fns: dict[str, LossFn] = {"sft": sft_loss_fn}
+    Always returns all three modes - the trainer is mode-agnostic and routes
+    per batch from ``TrainingSample.training_mode``:
 
-    if isinstance(loss_config, CustomLossConfig):
-        custom_fn = import_object(loss_config.import_path)
-        kwargs = loss_config.kwargs
+    - ``"sft"`` → ``sft_loss_fn`` (masked NLL on teacher tokens)
+    - ``"opd"`` → ``opd_loss_fn`` (teacher KL as gradient signal, DPPO + KL machinery)
+    - ``"rl"``  → ``default_loss_fn`` with the DPPO+KL knobs, or the
+      ``custom_loss`` override if configured.
+    """
+
+    def opd_fn(inputs: LossInputs) -> LossOutputs:
+        return opd_loss_fn(inputs, loss_config)
+
+    if custom_loss is not None:
+        custom_fn = import_object(custom_loss.import_path)
+        kwargs = custom_loss.kwargs
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return custom_fn(inputs, **kwargs)
-
-        fns["rl"] = rl_fn
-    elif isinstance(loss_config, SFTLossConfig):
-        # sft loss type is only compatible with training_mode = "sft" (validated upstream).
-        pass
-    else:  # DefaultLossConfig
+    else:
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return default_loss_fn(inputs, loss_config)
 
-        def opd_fn(inputs: LossInputs) -> LossOutputs:
-            return opd_loss_fn(inputs, loss_config)
-
-        fns["rl"] = rl_fn
-        fns["opd"] = opd_fn
-
-    return fns
+    return {"sft": sft_loss_fn, "opd": opd_fn, "rl": rl_fn}
 
 
 def compute_loss(

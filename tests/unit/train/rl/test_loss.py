@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, SFTLossConfig
+from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig
 from prime_rl.trainer.rl.loss import LossInputs, LossOutputs, compute_entropy, compute_loss, setup_loss_fns
 
 pytestmark = [pytest.mark.gpu]
@@ -81,7 +81,7 @@ def test_sft_loss_matches_masked_nll():
     advantages = [torch.zeros(3, dtype=torch.float32).cuda()]
     loss_mask = [torch.tensor([True, False, True], dtype=torch.bool).cuda()]
 
-    loss_fns = setup_loss_fns(SFTLossConfig())
+    loss_fns = setup_loss_fns(DefaultLossConfig())
     loss, metrics = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,

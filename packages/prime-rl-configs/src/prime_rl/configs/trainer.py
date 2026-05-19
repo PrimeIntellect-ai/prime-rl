@@ -682,31 +682,20 @@ class CheckpointConfig(BaseConfig):
 
 
 class DefaultLossConfig(BaseModel):
-    """Config for the default loss."""
-
-    type: Literal["default"] = "default"
+    """Knobs for the default DPPO+KL loss math, shared by ``default_loss_fn`` (rl)
+    and ``opd_loss_fn`` (opd). The actual loss fn is selected per batch from
+    ``TrainingSample.training_mode``."""
 
     dppo_mask_low: Annotated[float, Field(ge=0, description="The low threshold for masking tokens.")] = 0.2
     dppo_mask_high: Annotated[float, Field(ge=0, description="The high threshold for masking tokens.")] = 0.2
     kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 1e-3
 
 
-class SFTLossConfig(BaseModel):
-    """Config for SFT-style masked negative log-likelihood loss."""
-
-    type: Literal["sft"] = "sft"
-
-
 class CustomLossConfig(BaseModel):
-    """Config for a custom external loss function."""
-
-    type: Literal["custom"] = "custom"
+    """Optional override for the rl-mode loss fn. opd and sft are unaffected."""
 
     import_path: Annotated[str, Field(description="Import path to the loss function (e.g., 'my_module.my_loss')")]
     kwargs: Annotated[dict[str, Any], Field(default_factory=dict, description="Kwargs to pass to the loss function")]
-
-
-LossConfig: TypeAlias = Annotated[DefaultLossConfig | SFTLossConfig | CustomLossConfig, Field(discriminator="type")]
 
 
 class FakeDataLoaderConfig(BaseConfig):
@@ -781,8 +770,12 @@ class TrainerConfig(BaseConfig):
     # The data configuration
     data: DataLoaderConfig = DataLoaderConfig()
 
-    # The loss configuration
-    loss: LossConfig = DefaultLossConfig()
+    # DPPO+KL knobs (shared by default_loss_fn and opd_loss_fn); selection of
+    # which loss fn runs is driven by TrainingSample.training_mode, not by config.
+    loss: DefaultLossConfig = DefaultLossConfig()
+
+    # Optional override for rl-mode loss only. opd and sft are unaffected.
+    custom_loss: CustomLossConfig | None = None
 
     # The optimizer configuration
     optim: OptimizerConfig = AdamWConfig()

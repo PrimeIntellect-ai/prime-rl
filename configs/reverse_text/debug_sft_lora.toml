@@ -3,7 +3,7 @@
 #     --model.name PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
 #     --server.port 8001 --gpu-memory-utilization 0.5 --model.enforce-eager
 # Then:
-#   uv run rl @ configs/reverse_text/debug_sft.toml
+#   uv run rl @ configs/reverse_text/debug_sft_lora.toml
 
 max_steps = 20
 seq_len = 2048
@@ -13,7 +13,7 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [wandb]
 project = "reverse-text-debug"
-name = "debug-sft"
+name = "debug-sft-lora"
 
 [orchestrator]
 training_mode = "sft"
@@ -44,7 +44,13 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 base_url = ["http://localhost:8001/v1"]
 
 [trainer.optim]
-lr = 3e-6
+lr = 5e-5
+
+[trainer.model.lora]
+rank = 8
+
+[trainer.ckpt.weights]
+save_adapter_separately = true
 
 [ckpt]
 

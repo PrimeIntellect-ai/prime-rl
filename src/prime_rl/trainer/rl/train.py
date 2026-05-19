@@ -150,7 +150,7 @@ def train(config: TrainerConfig):
 
     # Set up the loss function
     logger.info(f"Setting up loss function ({config.loss})")
-    loss_fns = setup_loss_fns(config.loss)
+    loss_fns = setup_loss_fns(config.loss, config.custom_loss)
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
