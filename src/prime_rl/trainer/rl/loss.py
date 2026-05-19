@@ -19,6 +19,13 @@ class LossInputs:
     teacher_logprobs: Float[Tensor, " seq"] | None
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
+    # Per-token mask flagging SFT-on-tool-body positions (positions where
+    # the advantage tensor carries a constant alpha/n weight, not the
+    # rollout's RL advantage). The default_loss_fn forces IS ratio = 1
+    # and skips both DPPO trust-region clipping and the KL penalty on
+    # these positions so the gradient direction matches pure SFT. None
+    # when the rollout's env has SFT-on-tool-body disabled.
+    sft_mask: Bool[Tensor, " seq"] | None = None
 
 
 @dataclass
@@ -130,10 +137,23 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     teacher_logprobs = inputs.teacher_logprobs
     advantages = inputs.advantages
     loss_mask = inputs.loss_mask
+    sft_mask = inputs.sft_mask
 
     log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
         trainer_logprobs, inference_logprobs
     )
+
+    # SFT-on-tool-body positions: the model never sampled these tokens, so
+    # the off-policy correction concept doesn't apply. Force log-ratio to 0
+    # → importance_ratio=1, mismatch_kl=0, and the downstream
+    # ``kl_loss = loss_mask * log_importance_ratio**2`` is zero on these
+    # positions too. The advantage tensor already carries alpha/n here
+    # (overlaid in prepare_sample), so the policy-gradient term becomes
+    # ``alpha/n * trainer_logprob`` — pure SFT gradient direction.
+    if sft_mask is not None:
+        log_importance_ratio = torch.where(sft_mask, torch.zeros_like(log_importance_ratio), log_importance_ratio)
+        importance_ratio = torch.exp(log_importance_ratio)
+        mismatch_kl = importance_ratio - log_importance_ratio - 1
 
     probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
     dppo_invalid_mask_high = probs_diff > loss_config.dppo_mask_high
@@ -141,6 +161,14 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     positive_advantages = advantages > 0
     negative_advantages = advantages < 0
     dppo_invalid_mask = torch.where(positive_advantages, dppo_invalid_mask_high, dppo_invalid_mask_low)
+
+    # SFT positions: never trust-region-clip. The inference logprob for
+    # prompt tokens is placeholder 0.0 (not a real sample), so probs_diff
+    # ≈ exp(trainer_logprob) - 1 and would almost always trigger the
+    # high-side mask — silently dropping the SFT gradient. Exclude SFT
+    # positions from the trust-region check by construction.
+    if sft_mask is not None:
+        dppo_invalid_mask = dppo_invalid_mask & ~sft_mask
 
     is_masked = dppo_invalid_mask
     is_masked_high = positive_advantages & dppo_invalid_mask_high
@@ -170,6 +198,20 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     }
     if teacher_kl is not None:
         metrics["teacher_kl"] = _safe_mean(teacher_kl, loss_mask)
+
+    # SFT-on-tool-body world-model loss: per-rollout NLL on the body tokens
+    # the trainer is supervising. ``sft_train_mask`` is the intersection of
+    # loss_mask (so we count only trainable positions) and sft_mask; for
+    # rollouts whose env has SFT disabled, sft_mask is None and the metrics
+    # default to zero / non-NaN so downstream aggregation stays clean.
+    if sft_mask is not None:
+        sft_train_mask = loss_mask & sft_mask
+        metrics["sft_nll_mean"] = _safe_mean(-trainer_logprobs, sft_train_mask)
+        metrics["sft_token_count"] = sft_train_mask.sum().float()
+        if sft_train_mask.any():
+            metrics["sft_nll_max"] = (-trainer_logprobs[sft_train_mask]).max()
+        else:
+            metrics["sft_nll_max"] = torch.tensor(0.0, device=trainer_logprobs.device)
 
     return LossOutputs(loss=loss, metrics=metrics)
 
