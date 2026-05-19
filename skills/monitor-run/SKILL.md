@@ -83,7 +83,8 @@ Logs are usually the most informative place to monitor a run.
 {output_dir}/logs/
 ├── trainer.log                  # trainer stdout (rank 0)
 ├── orchestrator.log             # orchestrator stdout
-├── inference.log                # vLLM inference server stdout
+├── inference_<tag>.log          # vLLM inference server stdout, one file per [[inference]] tag
+│                                #   (typically inference_student.log, inference_teacher.log for OPD/SFT)
 ├── trainer/
 │   ├── node_*.log               # per-node logs (multi-node only)
 │   └── torchrun/                # per-rank stdout/stderr (all ranks)
@@ -98,12 +99,13 @@ Logs are usually the most informative place to monitor a run.
         └── ...
 ```
 
-Usually it's sufficient to tail `trainer.log`, `orchestrator.log`, and `inference.log`. For debugging, it may be necessary to check the per-node logs (`node_*.log`) or per-rank trainer logs under `torchrun/`.
+Usually it's sufficient to tail `trainer.log`, `orchestrator.log`, and `inference_student.log` (plus `inference_teacher.log` for OPD/SFT). For debugging, it may be necessary to check the per-node logs (`node_*.log`) or per-rank trainer logs under `torchrun/`.
 
 ```bash
 tail {output_dir}/logs/trainer.log                     # training progress — kl mismatch, entropy, grad norm, trainer step time
 tail {output_dir}/logs/orchestrator.log                # orchestrator — reward, rollouts, env execution, inference step time
-tail {output_dir}/logs/inference.log                   # inference — completed HTTP requests, engine stats, OOM errors
+tail {output_dir}/logs/inference_student.log           # student inference — completed HTTP requests, engine stats, OOM errors
+tail {output_dir}/logs/inference_teacher.log           # teacher inference (OPD/SFT only) — completed HTTP requests, engine stats
 tail {output_dir}/logs/envs/train/*/env_server.log     # env server — aggregated stats across its workers (lag, task distribution)
 tail {output_dir}/logs/envs/train/*/env_worker_*.log   # env workers — individual env logs
 ```
@@ -113,7 +115,7 @@ All logs use loguru with the format `HH:mm:ss  LEVEL message`. Log levels: `DEBU
 ```bash
 grep -E "WARNING|ERROR" {output_dir}/logs/trainer.log
 grep -E "WARNING|ERROR" {output_dir}/logs/orchestrator.log
-grep -E "WARNING|ERROR" {output_dir}/logs/inference.log
+grep -E "WARNING|ERROR" {output_dir}/logs/inference_*.log
 grep -E "WARNING|ERROR" {output_dir}/logs/envs/train/*/env_server.log
 grep -E "WARNING|ERROR" {output_dir}/logs/envs/train/*/env_worker_*.log
 ```
@@ -183,7 +185,7 @@ These tell you how fast the run is and where the bottlenecks are. Trainer and or
 | event loop lag (min/mean/p90/p99/max) | server and worker lag stats, logged periodically |
 | active task distribution | per-worker and per-env task counts  |
 
-**Inference** (in `inference.log`):
+**Inference** (in `inference_<tag>.log` — one file per [[inference]] tag, e.g. `inference_student.log` and `inference_teacher.log` for OPD/SFT):
 
 vLLM logs completed HTTP requests and occasionally engine stats. For live inference metrics, query the vLLM metrics endpoint directly:
 
@@ -240,7 +242,7 @@ All processes have custom process names, making them easy to identify in `ps`, `
 
 ```
 PRIME-RL::Launcher
-├── PRIME-RL::Inference          (vLLM server, GPU 0)
+├── PRIME-RL::Inference          (vLLM server, one per [[inference]] tag — student, teacher, ...)
 ├── PRIME-RL::Orchestrator       (CPU-only, data/scheduling)
 │   ├── Verifiers::EnvServer     (ZMQ env server per environment)
 │   │   ├── Verifiers::EnvWorker0
@@ -248,7 +250,7 @@ PRIME-RL::Launcher
 │   │   └── ...
 │   └── ...
 ├── torchrun
-│   └── PRIME-RL::Trainer        (RL trainer, GPU 1+)
+│   └── PRIME-RL::Trainer        (RL trainer)
 └── tail trainer.log
 ```
 

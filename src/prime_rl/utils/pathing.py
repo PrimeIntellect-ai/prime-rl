@@ -39,7 +39,7 @@ def format_log_message(
     if orchestrator:
         log_lines.append(f"{i1}{'Orchestrator:':<{col}}tail -F {log_dir}/orchestrator.log")
     if inference:
-        log_lines.append(f"{i1}{'Inference:':<{col}}tail -F {log_dir}/inference.log")
+        log_lines.append(f"{i1}{'Inference:':<{col}}tail -F {log_dir}/inference_*.log")
         if num_infer_nodes > 1:
             log_lines.append(f"{i2}{'All nodes:':<{col - 1}}tail -F {log_dir}/inference/node_*.log")
     if train_env_names:

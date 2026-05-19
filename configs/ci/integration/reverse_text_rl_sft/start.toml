@@ -1,0 +1,67 @@
+# Smoke test for the RL-entrypoint SFT (on-policy hard distillation) training
+# mode with an overlapped student+teacher inference layout. The teacher
+# generates rollouts via /v1/chat/completions; the student is kept on-host so
+# evals and weight sync still work end-to-end. Trainer on GPU 0, both vLLM
+# engines on GPU 1 at 40% gpu_memory_utilization each.
+
+max_steps = 5
+seq_len = 1024
+
+[ckpt]
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+project = "reverse-text-ci"
+name = "ci-rl-sft"
+
+[orchestrator]
+training_mode = "sft"
+batch_size = 32
+rollouts_per_example = 4
+
+[orchestrator.train.sampling]
+max_completion_tokens = 64
+
+[[orchestrator.train.env]]
+id = "reverse-text"
+
+[orchestrator.teacher.model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+
+[trainer.optim]
+lr = 3e-6
+
+[deployment]
+num_train_gpus = 1
+gpus_per_node = 2
+
+[[inference]]
+tag = "student"
+gpu_ids = [1]
+# Overlapped layout: student and teacher share GPU 1. vLLM's default
+# `gpu_memory_utilization`-based KV-cache sizing double-counts the other
+# engine's footprint via `non_torch_allocations`, so we pin the per-engine KV
+# cache budget explicitly via vllm_extra.kv_cache_memory_bytes (2 GiB each
+# is more than enough for a 0.6B model with seq_len = 1024 and small batches).
+gpu_memory_utilization = 0.5
+vllm_extra = { kv_cache_memory_bytes = 2147483648 }
+
+[inference.model]
+max_model_len = 2048
+enforce_eager = true
+
+[[inference]]
+tag = "teacher"
+gpu_ids = [1]
+gpu_memory_utilization = 0.5
+vllm_extra = { kv_cache_memory_bytes = 2147483648 }
+
+[inference.server]
+port = 8001
+
+[inference.model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+max_model_len = 2048
+enforce_eager = true

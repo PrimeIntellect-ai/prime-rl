@@ -307,7 +307,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     fi
 
     uv run inference \
-        @ $CONFIG_DIR/inference.toml \
+        @ $CONFIG_DIR/inference_student.toml \
         --server.host 0.0.0.0 \
         --server.port $PORT \
         --parallel.dp $DP \
@@ -344,7 +344,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         fi
 
         uv run inference \
-            @ $CONFIG_DIR/inference.toml \
+            @ $CONFIG_DIR/inference_student.toml \
             --server.host 0.0.0.0 \
             --server.port $BACKEND_PORT \
             --data-parallel-rpc-port $INFERENCE_DATA_PARALLEL_RPC_PORT \
@@ -352,7 +352,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
     else
         uv run inference \
-            @ $CONFIG_DIR/inference.toml \
+            @ $CONFIG_DIR/inference_student.toml \
             --server.host 0.0.0.0 \
             --server.port $BACKEND_PORT \
             2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log

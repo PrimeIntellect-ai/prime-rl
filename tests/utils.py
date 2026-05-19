@@ -12,12 +12,17 @@ def strip_escape_codes(text: str) -> str:
 def check_no_error(process: ProcessResult, output_dir: Path) -> None:
     """Helper to assert that a process did not error"""
     if process.returncode != 0:
-        print("=== Inference Outputs ===")
-        with open(output_dir / "logs" / "inference.log", "r") as f:
-            print(*f.readlines()[-100:], sep="")
-        print("=== Orchestrator Outputs ===")
-        with open(output_dir / "logs" / "orchestrator.log", "r") as f:
-            print(*f.readlines()[-1000:], sep="")
+        logs_dir = output_dir / "logs"
+        inference_logs = sorted(logs_dir.glob("inference*.log"))
+        for log_path in inference_logs:
+            print(f"=== {log_path.name} Outputs ===")
+            with open(log_path, "r") as f:
+                print(*f.readlines()[-100:], sep="")
+        orchestrator_log = logs_dir / "orchestrator.log"
+        if orchestrator_log.exists():
+            print("=== Orchestrator Outputs ===")
+            with open(orchestrator_log, "r") as f:
+                print(*f.readlines()[-1000:], sep="")
     assert process.returncode == 0, f"Process has non-zero return code ({process})"
 
 

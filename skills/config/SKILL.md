@@ -165,7 +165,44 @@ If you wish to configure values of the default variant, you don't need to set th
 
 Set `orchestrator.training_mode = "sft"` (or top-level `training_mode = "sft"`, which auto-propagates) and configure `orchestrator.teacher` with the teacher endpoint. The orchestrator stamps each `TrainingSample.sft_loss = True` and the shared `training_mode` validator sets `trainer.loss.type = "sft"`, which the trainer's `compute_loss` honors by dispatching to `sft_loss_fn` per batch.
 
-`[inference]` is required (same as rl/opd) — it starts the student inference server and auto-configures `orchestrator.student.client.base_url`. The student pool is used for online evals and policy weight sync. For externally started student inference, set `orchestrator.student.client.base_url` explicitly instead.
+A `[[inference]] tag = "student"` entry is required (same as rl/opd) — it starts the student inference server and auto-configures `orchestrator.student.client.base_url`. The student pool is used for online evals and policy weight sync. For externally started student inference, set `orchestrator.student.client.base_url` explicitly instead.
+
+### Tagged inference deployments (`[[inference]]`)
+
+`RLConfig.inference` is a list of tagged deployments, written as repeated `[[inference]]` blocks in TOML. The RL launcher starts one vLLM subprocess per entry; the orchestrator routes student/teacher requests by tag. Tags must be unique and at least one entry must be `tag = "student"` (the weight-broadcast target).
+
+```toml
+[deployment]
+num_train_gpus = 1
+gpus_per_node = 2
+
+[[inference]]
+tag = "student"
+gpu_ids = [1]                       # explicit placement — overrides sequential allocation
+gpu_memory_utilization = 0.4
+
+[[inference]]
+tag = "teacher"
+gpu_ids = [1]                       # same GPU as student — overlapped layout
+gpu_memory_utilization = 0.4
+
+[inference.server]
+port = 8001                         # unique port per entry
+
+[inference.model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+```
+
+Key knobs per entry:
+
+- `tag` — unique identifier; orchestrator routing matches on this.
+- `gpu_ids` — explicit local GPU ids (overrides `deployment.num_infer_gpus` for that entry); omit for legacy sequential allocation. Multiple entries can share ids when `gpu_memory_utilization` leaves enough headroom.
+- `server.port` — must be unique across entries; the validator rejects collisions.
+- All other vLLM-facing fields (`parallel.tp`, `parallel.dp`, `enable_lora`, etc.) are per-entry.
+
+For back-compat, a single `[inference]` block is auto-wrapped to `[{tag = "student"}]`; the old `[teacher_inference]` + `deployment.num_teacher_gpus` shorthand is auto-migrated to a second `[[inference]]` entry tagged `teacher`. Prefer writing `[[inference]]` directly in new configs.
+
+Per-tag log files land at `logs/inference_<tag>.log` (was `inference.log` / `teacher_inference.log`).
 
 ### RL rollout client defaults
 

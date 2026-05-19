@@ -183,16 +183,26 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
     type: Literal["single_node"] = "single_node"
 
     num_train_gpus: Annotated[int, Field(description="Number of training GPUs")] = 1
-    num_infer_gpus: Annotated[int, Field(description="Number of inference GPUs")] = 1
-    num_teacher_gpus: Annotated[int | None, Field(description="Number of teacher inference GPUs")] = None
+    num_infer_gpus: Annotated[
+        int,
+        Field(
+            description=(
+                "Number of GPUs to allocate sequentially across [[inference]] entries that do not "
+                "set `gpu_ids` explicitly. Ignored when every inference entry pins its own `gpu_ids`."
+            ),
+        ),
+    ] = 1
 
     @model_validator(mode="after")
     def validate_gpu_count(self):
-        total = self.num_train_gpus + self.num_infer_gpus + (self.num_teacher_gpus or 0)
+        # Soft check on the legacy sequential pool only; RLConfig.validate_inference_placement
+        # cross-checks the actual per-tag gpu_ids against gpus_per_node.
+        total = self.num_train_gpus + self.num_infer_gpus
         if total > self.gpus_per_node:
             raise ValueError(
-                f"Total GPU count ({total} = {self.num_train_gpus} train + {self.num_infer_gpus} infer"
-                f" + {self.num_teacher_gpus or 0} teacher) exceeds gpus_per_node ({self.gpus_per_node})."
+                f"num_train_gpus ({self.num_train_gpus}) + num_infer_gpus ({self.num_infer_gpus}) "
+                f"exceeds gpus_per_node ({self.gpus_per_node}). Either reduce the sequential "
+                f"inference pool, raise gpus_per_node, or pin per-deployment GPUs via [[inference]].gpu_ids."
             )
         return self
 
@@ -217,7 +227,6 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
             description="Number of independent inference replicas. Total inference nodes = num_infer_nodes * num_infer_replicas.",
         ),
     ] = 1
-    num_teacher_nodes: Annotated[int | None, Field(description="Number of teacher inference nodes.")] = None
 
     nodes_per_fsdp_group: Annotated[
         int | None,
@@ -229,12 +238,6 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     @property
     def total_infer_nodes(self) -> int:
         return self.num_infer_nodes * self.num_infer_replicas
-
-    @model_validator(mode="after")
-    def teacher_inference_not_supported(self):
-        if self.num_teacher_nodes is not None:
-            raise ValueError("Teacher inference is not yet supported in multi node deployment.")
-        return self
 
 
 DeploymentConfig: TypeAlias = Annotated[
@@ -248,18 +251,19 @@ class RLConfig(BaseConfig):
     trainer: TrainerConfig
     orchestrator: OrchestratorConfig
     inference: Annotated[
-        InferenceConfig | None,
+        list[InferenceConfig],
         Field(
-            description="The inference config. If None, the rl entrypoint will not start an inference server (useful for elastic inference pools or manually started servers)."
+            description=(
+                "Inference deployments to launch alongside this RL run, written as repeated "
+                "[[inference]] TOML blocks. Each entry is tagged (`tag` field, defaults to "
+                "`student`); the launcher brings up one vLLM subprocess per entry, and the "
+                "orchestrator routes student/teacher requests by tag. An empty list means no "
+                "inference server is launched here (useful for elastic pools or manually "
+                "managed servers). For back-compat, a single `[inference]` block is auto-wrapped "
+                'into a list with tag="student".'
+            ),
         ),
-    ] = None
-
-    teacher_inference: Annotated[
-        InferenceConfig | None,
-        Field(
-            description="Teacher inference config. If None, will use the same config as inference or a default config. Only used when teacher GPUs or nodes are set."
-        ),
-    ] = None
+    ] = []
 
     output_dir: Annotated[
         Path,
@@ -365,23 +369,96 @@ class RLConfig(BaseConfig):
         Field(description="Experimental features for RL training."),
     ] = RLExperimentalConfig()
 
+    ### Tagged inference helpers
+
+    def get_inference(self, tag: str) -> InferenceConfig | None:
+        for entry in self.inference:
+            if entry.tag == tag:
+                return entry
+        return None
+
+    @property
+    def student_inference(self) -> InferenceConfig | None:
+        return self.get_inference("student")
+
+    @property
+    def teacher_inference(self) -> InferenceConfig | None:
+        return self.get_inference("teacher")
+
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
     @model_validator(mode="before")
     @classmethod
-    def _stub_orchestrator_teacher_for_auto_setup(cls, data):
-        """When `deployment.num_teacher_gpus > 0` and the user didn't write an
-        `[orchestrator.teacher]` block, inject an empty one so
-        `OrchestratorConfig.validate_training_mode` (which fires during nested
-        validation) doesn't reject `training_mode = "opd"` for "missing teacher".
-        `auto_setup_teacher_inference` (after) then fills in client.base_url and
-        model.name from the auto-launched teacher_inference server."""
+    def _migrate_legacy_inference(cls, data):
+        """Translate the pre-#2554 single-deployment schema into the tagged
+        `[[inference]]` list. Three legacy shapes are auto-migrated:
+
+        1. `[inference]` (dict) → `[{tag="student", ...}]`.
+        2. `[teacher_inference]` (dict) → second list entry with `tag="teacher"`,
+           and `gpu_ids` derived from `deployment.num_infer_gpus` +
+           `deployment.num_train_gpus` + `deployment.num_teacher_gpus` to preserve
+           the legacy `infer → trainer → teacher` GPU ordering.
+        3. `deployment.num_teacher_gpus` set without a `[teacher_inference]`
+           block → synthesizes an empty teacher entry on the same GPU slice.
+
+        Once migrated, `num_teacher_gpus` is dropped from `deployment` (the field
+        was removed from the schema in this PR; ignoring it without a clear
+        warning would silently strand legacy configs).
+        """
         if not isinstance(data, dict):
             return data
-        deployment = data.get("deployment")
-        if not isinstance(deployment, dict):
+
+        inference = data.get("inference")
+        teacher_inference = data.pop("teacher_inference", None)
+        deployment = data.get("deployment") if isinstance(data.get("deployment"), dict) else None
+        num_teacher_gpus = deployment.pop("num_teacher_gpus", None) if deployment is not None else None
+        num_infer_gpus = deployment.get("num_infer_gpus") if deployment is not None else None
+        num_train_gpus = deployment.get("num_train_gpus") if deployment is not None else None
+
+        if isinstance(inference, dict):
+            entry = {**inference}
+            entry.setdefault("tag", "student")
+            inference_list = [entry]
+            data["inference"] = inference_list
+        elif isinstance(inference, list):
+            inference_list = inference
+        elif inference is None:
+            if teacher_inference is None and not num_teacher_gpus:
+                return data
+            inference_list = []
+            data["inference"] = inference_list
+        else:
             return data
-        if not deployment.get("num_teacher_gpus"):
+
+        teacher_offset = (num_infer_gpus or 0) + (num_train_gpus or 0)
+        if isinstance(teacher_inference, dict):
+            entry = {**teacher_inference}
+            entry.setdefault("tag", "teacher")
+            if "gpu_ids" not in entry and num_teacher_gpus:
+                entry["gpu_ids"] = list(range(teacher_offset, teacher_offset + num_teacher_gpus))
+            inference_list.append(entry)
+        elif num_teacher_gpus:
+            entry: dict = {"tag": "teacher"}
+            entry["gpu_ids"] = list(range(teacher_offset, teacher_offset + num_teacher_gpus))
+            inference_list.append(entry)
+
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _stub_orchestrator_teacher_for_auto_setup(cls, data):
+        """When the inference list contains a `teacher` deployment and the user
+        didn't write an `[orchestrator.teacher]` block, inject an empty one so
+        `OrchestratorConfig.validate_training_mode` (which fires during nested
+        validation) doesn't reject `training_mode = "opd"` for "missing teacher".
+        `auto_setup_inference_clients` (after) then fills in client.base_url and
+        model.name from the auto-launched teacher inference server."""
+        if not isinstance(data, dict):
+            return data
+        inference = data.get("inference")
+        if not isinstance(inference, list):
+            return data
+        if not any(isinstance(i, dict) and i.get("tag") == "teacher" for i in inference):
             return data
         orch = data.setdefault("orchestrator", {})
         if isinstance(orch, dict) and "teacher" not in orch and "teacher_model" not in orch:
@@ -398,7 +475,7 @@ class RLConfig(BaseConfig):
             if self.deployment.num_infer_nodes == 0 and self.inference:
                 raise ValueError(
                     "Cannot configure inference with num_infer_nodes = 0. "
-                    "Either set num_infer_nodes > 0 or remove the inference config."
+                    "Either set num_infer_nodes > 0 or remove all [[inference]] blocks."
                 )
             if self.deployment.num_infer_nodes == 0 and not self.trainer.data.fake and not self.bench:
                 raise ValueError(
@@ -407,13 +484,59 @@ class RLConfig(BaseConfig):
                 )
         return self
 
-    # TODO: fix this
+    @model_validator(mode="after")
+    def validate_inference_tags(self):
+        tags = [i.tag for i in self.inference]
+        if any(not t for t in tags):
+            raise ValueError("Every [[inference]] entry must set a non-empty `tag`.")
+        if len(tags) != len(set(tags)):
+            raise ValueError(f"Duplicate [[inference]] tags: {tags}. Each `tag` must be unique within an RL run.")
+        if self.inference and "student" not in tags:
+            raise ValueError(
+                'The [[inference]] list must include an entry with `tag = "student"` (the weight-broadcast target). '
+                f"Got tags: {tags}."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_inference_placement(self):
+        """Cross-check explicit gpu_ids on inference entries against the deployment.
+
+        Each entry's gpu_ids (when set) must fit within the launcher's visible GPUs
+        (single-node: 0..gpus_per_node-1) and must not collide with the trainer's
+        derived placement (the first num_train_gpus IDs not used by any inference
+        entry — see rl_local).
+        """
+        if self.deployment.type != "single_node":
+            return self
+        gpus_per_node = self.deployment.gpus_per_node
+        explicit: set[int] = set()
+        for entry in self.inference:
+            if entry.gpu_ids is None:
+                continue
+            for gid in entry.gpu_ids:
+                if gid < 0 or gid >= gpus_per_node:
+                    raise ValueError(
+                        f"[[inference]] tag={entry.tag!r} gpu_ids contains {gid}, which is outside "
+                        f"the [0, gpus_per_node={gpus_per_node}) range."
+                    )
+                explicit.add(gid)
+        free_for_trainer = [g for g in range(gpus_per_node) if g not in explicit]
+        if len(free_for_trainer) < self.deployment.num_train_gpus:
+            raise ValueError(
+                f"After placing inference deployments on GPUs {sorted(explicit) or '[]'}, only "
+                f"{len(free_for_trainer)} GPU(s) remain for the trainer, but num_train_gpus = "
+                f"{self.deployment.num_train_gpus}. Either reduce num_train_gpus, raise "
+                f"gpus_per_node, or change the inference gpu_ids."
+            )
+        return self
+
     @model_validator(mode="after")
     def validate_no_teacher_in_multinode(self):
         if self.deployment.type == "multi_node" and self.teacher_inference is not None:
             raise ValueError(
-                "Teacher inference is not supported in multi-node deployment. "
-                "The SLURM template only handles inference and training nodes."
+                "Teacher inference is not yet supported in multi-node deployment. "
+                "The SLURM template only handles a single inference deployment per run."
             )
         return self
 
@@ -435,7 +558,7 @@ class RLConfig(BaseConfig):
         if self.weight_broadcast.type != "nccl":
             raise ValueError("weight_broadcast.quantize_in_weight_transfer requires weight_broadcast.type = 'nccl'.")
 
-        if self.inference is None:
+        if not self.inference:
             raise ValueError("weight_broadcast.quantize_in_weight_transfer requires an inference config.")
 
         if self.trainer.model.impl != "custom":
@@ -555,21 +678,22 @@ class RLConfig(BaseConfig):
         """Auto-setup shared model config for trainer, orchestrator, and inference."""
         if self.model is not None:
             self.trainer.model.name = self.model.name
-            if self.inference is not None:
-                inference_model_explicitly_set = "name" in self.inference.model.model_fields_set
+            student_inf = self.student_inference
+            if student_inf is not None:
+                inference_model_explicitly_set = "name" in student_inf.model.model_fields_set
                 if not inference_model_explicitly_set:
-                    self.inference.model.name = self.model.name
-                self.orchestrator.student.model.name = self.inference.model.name
+                    student_inf.model.name = self.model.name
+                self.orchestrator.student.model.name = student_inf.model.name
             else:
                 self.orchestrator.student.model.name = self.model.name
 
             if self.model.vlm is not None:
                 self.trainer.model.vlm = self.model.vlm
                 self.orchestrator.student.model.vlm = self.model.vlm
-                if self.inference is not None:
-                    self.inference.model.vlm = self.model.vlm
+                if student_inf is not None:
+                    student_inf.model.vlm = self.model.vlm
 
-        validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
+        validate_shared_model_name(self.trainer, self.orchestrator, self.student_inference)
 
         return self
 
@@ -597,13 +721,16 @@ class RLConfig(BaseConfig):
             self.orchestrator.tokenizer.name = self.orchestrator.student.model.name
             self.orchestrator.tokenizer.trust_remote_code = self.orchestrator.student.model.trust_remote_code
 
-        # Propagate chat_template to inference (vLLM --chat-template)
-        if self.inference is not None:
-            chat_template = self.trainer.tokenizer.chat_template
-            if chat_template is not None and self.inference.model.chat_template is None:
-                self.inference.model.chat_template = chat_template
+        # Propagate chat_template to the student inference deployment (vLLM
+        # --chat-template). Other tags (e.g. teacher) keep their own template,
+        # which can differ when the teacher is a distinct model family.
+        chat_template = self.trainer.tokenizer.chat_template
+        if chat_template is not None:
+            student_inf = self.student_inference
+            if student_inf is not None and student_inf.model.chat_template is None:
+                student_inf.model.chat_template = chat_template
 
-        validate_shared_tokenizer(self.trainer, self.orchestrator, self.inference)
+        validate_shared_tokenizer(self.trainer, self.orchestrator, self.student_inference)
 
         return self
 
@@ -652,10 +779,18 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_weight_broadcast(self):
-        """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference."""
+        """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference.
+
+        NCCL broadcast targets the `student` deployment only (it's the weight-sync
+        destination). Other tags (e.g. teacher) keep their own weight_broadcast
+        config — typically `filesystem`/no-op since they aren't updated mid-run.
+        """
         if self.weight_broadcast is not None:
+            student_inf = self.student_inference
             if self.weight_broadcast.type == "nccl":
-                inference_world_size = self.inference.parallel.dp * self.inference.parallel.tp if self.inference else 1
+                inference_world_size = (
+                    student_inf.parallel.dp * student_inf.parallel.tp if student_inf is not None else 1
+                )
                 self.trainer.weight_broadcast = TrainerNCCLWeightBroadcastConfig(
                     type=self.weight_broadcast.type,
                     inference_world_size=inference_world_size,
@@ -673,16 +808,17 @@ class RLConfig(BaseConfig):
             elif self.weight_broadcast.type == "filesystem":
                 self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
                 self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
-            if self.inference is not None:
-                self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
+            if student_inf is not None:
+                student_inf.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
 
-        validate_shared_weight_broadcast(self.trainer, self.orchestrator, self.inference)
+        validate_shared_weight_broadcast(self.trainer, self.orchestrator, self.student_inference)
 
         return self
 
     @model_validator(mode="after")
     def validate_eplb_requires_quantized_weight_transfer(self):
-        if self.inference is None or not self.inference.enable_eplb:
+        student_inf = self.student_inference
+        if student_inf is None or not student_inf.enable_eplb:
             return self
 
         # TODO(matej): check if weight reloading works itself before supporting EPLB without quantized transfer.
@@ -755,9 +891,10 @@ class RLConfig(BaseConfig):
                     f"r{self.orchestrator.student.model.lora.rank}-a{self.orchestrator.student.model.lora.alpha}"
                 )
 
-            if self.inference is not None:
-                self.inference.enable_lora = True
-                self.inference.max_lora_rank = self.trainer.model.lora.rank
+            student_inf = self.student_inference
+            if student_inf is not None:
+                student_inf.enable_lora = True
+                student_inf.max_lora_rank = self.trainer.model.lora.rank
             else:
                 warnings.warn(
                     "LoRA is enabled, but inference is not configured. When manually starting the inference server, "
@@ -776,13 +913,14 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_router_replay(self):
         if self.trainer.enable_router_replay:
-            if self.inference is not None:
-                if self.inference.enable_return_routed_experts is False:
+            student_inf = self.student_inference
+            if student_inf is not None:
+                if student_inf.enable_return_routed_experts is False:
                     warnings.warn(
                         "Router replay is enabled, but inference.enable_return_routed_experts is False. Setting to True.",
                         stacklevel=2,
                     )
-                self.inference.enable_return_routed_experts = True
+                student_inf.enable_return_routed_experts = True
             else:
                 warnings.warn(
                     "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server.",
@@ -792,26 +930,33 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_deployment(self):
+        # Multi-node and the disaggregated/expert-parallel knobs below only apply
+        # to the student deployment; other tags are gated out by
+        # validate_no_teacher_in_multinode.
+        student_inf = self.student_inference
         if self.deployment.type == "single_node":  # single-node
             # set num_train_workers to the number of data replicas
             non_data_parallel_size = self.trainer.model.cp
             if self.deployment.num_train_gpus > 1:
                 self.orchestrator.num_train_workers = self.deployment.num_train_gpus // non_data_parallel_size
 
-            # fill up inference capacity with dp ranks
-            if self.inference is not None:
+            # Fill up inference capacity with dp ranks for entries that didn't
+            # pin their own GPUs. Entries with explicit gpu_ids set their own
+            # dp/tp budget and should not be auto-rewritten from the legacy
+            # num_infer_gpus pool.
+            for entry in self.inference:
+                if entry.gpu_ids is not None:
+                    continue
                 num_infer_gpus = self.deployment.num_infer_gpus
-                if num_infer_gpus != self.inference.parallel.dp * self.inference.parallel.tp:
-                    assert num_infer_gpus % self.inference.parallel.tp == 0, (
-                        "Number of inference GPUs must be divisible by the tensor parallel size"
+                if num_infer_gpus != entry.parallel.dp * entry.parallel.tp:
+                    assert num_infer_gpus % entry.parallel.tp == 0, (
+                        f"Number of inference GPUs ({num_infer_gpus}) for tag={entry.tag!r} must be "
+                        f"divisible by its tensor parallel size ({entry.parallel.tp})."
                     )
-                    self.inference.parallel.dp = num_infer_gpus // self.inference.parallel.tp
-                # Ensure api_server_count matches DP so all workers are created.
-                # Without this, the NCCL broadcast group expects dp*tp workers
-                # but only api_server_count*tp exist, causing a deadlock.
-                dp = self.inference.parallel.dp
-                if self.inference.api_server_count < dp and not self.inference.enable_lora:
-                    self.inference.api_server_count = dp
+                    entry.parallel.dp = num_infer_gpus // entry.parallel.tp
+                dp = entry.parallel.dp
+                if entry.api_server_count < dp and not entry.enable_lora:
+                    entry.api_server_count = dp
 
         elif self.deployment.type == "multi_node":  # multi-node
             self.orchestrator.num_train_workers = self.deployment.num_train_nodes * self.deployment.gpus_per_node
@@ -827,11 +972,11 @@ class RLConfig(BaseConfig):
                 )
 
             if (
-                self.inference is not None
-                and self.inference.enable_expert_parallel
-                and self.inference.deployment.type != "disaggregated"
+                student_inf is not None
+                and student_inf.enable_expert_parallel
+                and student_inf.deployment.type != "disaggregated"
             ):
-                inference_tp = self.inference.parallel.tp
+                inference_tp = student_inf.parallel.tp
                 if self.deployment.gpus_per_node % inference_tp != 0:
                     raise ValueError(
                         "deployment.gpus_per_node must be divisible by inference.parallel.tp "
@@ -840,46 +985,46 @@ class RLConfig(BaseConfig):
 
                 inferred_dp_local = self.deployment.gpus_per_node // inference_tp
                 total_infer_gpus = self.deployment.num_infer_nodes * self.deployment.gpus_per_node
-                expected_global_world_size = self.inference.parallel.dp * inference_tp
+                expected_global_world_size = student_inf.parallel.dp * inference_tp
                 if expected_global_world_size != total_infer_gpus:
                     raise ValueError(
                         "For multi-node expert parallel inference, inference.parallel.dp * inference.parallel.tp "
                         f"must match total inference GPUs ({total_infer_gpus}), got {expected_global_world_size}."
                     )
 
-                if self.inference.data_parallel_size_local is None:
-                    self.inference.data_parallel_size_local = inferred_dp_local
-                elif self.inference.data_parallel_size_local != inferred_dp_local:
+                if student_inf.data_parallel_size_local is None:
+                    student_inf.data_parallel_size_local = inferred_dp_local
+                elif student_inf.data_parallel_size_local != inferred_dp_local:
                     raise ValueError(
                         "inference.data_parallel_size_local must equal deployment.gpus_per_node / inference.parallel.tp "
                         f"({inferred_dp_local}) when inference.enable_expert_parallel is enabled in multi-node deployment."
                     )
 
-                if not self.inference.enable_lora and self.inference.api_server_count == self.inference.parallel.dp:
-                    self.inference.api_server_count = inferred_dp_local
+                if not student_inf.enable_lora and student_inf.api_server_count == student_inf.parallel.dp:
+                    student_inf.api_server_count = inferred_dp_local
 
             # Auto-infer DP and api_server_count for standard multi-node inference.
             # Without EP, vLLM only creates api_server_count * tp workers per node,
             # not gpus_per_node workers. If DP isn't set, the broadcast group expects
             # more workers than exist, deadlocking NCCL init.
             if (
-                self.inference is not None
-                and not self.inference.enable_expert_parallel
-                and self.inference.deployment.type != "disaggregated"
+                student_inf is not None
+                and not student_inf.enable_expert_parallel
+                and student_inf.deployment.type != "disaggregated"
             ):
-                dp_per_node = self.deployment.gpus_per_node // self.inference.parallel.tp
-                if self.inference.parallel.dp == 1 and dp_per_node > 1:
-                    self.inference.parallel.dp = dp_per_node
-                if self.inference.data_parallel_size_local is None and dp_per_node > 1:
-                    self.inference.data_parallel_size_local = dp_per_node
-                if self.inference.api_server_count == 1 and dp_per_node > 1:
-                    self.inference.api_server_count = dp_per_node
+                dp_per_node = self.deployment.gpus_per_node // student_inf.parallel.tp
+                if student_inf.parallel.dp == 1 and dp_per_node > 1:
+                    student_inf.parallel.dp = dp_per_node
+                if student_inf.data_parallel_size_local is None and dp_per_node > 1:
+                    student_inf.data_parallel_size_local = dp_per_node
+                if student_inf.api_server_count == 1 and dp_per_node > 1:
+                    student_inf.api_server_count = dp_per_node
 
             if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
                 # Compute inference_world_size from actual worker count per server:
                 # each api_server runs tp workers that participate in collective_rpc.
-                api_server_count = self.inference.api_server_count if self.inference else 1
-                tp = self.inference.parallel.tp if self.inference else 1
+                api_server_count = student_inf.api_server_count if student_inf else 1
+                tp = student_inf.parallel.tp if student_inf else 1
                 total_infer_workers = self.deployment.total_infer_nodes * api_server_count * tp
                 assert self.trainer.weight_broadcast.type == "nccl"
                 self.trainer.weight_broadcast.host = "0.0.0.0"
@@ -891,13 +1036,18 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_disaggregated_inference(self):
-        """Auto-setup for disaggregated P/D inference within a multi-node deployment."""
-        if self.inference is None or self.inference.deployment.type != "disaggregated":
+        """Auto-setup for disaggregated P/D inference within a multi-node deployment.
+
+        Disaggregated P/D only applies to the student deployment today; other
+        tags are blocked by ``validate_no_teacher_in_multinode``.
+        """
+        student_inf = self.student_inference
+        if student_inf is None or student_inf.deployment.type != "disaggregated":
             return self
         if self.deployment.type != "multi_node":
             return self
 
-        infer_deploy = self.inference.deployment
+        infer_deploy = student_inf.deployment
         expected_infer_nodes = infer_deploy.num_prefill_nodes + infer_deploy.num_decode_nodes
         if self.deployment.num_infer_nodes != expected_infer_nodes:
             raise ValueError(
@@ -916,63 +1066,52 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_inference_client(self):
-        """Auto-configure orchestrator student client from the inference server config.
+    def auto_setup_inference_clients(self):
+        """Auto-configure orchestrator student/teacher clients from the tagged inference list.
 
-        For all modes, sets dp_rank_count from inference DP size. For SFT mode,
-        also sets base_url - rl/opd rely on the ClientConfig default
-        (``["http://localhost:8000/v1"]``) which already matches the auto-launched
-        student vLLM at inference.server.port = 8000.
+        - Student: sets ``dp_rank_count`` from the student deployment's DP size. For SFT mode,
+          also sets ``base_url`` (rl/opd rely on the ClientConfig default of
+          ``["http://localhost:8000/v1"]`` which already matches the auto-launched student vLLM
+          at ``inference.server.port = 8000``).
+        - Teacher: sets ``orchestrator.teacher.client.base_url`` to the teacher deployment's
+          ``host:port`` (so the orchestrator points at the right server even when student and
+          teacher share a host with different ports), and copies the teacher model name from
+          inference config when ``orchestrator.teacher.model.name`` was not explicitly set.
+
+        Also enforces that no two inference deployments bind the same ``server.port``.
         """
-        if self.inference is None:
-            return self
-        client = self.orchestrator.student.client
-        if "dp_rank_count" not in client.model_fields_set:
-            client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
-        if self.orchestrator.training_mode == "sft" and "base_url" not in client.model_fields_set:
-            host = self.inference.server.host or "localhost"
-            port = self.inference.server.port
-            client.base_url = [f"http://{host}:{port}/v1"]
-        return self
+        ports = [(entry.tag, entry.server.port) for entry in self.inference]
+        seen: dict[int, str] = {}
+        for tag, port in ports:
+            if port in seen:
+                raise ValueError(
+                    f"Inference deployments {seen[port]!r} and {tag!r} both bind server.port={port}. "
+                    "Each [[inference]] entry needs a unique port."
+                )
+            seen[port] = tag
 
-    @model_validator(mode="after")
-    def auto_setup_teacher_inference(self):
-        """Auto-configure teacher inference server and orchestrator teacher_model client."""
-        if self.deployment.type != "single_node":
-            return self
-        if self.deployment.num_teacher_gpus is None or self.deployment.num_teacher_gpus == 0:
-            return self
+        student_inf = self.student_inference
+        if student_inf is not None:
+            client = self.orchestrator.student.client
+            if "dp_rank_count" not in client.model_fields_set:
+                client.dp_rank_count = student_inf.data_parallel_size_local or student_inf.parallel.dp
+            if self.orchestrator.training_mode == "sft" and "base_url" not in client.model_fields_set:
+                host = student_inf.server.host or "localhost"
+                port = student_inf.server.port
+                client.base_url = [f"http://{host}:{port}/v1"]
 
-        import copy
+        teacher_inf = self.teacher_inference
+        if teacher_inf is not None:
+            from prime_rl.configs.orchestrator import RolloutModelConfig
 
-        from prime_rl.configs.orchestrator import RolloutModelConfig
-
-        if self.teacher_inference is None:
-            if self.inference is None:
-                self.teacher_inference = InferenceConfig()
-            else:
-                self.teacher_inference = copy.deepcopy(self.inference)
-            self.teacher_inference.server.port = (self.inference.server.port if self.inference else 8000) + 1
-        elif self.inference is not None and self.teacher_inference.server.port == self.inference.server.port:
-            raise ValueError(
-                f"teacher_inference.server.port ({self.teacher_inference.server.port}) conflicts with "
-                f"inference.server.port ({self.inference.server.port}). "
-                "Either use different ports or let teacher_inference be auto-configured."
-            )
-
-        tp = self.teacher_inference.parallel.tp
-        num_teacher_gpus = self.deployment.num_teacher_gpus
-        if num_teacher_gpus != self.teacher_inference.parallel.dp * tp:
-            assert num_teacher_gpus % tp == 0, "Number of teacher GPUs must be divisible by tensor parallel size"
-            assert num_teacher_gpus > 0, "num_teacher_gpus cannot be zero"
-            self.teacher_inference.parallel.dp = num_teacher_gpus // tp
-
-        if self.orchestrator.teacher is None:
-            self.orchestrator.teacher = RolloutModelConfig()
-        host = self.teacher_inference.server.host or "localhost"
-        port = self.teacher_inference.server.port
-        self.orchestrator.teacher.client.base_url = [f"http://{host}:{port}/v1"]
-        self.orchestrator.teacher.model.name = self.teacher_inference.model.name
+            if self.orchestrator.teacher is None:
+                self.orchestrator.teacher = RolloutModelConfig()
+            host = teacher_inf.server.host or "localhost"
+            port = teacher_inf.server.port
+            if "base_url" not in self.orchestrator.teacher.client.model_fields_set:
+                self.orchestrator.teacher.client.base_url = [f"http://{host}:{port}/v1"]
+            if "name" not in self.orchestrator.teacher.model.model_fields_set:
+                self.orchestrator.teacher.model.name = teacher_inf.model.name
 
         return self
 

@@ -35,8 +35,20 @@ RL_SBATCH = "rl.sbatch"
 
 TRAINER_TOML = "trainer.toml"
 ORCHESTRATOR_TOML = "orchestrator.toml"
-INFERENCE_TOML = "inference.toml"
-TEACHER_INFERENCE_TOML = "teacher_inference.toml"
+
+
+def inference_toml_name(tag: str) -> str:
+    return f"inference_{tag}.toml"
+
+
+def inference_log_name(tag: str) -> str:
+    return f"inference_{tag}.log"
+
+
+# Launcher-only fields stripped from the per-deployment vLLM TOML — the
+# inference entrypoint validates against InferenceConfig but doesn't know about
+# multi-deployment placement, SLURM, or RL-only output_dir overrides.
+_INFERENCE_LAUNCHER_FIELDS = {"deployment", "slurm", "output_dir", "dry_run", "tag", "gpu_ids"}
 
 
 def get_physical_gpu_ids() -> list[int]:
@@ -66,16 +78,59 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     with open(output_dir / ORCHESTRATOR_TOML, "wb") as f:
         tomli_w.dump(config.orchestrator.model_dump(exclude_none=True, mode="json"), f)
 
-    if config.inference is not None:
-        # Exclude launcher-only fields that are not needed by the vLLM server
-        exclude_inference = {"deployment", "slurm", "output_dir", "dry_run"}
-        with open(output_dir / INFERENCE_TOML, "wb") as f:
-            tomli_w.dump(config.inference.model_dump(exclude=exclude_inference, exclude_none=True, mode="json"), f)
+    for entry in config.inference:
+        with open(output_dir / inference_toml_name(entry.tag), "wb") as f:
+            tomli_w.dump(entry.model_dump(exclude=_INFERENCE_LAUNCHER_FIELDS, exclude_none=True, mode="json"), f)
 
-    teacher_inference = getattr(config, "teacher_inference", None)
-    if teacher_inference is not None:
-        with open(output_dir / TEACHER_INFERENCE_TOML, "wb") as f:
-            tomli_w.dump(teacher_inference.model_dump(exclude_none=True, mode="json"), f)
+
+def _resolve_inference_gpu_placement(config: RLConfig) -> dict[str, list[int]]:
+    """Compute local GPU ids for each [[inference]] entry and the trainer.
+
+    Entries with explicit ``gpu_ids`` use them verbatim (allowing overlapped
+    placement when multiple tags share an id). Entries without ``gpu_ids`` fall
+    back to sequential allocation from ``deployment.num_infer_gpus``, preserving
+    the legacy single-deployment behavior. The trainer takes the first
+    ``num_train_gpus`` ids not used by any inference entry.
+
+    Returns a dict keyed by tag (plus ``"trainer"``) mapping to local GPU ids.
+    """
+    assert config.deployment.type == "single_node"
+
+    explicit: dict[str, list[int]] = {}
+    implicit_tags: list[str] = []
+    used: set[int] = set()
+    for entry in config.inference:
+        if entry.gpu_ids is not None:
+            explicit[entry.tag] = list(entry.gpu_ids)
+            used.update(entry.gpu_ids)
+        else:
+            implicit_tags.append(entry.tag)
+
+    # Sequential allocation from the legacy num_infer_gpus pool, starting at 0
+    # and skipping ids already claimed by explicit entries. Splitting the pool
+    # across multiple implicit entries isn't supported (ambiguous); each
+    # implicit entry would need to declare its own GPU budget. Today this only
+    # fires for legacy single-block configs (one implicit entry), so the
+    # behavior is the same as before #2554.
+    if implicit_tags:
+        if len(implicit_tags) > 1:
+            raise ValueError(
+                "Multiple [[inference]] entries left gpu_ids unset; the legacy sequential "
+                "allocation only handles one such entry. Pin gpu_ids on the others."
+            )
+        tag = implicit_tags[0]
+        pool: list[int] = []
+        cursor = 0
+        while len(pool) < config.deployment.num_infer_gpus:
+            if cursor not in used:
+                pool.append(cursor)
+            cursor += 1
+        explicit[tag] = pool
+
+    trainer_ids = [g for g in range(config.deployment.gpus_per_node) if g not in set().union(*explicit.values())]
+    trainer_ids = trainer_ids[: config.deployment.num_train_gpus]
+
+    return {**explicit, "trainer": trainer_ids}
 
 
 def rl_local(config: RLConfig):
@@ -94,29 +149,27 @@ def rl_local(config: RLConfig):
         logger.success("Dry run complete. To start an RL run locally, remove --dry-run from your command.")
         return
 
-    # Derive launcher-local GPU IDs from deployment config
-    gpu_offset = 0
-    num_infer_gpus = config.deployment.num_infer_gpus if config.inference is not None else 0
-    infer_local_gpu_ids = list(range(gpu_offset, gpu_offset + num_infer_gpus))
-    gpu_offset += num_infer_gpus
-    trainer_local_gpu_ids = list(range(gpu_offset, gpu_offset + config.deployment.num_train_gpus))
-    gpu_offset += config.deployment.num_train_gpus
-    num_teacher_gpus = config.deployment.num_teacher_gpus or 0
-    teacher_local_gpu_ids = list(range(gpu_offset, gpu_offset + num_teacher_gpus)) if num_teacher_gpus > 0 else []
+    placement = _resolve_inference_gpu_placement(config)
+    trainer_local_gpu_ids = placement["trainer"]
+    inference_local_gpu_ids: dict[str, list[int]] = {tag: ids for tag, ids in placement.items() if tag != "trainer"}
 
-    total_requested_gpus = num_infer_gpus + config.deployment.num_train_gpus + num_teacher_gpus
+    requested_locals = set(trainer_local_gpu_ids)
+    for ids in inference_local_gpu_ids.values():
+        requested_locals.update(ids)
     physical_gpu_ids = get_physical_gpu_ids()
-    if total_requested_gpus > len(physical_gpu_ids):
+    max_requested = max(requested_locals, default=-1)
+    if max_requested >= len(physical_gpu_ids):
         raise ValueError(
-            f"Requested {total_requested_gpus} GPUs via deployment settings, but only "
-            f"{len(physical_gpu_ids)} physical GPU(s) are available: {physical_gpu_ids}"
+            f"Requested local GPU id {max_requested}, but only {len(physical_gpu_ids)} physical "
+            f"GPU(s) are available: {physical_gpu_ids}"
         )
-    physical_gpu_mapping = {local_id: physical_gpu_ids[local_id] for local_id in range(total_requested_gpus)}
+    physical_gpu_mapping = {local_id: physical_gpu_ids[local_id] for local_id in requested_locals}
     logger.info(f"Using local->physical GPU mapping: {physical_gpu_mapping}")
 
-    infer_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in infer_local_gpu_ids]
-    trainer_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in trainer_local_gpu_ids]
-    teacher_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in teacher_local_gpu_ids]
+    inference_gpu_ids: dict[str, list[int]] = {
+        tag: [physical_gpu_mapping[i] for i in ids] for tag, ids in inference_local_gpu_ids.items()
+    }
+    trainer_gpu_ids = [physical_gpu_mapping[i] for i in trainer_local_gpu_ids]
 
     start_command = sys.argv
     logger.info("Starting RL run")
@@ -127,21 +180,6 @@ def rl_local(config: RLConfig):
     if config.wandb and config.wandb.shared:
         wandb_shared_env["WANDB_SHARED_MODE"] = "1"
         wandb_shared_env["WANDB_SHARED_RUN_ID"] = os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex)
-
-    # Validate client port matches inference server port
-    if config.inference is not None and not config.orchestrator.student.client.is_elastic:
-        from urllib.parse import urlparse
-
-        base_url = config.orchestrator.student.client.base_url[0]
-        parsed = urlparse(base_url)
-        client_port = parsed.port
-        expected_port = config.inference.server.port
-        if client_port != expected_port:
-            raise ValueError(
-                f"orchestrator.student.client.base_url port ({client_port}) does not match "
-                f"inference.server.port ({expected_port}). "
-                f"Update the base_url to use port {expected_port} to match the inference server."
-            )
 
     # Prepare paths to communicate with the trainer
     log_dir = get_log_dir(config.output_dir)
@@ -162,81 +200,54 @@ def rl_local(config: RLConfig):
     signal.signal(signal.SIGTERM, sigterm_handler)
 
     try:
-        # Optionally, start inference process
-        if config.inference:
-            inference_cmd = ["inference", "@", (config_dir / INFERENCE_TOML).as_posix()]
-            logger.info(f"Starting inference on GPU(s) {' '.join(map(str, infer_gpu_ids))}")
-            logger.debug(f"Inference start command: {' '.join(inference_cmd)}")
-            # If we don't log stdout, the server hangs
-            with open(log_dir / "inference.log", "w") as log_file:
-                inference_process = Popen(
-                    inference_cmd,
-                    env={
-                        **os.environ,
-                        "CUDA_VISIBLE_DEVICES": ",".join(map(str, infer_gpu_ids)),
-                    },
-                    stdout=log_file,
-                    stderr=log_file,
-                )
-            processes.append(inference_process)
-
-            # Start monitoring thread
-            stop_event = Event()
-            stop_events["inference"] = stop_event
-            monitor_thread = Thread(
-                target=monitor_process,
-                args=(inference_process, stop_event, error_queue, "inference"),
-                daemon=True,
-            )
-            monitor_thread.start()
-            monitor_threads.append(monitor_thread)
-        else:
+        if not config.inference:
             logger.warning(
-                "No [inference] block configured - the student inference server will not be started here. "
+                "No [[inference]] entries configured - no inference server will be started here. "
                 "All training modes (rl/opd/sft) require a student inference pool for evals + weight sync; "
                 "make sure one is running at orchestrator.student.client.base_url "
                 f"({', '.join(config.orchestrator.student.client.base_url)}), otherwise the orchestrator "
                 "will hang waiting for it."
             )
 
-        # Optionally, start teacher inference process
-        if config.teacher_inference:
-            if not teacher_gpu_ids:
-                raise ValueError(
-                    "teacher_inference is configured but deployment.num_teacher_gpus is not set. "
-                    "Either set deployment.num_teacher_gpus to start a teacher inference server, "
-                    "or omit teacher_inference and configure orchestrator.teacher to use an existing server."
-                )
-
-            teacher_inference_cmd = ["inference", "@", (config_dir / TEACHER_INFERENCE_TOML).as_posix()]
-            logger.info(f"Starting teacher inference process on GPU(s) {' '.join(map(str, teacher_gpu_ids))}")
-            logger.debug(f"Teacher inference start command: {' '.join(teacher_inference_cmd)}")
-            with open(log_dir / "teacher_inference.log", "w") as log_file:
-                teacher_inference_process = Popen(
-                    teacher_inference_cmd,
+        # Start one inference subprocess per [[inference]] entry. Each one gets
+        # its own log file, monitor thread, and CUDA_VISIBLE_DEVICES; multiple
+        # entries can share GPU ids (overlapped layout) as long as their
+        # gpu_memory_utilization budgets fit together.
+        for entry in config.inference:
+            tag = entry.tag
+            gpu_ids = inference_gpu_ids[tag]
+            label = f"inference[{tag}]"
+            inference_cmd = ["inference", "@", (config_dir / inference_toml_name(tag)).as_posix()]
+            logger.info(f"Starting {label} on GPU(s) {' '.join(map(str, gpu_ids))}")
+            logger.debug(f"{label} start command: {' '.join(inference_cmd)}")
+            with open(log_dir / inference_log_name(tag), "w") as log_file:
+                inference_process = Popen(
+                    inference_cmd,
                     env={
                         **os.environ,
-                        "CUDA_VISIBLE_DEVICES": ",".join(map(str, teacher_gpu_ids)),
+                        "CUDA_VISIBLE_DEVICES": ",".join(map(str, gpu_ids)),
                     },
                     stdout=log_file,
                     stderr=log_file,
                 )
-            processes.append(teacher_inference_process)
+            processes.append(inference_process)
 
-            # Start monitoring thread
             stop_event = Event()
-            stop_events["teacher_inference"] = stop_event
+            stop_key = f"inference_{tag}"
+            stop_events[stop_key] = stop_event
             monitor_thread = Thread(
                 target=monitor_process,
-                args=(teacher_inference_process, stop_event, error_queue, "teacher_inference"),
+                args=(inference_process, stop_event, error_queue, label),
                 daemon=True,
             )
             monitor_thread.start()
             monitor_threads.append(monitor_thread)
-        elif config.orchestrator.teacher:
+
+        if config.orchestrator.teacher and config.teacher_inference is None:
             logger.warning(
-                "No teacher_inference config specified, skipping starting teacher inference server. "
-                "Is your teacher inference server running? Make sure orchestrator.teacher is configured."
+                'orchestrator.teacher is configured but no [[inference]] entry tagged "teacher" was found. '
+                "Make sure an external teacher server is running at "
+                f"{', '.join(config.orchestrator.teacher.client.base_url)}; otherwise the orchestrator will hang."
             )
 
         # Start orchestrator process
@@ -375,7 +386,15 @@ def rl_local(config: RLConfig):
 
 
 def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) -> None:
-    """Write the SLURM script to disk."""
+    """Write the SLURM script to disk.
+
+    The multi-node template iterates over ``inference_deployments`` (one entry per
+    tagged [[inference]] block) when rendering srun steps. Today only the
+    student deployment lands on multi-node — additional tags are gated by
+    RLConfig.validate_no_teacher_in_multinode — so the list collapses to a
+    single entry when present. The data is exposed as a list anyway so the
+    template doesn't need to special-case future per-tag fan-out.
+    """
     from jinja2 import Environment, FileSystemLoader
 
     assert config.slurm is not None
@@ -384,15 +403,32 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
     env = Environment(loader=FileSystemLoader(config.slurm.template_path.parent), keep_trailing_newline=True)
     template = env.get_template(config.slurm.template_path.name)
 
+    student_inf = config.student_inference
+    inference_deployments = [
+        {
+            "tag": entry.tag,
+            "server_port": entry.server.port,
+            "tp": entry.parallel.tp,
+            "dp": entry.parallel.dp,
+            "data_parallel_size_local": entry.data_parallel_size_local,
+            "data_parallel_rpc_port": entry.data_parallel_rpc_port,
+            "api_server_count": entry.api_server_count,
+            "config_path": (config_dir / inference_toml_name(entry.tag)).as_posix(),
+            "log_name": inference_log_name(entry.tag),
+        }
+        for entry in config.inference
+    ]
+
     if config.deployment.type == "single_node":
         script = template.render(
             **config.slurm.template_vars,
             config_path=config_dir / RL_TOML,
             output_dir=config.output_dir,
             gpus_per_node=config.deployment.gpus_per_node,
+            inference_deployments=inference_deployments,
         )
-    elif config.inference is not None and config.inference.deployment.type == "disaggregated":
-        infer_deploy = config.inference.deployment
+    elif student_inf is not None and student_inf.deployment.type == "disaggregated":
+        infer_deploy = student_inf.deployment
 
         script = template.render(
             **config.slurm.template_vars,
@@ -412,19 +448,18 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             router_port=infer_deploy.router_port,
             prefill_port=infer_deploy.prefill_port,
             decode_port=infer_deploy.decode_port,
-            inference_tp=config.inference.parallel.tp,
-            inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
-            use_deep_gemm=config.inference.use_deep_gemm,
+            inference_tp=student_inf.parallel.tp,
+            inference_data_parallel_rpc_port=student_inf.data_parallel_rpc_port,
+            use_deep_gemm=student_inf.use_deep_gemm,
             prefill_env_overrides=infer_deploy.prefill_env_overrides,
             decode_env_overrides=infer_deploy.decode_env_overrides,
-            dp_per_node=config.deployment.gpus_per_node // config.inference.parallel.tp,
-            kv_offload=config.inference.kv_cache_offload is not None,
-            kv_offload_cpu_bytes=int(config.inference.kv_cache_offload.cpu_bytes)
-            if config.inference.kv_cache_offload
-            else 0,
+            dp_per_node=config.deployment.gpus_per_node // student_inf.parallel.tp,
+            kv_offload=student_inf.kv_cache_offload is not None,
+            kv_offload_cpu_bytes=int(student_inf.kv_cache_offload.cpu_bytes) if student_inf.kv_cache_offload else 0,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             wandb_shared=config.wandb is not None and config.wandb.shared,
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
+            inference_deployments=inference_deployments,
         )
     else:
         script = template.render(
@@ -437,18 +472,18 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             num_infer_nodes=config.deployment.total_infer_nodes,
             nodes_per_infer_replica=config.deployment.num_infer_nodes,
             num_infer_replicas=config.deployment.num_infer_replicas,
-            num_teacher_nodes=config.deployment.num_teacher_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
-            router_port=getattr(config.inference.deployment, "router_port", 8000) if config.inference else 8000,
-            backend_port=getattr(config.inference.deployment, "backend_port", 8100) if config.inference else 8100,
-            inference_tp=config.inference.parallel.tp if config.inference else 1,
-            inference_enable_expert_parallel=config.inference.enable_expert_parallel if config.inference else False,
-            inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port if config.inference else 29600,
-            dp_per_node=(config.deployment.gpus_per_node // config.inference.parallel.tp) if config.inference else 1,
-            kv_offload=config.inference is not None and config.inference.kv_cache_offload is not None,
+            router_port=getattr(student_inf.deployment, "router_port", 8000) if student_inf else 8000,
+            backend_port=getattr(student_inf.deployment, "backend_port", 8100) if student_inf else 8100,
+            inference_tp=student_inf.parallel.tp if student_inf else 1,
+            inference_enable_expert_parallel=student_inf.enable_expert_parallel if student_inf else False,
+            inference_data_parallel_rpc_port=student_inf.data_parallel_rpc_port if student_inf else 29600,
+            dp_per_node=(config.deployment.gpus_per_node // student_inf.parallel.tp) if student_inf else 1,
+            kv_offload=student_inf is not None and student_inf.kv_cache_offload is not None,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             wandb_shared=config.wandb is not None and config.wandb.shared,
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
+            inference_deployments=inference_deployments,
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
