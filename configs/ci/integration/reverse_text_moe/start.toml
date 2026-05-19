@@ -27,3 +27,7 @@ gpu_memory_utilization = 0.7
 
 [inference.model]
 max_model_len = 2048
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"

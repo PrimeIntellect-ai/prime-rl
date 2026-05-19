@@ -116,6 +116,14 @@ id = "math-env"
 
 On the CLI, list items are indexed: `--env.0.id reverse-text --env.1.id math-env`.
 
+When composing multiple TOML files, list fields are replaced wholesale by the later file. To change one
+`orchestrator.filters` entry in an overlay, include the full desired filter list in that overlay.
+
+For quick KL smoke runs with very small rollout batches, enforced `zero_advantage` filtering can remove
+every rollout and stop the orchestrator. If the goal is only trainer/inference mismatch KL, keep the
+filter present but set `enforce = false` in a temporary overlay and call out that the run is not a reward
+learning validation.
+
 ### Dict fields
 
 In TOML, use a section:

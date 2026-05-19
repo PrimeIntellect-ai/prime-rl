@@ -18,7 +18,7 @@ dependencies = [
     "torchaudio",
     "torchdata>=0.11.0",
     "transformers",
-    "vllm>=0.20.2",
+    "vllm>=0.21.0",
     "wandb>=0.26.1",
     "ring-flash-attn>=0.1.8",
     "prime>=0.6.4",
@@ -98,7 +98,7 @@ gpt-oss = [
     "kernels",
 ]
 quack = [
-    "quack-kernels>=0.3.3",
+    "quack-kernels>=0.4.1",
 ]
 all = [
     "prime-rl[flash-attn]",
@@ -176,6 +176,7 @@ override-dependencies = [
 [tool.uv.exclude-newer-package]
 # we want latest vllm, remove next patch
 vllm = false
+tokenspeed-mla = false
 flash_attn_3 = false
 # PrimeIntellect-published on PyPI (trusted publisher)
 prime = false
@@ -231,8 +232,8 @@ flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdi
 pydantic-config = { git = "https://github.com/samsja/pydantic_config.git", branch = "main" }
 vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl" }
 vllm = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.21.0/vllm-0.21.0+cu129-cp38-abi3-manylinux_2_34_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.21.0/vllm-0.21.0+cu129-cp38-abi3-manylinux_2_34_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }
 deep-gemm = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }

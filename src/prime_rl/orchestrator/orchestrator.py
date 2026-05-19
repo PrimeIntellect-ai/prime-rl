@@ -550,6 +550,7 @@ async def orchestrate(config: OrchestratorConfig):
             for sample in samples:
                 sample.advantage = rollout["advantage"]
                 sample.reward = rollout["reward"]
+                sample.env_name = rollout["env_name"]
                 if config.training_mode == "sft":
                     sample.sft_loss = True
                 sample_decode_tokens = sum(sample.completion_mask)

@@ -16,6 +16,7 @@
                 "benchmarking",
                 "deployment",
                 "kubernetes",
+                "testing-moe-at-small-scale",
                 "troubleshooting"
             ]
         }
