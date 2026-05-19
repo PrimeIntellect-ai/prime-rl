@@ -2,7 +2,7 @@
 # X-Prime-Team-ID header is auto-injected from $PRIME_TEAM_ID for pinference.ai URLs.
 #
 # Run with:
-#   uv run rl @ configs/reverse_text/debug_sft_thinking.toml
+#   uv run rl @ configs/reverse_text/debug_sft_external.toml
 
 max_steps = 20
 seq_len = 2048

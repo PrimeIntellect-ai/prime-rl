@@ -120,8 +120,8 @@ Notes:
 
 ### Reference configs
 
-- `configs/alphabet_sort/sft_distill_hard_qwen4b_lora_prime_teacher.toml`
-- `examples/alphabet_sort/sft_distill_hard.toml`
+- `configs/reverse_text/debug_sft.toml` (local vLLM teacher)
+- `configs/reverse_text/debug_sft_external.toml` (PI inference teacher)
 
 ## Parameter reference
 
