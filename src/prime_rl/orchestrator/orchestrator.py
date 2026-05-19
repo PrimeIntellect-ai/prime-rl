@@ -557,8 +557,7 @@ async def orchestrate(config: OrchestratorConfig):
                 sample.advantage = rollout["advantage"]
                 sample.reward = rollout["reward"]
                 sample.env_name = rollout["env_name"]
-                if config.training_mode == "sft":
-                    sample.sft_loss = True
+                sample.training_mode = config.training_mode
                 sample_decode_tokens = sum(sample.completion_mask)
                 sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens
                 rollout_decode_tokens += sample_decode_tokens

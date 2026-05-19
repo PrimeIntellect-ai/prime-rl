@@ -112,7 +112,7 @@ def test_sft_loss_override_uses_masked_nll_with_default_loss_config():
         loss_mask=loss_mask,
         loss_fn=loss_fn,
         loss_scale=2,
-        sft_loss=True,
+        training_mode="sft",
     )
 
     assert torch.isclose(loss, torch.tensor(0.15, device=loss.device), atol=1e-6)

@@ -437,10 +437,9 @@ class RLConfig(BaseConfig):
         """Propagate shared training_mode into orchestrator.training_mode and trainer.loss.
 
         Runs before nested validation so that OrchestratorConfig.validate_training_mode
-        sees the propagated value. Only propagates to fields the user didn't set:
-
-        - sft: trainer.loss.type = "sft"
-        - opd: trainer.loss.teacher_tau = 1.0, trainer.loss.adv_tau = 0.0 (pure distillation)
+        sees the propagated value. For sft mode, defaults trainer.loss.type to "sft".
+        The actual loss dispatch is batch-driven (TrainingSample.training_mode); this
+        only keeps the trainer's static loss_fn consistent with the run's mode.
         """
         if not isinstance(data, dict):
             return data
@@ -457,33 +456,18 @@ class RLConfig(BaseConfig):
         if isinstance(orch, dict) and "training_mode" not in orch:
             orch["training_mode"] = mode
 
-        if mode in ("sft", "opd"):
+        if mode == "sft":
             trainer = data.setdefault("trainer", {})
             if isinstance(trainer, dict):
                 loss = trainer.setdefault("loss", {})
                 if isinstance(loss, dict):
-                    if mode == "sft":
-                        loss.setdefault("type", "sft")
-                    elif mode == "opd":
-                        loss.setdefault("teacher_tau", 1.0)
-                        loss.setdefault("adv_tau", 0.0)
+                    loss.setdefault("type", "sft")
 
         return data
 
     @model_validator(mode="after")
-    def validate_teacher_model(self):
-        if (
-            self.trainer.loss.type == "default" and self.trainer.loss.teacher_tau > 0
-        ) and not self.orchestrator.teacher:
-            raise ValueError(
-                "orchestrator.teacher must be configured when teacher_tau > 0. "
-                "Either set teacher_tau = 0, set deployment.num_teacher_gpus, or configure orchestrator.teacher manually."
-            )
-        return self
-
-    @model_validator(mode="after")
     def validate_training_mode_loss_consistency(self):
-        """Cross-config invariants between orchestrator.training_mode and trainer.loss."""
+        """Cross-config invariants between orchestrator.training_mode and trainer.loss.type."""
         mode = self.orchestrator.training_mode
         loss_type = self.trainer.loss.type
 
@@ -496,11 +480,6 @@ class RLConfig(BaseConfig):
             raise ValueError(
                 f"trainer.loss.type = 'sft' requires training_mode = 'sft' (got '{mode}'). "
                 "The sft loss path expects teacher-generated rollouts."
-            )
-        if mode == "opd" and loss_type == "default" and self.trainer.loss.teacher_tau <= 0:
-            raise ValueError(
-                "training_mode = 'opd' requires trainer.loss.teacher_tau > 0. "
-                "Either set teacher_tau > 0 or change training_mode to 'rl'."
             )
         return self
 

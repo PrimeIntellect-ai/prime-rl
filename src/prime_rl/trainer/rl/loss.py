@@ -19,6 +19,10 @@ class LossInputs:
     teacher_logprobs: Float[Tensor, " seq"] | None
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
+    # adv_tau / teacher_tau are batch-driven (set in compute_loss from the
+    # MicroBatch's training_mode). rl: (1.0, 0.0); opd: (0.0, 1.0).
+    adv_tau: float = 1.0
+    teacher_tau: float = 0.0
 
 
 @dataclass
@@ -148,10 +152,10 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     drop_mask = loss_mask & is_masked
     keep_mask = loss_mask & ~is_masked
 
-    advantages = loss_config.adv_tau * advantages
+    advantages = inputs.adv_tau * advantages
     if teacher_logprobs is not None:
         teacher_kl = teacher_logprobs - trainer_logprobs
-        advantages = advantages + loss_config.teacher_tau * teacher_kl.detach()
+        advantages = advantages + inputs.teacher_tau * teacher_kl.detach()
     else:
         teacher_kl = None
 
@@ -206,6 +210,13 @@ def setup_loss_fn(loss_config: LossConfig) -> LossFn:
     return loss_fn
 
 
+# Mode -> (adv_tau, teacher_tau). sft is dispatched separately to sft_loss_fn.
+_MODE_TO_TAUS: dict[str, tuple[float, float]] = {
+    "rl": (1.0, 0.0),
+    "opd": (0.0, 1.0),
+}
+
+
 def compute_loss(
     trainer_logprobs: list[Float[Tensor, " seq_i"]],
     inference_logprobs: list[Float[Tensor, " seq_i"]],
@@ -214,10 +225,16 @@ def compute_loss(
     loss_mask: list[Bool[Tensor, " seq_i"]],
     loss_fn: LossFn,
     loss_scale: int,
-    sft_loss: bool = False,
+    training_mode: str = "rl",
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
+
+    Loss dispatch is batch-driven via ``training_mode``:
+
+    - ``"sft"``: always use ``sft_loss_fn`` (taus ignored).
+    - ``"rl"`` / ``"opd"``: use the configured ``loss_fn`` with mode-specific taus
+      (rl: adv_tau=1, teacher_tau=0; opd: adv_tau=0, teacher_tau=1).
 
     Args:
         trainer_logprobs: Log probabilities for each sequence
@@ -225,14 +242,19 @@ def compute_loss(
         teacher_logprobs: Teacher log probabilities for each sequence, or None
         advantages: Advantages for each sequence
         loss_mask: Loss mask for each sequence
-        loss_fn: Per-sequence loss function
+        loss_fn: Per-sequence loss function for non-sft batches
         loss_scale: Scale factor to normalize the loss
-        sft_loss: If True, use SFT loss instead of the configured loss_fn for this batch
+        training_mode: Selects loss dispatch (rl/opd/sft)
 
     Returns:
         Tuple of (scaled_loss, aggregated_metrics)
     """
-    effective_loss_fn = sft_loss_fn if sft_loss else loss_fn
+    if training_mode == "sft":
+        effective_loss_fn = sft_loss_fn
+        adv_tau, teacher_tau = 0.0, 0.0  # unused
+    else:
+        effective_loss_fn = loss_fn
+        adv_tau, teacher_tau = _MODE_TO_TAUS[training_mode]
 
     total_loss = 0.0
     all_metrics: dict[str, list[Tensor]] = {}
@@ -253,6 +275,8 @@ def compute_loss(
             teacher_logprobs=teach_logp,
             advantages=adv,
             loss_mask=mask,
+            adv_tau=adv_tau,
+            teacher_tau=teacher_tau,
         )
 
         result = effective_loss_fn(inputs)
