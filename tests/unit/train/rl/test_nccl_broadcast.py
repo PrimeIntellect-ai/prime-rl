@@ -4,9 +4,48 @@ import pytest
 import torch
 
 from prime_rl.inference.vllm.worker.nccl import NCCLWeightBroadcastReceiver
-from prime_rl.trainer.rl.broadcast.nccl import NCCLWeightBroadcastSender
+from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
+from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeConfig
+from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM as PrimeRLQwen3_5MoeForCausalLM
+from prime_rl.trainer.rl.broadcast.nccl import NCCLWeightBroadcastSender, preprocess_layer_checkpoint
+from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
+
+
+def test_nccl_preprocess_converts_mtp_non_layer_chunk_to_hf_keys():
+    config = Qwen3_5MoeConfig(
+        vocab_size=32,
+        hidden_size=16,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=8,
+        moe_intermediate_size=8,
+        shared_expert_intermediate_size=8,
+        num_experts=4,
+        num_experts_per_tok=2,
+        max_position_embeddings=32,
+        linear_key_head_dim=8,
+        linear_value_head_dim=8,
+        linear_num_key_heads=2,
+        linear_num_value_heads=2,
+        use_grouped_mm=False,
+        mtp_num_hidden_layers=1,
+    )
+    config._attn_implementation = "sdpa"
+    with default_dtype(torch.float32):
+        model = PrimeRLQwen3_5MoeForCausalLM._from_config(config)
+    inject_prime_lm_head(model, chunk_size=None)
+    non_layer_state_dict = {
+        key: value for key, value in model.state_dict().items() if not key.startswith("model.layers.")
+    }
+
+    converted = preprocess_layer_checkpoint(model, non_layer_state_dict, layer_idx=-1)
+
+    assert "mtp.fc.weight" in converted
+    assert "mtp.layers.0.self_attn.q_proj.weight" in converted
+    assert not any(key.startswith("mtp_layers.") for key in converted)
 
 
 @pytest.mark.skip(reason="Skipping NCCL broadcast as it fail only in ci")

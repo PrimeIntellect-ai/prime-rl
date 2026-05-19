@@ -375,12 +375,13 @@ class Tensors(defaultdict):
                 metrics[f"{key}/max"] = float("nan")
                 continue
 
-            # Compute relevant tensor statistics
-            metrics[f"{key}/mean"] = tensors.mean().item()
-            metrics[f"{key}/median"] = torch.median(tensors).item()
-            metrics[f"{key}/std"] = tensors.std().item()
-            metrics[f"{key}/min"] = tensors.min().item()
-            metrics[f"{key}/max"] = tensors.max().item()
+            # Compute relevant tensor statistics. Counters like MTP token counts can be integer tensors.
+            stat_tensors = tensors if tensors.is_floating_point() else tensors.float()
+            metrics[f"{key}/mean"] = stat_tensors.mean().item()
+            metrics[f"{key}/median"] = torch.median(stat_tensors).item()
+            metrics[f"{key}/std"] = stat_tensors.std().item()
+            metrics[f"{key}/min"] = stat_tensors.min().item()
+            metrics[f"{key}/max"] = stat_tensors.max().item()
 
             # Add back all-gathered tensors to self
             self[key].append(tensors.tolist())

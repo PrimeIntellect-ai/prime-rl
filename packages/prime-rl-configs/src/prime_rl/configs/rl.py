@@ -420,6 +420,9 @@ class RLConfig(BaseConfig):
         if self.trainer.model.impl != "custom":
             raise ValueError("weight_broadcast.quantize_in_weight_transfer requires trainer.model.impl = 'custom'.")
 
+        if self.trainer.model.mtp is not None and self.trainer.model.mtp.enabled:
+            raise ValueError("MTP with quantize_in_weight_transfer is not supported yet; use non-quantized NCCL.")
+
         return self
 
     @model_validator(mode="after")
@@ -685,6 +688,11 @@ class RLConfig(BaseConfig):
     def validate_eplb_requires_quantized_weight_transfer(self):
         if self.inference is None or not self.inference.enable_eplb:
             return self
+        if self.trainer.model.mtp is not None and self.trainer.model.mtp.enabled:
+            raise ValueError(
+                "inference.enable_eplb is not supported with MTP yet because EPLB currently requires "
+                "quantized NCCL weight transfer, and MTP weights do not support quantized transfer."
+            )
 
         # TODO(matej): check if weight reloading works itself before supporting EPLB without quantized transfer.
         trainer_weight_broadcast = self.trainer.weight_broadcast
@@ -694,6 +702,24 @@ class RLConfig(BaseConfig):
                 "weight_broadcast.quantize_in_weight_transfer = true."
             )
 
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_mtp_rollout(self):
+        mtp = self.trainer.model.mtp
+        if mtp is None or not mtp.enable_rollout:
+            return self
+        if self.inference is None:
+            raise ValueError("model.mtp.enable_rollout requires an inference config.")
+        if self.trainer.model.impl not in ("hf", "custom", "auto"):
+            raise ValueError("model.mtp.enable_rollout requires trainer.model.impl='hf', 'custom', or 'auto'.")
+        model_name = self.trainer.model.name.lower()
+        speculative_config = {
+            "method": "qwen3_next_mtp" if "qwen3.5" in model_name or "qwen3_5" in model_name else "mtp",
+            "num_speculative_tokens": mtp.num_speculative_tokens or 1,
+        }
+        if self.inference.model.speculative_config is None:
+            self.inference.model.speculative_config = speculative_config
         return self
 
     @model_validator(mode="after")

@@ -91,6 +91,9 @@ def preprocess_layer_checkpoint(
     layer_idx: int,
 ) -> dict[str, Tensor]:
     if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(layer_state_dict):
+        if layer_idx < 0:
+            model.convert_to_hf(layer_state_dict)
+            return layer_state_dict
         model.convert_layer_to_hf(layer_state_dict, layer_idx)
         return layer_state_dict
 
@@ -141,6 +144,10 @@ class NCCLWeightBroadcastSender:
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
         state_dict = model.state_dict()
+        if self.quantize_in_weight_transfer and any(
+            key.startswith("mtp_layers.") or key.startswith("mtp.") for key in state_dict
+        ):
+            raise ValueError("MTP with quantize_in_weight_transfer is not supported yet; use non-quantized NCCL.")
         layer_prefix = get_layer_prefix(model.config)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
         num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights

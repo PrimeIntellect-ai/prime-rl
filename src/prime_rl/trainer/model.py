@@ -46,6 +46,7 @@ from prime_rl.trainer.models.layers.checkpointing import (
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import LatentMoE, MoE
+from prime_rl.trainer.models.qwen3_5_dense_mtp import patch_qwen3_5_dense_mtp
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
     load_state_dict,
@@ -293,6 +294,13 @@ def _patch_qwen3_5_linear_attn_varlen():
     Qwen3_5TextModel.forward = _text_forward
 
 
+def _has_registered_mtp(model: nn.Module) -> bool:
+    if len(getattr(model, "mtp_layers", [])) > 0:
+        return True
+    mtp = getattr(model, "mtp", None)
+    return mtp is not None and len(getattr(mtp, "layers", [])) > 0
+
+
 # Add filter to the standard logging module for transformers.modeling_utils to supress the
 # flash attention dtype warnings since FSDP is used to handle mixed precision.
 transformers_modeling_utils_logger = logging.getLogger("transformers.modeling_utils")
@@ -472,6 +480,15 @@ def get_model(
             subconfig.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
     model_config.fp8 = config.fp8
+
+    mtp_target_config = getattr(model_config, "text_config", model_config)
+    mtp_enabled = config.mtp is not None and config.mtp.enabled
+    mtp_target_config.prime_mtp_enabled = mtp_enabled
+    mtp_target_config.prime_mtp_loss_scale = config.mtp.loss_scale if config.mtp is not None else 0.2
+    if mtp_enabled and getattr(mtp_target_config, "model_type", None) not in ("qwen3_5_moe_text", "qwen3_5_text"):
+        raise ValueError("MTP training is currently only supported for Qwen3.5 dense and MoE models.")
+    if mtp_enabled and getattr(mtp_target_config, "model_type", None) == "qwen3_5_text":
+        patch_qwen3_5_dense_mtp()
 
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
     # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
@@ -831,6 +848,15 @@ def can_reinit_empty_buffers(model: nn.Module):
     if set(buffer_names) == gpt_oss_buffers:
         return True
 
+    # Qwen3.5 HF VLM shell used for text-only training.
+    qwen3_5_buffers = {
+        "model.visual.rotary_pos_emb.inv_freq",
+        "model.language_model.rotary_emb.inv_freq",
+        "model.language_model.rotary_emb.original_inv_freq",
+    }
+    if set(buffer_names) == qwen3_5_buffers:
+        return True
+
     # Gemma3 model (has embed_scale and local rotary emb)
     gemma3_buffers = {"model.embed_tokens.embed_scale", "model.rotary_emb.inv_freq", "model.rotary_emb_local.inv_freq"}
     if set(buffer_names) == gemma3_buffers:
@@ -860,6 +886,27 @@ def fix_model_post_empty(model: nn.Module):
         rotary_emb.inv_freq.copy_(inv_freq)
         if "model.rotary_emb.original_inv_freq" in buffer_names:
             rotary_emb.original_inv_freq.copy_(inv_freq)
+    # Qwen3.5 HF VLM shell used for text-only training.
+    if "model.language_model.rotary_emb.inv_freq" in buffer_names:
+        rotary_emb = model.model.language_model.rotary_emb
+        rope_init_fn = (
+            rotary_emb.rope_init_fn
+            if hasattr(rotary_emb, "rope_init_fn")
+            else rotary_emb.compute_default_rope_parameters
+        )
+        inv_freq, rotary_emb.attention_scaling = rope_init_fn(rotary_emb.config, rotary_emb.inv_freq.device)
+        rotary_emb.inv_freq.copy_(inv_freq)
+        rotary_emb.original_inv_freq.copy_(inv_freq)
+    if "model.visual.rotary_pos_emb.inv_freq" in buffer_names:
+        rotary_emb = model.model.visual.rotary_pos_emb
+        inv_freq = 1.0 / (
+            rotary_emb.theta
+            ** (
+                torch.arange(0, rotary_emb.dim, 2, dtype=torch.float, device=rotary_emb.inv_freq.device)
+                / rotary_emb.dim
+            )
+        )
+        rotary_emb.inv_freq.copy_(inv_freq)
     # Gemma3 local rotary emb
     if "model.rotary_emb_local.inv_freq" in buffer_names:
         rotary_emb_local = model.model.rotary_emb_local
@@ -1021,6 +1068,8 @@ def setup_model(
 
     # 1. We load to meta device by default
     model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
+    if config.mtp is not None and config.mtp.enabled and not _has_registered_mtp(model):
+        raise ValueError("MTP was enabled, but the selected Qwen checkpoint config does not define MTP layers.")
     configure_moe_ep_backend(model, config)
 
     possible_to_load_to_meta = can_reinit_empty_buffers(model)
@@ -1124,6 +1173,7 @@ def forward(
     input_ids: Int[Tensor, "batch seq"],
     position_ids: Int[Tensor, "batch seq"],
     labels: Int[Tensor, "batch seq"] | None = None,
+    loss_mask: Tensor | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     # Multimodal fields (Qwen3-VL)
@@ -1137,6 +1187,8 @@ def forward(
         "labels": labels,
         "temperature": temperature,
     }
+    if loss_mask is not None:
+        kwargs["loss_mask"] = loss_mask
 
     # For multimodal (VLM), don't pass position_ids - let the model compute MRoPE internally
     # using image_grid_thw. Qwen3-VL only computes proper MRoPE when position_ids is None.

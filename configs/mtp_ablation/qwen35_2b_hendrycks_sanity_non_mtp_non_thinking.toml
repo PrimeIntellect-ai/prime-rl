@@ -1,0 +1,57 @@
+max_steps = 3000
+seq_len = 8192
+output_dir = "outputs/qwen35-2b-hendrycks-sanity-non-mtp-non-thinking"
+
+[wandb]
+project = "mtp-qwen35-hendrycks"
+name = "qwen35-2b-non-mtp-non-thinking"
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[model]
+name = "Qwen/Qwen3.5-2B"
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 8
+
+[orchestrator.train.sampling]
+extra_body = { enable_thinking = false }
+
+[[orchestrator.train.env]]
+id = "math-env"
+args = { dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B", dataset_subset = "default" }
+name = "hendrycks-math"
+
+# [orchestrator.eval]
+# interval = 50
+
+# [orchestrator.eval.sampling]
+# extra_body = { enable_thinking = false }
+
+# [[orchestrator.eval.env]]
+# id = "aime2024"
+# name = "aime2024"
+# rollouts_per_example = 16
+
+[trainer.model]
+name = "Qwen/Qwen3.5-2B"
+seq_len = 8192
+attn = "sdpa"
+fused_lm_head_token_chunk_size = 8192
+
+[inference]
+gpu_memory_utilization = 0.8
+
+[inference.model]
+max_model_len = 8192
+enforce_eager = true
+
+[inference.vllm_extra]
+language_model_only = true
+max_num_seqs = 64
+
+[log]
+level = "debug"

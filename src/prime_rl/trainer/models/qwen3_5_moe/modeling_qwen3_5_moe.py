@@ -1,3 +1,4 @@
+import copy
 import functools
 from dataclasses import dataclass
 from typing import Optional, Union
@@ -18,6 +19,12 @@ from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import FeedForward, MoE, MoEArgs
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig, apply_rotary_pos_emb
+from prime_rl.trainer.mtp import (
+    detached_lm_head_cross_entropy,
+    make_viewless_tensor_with_grad,
+    mtp_masks_from_label_mask,
+    roll_tensor,
+)
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 
 from .configuration_qwen3_5_moe import Qwen3_5MoeConfig
@@ -667,6 +674,54 @@ class Qwen3_5MoeDecoderLayer(GradientCheckpointingLayer):
         return hidden_states
 
 
+def _make_qwen_mtp_decoder_config(config: Qwen3_5MoeConfig) -> Qwen3_5MoeConfig:
+    mtp_config = copy.deepcopy(config)
+    mtp_config.layer_types = ["full_attention"]
+    mtp_config.num_hidden_layers = 1
+    return mtp_config
+
+
+def _build_flash_attention_metadata(
+    config: Qwen3_5MoeConfig, position_ids: torch.LongTensor
+) -> tuple[torch.Tensor | None, int | None]:
+    if config._attn_implementation not in ("flash_attention_2", "flash_attention_3", "fa4"):
+        return None, None
+
+    cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
+    torch._dynamo.mark_dynamic(cu_seqlens, 0)
+    return cu_seqlens, max_seqlen
+
+
+class Qwen3_5MoeMTPLayer(nn.Module):
+    def __init__(self, config: Qwen3_5MoeConfig):
+        super().__init__()
+        self.enorm = Qwen3_5MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.hnorm = Qwen3_5MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.eh_proj = nn.Linear(config.hidden_size * 2, config.hidden_size, bias=False)
+        self.block = Qwen3_5MoeDecoderLayer(_make_qwen_mtp_decoder_config(config), 0)
+        self.norm = Qwen3_5MoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+    def forward(
+        self,
+        token_embeddings: torch.Tensor,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        cu_seqlens: torch.LongTensor | None = None,
+        max_seqlen: int | None = None,
+    ) -> torch.Tensor:
+        token_embeddings = self.enorm(token_embeddings)
+        hidden_states = self.hnorm(hidden_states)
+        hidden_states = torch.cat([token_embeddings, hidden_states], dim=-1)
+        hidden_states = self.eh_proj(hidden_states)
+        hidden_states = self.block(
+            hidden_states,
+            position_embeddings=position_embeddings,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
+        )
+        return self.norm(hidden_states)
+
+
 # ---------------------------------------------------------------------------
 # Model classes
 # ---------------------------------------------------------------------------
@@ -764,12 +819,7 @@ class Qwen3_5MoeModel(Qwen3_5MoePreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        if self.config._attn_implementation in ("flash_attention_2", "flash_attention_3", "fa4"):
-            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
-            torch._dynamo.mark_dynamic(cu_seqlens, 0)
-        else:
-            max_seqlen = None
-            cu_seqlens = None
+        cu_seqlens, max_seqlen = _build_flash_attention_metadata(self.config, position_ids)
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
@@ -895,14 +945,17 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
 
         if self._is_vlm:
             self.model = Qwen3_5MoeVLMModel(config)
-            text_config = config.text_config
+            text_config = self.model.language_model.config
             self._tied_weights_keys = {"lm_head.weight": "model.language_model.embed_tokens.weight"}
         else:
             self.model = Qwen3_5MoeModel(config)
             text_config = config
 
         self.vocab_size = text_config.vocab_size
+        self._text_config = text_config
         self.lm_head = nn.Linear(text_config.hidden_size, text_config.vocab_size, bias=False)
+        mtp_num_hidden_layers = 0 if self._is_vlm else getattr(text_config, "mtp_num_hidden_layers", 0)
+        self.mtp_layers = nn.ModuleList([Qwen3_5MoeMTPLayer(text_config) for _ in range(mtp_num_hidden_layers)])
         self.post_init()
 
     def get_input_embeddings(self):
@@ -983,6 +1036,56 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
     # Forward
     # ------------------------------------------------------------------
 
+    def _compute_mtp_loss(
+        self,
+        hidden_states: torch.Tensor,
+        input_ids: torch.LongTensor,
+        labels: torch.LongTensor,
+        loss_mask: torch.Tensor,
+        position_ids: torch.LongTensor,
+    ) -> PrimeLmOutput:
+        if self._is_vlm:
+            raise ValueError("MTP training is only supported for text-only Qwen3.5 MoE models.")
+        if len(self.mtp_layers) == 0:
+            raise ValueError("MTP was enabled but this Qwen config has no MTP layers.")
+
+        language_model = self.model
+        assert isinstance(language_model, Qwen3_5MoeModel)
+
+        mtp_hidden = make_viewless_tensor_with_grad(hidden_states)
+        mtp_input_ids = input_ids
+        mtp_labels = labels
+        mtp_position_ids = position_ids
+        mtp_losses = []
+        mtp_masks = list(mtp_masks_from_label_mask(loss_mask, position_ids, len(self.mtp_layers)))
+        cu_seqlens, max_seqlen = _build_flash_attention_metadata(language_model.config, position_ids)
+
+        for mtp_layer, mtp_mask in zip(self.mtp_layers, mtp_masks):
+            mtp_input_ids = roll_tensor(
+                mtp_input_ids,
+                position_ids=position_ids,
+                fill_value=language_model.padding_idx or 0,
+            )
+            mtp_labels = roll_tensor(mtp_labels, position_ids=position_ids, fill_value=0)
+            mtp_position_ids = roll_tensor(mtp_position_ids, position_ids=position_ids, fill_value=0)
+            mtp_embeddings = language_model.embed_tokens(mtp_input_ids).detach()
+            position_embeddings = language_model.rotary_emb(mtp_hidden, mtp_position_ids)
+            mtp_hidden = mtp_layer(
+                mtp_embeddings,
+                mtp_hidden,
+                position_embeddings=position_embeddings,
+                cu_seqlens=cu_seqlens,
+                max_seqlen=max_seqlen,
+            )
+            mtp_losses.append(detached_lm_head_cross_entropy(self.lm_head, mtp_hidden, mtp_labels, mtp_mask))
+
+        mtp_loss = torch.stack(mtp_losses).mean() * self._text_config.prime_mtp_loss_scale
+        return PrimeLmOutput(
+            mtp_loss=mtp_loss,
+            mtp_loss_per_depth=tuple(mtp_losses),
+            mtp_token_count=torch.stack([mask.sum() for mask in mtp_masks]).sum(),
+        )
+
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -994,6 +1097,7 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
         use_cache: Optional[bool] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Union[torch.Tensor, None] = None,
+        loss_mask: Optional[torch.Tensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
         pixel_values: Optional[torch.Tensor] = None,
         image_grid_thw: Optional[torch.LongTensor] = None,
@@ -1027,11 +1131,20 @@ class Qwen3_5MoeForCausalLM(Qwen3_5MoePreTrainedModel, GenerationMixin):
 
         hidden_states = outputs.last_hidden_state
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        return self.lm_head(
+        out = self.lm_head(
             hidden_states[:, slice_indices, :],
             labels[:, slice_indices] if labels is not None else None,
             temperature=temperature,
         )
+
+        if getattr(self._text_config, "prime_mtp_enabled", False):
+            if input_ids is None or labels is None or loss_mask is None:
+                raise ValueError("Qwen MTP training requires input_ids, labels, and loss_mask.")
+            if logits_to_keep != 0:
+                raise ValueError("Qwen MTP training requires logits_to_keep=0.")
+            out.update(self._compute_mtp_loss(hidden_states, input_ids, labels, loss_mask, position_ids))
+
+        return out
 
     # ------------------------------------------------------------------
     # Buffer init after meta-device loading
