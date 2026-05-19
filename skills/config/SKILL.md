@@ -167,7 +167,7 @@ For hosted multi-tenant runs where the trainer image's `trainer.loss.type` is fi
 
 ### RL rollout client defaults
 
-For text-only RL rollouts, the orchestrator defaults to renderer-backed TITO (`use_renderer = true`, `use_token_client = false`). VLM configs must explicitly use MITO (`use_token_client = false`, `use_renderer = false`) so image preprocessing and chat templating stay server-side. External teacher rollouts must also set `use_renderer = false`.
+For text-only RL rollouts, the orchestrator defaults to renderer-backed TITO (`use_renderer = true`). VLM configs must explicitly fall back to MITO (`use_renderer = false`) so image preprocessing and chat templating stay server-side. External teacher rollouts must also set `use_renderer = false`.
 
 ### Model fields
 
