@@ -200,6 +200,12 @@ async def orchestrate(config: OrchestratorConfig):
     # Load environments
     logger.info("Loading training environments")
     train_envs = TrainEnvs(config.train.env)
+    if config.training_mode == "sft":
+        # Teacher rollouts don't need inference-side logprobs (the trainer
+        # reconstructs teacher tokens), and some external reasoning-model
+        # endpoints (e.g. openai/gpt-5*) reject the parameter.
+        for env in train_envs:
+            env.sampling_args.pop("logprobs", None)
     logger.info(f"Loaded {len(train_envs)} training environment(s) ({', '.join(train_envs.names)})")
 
     await train_envs.start(
