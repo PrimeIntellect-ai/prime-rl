@@ -1126,20 +1126,19 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="before")
     @classmethod
-    def _accept_legacy_student_layout(cls, data: Any) -> Any:
-        """Backward-compat shims for the pre-refactor student layout.
-
-        Pre-refactor OrchestratorConfig had top-level `model: ModelConfig` and
-        `client: ClientConfig` fields. The student/teacher rename consolidated
-        both under `student: RolloutModelConfig` (with `model` as a legacy alias
-        for `student`). Re-nest legacy keys so old configs still parse:
+    def fold_student_shortcuts(cls, data: Any) -> Any:
+        """Accept top-level ``[orchestrator.model]`` / ``[orchestrator.client]``
+        as shorthand for the student sub-config. Useful for ergonomic rl configs
+        where ``[orchestrator.student.*]`` is overkill, and required for
+        pre-refactor configs that used the flat layout to keep parsing:
 
         - [orchestrator.client.*]     -> [orchestrator.student.client.*]
         - [orchestrator.model.<k>]    -> [orchestrator.student.model.<k>]
-          (where <k> is a ModelConfig field: name, trust_remote_code, vlm, lora)
+          (where <k> is any ModelConfig field)
 
-        Teacher was always nested pre-refactor (teacher_model.model +
-        teacher_model.client), so we don't touch it.
+        Teacher must always be configured under [orchestrator.teacher.*]
+        (no equivalent shortcut), because rl mode forbids a teacher and we
+        don't want the same shortcut to silently route to two different roles.
         """
         if not isinstance(data, dict):
             return data
