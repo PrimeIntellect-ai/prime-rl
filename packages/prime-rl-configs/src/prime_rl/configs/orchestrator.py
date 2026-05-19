@@ -1101,24 +1101,14 @@ class OrchestratorConfig(BaseConfig):
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
 
-    use_token_client: Annotated[
-        bool,
-        Field(
-            description="Whether to use the server-tokenized token-in-token-out (TITO) client for training across all environments. "
-            "WARNING: Only use this if your environment has a linear history and the chat template has the extension "
-            "property (i.e. no tokens are ever removed or inserted by the chat template). Mutually exclusive with "
-            "``use_renderer``."
-        ),
-    ] = False
-
     use_renderer: Annotated[
         bool,
         Field(
             description="Whether to use the renderer-backed TITO client (client-side tokenization via the ``renderers`` package, "
-            "served by ``/v1/generate``). Mutually exclusive with ``use_token_client``. When True, the "
-            "``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) applies. "
-            "This is the default for text-only rollouts. Not supported for VLMs — VLMs must use MITO so "
-            "image preprocessing and chat templating stay server-side."
+            "served by ``/v1/generate``). When True, the ``[orchestrator.renderer]`` block "
+            "(name / tool_parser / reasoning_parser / pool_size) applies. This is the default for text-only "
+            "rollouts. Set to False to fall back to MITO (``openai_chat_completions``); VLMs and external "
+            "teacher rollouts require MITO."
         ),
     ] = True
 
@@ -1234,34 +1224,10 @@ class OrchestratorConfig(BaseConfig):
             raise ValueError("orchestrator.teacher must not be set when training_mode = 'rl'.")
         if self.training_mode in ("opd", "sft") and not has_teacher:
             raise ValueError(f"orchestrator.teacher must be configured when training_mode = '{self.training_mode}'.")
-        if self.training_mode == "sft" and self.use_token_client:
-            raise ValueError(
-                "orchestrator.use_token_client must be false when training_mode = 'sft' "
-                "(teacher rollout uses the plain OpenAI chat-completions client)."
-            )
         if self.training_mode == "sft" and self.use_renderer:
             raise ValueError(
                 "orchestrator.use_renderer must be false when training_mode = 'sft' "
                 "(teacher rollout uses the plain OpenAI chat-completions client)."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def validate_client_mode(self):
-        """The two client toggles select among three exclusive modes:
-
-        - ``use_token_client=False`` + ``use_renderer=True``  → renderer-backed TITO (default)
-        - ``use_token_client=True``  + ``use_renderer=False`` → server-tokenized TITO
-        - ``use_token_client=False`` + ``use_renderer=False`` → MITO
-
-        Both True is invalid: renderer-backed TITO and server-tokenized TITO are
-        different wire protocols (client-side vs server-side tokenization).
-        """
-        if self.use_token_client and self.use_renderer:
-            raise ValueError(
-                "orchestrator.use_token_client and orchestrator.use_renderer are mutually exclusive. "
-                "Pick one TITO path: renderer client (client-side tokenization) or token client "
-                "(server-side tokenization)."
             )
         return self
 
@@ -1274,8 +1240,8 @@ class OrchestratorConfig(BaseConfig):
         if self.use_renderer and self.student.model.vlm is not None:
             raise ValueError(
                 "orchestrator.use_renderer is not supported for VLMs. Use MITO "
-                "(``use_token_client=false`` and ``use_renderer=false``) so image preprocessing and chat "
-                "templating stay on the inference server."
+                "(``use_renderer=false``) so image preprocessing and chat templating stay on the "
+                "inference server."
             )
         return self
 

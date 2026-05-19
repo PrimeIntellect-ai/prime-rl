@@ -11,7 +11,6 @@ def test_setup_student_inference_pool_uses_renderer_when_enabled():
         config = SimpleNamespace(
             training_mode="rl",
             use_renderer=True,
-            use_token_client=False,
             student=SimpleNamespace(
                 client=SimpleNamespace(base_url=["http://localhost:8000/v1"]),
                 model=SimpleNamespace(name="student-model"),
@@ -69,14 +68,13 @@ def test_setup_student_inference_pool_uses_renderer_when_enabled():
 
 
 def test_setup_student_inference_pool_defaults_to_mito():
-    """No renderer, no token client -> plain MITO chat completions."""
+    """No renderer -> plain MITO chat completions."""
 
     async def run() -> None:
         tokenizer = object()
         config = SimpleNamespace(
             training_mode="rl",
             use_renderer=False,
-            use_token_client=False,
             student=SimpleNamespace(
                 client=SimpleNamespace(base_url=["http://localhost:8000/v1"]),
                 model=SimpleNamespace(name="student-model"),
