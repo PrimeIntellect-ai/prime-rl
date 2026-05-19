@@ -34,12 +34,5 @@ base_url = ["http://localhost:8001/v1"]
 [trainer.optim]
 lr = 3e-6
 
-[deployment]
-num_train_gpus = 1
-gpus_per_node = 2
-
 [inference]
 gpu_memory_utilization = 0.4
-
-[inference.model]
-enforce_eager = true

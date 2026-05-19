@@ -52,7 +52,6 @@ def teacher_inference(output_dir: Path) -> Generator[subprocess.Popen, None, Non
         "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL",
         "--server.port",
         str(TEACHER_PORT),
-        "--model.enforce-eager",
         "--gpu-memory-utilization",
         "0.4",
     ]
