@@ -699,8 +699,6 @@ class RLConfig(BaseConfig):
 
         if not ttt.enabled:
             tool_output_extra_body = {
-                "ttt_windowing_enabled": tool_output_training.enabled,
-                "ttt_window_seq_len": self.orchestrator.seq_len,
                 "tool_output_training_enabled": tool_output_training.enabled,
                 "tool_output_training_weight": tool_output_training.weight,
                 "tool_output_train_names": tool_output_training.tool_names,

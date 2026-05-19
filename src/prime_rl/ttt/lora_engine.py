@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import contextvars
 import json
@@ -250,6 +251,119 @@ class HookedLoRAEngine:
             "loss": losses[-1] if losses else 0.0,
         }
 
+    async def append_and_train_with_replay_spans(
+        self,
+        session: TTTSession,
+        token_ids: list[int],
+        replay_mask: list[bool] | None,
+        turn_idx: int,
+    ) -> dict[str, Any]:
+        """Append prompt tokens and emit causal adapter spans for selected replay tokens.
+
+        The replay span adapter is always the LoRA state *before* the chunk
+        containing those prompt tokens is learned. This preserves online TTT
+        causality for prompt-side auxiliary losses.
+        """
+        if replay_mask is not None and len(replay_mask) != len(token_ids):
+            raise ValueError(f"replay_mask length {len(replay_mask)} does not match token_ids length {len(token_ids)}.")
+
+        start = time.perf_counter()
+        pending_items: list[tuple[int, int | None]] = [(int(token_id), None) for token_id in session.pending_token_ids]
+        pending_items.extend((int(token_id), idx) for idx, token_id in enumerate(token_ids))
+        initial_pending = len(session.pending_token_ids)
+        losses: list[float] = []
+        trained_token_count = 0
+        replay_spans: list[dict[str, Any]] = []
+
+        while len(pending_items) >= self.update_every_tokens:
+            chunk_items = pending_items[: self.update_every_tokens]
+            del pending_items[: self.update_every_tokens]
+            replay_indices = self._selected_new_indices(chunk_items, replay_mask)
+            if replay_indices:
+                meta = await self._current_replay_adapter(session, turn_idx, set_latest=False)
+                replay_spans.append(self._replay_span(replay_indices, meta))
+
+            chunk = [token_id for token_id, _ in chunk_items]
+            losses.append(await asyncio.to_thread(self._train_chunk, session, chunk))
+            trained_token_count += len(chunk)
+            session.version += 1
+            session.latest_adapter = None
+
+        tail_replay_indices = self._selected_new_indices(pending_items, replay_mask)
+        if tail_replay_indices:
+            meta = await self._current_replay_adapter(session, turn_idx, set_latest=True)
+            replay_spans.append(self._replay_span(tail_replay_indices, meta))
+
+        session.pending_token_ids = [token_id for token_id, _ in pending_items]
+        elapsed = time.perf_counter() - start
+        if losses or replay_spans or elapsed > 1.0:
+            get_logger().info(
+                f"TTT timing append_and_train_with_replay session={session.session_id} input_tokens={len(token_ids)} "
+                f"initial_pending={initial_pending} trained_chunks={len(losses)} "
+                f"trained_tokens={trained_token_count} pending_tokens={len(session.pending_token_ids)} "
+                f"replay_spans={len(replay_spans)} version={session.version} elapsed={elapsed:.3f}s "
+                f"loss={(losses[-1] if losses else 0.0):.6f}"
+            )
+        return {
+            "trained_chunks": len(losses),
+            "trained_token_count": trained_token_count,
+            "pending_token_count": len(session.pending_token_ids),
+            "loss": losses[-1] if losses else 0.0,
+            "prompt_replay_spans": replay_spans,
+        }
+
+    def _selected_new_indices(
+        self,
+        items: list[tuple[int, int | None]],
+        replay_mask: list[bool] | None,
+    ) -> list[int]:
+        if replay_mask is None:
+            return []
+        return [idx for _, idx in items if idx is not None and replay_mask[idx]]
+
+    def _replay_span(self, replay_indices: list[int], meta: dict[str, Any] | None) -> dict[str, Any]:
+        span = {
+            "new_start": min(replay_indices),
+            "new_end": max(replay_indices) + 1,
+            "adapter_name": None,
+            "adapter_path": None,
+            "adapter_kind": "base",
+            "base_step": self.base_step,
+            "adapter_version": 0,
+        }
+        if meta:
+            span.update(
+                {
+                    "adapter_name": meta.get("adapter_name"),
+                    "adapter_path": meta.get("adapter_path"),
+                    "adapter_kind": meta.get("adapter_kind"),
+                    "base_step": meta.get("base_step"),
+                    "adapter_version": meta.get("version"),
+                }
+            )
+        return span
+
+    async def _current_replay_adapter(
+        self,
+        session: TTTSession,
+        turn_idx: int,
+        *,
+        set_latest: bool,
+    ) -> dict[str, Any] | None:
+        if session.version <= 0:
+            return None
+        if session.latest_adapter is not None and session.latest_adapter.get("version") == session.version:
+            return session.latest_adapter
+        name = f"ttt-{session.session_id[:12]}-t{turn_idx}-prompt-v{session.version}-b{self.base_step}"
+        return await self.materialize(
+            session,
+            name=name,
+            load_into_vllm=False,
+            turn_idx=turn_idx,
+            adapter_kind="prompt_replay_snapshot",
+            set_latest=set_latest,
+        )
+
     def _train_chunk(self, session: TTTSession, token_ids: list[int]) -> float:
         if len(token_ids) < 2:
             return 0.0
@@ -304,6 +418,9 @@ class HookedLoRAEngine:
         name: str,
         load_into_vllm: bool,
         turn_idx: int,
+        *,
+        adapter_kind: str = "snapshot",
+        set_latest: bool = True,
     ) -> dict[str, Any]:
         start = time.perf_counter()
         path = self.adapter_dir / name
@@ -316,7 +433,7 @@ class HookedLoRAEngine:
         meta = {
             "adapter_name": name,
             "adapter_path": path.as_posix(),
-            "adapter_kind": "snapshot",
+            "adapter_kind": adapter_kind,
             "loaded_into_vllm": bool(load_into_vllm and self.load_adapters_into_vllm),
             "rank": self.rank,
             "base_step": self.base_step,
@@ -331,7 +448,8 @@ class HookedLoRAEngine:
         else:
             load_elapsed = 0.0
         session.materialized_adapters.append(meta)
-        session.latest_adapter = meta
+        if set_latest:
+            session.latest_adapter = meta
         get_logger().info(
             f"TTT timing materialize session={session.session_id} turn={turn_idx} adapter={name} "
             f"version={session.version} path={path} save={state_elapsed:.3f}s "

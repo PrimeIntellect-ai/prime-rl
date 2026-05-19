@@ -80,6 +80,83 @@ def test_get_or_create_session_enforces_max_concurrent_sessions():
         engine.get_or_create_session("new")
 
 
+def test_append_and_train_with_replay_spans_uses_pre_chunk_adapters():
+    engine = HookedLoRAEngine.__new__(HookedLoRAEngine)
+    engine.update_every_tokens = 4
+    engine.base_step = 7
+
+    def train_chunk(session, token_ids):
+        assert len(token_ids) == 4
+        return float(session.version)
+
+    async def materialize(session, name, load_into_vllm, turn_idx, *, adapter_kind="snapshot", set_latest=True):
+        assert load_into_vllm is False
+        meta = {
+            "adapter_name": name,
+            "adapter_path": f"/tmp/{name}",
+            "adapter_kind": adapter_kind,
+            "base_step": engine.base_step,
+            "version": session.version,
+            "turn_idx": turn_idx,
+        }
+        if set_latest:
+            session.latest_adapter = meta
+        return meta
+
+    engine._train_chunk = train_chunk
+    engine.materialize = materialize
+    session = SimpleNamespace(
+        session_id="rollout-1234567890",
+        version=0,
+        pending_token_ids=[],
+        latest_adapter=None,
+    )
+
+    stats = asyncio.run(
+        engine.append_and_train_with_replay_spans(
+            session,
+            token_ids=list(range(10)),
+            replay_mask=[True] * 10,
+            turn_idx=3,
+        )
+    )
+
+    assert stats["trained_chunks"] == 2
+    assert stats["trained_token_count"] == 8
+    assert stats["pending_token_count"] == 2
+    assert session.version == 2
+    assert session.pending_token_ids == [8, 9]
+    assert stats["prompt_replay_spans"] == [
+        {
+            "new_start": 0,
+            "new_end": 4,
+            "adapter_name": None,
+            "adapter_path": None,
+            "adapter_kind": "base",
+            "base_step": 7,
+            "adapter_version": 0,
+        },
+        {
+            "new_start": 4,
+            "new_end": 8,
+            "adapter_name": "ttt-rollout-1234-t3-prompt-v1-b7",
+            "adapter_path": "/tmp/ttt-rollout-1234-t3-prompt-v1-b7",
+            "adapter_kind": "prompt_replay_snapshot",
+            "base_step": 7,
+            "adapter_version": 1,
+        },
+        {
+            "new_start": 8,
+            "new_end": 10,
+            "adapter_name": "ttt-rollout-1234-t3-prompt-v2-b7",
+            "adapter_path": "/tmp/ttt-rollout-1234-t3-prompt-v2-b7",
+            "adapter_kind": "prompt_replay_snapshot",
+            "base_step": 7,
+            "adapter_version": 2,
+        },
+    ]
+
+
 def test_trainer_cleanup_evicts_cache_and_deletes_directories(tmp_path: Path):
     model = nn.Sequential(nn.Linear(3, 4))
     manager = TTTTrainerAdapterManager(model)

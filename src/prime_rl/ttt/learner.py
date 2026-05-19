@@ -23,6 +23,7 @@ class PrepareTurnRequest(BaseModel):
     model: str
     prompt_ids: list[int]
     new_token_ids: list[int]
+    new_token_replay_mask: list[bool] | None = None
 
 
 class CompleteTurnRequest(BaseModel):
@@ -56,6 +57,9 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
     app = FastAPI(title="Prime-RL TTT learner")
     locks: dict[str, asyncio.Lock] = {}
     engine_lock = asyncio.Lock()
+    vllm_admin_lock = asyncio.Lock()
+    vllm_admin_pause_state_lock = asyncio.Lock()
+    vllm_admin_paused = False
     logger = get_logger()
 
     def elapsed(start: float) -> float:
@@ -100,6 +104,28 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
         )
         return {"status": "ok", "base_step": engine.base_step, "sessions": len(engine.sessions)}
 
+    @app.post("/pause_vllm_admin")
+    async def pause_vllm_admin() -> dict[str, Any]:
+        nonlocal vllm_admin_paused
+        start = time.perf_counter()
+        async with vllm_admin_pause_state_lock:
+            if not vllm_admin_paused:
+                await vllm_admin_lock.acquire()
+                vllm_admin_paused = True
+        logger.info(f"TTT timing pause_vllm_admin elapsed={elapsed(start):.3f}s")
+        return {"status": "ok", "paused": True}
+
+    @app.post("/resume_vllm_admin")
+    async def resume_vllm_admin() -> dict[str, Any]:
+        nonlocal vllm_admin_paused
+        start = time.perf_counter()
+        async with vllm_admin_pause_state_lock:
+            if vllm_admin_paused:
+                vllm_admin_paused = False
+                vllm_admin_lock.release()
+        logger.info(f"TTT timing resume_vllm_admin elapsed={elapsed(start):.3f}s")
+        return {"status": "ok", "paused": False}
+
     @app.post("/start_session")
     async def start_session(request: FinishSessionRequest) -> dict[str, Any]:
         session = await activate_session(request.session_id)
@@ -116,7 +142,12 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
             try:
                 train_start = time.perf_counter()
                 async with engine_lock:
-                    train_stats = await asyncio.to_thread(engine.append_and_train, session, request.new_token_ids)
+                    train_stats = await engine.append_and_train_with_replay_spans(
+                        session,
+                        request.new_token_ids,
+                        request.new_token_replay_mask,
+                        request.turn_idx,
+                    )
                     meta = session.latest_adapter
                     if session.version > 0 and meta is None:
                         adapter_name = (
@@ -125,10 +156,11 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
                         meta = await engine.materialize(
                             session,
                             name=adapter_name,
-                            load_into_vllm=True,
+                            load_into_vllm=False,
                             turn_idx=request.turn_idx,
                         )
-                    elif meta is not None:
+                if meta is not None:
+                    async with vllm_admin_lock:
                         await engine.ensure_vllm_loaded(meta)
                 train_elapsed = elapsed(train_start)
                 meta = dict(meta or {})
@@ -144,6 +176,7 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
                 )
                 return {
                     **meta,
+                    "prompt_replay_spans": train_stats.get("prompt_replay_spans", []),
                     "status": "ok",
                     "version": session.version,
                     "trained_token_count": train_stats["trained_token_count"],
@@ -174,7 +207,8 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
                 unload_elapsed = 0.0
                 if request.adapter_name:
                     unload_start = time.perf_counter()
-                    await engine.unload_vllm_adapter(request.adapter_name)
+                    async with vllm_admin_lock:
+                        await engine.unload_vllm_adapter(request.adapter_name)
                     engine.mark_vllm_unloaded(session, request.adapter_name)
                     unload_elapsed = elapsed(unload_start)
                 logger.info(
@@ -211,7 +245,8 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
         async with lock:
             async with engine_lock:
                 session = engine.sessions.pop(request.session_id, None)
-            await engine.unload_session_loaded_adapters(session)
+            async with vllm_admin_lock:
+                await engine.unload_session_loaded_adapters(session)
         logger.info(
             f"TTT timing finish_session session={request.session_id} "
             f"had_session={session is not None} elapsed={elapsed(start):.3f}s"
@@ -228,7 +263,8 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
         async with lock:
             async with engine_lock:
                 session = engine.sessions.pop(request.session_id, None)
-            await engine.unload_session_loaded_adapters(session)
+            async with vllm_admin_lock:
+                await engine.unload_session_loaded_adapters(session)
         logger.info(
             f"TTT timing abort_session session={request.session_id} "
             f"had_session={session is not None} elapsed={elapsed(start):.3f}s"

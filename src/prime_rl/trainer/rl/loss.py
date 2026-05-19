@@ -283,6 +283,8 @@ def compute_tool_output_loss(
     prompt_loss_sum = -(trainer_logprobs[prompt_mask]).sum()
     denom = torch.clamp_min(torch.tensor(loss_scale, device=trainer_logprobs.device), 1)
     loss = weight * prompt_loss_sum / denom
+    if not bool(prompt_mask.any().item()):
+        return loss, {}
     metrics = {
         "tool_output_nll": _safe_mean(-trainer_logprobs, prompt_mask).unsqueeze(0),
         "tool_output_tokens": prompt_mask.sum().to(dtype=trainer_logprobs.dtype).unsqueeze(0),

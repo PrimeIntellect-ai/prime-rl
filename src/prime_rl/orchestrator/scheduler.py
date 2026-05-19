@@ -319,8 +319,17 @@ class Scheduler:
 
         update_weights_start_time = time.perf_counter()
         weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
-        await self.inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
-        await self._update_ttt_learner_weights(weights_path, next_ckpt_step)
+        ttt_vllm_admin_paused = False
+        try:
+            ttt_vllm_admin_paused = await self._set_ttt_vllm_admin_paused(True)
+            await self.inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
+            await self._update_ttt_learner_weights(weights_path, next_ckpt_step)
+        finally:
+            if ttt_vllm_admin_paused:
+                try:
+                    await self._set_ttt_vllm_admin_paused(False)
+                except Exception as exc:
+                    self.logger.warning(f"Failed to resume TTT learner vLLM admin calls: {exc}")
         self.update_weights_time = time.perf_counter() - update_weights_start_time
         self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
@@ -341,6 +350,17 @@ class Scheduler:
         async with httpx.AsyncClient(timeout=ttt.learner.request_timeout_s) as client:
             response = await client.post(url, json=payload)
             response.raise_for_status()
+
+    async def _set_ttt_vllm_admin_paused(self, paused: bool) -> bool:
+        ttt = self.config.experimental.ttt
+        if not (ttt.enabled and ttt.mode == "online_lora"):
+            return False
+        endpoint = "pause_vllm_admin" if paused else "resume_vllm_admin"
+        url = f"{ttt.learner.resolved_base_url.rstrip('/')}/{endpoint}"
+        async with httpx.AsyncClient(timeout=ttt.learner.request_timeout_s) as client:
+            response = await client.post(url)
+            response.raise_for_status()
+        return True
 
     async def _close_ttt_sessions(self, rollouts: list[vf.RolloutOutput], *, abort: bool = False) -> None:
         ttt = self.config.experimental.ttt

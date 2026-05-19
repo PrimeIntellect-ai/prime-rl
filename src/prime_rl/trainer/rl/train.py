@@ -192,18 +192,61 @@ def _compute_ttt_replay_loss(
             loss_scale=loss_scale,
             sft_loss=sft_loss,
         )
-        if tool_output_weight > 0 and prompt_tool_output_train_mask:
-            full_tool_mask = prompt_tool_output_train_mask[: len(prompt_ids)] + [False] * len(completion_ids)
-            tool_loss, tool_tensors = compute_tool_output_loss(
-                trainer_logprobs=logprobs,
-                input_ids=input_ids,
-                tool_output_train_mask=torch.tensor([full_tool_mask], dtype=torch.bool, device="cuda"),
-                pad_token_id=pad_token_id,
-                loss_scale=tool_output_loss_scale,
-                weight=tool_output_weight,
-            )
-            loss = loss + tool_loss
-            loss_tensors.update(tool_tensors)
+        tool_mask_values = [bool(item) for item in prompt_tool_output_train_mask[: len(prompt_ids)]]
+        if tool_output_weight > 0 and any(tool_mask_values):
+            prompt_adapter_spans = list(entry.get("prompt_adapter_spans") or [])
+            if not prompt_adapter_spans:
+                prompt_adapter_spans = [
+                    {
+                        "prompt_start": 0,
+                        "prompt_end": len(prompt_ids),
+                        "adapter_path": entry.get("prompt_adapter_path"),
+                    }
+                ]
+            for span in prompt_adapter_spans:
+                span_start = max(int(span.get("prompt_start", 0)), 0)
+                span_end = min(int(span.get("prompt_end", 0)), len(prompt_ids))
+                if span_start >= span_end:
+                    continue
+                span_tool_mask = [False] * len(prompt_ids)
+                for pos in range(span_start, span_end):
+                    span_tool_mask[pos] = tool_mask_values[pos]
+                if not any(span_tool_mask):
+                    continue
+
+                prompt_adapter_path = span.get("adapter_path")
+                if prompt_adapter_path:
+                    consumed_adapter_paths.add(str(prompt_adapter_path))
+                full_tool_mask = span_tool_mask + [False] * len(completion_ids)
+                if prompt_adapter_path == adapter_path:
+                    tool_logprobs = logprobs
+                else:
+                    prompt_adapter_context = (
+                        adapter_manager.active(prompt_adapter_path) if prompt_adapter_path else nullcontext()
+                    )
+                    with prompt_adapter_context:
+                        tool_out = forward(model, input_ids, position_ids, labels=labels, temperature=temperatures)
+                    if tool_out.get("logprobs") is None:
+                        assert tool_out.get("logits") is not None, "Logits must be provided to compute logprobs"
+                        tool_logits = tool_out["logits"]
+                        tool_scaled_logits = tool_logits / temperatures.unsqueeze(-1)
+                        tool_out["logprobs"] = selective_log_softmax(tool_scaled_logits, labels)
+                    tool_logprobs = shift_tensor_right(
+                        tool_out["logprobs"],
+                        pad_value=torch.log(torch.tensor(1.0 / vocab_size)).item(),
+                    )
+                tool_loss, tool_tensors = compute_tool_output_loss(
+                    trainer_logprobs=tool_logprobs,
+                    input_ids=input_ids,
+                    tool_output_train_mask=torch.tensor([full_tool_mask], dtype=torch.bool, device="cuda"),
+                    pad_token_id=pad_token_id,
+                    loss_scale=tool_output_loss_scale,
+                    weight=tool_output_weight,
+                )
+                loss = loss + tool_loss
+                for key, values in tool_tensors.items():
+                    loss_tensors[key].extend(values)
+                tensors["tool_output_loss"].append(tool_loss.detach().to("cpu").unsqueeze(0))
         total_loss = loss if total_loss is None else total_loss + loss
         tensors["entropy"].append(entropy.squeeze(0)[start : start + n].detach().to("cpu"))
         for key, loss_tensor in loss_tensors.items():

@@ -157,6 +157,31 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+def test_tool_output_training_does_not_enable_ttt_windowing():
+    config = RLConfig.model_validate(
+        {
+            "experimental": {
+                "tool_output_training": {
+                    "enabled": True,
+                    "weight": 0.5,
+                    "tool_names": ["run_code", "submit_code"],
+                }
+            },
+            "orchestrator": {
+                "use_renderer": True,
+                "use_token_client": False,
+            },
+        }
+    )
+
+    train_extra_body = config.orchestrator.train.env[0].sampling.extra_body
+    assert train_extra_body["tool_output_training_enabled"] is True
+    assert train_extra_body["tool_output_training_weight"] == 0.5
+    assert train_extra_body["tool_output_train_names"] == ["run_code", "submit_code"]
+    assert "ttt_windowing_enabled" not in train_extra_body
+    assert "ttt_window_seq_len" not in train_extra_body
+
+
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})

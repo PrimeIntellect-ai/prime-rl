@@ -160,9 +160,14 @@ class TTTTrainerAdapterManager:
 def collect_trace_adapter_paths(trace: list[dict]) -> list[str]:
     paths = []
     for entry in trace:
-        path = entry.get("adapter_path")
-        if path:
-            paths.append(str(path))
+        for key in ("adapter_path", "prompt_adapter_path"):
+            path = entry.get(key)
+            if path:
+                paths.append(str(path))
+        for span in entry.get("prompt_adapter_spans") or []:
+            path = span.get("adapter_path")
+            if path:
+                paths.append(str(path))
     return paths
 
 
