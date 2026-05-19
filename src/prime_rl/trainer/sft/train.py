@@ -166,6 +166,8 @@ def train(config: SFTConfig):
             renderer=config.renderer.name,
             tool_parser=config.renderer.tool_parser,
             reasoning_parser=config.renderer.reasoning_parser,
+            preserve_all_thinking=config.renderer.preserve_all_thinking,
+            preserve_thinking_between_tool_calls=config.renderer.preserve_thinking_between_tool_calls,
         )
         if isinstance(renderer, DefaultRenderer):
             raise ValueError(

@@ -24,3 +24,7 @@ lr = 3e-6
 [ckpt] # Checkpoint at the end of training
 
 [inference]
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"

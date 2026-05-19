@@ -131,11 +131,15 @@ class BaseModelConfig(BaseConfig):
         ),
     ] = None
 
+    @property
+    def is_vlm(self) -> bool:
+        return self.vlm is not None
+
 
 class RendererConfig(BaseConfig):
     """Configures the client-side renderer (chat-template + response parsing).
 
-    Only consumed when ``orchestrator.use_renderer = true``. The renderer
+    Consumed when ``use_renderer = true``. The renderer
     owns both directions: render messages → token ids on the client, and
     parse model output tokens → structured ``content`` / ``reasoning_content``
     / ``tool_calls``.
@@ -185,6 +189,37 @@ class RendererConfig(BaseConfig):
             ),
         ),
     ] = None
+
+    preserve_all_thinking: Annotated[
+        bool,
+        Field(
+            description=(
+                "Override flag forwarded to the renderer at construction. When "
+                "True, every past-assistant turn's ``reasoning_content`` is "
+                "re-emitted between ``<think>``/``</think>`` (or the model's "
+                "equivalent), even if the underlying chat template would drop "
+                "it. Off by default — preserves byte-identical output to the "
+                "stock template. Strict superset of "
+                "``preserve_thinking_between_tool_calls``."
+            ),
+        ),
+    ] = False
+
+    preserve_thinking_between_tool_calls: Annotated[
+        bool,
+        Field(
+            description=(
+                "Override flag forwarded to the renderer at construction. When "
+                "True, preserves past-assistant ``reasoning_content`` only "
+                "inside the *current* tool cycle — the contiguous "
+                "assistant→tool→…→assistant block after the most recent user "
+                "message, when that block contains at least one tool response. "
+                "A new user turn closes the block; older blocks fall back to "
+                "the template default (typically dropped). Use "
+                "``preserve_all_thinking`` to keep older blocks too."
+            ),
+        ),
+    ] = False
 
 
 class ElasticConfig(BaseConfig):
@@ -265,6 +300,13 @@ class ClientConfig(BaseConfig):
         dict[str, str],
         Field(
             description="Headers to use for the OpenAI API. By default, it is set to an empty dictionary.",
+        ),
+    ] = {}
+
+    headers_from_env: Annotated[
+        dict[str, str],
+        Field(
+            description='Maps HTTP header names to environment variable names. At runtime each entry is resolved via os.getenv and merged into the request headers. e.g. {"X-Prime-Team-ID": "PRIME_TEAM_ID"}.',
         ),
     ] = {}
 

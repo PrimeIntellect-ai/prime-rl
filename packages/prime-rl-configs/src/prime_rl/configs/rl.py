@@ -354,6 +354,27 @@ class RLConfig(BaseConfig):
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _stub_orchestrator_teacher_for_auto_setup(cls, data):
+        """When `deployment.num_teacher_gpus > 0` and the user didn't write an
+        `[orchestrator.teacher]` block, inject an empty one so
+        `OrchestratorConfig.validate_training_mode` (which fires during nested
+        validation) doesn't reject `training_mode = "opd"` for "missing teacher".
+        `auto_setup_teacher_inference` (after) then fills in client.base_url and
+        model.name from the auto-launched teacher_inference server."""
+        if not isinstance(data, dict):
+            return data
+        deployment = data.get("deployment")
+        if not isinstance(deployment, dict):
+            return data
+        if not deployment.get("num_teacher_gpus"):
+            return data
+        orch = data.setdefault("orchestrator", {})
+        if isinstance(orch, dict) and "teacher" not in orch and "teacher_model" not in orch:
+            orch["teacher"] = {}
+        return data
+
     @model_validator(mode="after")
     def validate_deployment(self):
         if self.deployment.type == "multi_node":
@@ -409,32 +430,6 @@ class RLConfig(BaseConfig):
 
         return self
 
-    @model_validator(mode="after")
-    def validate_teacher_model(self):
-        if (
-            self.trainer.loss.type == "default" and self.trainer.loss.teacher_tau > 0
-        ) and not self.orchestrator.teacher_model:
-            raise ValueError(
-                "teacher_model must be configured when teacher_tau > 0. "
-                "Either set teacher_tau = 0, set deployment.num_teacher_gpus, or configure teacher_model manually."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def validate_external_rollout_inference(self):
-        """Forbid configuring a local inference server when rollouts come from an external teacher.
-
-        Orchestrator-only invariants (``use_sft_loss`` paired with ``teacher_rollout_model``,
-        and ``use_token_client`` coupling) live on ``OrchestratorConfig`` so the hosted
-        orchestrator entrypoint also enforces them.
-        """
-        if self.orchestrator.teacher_rollout_model is not None and self.inference is not None:
-            raise ValueError(
-                "inference must be omitted when orchestrator.teacher_rollout_model is configured. "
-                "External rollout mode does not use the local inference server."
-            )
-        return self
-
     ### Auto-setup shared configs (before sub-config construction)
 
     @model_validator(mode="before")
@@ -467,33 +462,6 @@ class RLConfig(BaseConfig):
             return data
 
         data = deepcopy(data)
-
-        # tyro may pass already-constructed sub-config instances rather than
-        # raw dicts (when merging CLI overrides on top of a TOML default). Dump
-        # them back to dicts, dropping fields still at their class defaults so
-        # `fill` can still tell "unset" apart from "set to a default". Discriminator
-        # `type` keys are preserved at every level so pydantic can pick the right
-        # union variant when it re-validates (otherwise `type="multi_node"` gets
-        # stripped as "equals default" and the nested config falls back to the
-        # wrong union variant).
-        def _dump_preserving_discriminators(obj: Any) -> Any:
-            if isinstance(obj, BaseModel):
-                dumped = obj.model_dump(exclude_defaults=True)
-                if "type" in type(obj).model_fields and "type" not in dumped:
-                    dumped["type"] = getattr(obj, "type")
-                for field_name in type(obj).model_fields:
-                    if field_name in dumped:
-                        dumped[field_name] = _dump_preserving_discriminators(getattr(obj, field_name))
-                return dumped
-            if isinstance(obj, list):
-                return [_dump_preserving_discriminators(item) for item in obj]
-            if isinstance(obj, dict):
-                return {k: _dump_preserving_discriminators(v) for k, v in obj.items()}
-            return obj
-
-        for key, value in list(data.items()):
-            if isinstance(value, BaseModel):
-                data[key] = _dump_preserving_discriminators(value)
 
         def get(path: str) -> Any | None:
             """Read a dotted path from raw config data. Returns None if any key is missing."""
@@ -702,40 +670,40 @@ class RLConfig(BaseConfig):
             if self.trainer.weight_broadcast.type == "nccl":
                 raise ValueError("NCCL weight broadcast does not support LoRA yet.")
 
-            if self.orchestrator.model.lora is None:
+            if self.orchestrator.student.model.lora is None:
                 from prime_rl.configs.orchestrator import LoRAConfig
 
-                self.orchestrator.model.lora = LoRAConfig()
+                self.orchestrator.student.model.lora = LoRAConfig()
 
             if (
-                self.orchestrator.model.lora.rank is not None
-                and self.orchestrator.model.lora.rank != self.trainer.model.lora.rank
+                self.orchestrator.student.model.lora.rank is not None
+                and self.orchestrator.student.model.lora.rank != self.trainer.model.lora.rank
             ):
                 raise ValueError(
-                    f"orchestrator.model.lora.rank ({self.orchestrator.model.lora.rank}) conflicts with "
+                    f"orchestrator.student.model.lora.rank ({self.orchestrator.student.model.lora.rank}) conflicts with "
                     f"trainer.model.lora.rank ({self.trainer.model.lora.rank}). "
-                    f"Remove orchestrator.model.lora.rank to inherit from trainer, or update trainer.model.lora.rank to match."
+                    f"Remove orchestrator.student.model.lora.rank to inherit from trainer, or update trainer.model.lora.rank to match."
                 )
 
             if (
-                self.orchestrator.model.lora.alpha is not None
-                and self.orchestrator.model.lora.alpha != self.trainer.model.lora.alpha
+                self.orchestrator.student.model.lora.alpha is not None
+                and self.orchestrator.student.model.lora.alpha != self.trainer.model.lora.alpha
             ):
                 raise ValueError(
-                    f"orchestrator.model.lora.alpha ({self.orchestrator.model.lora.alpha}) conflicts with "
+                    f"orchestrator.student.model.lora.alpha ({self.orchestrator.student.model.lora.alpha}) conflicts with "
                     f"trainer.model.lora.alpha ({self.trainer.model.lora.alpha}). "
-                    f"Remove orchestrator.model.lora.alpha to inherit from trainer, or update trainer.model.lora.alpha to match."
+                    f"Remove orchestrator.student.model.lora.alpha to inherit from trainer, or update trainer.model.lora.alpha to match."
                 )
 
-            if self.orchestrator.model.lora.rank is None:
-                self.orchestrator.model.lora.rank = self.trainer.model.lora.rank
+            if self.orchestrator.student.model.lora.rank is None:
+                self.orchestrator.student.model.lora.rank = self.trainer.model.lora.rank
 
-            if self.orchestrator.model.lora.alpha is None:
-                self.orchestrator.model.lora.alpha = self.trainer.model.lora.alpha
+            if self.orchestrator.student.model.lora.alpha is None:
+                self.orchestrator.student.model.lora.alpha = self.trainer.model.lora.alpha
 
-            if self.orchestrator.model.lora.name is None:
-                self.orchestrator.model.lora.name = (
-                    f"r{self.orchestrator.model.lora.rank}-a{self.orchestrator.model.lora.alpha}"
+            if self.orchestrator.student.model.lora.name is None:
+                self.orchestrator.student.model.lora.name = (
+                    f"r{self.orchestrator.student.model.lora.rank}-a{self.orchestrator.student.model.lora.alpha}"
                 )
 
             if self.inference is not None:
@@ -893,17 +861,23 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_dp_rank_count(self):
-        """Auto-set orchestrator client dp_rank_count from inference DP size.
+    def auto_setup_inference_client(self):
+        """Auto-configure orchestrator student client from the inference server config.
 
-        Uses data_parallel_size_local (per-node DP) when set, since each base URL
-        points to a single node whose API server only knows about its local ranks.
-        Falls back to the global parallel.dp for single-node setups.
+        For all modes, sets dp_rank_count from inference DP size. For SFT mode,
+        also sets base_url - rl/opd rely on the ClientConfig default
+        (``["http://localhost:8000/v1"]``) which already matches the auto-launched
+        student vLLM at inference.server.port = 8000.
         """
-        if self.inference is not None and "dp_rank_count" not in self.orchestrator.client.model_fields_set:
-            self.orchestrator.client.dp_rank_count = (
-                self.inference.data_parallel_size_local or self.inference.parallel.dp
-            )
+        if self.inference is None:
+            return self
+        client = self.orchestrator.student.client
+        if "dp_rank_count" not in client.model_fields_set:
+            client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
+        if self.orchestrator.training_mode == "sft" and "base_url" not in client.model_fields_set:
+            host = self.inference.server.host or "localhost"
+            port = self.inference.server.port
+            client.base_url = [f"http://{host}:{port}/v1"]
         return self
 
     @model_validator(mode="after")
@@ -916,7 +890,7 @@ class RLConfig(BaseConfig):
 
         import copy
 
-        from prime_rl.configs.orchestrator import TeacherModelConfig
+        from prime_rl.configs.orchestrator import RolloutModelConfig
 
         if self.teacher_inference is None:
             if self.inference is None:
@@ -938,12 +912,12 @@ class RLConfig(BaseConfig):
             assert num_teacher_gpus > 0, "num_teacher_gpus cannot be zero"
             self.teacher_inference.parallel.dp = num_teacher_gpus // tp
 
-        if self.orchestrator.teacher_model is None:
-            self.orchestrator.teacher_model = TeacherModelConfig()
+        if self.orchestrator.teacher is None:
+            self.orchestrator.teacher = RolloutModelConfig()
         host = self.teacher_inference.server.host or "localhost"
         port = self.teacher_inference.server.port
-        self.orchestrator.teacher_model.client.base_url = [f"http://{host}:{port}/v1"]
-        self.orchestrator.teacher_model.model.name = self.teacher_inference.model.name
+        self.orchestrator.teacher.client.base_url = [f"http://{host}:{port}/v1"]
+        self.orchestrator.teacher.model.name = self.teacher_inference.model.name
 
         return self
 

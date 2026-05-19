@@ -11,6 +11,7 @@ language_model_attr = "model.language_model"
 [orchestrator]
 batch_size = 256
 rollouts_per_example = 16
+use_renderer = false
 
 
 [orchestrator.train.sampling]
