@@ -43,7 +43,6 @@ def test_setup_rollout_inference_pool_uses_direct_renderer_client_for_local_vllm
         config = SimpleNamespace(
             teacher_rollout_model=None,
             use_renderer=True,
-            use_token_client=False,
             model=SimpleNamespace(name="student-model"),
             renderer=SimpleNamespace(
                 name="qwen3_vl",

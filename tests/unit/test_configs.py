@@ -184,7 +184,6 @@ def test_orchestrator_vlm_requires_renderer():
         }
     )
 
-    assert config.use_token_client is False
     assert config.use_renderer is True
 
 

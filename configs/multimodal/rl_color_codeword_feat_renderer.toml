@@ -40,7 +40,6 @@ gpus_per_node = 2
 batch_size = 16
 rollouts_per_example = 8
 use_renderer = true
-use_token_client = false
 
 # Track zero-advantage groups but don't drop them — we're validating the
 # multimodal renderer path on 20 steps, not optimizing training efficiency.

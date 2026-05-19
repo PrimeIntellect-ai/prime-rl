@@ -167,7 +167,7 @@ For hosted multi-tenant runs where the trainer image's `trainer.loss.type` is fi
 
 ### RL rollout client defaults
 
-The orchestrator defaults to renderer-backed TITO (`use_renderer = true`, `use_token_client = false`) for both text-only and VLM rollouts. VLMs require `use_renderer = true` — the renderer owns the HF processor per-slot and ships multimodal tensors as generic `mm_kwargs` to the trainer. External teacher rollouts must set `use_renderer = false` (validator-enforced).
+The orchestrator defaults to renderer-backed TITO (`use_renderer = true`) for both text-only and VLM rollouts. VLMs require `use_renderer = true` — the renderer owns the HF processor per-slot and ships multimodal tensors as generic `mm_kwargs` to the trainer. External teacher rollouts must set `use_renderer = false` (validator-enforced).
 
 ### Model fields
 
