@@ -93,13 +93,7 @@ async def orchestrate(config: OrchestratorConfig):
     )
     intercept_vf_logging(logger="verifiers.serve", level="WARN")  # show logs from env clients
 
-    # Print start message
-    mode_descriptions = {
-        "rl": "student generates rollouts, no teacher",
-        "opd": "student generates rollouts, teacher judges",
-        "sft": "teacher generates rollouts, student trains on teacher tokens",
-    }
-    logger.info(f"Starting orchestrator in {config.training_mode} mode ({mode_descriptions[config.training_mode]})")
+    logger.info(f"Starting orchestrator ({config.training_mode})")
 
     set_default_executor()
     event_loop_lag_monitor = EventLoopLagMonitor()

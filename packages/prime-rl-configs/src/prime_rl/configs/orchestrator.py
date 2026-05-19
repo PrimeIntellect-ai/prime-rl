@@ -1165,7 +1165,7 @@ class OrchestratorConfig(BaseConfig):
                 data["model"] = legacy_model
 
         # 3. Re-nest flat ModelConfig keys under student.model.
-        model_only_keys = {"name", "trust_remote_code", "vlm", "lora"}
+        model_only_keys = set(ModelConfig.model_fields)
         student = data.get("student")
         if isinstance(student, dict):
             flat = {k: student.pop(k) for k in list(student) if k in model_only_keys}
@@ -1217,6 +1217,16 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def _force_no_renderer_for_sft(self):
+        """SFT rolls out via the teacher's plain chat-completions endpoint; the
+        renderer client doesn't apply. Force use_renderer=False so the user
+        doesn't have to remember to set it. Declared before the renderer
+        validators below so they see the corrected value."""
+        if self.training_mode == "sft":
+            self.use_renderer = False
+        return self
+
+    @model_validator(mode="after")
     def validate_training_mode(self):
         """Enforce training mode invariants that involve only orchestrator fields."""
         has_teacher = self.teacher is not None
@@ -1224,11 +1234,6 @@ class OrchestratorConfig(BaseConfig):
             raise ValueError("orchestrator.teacher must not be set when training_mode = 'rl'.")
         if self.training_mode in ("opd", "sft") and not has_teacher:
             raise ValueError(f"orchestrator.teacher must be configured when training_mode = '{self.training_mode}'.")
-        if self.training_mode == "sft" and self.use_renderer:
-            raise ValueError(
-                "orchestrator.use_renderer must be false when training_mode = 'sft' "
-                "(teacher rollout uses the plain OpenAI chat-completions client)."
-            )
         return self
 
     @model_validator(mode="after")
