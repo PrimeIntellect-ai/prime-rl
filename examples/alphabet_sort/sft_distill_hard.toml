@@ -29,7 +29,6 @@ save_adapter_separately = true
 [orchestrator]
 batch_size = 256
 rollouts_per_example = 4
-use_token_client = false
 use_renderer = false
 use_sft_loss = true
 

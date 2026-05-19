@@ -1089,7 +1089,7 @@ class OrchestratorConfig(BaseConfig):
             ge=1,
             description="The group is dropped from the current step's batch once this many of its dispatch rounds have returned errored or empty rollouts (the trainer proceeds with the rollouts from other groups). Counts rounds, not individual rollouts: a non-group-scoring env that dispatches `rollouts_per_example` rollouts at once still only counts one round per failed batch. `None` means retry indefinitely (legacy behavior). Useful for unblocking single-example hangs in agent envs.",
         ),
-    ] = None
+    ] = 3
 
     max_async_level: Annotated[
         int,
@@ -1119,24 +1119,14 @@ class OrchestratorConfig(BaseConfig):
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
 
-    use_token_client: Annotated[
-        bool,
-        Field(
-            description="Whether to use the server-tokenized token-in-token-out (TITO) client for training across all environments. "
-            "WARNING: Only use this if your environment has a linear history and the chat template has the extension "
-            "property (i.e. no tokens are ever removed or inserted by the chat template). Mutually exclusive with "
-            "``use_renderer``."
-        ),
-    ] = False
-
     use_renderer: Annotated[
         bool,
         Field(
             description="Whether to use the renderer-backed TITO client (client-side tokenization via the ``renderers`` package, "
-            "served by ``/v1/generate``). Mutually exclusive with ``use_token_client``. When True, the "
-            "``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) applies. "
-            "This is the default for text-only rollouts. Not supported for VLMs — VLMs must use MITO so "
-            "image preprocessing and chat templating stay server-side."
+            "served by ``/v1/generate``). When True, the ``[orchestrator.renderer]`` block "
+            "(name / tool_parser / reasoning_parser / pool_size) applies. This is the default for text-only "
+            "rollouts. Set to False to fall back to MITO (``openai_chat_completions``); VLMs and external "
+            "teacher rollouts require MITO."
         ),
     ] = True
 
@@ -1209,33 +1199,10 @@ class OrchestratorConfig(BaseConfig):
             )
         if has_teacher and not self.use_sft_loss:
             raise ValueError("orchestrator.teacher_rollout_model requires orchestrator.use_sft_loss = true.")
-        if has_teacher and self.use_token_client:
-            raise ValueError(
-                "orchestrator.use_token_client must be false when orchestrator.teacher_rollout_model is configured."
-            )
         if has_teacher and self.use_renderer:
             raise ValueError(
                 "orchestrator.use_renderer must be false when orchestrator.teacher_rollout_model is configured "
                 "(external rollout uses MITO)."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def validate_client_mode(self):
-        """The two client toggles select among three exclusive modes:
-
-        - ``use_token_client=False`` + ``use_renderer=True``  → renderer-backed TITO (default)
-        - ``use_token_client=True``  + ``use_renderer=False`` → server-tokenized TITO
-        - ``use_token_client=False`` + ``use_renderer=False`` → MITO
-
-        Both True is invalid: renderer-backed TITO and server-tokenized TITO are
-        different wire protocols (client-side vs server-side tokenization).
-        """
-        if self.use_token_client and self.use_renderer:
-            raise ValueError(
-                "orchestrator.use_token_client and orchestrator.use_renderer are mutually exclusive. "
-                "Pick one TITO path: renderer client (client-side tokenization) or token client "
-                "(server-side tokenization)."
             )
         return self
 
@@ -1248,8 +1215,8 @@ class OrchestratorConfig(BaseConfig):
         if self.use_renderer and self.model.vlm is not None:
             raise ValueError(
                 "orchestrator.use_renderer is not supported for VLMs. Use MITO "
-                "(``use_token_client=false`` and ``use_renderer=false``) so image preprocessing and chat "
-                "templating stay on the inference server."
+                "(``use_renderer=false``) so image preprocessing and chat templating stay on the "
+                "inference server."
             )
         return self
 
@@ -1283,6 +1250,42 @@ class OrchestratorConfig(BaseConfig):
                 f"{', '.join(renderer_args_set)}. Either enable the renderer client or remove these knobs."
             )
         return self
+
+    @model_validator(mode="after")
+    def validate_renderer_auto_resolves(self):
+        """Reject the silent DefaultRenderer fallback at config time.
+
+        When ``use_renderer=True`` with ``renderer.name='auto'`` and the
+        model isn't in ``MODEL_RENDERER_MAP``, ``create_renderer`` would
+        fall back to ``DefaultRenderer``. That fallback doesn't fix the
+        position-dependent chat-template bug the renderer client exists to
+        solve, and rejects envs that pass tools (the rollout dies with
+        "RendererPool does not support tools") unless
+        ``renderer.tool_parser`` is configured. Surface at config time so
+        ``--dry-run`` reports the error.
+        """
+        if not self.use_renderer or self.renderer.name != "auto":
+            return self
+        from renderers.base import MODEL_RENDERER_MAP
+
+        model_id = self.tokenizer.name or self.model.name
+        if model_id in MODEL_RENDERER_MAP:
+            return self
+        raise ValueError(
+            f"orchestrator.use_renderer=True with renderer.name='auto' but "
+            f"{model_id!r} is not in renderers.base.MODEL_RENDERER_MAP, so it "
+            f"would silently fall back to DefaultRenderer. Pick one: "
+            f"(a) [orchestrator.renderer] name='default' — for fine-tunes / "
+            f"vendored mirrors with custom chat templates (DefaultRenderer "
+            f"calls apply_chat_template); pair with tool_parser=<name> if "
+            f"the env uses tools. "
+            f"(b) [orchestrator.renderer] name=<model-specific renderer> — "
+            f"if {model_id!r} is template-identical to a mapped family "
+            f"(and ideally also add it upstream to "
+            f"renderers.base.MODEL_RENDERER_MAP). "
+            f"(c) orchestrator.use_renderer=false — opt out of the renderer "
+            f"client entirely."
+        )
 
     @model_validator(mode="after")
     def nccl_max_async_level(self):

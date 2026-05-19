@@ -438,7 +438,7 @@ class RLConfig(BaseConfig):
         """Forbid configuring a local inference server when rollouts come from an external teacher.
 
         Orchestrator-only invariants (``use_sft_loss`` paired with ``teacher_rollout_model``,
-        and ``use_token_client`` coupling) live on ``OrchestratorConfig`` so the hosted
+        and ``use_renderer`` coupling) live on ``OrchestratorConfig`` so the hosted
         orchestrator entrypoint also enforces them.
         """
         if self.orchestrator.teacher_rollout_model is not None and self.inference is not None:

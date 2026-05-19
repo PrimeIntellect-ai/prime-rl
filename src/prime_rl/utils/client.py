@@ -62,7 +62,7 @@ class StaticInferencePool:
         self,
         client_config: ClientConfig,
         model_name: str,
-        train_client_type: str = "openai_chat_completions_token",
+        train_client_type: str = "openai_chat_completions",
         eval_client_type: str = "openai_chat_completions",
         renderer_name: str = "auto",
         tool_parser: str | None = None,
@@ -127,7 +127,7 @@ class StaticInferencePool:
 async def setup_inference_pool(
     client_config: ClientConfig,
     model_name: str,
-    train_client_type: str = "openai_chat_completions_token",
+    train_client_type: str = "openai_chat_completions",
     eval_client_type: str = "openai_chat_completions",
     renderer_name: str = "auto",
     tool_parser: str | None = None,
@@ -138,13 +138,6 @@ async def setup_inference_pool(
 ) -> InferencePool:
     """Create an inference pool from config (static or elastic)."""
     logger = get_logger()
-
-    if train_client_type == "openai_chat_completions_token":
-        logger.warning(
-            "Token-in-token-out (TITO) client is enabled for training. Only use "
-            "this if your environment has a linear history and the chat "
-            "template has the extension property."
-        )
 
     if client_config.is_elastic:
         from prime_rl.utils.elastic import ElasticInferencePool

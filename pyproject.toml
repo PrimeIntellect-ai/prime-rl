@@ -18,7 +18,7 @@ dependencies = [
     "torchaudio",
     "torchdata>=0.11.0",
     "transformers",
-    "vllm>=0.20.2",
+    "vllm>=0.21.0",
     "wandb>=0.26.1",
     "ring-flash-attn>=0.1.8",
     "prime>=0.6.4",
@@ -98,7 +98,7 @@ gpt-oss = [
     "kernels",
 ]
 quack = [
-    "quack-kernels>=0.3.3",
+    "quack-kernels>=0.4.1",
 ]
 all = [
     "prime-rl[flash-attn]",
@@ -176,6 +176,7 @@ override-dependencies = [
 [tool.uv.exclude-newer-package]
 # we want latest vllm, remove next patch
 vllm = false
+tokenspeed-mla = false
 flash_attn_3 = false
 # PrimeIntellect-published on PyPI (trusted publisher)
 prime = false

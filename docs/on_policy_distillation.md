@@ -71,7 +71,6 @@ Use this mode when you want to train from teacher-generated completions directly
 type = "sft"
 
 [orchestrator]
-use_token_client = false
 use_renderer = false
 use_sft_loss = true
 

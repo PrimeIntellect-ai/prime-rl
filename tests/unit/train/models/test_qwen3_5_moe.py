@@ -121,18 +121,19 @@ def test_qwen3_5_moe_cp_patching():
     from prime_rl.trainer.models.layers.attn import FlashAttention, substitute_ring_attn
     from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeGatedFlashAttention
 
-    original_flash = FlashAttention._compute_attention
-    original_afmoe = AfmoeFlashAttention._compute_attention
-    original_method = Qwen3_5MoeGatedFlashAttention._compute_attention
-
-    mock_group = MagicMock()
+    # substitute_ring_attn rewrites _compute_attention on all three classes;
+    # snapshot every one so the patch can't leak into later tests via the
+    # untouched siblings.
+    originals = {
+        cls: cls._compute_attention for cls in (FlashAttention, AfmoeFlashAttention, Qwen3_5MoeGatedFlashAttention)
+    }
     try:
+        mock_group = MagicMock()
         substitute_ring_attn(process_group=mock_group, heads_k_stride=1)
-        assert Qwen3_5MoeGatedFlashAttention._compute_attention is not original_method
+        assert Qwen3_5MoeGatedFlashAttention._compute_attention is not originals[Qwen3_5MoeGatedFlashAttention]
     finally:
-        FlashAttention._compute_attention = original_flash
-        AfmoeFlashAttention._compute_attention = original_afmoe
-        Qwen3_5MoeGatedFlashAttention._compute_attention = original_method
+        for cls, method in originals.items():
+            cls._compute_attention = method
 
 
 if __name__ == "__main__":

@@ -29,6 +29,7 @@ from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
+    compute_importance_ratio_and_mismatch_kl,
     selective_log_softmax,
     setup_loss_fn,
     shift_tensor_left,
@@ -480,8 +481,26 @@ def train(config: TrainerConfig):
                 loss.backward()
 
             # Add relevant tensors to tensor dict for logging purposes
-            tensors["entropy"].append(out["entropy"][loss_mask].detach().to("cpu"))
+            entropy = out["entropy"][loss_mask].detach().to("cpu")
+            tensors["entropy/all"].append(entropy)
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
+
+            env_names = micro_batch["env_names"]
+            masked_env_names = [env_name for env_name, keep in zip(env_names, loss_mask.flatten().tolist()) if keep]
+            env_to_indices: dict[str, list[int]] = {}
+            for idx, env_name in enumerate(masked_env_names):
+                env_to_indices.setdefault(env_name, []).append(idx)
+
+            for env_name, indices in env_to_indices.items():
+                tensors[f"entropy/{env_name}"].append(entropy[indices])
+
+            if not micro_batch["sft_loss"]:
+                with torch.no_grad():
+                    _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(out["logprobs"], inference_logprobs)
+                mismatch_kl = mismatch_kl[loss_mask].detach().to("cpu")
+                tensors["mismatch_kl/all"].append(mismatch_kl)
+                for env_name, indices in env_to_indices.items():
+                    tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)
@@ -491,13 +510,12 @@ def train(config: TrainerConfig):
 
             # Add loss tensors to tensor dict for logging purposes
             for key, loss_tensor in loss_tensors.items():
-                loss_tensor = loss_tensor.detach().to("cpu")
-                tensors[key].append(loss_tensor)
+                tensors[key].append(loss_tensor.detach().to("cpu"))
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f}"
-            if "mismatch_kl" in tensors:
-                micro_step_message += f" | Mismatch KL: {tensors['mismatch_kl'][-1].mean().item():.4f}"
+            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy/all'][-1].mean().item():.4f}"
+            if not micro_batch["sft_loss"]:
+                micro_step_message += f" | Mismatch KL: {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
@@ -545,9 +563,9 @@ def train(config: TrainerConfig):
 
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f}"
-        if "mismatch_kl/mean" in tensor_stats:
-            step_message += f" | Mismatch KL: {tensor_stats['mismatch_kl/mean']:.4f}"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/all/mean']:.4f}"
+        if "mismatch_kl/all/mean" in tensor_stats:
+            step_message += f" | Mismatch KL: {tensor_stats['mismatch_kl/all/mean']:.4f}"
         if grad_norm is not None:
             step_message += f" | Grad. Norm: {grad_norm:.4f}"
         step_message += f" | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
@@ -576,8 +594,8 @@ def train(config: TrainerConfig):
         monitor.log(optim_metrics, step=progress.step)
 
         # Compute derived metrics
-        entropy_mean = tensor_stats.get("entropy/mean", 0.0)
-        mismatch_kl_mean = tensor_stats.get("mismatch_kl/mean")
+        entropy_mean = tensor_stats.get("entropy/all/mean", 0.0)
+        mismatch_kl_mean = tensor_stats.get("mismatch_kl/all/mean")
         if mismatch_kl_mean is not None and entropy_mean > 0:
             tensor_stats["kl_ent_ratio/mean"] = mismatch_kl_mean / entropy_mean
 
@@ -611,8 +629,8 @@ def train(config: TrainerConfig):
                 peak_memory_gib=peak_memory,
                 learning_rate=current_lr,
                 mfu=mfu,
-                entropy=tensor_stats.get("entropy/mean", 0.0),
-                mismatch_kl=tensor_stats.get("mismatch_kl/mean", 0.0),
+                entropy=tensor_stats.get("entropy/all/mean", 0.0),
+                mismatch_kl=tensor_stats.get("mismatch_kl/all/mean", 0.0),
                 zero_grad_ratio=zero_grad_ratio,
             )
             # Update run/LoRA metrics

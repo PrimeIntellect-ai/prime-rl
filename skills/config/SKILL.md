@@ -116,6 +116,14 @@ id = "math-env"
 
 On the CLI, list items are indexed: `--env.0.id reverse-text --env.1.id math-env`.
 
+When composing multiple TOML files, list fields are replaced wholesale by the later file. To change one
+`orchestrator.filters` entry in an overlay, include the full desired filter list in that overlay.
+
+For quick KL smoke runs with very small rollout batches, enforced `zero_advantage` filtering can remove
+every rollout and stop the orchestrator. If the goal is only trainer/inference mismatch KL, keep the
+filter present but set `enforce = false` in a temporary overlay and call out that the run is not a reward
+learning validation.
+
 ### Dict fields
 
 In TOML, use a section:
@@ -159,7 +167,7 @@ For hosted multi-tenant runs where the trainer image's `trainer.loss.type` is fi
 
 ### RL rollout client defaults
 
-For text-only RL rollouts, the orchestrator defaults to renderer-backed TITO (`use_renderer = true`, `use_token_client = false`). VLM configs must explicitly use MITO (`use_token_client = false`, `use_renderer = false`) so image preprocessing and chat templating stay server-side. External teacher rollouts must also set `use_renderer = false`.
+For text-only RL rollouts, the orchestrator defaults to renderer-backed TITO (`use_renderer = true`). VLM configs must explicitly fall back to MITO (`use_renderer = false`) so image preprocessing and chat templating stay server-side. External teacher rollouts must also set `use_renderer = false`.
 
 ### Model fields
 
