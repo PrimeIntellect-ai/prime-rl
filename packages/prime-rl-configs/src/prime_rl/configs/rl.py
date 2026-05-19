@@ -187,22 +187,21 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
         int,
         Field(
             description=(
-                "Number of GPUs to allocate sequentially across [[inference]] entries that do not "
-                "set `gpu_ids` explicitly. Ignored when every inference entry pins its own `gpu_ids`."
+                "Number of GPUs allocated to the inference pool. When there is a single [[inference]] "
+                "entry this sizes its parallel.dp directly; with multiple entries each entry's GPU "
+                "count comes from its own parallel.dp * parallel.tp."
             ),
         ),
     ] = 1
 
     @model_validator(mode="after")
     def validate_gpu_count(self):
-        # Soft check on the legacy sequential pool only; RLConfig.validate_inference_placement
-        # cross-checks the actual per-tag gpu_ids against gpus_per_node.
         total = self.num_train_gpus + self.num_infer_gpus
         if total > self.gpus_per_node:
             raise ValueError(
                 f"num_train_gpus ({self.num_train_gpus}) + num_infer_gpus ({self.num_infer_gpus}) "
-                f"exceeds gpus_per_node ({self.gpus_per_node}). Either reduce the sequential "
-                f"inference pool, raise gpus_per_node, or pin per-deployment GPUs via [[inference]].gpu_ids."
+                f"exceeds gpus_per_node ({self.gpus_per_node}). Either reduce the inference pool, "
+                f"raise gpus_per_node, or split deployments across nodes."
             )
         return self
 
@@ -391,19 +390,17 @@ class RLConfig(BaseConfig):
     @classmethod
     def _migrate_legacy_inference(cls, data):
         """Translate the pre-#2554 single-deployment schema into the tagged
-        `[[inference]]` list. Three legacy shapes are auto-migrated:
+        `[[inference]]` list:
 
         1. `[inference]` (dict) → `[{tag="student", ...}]`.
         2. `[teacher_inference]` (dict) → second list entry with `tag="teacher"`,
-           and `gpu_ids` derived from `deployment.num_infer_gpus` +
-           `deployment.num_train_gpus` + `deployment.num_teacher_gpus` to preserve
-           the legacy `infer → trainer → teacher` GPU ordering.
+           sized from `deployment.num_teacher_gpus` (mapped onto `parallel.dp`).
         3. `deployment.num_teacher_gpus` set without a `[teacher_inference]`
-           block → synthesizes an empty teacher entry on the same GPU slice.
+           block → synthesizes a teacher entry whose `parallel.dp` matches.
 
-        Once migrated, `num_teacher_gpus` is dropped from `deployment` (the field
-        was removed from the schema in this PR; ignoring it without a clear
-        warning would silently strand legacy configs).
+        Once migrated, `num_teacher_gpus` is dropped from `deployment` (the
+        field was removed from the schema in this PR). GPU placement is then
+        sequential across inference entries — see the RL launcher.
         """
         if not isinstance(data, dict):
             return data
@@ -412,8 +409,6 @@ class RLConfig(BaseConfig):
         teacher_inference = data.pop("teacher_inference", None)
         deployment = data.get("deployment") if isinstance(data.get("deployment"), dict) else None
         num_teacher_gpus = deployment.pop("num_teacher_gpus", None) if deployment is not None else None
-        num_infer_gpus = deployment.get("num_infer_gpus") if deployment is not None else None
-        num_train_gpus = deployment.get("num_train_gpus") if deployment is not None else None
 
         if isinstance(inference, dict):
             entry = {**inference}
@@ -430,17 +425,15 @@ class RLConfig(BaseConfig):
         else:
             return data
 
-        teacher_offset = (num_infer_gpus or 0) + (num_train_gpus or 0)
         if isinstance(teacher_inference, dict):
             entry = {**teacher_inference}
             entry.setdefault("tag", "teacher")
-            if "gpu_ids" not in entry and num_teacher_gpus:
-                entry["gpu_ids"] = list(range(teacher_offset, teacher_offset + num_teacher_gpus))
+            if num_teacher_gpus:
+                parallel = entry.setdefault("parallel", {})
+                parallel.setdefault("dp", num_teacher_gpus)
             inference_list.append(entry)
         elif num_teacher_gpus:
-            entry: dict = {"tag": "teacher"}
-            entry["gpu_ids"] = list(range(teacher_offset, teacher_offset + num_teacher_gpus))
-            inference_list.append(entry)
+            inference_list.append({"tag": "teacher", "parallel": {"dp": num_teacher_gpus}})
 
         return data
 
@@ -495,39 +488,6 @@ class RLConfig(BaseConfig):
             raise ValueError(
                 'The [[inference]] list must include an entry with `tag = "student"` (the weight-broadcast target). '
                 f"Got tags: {tags}."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def validate_inference_placement(self):
-        """Cross-check explicit gpu_ids on inference entries against the deployment.
-
-        Each entry's gpu_ids (when set) must fit within the launcher's visible GPUs
-        (single-node: 0..gpus_per_node-1) and must not collide with the trainer's
-        derived placement (the first num_train_gpus IDs not used by any inference
-        entry — see rl_local).
-        """
-        if self.deployment.type != "single_node":
-            return self
-        gpus_per_node = self.deployment.gpus_per_node
-        explicit: set[int] = set()
-        for entry in self.inference:
-            if entry.gpu_ids is None:
-                continue
-            for gid in entry.gpu_ids:
-                if gid < 0 or gid >= gpus_per_node:
-                    raise ValueError(
-                        f"[[inference]] tag={entry.tag!r} gpu_ids contains {gid}, which is outside "
-                        f"the [0, gpus_per_node={gpus_per_node}) range."
-                    )
-                explicit.add(gid)
-        free_for_trainer = [g for g in range(gpus_per_node) if g not in explicit]
-        if len(free_for_trainer) < self.deployment.num_train_gpus:
-            raise ValueError(
-                f"After placing inference deployments on GPUs {sorted(explicit) or '[]'}, only "
-                f"{len(free_for_trainer)} GPU(s) remain for the trainer, but num_train_gpus = "
-                f"{self.deployment.num_train_gpus}. Either reduce num_train_gpus, raise "
-                f"gpus_per_node, or change the inference gpu_ids."
             )
         return self
 
@@ -940,20 +900,19 @@ class RLConfig(BaseConfig):
             if self.deployment.num_train_gpus > 1:
                 self.orchestrator.num_train_workers = self.deployment.num_train_gpus // non_data_parallel_size
 
-            # Fill up inference capacity with dp ranks for entries that didn't
-            # pin their own GPUs. Entries with explicit gpu_ids set their own
-            # dp/tp budget and should not be auto-rewritten from the legacy
-            # num_infer_gpus pool.
-            for entry in self.inference:
-                if entry.gpu_ids is not None:
-                    continue
+            # Single-deployment legacy: num_infer_gpus sizes parallel.dp directly
+            # so existing `[inference]` configs keep working without setting dp.
+            # With multiple deployments each entry's parallel.dp/tp is authoritative.
+            if len(self.inference) == 1:
+                entry = self.inference[0]
                 num_infer_gpus = self.deployment.num_infer_gpus
                 if num_infer_gpus != entry.parallel.dp * entry.parallel.tp:
                     assert num_infer_gpus % entry.parallel.tp == 0, (
-                        f"Number of inference GPUs ({num_infer_gpus}) for tag={entry.tag!r} must be "
-                        f"divisible by its tensor parallel size ({entry.parallel.tp})."
+                        f"Number of inference GPUs ({num_infer_gpus}) must be divisible by "
+                        f"the tensor parallel size ({entry.parallel.tp})."
                     )
                     entry.parallel.dp = num_infer_gpus // entry.parallel.tp
+            for entry in self.inference:
                 dp = entry.parallel.dp
                 if entry.api_server_count < dp and not entry.enable_lora:
                     entry.api_server_count = dp

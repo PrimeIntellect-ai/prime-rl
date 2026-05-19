@@ -48,7 +48,7 @@ def inference_log_name(tag: str) -> str:
 # Launcher-only fields stripped from the per-deployment vLLM TOML — the
 # inference entrypoint validates against InferenceConfig but doesn't know about
 # multi-deployment placement, SLURM, or RL-only output_dir overrides.
-_INFERENCE_LAUNCHER_FIELDS = {"deployment", "slurm", "output_dir", "dry_run", "tag", "gpu_ids"}
+_INFERENCE_LAUNCHER_FIELDS = {"deployment", "slurm", "output_dir", "dry_run", "tag"}
 
 
 def get_physical_gpu_ids() -> list[int]:
@@ -86,51 +86,26 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
 def _resolve_inference_gpu_placement(config: RLConfig) -> dict[str, list[int]]:
     """Compute local GPU ids for each [[inference]] entry and the trainer.
 
-    Entries with explicit ``gpu_ids`` use them verbatim (allowing overlapped
-    placement when multiple tags share an id). Entries without ``gpu_ids`` fall
-    back to sequential allocation from ``deployment.num_infer_gpus``, preserving
-    the legacy single-deployment behavior. The trainer takes the first
-    ``num_train_gpus`` ids not used by any inference entry.
+    Inference entries are placed sequentially in list order — entry i takes the
+    next ``parallel.dp * parallel.tp`` ids — and the trainer takes the next
+    ``num_train_gpus`` after that. For the legacy single-deployment case where
+    the user only set ``deployment.num_infer_gpus``, ``auto_setup_deployment``
+    has already mapped that count onto ``parallel.dp`` so this function reads
+    the same size off the entry.
 
     Returns a dict keyed by tag (plus ``"trainer"``) mapping to local GPU ids.
     """
     assert config.deployment.type == "single_node"
 
-    explicit: dict[str, list[int]] = {}
-    implicit_tags: list[str] = []
-    used: set[int] = set()
+    placement: dict[str, list[int]] = {}
+    cursor = 0
     for entry in config.inference:
-        if entry.gpu_ids is not None:
-            explicit[entry.tag] = list(entry.gpu_ids)
-            used.update(entry.gpu_ids)
-        else:
-            implicit_tags.append(entry.tag)
+        size = entry.parallel.dp * entry.parallel.tp
+        placement[entry.tag] = list(range(cursor, cursor + size))
+        cursor += size
 
-    # Sequential allocation from the legacy num_infer_gpus pool, starting at 0
-    # and skipping ids already claimed by explicit entries. Splitting the pool
-    # across multiple implicit entries isn't supported (ambiguous); each
-    # implicit entry would need to declare its own GPU budget. Today this only
-    # fires for legacy single-block configs (one implicit entry), so the
-    # behavior is the same as before #2554.
-    if implicit_tags:
-        if len(implicit_tags) > 1:
-            raise ValueError(
-                "Multiple [[inference]] entries left gpu_ids unset; the legacy sequential "
-                "allocation only handles one such entry. Pin gpu_ids on the others."
-            )
-        tag = implicit_tags[0]
-        pool: list[int] = []
-        cursor = 0
-        while len(pool) < config.deployment.num_infer_gpus:
-            if cursor not in used:
-                pool.append(cursor)
-            cursor += 1
-        explicit[tag] = pool
-
-    trainer_ids = [g for g in range(config.deployment.gpus_per_node) if g not in set().union(*explicit.values())]
-    trainer_ids = trainer_ids[: config.deployment.num_train_gpus]
-
-    return {**explicit, "trainer": trainer_ids}
+    placement["trainer"] = list(range(cursor, cursor + config.deployment.num_train_gpus))
+    return placement
 
 
 def rl_local(config: RLConfig):

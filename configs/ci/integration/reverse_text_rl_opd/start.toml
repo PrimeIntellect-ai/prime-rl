@@ -1,6 +1,9 @@
-# Smoke test for RL-entrypoint OPD (on-policy distillation) training mode with
-# an overlapped student+teacher inference layout: trainer on GPU 0, both vLLM
-# engines on GPU 1 at 40% gpu_memory_utilization each.
+# Smoke test for the RL-entrypoint OPD (on-policy distillation) training mode.
+# The student inference deployment is launched by the rl entrypoint on GPU 0;
+# the teacher inference server is started externally by the test fixture (see
+# tests/integration/test_reverse_text_rl_opd.py) on the same GPU at a small
+# gpu_memory_utilization so it doesn't crowd out the student. Trainer takes
+# GPU 1.
 
 max_steps = 5
 seq_len = 1024
@@ -31,6 +34,9 @@ id = "reverse-text"
 [orchestrator.teacher.model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 
+[orchestrator.teacher.client]
+base_url = ["http://localhost:8001/v1"]
+
 [trainer.optim]
 lr = 3e-6
 
@@ -40,29 +46,8 @@ gpus_per_node = 2
 
 [[inference]]
 tag = "student"
-gpu_ids = [1]
-# Overlapped layout: student and teacher share GPU 1. vLLM's default
-# `gpu_memory_utilization`-based KV-cache sizing double-counts the other
-# engine's footprint via `non_torch_allocations`, so we pin the per-engine KV
-# cache budget explicitly via vllm_extra.kv_cache_memory_bytes (2 GiB each
-# is more than enough for a 0.6B model with seq_len = 1024 and small batches).
-gpu_memory_utilization = 0.5
-vllm_extra = { kv_cache_memory_bytes = 2147483648 }
+# Leaves headroom for the externally-launched teacher (10% util) on the same GPU.
+gpu_memory_utilization = 0.85
 
 [inference.model]
-max_model_len = 2048
-enforce_eager = true
-
-[[inference]]
-tag = "teacher"
-gpu_ids = [1]
-gpu_memory_utilization = 0.5
-vllm_extra = { kv_cache_memory_bytes = 2147483648 }
-
-[inference.server]
-port = 8001
-
-[inference.model]
-name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
-max_model_len = 2048
 enforce_eager = true

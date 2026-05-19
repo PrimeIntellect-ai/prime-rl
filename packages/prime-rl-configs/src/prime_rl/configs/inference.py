@@ -265,20 +265,6 @@ class InferenceConfig(BaseConfig):
         ),
     ] = "student"
 
-    gpu_ids: Annotated[
-        list[int] | None,
-        Field(
-            description=(
-                "Explicit local GPU ids (relative to the launcher's CUDA_VISIBLE_DEVICES, i.e. 0..gpus_per_node-1) "
-                "to place this inference deployment on. When set, overrides sequential allocation and allows "
-                "multiple deployments to share the same GPU(s) (overlapped layout) provided each sets "
-                "gpu_memory_utilization appropriately. When None (default), the RL launcher falls back to "
-                "sequential allocation from deployment.num_infer_gpus for back-compat. Launcher-only — not "
-                "passed to vLLM."
-            ),
-        ),
-    ] = None
-
     # The server configuration
     server: ServerConfig = ServerConfig()
 
