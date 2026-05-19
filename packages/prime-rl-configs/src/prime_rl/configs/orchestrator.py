@@ -366,6 +366,36 @@ class EnvConfig(BaseConfig):
         return self
 
 
+class SFTConfig(BaseConfig):
+    """Per-env SFT-on-tool-body objective (the ECHO loss).
+
+    When enabled, tool-message body tokens in the prompt receive a
+    constant positive advantage of ``alpha`` (length-normalized per
+    rollout unless ``trainer.loss.disable_echo`` is set), so the
+    policy learns to anticipate tool outputs alongside its standard
+    RL objective on assistant tokens. The scaffold around tool bodies
+    (``<|tool_response>`` specials, role-tag wraps, separators) is
+    excluded by construction — the mask is built from
+    ``prompt_attribution.is_content`` AND a per-message tool-name
+    filter, never the raw token stream.
+    """
+
+    on_tool_outputs: Annotated[
+        bool,
+        Field(description="Enable SFT-on-tool-body for this env."),
+    ] = False
+    alpha: Annotated[
+        float,
+        Field(description="Per-env constant weight on the SFT advantage."),
+    ] = 1.0
+    tool_names: Annotated[
+        list[str] | None,
+        Field(
+            description="Restrict SFT to these tool function names; None = all tools.",
+        ),
+    ] = None
+
+
 class TrainEnvConfig(EnvConfig):
     """Configures a training environment."""
 
@@ -375,6 +405,12 @@ class TrainEnvConfig(EnvConfig):
             description="Per-env sampling overrides. Unset fields inherit from the group-level train sampling config.",
         ),
     ] = TrainSamplingConfig()
+    sft: Annotated[
+        SFTConfig | None,
+        Field(
+            description="Per-env SFT-on-tool-body config; None = SFT disabled for this env.",
+        ),
+    ] = None
 
 
 class EvalEnvConfig(EnvConfig):

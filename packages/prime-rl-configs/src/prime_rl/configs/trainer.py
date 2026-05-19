@@ -691,6 +691,18 @@ class DefaultLossConfig(BaseModel):
     adv_tau: Annotated[float, Field(ge=0, description="The tau for advantages.")] = 1.0
     teacher_tau: Annotated[float, Field(ge=0, description="The tau for teacher logprobs.")] = 0.0
     kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 1e-3
+    disable_echo: Annotated[
+        bool,
+        Field(
+            description=(
+                "Global flag for the SFT-on-tool-body advantage overlay. "
+                "False (default): per-token SFT advantage = alpha / n_sft_tokens_in_rollout "
+                "(length-normalized; the ECHO objective). True: per-token SFT advantage = alpha "
+                "(no length normalization). Only takes effect when at least one env has "
+                "``train.env[*].sft.on_tool_outputs=True``."
+            ),
+        ),
+    ] = False
 
 
 class SFTLossConfig(BaseModel):
