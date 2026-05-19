@@ -443,6 +443,35 @@ def test_interleave_rollout_multi_step_trajectory_with_tool_calls(multi_step_tra
     assert rollout.completion_temperatures == [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
 
+def test_interleave_rollout_preserves_late_tool_output_mask(multi_step_trajectory_with_tool_calls_output):
+    output = copy.deepcopy(multi_step_trajectory_with_tool_calls_output)
+    output["trajectory"][1]["tokens"]["tool_output_train_mask"] = [
+        False,
+        False,
+        False,
+        False,
+        True,
+        False,
+        False,
+        False,
+    ]
+
+    rollouts = interleave_rollout(output)
+
+    assert rollouts is not None
+    assert len(rollouts) == 1
+    assert rollouts[0].tool_output_train_mask == [
+        False,
+        False,
+        False,
+        False,
+        True,
+        False,
+        False,
+        False,
+    ]
+
+
 @pytest.fixture
 def five_step_trajectory_with_extension_break():
     """

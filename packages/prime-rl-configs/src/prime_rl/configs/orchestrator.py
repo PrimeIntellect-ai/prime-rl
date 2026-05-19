@@ -260,6 +260,41 @@ class EvalSamplingConfig(BaseConfig):
         return data
 
 
+class EnvToolOutputTrainingConfig(BaseConfig):
+    """Per-environment overrides for renderer-attributed tool-output SFT."""
+
+    enabled: Annotated[
+        bool | None,
+        Field(
+            description=(
+                "Override whether tool-output SFT mask construction is enabled for this environment. "
+                "None inherits the run-level default for train envs and stays disabled for eval envs."
+            )
+        ),
+    ] = None
+
+    tool_names: Annotated[
+        list[str] | None,
+        Field(description="Per-environment allowlist of tool names. None trains all tool outputs for this env."),
+    ] = None
+
+    content_only: Annotated[
+        bool | None,
+        Field(description="Override whether only renderer-marked content tokens are selected."),
+    ] = None
+
+    @model_validator(mode="after")
+    def validate_tool_names(self):
+        if self.tool_names is None:
+            return self
+        if len(set(self.tool_names)) != len(self.tool_names):
+            raise ValueError("tool_output_training.tool_names contains duplicates.")
+        for item in self.tool_names:
+            if not isinstance(item, str) or not item:
+                raise ValueError("tool_output_training.tool_names must contain non-empty strings.")
+        return self
+
+
 class EnvConfig(BaseConfig):
     """Base environment configuration."""
 
@@ -335,6 +370,16 @@ class EnvConfig(BaseConfig):
         Field(
             validation_alias=AliasChoices("timeout", "timeout_seconds"),
             description="Per-rollout wall-clock timeout in seconds. Set to None (default) to disable.",
+        ),
+    ] = None
+
+    tool_output_training: Annotated[
+        EnvToolOutputTrainingConfig | None,
+        Field(
+            description=(
+                "Per-env overrides for renderer-attributed tool-output SFT mask construction. "
+                "Use this to set environment-specific tool name allowlists."
+            )
         ),
     ] = None
 

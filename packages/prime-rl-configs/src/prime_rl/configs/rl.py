@@ -673,18 +673,64 @@ class RLConfig(BaseConfig):
         """Propagate renderer-based online TTT config and keep physical/logical length knobs distinct."""
         ttt = self.experimental.ttt
         tool_output_training = self.experimental.tool_output_training
-        if not ttt.enabled and not tool_output_training.enabled:
-            return self
 
         def set_extra_body_defaults(extra_body: dict, defaults: dict) -> None:
             for key, value in defaults.items():
                 if value is not None:
                     extra_body.setdefault(key, value)
 
-        self.trainer.experimental.tool_output_training = tool_output_training.model_copy(deep=True)
-        self.orchestrator.experimental.tool_output_training = tool_output_training.model_copy(deep=True)
+        def env_tool_output_enabled(env, *, inherit_enabled: bool) -> bool:
+            env_tool_output = env.tool_output_training
+            if env_tool_output is None or env_tool_output.enabled is None:
+                return inherit_enabled
+            return env_tool_output.enabled
 
-        if tool_output_training.enabled:
+        def env_tool_output_extra_body(env, *, inherit_enabled: bool, inherit_tool_names: bool) -> dict | None:
+            env_tool_output = env.tool_output_training
+            enabled = env_tool_output_enabled(env, inherit_enabled=inherit_enabled)
+            if not enabled:
+                return None
+
+            content_only = tool_output_training.content_only
+            if env_tool_output is not None and env_tool_output.content_only is not None:
+                content_only = env_tool_output.content_only
+
+            if env_tool_output is not None and "tool_names" in env_tool_output.model_fields_set:
+                tool_names = env_tool_output.tool_names
+            elif inherit_tool_names:
+                tool_names = tool_output_training.tool_names
+            else:
+                tool_names = None
+
+            return {
+                "tool_output_training_enabled": True,
+                "tool_output_training_weight": tool_output_training.weight,
+                "tool_output_train_names": tool_names,
+                "tool_output_content_only": content_only,
+                "tool_output_require_content_mask": content_only,
+            }
+
+        train_tool_output_enabled = any(
+            env_tool_output_enabled(env, inherit_enabled=tool_output_training.enabled)
+            for env in self.orchestrator.train.env
+        )
+        eval_tool_output_enabled = any(
+            env_tool_output_enabled(env, inherit_enabled=False)
+            for env in (self.orchestrator.eval.env if self.orchestrator.eval is not None else [])
+        )
+        any_tool_output_enabled = train_tool_output_enabled or eval_tool_output_enabled
+
+        if not ttt.enabled and not any_tool_output_enabled:
+            return self
+
+        trainer_tool_output_training = tool_output_training.model_copy(
+            update={"enabled": train_tool_output_enabled},
+            deep=True,
+        )
+        self.trainer.experimental.tool_output_training = trainer_tool_output_training
+        self.orchestrator.experimental.tool_output_training = trainer_tool_output_training.model_copy(deep=True)
+
+        if any_tool_output_enabled:
             if not self.orchestrator.use_renderer or self.orchestrator.use_token_client:
                 raise ValueError(
                     "experimental.tool_output_training.enabled=true requires orchestrator.use_renderer=true "
@@ -698,20 +744,25 @@ class RLConfig(BaseConfig):
                 raise ValueError("experimental.tool_output_training.tool_names contains duplicates.")
 
         if not ttt.enabled:
-            tool_output_extra_body = {
-                "tool_output_training_enabled": tool_output_training.enabled,
-                "tool_output_training_weight": tool_output_training.weight,
-                "tool_output_train_names": tool_output_training.tool_names,
-                "tool_output_content_only": tool_output_training.content_only,
-                "tool_output_require_content_mask": tool_output_training.content_only,
-            }
             is_vllm_rollout = self.orchestrator.teacher_rollout_model is None
             if is_vllm_rollout:
                 for env in self.orchestrator.train.env:
-                    set_extra_body_defaults(env.sampling.extra_body, tool_output_extra_body)
+                    tool_output_extra_body = env_tool_output_extra_body(
+                        env,
+                        inherit_enabled=tool_output_training.enabled,
+                        inherit_tool_names=True,
+                    )
+                    if tool_output_extra_body is not None:
+                        set_extra_body_defaults(env.sampling.extra_body, tool_output_extra_body)
                 if self.orchestrator.eval is not None:
                     for env in self.orchestrator.eval.env:
-                        set_extra_body_defaults(env.sampling.extra_body, tool_output_extra_body)
+                        tool_output_extra_body = env_tool_output_extra_body(
+                            env,
+                            inherit_enabled=False,
+                            inherit_tool_names=False,
+                        )
+                        if tool_output_extra_body is not None:
+                            set_extra_body_defaults(env.sampling.extra_body, tool_output_extra_body)
             return self
 
         self.trainer.experimental.ttt = ttt.model_copy(deep=True)
@@ -735,21 +786,30 @@ class RLConfig(BaseConfig):
             "ttt_require_exact_token_ids": ttt.require_exact_token_ids,
             "ttt_cache_salt_includes_adapter": ttt.cache_salt_includes_adapter,
             "ttt_request_timeout_s": ttt.learner.request_timeout_s,
-            "tool_output_training_enabled": tool_output_training.enabled,
-            "tool_output_training_weight": tool_output_training.weight,
-            "tool_output_train_names": tool_output_training.tool_names,
-            "tool_output_content_only": tool_output_training.content_only,
-            "tool_output_require_content_mask": tool_output_training.content_only,
         }
         for env in self.orchestrator.train.env:
             env.extra_env_kwargs.update(max_seq_len=ttt.total_seq_len)
             if is_vllm_rollout:
                 set_extra_body_defaults(env.sampling.extra_body, ttt_extra_body)
+                tool_output_extra_body = env_tool_output_extra_body(
+                    env,
+                    inherit_enabled=tool_output_training.enabled,
+                    inherit_tool_names=True,
+                )
+                if tool_output_extra_body is not None:
+                    set_extra_body_defaults(env.sampling.extra_body, tool_output_extra_body)
         if self.orchestrator.eval is not None:
             for env in self.orchestrator.eval.env:
                 env.extra_env_kwargs.update(max_seq_len=ttt.total_seq_len)
                 if is_vllm_rollout:
                     set_extra_body_defaults(env.sampling.extra_body, ttt_extra_body)
+                    tool_output_extra_body = env_tool_output_extra_body(
+                        env,
+                        inherit_enabled=False,
+                        inherit_tool_names=False,
+                    )
+                    if tool_output_extra_body is not None:
+                        set_extra_body_defaults(env.sampling.extra_body, tool_output_extra_body)
 
         if self.inference is not None:
             self.inference.experimental.ttt = ttt.model_copy(deep=True)

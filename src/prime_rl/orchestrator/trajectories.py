@@ -367,13 +367,16 @@ def interleave_rollout(
         tokens = prepared_steps[step_idx]
 
         # Extend with new prompt tokens (mask=False, no gradient)
+        previous_sample_len = len(sample.prompt_ids) + len(sample.completion_ids)
         new_prompt_ids = tokens["prompt_ids"][prefix_len:]
         sample.completion_ids.extend(new_prompt_ids)
         sample.completion_mask.extend([False] * len(new_prompt_ids))
         sample.completion_logprobs.extend([0.0] * len(new_prompt_ids))
         sample.completion_temperatures.extend([temperature] * len(new_prompt_ids))
+        step_tool_mask = tokens.get("tool_output_train_mask") or []
+        if sample.tool_output_train_mask is None and step_tool_mask:
+            sample.tool_output_train_mask = [False] * previous_sample_len
         if sample.tool_output_train_mask is not None:
-            step_tool_mask = tokens.get("tool_output_train_mask") or []
             if not step_tool_mask:
                 step_tool_mask = [False] * (len(tokens["prompt_ids"]) + len(tokens["completion_ids"]))
             sample.tool_output_train_mask.extend(

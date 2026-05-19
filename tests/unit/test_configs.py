@@ -180,6 +180,50 @@ def test_tool_output_training_does_not_enable_ttt_windowing():
     assert train_extra_body["tool_output_train_names"] == ["run_code", "submit_code"]
     assert "ttt_windowing_enabled" not in train_extra_body
     assert "ttt_window_seq_len" not in train_extra_body
+    assert config.orchestrator.eval is not None
+    eval_extra_body = config.orchestrator.eval.env[0].sampling.extra_body
+    assert "tool_output_training_enabled" not in eval_extra_body
+
+
+def test_tool_output_training_tool_names_can_be_overridden_per_env():
+    config = RLConfig.model_validate(
+        {
+            "experimental": {
+                "tool_output_training": {
+                    "enabled": True,
+                    "weight": 0.5,
+                    "tool_names": None,
+                }
+            },
+            "orchestrator": {
+                "use_renderer": True,
+                "use_token_client": False,
+                "train": {
+                    "env": [
+                        {
+                            "id": "forth-lang",
+                            "tool_output_training": {
+                                "tool_names": ["run_code", "submit_code"],
+                            },
+                        },
+                        {
+                            "id": "deepdive",
+                            "tool_output_training": {
+                                "enabled": False,
+                            },
+                        },
+                    ]
+                },
+            },
+        }
+    )
+
+    forth_extra_body = config.orchestrator.train.env[0].sampling.extra_body
+    assert forth_extra_body["tool_output_training_enabled"] is True
+    assert forth_extra_body["tool_output_train_names"] == ["run_code", "submit_code"]
+
+    deepdive_extra_body = config.orchestrator.train.env[1].sampling.extra_body
+    assert "tool_output_training_enabled" not in deepdive_extra_body
 
 
 def test_selective_activation_checkpointing_requires_custom_impl():
