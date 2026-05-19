@@ -166,16 +166,19 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
 
 def opd_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutputs:
     """
-    On-policy distillation loss. Same DPPO+KL machinery as ``default_loss_fn``,
-    but the per-token policy-gradient signal is the teacher KL (teacher minus
-    student logprobs over the student's own tokens) instead of the reward
-    advantage. Equivalent to setting ``adv_tau=0, teacher_tau=1`` on the
-    classical mixed loss - we just inline it to keep the two paths separate.
+    On-policy distillation loss: the default DPPO+KL math with the tau knobs
+    hardcoded to drop the reward signal and use the teacher KL as the
+    per-token policy-gradient signal. Equivalent to ``default_loss_fn`` with
+    ``adv_tau = 0`` and ``teacher_tau = 1``; we inline both here so the two
+    paths read as distinct losses.
     """
+    adv_tau = 0.0
+    teacher_tau = 1.0
+
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
     teacher_logprobs = inputs.teacher_logprobs
-    advantages = inputs.advantages  # used only for the dppo sign mask
+    advantages = inputs.advantages
     loss_mask = inputs.loss_mask
 
     if teacher_logprobs is None:
@@ -199,7 +202,9 @@ def opd_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutpu
     keep_mask = loss_mask & ~is_masked
 
     teacher_kl = teacher_logprobs - trainer_logprobs
-    pg_loss = keep_mask * teacher_kl.detach() * importance_ratio
+    advantages = adv_tau * advantages + teacher_tau * teacher_kl.detach()
+
+    pg_loss = keep_mask * advantages * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
     loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
 
