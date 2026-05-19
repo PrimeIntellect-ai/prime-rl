@@ -1,6 +1,10 @@
+from collections import defaultdict
+from types import SimpleNamespace
+
 import pytest
 
-from prime_rl.transport.ray import _RayTransportStore
+from prime_rl.transport.ray import RayTrainingBatchReceiver, _RayTransportStore
+from prime_rl.transport.types import TrainingBatch
 
 
 def test_ray_transport_store_drains_training_batches():
@@ -55,3 +59,20 @@ def test_ray_transport_store_rejects_duplicate_micro_batch_step():
 
     with pytest.raises(RuntimeError, match="already queued"):
         store.put_micro_batch(data_rank=0, step=0, payload=b"duplicate")
+
+
+def test_ray_training_batch_receiver_reset_run_clears_only_matching_pending_batches():
+    receiver = object.__new__(RayTrainingBatchReceiver)
+    receiver.multi_run_manager = SimpleNamespace(idx_2_id={0: "run-a", 1: "run-b"})
+    receiver._pending = defaultdict(
+        dict,
+        {
+            "run-a": {0: TrainingBatch(examples=[], step=0)},
+            "run-b": {0: TrainingBatch(examples=[], step=0)},
+        },
+    )
+
+    receiver.reset_run(0)
+
+    assert "run-a" not in receiver._pending
+    assert receiver._pending["run-b"] == {0: TrainingBatch(examples=[], step=0)}

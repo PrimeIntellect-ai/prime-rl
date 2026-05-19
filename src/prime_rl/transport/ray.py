@@ -180,6 +180,13 @@ class RayTrainingBatchReceiver(TrainingBatchReceiver):
             )
             per_id_batches[batch.step] = batch
 
+    def reset_run(self, idx: int) -> None:
+        run_id = self.multi_run_manager.idx_2_id.get(idx)
+        if run_id is None:
+            self.logger.debug(f"Skipping Ray pending batch reset for unknown run index {idx}")
+            return
+        self._pending.pop(run_id, None)
+
     def receive(self) -> list[TrainingBatch]:
         batches: list[TrainingBatch] = []
         now = time.time()
