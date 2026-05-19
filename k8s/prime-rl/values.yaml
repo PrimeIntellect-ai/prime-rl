@@ -99,7 +99,11 @@ trainer:
 
   # Auto-start configuration (set to false to use sleep infinity for debugging)
   autoStart: false
-  command: ""  # e.g., "uv run trainer @ /app/examples/reverse_text/rl/train.toml --output-dir /data/outputs"
+  # Single GPU: "uv run trainer @ /app/examples/reverse_text/rl/train.toml --output-dir /data/outputs"
+  # Multi-GPU: use torchrun and pass --local-ranks-filter=0 --tee=3 --redirect=3 --log-dir=... so
+  # only rank 0's stdout reaches the pod console (Loki/dashboard see each line once) while every
+  # rank's stdout/stderr is still written to per-rank files. See docs/kubernetes.md.
+  command: ""
 
   # Helps reduce CUDA memory fragmentation with PyTorch allocator
   pytorchCudaAllocConf: "expandable_segments:True"
