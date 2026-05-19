@@ -492,14 +492,6 @@ class TokenExportConfig(BaseConfig):
         ),
     ] = None
 
-    interval: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Export every N training steps.",
-        ),
-    ] = 1
-
 
 class TrainerExperimentalConfig(BaseConfig):
     pass

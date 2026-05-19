@@ -94,9 +94,6 @@ class TokenExporter:
         response_lengths: list[int],
         loss_config: Any,
     ) -> None:
-        if step % self.config.interval != 0:
-            return
-
         if self._current_step != step:
             self._current_step = step
             self._sequences_this_step = 0
