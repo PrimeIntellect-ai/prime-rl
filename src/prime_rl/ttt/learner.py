@@ -120,7 +120,8 @@ def create_app(engine: HookedLoRAEngine, session_offload: Literal["none", "cpu_a
                     meta = session.latest_adapter
                     if session.version > 0 and meta is None:
                         adapter_name = (
-                            f"ttt-{request.session_id[:12]}-t{request.turn_idx}-v{session.version}-b{engine.base_step}"
+                            f"{engine.adapter_name_prefix}-{request.session_id[:12]}-"
+                            f"t{request.turn_idx}-v{session.version}-b{engine.base_step}"
                         )
                         meta = await engine.materialize(
                             session,
@@ -260,6 +261,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-load-adapters-into-vllm", action="store_true")
     parser.add_argument("--session-offload", default="cpu_after_request", choices=["none", "cpu_after_request"])
     parser.add_argument("--no-unload-vllm-adapters", action="store_true")
+    parser.add_argument("--adapter-name-prefix", default="ttt")
     parser.add_argument("--log-level", default="info")
     return parser.parse_args()
 
@@ -294,6 +296,7 @@ def main() -> None:
         max_concurrent_sessions=args.max_concurrent_sessions,
         load_adapters_into_vllm=not args.no_load_adapters_into_vllm,
         unload_vllm_adapters=not args.no_unload_vllm_adapters,
+        adapter_name_prefix=args.adapter_name_prefix,
     )
     logger.info(f"TTT learner engine initialized; serving on {args.host}:{args.port}")
     uvicorn.run(create_app(engine, session_offload=args.session_offload), host=args.host, port=args.port)

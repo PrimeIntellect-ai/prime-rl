@@ -789,8 +789,32 @@ class RLConfig(BaseConfig):
 
         if ttt.mode == "online_lora":
             self.orchestrator.client.extra_headers_from_state["X-Session-ID"] = "trajectory_id"
-            if self.deployment.type == "multi_node" and self.deployment.gpus_per_node < 2:
-                raise ValueError("multi-node online TTT reserves one train-node GPU for the learner.")
+            reserved_ttt_gpus = len(ttt.learner.resolved_gpus)
+            if self.deployment.type == "multi_node" and self.deployment.gpus_per_node <= reserved_ttt_gpus:
+                raise ValueError(
+                    "multi-node online TTT reserves learner GPUs on train nodes, so "
+                    f"deployment.gpus_per_node ({self.deployment.gpus_per_node}) must be greater than "
+                    f"the number of TTT learner GPUs ({reserved_ttt_gpus})."
+                )
+            if self.deployment.type == "multi_node" and max(ttt.learner.resolved_gpus) >= self.deployment.gpus_per_node:
+                raise ValueError(
+                    "multi-node online TTT learner GPU ids must be node-local ids smaller than "
+                    f"deployment.gpus_per_node ({self.deployment.gpus_per_node})."
+                )
+            if self.deployment.type == "single_node" and self.deployment.num_train_gpus <= reserved_ttt_gpus:
+                raise ValueError(
+                    "single-node online TTT reserves learner GPUs from deployment.num_train_gpus, so "
+                    f"deployment.num_train_gpus ({self.deployment.num_train_gpus}) must be greater than "
+                    f"the number of TTT learner GPUs ({reserved_ttt_gpus})."
+                )
+            if (
+                self.deployment.type == "single_node"
+                and max(ttt.learner.resolved_gpus) >= self.deployment.gpus_per_node
+            ):
+                raise ValueError(
+                    "single-node online TTT learner GPU ids must be smaller than "
+                    f"deployment.gpus_per_node ({self.deployment.gpus_per_node})."
+                )
 
         return self
 
@@ -939,8 +963,11 @@ class RLConfig(BaseConfig):
         if self.deployment.type == "single_node":  # single-node
             # set num_train_workers to the number of data replicas
             non_data_parallel_size = self.trainer.model.cp
-            if self.deployment.num_train_gpus > 1:
-                self.orchestrator.num_train_workers = self.deployment.num_train_gpus // non_data_parallel_size
+            train_gpus = self.deployment.num_train_gpus
+            if self.experimental.ttt.enabled and self.experimental.ttt.mode == "online_lora":
+                train_gpus -= len(self.experimental.ttt.learner.resolved_gpus)
+            if train_gpus > 1:
+                self.orchestrator.num_train_workers = train_gpus // non_data_parallel_size
 
             # fill up inference capacity with dp ranks
             if self.inference is not None:
@@ -960,7 +987,7 @@ class RLConfig(BaseConfig):
         elif self.deployment.type == "multi_node":  # multi-node
             train_gpus_per_node = self.deployment.gpus_per_node
             if self.experimental.ttt.enabled and self.experimental.ttt.mode == "online_lora":
-                train_gpus_per_node -= 1
+                train_gpus_per_node -= len(self.experimental.ttt.learner.resolved_gpus)
             self.orchestrator.num_train_workers = self.deployment.num_train_nodes * train_gpus_per_node
 
             if self.deployment.nodes_per_fsdp_group is not None:

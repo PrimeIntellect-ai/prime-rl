@@ -104,6 +104,7 @@ class HookedLoRAEngine:
         max_concurrent_sessions: int = 64,
         load_adapters_into_vllm: bool = True,
         unload_vllm_adapters: bool = True,
+        adapter_name_prefix: str = "ttt",
     ) -> None:
         self.model_name = model_name
         self.adapter_dir = adapter_dir
@@ -123,6 +124,7 @@ class HookedLoRAEngine:
         self.max_concurrent_sessions = max_concurrent_sessions
         self.load_adapters_into_vllm = load_adapters_into_vllm
         self.unload_vllm_adapters = unload_vllm_adapters
+        self.adapter_name_prefix = adapter_name_prefix
         self.base_step = 0
         self.sessions: dict[str, TTTSession] = {}
 

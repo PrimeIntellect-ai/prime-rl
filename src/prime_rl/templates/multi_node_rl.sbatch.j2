@@ -28,8 +28,23 @@ export NODES_PER_INFER_REPLICA={{ nodes_per_infer_replica }}
 export NUM_INFER_REPLICAS={{ num_infer_replicas }}
 export GPUS_PER_NODE={{ gpus_per_node }}
 {% if ttt_enabled -%}
-export TRAINER_GPUS_PER_NODE=$((GPUS_PER_NODE - 1))
-export TRAINER_CUDA_VISIBLE_DEVICES=$(seq -s, 1 $((GPUS_PER_NODE - 1)))
+export TTT_NUM_LEARNERS={{ ttt_num_learners }}
+export TTT_GPU_IDS="{{ ttt_gpu_ids | join(' ') }}"
+TRAINER_CUDA_VISIBLE_DEVICES=""
+for ((gpu=0; gpu<GPUS_PER_NODE; gpu++)); do
+    use_for_trainer=1
+    for ttt_gpu in $TTT_GPU_IDS; do
+        if [ "$gpu" -eq "$ttt_gpu" ]; then
+            use_for_trainer=0
+            break
+        fi
+    done
+    if [ "$use_for_trainer" -eq 1 ]; then
+        TRAINER_CUDA_VISIBLE_DEVICES="${TRAINER_CUDA_VISIBLE_DEVICES:+$TRAINER_CUDA_VISIBLE_DEVICES,}$gpu"
+    fi
+done
+export TRAINER_CUDA_VISIBLE_DEVICES
+export TRAINER_GPUS_PER_NODE=$(echo "$TRAINER_CUDA_VISIBLE_DEVICES" | awk -F, "{print NF}")
 {%- else -%}
 export TRAINER_GPUS_PER_NODE=$GPUS_PER_NODE
 export TRAINER_CUDA_VISIBLE_DEVICES=$(seq -s, 0 $((GPUS_PER_NODE - 1)))
@@ -375,15 +390,15 @@ else
 
     if [ "$TRAIN_NODE_RANK" -eq 0 ]; then
         {% if ttt_enabled -%}
-	        TTT_ARGS="--model-name {{ ttt_model_name }} --adapter-dir {{ ttt_adapter_dir }} --target-modules{% for module in ttt_target_modules %} {{ module }}{% endfor %}"
-	        TTT_ARGS="$TTT_ARGS --rank {{ ttt_rank }} --alpha {{ ttt_alpha }} --dropout {{ ttt_dropout }}"
-	        TTT_ARGS="$TTT_ARGS --lr {{ ttt_lr }} --weight-decay {{ ttt_weight_decay }} --steps-per-update {{ ttt_steps_per_update }}"
-	        TTT_ARGS="$TTT_ARGS --update-every-tokens {{ ttt_update_every_tokens }}"
-	        TTT_ARGS="$TTT_ARGS --max-concurrent-sessions {{ ttt_max_concurrent_sessions }}"
+	    TTT_ARGS="--model-name {{ ttt_model_name }} --adapter-dir {{ ttt_adapter_dir }} --target-modules{% for module in ttt_target_modules %} {{ module }}{% endfor %}"
+	    TTT_ARGS="$TTT_ARGS --rank {{ ttt_rank }} --alpha {{ ttt_alpha }} --dropout {{ ttt_dropout }}"
+	    TTT_ARGS="$TTT_ARGS --lr {{ ttt_lr }} --weight-decay {{ ttt_weight_decay }} --steps-per-update {{ ttt_steps_per_update }}"
+	    TTT_ARGS="$TTT_ARGS --update-every-tokens {{ ttt_update_every_tokens }}"
+	    TTT_ARGS="$TTT_ARGS --max-concurrent-sessions {{ ttt_max_concurrent_sessions }}"
         {% if ttt_max_grad_norm is not none -%}
         TTT_ARGS="$TTT_ARGS --max-grad-norm {{ ttt_max_grad_norm }}"
         {% endif -%}
-        TTT_ARGS="$TTT_ARGS --device {{ ttt_device }} --dtype {{ ttt_dtype }} --host {{ ttt_host }} --port {{ ttt_port }}"
+        TTT_ARGS="$TTT_ARGS --device {{ ttt_device }} --dtype {{ ttt_dtype }} --host {{ ttt_host }} --log-level {{ log_level }}"
         TTT_ARGS="$TTT_ARGS --session-offload {{ ttt_session_offload }}"
         {% if not ttt_load_adapters_into_vllm -%}
         TTT_ARGS="$TTT_ARGS --no-load-adapters-into-vllm"
@@ -394,9 +409,34 @@ else
         for admin_url in $ADMIN_URLS; do
             TTT_ARGS="$TTT_ARGS --vllm-admin-base-url ${admin_url%/v1}"
         done
-        echo "Starting TTT learner on train node 0" | tee $OUTPUT_DIR/logs/ttt/learner.log
-        CUDA_VISIBLE_DEVICES=0 "$PROJECT_DIR/.venv/bin/ttt-learner" $TTT_ARGS \
-            2>&1 | tee -a $OUTPUT_DIR/logs/ttt/learner.log &
+        TTT_LEARNER_URLS=""
+        learner_idx=0
+        for ttt_gpu in $TTT_GPU_IDS; do
+            if [ "$TTT_NUM_LEARNERS" -eq 1 ]; then
+                learner_port={{ ttt_port }}
+            else
+                learner_port=$(({{ ttt_learner_base_port }} + learner_idx))
+            fi
+            learner_url="http://{{ ttt_host }}:${learner_port}"
+            TTT_LEARNER_URLS="${TTT_LEARNER_URLS:+$TTT_LEARNER_URLS }${learner_url}"
+            echo "Starting TTT learner shard ${learner_idx} on train node 0 GPU ${ttt_gpu} port ${learner_port}" \
+                | tee $OUTPUT_DIR/logs/ttt/learner_${learner_idx}.log
+            CUDA_VISIBLE_DEVICES=$ttt_gpu "$PROJECT_DIR/.venv/bin/ttt-learner" $TTT_ARGS \
+                --port $learner_port \
+                --adapter-name-prefix ttt-s${learner_idx} \
+                2>&1 | tee -a $OUTPUT_DIR/logs/ttt/learner_${learner_idx}.log &
+            learner_idx=$((learner_idx + 1))
+        done
+
+        if [ "$TTT_NUM_LEARNERS" -gt 1 ]; then
+            ROUTER_ARGS="--host {{ ttt_host }} --port {{ ttt_port }} --request-timeout-s {{ ttt_request_timeout_s }} --log-level {{ log_level }}"
+            for learner_url in $TTT_LEARNER_URLS; do
+                ROUTER_ARGS="$ROUTER_ARGS --learner-url $learner_url"
+            done
+            echo "Starting TTT router on train node 0" | tee $OUTPUT_DIR/logs/ttt/router.log
+            "$PROJECT_DIR/.venv/bin/ttt-router" $ROUTER_ARGS \
+                2>&1 | tee -a $OUTPUT_DIR/logs/ttt/router.log &
+        fi
 
         TTT_READY=0
         for i in {1..600}; do
