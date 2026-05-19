@@ -1,27 +1,22 @@
 # Training Modes
 
-prime-rl supports three training modes, selected via `training_mode`:
+PRIME-RL supports three training modes through our RL trainer, selected via `training_mode`:
 
-- **`rl`** — standard reinforcement learning from rewards
-- **`opd`** — on-policy distillation: RL with an extra KL term toward a teacher's logprobs ([Thinking Machines blog post](https://thinkingmachines.ai/blog/on-policy-distillation/))
-- **`sft`** — hard distillation: supervised fine-tuning on teacher-generated rollouts
+- **`rl`** — reinforcement learning: student generates rollouts, no teacher
+- **`opd`** — [on-policy distillation](https://thinkingmachines.ai/blog/on-policy-distillation/): students generates rollouts, train to minimize the KL divergence between the student and teacher's logprobs for each token in the rollout
+- **`sft`** — supervised fine-tuning on teacher-generated rollouts
+
+> Note: PRIME-RL also has a dedicated `sft` entrypoint for more traditional supervised fine-tuning from a HF dataset. When using the `sft` training mode on the orchestrator, teacher rollouts are generated on-the-fly and used for training.
 
 The mode determines who generates rollouts, what role the teacher plays, and what must be configured.
 
-## Mode comparison
+| Mode | Student | Teacher |
+|---|---|---|
+| `rl` | required | forbidden |
+| `opd` | required | required (local vLLM) |
+| `sft` | required | required (any OAI-compatible endpoint) |
 
-| | **rl** | **opd** | **sft** |
-|---|---|---|---|
-| **Student does** | generate rollouts → get trained on them | generate rollouts → get trained on them | serve inference (for evals + weight sync); get trained on teacher's rollouts |
-| **Teacher does** | nothing (must be unset) | score student rollouts (token-level logprobs) | generate rollouts |
-| **Loss** | reward-based (advantage) | reward + KL to teacher logprobs (`teacher_tau > 0`) | pure NLL on teacher tokens (hard distill) |
-| **Student inference** (`[inference]`) | **required** | **required** | **required** |
-| **Teacher inference** (`[teacher_inference]`) | forbidden | **required, must be vLLM** | not used (teacher is external) |
-| **`[orchestrator.teacher]`** | must be `None` | auto-wired from `[teacher_inference]` | **required** — `client.base_url` + `model.name` of external endpoint |
-| **`num_teacher_gpus`** | unset | **required** (`> 0`) | unset (teacher is external) |
-| **Teacher endpoint type** | n/a | **local vLLM only** | **any OpenAI-compatible** (PI inference, OpenAI, Anthropic, local vLLM…) |
-| **Weight sync (trainer → ?)** | → student inference | → student inference (teacher frozen) | → student inference (teacher frozen) |
-| **Evals** | student | student | student |
+**SFT vs OPD teachers** differ in what the orchestrator asks of them. SFT only calls `/v1/chat/completions` to generate rollouts — any OpenAI-compatible endpoint works (PI inference, OpenAI, Anthropic, a local vLLM). OPD additionally needs token-level logprobs scored over the student's tokens, which today only vLLM's `/inference/v1/generate` with `prompt_logprobs` exposes — so the OPD teacher must be a vLLM server.
 
 ## Key implications
 
