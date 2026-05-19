@@ -1,5 +1,5 @@
 output_dir = "/beegfs/outputs/behavior-learning/qwen3-4b-rlm-behavior-shaping"
-max_steps = 200
+max_steps = 400
 seq_len = 65536
 
 [slurm]
