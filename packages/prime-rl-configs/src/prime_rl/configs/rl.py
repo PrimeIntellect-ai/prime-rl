@@ -367,6 +367,27 @@ class RLConfig(BaseConfig):
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _stub_orchestrator_teacher_for_auto_setup(cls, data):
+        """When `deployment.num_teacher_gpus > 0` and the user didn't write an
+        `[orchestrator.teacher]` block, inject an empty one so
+        `OrchestratorConfig.validate_training_mode` (which fires during nested
+        validation) doesn't reject `training_mode = "opd"` for "missing teacher".
+        `auto_setup_teacher_inference` (after) then fills in client.base_url and
+        model.name from the auto-launched teacher_inference server."""
+        if not isinstance(data, dict):
+            return data
+        deployment = data.get("deployment")
+        if not isinstance(deployment, dict):
+            return data
+        if not deployment.get("num_teacher_gpus"):
+            return data
+        orch = data.setdefault("orchestrator", {})
+        if isinstance(orch, dict) and "teacher" not in orch and "teacher_model" not in orch:
+            orch["teacher"] = {}
+        return data
+
     @model_validator(mode="after")
     def validate_deployment(self):
         if self.deployment.type == "multi_node":
