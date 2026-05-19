@@ -2964,7 +2964,7 @@ requires-dist = [
     { name = "torchvision", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers?rev=044f28c" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers?rev=3821b17" },
     { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
     { name = "vllm", marker = "platform_machine == 'aarch64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl" },
     { name = "vllm", marker = "platform_machine == 'x86_64'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.20.2rc1.dev354+g24337fb86.cu129-cp38-abi3-manylinux_2_34_x86_64.whl" },
@@ -4277,7 +4277,7 @@ wheels = [
 [[package]]
 name = "verifiers"
 version = "0.1.15.dev5"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers?rev=044f28c#044f28c102ead58169c38202de0e3e009c25d5a9" }
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers?rev=3821b17#3821b1762318181c5b114b036c084f28c37f1a9d" }
 dependencies = [
     { name = "aiolimiter", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "anthropic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
