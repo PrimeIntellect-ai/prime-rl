@@ -163,9 +163,9 @@ If you wish to configure values of the default variant, you don't need to set th
 
 ### SFT hard distill override
 
-Set `orchestrator.training_mode = "sft"` and configure `orchestrator.teacher_model` with the teacher endpoint. The orchestrator stamps each `TrainingSample.sft_loss = True`, which the trainer's `compute_loss` honors by dispatching to `sft_loss_fn` per batch, independent of the trainer's configured default loss.
+Set `orchestrator.training_mode = "sft"` (or top-level `training_mode = "sft"`, which auto-propagates) and configure `orchestrator.teacher` with the teacher endpoint. The orchestrator stamps each `TrainingSample.sft_loss = True` and the shared `training_mode` validator sets `trainer.loss.type = "sft"`, which the trainer's `compute_loss` honors by dispatching to `sft_loss_fn` per batch.
 
-When SFT hard distill also needs online evals or policy weight sync against the student model, configure `[inference]` in the RL entrypoint — this starts the student inference server and auto-configures `orchestrator.model.client`, enabling student weight sync. For externally started student inference, set `orchestrator.model.client.base_url` explicitly. If the student client is not configured, SFT keeps teacher-only rollout behavior and skips student policy updates.
+`[inference]` is required (same as rl/opd) — it starts the student inference server and auto-configures `orchestrator.student.client.base_url`. The student pool is used for online evals and policy weight sync. For externally started student inference, set `orchestrator.student.client.base_url` explicitly instead.
 
 ### RL rollout client defaults
 
