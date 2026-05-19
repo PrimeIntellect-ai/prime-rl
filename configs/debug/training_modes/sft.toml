@@ -1,8 +1,9 @@
-# SFT from openai/gpt-5-mini via PI inference.
-# X-Prime-Team-ID header is auto-injected from $PRIME_TEAM_ID for pinference.ai URLs.
-#
-# Run with:
-#   uv run rl @ configs/reverse_text/debug_sft_external.toml
+# Start the teacher inference server first (on a separate GPU):
+#   CUDA_VISIBLE_DEVICES=1 uv run inference \
+#     --model.name PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
+#     --server.port 8001 --gpu-memory-utilization 0.5 --model.enforce-eager
+# Then:
+#   uv run rl @ configs/debug/training_modes/sft.toml
 
 max_steps = 20
 seq_len = 2048
@@ -12,7 +13,7 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [wandb]
 project = "reverse-text-debug"
-name = "debug-sft-external"
+name = "debug-sft"
 
 [orchestrator]
 training_mode = "sft"
@@ -20,8 +21,7 @@ batch_size = 128
 rollouts_per_example = 4
 
 [orchestrator.train.sampling]
-max_completion_tokens = 2048
-extra_body = { reasoning_effort = "minimal" }
+max_completion_tokens = 128
 
 [[orchestrator.train.env]]
 id = "reverse-text"
@@ -37,11 +37,10 @@ max_completion_tokens = 128
 id = "reverse-text"
 
 [orchestrator.teacher.model]
-name = "openai/gpt-5-mini"
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 
 [orchestrator.teacher.client]
-base_url = ["https://api.pinference.ai/api/v1"]
-api_key_var = "PRIME_API_KEY"
+base_url = ["http://localhost:8001/v1"]
 
 [trainer.optim]
 lr = 3e-6

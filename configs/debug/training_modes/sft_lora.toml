@@ -3,7 +3,7 @@
 #     --model.name PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
 #     --server.port 8001 --gpu-memory-utilization 0.5 --model.enforce-eager
 # Then:
-#   uv run rl @ configs/reverse_text/debug_opd_lora.toml
+#   uv run rl @ configs/debug/training_modes/sft_lora.toml
 
 max_steps = 20
 seq_len = 2048
@@ -13,15 +13,12 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [wandb]
 project = "reverse-text-debug"
-name = "debug-opd-lora"
+name = "debug-sft-lora"
 
 [orchestrator]
-training_mode = "opd"
+training_mode = "sft"
 batch_size = 128
-rollouts_per_example = 16
-
-[orchestrator.renderer]
-name = "qwen3"
+rollouts_per_example = 4
 
 [orchestrator.train.sampling]
 max_completion_tokens = 128
