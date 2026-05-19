@@ -15,6 +15,7 @@ import verifiers as vf
 from verifiers import rollout_to_member_rollouts
 from verifiers.envs.multi_agent_env import MultiAgentEnv
 from verifiers.envs.multi_agent_kernel import (
+    ContentChannels,
     KernelState,
     StaticSchedule,
     TurnSlot,
@@ -73,6 +74,7 @@ def _build_clean_state(*, episode_scalar=1.0, parse_errors=None) -> State:
     state["task"] = "default"
     state["trajectory_id"] = "ep-7"
     state["sampling_args"] = {"temperature": 0.5}
+    state["timing"] = {}
     extras_a = {"member_id": "A", "phase": "p"}
     extras_b = {"member_id": "B", "phase": "p"}
     if parse_errors.get("A"):
@@ -259,6 +261,7 @@ def test_single_agent_env_legacy_metrics_path_intact():
     state["task"] = "default"
     state["reward"] = 0.42
     state["metrics"] = {"my_metric": 1.0, "other": 2.0}
+    state["timing"] = {}
     output = state_to_output(state)
     assert output["reward"] == 0.42
     assert output["my_metric"] == 1.0
@@ -273,6 +276,7 @@ def test_single_agent_bridge_call_raises_keyerror():
     state["task"] = "default"
     state["reward"] = 0.42
     state["metrics"] = {}
+    state["timing"] = {}
     output = state_to_output(state, state_columns=["sampling_args"])
     state["sampling_args"] = {"temperature": 0.5}
     output = state_to_output(state, state_columns=["sampling_args"])
@@ -336,7 +340,7 @@ def test_simultaneous_slot_mixed_vf_errors_raises_single_concrete_exception():
             model=None,
             request_context=None,
         ):
-            mid = request_context.lineage_key if request_context else None
+            mid = request_context.member_id if request_context else None
             if mid == "A":
                 raise vf.OverlongPromptError("A: too long")
             if mid == "B":
@@ -388,7 +392,7 @@ def test_simultaneous_slot_overlong_takes_priority_over_other_vf_errors():
             model=None,
             request_context=None,
         ):
-            mid = request_context.lineage_key if request_context else None
+            mid = request_context.member_id if request_context else None
             if mid == "A":
                 raise vf.InvalidModelResponseError("A first")
             if mid == "B":
@@ -423,12 +427,18 @@ def test_simultaneous_slot_overlong_takes_priority_over_other_vf_errors():
 
 
 def test_quarantined_step_carries_parse_error_in_extras():
-    """Kernel quarantines malformed output; _build_step propagates the
-    parse_error flag through extras so the trainer can mask completion tokens."""
+    """Kernel propagates protocol parse errors so the trainer can mask
+    completion tokens."""
     schedule = StaticSchedule((TurnSlot(slot_id=0, agents=("A",), phase="p"),))
     state = KernelState(slot_index=0)
-    # Malformed: unbalanced think tags.
-    result = apply_action(state, schedule, "A", "<think>unclosed", token_count=5)
+    result = apply_action(
+        state,
+        schedule,
+        "A",
+        "<think>unclosed",
+        token_count=5,
+        channels=ContentChannels(public="", parse_error="unclosed think tag"),
+    )
     utt = result.committed[0]
     assert utt.parse_error is not None
     assert utt.public_channel == ""
@@ -438,13 +448,10 @@ def test_member_snapshot_tallies_parse_errors():
     """Parse-error counting now lives in ``member_snapshot``: per-member step
     walk that records ``extras['parse_error']`` occurrences. The trainer
     consumes the count through ``MemberScore.parse_error_count``."""
-    import importlib.resources
+    from verifiers.protocols.debate.prompts import resolve_prompts
+    from verifiers.protocols.debate.rubric import member_snapshot
 
-    from verifiers.envs.debate.prompts import resolve_prompts
-    from verifiers.envs.debate_rubric import member_snapshot
-
-    prompts_dir = importlib.resources.files("verifiers.envs.debate") / "prompts"
-    prompts = resolve_prompts(str(prompts_dir / "default.yaml"))
+    prompts = resolve_prompts("default")
 
     def _step(member_id: str, parse_error: str | None = None) -> TrajectoryStep:
         extras: dict[str, Any] = {"member_id": member_id, "phase": "propose"}

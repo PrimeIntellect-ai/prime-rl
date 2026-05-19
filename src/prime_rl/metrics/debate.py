@@ -46,11 +46,9 @@ def _debate_winner(rollout: vf.RolloutOutput) -> tuple[bool, str | None]:
 def _truth_member(rollout: vf.RolloutOutput) -> str | None:
     """The member whose committed answer matches ground truth.
 
-    ``info.learner_seat`` alone doesn't identify truth — truth_member is
-    assigned at dataset-prep time by gpqa_debate and stored via
-    ``truth_member``'s mapping to per-member ``final_correct``. We
-    infer: the debater with ``final_correct=1`` is truth-side (when
-    exactly one debater is correct — the resolvable case).
+    Runtime trainability doesn't identify truth. We infer the truth-side
+    member from per-member ``final_correct`` when exactly one debater is
+    correct — the resolvable case.
     """
     final_correct = {}
     for member in ("debater_a", "debater_b"):

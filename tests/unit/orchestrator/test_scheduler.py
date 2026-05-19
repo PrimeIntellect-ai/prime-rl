@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import verifiers as vf
 
+from prime_rl.configs.multi_agent import FixedMemberTargetConfig, MultiAgentConfig
 from prime_rl.orchestrator.scheduler import InflightRequest, Scheduler
 from prime_rl.utils.async_utils import safe_cancel
 
@@ -174,3 +175,65 @@ def test_client_identity_distinguishes_base_url_and_dp_rank():
     )
 
     assert Scheduler._client_identity(client_a) != Scheduler._client_identity(client_b)
+
+
+def test_compile_generation_ignores_single_agent_env_with_global_config():
+    scheduler = make_scheduler()
+    scheduler.config.multi_agent = MultiAgentConfig(
+        fixed={
+            "judge": FixedMemberTargetConfig(
+                members=["judge"],
+                model="judge-model",
+                base_url=["http://judge/v1"],
+            )
+        }
+    )
+    env = SimpleNamespace(
+        is_multi_agent=False,
+        compile_generation=MagicMock(side_effect=AssertionError("should not compile")),
+    )
+
+    generation = scheduler._compile_generation(
+        env=env,
+        client_config=vf.ClientConfig(api_base_url="http://learner/v1"),
+        cache_salt="1",
+        dispatch_id="dispatch-1",
+    )
+
+    assert generation is None
+    env.compile_generation.assert_not_called()
+
+
+def test_compile_generation_routes_multi_agent_env_with_global_config():
+    scheduler = make_scheduler()
+    scheduler.config.multi_agent = MultiAgentConfig(
+        fixed={
+            "judge": FixedMemberTargetConfig(
+                members=["judge"],
+                model="judge-model",
+                base_url=["http://judge/v1"],
+            )
+        }
+    )
+    expected = vf.MemberGenerationPlan()
+    env = SimpleNamespace(
+        is_multi_agent=True,
+        compile_generation=MagicMock(return_value=expected),
+    )
+    client = vf.ClientConfig(api_base_url="http://learner/v1")
+
+    generation = scheduler._compile_generation(
+        env=env,
+        client_config=client,
+        cache_salt="1",
+        dispatch_id="dispatch-1",
+    )
+
+    assert generation is expected
+    env.compile_generation.assert_called_once_with(
+        scheduler.config.multi_agent,
+        client=client,
+        model_name="test-model",
+        cache_salt="1",
+        dispatch_id="dispatch-1",
+    )

@@ -36,13 +36,6 @@ import pytest
 import verifiers as vf
 from verifiers import rollout_to_member_rollouts
 from verifiers.clients import Client as _VFClient
-from verifiers.envs.debate.fields import EnumScoring, FieldSpec
-from verifiers.envs.debate.prompts import DebatePrompts, build_context, resolve_prompts
-from verifiers.envs.debate_env import (
-    DebateEnv,
-    load_environment,
-)
-from verifiers.envs.debate_rubric import DebateRubric
 from verifiers.envs.multi_agent_kernel import (
     KernelState,
     StaticSchedule,
@@ -51,6 +44,13 @@ from verifiers.envs.multi_agent_kernel import (
 )
 from verifiers.errors import Error as VFError
 from verifiers.errors import KernelProtocolError
+from verifiers.protocols.debate.env import (
+    DebateEnv,
+    load_environment,
+)
+from verifiers.protocols.debate.fields import EnumScoring, FieldSpec
+from verifiers.protocols.debate.prompts import DebatePrompts, build_context, resolve_prompts
+from verifiers.protocols.debate.rubric import DebateRubric
 from verifiers.types import MARScore as _MARScore
 from verifiers.types import (
     Response,
@@ -1431,7 +1431,7 @@ def _make_field_prompts() -> DebatePrompts:
     so DebateEnv's init-time schedule×prompts coverage check passes
     regardless of which schedule the test uses.
     """
-    from verifiers.envs.debate.fields import FieldSpec
+    from verifiers.protocols.debate.fields import FieldSpec
 
     return DebatePrompts(
         system={
@@ -1804,7 +1804,7 @@ def _open_ended_prompts() -> DebatePrompts:
     gate: both conditions hold (judges declared, open-ended answer routes
     through the LLM path), so constructing without a judge_client must
     raise ValueError at __init__ time."""
-    from verifiers.envs.debate.prompts import JudgeTemplate
+    from verifiers.protocols.debate.prompts import JudgeTemplate
 
     grader = JudgeTemplate(
         user="Target: {answer}\nResponse: {response}",
@@ -3140,8 +3140,8 @@ def test_debate_prompts_rejects_colliding_verdict_tokens():
     EnumScoring answer value (case-insensitive), constructing the pack
     must raise ValueError. Otherwise transcript greps for the verdict
     silently misattribute judge output to a debater commit."""
-    from verifiers.envs.debate.fields import EnumScoring
-    from verifiers.envs.debate.prompts import JudgeTemplate
+    from verifiers.protocols.debate.fields import EnumScoring
+    from verifiers.protocols.debate.prompts import JudgeTemplate
 
     # Build a synthetic pack where the grader's positive token "A"
     # collides with the MCQ answer enum {A, B, C, D}. Construction itself
@@ -3226,7 +3226,7 @@ def test_wrap_opponent_respects_viewer_id():
 def test_debate_env_build_prompt_monotonic_across_slots():
     """For each member, build_prompt at slot_{N+1} must structurally extend
     build_prompt at slot_N: older messages byte-equal, new tail appended.
-    This is the prefix-cache contract on which lineage-scoped KV reuse
+    This is the prefix-cache contract on which member-scoped KV reuse
     depends; a violation silently turns an O(T) episode into O(T²).
     """
     responses = [_make_response(f"turn-{i}") for i in range(4)]

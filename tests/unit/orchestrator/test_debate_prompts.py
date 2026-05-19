@@ -13,7 +13,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from verifiers.envs.debate.prompts import (
+from verifiers.protocols.debate.prompts import (
     DebatePrompts,
     JudgeTemplate,
     _normalize_think,
@@ -24,7 +24,7 @@ from verifiers.envs.debate.prompts import (
 
 # importlib.resources is namespace-package-safe and survives non-editable
 # (wheel) installs — stdlib-idiomatic way to locate package-shipped data.
-_PROMPTS_DIR = Path(str(importlib.resources.files("verifiers.envs.debate") / "prompts"))
+_PROMPTS_DIR = Path(str(importlib.resources.files("verifiers.protocols.debate") / "prompts"))
 
 
 # ---------------------------------------------------------------------------

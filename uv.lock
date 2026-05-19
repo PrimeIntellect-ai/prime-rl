@@ -2901,7 +2901,7 @@ requires-dist = [
     { name = "torchvision", index = "https://download.pytorch.org/whl/cu130" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", git = "https://github.com/joanvelja/verifiers.git?rev=73fe401" },
+    { name = "verifiers", git = "https://github.com/joanvelja/verifiers.git?rev=38ff43e3" },
     { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'", specifier = ">=0.20.2" },
     { name = "vllm", marker = "platform_machine == 'aarch64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2-cp38-abi3-manylinux_2_35_aarch64.whl" },
     { name = "vllm", marker = "platform_machine == 'x86_64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2-cp38-abi3-manylinux_2_35_x86_64.whl" },
@@ -4187,8 +4187,8 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-version = "0.1.15.dev5"
-source = { git = "https://github.com/joanvelja/verifiers.git?rev=73fe401#73fe4013722c777e1e7cb9169e51491f23986e5d" }
+version = "0.1.15.dev7"
+source = { git = "https://github.com/joanvelja/verifiers.git?rev=38ff43e3#38ff43e32cfc58c40c207c23bf41b81bba4e8ded" }
 dependencies = [
     { name = "aiolimiter", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "anthropic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },

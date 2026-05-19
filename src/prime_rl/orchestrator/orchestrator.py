@@ -11,6 +11,7 @@ from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
+from prime_rl.orchestrator.member_generation import is_trainable_member as is_bound_trainable_member
 from prime_rl.orchestrator.multi_agent_advantage import (
     RAEState,
     compute_rae_advantages,
@@ -40,7 +41,6 @@ import pandas as pd
 import verifiers as vf
 from renderers.base import create_renderer
 from transformers import AutoProcessor
-from verifiers.rubrics.multi_agent_rubric import MultiAgentRubric
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.metrics.debate import write_step_metrics as write_debate_step_metrics
@@ -244,7 +244,7 @@ async def orchestrate(config: OrchestratorConfig):
     )
     logger.success("Train environment(s) ready")
 
-    ma_env_names = {env.name for env in train_envs if isinstance(env.env.rubric, MultiAgentRubric)}
+    ma_env_names = train_envs.multi_agent_names
     non_ma_env_names = set(train_envs.names) - ma_env_names
     if ma_env_names and non_ma_env_names:
         raise NotImplementedError(
@@ -265,15 +265,13 @@ async def orchestrate(config: OrchestratorConfig):
         )
     if (not is_ma) and advantage_type == "ema_per_member":
         raise ValueError(
-            "advantage.type='ema_per_member' requires a MultiAgentRubric env. "
+            "advantage.type='ema_per_member' requires a multi-agent env. "
             "Use type='default' or type='custom' for single-agent training."
         )
 
     if is_ma:
         logger.info(
-            f"Multi-agent envs={sorted(ma_env_names)}. Routing through per-member fan-out "
-            f"(drop_judge={config.multi_agent.drop_judge}, "
-            f"filter_by_learner_seat={config.multi_agent.filter_by_learner_seat}); "
+            f"Multi-agent envs={sorted(ma_env_names)}. Runtime member generation={config.multi_agent}; "
             f"advantage estimator={advantage_type}."
         )
         if is_vlm:
@@ -328,6 +326,9 @@ async def orchestrate(config: OrchestratorConfig):
     if checkpoint_step is not None and config.model.lora is not None and enable_policy_updates:
         assert config.model.lora.name is not None
         scheduler.model_name = config.model.lora.name
+
+    async def get_eval_client_config() -> vf.ClientConfig:
+        return await inference_pool.get_eval_client()
 
     # Check health of the inference pool
     logger.info("Waiting for inference pool to be ready")
@@ -473,10 +474,11 @@ async def orchestrate(config: OrchestratorConfig):
                 *[
                     eval_env.evaluate(
                         model_name=scheduler.model_name,
-                        get_client=inference_pool.get_eval_client,
+                        get_client=get_eval_client_config,
                         ckpt_step=ckpt_step,
                         step=progress.step,
                         cache_salt=str(ckpt_step),
+                        multi_agent=config.multi_agent if eval_env.is_multi_agent else None,
                     )
                     for eval_env in envs_to_eval
                 ]
@@ -520,8 +522,9 @@ async def orchestrate(config: OrchestratorConfig):
             if is_ma:
                 training_units, rollout_to_unit_idxs = fan_out_for_multi_agent(
                     train_rollouts,
-                    drop_judge=config.multi_agent.drop_judge,
-                    filter_by_learner_seat=config.multi_agent.filter_by_learner_seat,
+                    is_trainable_member=lambda rollout, member_id: is_bound_trainable_member(
+                        config.multi_agent, rollout, member_id
+                    ),
                 )
                 assert advantage_state is not None  # gated by MA validation above
                 advantages = compute_rae_advantages(training_units, advantage_state)
@@ -569,10 +572,11 @@ async def orchestrate(config: OrchestratorConfig):
                 f"filtered out all {num_rollouts} rollouts - retrying batch generation"
             )
 
-        trainable_ratio = n_trainable / num_rollouts
+        trainable_denominator = len(training_units) if is_ma else num_rollouts
+        trainable_ratio = n_trainable / max(trainable_denominator, 1)
         if trainable_ratio <= 0.1:
             logger.warning(
-                f"Only {n_trainable}/{num_rollouts} rollouts in the batch are trainable "
+                f"Only {n_trainable}/{trainable_denominator} training units in the batch are trainable "
                 f"({trainable_ratio:.1%}) - this can mean the tasks are too easy or too hard for the "
                 "model, consider reviewing the task difficulty of your environment(s)"
             )
@@ -936,10 +940,11 @@ async def orchestrate(config: OrchestratorConfig):
             *[
                 eval_env.evaluate(
                     model_name=scheduler.model_name,
-                    get_client=inference_pool.get_eval_client,
+                    get_client=get_eval_client_config,
                     ckpt_step=ckpt_step,
                     step=progress.step,
                     cache_salt=str(ckpt_step),
+                    multi_agent=config.multi_agent if eval_env.is_multi_agent else None,
                 )
                 for eval_env in eval_envs
             ]

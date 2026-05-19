@@ -1,11 +1,10 @@
 # Debate (self-play) GPQA — both debaters are the learner; judge is a
 # smaller Qwen via OpenRouter (qwen/qwen-2.5-7b-instruct).
 #
-# Status: works today. The `gpqa-debate` env exists in verifiers (
-# environments/gpqa_debate/). truth_member="debater_a" assigns the truth
-# side deterministically; both seats use the orchestrator's learner model
-# since debater_model is omitted (defaults to vf-eval's top-level model =
-# the prime-rl learner).
+# Status: works today. The `gpqa-debate` env exists in verifiers
+# (environments/gpqa_debate/). Symmetric self-play leaves truth_member unset:
+# member rewards come from judge decisions, while ground-truth correctness is
+# diagnostic-only.
 #
 # Reward: SPIRAL zero-sum (winner +1, loser -1, judge 0, tie 0).
 # Advantage: per-(task, example_id, member_id) EMA baseline.
@@ -31,6 +30,8 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 batch_size = 128
 rollouts_per_example = 4
 oversampling_factor = 1.5  # drop degenerate transcripts (judge-tie or non-parsable)
+use_token_client = false
+use_renderer = true        # debaters use renderer; fixed judge below uses chat.
 # Persist full per-step I/O (each role's input + output, per turn) to
 # outputs/<run>/rollouts/<step>/{train,eval}_rollouts.jsonl. Disk cost:
 # ~MB/rollout × 128 × 200 steps ≈ tens of GB. Worth it for audit.
@@ -46,19 +47,26 @@ max_completion_tokens = 8192
 [[orchestrator.train.env]]
 id = "gpqa-debate"
 name = "gpqa-debate-selfplay"
-args = { prompts_ref = "selfplay", subset = "gpqa_diamond", truth_member = "debater_a", judge_model = "qwen/qwen-2.5-7b-instruct", judge_base_url = "https://openrouter.ai/api/v1", judge_api_key_var = "OPENROUTER_API_KEY" }
-# debater_model omitted → both debaters use the orchestrator's learner model
+# no assigned truth side → scalar reward is inert; train on member rewards
+args = { prompts_ref = "selfplay", subset = "gpqa_diamond" }
+# no fixed debater target → both debaters use the orchestrator's learner model
 
 [orchestrator.advantage]   # ← MA marker: SPIRAL Alg.1 EMA-per-(task,ex,member_id)
 type = "ema_per_member"
 momentum = 0.9
 
-[orchestrator.multi_agent] # ← routing knobs (orthogonal to advantage)
-drop_judge = true          # judge has reward=0 by zero_sum_reward → no training value
+[orchestrator.multi_agent.fixed.judge] # runtime binding, orthogonal to advantage
+members = ["judge"]
+model = "qwen/qwen-2.5-7b-instruct"
+base_url = ["https://openrouter.ai/api/v1"]
+api_key_var = "OPENROUTER_API_KEY"
+request_mode = "chat"
+sampling = { temperature = 0.0, max_completion_tokens = 1024 }
 
 [orchestrator.buffer]
-easy_threshold = 1.0       # both debaters won everything → drop (rare)
-hard_threshold = -1.0      # both debaters lost or judge tied → drop
+# Keep debate curriculum unfiltered initially. Difficulty filtering would use
+# rollout-level reward, and any correctness-derived scalar would leak ground
+# truth into training via example sampling. Correctness belongs in metrics only.
 
 [ckpt]
 interval = 25              # rae_state.pt round-trips with progress + buffer
@@ -71,7 +79,7 @@ id = "gpqa-debate"
 name = "gpqa-debate-eval"
 num_examples = 32
 rollouts_per_example = 2
-args = { prompts_ref = "selfplay", subset = "gpqa_diamond", judge_model = "qwen/qwen-2.5-7b-instruct", judge_base_url = "https://openrouter.ai/api/v1", judge_api_key_var = "OPENROUTER_API_KEY" }
+args = { prompts_ref = "selfplay", subset = "gpqa_diamond" }
 
 [trainer] # Default trainer config (DPPO+KL loss)
 

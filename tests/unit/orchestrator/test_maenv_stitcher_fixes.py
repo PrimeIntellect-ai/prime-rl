@@ -18,15 +18,15 @@ from types import MappingProxyType
 
 import pytest
 from verifiers.clients.openai_chat_completions_token_client import _is_valid_env_tail
-from verifiers.envs.debate.prompts import _validate, resolve_prompts
-from verifiers.envs.debate_env import DebateEnv
-from verifiers.envs.debate_rubric import DebateRubric
 from verifiers.envs.multi_agent_kernel import (
     KernelState,
     StaticSchedule,
     TurnSlot,
     Utterance,
 )
+from verifiers.protocols.debate.env import DebateEnv
+from verifiers.protocols.debate.prompts import _validate, resolve_prompts
+from verifiers.protocols.debate.rubric import DebateRubric
 from verifiers.types import AssistantMessage, SystemMessage, ToolMessage, UserMessage
 from verifiers.utils.message_utils import fold_consecutive_user_messages
 
@@ -35,9 +35,10 @@ from verifiers.utils.message_utils import fold_consecutive_user_messages
 # ---------------------------------------------------------------------------
 
 
-def _utt(mid: str, sid: int, phase: str, raw: str, pub: str) -> Utterance:
+def _utt(mid: str, turn_index: int, sid: int, phase: str, raw: str, pub: str) -> Utterance:
     return Utterance(
         member_id=mid,
+        turn_index=turn_index,
         slot_id=sid,
         phase=phase,
         raw_content=raw,
@@ -163,8 +164,8 @@ async def _run_roundtrip():
     msgs2 = await env.build_prompt(
         _state(
             [
-                _utt("debater_a", 0, "propose", "A1 raw", "A1 pub"),
-                _utt("debater_b", 1, "propose", "B1 raw", "B1 pub"),
+                _utt("debater_a", 0, 0, "propose", "A1 raw", "A1 pub"),
+                _utt("debater_b", 1, 1, "propose", "B1 raw", "B1 pub"),
             ]
         ),
         "debater_a",
@@ -207,8 +208,8 @@ async def _past_instruction_positional(slot_ids: tuple[int, int, int, int]):
     )
     env = _make_env(schedule)
     commits = [
-        _utt("debater_a", slot_ids[0], "propose", "A1 raw", "A1 pub"),
-        _utt("debater_b", slot_ids[1], "propose", "B1 raw", "B1 pub"),
+        _utt("debater_a", 0, slot_ids[0], "propose", "A1 raw", "A1 pub"),
+        _utt("debater_b", 1, slot_ids[1], "propose", "B1 raw", "B1 pub"),
     ]
     msgs = await env.build_prompt(_state(commits), "debater_a", env.schedule._slots[2])
     # Past-own-turn instruction sits before the assistant msg with A1's raw content.

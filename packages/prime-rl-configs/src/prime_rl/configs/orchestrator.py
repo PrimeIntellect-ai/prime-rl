@@ -5,6 +5,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
+from prime_rl.configs.multi_agent import MultiAgentConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
@@ -800,42 +801,6 @@ AdvantageConfig: TypeAlias = Annotated[
     DefaultAdvantageConfig | EMAPerMemberAdvantageConfig | CustomAdvantageConfig,
     Field(discriminator="type"),
 ]
-
-
-class MultiAgentConfig(BaseModel):
-    """Multi-agent routing knobs — orthogonal to the advantage estimator.
-
-    These control how per-rollout episodes get fanned out into per-member
-    training units (stage 2 of the pipeline). The baseline / advantage
-    computation (stage 3) lives in ``AdvantageConfig`` and is independent.
-
-    Activates automatically when the env's rubric is a ``MultiAgentRubric``.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    drop_judge: Annotated[
-        bool,
-        Field(
-            description="Drop member_id == 'judge' units from the training batch. "
-            "The judge gets reward 0 by zero_sum_reward construction, so its "
-            "advantage is policy-neutral noise — training on those tokens only "
-            "burns gradient compute. Set to False only for diagnostic SFT-on-judge runs.",
-        ),
-    ] = True
-
-    filter_by_learner_seat: Annotated[
-        bool,
-        Field(
-            description="Keep only the member matching rollout.info['learner_seat'] "
-            "in the training batch. Enables external-opponent training: the frozen "
-            "opponent's and judge's trajectories are projected out before RAE / the "
-            "trainer see them, avoiding wasted gradient compute on tokens whose "
-            "parameters don't update. Requires the env-pack to stamp info.learner_seat "
-            "per row (e.g. gpqa_debate with opponent_model set). Leave False for "
-            "self-play envs — enabling it raises at fan-out time when the key is absent.",
-        ),
-    ] = False
 
 
 class GibberishFilterConfig(BaseModel):

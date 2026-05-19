@@ -1,6 +1,6 @@
 # Debate (external-opponent) GPQA — learner vs frozen gpt-4.1-mini opponent.
-# Learner seat assigned Bernoulli(0.5) per episode; judge routes to the
-# same external endpoint as the opponent.
+# One debater is selected per episode as trainable; the other debater and
+# judge route through runtime member generation below.
 #
 # Pre-flight:
 #   uv pip install -e ../verifiers/environments/gpqa_debate
@@ -11,9 +11,8 @@
 #
 # Topology: two-server. Learner lives on the orchestrator's vLLM; opponent
 # and judge hit api.openai.com via dedicated OpenAI-compatible clients.
-# Swap to the shared-vLLM / LoRA-self topology by dropping opponent_base_url
-# + judge_base_url (see skills/preflight-lora-smoke/SKILL.md for the
-# required GPU smoke before the first training step in that mode).
+# Swap to shared-vLLM / LoRA-self by changing the fixed target/model
+# here; the Verifiers environment remains unchanged.
 
 max_steps = 200
 seq_len = 8192
@@ -29,27 +28,52 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 batch_size = 128
 rollouts_per_example = 4
 oversampling_factor = 1.5
+use_token_client = false
+use_renderer = true       # learner uses renderer; fixed members below use chat.
+# Keep full role-level prompts/completions for audit. Fixed-opponent runs need
+# this just as much as self-play because routing bugs are easiest to see in IO.
+dump_trajectory = true
 
 [orchestrator.train.sampling]
 temperature = 1.0
-max_completion_tokens = 1024
+max_completion_tokens = 8192
 
 [[orchestrator.train.env]]
 id = "gpqa-debate"
 name = "gpqa-debate-external-opponent"
-args = { prompts_ref = "selfplay", subset = "gpqa_diamond", truth_member = "debater_a", opponent_model = "gpt-4.1-mini", opponent_base_url = "https://api.openai.com/v1", opponent_api_key_var = "OPENAI_API_KEY", judge_model = "gpt-4.1-mini", judge_base_url = "https://api.openai.com/v1", judge_api_key_var = "OPENAI_API_KEY", learner_seat_mode = "bernoulli", learner_seat_seed = 42 }
+# Symmetric debate: no assigned truth side. Ground-truth correctness stays in
+# diagnostics; member rewards come only from the judge decision.
+args = { prompts_ref = "selfplay", subset = "gpqa_diamond" }
 
 [orchestrator.advantage]
 type = "ema_per_member"
 momentum = 0.9
 
-[orchestrator.multi_agent]
-drop_judge = true
-filter_by_learner_seat = true
+[orchestrator.multi_agent.train_one]
+# Bernoulli role assignment: for each rollout, exactly one of these members
+# uses the learner policy. Unselected candidates use the fixed target named here.
+members = ["debater_a", "debater_b"]
+unselected = "opponent"
+
+[orchestrator.multi_agent.fixed.opponent]
+model = "gpt-4.1-mini"
+base_url = ["https://api.openai.com/v1"]
+api_key_var = "OPENAI_API_KEY"
+request_mode = "chat"
+sampling = { temperature = 0.0 }
+
+[orchestrator.multi_agent.fixed.judge]
+members = ["judge"]
+model = "gpt-4.1-mini"
+base_url = ["https://api.openai.com/v1"]
+api_key_var = "OPENAI_API_KEY"
+request_mode = "chat"
+sampling = { temperature = 0.0, max_completion_tokens = 1024 }
 
 [orchestrator.buffer]
-easy_threshold = 1.0
-hard_threshold = -1.0
+# Keep debate curriculum unfiltered initially. Difficulty filtering would use
+# rollout-level reward, and any correctness-derived scalar would leak ground
+# truth into training via example sampling. Correctness belongs in metrics only.
 
 [ckpt]
 interval = 25
@@ -62,8 +86,7 @@ id = "gpqa-debate"
 name = "gpqa-debate-eval"
 num_examples = 32
 rollouts_per_example = 2
-# Eval pins learner to seat A for deterministic cross-step comparison.
-args = { prompts_ref = "selfplay", subset = "gpqa_diamond", opponent_model = "gpt-4.1-mini", opponent_base_url = "https://api.openai.com/v1", opponent_api_key_var = "OPENAI_API_KEY", judge_model = "gpt-4.1-mini", judge_base_url = "https://api.openai.com/v1", judge_api_key_var = "OPENAI_API_KEY", pin_learner_seat = "a" }
+args = { prompts_ref = "selfplay", subset = "gpqa_diamond" }
 
 [trainer]
 

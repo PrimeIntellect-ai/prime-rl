@@ -1,14 +1,18 @@
 """Tests for RAEState + compute_rae_advantages.
 
-This is the per-(task, example_id, member_id) baseline path that the
+This is the per-(env_name, example_id, member_id) baseline path that the
 multi-agent training loop will use as the bridge consumer. Algorithm:
-A_i = R_i - b[(task_i, example_id_i, member_id_i)], EMA baseline update.
+A_i = R_i - b[(env_name_i, example_id_i, member_id_i)], EMA baseline update.
 """
 
 import pytest
 from verifiers.types import MemberRollout
 
-from prime_rl.orchestrator.multi_agent_advantage import RAEState, compute_rae_advantages
+from prime_rl.orchestrator.multi_agent_advantage import (
+    RAEState,
+    compute_rae_advantages,
+    fan_out_for_multi_agent,
+)
 
 ENV_NAME = "debate_v1"
 TEMPERATURE = 0.7
@@ -20,9 +24,10 @@ def _make_rollout(
     member_id: str = "prover",
     reward: float = 1.0,
     episode_id: str = "ep-0",
-    task: str = ENV_NAME,
+    task: object = ENV_NAME,
+    env_name: str | None = None,
 ) -> MemberRollout:
-    return MemberRollout(
+    rollout = MemberRollout(
         example_id=example_id,
         task=task,
         trajectory=[],
@@ -32,6 +37,32 @@ def _make_rollout(
         episode_id=episode_id,
         member_id=member_id,
     )
+    if env_name is not None:
+        rollout["env_name"] = env_name
+    return rollout
+
+
+def _make_episode_rollout(
+    *,
+    env_name: str,
+    task: object,
+    example_id: int | str = 1,
+    member_id: str = "prover",
+    reward: float = 1.0,
+) -> dict[str, object]:
+    return {
+        "env_name": env_name,
+        "example_id": example_id,
+        "task": task,
+        "trajectory": [{"extras": {"member_id": member_id}}],
+        "sampling_args": {"temperature": TEMPERATURE},
+        "error": None,
+        "trajectory_id": "ep-0",
+        "mar_score": {
+            "members": [{"member_id": member_id, "reward": reward}],
+            "episode_scalar": 1.0,
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -104,14 +135,41 @@ def test_per_example_baselines_independent():
     assert state.baselines[(ENV_NAME, 2, "prover")] == pytest.approx(0.0)
 
 
-def test_per_task_baselines_independent():
-    """Same (example_id, member_id) under different tasks must NOT share baselines."""
+def test_string_task_fallback_baselines_independent():
+    """String task identities still partition direct MemberRollout inputs."""
     state = RAEState(baselines={}, momentum=0.5)
     r_a = _make_rollout(example_id=1, member_id="prover", reward=1.0, task="env_a")
     r_b = _make_rollout(example_id=1, member_id="prover", reward=0.0, task="env_b")
     compute_rae_advantages([r_a, r_b], state)
     assert state.baselines[("env_a", 1, "prover")] == pytest.approx(0.5)
     assert state.baselines[("env_b", 1, "prover")] == pytest.approx(0.0)
+
+
+def test_unhashable_task_uses_env_name_identity():
+    state = RAEState(baselines={}, momentum=0.5)
+    task_row = {"question": "Which option?", "answer": "A"}
+    rollout = _make_rollout(task=task_row, env_name="gpqa_debate", reward=1.0)
+    advs = compute_rae_advantages([rollout], state)
+    assert advs == [pytest.approx(0.5)]
+    assert state.baselines[("gpqa_debate", 1, "prover")] == pytest.approx(0.5)
+
+
+def test_env_name_baselines_independent_when_task_rows_match():
+    state = RAEState(baselines={}, momentum=0.5)
+    task_row = {"question": "shared row", "answer": "A"}
+    r_a = _make_rollout(task=task_row, env_name="env_a", reward=1.0)
+    r_b = _make_rollout(task=task_row, env_name="env_b", reward=0.0)
+    compute_rae_advantages([r_a, r_b], state)
+    assert state.baselines[("env_a", 1, "prover")] == pytest.approx(0.5)
+    assert state.baselines[("env_b", 1, "prover")] == pytest.approx(0.0)
+
+
+def test_fan_out_carries_env_name_for_rae_identity():
+    state = RAEState(baselines={}, momentum=0.5)
+    units, mapping = fan_out_for_multi_agent([_make_episode_rollout(env_name="gpqa_debate", task={"question": "q"})])
+    assert mapping == [[0]]
+    compute_rae_advantages(units, state)
+    assert state.baselines[("gpqa_debate", 1, "prover")] == pytest.approx(0.5)
 
 
 def test_within_batch_ordering_compounds_per_trajectory():
@@ -156,7 +214,7 @@ def test_str_example_id_keys_baseline_correctly():
 
 
 def test_repeated_key_in_batch_compounds_per_trajectory():
-    """Two rollouts sharing (task, example_id, member_id) trigger N
+    """Two rollouts sharing (env_name, example_id, member_id) trigger N
     sequential per-trajectory EMA updates (SPIRAL Alg.1, not a single
     mean-aggregated update). With momentum=0.5, b₀=0, rewards [1.0, 0.0]:
         b₁ = 0.5·0 + 0.5·1 = 0.5; A₁ = 1 - 0.5 = 0.5

@@ -1,22 +1,24 @@
-"""Unit tests for ``fan_out_for_multi_agent`` — the orchestrator's
-per-step bridge wrapper that turns episode-level RolloutOutputs into
-per-member training units.
-
-The orchestrator inlines this against ``rollout_to_member_rollouts`` from
-verifiers, then feeds the units to ``compute_rae_advantages``. These
-tests exercise the routing + judge filter + index mapping that the
-production code depends on for results_df aggregation.
-"""
+"""Unit tests for the multi-agent episode → member training-unit bridge."""
 
 from __future__ import annotations
 
 import json
 from typing import Any
 
-import pytest
-from verifiers.types import MARScore, MemberScore, State, TrajectoryStep
+import verifiers as vf
+from verifiers.types import MARScore, MemberScore, RolloutTiming, State, TrajectoryStep
 from verifiers.utils.save_utils import state_to_output
 
+from prime_rl.configs.multi_agent import (
+    FixedMemberTargetConfig,
+    MultiAgentConfig,
+    TrainOneConfig,
+)
+from prime_rl.orchestrator.member_generation import (
+    DISPATCH_ID_FIELD,
+    compile_member_generation_plan,
+    is_trainable_member,
+)
 from prime_rl.orchestrator.multi_agent_advantage import (
     RAEState,
     compute_rae_advantages,
@@ -62,6 +64,7 @@ def _build_rollout(
     state["trajectory"] = steps
     state["trajectory_id"] = trajectory_id
     state["sampling_args"] = {"temperature": 0.7}
+    state["timing"] = RolloutTiming()
     member_scores = [MemberScore(member_id=mid, reward=r) for mid, r in members]
     if include_judge:
         member_scores.append(MemberScore(member_id="judge", reward=0.0))
@@ -72,24 +75,22 @@ def _build_rollout(
     return json.loads(json.dumps(output, default=lambda o: o.model_dump(exclude_none=True)))
 
 
-def test_fan_out_drops_judge_by_default():
-    """drop_judge=True (default) excludes member_id="judge" from training
-    units. Judge rewards are 0 by zero_sum_reward construction → wasted
-    gradient compute."""
+def test_fan_out_keeps_all_members_by_default():
     rollouts = [_build_rollout(include_judge=True)]
     units, mapping = fan_out_for_multi_agent(rollouts)
-    assert len(units) == 2
-    assert {u["member_id"] for u in units} == {"debater_a", "debater_b"}
-    assert mapping == [[0, 1]]
-
-
-def test_fan_out_keeps_judge_when_requested():
-    """drop_judge=False threads the judge through (diagnostic-only paths
-    like SFT-on-judge-transcripts)."""
-    rollouts = [_build_rollout(include_judge=True)]
-    units, mapping = fan_out_for_multi_agent(rollouts, drop_judge=False)
+    assert len(units) == 3
     assert {u["member_id"] for u in units} == {"debater_a", "debater_b", "judge"}
     assert mapping == [[0, 1, 2]]
+
+
+def test_fan_out_filters_with_trainability_predicate():
+    rollouts = [_build_rollout(include_judge=True)]
+    units, mapping = fan_out_for_multi_agent(
+        rollouts,
+        is_trainable_member=lambda _rollout, member_id: member_id != "judge",
+    )
+    assert {u["member_id"] for u in units} == {"debater_a", "debater_b"}
+    assert mapping == [[0, 1]]
 
 
 def test_fan_out_index_mapping_for_multiple_rollouts():
@@ -102,9 +103,9 @@ def test_fan_out_index_mapping_for_multiple_rollouts():
         _build_rollout(example_id=3, trajectory_id="ep-3"),
     ]
     units, mapping = fan_out_for_multi_agent(rollouts)
-    # 3 rollouts × 2 members each (judge dropped) = 6 units
-    assert len(units) == 6
-    assert mapping == [[0, 1], [2, 3], [4, 5]]
+    # 3 rollouts × 3 members each = 9 units
+    assert len(units) == 9
+    assert mapping == [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
     # Verify each mapping[i] points to units derived from rollout i
     for rollout_idx, unit_idxs in enumerate(mapping):
         unit_episodes = {units[ui]["episode_id"] for ui in unit_idxs}
@@ -119,7 +120,10 @@ def test_fan_out_pipeline_into_compute_rae_advantages():
         _build_rollout(example_id=1, members=[("debater_a", 1.0), ("debater_b", -1.0)]),
         _build_rollout(example_id=1, members=[("debater_a", -1.0), ("debater_b", 1.0)]),
     ]
-    units, _mapping = fan_out_for_multi_agent(rollouts)
+    units, _mapping = fan_out_for_multi_agent(
+        rollouts,
+        is_trainable_member=lambda _rollout, member_id: member_id != "judge",
+    )
     state = RAEState(momentum=0.9)
     advantages = compute_rae_advantages(units, state)
     assert len(advantages) == len(units) == 4
@@ -141,22 +145,112 @@ def test_fan_out_handles_empty_rollouts_list():
     assert mapping == []
 
 
-def test_fan_out_filter_by_learner_seat_keeps_only_matching_member():
-    """filter_by_learner_seat=True reads rollout.info['learner_seat'] and
-    keeps only that member's unit. External-opponent training: the frozen
-    opposite seat's trajectory never reaches the trainer."""
+def test_fan_out_trainability_predicate_keeps_only_matching_member():
     rollouts = [_build_rollout(example_id=1, trajectory_id="ep-1")]
-    rollouts[0]["info"] = {"learner_seat": "debater_a"}
-    units, mapping = fan_out_for_multi_agent(rollouts, filter_by_learner_seat=True)
+    units, mapping = fan_out_for_multi_agent(
+        rollouts,
+        is_trainable_member=lambda _rollout, member_id: member_id == "debater_a",
+    )
     assert [u["member_id"] for u in units] == ["debater_a"]
     assert mapping == [[0]]
 
 
-def test_fan_out_filter_by_learner_seat_missing_info_raises():
-    """filter_by_learner_seat=True on a rollout without info.learner_seat
-    is a config mismatch (filter enabled on a self-play env), not a silent
-    no-op."""
-    rollouts = [_build_rollout(example_id=1)]
-    rollouts[0]["info"] = {}
-    with pytest.raises(ValueError, match="info\\['learner_seat'\\] is missing"):
-        fan_out_for_multi_agent(rollouts, filter_by_learner_seat=True)
+def test_train_one_selects_one_trainable_debater_and_excludes_fixed_judge():
+    config = MultiAgentConfig(
+        train_one=TrainOneConfig(
+            members=["debater_a", "debater_b"],
+            seed=42,
+            unselected="opponent",
+        ),
+        fixed={
+            "opponent": FixedMemberTargetConfig(
+                members=[],
+                model="gpt-4.1-mini",
+                base_url=["https://api.openai.com/v1"],
+                api_key_var="OPENAI_API_KEY",
+            ),
+            "judge": FixedMemberTargetConfig(
+                members=["judge"],
+                model="judge-model",
+                base_url=["http://judge:8000/v1"],
+            ),
+        },
+    )
+    rollout = _build_rollout(example_id=1, trajectory_id="ep-1")
+    rollout[DISPATCH_ID_FIELD] = "dispatch-1"
+
+    trainable_members = [
+        member_id
+        for member_id in ("debater_a", "debater_b", "judge")
+        if is_trainable_member(config, rollout, member_id)
+    ]
+
+    assert len(trainable_members) == 1
+    assert trainable_members[0] in {"debater_a", "debater_b"}
+    assert not is_trainable_member(config, rollout, "judge")
+
+
+def test_compile_member_generation_plan_routes_selected_fixed_and_judge_members():
+    config = MultiAgentConfig(
+        train_one=TrainOneConfig(
+            members=["debater_a", "debater_b"],
+            seed=0,
+            unselected="opponent",
+        ),
+        fixed={
+            "opponent": FixedMemberTargetConfig(
+                members=[],
+                model="gpt-4.1-mini",
+                base_url=["https://api.openai.com/v1"],
+                api_key_var="OPENAI_API_KEY",
+                request_mode="chat",
+                sampling={"temperature": 0.0},
+            ),
+            "judge": FixedMemberTargetConfig(
+                members=["judge"],
+                model="judge-model",
+                base_url=["http://judge-1:8000/v1", "http://judge-2:8000/v1"],
+                request_mode="chat",
+                sampling={"temperature": 0.0, "max_completion_tokens": 256},
+            ),
+        },
+    )
+    dispatch_id = "dispatch-compile"
+    plan = compile_member_generation_plan(
+        config,
+        member_ids=["debater_a", "debater_b", "judge"],
+        default_client=vf.ClientConfig(
+            client_type="renderer",
+            api_base_url="http://learner:8000/v1",
+            api_key_var="VLLM_API_KEY",
+        ),
+        default_model="learner-lora",
+        learner_sampling_args={"temperature": 1.0, "extra_body": {"cache_salt": "7"}},
+        fixed_sampling_args={"temperature": 1.0, "max_completion_tokens": 1024},
+        dispatch_id=dispatch_id,
+    )
+    assert plan is not None
+
+    trainable = [
+        member
+        for member in ("debater_a", "debater_b")
+        if is_trainable_member(config, {DISPATCH_ID_FIELD: dispatch_id}, member)
+    ]
+    assert len(trainable) == 1
+    selected = trainable[0]
+    frozen = ({"debater_a", "debater_b"} - {selected}).pop()
+
+    assert plan.members[selected].model == "learner-lora"
+    assert plan.members[selected].client.client_type == "renderer"
+    assert plan.members[selected].sampling_args["extra_body"] == {"cache_salt": "7"}
+    assert plan.members[frozen].model == "gpt-4.1-mini"
+    assert plan.members[frozen].client.client_type == "openai_chat_completions"
+    assert plan.members[frozen].sampling_args == {
+        "temperature": 0.0,
+        "max_completion_tokens": 1024,
+    }
+    assert plan.members["judge"].model == "judge-model"
+    assert plan.members["judge"].sampling_args == {
+        "temperature": 0.0,
+        "max_completion_tokens": 256,
+    }

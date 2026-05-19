@@ -14,14 +14,21 @@ import verifiers as vf
 from verifiers.serve import ZMQEnvClient, ZMQEnvServer
 from verifiers.utils.serve_utils import get_free_port
 
+from prime_rl.configs.multi_agent import MultiAgentConfig
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
 from prime_rl.orchestrator.eval_utils import compute_pass_at_k
+from prime_rl.orchestrator.member_generation import (
+    DISPATCH_ID_FIELD,
+    compile_member_generation_plan,
+)
 from prime_rl.orchestrator.vf_utils import get_completion_len
 from prime_rl.utils.logger import ProgressTracker, get_logger
-from prime_rl.utils.monitor import get_monitor
-from prime_rl.utils.utils import capitalize
 
 REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
+
+
+def _capitalize(s: str) -> str:
+    return s[:1].upper() + s[1:]
 
 
 class Env:
@@ -55,6 +62,10 @@ class Env:
     @property
     def requires_group_scoring(self) -> bool:
         return any(self.env.rubric._is_group_func(func) for func in self.env.rubric._get_reward_funcs())
+
+    @property
+    def is_multi_agent(self) -> bool:
+        return self.env.is_multi_agent
 
     async def start(
         self,
@@ -114,15 +125,46 @@ class Env:
         sampling_args["extra_body"] = extra_body
         return sampling_args
 
+    def multi_agent_members(self) -> list[str]:
+        members = getattr(self.env, "members", None)
+        if members is None:
+            members = getattr(self.env.rubric, "members", None)
+        if not members:
+            raise ValueError(f"Multi-agent config is enabled for env {self.name}, but no member ids were found.")
+        return list(members)
+
+    def compile_generation(
+        self,
+        config: MultiAgentConfig,
+        *,
+        client: vf.ClientConfig,
+        model_name: str,
+        cache_salt: str,
+        dispatch_id: str,
+    ) -> vf.MemberGenerationPlan | None:
+        if not config.enabled:
+            return None
+        return compile_member_generation_plan(
+            config,
+            member_ids=self.multi_agent_members(),
+            default_client=client,
+            default_model=model_name,
+            learner_sampling_args=self._sampling_args_with_salt(cache_salt),
+            fixed_sampling_args=self.sampling_args,
+            dispatch_id=dispatch_id,
+        )
+
     async def run_rollout(
         self,
         client: vf.ClientConfig,
         example: dict,
         model_name: str,
         cache_salt: str,
+        generation: vf.MemberGenerationPlan | None = None,
+        dispatch_id: str | None = None,
     ) -> vf.RolloutOutput:
         """Run a single rollout for an example."""
-        return await self.env.run_rollout(
+        output = await self.env.run_rollout(
             vf.RolloutInput(**example),
             client=client,
             model=model_name,
@@ -130,7 +172,11 @@ class Env:
             max_retries=self.config.max_retries,
             state_columns=REQUIRED_STATE_COLUMNS,
             env_client=self.env_client,
+            generation=generation,
         )
+        if dispatch_id is not None:
+            output[DISPATCH_ID_FIELD] = dispatch_id
+        return output
 
     async def run_group(
         self,
@@ -139,9 +185,11 @@ class Env:
         model_name: str,
         rollouts_per_example: int,
         cache_salt: str,
+        generation: vf.GenerationPlan | None = None,
+        dispatch_ids: list[str] | None = None,
     ) -> list[vf.RolloutOutput]:
         """Run a group of rollouts for an example. Required for group-scoring envs."""
-        return await self.env.run_group(
+        outputs = await self.env.run_group(
             [vf.RolloutInput(**example) for _ in range(rollouts_per_example)],
             client=client,
             model=model_name,
@@ -149,7 +197,14 @@ class Env:
             max_retries=self.config.max_retries,
             state_columns=REQUIRED_STATE_COLUMNS,
             env_client=self.env_client,
+            generation=generation,
         )
+        if dispatch_ids is not None:
+            if len(dispatch_ids) != len(outputs):
+                raise ValueError(f"dispatch_ids length {len(dispatch_ids)} does not match output length {len(outputs)}")
+            for output, dispatch_id in zip(outputs, dispatch_ids):
+                output[DISPATCH_ID_FIELD] = dispatch_id
+        return outputs
 
     def shutdown(self) -> None:
         if self._env_server_process is None:
@@ -184,6 +239,7 @@ class EvalEnv(Env):
         ckpt_step: int,
         step: int,
         cache_salt: str,
+        multi_agent: MultiAgentConfig | None = None,
     ) -> list[vf.RolloutOutput]:
         num_examples = len(self.examples)
         rollouts_per_example = self.config.rollouts_per_example
@@ -191,6 +247,9 @@ class EvalEnv(Env):
         total_rollouts = num_examples * rollouts_per_example
         pbar = ProgressTracker(total=total_rollouts, desc=f"Evaluating {self.name}")
         eval_start = time.perf_counter()
+        active_multi_agent = (
+            multi_agent if multi_agent is not None and multi_agent.enabled and self.is_multi_agent else None
+        )
 
         if self.requires_group_scoring:
 
@@ -198,12 +257,31 @@ class EvalEnv(Env):
                 """Run rollouts_per_example rollouts as a scored group for one example."""
                 try:
                     client = await get_client()
+                    dispatch_ids = [
+                        f"eval:{step}:{self.name}:{example['example_id']}:{idx}" for idx in range(rollouts_per_example)
+                    ]
+                    generation = (
+                        [
+                            self.compile_generation(
+                                active_multi_agent,
+                                client=client,
+                                model_name=model_name,
+                                cache_salt=cache_salt,
+                                dispatch_id=dispatch_id,
+                            )
+                            for dispatch_id in dispatch_ids
+                        ]
+                        if active_multi_agent is not None
+                        else None
+                    )
                     outputs = await self.run_group(
                         client=client,
                         example=example,
                         model_name=model_name,
                         rollouts_per_example=rollouts_per_example,
                         cache_salt=cache_salt,
+                        generation=generation,
+                        dispatch_ids=dispatch_ids,
                     )
                     pbar.update(rollouts_per_example)
                     return outputs
@@ -216,12 +294,29 @@ class EvalEnv(Env):
 
         else:
 
-            async def run_with_progress(example: dict) -> list[vf.RolloutOutput] | None:
+            async def run_with_progress(example: dict, rollout_idx: int) -> list[vf.RolloutOutput] | None:
                 """Run a single rollout for one example."""
                 try:
                     client = await get_client()
+                    dispatch_id = f"eval:{step}:{self.name}:{example['example_id']}:{rollout_idx}"
+                    generation = (
+                        self.compile_generation(
+                            active_multi_agent,
+                            client=client,
+                            model_name=model_name,
+                            cache_salt=cache_salt,
+                            dispatch_id=dispatch_id,
+                        )
+                        if active_multi_agent is not None
+                        else None
+                    )
                     output = await self.run_rollout(
-                        client=client, example=example, model_name=model_name, cache_salt=cache_salt
+                        client=client,
+                        example=example,
+                        model_name=model_name,
+                        cache_salt=cache_salt,
+                        generation=generation,
+                        dispatch_id=dispatch_id,
                     )
                     pbar.update(1)
                     return [output]
@@ -230,7 +325,11 @@ class EvalEnv(Env):
                     pbar.update(1)
                     return None
 
-            coros = [run_with_progress(example) for example in self.examples for _ in range(rollouts_per_example)]
+            coros = [
+                run_with_progress(example, rollout_idx)
+                for example in self.examples
+                for rollout_idx in range(rollouts_per_example)
+            ]
 
         try:
             results = await asyncio.gather(*coros)
@@ -248,6 +347,8 @@ class EvalEnv(Env):
 
         if not successful_outputs:
             get_logger().warning(f"All rollouts failed for {self.name}, skipping logging metrics")
+            from prime_rl.utils.monitor import get_monitor
+
             get_monitor().log(
                 {
                     f"eval/{self.name}/failed_rollouts": failed_count / total_rollouts,
@@ -259,6 +360,8 @@ class EvalEnv(Env):
             return []
 
         # Log metrics
+        from prime_rl.utils.monitor import get_monitor
+
         monitor = get_monitor()
 
         rows = [
@@ -292,7 +395,7 @@ class EvalEnv(Env):
         if could_be_binary:
             assert pass_at_k is not None
             for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
-                message += f", {capitalize(str(pass_rate))}: {pass_rate_score:.4f}"
+                message += f", {_capitalize(str(pass_rate))}: {pass_rate_score:.4f}"
 
         message += (
             f", No-response: {results_df.no_response.mean() * 100:.1f}%"
@@ -334,6 +437,10 @@ class Envs(Generic[EnvT]):
     @property
     def names(self) -> list[str]:
         return list(self._envs.keys())
+
+    @property
+    def multi_agent_names(self) -> set[str]:
+        return {env.name for env in self if env.is_multi_agent}
 
     @property
     def configs(self) -> list[EnvConfig]:

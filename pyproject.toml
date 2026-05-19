@@ -168,7 +168,7 @@ prime-rl-configs = { workspace = true }
 torch = { index = "pytorch-cu130" }
 torchvision = { index = "pytorch-cu130" }
 torchaudio = { index = "pytorch-cu130" }
-verifiers = { git = "https://github.com/joanvelja/verifiers.git", rev = "73fe401" }
+verifiers = { git = "https://github.com/joanvelja/verifiers.git", rev = "38ff43e3" }
 renderers = { git = "https://github.com/joanvelja/renderers.git", rev = "cce74eb" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }

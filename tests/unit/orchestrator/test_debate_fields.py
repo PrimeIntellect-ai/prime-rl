@@ -8,7 +8,7 @@ Run from the fork venv — see test_debate_env.py docstring for setup.
 from __future__ import annotations
 
 import pytest
-from verifiers.envs.debate.fields import (
+from verifiers.protocols.debate.fields import (
     BinaryScoring,
     EnumScoring,
     NumericScoring,
@@ -24,7 +24,7 @@ from verifiers.envs.debate.fields import (
     resolve_scoring,
     validate_type_scoring,
 )
-from verifiers.envs.debate.parsing import extract_fields, generate_format_instructions
+from verifiers.protocols.debate.parsing import extract_fields, generate_format_instructions
 from verifiers.utils.mcq import normalize_mcq
 
 # ===================================================================
