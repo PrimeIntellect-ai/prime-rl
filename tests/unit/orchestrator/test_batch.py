@@ -8,7 +8,7 @@ from prime_rl.transport.types import TrainingSample
 def make_training_example():
     def _make_training_example(
         temperature: float = 1.0,
-        sft_loss: bool = False,
+        training_mode: str = "rl",
         env_name: str = "test-env",
     ) -> TrainingSample:
         return TrainingSample(
@@ -21,7 +21,7 @@ def make_training_example():
             teacher_logprobs=[0.0, 0.0, 0.0, 0.0],
             advantage=1.0,
             env_name=env_name,
-            sft_loss=sft_loss,
+            training_mode=training_mode,
         )
 
     return _make_training_example
@@ -99,17 +99,17 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
     assert flat_batches[0].env_names == ["env-a"] * 4 + ["env-b"] * 4
 
 
-def test_prepare_sample_propagates_sft_loss(make_training_example):
-    example = make_training_example(sft_loss=True)
+def test_prepare_sample_propagates_training_mode(make_training_example):
+    example = make_training_example(training_mode="sft")
 
     micro_batch = prepare_sample(example, seq_len=16)
 
-    assert micro_batch.sft_loss is True
+    assert micro_batch.training_mode == "sft"
 
 
-def test_prepare_batch_does_not_pack_mixed_sft_loss(make_training_example):
-    rl_example = make_training_example(sft_loss=False)
-    sft_example = make_training_example(sft_loss=True)
+def test_prepare_batch_does_not_pack_mixed_training_mode(make_training_example):
+    rl_example = make_training_example(training_mode="rl")
+    sft_example = make_training_example(training_mode="sft")
 
     batches_per_gpu = prepare_batch(
         rollouts=[rl_example, sft_example],
@@ -121,7 +121,7 @@ def test_prepare_batch_does_not_pack_mixed_sft_loss(make_training_example):
 
     flat_batches = [batch for worker_batches in batches_per_gpu for batch in worker_batches]
     assert len(flat_batches) == 2
-    assert {batch.sft_loss for batch in flat_batches} == {False, True}
+    assert {batch.training_mode for batch in flat_batches} == {"rl", "sft"}
 
 
 def test_prepare_sample_with_routed_experts():

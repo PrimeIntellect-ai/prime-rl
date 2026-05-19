@@ -31,7 +31,7 @@ from prime_rl.trainer.rl.loss import (
     compute_loss,
     compute_importance_ratio_and_mismatch_kl,
     selective_log_softmax,
-    setup_loss_fn,
+    setup_loss_fns,
     shift_tensor_left,
     shift_tensor_right,
 )
@@ -150,7 +150,7 @@ def train(config: TrainerConfig):
 
     # Set up the loss function
     logger.info(f"Setting up loss function ({config.loss})")
-    loss_fn = setup_loss_fn(config.loss)
+    loss_fns = setup_loss_fns(config.loss)
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -465,9 +465,9 @@ def train(config: TrainerConfig):
                 else None,
                 advantages=advantages.squeeze().split(response_lengths),
                 loss_mask=loss_mask.squeeze().split(response_lengths),
-                loss_fn=loss_fn,
+                loss_fns=loss_fns,
                 loss_scale=loss_scale,
-                sft_loss=micro_batch["sft_loss"],
+                training_mode=micro_batch["training_mode"],
             )
 
             # Backward pass
@@ -488,7 +488,7 @@ def train(config: TrainerConfig):
             for env_name, indices in env_to_indices.items():
                 tensors[f"entropy/{env_name}"].append(entropy[indices])
 
-            if not micro_batch["sft_loss"]:
+            if micro_batch["training_mode"] != "sft":
                 with torch.no_grad():
                     _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(out["logprobs"], inference_logprobs)
                 mismatch_kl = mismatch_kl[loss_mask].detach().to("cpu")
@@ -508,7 +508,7 @@ def train(config: TrainerConfig):
 
             # Debug log with *local, micro step* stats
             micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy/all'][-1].mean().item():.4f}"
-            if not micro_batch["sft_loss"]:
+            if micro_batch["training_mode"] != "sft":
                 micro_step_message += f" | Mismatch KL: {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"

@@ -161,10 +161,12 @@ def test_orchestrator_vlm_configs_must_disable_renderer():
     with pytest.raises(ValidationError, match="orchestrator.use_renderer is not supported for VLMs"):
         OrchestratorConfig.model_validate(
             {
-                "model": {
-                    "vlm": {
-                        "vision_encoder_attr": "model.visual",
-                        "language_model_attr": "model.language_model",
+                "student": {
+                    "model": {
+                        "vlm": {
+                            "vision_encoder_attr": "model.visual",
+                            "language_model_attr": "model.language_model",
+                        }
                     }
                 }
             }
@@ -172,10 +174,12 @@ def test_orchestrator_vlm_configs_must_disable_renderer():
 
     config = OrchestratorConfig.model_validate(
         {
-            "model": {
-                "vlm": {
-                    "vision_encoder_attr": "model.visual",
-                    "language_model_attr": "model.language_model",
+            "student": {
+                "model": {
+                    "vlm": {
+                        "vision_encoder_attr": "model.visual",
+                        "language_model_attr": "model.language_model",
+                    }
                 }
             },
             "use_renderer": False,

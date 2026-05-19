@@ -367,6 +367,27 @@ class RLConfig(BaseConfig):
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _stub_orchestrator_teacher_for_auto_setup(cls, data):
+        """When `deployment.num_teacher_gpus > 0` and the user didn't write an
+        `[orchestrator.teacher]` block, inject an empty one so
+        `OrchestratorConfig.validate_training_mode` (which fires during nested
+        validation) doesn't reject `training_mode = "opd"` for "missing teacher".
+        `auto_setup_teacher_inference` (after) then fills in client.base_url and
+        model.name from the auto-launched teacher_inference server."""
+        if not isinstance(data, dict):
+            return data
+        deployment = data.get("deployment")
+        if not isinstance(deployment, dict):
+            return data
+        if not deployment.get("num_teacher_gpus"):
+            return data
+        orch = data.setdefault("orchestrator", {})
+        if isinstance(orch, dict) and "teacher" not in orch and "teacher_model" not in orch:
+            orch["teacher"] = {}
+        return data
+
     @model_validator(mode="after")
     def validate_deployment(self):
         if self.deployment.type == "multi_node":
@@ -420,32 +441,6 @@ class RLConfig(BaseConfig):
         if self.trainer.model.impl != "custom":
             raise ValueError("weight_broadcast.quantize_in_weight_transfer requires trainer.model.impl = 'custom'.")
 
-        return self
-
-    @model_validator(mode="after")
-    def validate_teacher_model(self):
-        if (
-            self.trainer.loss.type == "default" and self.trainer.loss.teacher_tau > 0
-        ) and not self.orchestrator.teacher_model:
-            raise ValueError(
-                "teacher_model must be configured when teacher_tau > 0. "
-                "Either set teacher_tau = 0, set deployment.num_teacher_gpus, or configure teacher_model manually."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def validate_external_rollout_inference(self):
-        """Forbid configuring a local inference server when rollouts come from an external teacher.
-
-        Orchestrator-only invariants (``use_sft_loss`` paired with ``teacher_rollout_model``,
-        and ``use_renderer`` coupling) live on ``OrchestratorConfig`` so the hosted
-        orchestrator entrypoint also enforces them.
-        """
-        if self.orchestrator.teacher_rollout_model is not None and self.inference is not None:
-            raise ValueError(
-                "inference must be omitted when orchestrator.teacher_rollout_model is configured. "
-                "External rollout mode does not use the local inference server."
-            )
         return self
 
     ### Auto-setup and validate shared configs
@@ -564,13 +559,13 @@ class RLConfig(BaseConfig):
                 inference_model_explicitly_set = "name" in self.inference.model.model_fields_set
                 if not inference_model_explicitly_set:
                     self.inference.model.name = self.model.name
-                self.orchestrator.model.name = self.inference.model.name
+                self.orchestrator.student.model.name = self.inference.model.name
             else:
-                self.orchestrator.model.name = self.model.name
+                self.orchestrator.student.model.name = self.model.name
 
             if self.model.vlm is not None:
                 self.trainer.model.vlm = self.model.vlm
-                self.orchestrator.model.vlm = self.model.vlm
+                self.orchestrator.student.model.vlm = self.model.vlm
                 if self.inference is not None:
                     self.inference.model.vlm = self.model.vlm
 
@@ -586,17 +581,21 @@ class RLConfig(BaseConfig):
             # in name/trust_remote_code from model config where still unset.
             self.trainer.tokenizer = self.tokenizer.model_copy()
             self.orchestrator.tokenizer = self.tokenizer.model_copy()
-            for component in (self.trainer, self.orchestrator):
-                if component.tokenizer.name is None:
-                    component.tokenizer.name = component.model.name
-                if component.tokenizer.trust_remote_code is None:
-                    component.tokenizer.trust_remote_code = component.model.trust_remote_code
+            if self.trainer.tokenizer.name is None:
+                self.trainer.tokenizer.name = self.trainer.model.name
+            if self.trainer.tokenizer.trust_remote_code is None:
+                self.trainer.tokenizer.trust_remote_code = self.trainer.model.trust_remote_code
+            if self.orchestrator.tokenizer.name is None:
+                self.orchestrator.tokenizer.name = self.orchestrator.student.model.name
+            if self.orchestrator.tokenizer.trust_remote_code is None:
+                self.orchestrator.tokenizer.trust_remote_code = self.orchestrator.student.model.trust_remote_code
         else:
             # No shared tokenizer: re-derive from (now-correct) model names,
             # since auto_setup_tokenizer on sub-configs already ran with defaults.
-            for component in (self.trainer, self.orchestrator):
-                component.tokenizer.name = component.model.name
-                component.tokenizer.trust_remote_code = component.model.trust_remote_code
+            self.trainer.tokenizer.name = self.trainer.model.name
+            self.trainer.tokenizer.trust_remote_code = self.trainer.model.trust_remote_code
+            self.orchestrator.tokenizer.name = self.orchestrator.student.model.name
+            self.orchestrator.tokenizer.trust_remote_code = self.orchestrator.student.model.trust_remote_code
 
         # Propagate chat_template to inference (vLLM --chat-template)
         if self.inference is not None:
@@ -720,40 +719,40 @@ class RLConfig(BaseConfig):
             if self.trainer.weight_broadcast.type == "nccl":
                 raise ValueError("NCCL weight broadcast does not support LoRA yet.")
 
-            if self.orchestrator.model.lora is None:
+            if self.orchestrator.student.model.lora is None:
                 from prime_rl.configs.orchestrator import LoRAConfig
 
-                self.orchestrator.model.lora = LoRAConfig()
+                self.orchestrator.student.model.lora = LoRAConfig()
 
             if (
-                self.orchestrator.model.lora.rank is not None
-                and self.orchestrator.model.lora.rank != self.trainer.model.lora.rank
+                self.orchestrator.student.model.lora.rank is not None
+                and self.orchestrator.student.model.lora.rank != self.trainer.model.lora.rank
             ):
                 raise ValueError(
-                    f"orchestrator.model.lora.rank ({self.orchestrator.model.lora.rank}) conflicts with "
+                    f"orchestrator.student.model.lora.rank ({self.orchestrator.student.model.lora.rank}) conflicts with "
                     f"trainer.model.lora.rank ({self.trainer.model.lora.rank}). "
-                    f"Remove orchestrator.model.lora.rank to inherit from trainer, or update trainer.model.lora.rank to match."
+                    f"Remove orchestrator.student.model.lora.rank to inherit from trainer, or update trainer.model.lora.rank to match."
                 )
 
             if (
-                self.orchestrator.model.lora.alpha is not None
-                and self.orchestrator.model.lora.alpha != self.trainer.model.lora.alpha
+                self.orchestrator.student.model.lora.alpha is not None
+                and self.orchestrator.student.model.lora.alpha != self.trainer.model.lora.alpha
             ):
                 raise ValueError(
-                    f"orchestrator.model.lora.alpha ({self.orchestrator.model.lora.alpha}) conflicts with "
+                    f"orchestrator.student.model.lora.alpha ({self.orchestrator.student.model.lora.alpha}) conflicts with "
                     f"trainer.model.lora.alpha ({self.trainer.model.lora.alpha}). "
-                    f"Remove orchestrator.model.lora.alpha to inherit from trainer, or update trainer.model.lora.alpha to match."
+                    f"Remove orchestrator.student.model.lora.alpha to inherit from trainer, or update trainer.model.lora.alpha to match."
                 )
 
-            if self.orchestrator.model.lora.rank is None:
-                self.orchestrator.model.lora.rank = self.trainer.model.lora.rank
+            if self.orchestrator.student.model.lora.rank is None:
+                self.orchestrator.student.model.lora.rank = self.trainer.model.lora.rank
 
-            if self.orchestrator.model.lora.alpha is None:
-                self.orchestrator.model.lora.alpha = self.trainer.model.lora.alpha
+            if self.orchestrator.student.model.lora.alpha is None:
+                self.orchestrator.student.model.lora.alpha = self.trainer.model.lora.alpha
 
-            if self.orchestrator.model.lora.name is None:
-                self.orchestrator.model.lora.name = (
-                    f"r{self.orchestrator.model.lora.rank}-a{self.orchestrator.model.lora.alpha}"
+            if self.orchestrator.student.model.lora.name is None:
+                self.orchestrator.student.model.lora.name = (
+                    f"r{self.orchestrator.student.model.lora.rank}-a{self.orchestrator.student.model.lora.alpha}"
                 )
 
             if self.inference is not None:
@@ -771,7 +770,7 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_session_headers(self):
         """Ensure X-Session-ID header is always set for sticky DP-aware routing at the inference router."""
-        self.orchestrator.client.extra_headers_from_state.setdefault("X-Session-ID", "example_id")
+        self.orchestrator.student.client.extra_headers_from_state.setdefault("X-Session-ID", "example_id")
         return self
 
     @model_validator(mode="after")
@@ -917,17 +916,23 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_dp_rank_count(self):
-        """Auto-set orchestrator client dp_rank_count from inference DP size.
+    def auto_setup_inference_client(self):
+        """Auto-configure orchestrator student client from the inference server config.
 
-        Uses data_parallel_size_local (per-node DP) when set, since each base URL
-        points to a single node whose API server only knows about its local ranks.
-        Falls back to the global parallel.dp for single-node setups.
+        For all modes, sets dp_rank_count from inference DP size. For SFT mode,
+        also sets base_url - rl/opd rely on the ClientConfig default
+        (``["http://localhost:8000/v1"]``) which already matches the auto-launched
+        student vLLM at inference.server.port = 8000.
         """
-        if self.inference is not None and "dp_rank_count" not in self.orchestrator.client.model_fields_set:
-            self.orchestrator.client.dp_rank_count = (
-                self.inference.data_parallel_size_local or self.inference.parallel.dp
-            )
+        if self.inference is None:
+            return self
+        client = self.orchestrator.student.client
+        if "dp_rank_count" not in client.model_fields_set:
+            client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
+        if self.orchestrator.training_mode == "sft" and "base_url" not in client.model_fields_set:
+            host = self.inference.server.host or "localhost"
+            port = self.inference.server.port
+            client.base_url = [f"http://{host}:{port}/v1"]
         return self
 
     @model_validator(mode="after")
@@ -940,7 +945,7 @@ class RLConfig(BaseConfig):
 
         import copy
 
-        from prime_rl.configs.orchestrator import TeacherModelConfig
+        from prime_rl.configs.orchestrator import RolloutModelConfig
 
         if self.teacher_inference is None:
             if self.inference is None:
@@ -962,12 +967,12 @@ class RLConfig(BaseConfig):
             assert num_teacher_gpus > 0, "num_teacher_gpus cannot be zero"
             self.teacher_inference.parallel.dp = num_teacher_gpus // tp
 
-        if self.orchestrator.teacher_model is None:
-            self.orchestrator.teacher_model = TeacherModelConfig()
+        if self.orchestrator.teacher is None:
+            self.orchestrator.teacher = RolloutModelConfig()
         host = self.teacher_inference.server.host or "localhost"
         port = self.teacher_inference.server.port
-        self.orchestrator.teacher_model.client.base_url = [f"http://{host}:{port}/v1"]
-        self.orchestrator.teacher_model.model.name = self.teacher_inference.model.name
+        self.orchestrator.teacher.client.base_url = [f"http://{host}:{port}/v1"]
+        self.orchestrator.teacher.model.name = self.teacher_inference.model.name
 
         return self
 

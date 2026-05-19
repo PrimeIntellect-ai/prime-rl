@@ -682,25 +682,19 @@ class CheckpointConfig(BaseConfig):
 
 
 class DefaultLossConfig(BaseModel):
-    """Config for the default loss."""
+    """Knobs for the default DPPO+KL loss. Only consumed by rl-mode batches
+    (``default_loss_fn``); opd and sft have their own self-contained loss fns."""
 
     type: Literal["default"] = "default"
 
     dppo_mask_low: Annotated[float, Field(ge=0, description="The low threshold for masking tokens.")] = 0.2
     dppo_mask_high: Annotated[float, Field(ge=0, description="The high threshold for masking tokens.")] = 0.2
     adv_tau: Annotated[float, Field(ge=0, description="The tau for advantages.")] = 1.0
-    teacher_tau: Annotated[float, Field(ge=0, description="The tau for teacher logprobs.")] = 0.0
     kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 1e-3
 
 
-class SFTLossConfig(BaseModel):
-    """Config for SFT-style masked negative log-likelihood loss."""
-
-    type: Literal["sft"] = "sft"
-
-
 class CustomLossConfig(BaseModel):
-    """Config for a custom external loss function."""
+    """Override for the rl-mode loss fn. opd and sft are unaffected."""
 
     type: Literal["custom"] = "custom"
 
@@ -708,7 +702,7 @@ class CustomLossConfig(BaseModel):
     kwargs: Annotated[dict[str, Any], Field(default_factory=dict, description="Kwargs to pass to the loss function")]
 
 
-LossConfig: TypeAlias = Annotated[DefaultLossConfig | SFTLossConfig | CustomLossConfig, Field(discriminator="type")]
+LossConfig: TypeAlias = Annotated[DefaultLossConfig | CustomLossConfig, Field(discriminator="type")]
 
 
 class FakeDataLoaderConfig(BaseConfig):
@@ -783,7 +777,8 @@ class TrainerConfig(BaseConfig):
     # The data configuration
     data: DataLoaderConfig = DataLoaderConfig()
 
-    # The loss configuration
+    # Loss config for the rl-mode batches only. opd and sft batches dispatch to
+    # opd_loss_fn / sft_loss_fn unconditionally - they don't read trainer.loss.
     loss: LossConfig = DefaultLossConfig()
 
     # The optimizer configuration

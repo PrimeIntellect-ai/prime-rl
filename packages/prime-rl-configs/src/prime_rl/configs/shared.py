@@ -131,6 +131,10 @@ class BaseModelConfig(BaseConfig):
         ),
     ] = None
 
+    @property
+    def is_vlm(self) -> bool:
+        return self.vlm is not None
+
 
 class RendererConfig(BaseConfig):
     """Configures the client-side renderer (chat-template + response parsing).
@@ -296,6 +300,13 @@ class ClientConfig(BaseConfig):
         dict[str, str],
         Field(
             description="Headers to use for the OpenAI API. By default, it is set to an empty dictionary.",
+        ),
+    ] = {}
+
+    headers_from_env: Annotated[
+        dict[str, str],
+        Field(
+            description='Maps HTTP header names to environment variable names. At runtime each entry is resolved via os.getenv and merged into the request headers. e.g. {"X-Prime-Team-ID": "PRIME_TEAM_ID"}.',
         ),
     ] = {}
 

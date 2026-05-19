@@ -81,7 +81,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         pixel_values=training_example.pixel_values,
         pixel_values_shape=training_example.pixel_values_shape,
         image_grid_thw=training_example.image_grid_thw,
-        sft_loss=training_example.sft_loss,
+        training_mode=training_example.training_mode,
     )
 
 
@@ -123,7 +123,7 @@ def packed_samples_into_micro_bs(
             # Check if sequence fits in this bin
             if (
                 len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len
-                and bin_content.sft_loss == sample.sft_loss
+                and bin_content.training_mode == sample.training_mode
             ):
                 bin_content.input_ids.extend(sample.input_ids)
                 bin_content.loss_mask.extend(sample.loss_mask)
