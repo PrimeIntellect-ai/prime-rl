@@ -84,45 +84,12 @@ class TTTLearnerConfig(BaseConfig):
 
     port: Annotated[
         int,
-        Field(
-            gt=0,
-            lt=65536,
-            description=(
-                "Public TTT learner port. With num_learners=1 the learner listens here; "
-                "with num_learners>1 the router listens here."
-            ),
-        ),
+        Field(gt=0, lt=65536, description="Port the local TTT learner listens on."),
     ] = 9009
 
     base_url: Annotated[
         str | None,
         Field(description="Optional explicit TTT learner base URL used by Verifiers clients."),
-    ] = None
-
-    num_learners: Annotated[
-        int,
-        Field(ge=1, description="Number of TTT learner shards to run behind the router."),
-    ] = 1
-
-    learner_base_port: Annotated[
-        int | None,
-        Field(
-            gt=0,
-            lt=65536,
-            description=(
-                "First private learner-shard port. Defaults to port when num_learners=1 and port+1 when num_learners>1."
-            ),
-        ),
-    ] = None
-
-    gpus: Annotated[
-        list[int] | None,
-        Field(
-            description=(
-                "Optional GPU ids for TTT learner shards on each train node. "
-                "When unset, shards use GPUs 0..num_learners-1."
-            ),
-        ),
     ] = None
 
     adapter_dir: Annotated[
@@ -188,36 +155,6 @@ class TTTLearnerConfig(BaseConfig):
     @property
     def resolved_base_url(self) -> str:
         return self.base_url or f"http://{self.host}:{self.port}"
-
-    @property
-    def resolved_learner_base_port(self) -> int:
-        if self.learner_base_port is not None:
-            return self.learner_base_port
-        return self.port if self.num_learners == 1 else self.port + 1
-
-    @property
-    def resolved_gpus(self) -> list[int]:
-        return list(self.gpus) if self.gpus is not None else list(range(self.num_learners))
-
-    @model_validator(mode="after")
-    def validate_learner_shards(self):
-        if self.gpus is not None:
-            if len(self.gpus) != self.num_learners:
-                raise ValueError("experimental.ttt.learner.gpus must have one GPU id per learner shard.")
-            if len(set(self.gpus)) != len(self.gpus):
-                raise ValueError("experimental.ttt.learner.gpus contains duplicate GPU ids.")
-            if any(gpu < 0 for gpu in self.gpus):
-                raise ValueError("experimental.ttt.learner.gpus must contain non-negative GPU ids.")
-        if self.num_learners > 1:
-            first_port = self.resolved_learner_base_port
-            last_port = first_port + self.num_learners - 1
-            if self.port >= first_port and self.port <= last_port:
-                raise ValueError(
-                    "experimental.ttt.learner.port must not overlap learner shard ports when num_learners>1."
-                )
-            if last_port >= 65536:
-                raise ValueError("experimental.ttt.learner learner shard ports exceed 65535.")
-        return self
 
 
 class TTTConfig(BaseConfig):

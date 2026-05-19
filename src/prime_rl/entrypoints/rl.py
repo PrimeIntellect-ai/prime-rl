@@ -138,23 +138,6 @@ def rl_local(config: RLConfig):
     infer_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in infer_local_gpu_ids]
     trainer_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in trainer_local_gpu_ids]
     teacher_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in teacher_local_gpu_ids]
-    ttt_learner_gpu_ids: list[int] = []
-    ttt = config.experimental.ttt
-    if ttt.enabled and ttt.mode == "online_lora":
-        if ttt.learner.gpus is not None:
-            ttt_learner_gpu_ids = list(ttt.learner.gpus)
-            reserved = set(ttt_learner_gpu_ids)
-            trainer_gpu_ids = [gpu_id for gpu_id in trainer_gpu_ids if gpu_id not in reserved]
-        else:
-            ttt_learner_gpu_ids = trainer_gpu_ids[: ttt.learner.num_learners]
-            trainer_gpu_ids = trainer_gpu_ids[ttt.learner.num_learners :]
-        if len(ttt_learner_gpu_ids) != ttt.learner.num_learners:
-            raise ValueError(
-                f"online TTT requested {ttt.learner.num_learners} learner(s), but only "
-                f"{len(ttt_learner_gpu_ids)} learner GPU(s) are available."
-            )
-        if not trainer_gpu_ids:
-            raise ValueError("online TTT must leave at least one GPU for the trainer.")
 
     start_command = sys.argv
     logger.info("Starting RL run")
@@ -167,7 +150,7 @@ def rl_local(config: RLConfig):
         wandb_shared_env["WANDB_SHARED_RUN_ID"] = os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex)
 
     # Check for existing processes on GPUs
-    all_gpu_ids = list(set(infer_gpu_ids + trainer_gpu_ids + teacher_gpu_ids + ttt_learner_gpu_ids))
+    all_gpu_ids = list(set(infer_gpu_ids + trainer_gpu_ids + teacher_gpu_ids))
     check_gpus_available(all_gpu_ids)
 
     # Validate client port matches inference server port
@@ -289,7 +272,8 @@ def rl_local(config: RLConfig):
             adapter_dir = ttt.learner.adapter_dir or (config.output_dir / "ttt" / "adapters")
             admin_urls = config.orchestrator.client.admin_base_url or config.orchestrator.client.base_url
             admin_urls = [url.rstrip("/").removesuffix("/v1") for url in admin_urls]
-            ttt_common_args = [
+            ttt_cmd = [
+                "ttt-learner",
                 "--model-name",
                 config.trainer.model.name,
                 "--adapter-dir",
@@ -318,107 +302,54 @@ def rl_local(config: RLConfig):
                 ttt.learner.dtype,
                 "--host",
                 ttt.learner.host,
+                "--port",
+                str(ttt.learner.port),
                 "--session-offload",
                 ttt.learner.session_offload,
                 "--log-level",
                 config.log.level or os.environ.get("PRIME_LOG_LEVEL", "info"),
             ]
             if ttt.optim.max_grad_norm is not None:
-                ttt_common_args.extend(["--max-grad-norm", str(ttt.optim.max_grad_norm)])
+                ttt_cmd.extend(["--max-grad-norm", str(ttt.optim.max_grad_norm)])
             if not ttt.learner.load_adapters_into_vllm:
-                ttt_common_args.append("--no-load-adapters-into-vllm")
+                ttt_cmd.append("--no-load-adapters-into-vllm")
             if not ttt.learner.unload_vllm_adapters:
-                ttt_common_args.append("--no-unload-vllm-adapters")
+                ttt_cmd.append("--no-unload-vllm-adapters")
             for admin_url in ttt.learner.vllm_admin_base_urls or admin_urls:
-                ttt_common_args.extend(["--vllm-admin-base-url", admin_url])
+                ttt_cmd.extend(["--vllm-admin-base-url", admin_url])
 
-            logger.info(
-                f"Starting {ttt.learner.num_learners} online TTT learner shard(s) "
-                f"behind {ttt.learner.resolved_base_url}"
+            logger.info(f"Starting online TTT learner at {ttt.learner.resolved_base_url}")
+            logger.debug(f"TTT learner start command: {' '.join(ttt_cmd)}")
+            ttt_visible_devices = ",".join(map(str, trainer_gpu_ids[:1])) if trainer_gpu_ids else ""
+            with open(log_dir / "ttt-learner.log", "w") as log_file:
+                ttt_process = Popen(
+                    ttt_cmd,
+                    env={
+                        **os.environ,
+                        **({"CUDA_VISIBLE_DEVICES": ttt_visible_devices} if ttt_visible_devices else {}),
+                        "HF_HUB_OFFLINE": "1",
+                        "TRANSFORMERS_OFFLINE": "1",
+                        "PYTHONUNBUFFERED": "1",
+                        "LOGURU_FORCE_COLORS": "1",
+                    },
+                    stdout=log_file,
+                    stderr=log_file,
+                )
+            processes.append(ttt_process)
+            stop_event = Event()
+            stop_events["ttt-learner"] = stop_event
+            monitor_thread = Thread(
+                target=monitor_process,
+                args=(ttt_process, stop_event, error_queue, "ttt-learner"),
+                daemon=True,
             )
-            shard_urls: list[str] = []
-            learner_base_port = ttt.learner.resolved_learner_base_port
-            for shard_idx, gpu_id in enumerate(ttt_learner_gpu_ids):
-                shard_port = ttt.learner.port if ttt.learner.num_learners == 1 else learner_base_port + shard_idx
-                shard_url = f"http://{ttt.learner.host}:{shard_port}"
-                shard_urls.append(shard_url)
-                ttt_cmd = [
-                    "ttt-learner",
-                    *ttt_common_args,
-                    "--port",
-                    str(shard_port),
-                    "--adapter-name-prefix",
-                    f"ttt-s{shard_idx}",
-                ]
-                logger.debug(f"TTT learner shard {shard_idx} start command: {' '.join(ttt_cmd)}")
-                log_name = "ttt-learner.log" if ttt.learner.num_learners == 1 else f"ttt-learner-{shard_idx}.log"
-                with open(log_dir / log_name, "w") as log_file:
-                    ttt_process = Popen(
-                        ttt_cmd,
-                        env={
-                            **os.environ,
-                            "CUDA_VISIBLE_DEVICES": str(gpu_id),
-                            "HF_HUB_OFFLINE": "1",
-                            "TRANSFORMERS_OFFLINE": "1",
-                            "PYTHONUNBUFFERED": "1",
-                            "LOGURU_FORCE_COLORS": "1",
-                        },
-                        stdout=log_file,
-                        stderr=log_file,
-                    )
-                processes.append(ttt_process)
-                stop_event = Event()
-                stop_events[f"ttt-learner-{shard_idx}"] = stop_event
-                monitor_thread = Thread(
-                    target=monitor_process,
-                    args=(ttt_process, stop_event, error_queue, f"ttt-learner-{shard_idx}"),
-                    daemon=True,
-                )
-                monitor_thread.start()
-                monitor_threads.append(monitor_thread)
-
-            if ttt.learner.num_learners > 1:
-                router_cmd = [
-                    "ttt-router",
-                    "--host",
-                    ttt.learner.host,
-                    "--port",
-                    str(ttt.learner.port),
-                    "--request-timeout-s",
-                    str(ttt.learner.request_timeout_s),
-                    "--log-level",
-                    config.log.level or os.environ.get("PRIME_LOG_LEVEL", "info"),
-                ]
-                for shard_url in shard_urls:
-                    router_cmd.extend(["--learner-url", shard_url])
-                logger.debug(f"TTT router start command: {' '.join(router_cmd)}")
-                with open(log_dir / "ttt-router.log", "w") as log_file:
-                    ttt_router_process = Popen(
-                        router_cmd,
-                        env={
-                            **os.environ,
-                            "PYTHONUNBUFFERED": "1",
-                            "LOGURU_FORCE_COLORS": "1",
-                        },
-                        stdout=log_file,
-                        stderr=log_file,
-                    )
-                processes.append(ttt_router_process)
-                stop_event = Event()
-                stop_events["ttt-router"] = stop_event
-                monitor_thread = Thread(
-                    target=monitor_process,
-                    args=(ttt_router_process, stop_event, error_queue, "ttt-router"),
-                    daemon=True,
-                )
-                monitor_thread.start()
-                monitor_threads.append(monitor_thread)
+            monitor_thread.start()
+            monitor_threads.append(monitor_thread)
 
             health_url = f"{ttt.learner.resolved_base_url.rstrip('/')}/health"
             for _ in range(600):
-                exited = [process for process in processes if process.poll() is not None]
-                if exited:
-                    raise RuntimeError(f"A process exited before TTT became healthy; see {log_dir / 'ttt'} logs")
+                if ttt_process.poll() is not None:
+                    raise RuntimeError(f"TTT learner exited before becoming healthy; see {log_dir / 'ttt-learner.log'}")
                 try:
                     with urlopen(health_url, timeout=1):
                         break
@@ -586,10 +517,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
         ttt_max_grad_norm=ttt.optim.max_grad_norm,
         ttt_update_every_tokens=ttt.update_every_tokens,
         ttt_max_concurrent_sessions=ttt.learner.max_concurrent_sessions,
-        ttt_num_learners=ttt.learner.num_learners,
-        ttt_learner_base_port=ttt.learner.resolved_learner_base_port,
-        ttt_gpu_ids=ttt.learner.resolved_gpus,
-        ttt_request_timeout_s=ttt.learner.request_timeout_s,
         ttt_device=ttt.learner.device,
         ttt_dtype=ttt.learner.dtype,
         ttt_host=ttt.learner.host,
@@ -597,7 +524,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
         ttt_load_adapters_into_vllm=ttt.learner.load_adapters_into_vllm,
         ttt_unload_vllm_adapters=ttt.learner.unload_vllm_adapters,
         ttt_session_offload=ttt.learner.session_offload,
-        log_level=config.log.level or os.environ.get("PRIME_LOG_LEVEL", "info"),
     )
 
     if config.deployment.type == "single_node":
