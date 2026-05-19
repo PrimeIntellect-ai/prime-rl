@@ -1,12 +1,11 @@
 # Smoke test for the RL-entrypoint OPD (on-policy distillation) training mode.
 # The student inference deployment is launched by the rl entrypoint on GPU 0;
 # the teacher inference server is started externally by the test fixture (see
-# tests/integration/test_reverse_text_rl_opd.py) on the same GPU at a small
-# gpu_memory_utilization so it doesn't crowd out the student. Trainer takes
-# GPU 1.
+# tests/integration/test_reverse_text_rl_opd.py) on the same GPU. Trainer
+# takes GPU 1. Training config mirrors `reverse_text/start.toml`.
 
-max_steps = 5
-seq_len = 1024
+max_steps = 15
+seq_len = 2048
 
 [ckpt]
 
@@ -19,14 +18,14 @@ name = "ci-rl-opd"
 
 [orchestrator]
 training_mode = "opd"
-batch_size = 32
-rollouts_per_example = 4
+batch_size = 128
+rollouts_per_example = 16
 
 [orchestrator.renderer]
 name = "qwen3"
 
 [orchestrator.train.sampling]
-max_completion_tokens = 64
+max_completion_tokens = 128
 
 [[orchestrator.train.env]]
 id = "reverse-text"
@@ -45,8 +44,7 @@ num_train_gpus = 1
 gpus_per_node = 2
 
 [inference]
-# Leaves headroom for the externally-launched teacher (10% util) on the same GPU.
-gpu_memory_utilization = 0.85
+gpu_memory_utilization = 0.4
 
 [inference.model]
 enforce_eager = true

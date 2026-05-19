@@ -36,10 +36,8 @@ def _wait_for_teacher(port: int, timeout_s: int) -> None:
 
 @pytest.fixture(scope="module")
 def teacher_inference(output_dir: Path) -> Generator[subprocess.Popen, None, None]:
-    """Spawn a minimal `uv run inference` teacher on GPU 0 (shared with the
-    rl-launched student). gpu_memory_utilization is kept low (10%) so the
-    student vLLM — which starts after — still has enough headroom for its
-    own model + KV cache on the same GPU. Tears down at module scope.
+    """Spawn a `uv run inference` teacher on GPU 0 (shared with the rl-launched
+    student) at 40% gpu_memory_utilization. Tears down at module scope.
     """
     # The rl entrypoint's --clean-output-dir wipes the rl output_dir on start,
     # so park the teacher log next to it instead of inside it.
@@ -56,7 +54,7 @@ def teacher_inference(output_dir: Path) -> Generator[subprocess.Popen, None, Non
         str(TEACHER_PORT),
         "--model.enforce-eager",
         "--gpu-memory-utilization",
-        "0.1",
+        "0.4",
     ]
     env = {**os.environ, "CUDA_VISIBLE_DEVICES": "0"}
     with open(log_path, "w") as log_file:
