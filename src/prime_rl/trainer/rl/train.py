@@ -31,7 +31,7 @@ from prime_rl.trainer.rl.loss import (
     compute_loss,
     compute_importance_ratio_and_mismatch_kl,
     selective_log_softmax,
-    setup_loss_fn,
+    setup_loss_fns,
     shift_tensor_left,
     shift_tensor_right,
 )
@@ -150,7 +150,7 @@ def train(config: TrainerConfig):
 
     # Set up the loss function
     logger.info(f"Setting up loss function ({config.loss})")
-    loss_fn = setup_loss_fn(config.loss)
+    loss_fns = setup_loss_fns(config.loss)
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -465,7 +465,7 @@ def train(config: TrainerConfig):
                 else None,
                 advantages=advantages.squeeze().split(response_lengths),
                 loss_mask=loss_mask.squeeze().split(response_lengths),
-                loss_fn=loss_fn,
+                loss_fns=loss_fns,
                 loss_scale=loss_scale,
                 training_mode=micro_batch["training_mode"],
             )

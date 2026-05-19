@@ -481,6 +481,11 @@ class RLConfig(BaseConfig):
                 f"trainer.loss.type = 'sft' requires training_mode = 'sft' (got '{mode}'). "
                 "The sft loss path expects teacher-generated rollouts."
             )
+        if mode == "opd" and loss_type != "default":
+            raise ValueError(
+                f"training_mode = 'opd' requires trainer.loss.type = 'default' (got '{loss_type}'). "
+                "opd_loss_fn reuses the dppo_mask_* and kl_tau knobs from DefaultLossConfig."
+            )
         return self
 
     ### Auto-setup and validate shared configs

@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, SFTLossConfig
-from prime_rl.trainer.rl.loss import LossInputs, LossOutputs, compute_entropy, compute_loss, setup_loss_fn
+from prime_rl.trainer.rl.loss import LossInputs, LossOutputs, compute_entropy, compute_loss, setup_loss_fns
 
 pytestmark = [pytest.mark.gpu]
 
@@ -14,14 +14,14 @@ def test_grpo_loss():
     advantages = [torch.randn(50).cuda(), torch.randn(30).cuda()]
     loss_mask = [torch.ones(50, dtype=torch.bool).cuda(), torch.ones(30, dtype=torch.bool).cuda()]
 
-    loss_fn = setup_loss_fn(DefaultLossConfig(dppo_mask_high=10.0))
+    loss_fns = setup_loss_fns(DefaultLossConfig(dppo_mask_high=10.0))
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
         teacher_logprobs,
         advantages,
         loss_mask=loss_mask,
-        loss_fn=loss_fn,
+        loss_fns=loss_fns,
         loss_scale=1.0,
     )
     assert loss.shape == ()
@@ -34,14 +34,14 @@ def test_gspo_loss():
     advantages = [torch.randn(40).cuda(), torch.randn(60).cuda()]
     loss_mask = [torch.ones(40, dtype=torch.bool).cuda(), torch.ones(60, dtype=torch.bool).cuda()]
 
-    loss_fn = setup_loss_fn(DefaultLossConfig(dppo_mask_high=10.0))
+    loss_fns = setup_loss_fns(DefaultLossConfig(dppo_mask_high=10.0))
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
         teacher_logprobs,
         advantages,
         loss_mask=loss_mask,
-        loss_fn=loss_fn,
+        loss_fns=loss_fns,
         loss_scale=1.0,
     )
     assert loss.shape == ()
@@ -53,13 +53,13 @@ def test_entropy_loss():
     assert entropy.shape == (10, 10)
 
 
-def test_setup_loss_fn_with_custom_config():
-    """Test setup_loss_fn with CustomLossConfig importing a custom loss."""
+def test_setup_loss_fns_with_custom_config():
+    """Test setup_loss_fns with CustomLossConfig importing a custom loss."""
     loss_config = CustomLossConfig(
         import_path="tests.unit.train.rl.test_loss._dummy_custom_loss",
         kwargs={"multiplier": 2.0},
     )
-    loss_fn = setup_loss_fn(loss_config)
+    loss_fns = setup_loss_fns(loss_config)
 
     inputs = LossInputs(
         trainer_logprobs=torch.randn(50, dtype=torch.float32).cuda(),
@@ -69,7 +69,7 @@ def test_setup_loss_fn_with_custom_config():
         loss_mask=torch.ones(50, dtype=torch.bool).cuda(),
     )
 
-    result = loss_fn(inputs)
+    result = loss_fns["rl"](inputs)
     assert isinstance(result, LossOutputs)
     assert result.loss.shape == ()
     assert "custom_metric" in result.metrics
@@ -81,15 +81,16 @@ def test_sft_loss_matches_masked_nll():
     advantages = [torch.zeros(3, dtype=torch.float32).cuda()]
     loss_mask = [torch.tensor([True, False, True], dtype=torch.bool).cuda()]
 
-    loss_fn = setup_loss_fn(SFTLossConfig())
+    loss_fns = setup_loss_fns(SFTLossConfig())
     loss, metrics = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
         teacher_logprobs=None,
         advantages=advantages,
         loss_mask=loss_mask,
-        loss_fn=loss_fn,
+        loss_fns=loss_fns,
         loss_scale=2,
+        training_mode="sft",
     )
 
     # loss = -sum(masked logprobs) / loss_scale = -(-0.1 - 0.2) / 2 = 0.15
@@ -103,14 +104,14 @@ def test_sft_loss_override_uses_masked_nll_with_default_loss_config():
     advantages = [torch.ones(3, dtype=torch.float32).cuda()]
     loss_mask = [torch.tensor([True, False, True], dtype=torch.bool).cuda()]
 
-    loss_fn = setup_loss_fn(DefaultLossConfig())
+    loss_fns = setup_loss_fns(DefaultLossConfig())
     loss, metrics = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
         teacher_logprobs=None,
         advantages=advantages,
         loss_mask=loss_mask,
-        loss_fn=loss_fn,
+        loss_fns=loss_fns,
         loss_scale=2,
         training_mode="sft",
     )
