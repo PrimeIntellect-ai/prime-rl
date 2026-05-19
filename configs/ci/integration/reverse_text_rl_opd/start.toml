@@ -28,6 +28,16 @@ max_completion_tokens = 128
 [[orchestrator.train.env]]
 id = "reverse-text"
 
+[orchestrator.eval]
+interval = 1
+num_examples = 16
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.eval.env]]
+id = "reverse-text"
+
 [orchestrator.teacher.model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 

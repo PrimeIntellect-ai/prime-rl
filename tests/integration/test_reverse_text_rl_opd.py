@@ -10,7 +10,7 @@ import pytest
 
 from prime_rl.utils.process import cleanup_process
 from tests.conftest import ProcessResult
-from tests.utils import check_loss_goes_down, check_no_error, strip_escape_codes
+from tests.utils import check_eval_avg_goes_up, check_no_error, strip_escape_codes
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
@@ -107,7 +107,7 @@ def test_no_error(rl_opd_process: ProcessResult, output_dir: Path):
     check_no_error(rl_opd_process, output_dir)
 
 
-def test_loss_goes_down(rl_opd_process: ProcessResult, test_no_error, output_dir: Path):
-    with open(output_dir / "logs" / "trainer.log", "r") as f:
-        trainer_stdout = strip_escape_codes(f.read()).splitlines()
-    check_loss_goes_down(trainer_stdout)
+def test_eval_avg_goes_up(rl_opd_process: ProcessResult, test_no_error, output_dir: Path):
+    with open(output_dir / "logs" / "orchestrator.log", "r") as f:
+        orchestrator_stdout = strip_escape_codes(f.read()).splitlines()
+    check_eval_avg_goes_up(orchestrator_stdout, env_name="reverse-text")
