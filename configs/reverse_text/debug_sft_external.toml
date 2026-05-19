@@ -21,7 +21,8 @@ rollouts_per_example = 4
 use_renderer = false
 
 [orchestrator.train.sampling]
-max_completion_tokens = 128
+max_completion_tokens = 2048
+extra_body = { reasoning_effort = "minimal" }
 
 [[orchestrator.train.env]]
 id = "reverse-text"
