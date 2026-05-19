@@ -60,6 +60,25 @@ CLI: `--env.0.id reverse-text --env.1.id math-env`.
 
 In TOML, an empty section header (`[ckpt]`) does the same.
 
+## RL trainer token exports
+
+For rollout visualization/debugging, enable trainer-side token export under `trainer.experimental.token_export` (or `experimental.token_export` when running the trainer entrypoint directly). It writes JSONL records with per-token ids, loss mask, advantage, reward, entropy, mismatch KL, inference logprob/prob, trainer logprob/prob, and masking diagnostics. It does not decode token text in the trainer.
+
+```toml
+[trainer.experimental.token_export]
+# Optional. Relative paths resolve under trainer.output_dir.
+path = "token_exports/sample.jsonl"
+```
+
+Leave it unset for normal training. When enabled, it exports every sequence from each exporting rank.
+
+```bash
+uv run scripts/token_export_visualizer.py outputs/token_exports/rank_0.jsonl --tokenizer Qwen/Qwen3-0.6B -o /tmp/token_export.html
+uv run scripts/token_export_visualizer.py outputs/token_exports --tokenizer Qwen/Qwen3-0.6B -o outputs/token_exports/index.html
+```
+
+Directory inputs render every exported sequence as one navigable HTML page. For a single JSONL file, pass `--all-records` to embed every matching record instead of just one `--record-index`.
+
 ## Key files
 
 - `packages/prime-rl-configs/src/prime_rl/` — config classes under `configs/`; `utils/config.py` re-exports `BaseConfig` and `cli`
