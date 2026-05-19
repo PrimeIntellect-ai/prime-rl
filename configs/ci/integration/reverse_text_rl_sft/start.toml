@@ -4,10 +4,8 @@
 # fixture (see tests/integration/test_reverse_text_rl_sft.py) on the same GPU.
 # Trainer takes GPU 1. Training config mirrors `reverse_text/start.toml`.
 
-max_steps = 15
+max_steps = 5
 seq_len = 2048
-
-[ckpt]
 
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
