@@ -107,6 +107,77 @@ def test_prepare_sample_propagates_sft_loss(make_training_example):
     assert micro_batch.sft_loss is True
 
 
+def test_prepare_sample_overlays_sft_advantage_length_normalized(make_training_example):
+    """Length-normalized (ECHO) overlay: each sft_mask position gets
+    ``alpha / n_sft_tokens`` on the advantages tensor, and its loss_mask
+    flips to True so the SFT gradient reaches it."""
+    # 2 prompt + 2 completion = 4 tokens; mark both prompt positions as SFT.
+    example = make_training_example()
+    example.sft_mask = [True, True, False, False]
+    example.sft_alpha = 0.5
+
+    micro_batch = prepare_sample(example, seq_len=16)
+
+    # n_sft = 2, alpha = 0.5 → weight = 0.25 on mask positions.
+    assert micro_batch.advantages[0] == 0.25
+    assert micro_batch.advantages[1] == 0.25
+    # Non-SFT positions keep the rollout's scalar advantage (1.0 from the fixture).
+    assert micro_batch.advantages[2] == 1.0
+    assert micro_batch.advantages[3] == 1.0
+    # SFT prompt positions are now loss-trainable; completion mask preserved.
+    assert micro_batch.loss_mask == [True, True, True, True]
+    # The mask itself rides through unchanged.
+    assert micro_batch.sft_mask == [True, True, False, False]
+
+
+def test_prepare_sample_overlays_sft_advantage_disable_echo(make_training_example):
+    """When ``disable_echo=True`` the weight is a constant ``alpha``,
+    not ``alpha / n_sft_tokens``. Useful for the ablation cell on the
+    ECHO normalization."""
+    example = make_training_example()
+    example.sft_mask = [True, True, False, False]
+    example.sft_alpha = 0.5
+
+    micro_batch = prepare_sample(example, seq_len=16, disable_echo=True)
+
+    # Constant alpha across all SFT positions.
+    assert micro_batch.advantages[0] == 0.5
+    assert micro_batch.advantages[1] == 0.5
+    assert micro_batch.advantages[2] == 1.0
+    assert micro_batch.advantages[3] == 1.0
+
+
+def test_prepare_sample_skips_sft_overlay_without_alpha(make_training_example):
+    """Carrying ``sft_mask`` without ``sft_alpha`` is a defensive
+    no-op — the overlay only fires when both are set. Lets the
+    orchestrator emit the mask conditionally without forcing alpha."""
+    example = make_training_example()
+    example.sft_mask = [True, True, False, False]
+    example.sft_alpha = None
+
+    micro_batch = prepare_sample(example, seq_len=16)
+
+    # No advantage rewrite; original scalar fills every position.
+    assert all(adv == 1.0 for adv in micro_batch.advantages)
+    # No loss_mask flip on the SFT-mask positions either.
+    assert micro_batch.loss_mask == [False, False, True, True]
+
+
+def test_prepare_sample_truncates_sft_mask_with_other_per_token_lists(make_training_example):
+    """Truncation slices ``sft_mask`` in lockstep with ``input_ids``,
+    keeping the length-equality assertion green."""
+    example = make_training_example()
+    example.sft_mask = [True, True, False, False]
+    example.sft_alpha = 0.5
+
+    micro_batch = prepare_sample(example, seq_len=2)
+
+    assert len(micro_batch.input_ids) == 2
+    assert len(micro_batch.sft_mask) == 2
+    assert len(micro_batch.advantages) == 2
+    assert len(micro_batch.loss_mask) == 2
+
+
 def test_prepare_batch_does_not_pack_mixed_sft_loss(make_training_example):
     rl_example = make_training_example(sft_loss=False)
     sft_example = make_training_example(sft_loss=True)

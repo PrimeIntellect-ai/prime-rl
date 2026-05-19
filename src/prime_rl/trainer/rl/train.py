@@ -229,6 +229,11 @@ def train(config: TrainerConfig):
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake, config.model.seq_len, parallel_dims.get_mesh("dp").size())
     else:
+        # The packer process consumes ``disable_echo`` when applying the
+        # SFT-on-tool-body advantage overlay in ``prepare_sample``. Read it
+        # from the loss config; non-default losses (SFTLossConfig,
+        # CustomLossConfig) don't carry the flag and default to ECHO on.
+        disable_echo = getattr(config.loss, "disable_echo", False)
         dataloader = DataLoader(
             config.output_dir,
             progress.step,
@@ -237,6 +242,7 @@ def train(config: TrainerConfig):
             config.model.cp,
             tokenizer,
             config.rollout_transport,
+            disable_echo=disable_echo,
         )
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
@@ -457,6 +463,10 @@ def train(config: TrainerConfig):
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
+            sft_mask_batch = micro_batch.get("sft_mask")
+            sft_mask_split = (
+                sft_mask_batch.to("cuda").squeeze().split(response_lengths) if sft_mask_batch is not None else None
+            )
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
@@ -468,6 +478,7 @@ def train(config: TrainerConfig):
                 loss_fn=loss_fn,
                 loss_scale=loss_scale,
                 sft_loss=micro_batch["sft_loss"],
+                sft_mask=sft_mask_split,
             )
 
             # Backward pass

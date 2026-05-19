@@ -257,6 +257,7 @@ def compute_loss(
     loss_fn: LossFn,
     loss_scale: int,
     sft_loss: bool = False,
+    sft_mask: list[Bool[Tensor, " seq_i"]] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -270,6 +271,11 @@ def compute_loss(
         loss_fn: Per-sequence loss function
         loss_scale: Scale factor to normalize the loss
         sft_loss: If True, use SFT loss instead of the configured loss_fn for this batch
+        sft_mask: Per-sequence SFT-on-tool-body masks (parallel to loss_mask).
+            When provided, ``default_loss_fn`` gates IS-ratio / DPPO / KL on
+            these positions and emits sft_nll_mean / sft_nll_max /
+            sft_token_count metrics. None when no rollout in this batch
+            opted into SFT-on-tool-body.
 
     Returns:
         Tuple of (scaled_loss, aggregated_metrics)
@@ -281,13 +287,18 @@ def compute_loss(
 
     if teacher_logprobs is None:
         teacher_logprobs = [None] * len(trainer_logprobs)
+    if sft_mask is None:
+        sft_mask_list: list[Bool[Tensor, " seq_i"] | None] = [None] * len(trainer_logprobs)
+    else:
+        sft_mask_list = list(sft_mask)
 
-    for t_logp, i_logp, teach_logp, adv, mask in zip(
+    for t_logp, i_logp, teach_logp, adv, mask, sft_m in zip(
         trainer_logprobs,
         inference_logprobs,
         teacher_logprobs,
         advantages,
         loss_mask,
+        sft_mask_list,
     ):
         inputs = LossInputs(
             trainer_logprobs=t_logp,
@@ -295,6 +306,7 @@ def compute_loss(
             teacher_logprobs=teach_logp,
             advantages=adv,
             loss_mask=mask,
+            sft_mask=sft_m,
         )
 
         result = effective_loss_fn(inputs)

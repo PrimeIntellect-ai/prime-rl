@@ -43,6 +43,13 @@ class TensorMicroBatch(TypedDict):
     # When True, trainer uses SFT loss instead of RL loss for this batch
     sft_loss: bool
 
+    # Per-token SFT-on-tool-body mask (parallel to input_ids). None when no
+    # sample in this micro-batch opted into the SFT-on-tool-body overlay.
+    # When present, loss.default_loss_fn forces IS ratio = 1 and skips DPPO
+    # / KL on these positions; the advantages tensor already carries the
+    # constant alpha/n weight at those positions (overlaid in prepare_sample).
+    sft_mask: Bool[Tensor, "batch seq"] | None
+
 
 class FakeDataLoader:
     def __init__(self, config: FakeDataLoaderConfig, seq_len: int, dp_world_size: int):
@@ -117,6 +124,7 @@ class FakeDataLoader:
             "image_grid_thw": None,
             "mm_token_type_ids": None,
             "sft_loss": False,
+            "sft_mask": None,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -145,6 +153,7 @@ class FakeDataLoader:
             "image_grid_thw": None,
             "mm_token_type_ids": None,
             "sft_loss": False,
+            "sft_mask": None,
         }
 
 
@@ -160,6 +169,7 @@ class DataLoader:
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfig,
+        disable_echo: bool = False,
     ):
         self.world = get_world()
 
@@ -171,6 +181,7 @@ class DataLoader:
                 transport_config=config,
                 pad_to_multiple_of=pad_to_multiple_of,
                 start_step=start_step,
+                disable_echo=disable_echo,
             )
 
         non_dp_world_size = self.world.world_size // dp_world_size
@@ -228,4 +239,7 @@ class DataLoader:
             if micro_batch.routed_experts is not None
             else None,
             sft_loss=micro_batch.sft_loss,
+            sft_mask=torch.tensor(micro_batch.sft_mask, dtype=torch.bool).unsqueeze(0)
+            if micro_batch.sft_mask is not None
+            else None,
         )
