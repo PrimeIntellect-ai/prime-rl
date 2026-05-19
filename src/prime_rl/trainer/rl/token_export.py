@@ -10,7 +10,8 @@ from typing import Any
 import torch
 from torch import Tensor
 
-from prime_rl.configs.trainer import TokenExportConfig
+from prime_rl.configs.trainer import DefaultLossConfig, TokenExportConfig, TrainerConfig
+from prime_rl.trainer.rl.loss import compute_importance_ratio_and_mismatch_kl
 
 SCHEMA_VERSION = 1
 _STOP = object()
@@ -61,6 +62,14 @@ class AsyncJsonlWriter:
             raise RuntimeError(f"Token export writer failed for {self.path}") from self._error
 
 
+class DisabledTokenExporter:
+    def export(self, *args: Any, **kwargs: Any) -> None:
+        return
+
+    def close(self) -> None:
+        return
+
+
 class TokenExporter:
     def __init__(
         self,
@@ -76,22 +85,14 @@ class TokenExporter:
         self._current_step: int | None = None
         self._sequences_this_step = 0
 
-    def export_micro_batch(
+    def export(
         self,
-        *,
         step: int,
         micro_step: int,
         micro_batch: Mapping[str, Any],
-        trainer_logprobs: Tensor,
-        entropy: Tensor,
-        mismatch_kl: Tensor | None,
+        model_output: Mapping[str, Tensor],
         response_lengths: list[int],
-        log_importance_ratio: Tensor | None = None,
-        importance_ratio: Tensor | None = None,
-        prob_delta: Tensor | None = None,
-        is_masked: Tensor | None = None,
-        is_masked_high: Tensor | None = None,
-        is_masked_low: Tensor | None = None,
+        loss_config: Any,
     ) -> None:
         if step % self.config.interval != 0:
             return
@@ -102,15 +103,9 @@ class TokenExporter:
 
         flat = self._flatten_micro_batch(
             micro_batch,
-            trainer_logprobs,
-            entropy,
-            mismatch_kl,
-            log_importance_ratio,
-            importance_ratio,
-            prob_delta,
-            is_masked,
-            is_masked_high,
-            is_masked_low,
+            model_output["logprobs"],
+            model_output["entropy"],
+            _compute_export_tensors(micro_batch, model_output["logprobs"], loss_config),
         )
         start = 0
         for micro_sequence_idx, length in enumerate(response_lengths):
@@ -146,13 +141,7 @@ class TokenExporter:
         micro_batch: Mapping[str, Any],
         trainer_logprobs: Tensor,
         entropy: Tensor,
-        mismatch_kl: Tensor | None,
-        log_importance_ratio: Tensor | None,
-        importance_ratio: Tensor | None,
-        prob_delta: Tensor | None,
-        is_masked: Tensor | None,
-        is_masked_high: Tensor | None,
-        is_masked_low: Tensor | None,
+        export_tensors: Mapping[str, Tensor | None],
     ) -> dict[str, list[Any]]:
         input_ids = _tensor_to_ints(micro_batch["input_ids"])
         seq_len = len(input_ids)
@@ -167,14 +156,13 @@ class TokenExporter:
             "inference_logprobs": _tensor_to_floats(micro_batch["inference_logprobs"]),
             "trainer_logprobs": _tensor_to_floats(trainer_logprobs),
             "entropy": _tensor_to_floats(entropy),
-            "mismatch_kl": _optional_tensor_to_floats(mismatch_kl, seq_len),
-            "log_importance_ratio": _optional_tensor_to_floats(log_importance_ratio, seq_len),
-            "importance_ratio": _optional_tensor_to_floats(importance_ratio, seq_len),
-            "prob_delta": _optional_tensor_to_floats(prob_delta, seq_len),
-            "is_masked": _optional_tensor_to_bools(is_masked, seq_len),
-            "is_masked_high": _optional_tensor_to_bools(is_masked_high, seq_len),
-            "is_masked_low": _optional_tensor_to_bools(is_masked_low, seq_len),
-            "is_clipped": [False] * seq_len,
+            "mismatch_kl": _optional_tensor_to_floats(export_tensors["mismatch_kl"], seq_len),
+            "log_importance_ratio": _optional_tensor_to_floats(export_tensors["log_importance_ratio"], seq_len),
+            "importance_ratio": _optional_tensor_to_floats(export_tensors["importance_ratio"], seq_len),
+            "prob_delta": _optional_tensor_to_floats(export_tensors["prob_delta"], seq_len),
+            "is_masked": _optional_tensor_to_bools(export_tensors["is_masked"], seq_len),
+            "is_masked_high": _optional_tensor_to_bools(export_tensors["is_masked_high"], seq_len),
+            "is_masked_low": _optional_tensor_to_bools(export_tensors["is_masked_low"], seq_len),
             "env_names": list(micro_batch["env_names"]),
         }
         lengths = {key: len(values) for key, values in flat.items()}
@@ -224,7 +212,6 @@ class TokenExporter:
                 "is_masked": flat["is_masked"][absolute_idx],
                 "is_masked_high": flat["is_masked_high"][absolute_idx],
                 "is_masked_low": flat["is_masked_low"][absolute_idx],
-                "is_clipped": flat["is_clipped"][absolute_idx],
             }
             token["inference_prob"] = _prob_from_logprob(token["inference_logprob"])
             token["trainer_prob"] = _prob_from_logprob(token["trainer_logprob"])
@@ -242,6 +229,65 @@ class TokenExporter:
             "sft_loss": sft_loss,
             "tokens": tokens,
         }
+
+
+def setup_token_exporter(
+    config: TrainerConfig, parallel_dims: Any, world: Any, logger: Any
+) -> TokenExporter | DisabledTokenExporter:
+    token_export_config = config.experimental.token_export
+    if token_export_config is None:
+        return DisabledTokenExporter()
+    if parallel_dims.cp_enabled and parallel_dims.world_mesh["cp"].get_local_rank() != 0:
+        return DisabledTokenExporter()
+
+    exporter = TokenExporter(token_export_config, config.output_dir, world.rank)
+    logger.info(f"Writing token exports to {exporter.path}")
+    return exporter
+
+
+def _compute_export_tensors(
+    micro_batch: Mapping[str, Any], trainer_logprobs: Tensor, loss_config: Any
+) -> dict[str, Tensor | None]:
+    fields: dict[str, Tensor | None] = {
+        "log_importance_ratio": None,
+        "importance_ratio": None,
+        "mismatch_kl": None,
+        "prob_delta": None,
+        "is_masked": None,
+        "is_masked_high": None,
+        "is_masked_low": None,
+    }
+    if micro_batch["sft_loss"]:
+        return fields
+
+    inference_logprobs = micro_batch["inference_logprobs"].to(trainer_logprobs.device)
+    loss_mask = micro_batch["loss_mask"].to(trainer_logprobs.device)
+    advantages = micro_batch["advantages"].to(trainer_logprobs.device)
+    with torch.no_grad():
+        log_ratio, ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(trainer_logprobs, inference_logprobs)
+        prob_delta = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
+        fields.update(
+            {
+                "log_importance_ratio": log_ratio,
+                "importance_ratio": ratio,
+                "mismatch_kl": mismatch_kl,
+                "prob_delta": prob_delta,
+            }
+        )
+        if isinstance(loss_config, DefaultLossConfig):
+            invalid_high = prob_delta > loss_config.dppo_mask_high
+            invalid_low = prob_delta < -loss_config.dppo_mask_low
+            positive_advantages = advantages > 0
+            negative_advantages = advantages < 0
+            invalid = torch.where(positive_advantages, invalid_high, invalid_low)
+            fields.update(
+                {
+                    "is_masked": loss_mask & invalid,
+                    "is_masked_high": loss_mask & positive_advantages & invalid_high,
+                    "is_masked_low": loss_mask & negative_advantages & invalid_low,
+                }
+            )
+    return fields
 
 
 def _tensor_to_ints(tensor: Tensor) -> list[int]:

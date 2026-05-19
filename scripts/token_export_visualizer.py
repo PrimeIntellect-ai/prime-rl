@@ -395,7 +395,6 @@ def _render_html(records: list[dict[str, Any]], max_mismatch: float | None, init
       "entropy",
       "is_masked_low",
       "is_masked_high",
-      "is_clipped",
       "log_importance_ratio",
       "inference_logprob",
       "trainer_logprob",

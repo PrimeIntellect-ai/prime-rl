@@ -17,7 +17,7 @@ from prime_rl.trainer.ckpt import setup_ckpt_managers
 from prime_rl.trainer.multi_ckpt import setup_multi_checkpoint_manager
 from prime_rl.trainer.optim import setup_optimizer, setup_multi_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
-from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
+from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
     gather_for_cp,
@@ -35,7 +35,7 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_left,
     shift_tensor_right,
 )
-from prime_rl.trainer.rl.token_export import TokenExporter
+from prime_rl.trainer.rl.token_export import setup_token_exporter
 from prime_rl.trainer.model import (
     forward,
     setup_tokenizer,
@@ -240,12 +240,7 @@ def train(config: TrainerConfig):
             config.rollout_transport,
         )
 
-    token_exporter = None
-    if config.experimental.token_export is not None:
-        token_export_enabled = not parallel_dims.cp_enabled or parallel_dims.world_mesh["cp"].get_local_rank() == 0
-        if token_export_enabled:
-            token_exporter = TokenExporter(config.experimental.token_export, config.output_dir, world.rank)
-            logger.info(f"Writing token exports to {token_exporter.path}")
+    token_exporter = setup_token_exporter(config, parallel_dims, world, logger)
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
@@ -500,57 +495,15 @@ def train(config: TrainerConfig):
             for env_name, indices in env_to_indices.items():
                 tensors[f"entropy/{env_name}"].append(entropy[indices])
 
-            full_log_importance_ratio = None
-            full_importance_ratio = None
-            full_mismatch_kl = None
-            prob_delta = None
-            dppo_is_masked = None
-            dppo_is_masked_high = None
-            dppo_is_masked_low = None
             if micro_batch["training_mode"] != "sft":
                 with torch.no_grad():
-                    full_log_importance_ratio, full_importance_ratio, full_mismatch_kl = (
-                        compute_importance_ratio_and_mismatch_kl(out["logprobs"], inference_logprobs)
-                    )
-                    prob_delta = torch.exp(out["logprobs"]) - torch.exp(inference_logprobs)
-                    if isinstance(config.loss, DefaultLossConfig):
-                        dppo_invalid_mask_high = prob_delta > config.loss.dppo_mask_high
-                        dppo_invalid_mask_low = prob_delta < -config.loss.dppo_mask_low
-                        positive_advantages = advantages > 0
-                        negative_advantages = advantages < 0
-                        dppo_invalid_mask = torch.where(
-                            positive_advantages,
-                            dppo_invalid_mask_high,
-                            dppo_invalid_mask_low,
-                        )
-                        dppo_is_masked = loss_mask & dppo_invalid_mask
-                        dppo_is_masked_high = loss_mask & positive_advantages & dppo_invalid_mask_high
-                        dppo_is_masked_low = loss_mask & negative_advantages & dppo_invalid_mask_low
-                    else:
-                        dppo_is_masked = torch.zeros_like(loss_mask)
-                        dppo_is_masked_high = torch.zeros_like(loss_mask)
-                        dppo_is_masked_low = torch.zeros_like(loss_mask)
-                mismatch_kl = full_mismatch_kl[loss_mask].detach().to("cpu")
+                    _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(out["logprobs"], inference_logprobs)
+                mismatch_kl = mismatch_kl[loss_mask].detach().to("cpu")
                 tensors["mismatch_kl/all"].append(mismatch_kl)
                 for env_name, indices in env_to_indices.items():
                     tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
-            if token_exporter is not None:
-                token_exporter.export_micro_batch(
-                    step=progress.step,
-                    micro_step=micro_step,
-                    micro_batch=micro_batch,
-                    trainer_logprobs=out["logprobs"],
-                    entropy=out["entropy"],
-                    mismatch_kl=full_mismatch_kl,
-                    response_lengths=response_lengths,
-                    log_importance_ratio=full_log_importance_ratio,
-                    importance_ratio=full_importance_ratio,
-                    prob_delta=prob_delta,
-                    is_masked=dppo_is_masked,
-                    is_masked_high=dppo_is_masked_high,
-                    is_masked_low=dppo_is_masked_low,
-                )
+            token_exporter.export(progress.step, micro_step, micro_batch, out, response_lengths, config.loss)
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)
@@ -730,9 +683,7 @@ def train(config: TrainerConfig):
         prof.export_chrome_trace(trace_file)
         logger.info(f"Saved trace to {trace_file}")
 
-    if token_exporter is not None:
-        logger.info(f"Flushing token exports to {token_exporter.path}")
-        token_exporter.close()
+    token_exporter.close()
 
     # Write final checkpoint (only for single-run mode; multi-run checkpoints are managed by MultiCheckpointManager)
     if config.max_concurrent_runs == 1 and ckpt_manager is not None:
