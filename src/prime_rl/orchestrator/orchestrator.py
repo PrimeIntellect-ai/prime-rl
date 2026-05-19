@@ -46,7 +46,6 @@ from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
     get_weight_dir,
     print_benchmark,
-    probe_teacher_logprobs,
     set_default_executor,
 )
 from prime_rl.orchestrator.vf_utils import (
@@ -125,37 +124,27 @@ async def orchestrate(config: OrchestratorConfig):
     for env_id in env_ids_to_install:
         install_env(env_id, prerelease=config.env_install_prerelease)
 
-    # Check if this is a vision-language model (used throughout for VLM-specific paths)
-    is_vlm = config.student.model.vlm is not None
-
     # Load tokenizer and processor (processor only for VLM models)
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
 
     processor = None
-    if is_vlm:
+    if config.student.model.is_vlm:
         logger.info(f"Loading VLM processor for {config.student.model.name}")
         processor = AutoProcessor.from_pretrained(
             config.student.model.name, trust_remote_code=config.student.model.trust_remote_code, use_fast=True
         )
 
-    # Set up student inference pool. Required for rl/opd; optional for sft (only
-    # configured when the user wrote [inference] - signal: student.client.base_url
-    # is in model_fields_set, set by auto_setup_inference_client). When absent,
-    # SFT runs in teacher-only mode: no online evals, no weight sync.
-    has_student_inference = config.training_mode != "sft" or "base_url" in config.student.client.model_fields_set
-    student_inference = None
-    renderer = None
-    if has_student_inference:
-        logger.info(
-            f"Initializing student inference pool (base_url={', '.join(config.student.client.base_url)}, "
-            f"model={config.student.model.name})"
-        )
-        renderer, student_inference = await setup_student_inference_pool(
-            config=config,
-            tokenizer=tokenizer,
-            logger=logger,
-        )
+    # Set up student inference pool (required for all training modes).
+    logger.info(
+        f"Initializing student inference pool (base_url={', '.join(config.student.client.base_url)}, "
+        f"model={config.student.model.name})"
+    )
+    renderer, student_inference = await setup_student_inference_pool(
+        config=config,
+        tokenizer=tokenizer,
+        logger=logger,
+    )
 
     # Set up teacher inference pool (configured for opd or sft). Always MITO for
     # simplicity - this also keeps external OAI-compatible teachers (PI inference,
@@ -171,9 +160,6 @@ async def orchestrate(config: OrchestratorConfig):
             model_name=config.teacher.model.name,
             train_client_type="openai_chat_completions",
         )
-
-    # Weight sync is only possible when a student inference pool exists.
-    enable_policy_updates = student_inference is not None
 
     # Setup monitor (may register the run and set RUN_ID in the environment)
     logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
@@ -261,47 +247,37 @@ async def orchestrate(config: OrchestratorConfig):
         max_off_policy_steps=config.max_off_policy_steps,
         strict_async_level=config.strict_async_level,
         tasks_per_minute=config.tasks_per_minute,
-        enable_policy_updates=enable_policy_updates,
         lora_name=config.student.model.lora.name if config.student.model.lora else None,
         config=config,
     )
 
     # Wait for pools to be ready
-    if student_inference is not None:
-        logger.info("Waiting for student inference pool to be ready")
-        await student_inference.wait_for_ready(config.student.model.name)
-        logger.success("Student inference pool ready")
+    logger.info("Waiting for student inference pool to be ready")
+    await student_inference.wait_for_ready(config.student.model.name)
+    logger.success("Student inference pool ready")
     if teacher_inference is not None:
         assert config.teacher is not None
         logger.info("Waiting for teacher inference pool to be ready")
         await teacher_inference.wait_for_ready(config.teacher.model.name)
         logger.success("Teacher inference pool ready")
-        if config.training_mode == "opd":
-            logger.info("Probing teacher for prompt_logprobs support")
-            await probe_teacher_logprobs(teacher_inference.train_clients, config.teacher.model.name)
-            logger.success("Teacher supports prompt_logprobs")
 
-    # Start inference metrics collector (requires W&B + student inference pool)
+    # Start inference metrics collector (requires W&B)
     inference_metrics_collector = None
-    if config.wandb is not None and config.collect_inference_metrics and student_inference is not None:
+    if config.wandb is not None and config.collect_inference_metrics:
         inference_metrics_collector = InferenceMetricsCollector(student_inference.admin_clients)
         await inference_metrics_collector.start()
 
     # Set up weight broadcast backend (targets student inference)
-    if enable_policy_updates:
-        assert student_inference is not None
-        logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
-        if config.weight_broadcast.type == "nccl":
-            await init_nccl_broadcast(
-                student_inference.admin_clients,
-                config.weight_broadcast.host,
-                config.weight_broadcast.port,
-                config.weight_broadcast.timeout,
-                inference_world_size=config.weight_broadcast.inference_world_size,
-                quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
-            )
-    else:
-        logger.info("Skipping weight broadcast initialization (no student inference pool)")
+    logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
+    if config.weight_broadcast.type == "nccl":
+        await init_nccl_broadcast(
+            student_inference.admin_clients,
+            config.weight_broadcast.host,
+            config.weight_broadcast.port,
+            config.weight_broadcast.timeout,
+            inference_world_size=config.weight_broadcast.inference_world_size,
+            quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
+        )
 
     # Setup training batch sender for sending training examples to trainer
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
@@ -327,20 +303,18 @@ async def orchestrate(config: OrchestratorConfig):
             # Allow eval at resumed step by setting prev_ckpt_step one behind
             prev_ckpt_step = scheduler.ckpt_step - 1
 
-        if enable_policy_updates:
-            assert student_inference is not None
-            # In NCCL mode, skip existence check - weights are broadcasted, not stored on disk
-            check_exists = config.weight_broadcast.type != "nccl"
-            wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
-            weights_path = get_weight_dir(
-                config.output_dir, scheduler.ckpt_step, check_exists=check_exists, wait_timeout=wait_timeout
-            )
-            lora_name = config.student.model.lora.name if config.student.model.lora else None
-            await student_inference.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
-            if lora_name is not None:
-                student_inference.update_model_name(lora_name)
-                if scheduler.rollout_inference is student_inference:
-                    scheduler.model_name = lora_name
+        # In NCCL mode, skip existence check - weights are broadcasted, not stored on disk
+        check_exists = config.weight_broadcast.type != "nccl"
+        wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
+        weights_path = get_weight_dir(
+            config.output_dir, scheduler.ckpt_step, check_exists=check_exists, wait_timeout=wait_timeout
+        )
+        lora_name = config.student.model.lora.name if config.student.model.lora else None
+        await student_inference.update_weights(weights_path, lora_name=lora_name, step=scheduler.ckpt_step)
+        if lora_name is not None:
+            student_inference.update_model_name(lora_name)
+            if scheduler.rollout_inference is student_inference:
+                scheduler.model_name = lora_name
     else:
         logger.info("Training from scratch")
 
@@ -356,7 +330,7 @@ async def orchestrate(config: OrchestratorConfig):
             raise RuntimeError(f"Run evicted by trainer: {reason}")
 
         # Capture ckpt_step once for consistency (it's updated inside the scheduler)
-        ckpt_step = scheduler.ckpt_step if enable_policy_updates else progress.step
+        ckpt_step = scheduler.ckpt_step
         scheduler.ckpt_step = ckpt_step
 
         # Save checkpoint (if we are at an interval step and not at the first or last step)
@@ -384,7 +358,7 @@ async def orchestrate(config: OrchestratorConfig):
         # scheduler.checkpoint_ready during eval to ensure consistent weights.
         # Each eval env has its own interval, so we check each independently.
         envs_to_eval: list[EvalEnv] = []
-        if config.eval and student_inference is not None:
+        if config.eval:
             assert eval_envs is not None
             for eval_env in eval_envs:
                 eval_ckpt_step = compute_eval_ckpt_step(
@@ -399,7 +373,6 @@ async def orchestrate(config: OrchestratorConfig):
                     envs_to_eval.append(eval_env)
 
         if envs_to_eval:
-            assert student_inference is not None
             env_names = ", ".join(e.name for e in envs_to_eval)
             logger.info(f"Running evals at {ckpt_step=} for {env_names}")
 
@@ -496,7 +469,7 @@ async def orchestrate(config: OrchestratorConfig):
         )
 
         # VLM: offload base64 images to disk immediately to free memory
-        if is_vlm:
+        if config.student.model.is_vlm:
             offload_start = time.perf_counter()
             num_offloaded = offload_images_to_disk(train_rollouts, config.output_dir)
             if num_offloaded:
@@ -528,7 +501,7 @@ async def orchestrate(config: OrchestratorConfig):
                 )
             )
 
-        if is_vlm:
+        if config.student.model.is_vlm:
             mm_token_type_ids_mapping = {}
             if hasattr(processor, "image_token_id") and processor.image_token_id is not None:
                 mm_token_type_ids_mapping[processor.image_token_id] = 1
@@ -837,7 +810,7 @@ async def orchestrate(config: OrchestratorConfig):
         if heart is not None:
             heart.beat()
 
-    if config.eval and eval_envs is not None and student_inference is not None:
+    if config.eval and eval_envs is not None:
         logger.info("Running final evals")
         eval_results = await asyncio.gather(
             *[
@@ -879,8 +852,7 @@ async def orchestrate(config: OrchestratorConfig):
         await scheduler.stop()
         if inference_metrics_collector is not None:
             await inference_metrics_collector.stop()
-        if student_inference is not None:
-            await student_inference.stop()
+        await student_inference.stop()
         if teacher_inference is not None:
             await teacher_inference.stop()
         event_loop_lag_monitor_task.cancel()

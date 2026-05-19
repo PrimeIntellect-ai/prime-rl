@@ -194,26 +194,3 @@ def test_orchestrator_vlm_configs_must_disable_renderer():
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
-
-
-def test_sft_training_mode_enables_student_pool_when_inference_configured():
-    base_config = {
-        "training_mode": "sft",
-        "trainer": {},
-        "orchestrator": {
-            "use_token_client": False,
-            "use_renderer": False,
-            "teacher": {
-                "client": {"base_url": ["http://teacher.example/v1"]},
-                "model": {"name": "teacher-model"},
-            },
-        },
-    }
-
-    # Without inference, student client base_url not explicitly set → policy updates disabled
-    config = RLConfig.model_validate(base_config)
-    assert "base_url" not in config.orchestrator.student.client.model_fields_set
-
-    # With inference, student client base_url is auto-set → policy updates enabled
-    config = RLConfig.model_validate({**base_config, "inference": {}})
-    assert "base_url" in config.orchestrator.student.client.model_fields_set

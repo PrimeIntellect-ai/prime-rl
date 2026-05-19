@@ -890,27 +890,8 @@ class RolloutModelConfig(BaseConfig):
 
     client: Annotated[
         ClientConfig,
-        Field(description="The OAI client configuration."),
+        Field(description="The client configuration."),
     ] = ClientConfig()
-
-    @model_validator(mode="before")
-    @classmethod
-    def _accept_flat_model_layout(cls, data):
-        """Accept legacy flat ModelConfig layout (e.g. [orchestrator.model.lora]).
-
-        Pre-refactor, orchestrator.model was a ModelConfig directly (name, lora,
-        trust_remote_code, vlm). Now it's a RolloutModelConfig wrapping ModelConfig
-        + ClientConfig. Detect dicts whose only keys are ModelConfig fields and
-        re-nest them under "model" so existing configs keep working.
-        """
-        if not isinstance(data, dict):
-            return data
-        model_only_keys = {"name", "trust_remote_code", "vlm", "lora"}
-        if "model" in data or "client" in data:
-            return data
-        if any(k in model_only_keys for k in data.keys()):
-            return {"model": data}
-        return data
 
 
 class OrchestratorConfig(BaseConfig):
@@ -1155,19 +1136,52 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="before")
     @classmethod
-    def _accept_top_level_client(cls, data: Any) -> Any:
-        """Accept legacy [orchestrator.client] as shorthand for [orchestrator.student.client].
+    def _accept_legacy_student_layout(cls, data: Any) -> Any:
+        """Backward-compat shims for the pre-refactor student layout.
 
-        Pre-refactor, OrchestratorConfig had a top-level `client` field. After the
-        student/teacher rename it moved under `student.client`. Re-nest a top-level
-        `client` dict so existing configs keep working.
+        Pre-refactor OrchestratorConfig had top-level `model: ModelConfig` and
+        `client: ClientConfig` fields. The student/teacher rename consolidated
+        both under `student: RolloutModelConfig` (with `model` as a legacy alias
+        for `student`). Re-nest legacy keys so old configs still parse:
+
+        - [orchestrator.client.*]     -> [orchestrator.student.client.*]
+        - [orchestrator.model.<k>]    -> [orchestrator.student.model.<k>]
+          (where <k> is a ModelConfig field: name, trust_remote_code, vlm, lora)
+
+        Teacher was always nested pre-refactor (teacher_model.model +
+        teacher_model.client), so we don't touch it.
         """
-        if not isinstance(data, dict) or "client" not in data:
+        if not isinstance(data, dict):
             return data
-        student = data.setdefault("student", {})
-        # If the user already nested model+client under student/model, leave it alone.
-        if isinstance(student, dict) and "client" not in student:
-            student["client"] = data.pop("client")
+
+        # 1. Re-nest top-level [orchestrator.client] under student.client.
+        if "client" in data:
+            student = data.setdefault("student", {})
+            if isinstance(student, dict) and "client" not in student:
+                student["client"] = data.pop("client")
+
+        # 2. Consolidate the legacy `model` alias into `student` so the
+        # flat-layout fix-up below sees a single target.
+        legacy_model = data.pop("model", None)
+        if legacy_model is not None:
+            existing = data.get("student")
+            if existing is None:
+                data["student"] = legacy_model
+            elif isinstance(existing, dict) and isinstance(legacy_model, dict):
+                for k, v in legacy_model.items():
+                    existing.setdefault(k, v)
+            else:
+                # Mismatched types - put it back and let pydantic surface the error.
+                data["model"] = legacy_model
+
+        # 3. Re-nest flat ModelConfig keys under student.model.
+        model_only_keys = {"name", "trust_remote_code", "vlm", "lora"}
+        student = data.get("student")
+        if isinstance(student, dict):
+            flat = {k: student.pop(k) for k in list(student) if k in model_only_keys}
+            if flat:
+                student.setdefault("model", {}).update(flat)
+
         return data
 
     @model_validator(mode="before")

@@ -73,7 +73,7 @@ class Scheduler:
     def __init__(
         self,
         train_envs: TrainEnvs,
-        student_inference: InferencePool | None,
+        student_inference: InferencePool,
         teacher_inference: InferencePool | None,
         buffer: Buffer,
         config: OrchestratorConfig,
@@ -82,7 +82,6 @@ class Scheduler:
         max_off_policy_steps: int,
         strict_async_level: bool,
         tasks_per_minute: int | None,
-        enable_policy_updates: bool = True,
         lora_name: str | None = None,
     ):
         self.logger = get_logger()
@@ -100,18 +99,19 @@ class Scheduler:
         self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
         self.strict_async_level = strict_async_level
-        self.enable_policy_updates = enable_policy_updates
         self.lora_name = lora_name
         self.json_logging = config.log.json_logging
 
-        # student_inference is the weight-sync target (None = no policy updates).
-        # teacher_inference is set in opd (for logprobs) and sft (for rollouts).
-        # rollout_inference is whichever pool serves train rollouts for this mode.
+        # student_inference is the weight-sync target. teacher_inference is set
+        # in opd (for logprobs) and sft (for rollouts). rollout_inference is
+        # whichever pool serves train rollouts for this mode.
         self.student_inference = student_inference
         self.teacher_inference = teacher_inference
-        rollout = teacher_inference if config.training_mode == "sft" else student_inference
-        assert rollout is not None, "rollout_inference resolved to None - config validation should prevent this"
-        self.rollout_inference: InferencePool = rollout
+        if config.training_mode == "sft":
+            assert teacher_inference is not None
+            self.rollout_inference: InferencePool = teacher_inference
+        else:
+            self.rollout_inference = student_inference
         # model_name is the name to send on rollout requests - matches the rollout pool
         self.model_name = self.rollout_inference.model_name
 
@@ -328,9 +328,6 @@ class Scheduler:
 
         update_weights_start_time = time.perf_counter()
         weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
-        assert self.student_inference is not None, (
-            "weight sync requires student_inference - guard with enable_policy_updates"
-        )
         await self.student_inference.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
         self.update_weights_time = time.perf_counter() - update_weights_start_time
         self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
@@ -365,11 +362,6 @@ class Scheduler:
 
     async def maybe_update_policy(self):
         """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
-        if not self.enable_policy_updates:
-            self.ckpt_step = self.step
-            self.checkpoint_ready.set()
-            return
-
         while True:
             next_ckpt_step = self._compute_next_ckpt_step()
             if next_ckpt_step <= self.ckpt_step:
@@ -409,18 +401,14 @@ class Scheduler:
         """Continuously generates a batch of rollouts."""
         self.step = step
 
-        if self.enable_policy_updates:
-            # Cancel the previous update policy task to avoid concurrent updates
-            if self.update_policy_task is not None:
-                await safe_cancel(self.update_policy_task)
+        # Cancel the previous update policy task to avoid concurrent updates
+        if self.update_policy_task is not None:
+            await safe_cancel(self.update_policy_task)
 
-            # Manually check the async barrier before starting the step, then re-create the update policy loop
-            # This ensures that we respect max_async_level, while still listening for policy updates mid-step
-            await self.maybe_update_policy()
-            self.update_policy_task = asyncio.create_task(self.update_policy_loop())
-        else:
-            self.ckpt_step = step
-            self.checkpoint_ready.set()
+        # Manually check the async barrier before starting the step, then re-create the update policy loop
+        # This ensures that we respect max_async_level, while still listening for policy updates mid-step
+        await self.maybe_update_policy()
+        self.update_policy_task = asyncio.create_task(self.update_policy_loop())
 
         batch_start_time = time.perf_counter()
 

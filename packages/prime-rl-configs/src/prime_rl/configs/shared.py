@@ -131,6 +131,10 @@ class BaseModelConfig(BaseConfig):
         ),
     ] = None
 
+    @property
+    def is_vlm(self) -> bool:
+        return self.vlm is not None
+
 
 class RendererConfig(BaseConfig):
     """Configures the client-side renderer (chat-template + response parsing).
