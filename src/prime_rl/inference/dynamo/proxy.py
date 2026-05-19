@@ -76,6 +76,19 @@ class DynamoProxy:
             headers=_content_headers(response.headers),
         )
 
+    async def generate(self, request: Request) -> Response:
+        body = await request.json()
+        dp_rank = request.headers.get("x-data-parallel-rank")
+        if dp_rank is not None:
+            body.setdefault("routing", {})["dp_rank"] = int(dp_rank)
+
+        response = await self.client.post(f"{self.worker_url}/engine/generate", json=body)
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            headers=_content_headers(response.headers),
+        )
+
     async def models(self) -> JSONResponse:
         return JSONResponse(
             {
@@ -126,6 +139,10 @@ def build_app(proxy: DynamoProxy) -> FastAPI:
     @app.post("/v1/chat/completions")
     async def _chat_completions(request: Request) -> Response:
         return await proxy.chat_completions(request)
+
+    @app.post("/v1/generate")
+    async def _generate(request: Request) -> Response:
+        return await proxy.generate(request)
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
     async def _forward(request: Request, path: str) -> Response:
