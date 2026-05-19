@@ -169,7 +169,8 @@ echo "MASTER_PORT=${MASTER_PORT}"
 cd $PROJECT_DIR
 [ -f .env ] && source .env
 source .venv/bin/activate
-uv sync --all-extras
+# start.sh syncs the environment before submission. Avoid syncing again inside
+# the SLURM allocation because uv can block on the shared .venv lock here.
 
 {% if pre_run_command %}
 # Pre-run command
