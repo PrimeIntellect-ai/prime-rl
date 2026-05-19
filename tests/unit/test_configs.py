@@ -178,12 +178,10 @@ def test_orchestrator_vlm_configs_must_disable_renderer():
                     "language_model_attr": "model.language_model",
                 }
             },
-            "use_token_client": False,
             "use_renderer": False,
         }
     )
 
-    assert config.use_token_client is False
     assert config.use_renderer is False
 
 
