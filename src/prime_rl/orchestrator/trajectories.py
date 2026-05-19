@@ -11,6 +11,7 @@ import verifiers as vf
 from PIL import Image
 from transformers.tokenization_utils import PreTrainedTokenizer
 
+from prime_rl.configs.orchestrator import SFTConfig
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.chat_template import (
     common_prefix_len,
@@ -249,11 +250,70 @@ def pretokenize_rollout_trajectory(
     return True
 
 
+def _step_sft_mask(
+    prompt_attribution: Any,
+    prompt_message_tool_names: list[str | None] | None,
+    prompt_len: int,
+    completion_len: int,
+    sft_config: SFTConfig | None,
+) -> list[bool]:
+    """Per-token SFT mask for one trajectory step.
+
+    Length = prompt_len + completion_len. Completion-side entries are
+    uniformly False (assistant tokens never receive SFT supervision;
+    the policy gradient handles them via the normal RL advantage).
+
+    A prompt token is masked True iff:
+      1. The env's SFTConfig is set and ``on_tool_outputs=True``.
+      2. The renderer attribution is populated (``prompt_attribution``
+         carries ``message_indices`` + ``is_content``, and the verifiers
+         trajectory step carries the parallel ``prompt_message_tool_names``).
+      3. The token's message index resolves to a tool-role message whose
+         function name is in ``sft_config.tool_names`` (or any tool name
+         when ``tool_names`` is None).
+      4. The token is message-body bytes (``is_content`` from the renderer's
+         body/scaffold cut) — not template scaffold like ``<|tool_response>``.
+
+    Returns all-False when any precondition fails: SFT disabled, missing
+    attribution, missing names, or non-renderer client rollout. Callers
+    treat all-False as "no SFT for this step" without branching.
+    """
+    out = [False] * (prompt_len + completion_len)
+    if sft_config is None or not sft_config.on_tool_outputs:
+        return out
+    if prompt_attribution is None or prompt_message_tool_names is None:
+        return out
+
+    enabled = set(sft_config.tool_names) if sft_config.tool_names else None
+    message_indices = prompt_attribution.message_indices
+    is_content = prompt_attribution.is_content
+    # Defensive: if the renderer didn't populate is_content (DefaultRenderer
+    # leaves it empty), we can't tell body from scaffold — bail to all-False.
+    if not is_content or len(is_content) != prompt_len:
+        return out
+    if len(message_indices) != prompt_len:
+        return out
+
+    for k in range(prompt_len):
+        mi = message_indices[k]
+        if mi < 0 or not is_content[k]:
+            continue
+        if mi >= len(prompt_message_tool_names):
+            continue
+        name = prompt_message_tool_names[mi]
+        if name is None:
+            continue
+        if enabled is None or name in enabled:
+            out[k] = True
+    return out
+
+
 def interleave_rollout(
     output: vf.RolloutOutput,
     vlm_cache: "VLMImageCache | None" = None,
     cache_key: int | None = None,
     mm_token_type_ids_mapping: dict[int, int] | None = None,
+    sft_config: SFTConfig | None = None,
 ) -> list[TrainingSample] | None:
     """
     Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
@@ -273,10 +333,19 @@ def interleave_rollout(
     For VLM models, pass vlm_cache to attach cumulative pixel_values per sample.
     Each sample gets the images accumulated up to its last merged step.
 
+    When ``sft_config`` is provided and ``on_tool_outputs=True``, each sample
+    carries a per-token ``sft_mask`` (parallel to ``prompt_ids + completion_ids``)
+    that the trainer overlays an alpha advantage onto. The mask is computed
+    per-step from the renderer's ``prompt_attribution`` + verifiers'
+    ``prompt_message_tool_names`` and extended through step merging.
+
     Args:
         output: vf.RolloutOutput containing trajectory data
         vlm_cache: Pre-computed VLM image cache for multimodal training
         cache_key: Cache key to use when retrieving images from the VLM cache
+        sft_config: Per-env SFT-on-tool-body config (None when SFT is disabled
+            for this env). Caller resolves it from
+            ``train_envs.get(env_name).config.sft``.
     """
     logger = get_logger()
 
@@ -296,13 +365,23 @@ def interleave_rollout(
     def prepare_step_tokens(step: vf.TrajectoryStep, step_idx: int) -> dict[str, Any] | None:
         tokens = step["tokens"]
         if tokens is not None:
+            prompt_ids = list(tokens["prompt_ids"])
+            completion_ids = list(tokens["completion_ids"])
+            sft_mask = _step_sft_mask(
+                prompt_attribution=tokens.get("prompt_attribution"),
+                prompt_message_tool_names=tokens.get("prompt_message_tool_names"),
+                prompt_len=len(prompt_ids),
+                completion_len=len(completion_ids),
+                sft_config=sft_config,
+            )
             return {
-                "prompt_ids": list(tokens["prompt_ids"]),
+                "prompt_ids": prompt_ids,
                 "prompt_mask": [bool(i) for i in tokens["prompt_mask"]],
-                "completion_ids": list(tokens["completion_ids"]),
+                "completion_ids": completion_ids,
                 "completion_mask": [bool(i) for i in tokens["completion_mask"]],
                 "completion_logprobs": list(tokens["completion_logprobs"]),
                 "routed_experts": tokens.get("routed_experts"),
+                "sft_mask": sft_mask,
             }
 
         logger.warning(f"Missing rollout tokens for example {output['example_id']} step {step_idx}.")
@@ -328,6 +407,12 @@ def interleave_rollout(
             len(tokens["prompt_ids"]) + len(tokens["completion_ids"]),
         )
         prompt_ids = list(tokens["prompt_ids"])
+        # ``sft_mask`` was computed per-step against the env's SFTConfig.
+        # When SFT is disabled (sft_config is None or on_tool_outputs=False)
+        # the helper returns an all-False list; carry None on the sample in
+        # that case to keep the transport payload lean.
+        step_sft_mask = tokens.get("sft_mask")
+        sample_sft_mask = list(step_sft_mask) if step_sft_mask and any(step_sft_mask) else None
         return TrainingSample(
             prompt_ids=prompt_ids,
             prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
@@ -340,6 +425,7 @@ def interleave_rollout(
             env_name=output["env_name"],
             routed_experts=routed_experts,
             mm_token_type_ids=None,
+            sft_mask=sample_sft_mask,
         )
 
     def extend_sample(sample: TrainingSample, prefix_len: int, step_idx: int) -> None:
@@ -362,6 +448,24 @@ def interleave_rollout(
             sample.completion_mask.extend(bool(i) for i in tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
         sample.completion_temperatures.extend([temperature] * len(completion_ids))
+
+        # Extend the SFT mask in lockstep: the new prompt tail (mask=False on
+        # completion_mask) may contain tool-body tokens from the env_response;
+        # the new completion (assistant emission) is uniformly False.
+        step_sft_mask = tokens.get("sft_mask")
+        if step_sft_mask is not None:
+            step_prompt_len = len(tokens["prompt_ids"])
+            new_prompt_sft = step_sft_mask[prefix_len:step_prompt_len]
+            new_completion_sft = [False] * len(completion_ids)
+            extension = new_prompt_sft + new_completion_sft
+            if any(extension) or sample.sft_mask is not None:
+                # Materialize a previously-None mask only when there's actually
+                # SFT signal to record. Length must align with the existing
+                # prompt + completion at this point in the merge.
+                if sample.sft_mask is None:
+                    existing_len = len(sample.prompt_ids) + len(sample.completion_ids) - len(extension)
+                    sample.sft_mask = [False] * existing_len
+                sample.sft_mask.extend(extension)
 
         if tokens.get("routed_experts") is not None and sample.routed_experts is not None:
             step_routed = tokens["routed_experts"]

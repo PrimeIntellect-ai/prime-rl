@@ -525,11 +525,15 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Process rollouts in parallel
         def process_rollout(rollout: vf.RolloutOutput, rollout_idx: int) -> list[TrainingSample] | None:
+            # Resolve per-env SFT config so interleave_rollout can build the
+            # per-token SFT-on-tool-body mask in-line.
+            env_sft_config = train_envs.get(rollout["env_name"]).config.sft
             return interleave_rollout(
                 rollout,
                 vlm_cache=vlm_cache,
                 cache_key=rollout_idx,
                 mm_token_type_ids_mapping=mm_token_type_ids_mapping,
+                sft_config=env_sft_config,
             )
 
         results = await asyncio.gather(
@@ -550,12 +554,18 @@ async def orchestrate(config: OrchestratorConfig):
             if samples is None:
                 samples = []
             rollout_samples_per_rollout.append(len(samples))
+            env_sft_config = train_envs.get(rollout["env_name"]).config.sft
             for sample in samples:
                 sample.advantage = rollout["advantage"]
                 sample.reward = rollout["reward"]
                 sample.env_name = rollout["env_name"]
                 if config.use_sft_loss:
                     sample.sft_loss = True
+                # Per-env SFT-on-tool-body weight. ``sft_mask`` was populated by
+                # interleave_rollout when the env opted in; we attach the alpha
+                # here so the trainer-side overlay knows the weight per env.
+                if env_sft_config is not None and env_sft_config.on_tool_outputs and sample.sft_mask is not None:
+                    sample.sft_alpha = env_sft_config.alpha
                 sample_decode_tokens = sum(sample.completion_mask)
                 sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens
                 rollout_decode_tokens += sample_decode_tokens
