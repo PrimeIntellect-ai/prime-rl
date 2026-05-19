@@ -338,9 +338,15 @@ def train(config: TrainerConfig):
         forward_backward_start_time = time.perf_counter()
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
-        # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
-        loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
-        loss_scale = max(loss_scale, 1)
+        # Normalize by the global (dp_cp) number of unmasked tokens in the batch, so every rank
+        # divides by the same denominator. With a per-rank denominator, ranks with fewer loss
+        # tokens implicitly upweight their per-token gradient contribution after FSDP averaging.
+        # FSDP's per-rank divide is undone after the microbatch loop via fsdp_gradient_divide_factor.
+        local_loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
+        global_loss_scale = torch.tensor(local_loss_scale, dtype=torch.int64, device="cuda")
+        dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
+        dist.all_reduce(global_loss_scale, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        loss_scale = max(global_loss_scale.item(), 1)
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
@@ -513,6 +519,12 @@ def train(config: TrainerConfig):
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
+
+        # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
+        # across dp_cp so the final gradient is the true per-token mean over the global batch.
+        for param in model.parameters():
+            if param.grad is not None:
+                param.grad.mul_(parallel_dims.fsdp_gradient_divide_factor)
 
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
