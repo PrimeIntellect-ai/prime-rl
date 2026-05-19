@@ -12,7 +12,7 @@ def test_setup_student_inference_pool_uses_renderer_when_enabled():
             training_mode="rl",
             use_renderer=True,
             student=SimpleNamespace(
-                client=SimpleNamespace(base_url=["http://localhost:8000/v1"]),
+                client=SimpleNamespace(base_url="http://localhost:8000/v1"),
                 model=SimpleNamespace(name="student-model"),
             ),
             renderer=SimpleNamespace(
@@ -76,7 +76,7 @@ def test_setup_student_inference_pool_defaults_to_mito():
             training_mode="rl",
             use_renderer=False,
             student=SimpleNamespace(
-                client=SimpleNamespace(base_url=["http://localhost:8000/v1"]),
+                client=SimpleNamespace(base_url="http://localhost:8000/v1"),
                 model=SimpleNamespace(name="student-model"),
             ),
         )

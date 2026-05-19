@@ -40,7 +40,7 @@ id = "reverse-text"
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 
 [orchestrator.teacher.client]
-base_url = ["http://localhost:8001/v1"]
+base_url = "http://localhost:8001/v1"
 
 [trainer.optim]
 lr = 1e-4

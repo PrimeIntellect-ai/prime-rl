@@ -132,7 +132,7 @@ def rl_local(config: RLConfig):
     if config.inference is not None and not config.orchestrator.student.client.is_elastic:
         from urllib.parse import urlparse
 
-        base_url = config.orchestrator.student.client.base_url[0]
+        base_url = config.orchestrator.student.client.base_url
         parsed = urlparse(base_url)
         client_port = parsed.port
         expected_port = config.inference.server.port
@@ -195,7 +195,7 @@ def rl_local(config: RLConfig):
                 "No [inference] block configured - the student inference server will not be started here. "
                 "All training modes (rl/opd/sft) require a student inference pool for evals + weight sync; "
                 "make sure one is running at orchestrator.student.client.base_url "
-                f"({', '.join(config.orchestrator.student.client.base_url)}), otherwise the orchestrator "
+                f"({config.orchestrator.student.client.base_url}), otherwise the orchestrator "
                 "will hang waiting for it."
             )
 

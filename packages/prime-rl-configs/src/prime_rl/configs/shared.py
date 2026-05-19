@@ -254,7 +254,7 @@ class ClientConfig(BaseConfig):
     """Configures the OAI client.
 
     Supports two modes:
-    - Static mode (default): Uses fixed base_url list
+    - Static mode (default): Uses a fixed base_url
     - Elastic mode: Uses DNS-based service discovery via hostname
 
     If elastic config is provided, base_url is ignored and servers are discovered dynamically.
@@ -283,16 +283,16 @@ class ClientConfig(BaseConfig):
     ] = 1800
 
     base_url: Annotated[
-        list[str],
+        str,
         Field(
-            description="Base URLs to use for the OpenAI API. By default, it is set to a single server on localhost at port 8000 which matches the default local vLLM server configuration. If you specify more than one URL, the client will round-robin (chat) completion requests across all servers. Ignored if elastic config is provided.",
+            description="Base URL to use for the OpenAI API. Defaults to a single server on localhost at port 8000 which matches the default local vLLM server configuration. Ignored if elastic config is provided.",
         ),
-    ] = ["http://localhost:8000/v1"]
+    ] = "http://localhost:8000/v1"
 
     api_key_var: Annotated[
         str,
         Field(
-            description="Name of environment variable containing the API key to use for the inference API. Will parse using `os.getenv(client_config.api_key_var)`. Can be set to an arbitrary string if the inference server is not protected by an API key. If multiple URLs are specified, the same API key will be used for all servers.",
+            description="Name of environment variable containing the API key to use for the inference API. Will parse using `os.getenv(client_config.api_key_var)`. Can be set to an arbitrary string if the inference server is not protected by an API key.",
         ),
     ] = "VLLM_API_KEY"
 
@@ -331,8 +331,8 @@ class ClientConfig(BaseConfig):
         Field(
             ge=1,
             description=(
-                "Number of data-parallel ranks behind each base URL. When > 1, "
-                "each URL is expanded into dp_rank_count logical clients, each "
+                "Number of data-parallel ranks behind the base URL. When > 1, "
+                "the URL is expanded into dp_rank_count logical clients, each "
                 "pinned to a specific DP rank via the X-data-parallel-rank header. "
                 "This ensures all requests within a multi-turn rollout hit the same "
                 "DP engine, maximizing KV cache reuse. Auto-set from "
@@ -343,12 +343,12 @@ class ClientConfig(BaseConfig):
     ] = 1
 
     admin_base_url: Annotated[
-        list[str] | None,
+        str | None,
         Field(
-            description="Separate base URLs for admin operations (weight updates, health checks). "
-            "When set, admin clients use these URLs instead of base_url, allowing weight "
-            "updates to bypass routers and hit each server directly. Used in disaggregated "
-            "P/D deployments where the inference router should not handle admin traffic.",
+            description="Separate base URL for admin operations (weight updates, health checks). "
+            "When set, the admin client uses this URL instead of base_url, allowing weight "
+            "updates to bypass routers and hit the server directly. Used in deployments "
+            "where the inference router should not handle admin traffic.",
         ),
     ] = None
 

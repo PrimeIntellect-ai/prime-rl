@@ -51,7 +51,7 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
 
 def test_setup_clients_assigns_renderer_and_dp_rank_headers():
     client_config = ClientConfig(
-        base_url=["http://worker-a:8000/v1"],
+        base_url="http://worker-a:8000/v1",
         api_key_var="PRIME_API_KEY",
         headers={"X-Test": "test"},
         dp_rank_count=2,
@@ -75,7 +75,7 @@ def test_setup_clients_assigns_renderer_and_dp_rank_headers():
 
 def test_setup_clients_assigns_renderer_model_name():
     client_config = ClientConfig(
-        base_url=["http://worker-a:8000/v1"],
+        base_url="http://worker-a:8000/v1",
         api_key_var="PRIME_API_KEY",
     )
 
@@ -91,7 +91,7 @@ def test_setup_clients_assigns_renderer_model_name():
 
 def test_setup_clients_preserves_chat_client_defaults():
     client_config = ClientConfig(
-        base_url=["http://worker-a:8000/v1"],
+        base_url="http://worker-a:8000/v1",
         api_key_var="PRIME_API_KEY",
     )
 

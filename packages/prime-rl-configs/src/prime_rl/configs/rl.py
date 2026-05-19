@@ -921,7 +921,7 @@ class RLConfig(BaseConfig):
 
         For all modes, sets dp_rank_count from inference DP size. For SFT mode,
         also sets base_url - rl/opd rely on the ClientConfig default
-        (``["http://localhost:8000/v1"]``) which already matches the auto-launched
+        (``"http://localhost:8000/v1"``) which already matches the auto-launched
         student vLLM at inference.server.port = 8000.
         """
         if self.inference is None:
@@ -932,7 +932,7 @@ class RLConfig(BaseConfig):
         if self.orchestrator.training_mode == "sft" and "base_url" not in client.model_fields_set:
             host = self.inference.server.host or "localhost"
             port = self.inference.server.port
-            client.base_url = [f"http://{host}:{port}/v1"]
+            client.base_url = f"http://{host}:{port}/v1"
         return self
 
     @model_validator(mode="after")
@@ -971,7 +971,7 @@ class RLConfig(BaseConfig):
             self.orchestrator.teacher = RolloutModelConfig()
         host = self.teacher_inference.server.host or "localhost"
         port = self.teacher_inference.server.port
-        self.orchestrator.teacher.client.base_url = [f"http://{host}:{port}/v1"]
+        self.orchestrator.teacher.client.base_url = f"http://{host}:{port}/v1"
         self.orchestrator.teacher.model.name = self.teacher_inference.model.name
 
         return self

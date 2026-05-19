@@ -20,7 +20,7 @@ import verifiers as vf
 from httpx import AsyncClient
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.client import load_lora_adapter, setup_admin_clients, setup_clients
+from prime_rl.utils.client import load_lora_adapter, setup_admin_client, setup_clients
 from prime_rl.utils.logger import get_logger
 
 # --- Shared discovery functions ---
@@ -204,32 +204,38 @@ class ElasticInferencePool:
             self._client_urls = urls
 
             self._eval_index = 0
-            url_config = ClientConfig(
-                timeout=self.client_config.timeout,
-                connect_timeout=self.client_config.connect_timeout,
-                base_url=urls,
-                api_key_var=self.client_config.api_key_var,
-                headers=self.client_config.headers,
-                headers_from_env=self.client_config.headers_from_env,
-                dp_rank_count=self.client_config.dp_rank_count,
-                extra_headers_from_state=self.client_config.extra_headers_from_state,
-            )
-            self._train_clients = (
-                setup_clients(
-                    url_config,
-                    client_type=self.train_client_type,
-                    renderer_name=self.renderer_name,
-                    renderer_model_name=self.renderer_model_name,
-                    tool_parser=self.tool_parser,
-                    reasoning_parser=self.reasoning_parser,
-                    renderer_pool_size=self.renderer_pool_size,
-                    preserve_all_thinking=self.preserve_all_thinking,
-                    preserve_thinking_between_tool_calls=self.preserve_thinking_between_tool_calls,
+            self._train_clients = []
+            self._eval_clients = []
+            for url in urls:
+                url_config = ClientConfig(
+                    timeout=self.client_config.timeout,
+                    connect_timeout=self.client_config.connect_timeout,
+                    base_url=url,
+                    api_key_var=self.client_config.api_key_var,
+                    headers=self.client_config.headers,
+                    headers_from_env=self.client_config.headers_from_env,
+                    dp_rank_count=self.client_config.dp_rank_count,
+                    extra_headers_from_state=self.client_config.extra_headers_from_state,
                 )
-                if urls
-                else []
-            )
-            self._eval_clients = setup_clients(url_config, client_type=self.eval_client_type) if urls else []
+                self._train_clients.extend(
+                    setup_clients(
+                        url_config,
+                        client_type=self.train_client_type,
+                        renderer_name=self.renderer_name,
+                        renderer_model_name=self.renderer_model_name,
+                        tool_parser=self.tool_parser,
+                        reasoning_parser=self.reasoning_parser,
+                        renderer_pool_size=self.renderer_pool_size,
+                        preserve_all_thinking=self.preserve_all_thinking,
+                        preserve_thinking_between_tool_calls=self.preserve_thinking_between_tool_calls,
+                    )
+                )
+                self._eval_clients.extend(setup_clients(url_config, client_type=self.eval_client_type))
+            # Reassign client_idx so it is unique across all URLs.
+            for idx, client in enumerate(self._train_clients):
+                client.client_idx = idx
+            for idx, client in enumerate(self._eval_clients):
+                client.client_idx = idx
 
     @property
     def train_clients(self) -> list[vf.ClientConfig]:
@@ -265,12 +271,12 @@ class ElasticInferencePool:
         url = self._build_url(ip)
         config = ClientConfig(
             timeout=self.client_config.timeout,
-            base_url=[f"{url}/v1"],
+            base_url=f"{url}/v1",
             api_key_var=self.client_config.api_key_var,
             headers=self.client_config.headers,
             headers_from_env=self.client_config.headers_from_env,
         )
-        return setup_admin_clients(config)[0]
+        return setup_admin_client(config)
 
     async def _get_loaded_adapter(self, ip: str) -> AdapterState | None:
         if ip not in self._admin_clients:

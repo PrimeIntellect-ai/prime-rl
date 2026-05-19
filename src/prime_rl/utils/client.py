@@ -89,7 +89,7 @@ class StaticInferencePool:
             preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
         )
         self._eval_clients = setup_clients(client_config, client_type=eval_client_type)
-        self._admin_clients = setup_admin_clients(client_config)
+        self._admin_clients = [setup_admin_client(client_config)]
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
         self._eval_cycle = cycle(self._eval_clients)
@@ -183,8 +183,6 @@ def setup_clients(
     preserve_all_thinking: bool = False,
     preserve_thinking_between_tool_calls: bool = False,
 ) -> list[vf.ClientConfig]:
-    clients = []
-    client_idx = 0
     # Only forward preserve flags when the client actually uses a renderer —
     # MITO/TITO clients ignore them and the verifiers ClientConfig may reject
     # unknown extras on older versions.
@@ -197,65 +195,61 @@ def setup_clients(
     env_headers = {
         k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
     }
-    for base_url in client_config.base_url:
-        for dp_rank in range(client_config.dp_rank_count):
-            headers = {**client_config.headers, **env_headers}
-            if client_config.dp_rank_count > 1:
-                headers["X-data-parallel-rank"] = str(dp_rank)
-            clients.append(
-                vf.ClientConfig(
-                    client_idx=client_idx,
-                    client_type=client_type,
-                    renderer=renderer_name,
-                    renderer_model_name=renderer_model_name,
-                    renderer_pool_size=renderer_pool_size,
-                    tool_parser=tool_parser,
-                    reasoning_parser=reasoning_parser,
-                    api_base_url=base_url,
-                    api_key_var=client_config.api_key_var,
-                    timeout=client_config.timeout,
-                    connect_timeout=client_config.connect_timeout,
-                    max_connections=8192,
-                    max_keepalive_connections=8192,
-                    max_retries=10,
-                    extra_headers=headers,
-                    extra_headers_from_state=client_config.extra_headers_from_state,
-                    **renderer_extra,
-                )
+    clients = []
+    for dp_rank in range(client_config.dp_rank_count):
+        headers = {**client_config.headers, **env_headers}
+        if client_config.dp_rank_count > 1:
+            headers["X-data-parallel-rank"] = str(dp_rank)
+        clients.append(
+            vf.ClientConfig(
+                client_idx=dp_rank,
+                client_type=client_type,
+                renderer=renderer_name,
+                renderer_model_name=renderer_model_name,
+                renderer_pool_size=renderer_pool_size,
+                tool_parser=tool_parser,
+                reasoning_parser=reasoning_parser,
+                api_base_url=client_config.base_url,
+                api_key_var=client_config.api_key_var,
+                timeout=client_config.timeout,
+                connect_timeout=client_config.connect_timeout,
+                max_connections=8192,
+                max_keepalive_connections=8192,
+                max_retries=10,
+                extra_headers=headers,
+                extra_headers_from_state=client_config.extra_headers_from_state,
+                **renderer_extra,
             )
-            client_idx += 1
+        )
     return clients
 
 
-def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
-    """Create dedicated admin clients for weight update operations.
+def setup_admin_client(client_config: ClientConfig) -> AsyncClient:
+    """Create a dedicated admin client for weight update operations.
 
     Uses a separate connection pool to avoid queueing behind streaming requests.
-    When admin_base_url is set, uses those URLs instead of base_url, allowing
-    weight updates to bypass routers in disaggregated P/D deployments.
+    When admin_base_url is set, uses it instead of base_url, allowing weight
+    updates to bypass routers.
     """
-    urls = client_config.admin_base_url if client_config.admin_base_url else client_config.base_url
+    base_url = client_config.admin_base_url if client_config.admin_base_url else client_config.base_url
 
-    def _setup_admin_client(base_url: str) -> httpx.AsyncClient:
-        env_headers = {
-            k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
-        }
-        headers = {**client_config.headers, **env_headers}
-        api_key = os.getenv(client_config.api_key_var, "EMPTY")
-        if api_key and api_key != "EMPTY":
-            headers["Authorization"] = f"Bearer {api_key}"
+    env_headers = {
+        k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
+    }
+    headers = {**client_config.headers, **env_headers}
+    api_key = os.getenv(client_config.api_key_var, "EMPTY")
+    if api_key and api_key != "EMPTY":
+        headers["Authorization"] = f"Bearer {api_key}"
 
-        # Strip /v1 suffix since admin endpoints are at root level
-        base_url = base_url.rstrip("/").removesuffix("/v1")
+    # Strip /v1 suffix since admin endpoints are at root level
+    base_url = base_url.rstrip("/").removesuffix("/v1")
 
-        return AsyncClient(
-            base_url=base_url,
-            headers=headers,
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=1),
-            timeout=httpx.Timeout(None),
-        )
-
-    return [_setup_admin_client(base_url) for base_url in urls]
+    return AsyncClient(
+        base_url=base_url,
+        headers=headers,
+        limits=httpx.Limits(max_connections=4, max_keepalive_connections=1),
+        timeout=httpx.Timeout(None),
+    )
 
 
 async def maybe_check_has_model(

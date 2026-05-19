@@ -131,7 +131,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Set up student inference pool (required for all training modes).
     logger.info(
-        f"Initializing student inference pool (base_url={', '.join(config.student.client.base_url)}, "
+        f"Initializing student inference pool (base_url={config.student.client.base_url}, "
         f"model={config.student.model.name})"
     )
     renderer, student_inference = await setup_student_inference_pool(
@@ -146,7 +146,7 @@ async def orchestrate(config: OrchestratorConfig):
     teacher_inference = None
     if config.teacher is not None:
         logger.info(
-            f"Initializing teacher inference pool (base_url={', '.join(config.teacher.client.base_url)}, "
+            f"Initializing teacher inference pool (base_url={config.teacher.client.base_url}, "
             f"model={config.teacher.model.name})"
         )
         teacher_inference = await setup_inference_pool(
