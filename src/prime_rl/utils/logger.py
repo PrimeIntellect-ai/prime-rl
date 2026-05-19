@@ -1,5 +1,6 @@
 import json as json_module
 import logging
+import os
 import sys
 import traceback
 from typing import Any
@@ -88,6 +89,7 @@ def setup_logger(
     log_level: str = "info",
     tag: str | None = None,
     json_logging: bool = False,
+    rank_zero_only: bool = False,
 ):
     global _LOGGER, _JSON_LOGGING
     _JSON_LOGGING = json_logging
@@ -95,6 +97,13 @@ def setup_logger(
     # Clean up old logger instance to prevent resource leaks
     if _LOGGER is not None:
         _LOGGER.remove()
+
+    # When running under torchrun, every rank writes to its own stdout but all
+    # stdout streams are merged in k8s/Loki, so each log line shows up N times.
+    # rank_zero_only=True suppresses output on non-zero ranks. We read the
+    # global RANK env var (set by torchrun before the process starts) so this
+    # works even before torch.distributed.init_process_group is called.
+    is_silent_rank = rank_zero_only and int(os.environ.get("RANK", "0")) != 0
 
     # Format message with optional tag prefix
     tag_prefix = f"[{tag}] " if tag else ""
@@ -135,11 +144,13 @@ def setup_logger(
     if json_logging and tag:
         logger = logger.bind(tag=tag)
 
-    # Install console handler (enqueue=True only for JSON mode to avoid blocking in async contexts)
-    if json_logging:
-        logger.add(json_sink, level=log_level.upper(), enqueue=True)
-    else:
-        logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True)
+    # Install console handler (enqueue=True only for JSON mode to avoid blocking in async contexts).
+    # Silent ranks get a logger with no sinks so all log calls become no-ops.
+    if not is_silent_rank:
+        if json_logging:
+            logger.add(json_sink, level=log_level.upper(), enqueue=True)
+        else:
+            logger.add(sys.stdout, format=format, level=log_level.upper(), colorize=True)
 
     # Disable critical logging
     logger.critical = lambda _: None

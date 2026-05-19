@@ -62,9 +62,13 @@ from torchtitan.distributed.utils import clip_grad_norm_
 def train(config: SFTConfig):
     # Setup world and logger
     world = get_world()
+    # rank_zero_only suppresses logs on non-zero ranks. Every rank's stdout
+    # is merged in k8s/Loki, so without this each line appears N times in the
+    # dashboard's trainer log tab (one per GPU).
     logger = setup_logger(
         config.log.level,
         json_logging=config.log.json_logging,
+        rank_zero_only=True,
     )
     logger.info(f"Starting SFT trainer in {world}")
 
