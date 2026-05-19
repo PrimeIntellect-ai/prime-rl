@@ -205,14 +205,14 @@ def start_orchestrator(
         run_dir.as_posix(),
         "--max-steps",
         str(max_steps),
-        "--model.lora.name",
+        "--student.model.lora.name",
         name,
         "--wandb.project",
         wandb_project,
         "--wandb.name",
         f"{wandb_name}-{proc_name}",
     ]
-    cmd.append("--client.base-url")
+    cmd.append("--student.client.base-url")
     cmd.extend(INFERENCE_BASE_URLS)
 
     with open(orch_log_dir / "orchestrator.log", "w") as f:
