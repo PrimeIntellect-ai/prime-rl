@@ -34,6 +34,7 @@ from prime_rl.configs.trainer import (
 )
 from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
+    validate_no_shared_field_conflicts,
     validate_shared_ckpt_config,
     validate_shared_max_async_level,
     validate_shared_max_steps,
@@ -460,6 +461,11 @@ class RLConfig(BaseConfig):
         """
         if not isinstance(data, dict):
             return data
+
+        # Forbid shared-field + sub-config-field overlap before any propagation
+        # runs. Without this guard the sub-config silently wins on each
+        # overlapping field, which is the silent-no-op class of bugs from #2430.
+        validate_no_shared_field_conflicts(data)
 
         data = deepcopy(data)
 

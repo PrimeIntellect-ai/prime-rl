@@ -224,17 +224,19 @@ def test_shared_tokenizer_propagates_when_subconfigs_unset():
     assert config.orchestrator.tokenizer.name == "my-tokenizer"
 
 
-def test_subconfig_tokenizer_wins_over_shared():
-    config = RLConfig.model_validate(
-        {
-            "model": {"name": "my-model"},
-            "tokenizer": {"name": "shared-tok"},
-            "trainer": {"tokenizer": {"name": "trainer-tok"}},
-            "orchestrator": {"use_renderer": False},
-        }
-    )
-    assert config.trainer.tokenizer.name == "trainer-tok"
-    assert config.orchestrator.tokenizer.name == "shared-tok"
+def test_shared_and_sub_tokenizer_name_conflict_raises():
+    """Setting tokenizer.name in both [tokenizer] and [trainer.tokenizer]
+    is a config conflict — the sub-config would silently win, and any later
+    CLI override of [tokenizer].name would silently no-op for the trainer."""
+    with pytest.raises(ValidationError, match=r"tokenizer.name.*trainer.tokenizer.name"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "tokenizer": {"name": "shared-tok"},
+                "trainer": {"tokenizer": {"name": "trainer-tok"}},
+                "orchestrator": {"use_renderer": False},
+            }
+        )
 
 
 def test_tokenizer_name_falls_back_to_model_name_when_unset():
@@ -274,16 +276,70 @@ def test_shared_seq_len_propagates_to_subconfigs():
     assert config.orchestrator.seq_len == 4096
 
 
-def test_subconfig_seq_len_wins_over_shared():
+def test_shared_and_sub_seq_len_conflict_raises():
+    """Setting seq_len at the shared level and on a sub-config is a conflict —
+    forces the user to pick one place to express the value rather than
+    relying on the silent 'sub wins' rule."""
+    with pytest.raises(ValidationError, match=r"seq_len.*trainer.model.seq_len"):
+        RLConfig.model_validate(
+            {
+                "seq_len": 4096,
+                "trainer": {"model": {"seq_len": 8192}},
+                "orchestrator": {"use_renderer": False},
+            }
+        )
+
+
+def test_shared_and_sub_model_name_conflict_raises():
+    """Setting model.name at the shared level and on a sub-config is a conflict."""
+    with pytest.raises(ValidationError, match=r"model.name.*trainer.model.name"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "X"},
+                "trainer": {"model": {"name": "Y"}},
+                "orchestrator": {"use_renderer": False},
+            }
+        )
+
+
+def test_shared_and_sub_max_steps_conflict_raises():
+    """Top-level scalar shared fields also participate in the mutex check."""
+    with pytest.raises(ValidationError, match=r"max_steps.*orchestrator.max_steps"):
+        RLConfig.model_validate(
+            {
+                "max_steps": 100,
+                "trainer": {},
+                "orchestrator": {"use_renderer": False, "max_steps": 200},
+            }
+        )
+
+
+def test_empty_shared_ckpt_block_does_not_conflict_with_subconfig_ckpt():
+    """An empty shared [ckpt] block is a presence-only signal, not a field
+    setting — it should not conflict with a non-empty [trainer.ckpt]."""
     config = RLConfig.model_validate(
         {
-            "seq_len": 4096,
-            "trainer": {"model": {"seq_len": 8192}},
+            "ckpt": {},  # empty block, no field set
+            "trainer": {"ckpt": {"interval": 50}},
+            "orchestrator": {"use_renderer": False, "ckpt": {"interval": 50}},
+        }
+    )
+    assert config.trainer.ckpt is not None
+    assert config.trainer.ckpt.interval == 50
+
+
+def test_shared_and_subconfig_disjoint_fields_coexist():
+    """Per-field mutex only forbids conflicts on the SAME field — disjoint
+    fields in [model] vs [trainer.model] are fine."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "trainer": {"model": {"impl": "custom"}},
             "orchestrator": {"use_renderer": False},
         }
     )
-    assert config.trainer.model.seq_len == 8192
-    assert config.orchestrator.seq_len == 4096
+    assert config.trainer.model.name == "Qwen/Qwen3-0.6B"
+    assert config.trainer.model.impl == "custom"
 
 
 def test_shared_output_dir_propagates_through_cli(tmp_path):

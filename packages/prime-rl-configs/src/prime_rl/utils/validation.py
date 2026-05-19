@@ -1,10 +1,115 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.trainer import TrainerConfig
+
+
+# Per-field shared ↔ sub-config mappings used by ``validate_no_shared_field_conflicts``.
+# Each entry: "shared.dotted.path" -> [list of sub-config paths it propagates to].
+#
+# Setting both a shared field and any of its targets is a config conflict — the
+# sub-config silently wins under fill-if-absent semantics, which is exactly the
+# silent-no-op class of bugs from #2430. The mutex check below raises instead.
+#
+# Where a sub-config field is reachable via multiple keys (alias), all variants
+# are listed so the check catches the conflict regardless of which form the user
+# wrote (e.g. ``[orchestrator.model]`` and ``[orchestrator.student.model]`` are
+# the same field, exposed via ``AliasChoices("student", "model")``).
+_SHARED_TO_SUB_FIELDS: dict[str, tuple[str, ...]] = {
+    # [model] → trainer / orchestrator (student) / inference
+    "model.name": (
+        "trainer.model.name",
+        "inference.model.name",
+        "orchestrator.model.name",
+        "orchestrator.student.model.name",
+    ),
+    "model.vlm": (
+        "trainer.model.vlm",
+        "inference.model.vlm",
+        "orchestrator.model.vlm",
+        "orchestrator.student.model.vlm",
+    ),
+    # [log] → trainer / orchestrator
+    "log.level": ("trainer.log.level", "orchestrator.log.level"),
+    "log.json_logging": ("trainer.log.json_logging", "orchestrator.log.json_logging"),
+    # [ckpt] (field-level only; presence of an empty shared [ckpt] block is
+    # explicitly allowed — it just enables ckpt on both sub-configs).
+    "ckpt.output_dir": ("trainer.ckpt.output_dir",),  # orchestrator.ckpt has no output_dir
+    "ckpt.interval": ("trainer.ckpt.interval", "orchestrator.ckpt.interval"),
+    "ckpt.resume_step": ("trainer.ckpt.resume_step", "orchestrator.ckpt.resume_step"),
+    "ckpt.keep_last": ("trainer.ckpt.keep_last", "orchestrator.ckpt.keep_last"),
+    "ckpt.keep_interval": ("trainer.ckpt.keep_interval", "orchestrator.ckpt.keep_interval"),
+    # [wandb] (same: empty shared [wandb] block is allowed, only field-level
+    # collisions are forbidden).
+    "wandb.project": ("trainer.wandb.project", "orchestrator.wandb.project"),
+    "wandb.offline": ("trainer.wandb.offline", "orchestrator.wandb.offline"),
+    "wandb.name": ("trainer.wandb.name", "orchestrator.wandb.name"),
+    # [tokenizer]
+    "tokenizer.name": ("trainer.tokenizer.name", "orchestrator.tokenizer.name"),
+    "tokenizer.trust_remote_code": (
+        "trainer.tokenizer.trust_remote_code",
+        "orchestrator.tokenizer.trust_remote_code",
+    ),
+    "tokenizer.chat_template": (
+        "trainer.tokenizer.chat_template",
+        "orchestrator.tokenizer.chat_template",
+    ),
+    # Top-level scalars
+    "max_steps": ("trainer.max_steps", "orchestrator.max_steps"),
+    "max_async_level": ("trainer.max_async_level", "orchestrator.max_async_level"),
+    "output_dir": ("trainer.output_dir", "orchestrator.output_dir"),
+    "seq_len": ("trainer.model.seq_len", "orchestrator.seq_len"),
+}
+
+
+def _get_dotted(data: Any, path: str) -> Any:
+    """Walk a raw config dict by dotted path; return None if any segment is absent."""
+    node = data
+    for part in path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def validate_no_shared_field_conflicts(data: Any) -> None:
+    """Raise if any shared top-level field is also set on a matching sub-config field.
+
+    Shared fields (``[model] name``, ``seq_len``, ``[ckpt] interval``, etc.)
+    propagate down to sub-configs via fill-if-absent semantics in
+    ``RLConfig.auto_setup_shared_configs``. If the user writes the same field
+    in both places, the sub-config silently wins — and any later CLI override
+    of the shared field is also silently shadowed. That is the bug from #2430.
+
+    This check forbids the overlap entirely: pick one place to express each
+    setting. Operates on the raw input dict before sub-configs are built so it
+    can tell user-set entries apart from validator-filled ones.
+
+    Aliased sub-config paths are checked under all their accepted keys (e.g.
+    both ``orchestrator.model.name`` and ``orchestrator.student.model.name``).
+    """
+    if not isinstance(data, dict):
+        return
+    conflicts: list[tuple[str, str]] = []
+    for shared_path, sub_paths in _SHARED_TO_SUB_FIELDS.items():
+        if _get_dotted(data, shared_path) is None:
+            continue
+        for sub_path in sub_paths:
+            if _get_dotted(data, sub_path) is not None:
+                conflicts.append((shared_path, sub_path))
+    if not conflicts:
+        return
+    lines = [
+        "Shared config conflicts with matching sub-config field(s). Pick one place "
+        "to set each value — duplicating it is ambiguous and the sub-config "
+        "would silently shadow any later shared-level override (e.g. on the CLI):",
+    ]
+    for shared, sub in conflicts:
+        lines.append(f"  - [{shared!r}] is set, but [{sub!r}] is also set")
+    raise ValueError("\n".join(lines))
 
 
 def validate_shared_ckpt_config(
