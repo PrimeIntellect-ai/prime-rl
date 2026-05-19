@@ -6,7 +6,7 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig
+from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, LossConfig
 from prime_rl.utils.utils import import_object
 
 
@@ -147,6 +147,7 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     drop_mask = loss_mask & is_masked
     keep_mask = loss_mask & ~is_masked
 
+    advantages = loss_config.adv_tau * advantages
     pg_loss = keep_mask * advantages * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
     loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
@@ -164,13 +165,24 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     return LossOutputs(loss=loss, metrics=metrics)
 
 
-def opd_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutputs:
+# OPD knobs are baked into opd_loss_fn (not user-configurable via trainer.loss,
+# which only applies to rl). Defaults mirror DefaultLossConfig's so the dppo/kl
+# behavior matches the rl path.
+_OPD_DPPO_MASK_HIGH = 0.2
+_OPD_DPPO_MASK_LOW = 0.2
+_OPD_KL_TAU = 1e-3
+
+
+def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
     """
     On-policy distillation loss: the default DPPO+KL math with the tau knobs
     hardcoded to drop the reward signal and use the teacher KL as the
     per-token policy-gradient signal. Equivalent to ``default_loss_fn`` with
     ``adv_tau = 0`` and ``teacher_tau = 1``; we inline both here so the two
     paths read as distinct losses.
+
+    Self-contained: doesn't read ``trainer.loss`` (which is rl-only). The
+    dppo/kl knobs are baked in.
     """
     adv_tau = 0.0
     teacher_tau = 1.0
@@ -189,8 +201,8 @@ def opd_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutpu
     )
 
     probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
-    dppo_invalid_mask_high = probs_diff > loss_config.dppo_mask_high
-    dppo_invalid_mask_low = probs_diff < -loss_config.dppo_mask_low
+    dppo_invalid_mask_high = probs_diff > _OPD_DPPO_MASK_HIGH
+    dppo_invalid_mask_low = probs_diff < -_OPD_DPPO_MASK_LOW
     positive_advantages = advantages > 0
     negative_advantages = advantages < 0
     dppo_invalid_mask = torch.where(positive_advantages, dppo_invalid_mask_high, dppo_invalid_mask_low)
@@ -206,7 +218,7 @@ def opd_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutpu
 
     pg_loss = keep_mask * advantages * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
-    loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
+    loss = (-pg_loss + _OPD_KL_TAU * kl_loss).sum()
 
     metrics = {
         "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),
@@ -234,27 +246,23 @@ def sft_loss_fn(inputs: LossInputs) -> LossOutputs:
     return LossOutputs(loss=loss, metrics=metrics)
 
 
-def setup_loss_fns(
-    loss_config: DefaultLossConfig,
-    custom_loss: CustomLossConfig | None = None,
-) -> dict[str, LossFn]:
+def setup_loss_fns(loss_config: LossConfig) -> dict[str, LossFn]:
     """Build the per-training-mode loss fn dispatch table.
 
     Always returns all three modes - the trainer is mode-agnostic and routes
     per batch from ``TrainingSample.training_mode``:
 
     - ``"sft"`` → ``sft_loss_fn`` (masked NLL on teacher tokens)
-    - ``"opd"`` → ``opd_loss_fn`` (teacher KL as gradient signal, DPPO + KL machinery)
-    - ``"rl"``  → ``default_loss_fn`` with the DPPO+KL knobs, or the
-      ``custom_loss`` override if configured.
+    - ``"opd"`` → ``opd_loss_fn`` (teacher KL as gradient signal, hardcoded
+      DPPO + KL knobs)
+    - ``"rl"``  → ``default_loss_fn(loss_config)`` for ``DefaultLossConfig``,
+      or the imported function for ``CustomLossConfig``.
+
+    ``trainer.loss`` only affects the rl path - opd and sft are independent.
     """
-
-    def opd_fn(inputs: LossInputs) -> LossOutputs:
-        return opd_loss_fn(inputs, loss_config)
-
-    if custom_loss is not None:
-        custom_fn = import_object(custom_loss.import_path)
-        kwargs = custom_loss.kwargs
+    if isinstance(loss_config, CustomLossConfig):
+        custom_fn = import_object(loss_config.import_path)
+        kwargs = loss_config.kwargs
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return custom_fn(inputs, **kwargs)
@@ -263,7 +271,7 @@ def setup_loss_fns(
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return default_loss_fn(inputs, loss_config)
 
-    return {"sft": sft_loss_fn, "opd": opd_fn, "rl": rl_fn}
+    return {"sft": sft_loss_fn, "opd": opd_loss_fn, "rl": rl_fn}
 
 
 def compute_loss(
