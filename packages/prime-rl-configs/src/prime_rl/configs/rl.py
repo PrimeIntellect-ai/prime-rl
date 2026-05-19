@@ -434,15 +434,22 @@ class RLConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def auto_setup_training_mode(cls, data):
-        """Propagate shared training_mode into orchestrator.training_mode and trainer.loss.type.
+        """Propagate shared training_mode into orchestrator.training_mode and trainer.loss.
 
         Runs before nested validation so that OrchestratorConfig.validate_training_mode
-        sees the propagated value. Only propagates to components that don't already set
-        the field explicitly. For 'sft' mode, defaults trainer.loss.type to 'sft'.
+        sees the propagated value. Only propagates to fields the user didn't set:
+
+        - sft: trainer.loss.type = "sft"
+        - opd: trainer.loss.teacher_tau = 1.0, trainer.loss.adv_tau = 0.0 (pure distillation)
         """
         if not isinstance(data, dict):
             return data
         mode = data.get("training_mode")
+        if mode is None:
+            # Also accept training_mode set only inside [orchestrator]
+            orch_candidate = data.get("orchestrator")
+            if isinstance(orch_candidate, dict):
+                mode = orch_candidate.get("training_mode")
         if mode is None:
             return data
 
@@ -450,12 +457,16 @@ class RLConfig(BaseConfig):
         if isinstance(orch, dict) and "training_mode" not in orch:
             orch["training_mode"] = mode
 
-        if mode == "sft":
+        if mode in ("sft", "opd"):
             trainer = data.setdefault("trainer", {})
             if isinstance(trainer, dict):
                 loss = trainer.setdefault("loss", {})
-                if isinstance(loss, dict) and "type" not in loss:
-                    loss["type"] = "sft"
+                if isinstance(loss, dict):
+                    if mode == "sft":
+                        loss.setdefault("type", "sft")
+                    elif mode == "opd":
+                        loss.setdefault("teacher_tau", 1.0)
+                        loss.setdefault("adv_tau", 0.0)
 
         return data
 

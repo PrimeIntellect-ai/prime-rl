@@ -45,9 +45,6 @@ base_url = ["http://localhost:8001/v1"]
 [trainer.optim]
 lr = 3e-6
 
-[trainer.loss]
-teacher_tau = 0.5
-
 [ckpt]
 
 [inference]

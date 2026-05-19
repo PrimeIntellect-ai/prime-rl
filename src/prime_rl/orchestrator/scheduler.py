@@ -109,7 +109,7 @@ class Scheduler:
         self.teacher_inference = teacher_inference
         if config.training_mode == "sft":
             assert teacher_inference is not None
-            self.rollout_inference: InferencePool = teacher_inference
+            self.rollout_inference = teacher_inference
         else:
             self.rollout_inference = student_inference
         # model_name is the name to send on rollout requests - matches the rollout pool
