@@ -1,0 +1,26 @@
+# Orchestrator config for multi-run RL integration test
+# model.lora.name and output_dir are set via CLI
+batch_size = 128
+rollouts_per_example = 16
+seq_len = 2048
+max_steps = 20
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[optim]
+lr = 3e-5
+
+[train.sampling]
+max_completion_tokens = 128
+
+[[train.env]]
+id = "reverse-text"
+
+[ckpt]
+interval = 10
+resume_step = -1
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[renderer]
+name = "default"

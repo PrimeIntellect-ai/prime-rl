@@ -1,5 +1,18 @@
 # Vendored from tile-ai/tilelang (Apache 2.0), modified for dynamic shapes.
 
+# TileLang ships a libcudart stub that proxies to the real CUDA runtime via
+# dlsym(RTLD_DEFAULT, ...).  If the stub's own symbols are the first ones found
+# (because nothing loaded the real libcudart globally yet), the self-check fails
+# and the stub calls abort().  Pre-loading the real library with RTLD_GLOBAL
+# ensures dlsym finds it before the stub's own exports.
+import ctypes as _ctypes
+
+try:
+    _ctypes.CDLL("libcudart.so", mode=_ctypes.RTLD_GLOBAL)
+except Exception:
+    # This is expected on CPU-only machines
+    pass
+
 import tilelang
 import torch
 from tilelang import language as T
@@ -78,7 +91,8 @@ def postprocess(
     pass_configs={
         tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
         tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-        tilelang.PassConfigKey.TL_ENABLE_AGGRESSIVE_SHARED_MEMORY_MERGE: True,
+        # Avoid TileLang MLA backward NaNs: https://github.com/tile-ai/tilelang/issues/2199
+        tilelang.PassConfigKey.TL_ENABLE_AGGRESSIVE_SHARED_MEMORY_MERGE: False,
     },
 )
 def bwd(
@@ -161,7 +175,10 @@ def bwd(
             acc_dkv_shared = T.alloc_shared([BS // split_store, D], accum_dtype)
             acc_dkv_tail_shared = T.alloc_shared([BS // split_store, D_tail], accum_dtype)
 
-            max_kv_i = s_i
+            # See sparse_mla_fwd: sentinel is at index S_kv - 1 (zero KV), valid indices
+            # live in [0, S_kv - 1). Using this single bound makes the kernel work for
+            # both full and CP-sharded Q without needing a global Q offset.
+            max_kv_i = S_kv - 2
 
             T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, :D], Q_shared)
             T.copy(Q[by, s_i, bz * block_H : (bz + 1) * block_H, D:], Q_tail_shared)

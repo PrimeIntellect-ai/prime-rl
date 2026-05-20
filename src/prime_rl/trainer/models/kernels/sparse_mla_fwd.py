@@ -1,5 +1,18 @@
 # Vendored from tile-ai/tilelang (Apache 2.0), modified for dynamic shapes.
 
+# TileLang ships a libcudart stub that proxies to the real CUDA runtime via
+# dlsym(RTLD_DEFAULT, ...).  If the stub's own symbols are the first ones found
+# (because nothing loaded the real libcudart globally yet), the self-check fails
+# and the stub calls abort().  Pre-loading the real library with RTLD_GLOBAL
+# ensures dlsym finds it before the stub's own exports.
+import ctypes as _ctypes
+
+try:
+    _ctypes.CDLL("libcudart.so", mode=_ctypes.RTLD_GLOBAL)
+except Exception:
+    # This is expected on CPU-only machines
+    pass
+
 import tilelang
 from tilelang import language as T
 
@@ -104,8 +117,12 @@ def sparse_mla_fwd(
 
             b_i, g_i = by, bz
             s_i = bx if REPLICATE_H == 1 else (bx // REPLICATE_H)
-            q_i = s_i
-            max_kv_i = q_i
+            # The indexer pre-filters indices using per-token `ke` and replaces out-of-range
+            # entries with the sentinel value `seq_len_kv - 1` (the last KV slot is a
+            # zero sentinel; valid K indices live in [0, seq_len_kv - 1)). This single
+            # bound preserves causality + varlen masking for both full and CP-sharded Q
+            # (where local q_i no longer matches the global K position).
+            max_kv_i = seq_len_kv - 2
 
             H0 = g_i * padded_H + (0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64)
             H1 = H0 + H_per_block

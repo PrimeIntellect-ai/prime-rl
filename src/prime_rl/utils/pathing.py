@@ -150,7 +150,10 @@ def validate_output_dir(output_dir: Path, *, resuming: bool, clean: bool, ckpt_o
 
 
 def clean_future_steps(output_dir: Path, resume_step: int) -> None:
-    """Remove stale rollouts and broadcasts from a resumed run."""
+    """Remove stale rollouts and broadcasts past ``resume_step``.
+
+    Pass ``resume_step=-1`` to wipe every step directory (fresh runs).
+    """
     run_default = output_dir / "run_default"
     dirs = [
         get_rollout_dir(output_dir),

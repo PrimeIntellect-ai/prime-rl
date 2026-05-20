@@ -30,7 +30,13 @@ def attn(request) -> AttnImplementation:
 @pytest.fixture
 def model(attn):
     config = ModelConfig(name="Qwen/Qwen3-0.6B", attn=attn)
-    return get_model(config)
+    model = get_model(config)
+    # Mirror setup_model: the custom Qwen3 forward calls lm_head with
+    # (hidden_states, labels, temperature=...), which only VanillaOutputLinear
+    # / FusedOutputLinear accept. Plain nn.Linear errors with
+    # `Linear.forward() got an unexpected keyword argument 'temperature'`.
+    inject_prime_lm_head(model, chunk_size=None)
+    return model
 
 
 def test_model_to_gpu(model):

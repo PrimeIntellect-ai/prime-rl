@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import verifiers as vf
 
 from prime_rl.utils.elastic import (
     AdapterState,
@@ -185,12 +186,12 @@ def test_adapter_state_creation():
 
 def test_adapter_matches_when_no_adapter_desired():
     with patch("prime_rl.utils.elastic.get_logger"):
-        pool = ElasticInferencePool(
-            hostname="test.hostname",
-            client_config=MagicMock(),
-            model_name="base-model",
-            port=8000,
-        )
+        mock_config = MagicMock()
+        mock_config.elastic.hostname = "test.hostname"
+        mock_config.elastic.port = 8000
+        mock_config.elastic.sync_interval = 5.0
+        mock_config.router_url = None
+        pool = ElasticInferencePool(client_config=mock_config, model_name="base-model")
         # No adapter desired (base model inference)
         assert pool._adapter_matches_desired(None) is True
         assert pool._adapter_matches_desired(AdapterState("x", Path("/x"), 0)) is True
@@ -198,12 +199,12 @@ def test_adapter_matches_when_no_adapter_desired():
 
 def test_adapter_matches_by_path():
     with patch("prime_rl.utils.elastic.get_logger"):
-        pool = ElasticInferencePool(
-            hostname="test.hostname",
-            client_config=MagicMock(),
-            model_name="base-model",
-            port=8000,
-        )
+        mock_config = MagicMock()
+        mock_config.elastic.hostname = "test.hostname"
+        mock_config.elastic.port = 8000
+        mock_config.elastic.sync_interval = 5.0
+        mock_config.router_url = None
+        pool = ElasticInferencePool(client_config=mock_config, model_name="base-model")
         pool._desired.path = Path("/weights/step_100")
         pool._desired.step = 100
 
@@ -216,12 +217,12 @@ def test_adapter_matches_by_path():
 
 def test_adapter_matches_by_step_when_nonzero():
     with patch("prime_rl.utils.elastic.get_logger"):
-        pool = ElasticInferencePool(
-            hostname="test.hostname",
-            client_config=MagicMock(),
-            model_name="base-model",
-            port=8000,
-        )
+        mock_config = MagicMock()
+        mock_config.elastic.hostname = "test.hostname"
+        mock_config.elastic.port = 8000
+        mock_config.elastic.sync_interval = 5.0
+        mock_config.router_url = None
+        pool = ElasticInferencePool(client_config=mock_config, model_name="base-model")
         pool._desired.path = Path("/weights/step_100")
         pool._desired.step = 100
 
@@ -232,12 +233,12 @@ def test_adapter_matches_by_step_when_nonzero():
 
 def test_adapter_does_not_match_by_zero_step():
     with patch("prime_rl.utils.elastic.get_logger"):
-        pool = ElasticInferencePool(
-            hostname="test.hostname",
-            client_config=MagicMock(),
-            model_name="base-model",
-            port=8000,
-        )
+        mock_config = MagicMock()
+        mock_config.elastic.hostname = "test.hostname"
+        mock_config.elastic.port = 8000
+        mock_config.elastic.sync_interval = 5.0
+        mock_config.router_url = None
+        pool = ElasticInferencePool(client_config=mock_config, model_name="base-model")
         pool._desired.path = Path("/weights/step_0")
         pool._desired.step = 0
 
@@ -248,12 +249,12 @@ def test_adapter_does_not_match_by_zero_step():
 
 def test_adapter_returns_false_when_no_adapter_loaded():
     with patch("prime_rl.utils.elastic.get_logger"):
-        pool = ElasticInferencePool(
-            hostname="test.hostname",
-            client_config=MagicMock(),
-            model_name="base-model",
-            port=8000,
-        )
+        mock_config = MagicMock()
+        mock_config.elastic.hostname = "test.hostname"
+        mock_config.elastic.port = 8000
+        mock_config.elastic.sync_interval = 5.0
+        mock_config.router_url = None
+        pool = ElasticInferencePool(client_config=mock_config, model_name="base-model")
         pool._desired.path = Path("/weights/step_100")
         pool._desired.step = 100
 
@@ -266,12 +267,12 @@ def test_adapter_returns_false_when_no_adapter_loaded():
 def test_get_loaded_adapter_finds_correct_adapter_when_multiple_loaded():
     """Test that _get_loaded_adapter returns the adapter matching desired name, not the first one."""
     with patch("prime_rl.utils.elastic.get_logger"):
-        pool = ElasticInferencePool(
-            hostname="test.hostname",
-            client_config=MagicMock(),
-            model_name="base-model",
-            port=8000,
-        )
+        mock_config = MagicMock()
+        mock_config.elastic.hostname = "test.hostname"
+        mock_config.elastic.port = 8000
+        mock_config.elastic.sync_interval = 5.0
+        mock_config.router_url = None
+        pool = ElasticInferencePool(client_config=mock_config, model_name="base-model")
 
         # Set the desired adapter name
         pool._desired.name = "rft-target-run"
@@ -317,12 +318,12 @@ def test_get_loaded_adapter_finds_correct_adapter_when_multiple_loaded():
 def test_get_loaded_adapter_returns_none_when_desired_adapter_not_found():
     """Test that _get_loaded_adapter returns None when desired adapter is not in the list."""
     with patch("prime_rl.utils.elastic.get_logger"):
-        pool = ElasticInferencePool(
-            hostname="test.hostname",
-            client_config=MagicMock(),
-            model_name="base-model",
-            port=8000,
-        )
+        mock_config = MagicMock()
+        mock_config.elastic.hostname = "test.hostname"
+        mock_config.elastic.port = 8000
+        mock_config.elastic.sync_interval = 5.0
+        mock_config.router_url = None
+        pool = ElasticInferencePool(client_config=mock_config, model_name="base-model")
 
         pool._desired.name = "rft-missing-run"
         pool._desired.path = Path("/data/outputs/missing_run/broadcasts/step_5")
@@ -348,12 +349,12 @@ def test_get_loaded_adapter_returns_none_when_desired_adapter_not_found():
 def test_get_loaded_adapter_parses_step_from_path():
     """Test that _get_loaded_adapter correctly parses step number from path."""
     with patch("prime_rl.utils.elastic.get_logger"):
-        pool = ElasticInferencePool(
-            hostname="test.hostname",
-            client_config=MagicMock(),
-            model_name="base-model",
-            port=8000,
-        )
+        mock_config = MagicMock()
+        mock_config.elastic.hostname = "test.hostname"
+        mock_config.elastic.port = 8000
+        mock_config.elastic.sync_interval = 5.0
+        mock_config.router_url = None
+        pool = ElasticInferencePool(client_config=mock_config, model_name="base-model")
 
         pool._desired.name = "my-lora"
 
@@ -377,12 +378,12 @@ def test_get_loaded_adapter_parses_step_from_path():
 def test_get_loaded_adapter_handles_step_dash_format():
     """Test that _get_loaded_adapter parses step-N format (with dash)."""
     with patch("prime_rl.utils.elastic.get_logger"):
-        pool = ElasticInferencePool(
-            hostname="test.hostname",
-            client_config=MagicMock(),
-            model_name="base-model",
-            port=8000,
-        )
+        mock_config = MagicMock()
+        mock_config.elastic.hostname = "test.hostname"
+        mock_config.elastic.port = 8000
+        mock_config.elastic.sync_interval = 5.0
+        mock_config.router_url = None
+        pool = ElasticInferencePool(client_config=mock_config, model_name="base-model")
 
         pool._desired.name = "my-lora"
 
@@ -401,3 +402,50 @@ def test_get_loaded_adapter_handles_step_dash_format():
 
         assert result is not None
         assert result.step == 99
+
+
+def test_elastic_clients_preserve_renderer_model_name_when_model_name_updates():
+    with patch("prime_rl.utils.elastic.get_logger"):
+        client_config = MagicMock()
+        client_config.elastic.hostname = "test.hostname"
+        client_config.elastic.port = 8000
+        client_config.elastic.sync_interval = 5.0
+        client_config.router_url = None
+        client_config.timeout = 1200
+        client_config.connect_timeout = 30.0
+        client_config.api_key_var = "PRIME_API_KEY"
+        client_config.headers = {}
+        client_config.headers_from_env = {}
+        client_config.extra_headers_from_state = {}
+        client_config.dp_rank_count = 1
+
+        pool = ElasticInferencePool(
+            client_config=client_config,
+            model_name="Qwen/Qwen3-VL-4B-Instruct",
+            train_client_type="renderer",
+            renderer_name="qwen3_vl",
+        )
+        pool._servers = {
+            "10.0.0.1": MagicMock(status="ready"),
+        }
+
+        pool.update_model_name("r8-smoke")
+        clients = pool.train_clients
+
+        assert clients == [
+            vf.ClientConfig(
+                client_idx=0,
+                client_type="renderer",
+                renderer="qwen3_vl",
+                renderer_model_name="Qwen/Qwen3-VL-4B-Instruct",
+                api_key_var="PRIME_API_KEY",
+                api_base_url="http://10.0.0.1:8000/v1",
+                timeout=1200,
+                connect_timeout=30.0,
+                max_connections=8192,
+                max_keepalive_connections=8192,
+                max_retries=10,
+                extra_headers={},
+                extra_headers_from_state={},
+            )
+        ]

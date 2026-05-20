@@ -4,6 +4,12 @@ from typing import Any, Callable
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 
+class IncrementalTokenizationError(ValueError):
+    """Raised when incremental tokenization produces inconsistent token prefixes."""
+
+    pass
+
+
 def common_prefix_len(a: list[int], b: list[int]) -> int:
     max_len = min(len(a), len(b))
     for idx in range(max_len):
@@ -130,7 +136,12 @@ def build_incremental_token_mask(
             processor=processor,
         )
 
-        assert prev_ids == cur_ids[:prev_len], "Mismatch in incremental tokenization with chat template."
+        if prev_ids != cur_ids[:prev_len]:
+            raise IncrementalTokenizationError(
+                f"Mismatch in incremental tokenization with chat template at message {idx} (role={role}). "
+                "This usually means the chat template is not stable under incremental application. "
+                "The sample will be skipped."
+            )
 
         token_mask.extend([role_to_mask(message)] * (len(cur_ids) - prev_len))
         prev_ids = cur_ids

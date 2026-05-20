@@ -143,8 +143,10 @@ These tell you whether training is healthy or diverging.
 
 | Metric | Source | Description |
 |--------|--------|-------------|
-| `mismatch_kl/mean` | trainer | KL divergence between trainer and (old) inference policy  |
-| `entropy/mean` | trainer | policy entropy |
+| `mismatch_kl/{all,env}/{mean,std,max}` | trainer | KL divergence between trainer and (old) inference policy over trainable tokens (W&B) |
+| `entropy/{all,env}/{mean,std,max}` | trainer | policy entropy over trainable tokens (W&B) |
+| `masked_advantage_positive/mean` | trainer | fraction of DPPO-masked trainable tokens with positive advantage (W&B) |
+| `masked_advantage_negative/mean` | trainer | fraction of DPPO-masked trainable tokens with negative advantage (W&B) |
 | `optim/grad_norm` | trainer | gradient norm — spikes may precede divergence |
 
 #### Performance
@@ -195,6 +197,31 @@ Key vLLM metrics to watch:
 - `vllm:num_requests_waiting` — requests queued waiting for KV cache space
 - `vllm:gpu_cache_usage_perc` — KV cache pressure (approaching 1.0 = requests will queue)
 
+### Rollouts
+
+Plain-text rollouts (`verifiers` format) are saved every step alongside the binary training batch inside the run directory. For single-run (local) runs this is typically `{output_dir}/run_default`.
+
+```
+{output_dir}/{run_dir}/rollouts/
+└── step_{N}/
+    ├── train_rollouts.jsonl   # all train rollouts
+    ├── eval_rollouts.jsonl    # all eval rollouts (only present when eval ran)
+    └── train_rollouts.bin     # binary-encoded training batch (consumed by the trainer)
+```
+
+Each line in the `.jsonl` files is a JSON-serialized `vf.RolloutOutput` dict with fields like `example_id`, `task`, `prompt`, `completion`, `reward`, `trajectory`, `metrics`, etc. To inspect rollouts for a given step:
+
+```bash
+# Count rollouts at a step
+wc -l {output_dir}/{run_dir}/rollouts/step_42/train_rollouts.jsonl
+
+# Preview first rollout (pretty-printed)
+head -1 {output_dir}/{run_dir}/rollouts/step_42/train_rollouts.jsonl | python -m json.tool
+
+# Extract rewards
+jq '.reward' {output_dir}/{run_dir}/rollouts/step_42/train_rollouts.jsonl
+```
+
 ### Errors and warnings
 
 As part of every check-in, grep all logs for `WARNING` and `ERROR` level messages. Pay special attention to env server and env worker logs — these are the most common source of issues since they run user-provided code.
@@ -226,4 +253,3 @@ PRIME-RL::Launcher
 ```
 
 For multi-node runs, trainer and inference processes are distributed across separate nodes. Use `srun` or `ssh` to inspect processes on other nodes directly.
-

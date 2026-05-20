@@ -4,6 +4,8 @@ import time
 from contextlib import nullcontext
 from datetime import timedelta
 
+from renderers.base import create_renderer
+from renderers.default import DefaultRenderer
 from ring_flash_attn import substitute_hf_flash_attn
 from torch.nn import CrossEntropyLoss
 
@@ -84,7 +86,10 @@ def train(config: SFTConfig):
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds), enable_gloo=config.model.fsdp_cpu_offload
     )
-    torch.set_float32_matmul_precision("high")
+    # Configurable to support ROCm/AMD GPUs where reduced precision
+    # matmul corrupts softmax over large vocabularies. Override via config
+    # (e.g. matmul_precision = "highest") on ROCm.
+    torch.set_float32_matmul_precision(config.matmul_precision)
 
     if config.model.lora is not None:
         setup_multi_run_manager(config.output_dir, 1, torch.device("cuda", world.local_rank), config.model.lora)
@@ -104,9 +109,18 @@ def train(config: SFTConfig):
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
         cp_group = parallel_dims.world_mesh["cp"].get_group()
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
-        substitute_hf_flash_attn(cp_group, heads_k_stride=1)
-        substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.model.attn)
-        from prime_rl.utils.cp import setup_hybrid_cp, setup_sparse_mla_cp
+        if config.model.cp_style == "ring":
+            substitute_hf_flash_attn(cp_group, heads_k_stride=1)
+            substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.model.attn)
+        else:
+            from prime_rl.trainer.models.layers.ulysses_attn import (
+                substitute_hf_ulysses_attn,
+                substitute_ulysses_attn,
+            )
+
+            substitute_hf_ulysses_attn(cp_group)
+            substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
+        from prime_rl.utils.cp import setup_hybrid_cp, setup_nemotron_h_cp, setup_sparse_mla_cp
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint managers ({config.ckpt})")
@@ -126,8 +140,16 @@ def train(config: SFTConfig):
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later, fused_cross_entropy=fused_cross_entropy)
 
     if parallel_dims.cp_enabled:
-        setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
+        from prime_rl.utils.cp import assert_cp_style_supports_model
+
+        assert_cp_style_supports_model(config.model.cp_style, model)
+        # sparse MLA is softmax (works with both ring and ulysses).
         setup_sparse_mla_cp(model, cp_group, cp_rank, parallel_dims.cp)
+        # Linear-attn / Mamba layers are only configured under ulysses; with ring
+        # we'd have already raised above.
+        if config.model.cp_style == "ulysses":
+            setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
+            setup_nemotron_h_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
     if config.model.lora is not None:
         multi_run_manager = get_multi_run_manager()
@@ -136,6 +158,26 @@ def train(config: SFTConfig):
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
+
+    renderer = None
+    if config.use_renderer:
+        renderer = create_renderer(
+            tokenizer,
+            renderer=config.renderer.name,
+            tool_parser=config.renderer.tool_parser,
+            reasoning_parser=config.renderer.reasoning_parser,
+            preserve_all_thinking=config.renderer.preserve_all_thinking,
+            preserve_thinking_between_tool_calls=config.renderer.preserve_thinking_between_tool_calls,
+        )
+        if isinstance(renderer, DefaultRenderer):
+            raise ValueError(
+                f"use_renderer=True for {config.tokenizer.name!r} resolved to DefaultRenderer. "
+                "DefaultRenderer falls back to incremental apply_chat_template and does NOT "
+                "fix position-dependent chat templates — the bug use_renderer is meant to solve. "
+                "Either use a model with a hand-coded renderer (see renderers.base.MODEL_RENDERER_MAP), "
+                "set [renderer] name=<hand-coded renderer> explicitly, or set use_renderer=false."
+            )
+        logger.info(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -155,7 +197,7 @@ def train(config: SFTConfig):
 
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
-    dataset = setup_dataset(tokenizer, config.data, config.model.cp)
+    dataset = setup_dataset(tokenizer, config.data, config.model.cp, renderer=renderer)
     dataloader = setup_dataloader(dataset, config.data)
     dataiter = iter(dataloader)
 
@@ -209,7 +251,9 @@ def train(config: SFTConfig):
         loss_mask = micro_batch["loss_mask"].to("cuda")
 
         if cp_enabled:
-            input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
+            input_ids, position_ids = setup_cp_params(
+                input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+            )
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 
@@ -261,7 +305,12 @@ def train(config: SFTConfig):
 
     def run_validation(step: int) -> None:
         val_dataset = setup_dataset(
-            tokenizer, config.val.data, config.model.cp, max_epochs=1, raw_dataset=val_raw_dataset
+            tokenizer,
+            config.val.data,
+            config.model.cp,
+            max_epochs=1,
+            raw_dataset=val_raw_dataset,
+            renderer=renderer,
         )
         val_dataloader = setup_dataloader(val_dataset, config.val.data)
 
@@ -418,9 +467,14 @@ def train(config: SFTConfig):
         if memory_profiler is not None:
             memory_profiler.step()
 
-        # Compute step metrics
-        # Divide by CP since those ranks process the same data
-        num_tokens = config.data.batch_size * config.data.seq_len // config.model.cp
+        # Compute step metrics. CP shards the same sequences across cp ranks
+        # (sequence-sharded data parallelism on the seq dim), so the unique
+        # training tokens per step is dp_size * (batch_per_dp_rank * seq).
+        # The `dp` mesh excludes cp by construction (parallel_dims.py), mirroring
+        # the RL trainer's accounting (rl/train.py).
+        dp_size = parallel_dims.get_mesh("dp").size()
+        num_local_tokens = config.data.seq_len * (config.data.batch_size // dp_size)
+        num_tokens = dp_size * num_local_tokens
         progress.total_tokens += num_tokens
         progress.total_samples = dataset.step
         perf_counter = get_perf_counter(model, config.data.seq_len)

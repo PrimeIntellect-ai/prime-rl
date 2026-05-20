@@ -53,3 +53,7 @@ temperature = 0.5
 lr = 3e-6
 
 [inference] # Default inference config
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"

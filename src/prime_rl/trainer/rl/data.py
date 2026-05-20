@@ -24,6 +24,7 @@ class TensorMicroBatch(TypedDict):
     teacher_logprobs: Float[Tensor, "batch seq"] | None
     loss_mask: Bool[Tensor, "batch seq"]
     temperatures: Float[Tensor, "batch seq"]  # Per-token temperatures
+    env_names: list[str]
 
     # Batch level
     lora_num_tokens: Int[Tensor, "n_loras"]
@@ -36,6 +37,12 @@ class TensorMicroBatch(TypedDict):
     pixel_values: Float[Tensor, "num_patches patch_dim"] | None
     # image_grid_thw: grid dimensions [num_images, 3] where each entry is [temporal, height, width]
     image_grid_thw: Int[Tensor, "num_images 3"] | None
+    # mm_token_type_ids: token type per token [batch seq], int64 (0=text, 1=image, 2=video)
+    mm_token_type_ids: Int[Tensor, "batch seq"] | None
+
+    # Selects loss dispatch (rl/opd → default loss with mode-specific taus,
+    # sft → sft loss). All samples in a micro batch share the same mode.
+    training_mode: str
 
 
 class FakeDataLoader:
@@ -103,11 +110,14 @@ class FakeDataLoader:
             "inference_logprobs": inference_logprobs.unsqueeze(0),
             "teacher_logprobs": None,
             "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
+            "env_names": ["fake"] * input_ids.shape[0],
             "loss_mask": loss_mask.unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
             "routed_experts": None,
             "pixel_values": None,
             "image_grid_thw": None,
+            "mm_token_type_ids": None,
+            "training_mode": "rl",
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -128,11 +138,14 @@ class FakeDataLoader:
             "inference_logprobs": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
             "teacher_logprobs": None,
             "temperatures": torch.ones(self.seq_len).unsqueeze(0),
+            "env_names": ["fake"] * self.seq_len,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
             "routed_experts": None,
             "pixel_values": None,
             "image_grid_thw": None,
+            "mm_token_type_ids": None,
+            "training_mode": "rl",
         }
 
 
@@ -196,6 +209,7 @@ class DataLoader:
             else None,
             loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
             temperatures=torch.tensor(micro_batch.temperatures, dtype=torch.float).unsqueeze(0),
+            env_names=micro_batch.env_names,
             lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
             # Multimodal fields - no batch dimension for these as they are variable-sized
             pixel_values=torch.frombuffer(bytearray(micro_batch.pixel_values), dtype=torch.float32).reshape(
@@ -206,9 +220,13 @@ class DataLoader:
             image_grid_thw=torch.tensor(micro_batch.image_grid_thw, dtype=torch.long)
             if micro_batch.image_grid_thw is not None
             else None,
+            mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)
+            if micro_batch.mm_token_type_ids is not None
+            else None,
             routed_experts=torch.tensor(micro_batch.routed_experts, dtype=torch.int32).unsqueeze(
                 0
             )  # [1, seq_len, layers, topk]
             if micro_batch.routed_experts is not None
             else None,
+            training_mode=micro_batch.training_mode,
         )

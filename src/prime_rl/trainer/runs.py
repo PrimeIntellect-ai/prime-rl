@@ -60,6 +60,9 @@ class MultiRunManager:
         # Store modules with their FQN prefixes for parameter management
         self._modules: list[tuple[str, "MultiLoRALinear"]] = []
 
+        # Optional conversion applied to adapter state dicts (e.g. PrimeRL -> HF key rename)
+        self._adapter_state_dict_converter: Callable[[dict[str, torch.Tensor]], dict[str, torch.Tensor]] | None = None
+
         # Initialize lora globals on device so runs.* ARE the global tensors
         from prime_rl.trainer.models.layers.lora import (
             get_lora_num_tokens,
@@ -140,6 +143,12 @@ class MultiRunManager:
     # Module Registration and Parameter Management
     # =========================================================================
 
+    def register_adapter_state_dict_converter(
+        self, converter: Callable[[dict[str, torch.Tensor]], dict[str, torch.Tensor]]
+    ) -> None:
+        """Register a converter applied in-place to adapter state dicts (e.g. model.convert_adapter_to_hf)."""
+        self._adapter_state_dict_converter = converter
+
     def register_module(self, prefix: str, module: "MultiLoRALinear") -> None:
         """Register a MultiLoRALinear module with its FQN prefix.
 
@@ -188,6 +197,9 @@ class MultiRunManager:
                 # Default: use named_parameters_for_adapter
                 for name, param in module.named_parameters_for_adapter(idx):
                     state_dict[f"{prefix}.{name}.weight"] = param.detach()
+
+        if self._adapter_state_dict_converter is not None:
+            state_dict = self._adapter_state_dict_converter(state_dict)
         return state_dict
 
     def reset_run_parameters(self, idx: int) -> None:
@@ -499,19 +511,21 @@ def setup_multi_run_manager(
 
         def validate_lora_rank(orch_config: "OrchestratorConfig") -> tuple[bool, str]:
             # Default to trainer's rank/alpha if not specified
-            if orch_config.model.lora.rank is None:
-                orch_config.model.lora.rank = trainer_lora.rank
-            if orch_config.model.lora.alpha is None:
-                orch_config.model.lora.alpha = trainer_lora.alpha
-            if orch_config.model.lora.rank > trainer_lora.rank:
+            if orch_config.student.model.lora.rank is None:
+                orch_config.student.model.lora.rank = trainer_lora.rank
+            if orch_config.student.model.lora.alpha is None:
+                orch_config.student.model.lora.alpha = trainer_lora.alpha
+            if orch_config.student.model.lora.rank > trainer_lora.rank:
                 return (
                     False,
-                    f"model.lora.rank ({orch_config.model.lora.rank}) exceeds trainer max rank ({trainer_lora.rank})",
+                    f"student.model.lora.rank ({orch_config.student.model.lora.rank}) exceeds trainer max rank ({trainer_lora.rank})",
                 )
             return True, ""
 
         def on_run_discovered(idx: int, run_id: str, orch_config: "OrchestratorConfig") -> None:
-            _MULTI_RUN_MANAGER.scaling_factors[idx] = orch_config.model.lora.alpha / orch_config.model.lora.rank
+            _MULTI_RUN_MANAGER.scaling_factors[idx] = (
+                orch_config.student.model.lora.alpha / orch_config.student.model.lora.rank
+            )
 
         _MULTI_RUN_MANAGER.register_config_validation_hook(validate_lora_rank)
         _MULTI_RUN_MANAGER.register_discovered_hook(on_run_discovered)

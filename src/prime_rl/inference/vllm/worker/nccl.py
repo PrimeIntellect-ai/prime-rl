@@ -1,5 +1,5 @@
 import pickle
-from typing import TYPE_CHECKING, Callable, Generator, cast
+from typing import TYPE_CHECKING, Generator, cast
 
 import torch
 from torch.nn import Module
@@ -8,10 +8,9 @@ from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import (
-    load_weights_checkpoint,
+    load_weights_checkpoint_layerwise,
     load_weights_kernel,
-    postprocess_weights_checkpoint,
-    postprocess_weights_kernel,
+    update_mla_absorbed_weights,
 )
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
 
@@ -130,6 +129,10 @@ class NCCLWeightUpdateWorker(Worker):
             timeout=timeout,
         )
 
+    def liveness_probe(self) -> None:
+        """No-op RPC used by the API server liveness endpoint."""
+        return None
+
     def update_weights_from_path(self, weight_dir: str) -> None:
         """Update weights with the nccl communicator."""
         model_runner = self.model_runner
@@ -140,15 +143,14 @@ class NCCLWeightUpdateWorker(Worker):
         assert isinstance(model, Module)
 
         state_iter = self.nccl_broadcast_receiver.receive_state_dict()
-        device = next(model.parameters()).device
-        loader_fn: Callable[[Module, Generator[tuple[str, torch.Tensor], None, None]], None]
-        postprocess_fn: Callable[[Module, object, torch.device], None]
         if self.quantize_in_weight_transfer:
-            loader_fn = load_weights_kernel
-            postprocess_fn = postprocess_weights_kernel
-        else:
-            loader_fn = load_weights_checkpoint
-            postprocess_fn = postprocess_weights_checkpoint
+            load_weights_kernel(model, state_iter)
+            update_mla_absorbed_weights(model)
+            return
 
-        loader_fn(model, state_iter)
-        postprocess_fn(model, self.model_runner.model_config, device)
+        load_weights_checkpoint_layerwise(
+            model,
+            state_iter,
+            self.model_runner.model_config,
+            self.vllm_config,
+        )

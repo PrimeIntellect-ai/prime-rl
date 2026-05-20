@@ -6,16 +6,16 @@ project = "gsm8k-debug"
 name = "gsm8k"
 
 [model]
-name = "PrimeIntellect/Qwen3-0.6B"
+name = "Qwen/Qwen3-0.6B"
 
 [orchestrator]
 batch_size = 512
 rollouts_per_example = 16
 
-[orchestrator.sampling]
-max_tokens = 2048
+[orchestrator.train.sampling]
+max_completion_tokens = 2048
 
-[[orchestrator.env]]
+[[orchestrator.train.env]]
 id = "math-env"
 name = "gsm8k"
 args = { dataset_name = "openai/gsm8k", dataset_subset = "main", math_verify_max_workers = 128, math_verify_timeout = 60 }
@@ -23,3 +23,8 @@ args = { dataset_name = "openai/gsm8k", dataset_subset = "main", math_verify_max
 [trainer] # Default trainer config
 
 [inference] # Default inference config
+
+# Mirror of Qwen/Qwen3-0.6B; PI's template patch always re-emits prior
+# <think> blocks. Match that with the qwen3 renderer's preserve_all_thinking.
+[orchestrator.renderer]
+preserve_all_thinking = true

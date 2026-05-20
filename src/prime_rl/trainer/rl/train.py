@@ -29,8 +29,9 @@ from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
+    compute_importance_ratio_and_mismatch_kl,
     selective_log_softmax,
-    setup_loss_fn,
+    setup_loss_fns,
     shift_tensor_left,
     shift_tensor_right,
 )
@@ -109,7 +110,10 @@ def train(config: TrainerConfig):
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds), enable_gloo=config.model.fsdp_cpu_offload
     )
-    torch.set_float32_matmul_precision("high")
+    # Configurable to support ROCm/AMD GPUs where reduced precision
+    # matmul corrupts softmax over large vocabularies. Override via config
+    # (e.g. matmul_precision = "highest") on ROCm.
+    torch.set_float32_matmul_precision(config.matmul_precision)
 
     # Setup multi run manager and offsets (including LoRA validation/scaling hooks if applicable)
     multi_run_manager = setup_multi_run_manager(
@@ -146,7 +150,7 @@ def train(config: TrainerConfig):
 
     # Set up the loss function
     logger.info(f"Setting up loss function ({config.loss})")
-    loss_fn = setup_loss_fn(config.loss)
+    loss_fns = setup_loss_fns(config.loss)
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -183,12 +187,32 @@ def train(config: TrainerConfig):
     if parallel_dims.cp_enabled:
         cp_group = parallel_dims.world_mesh["cp"].get_group()
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
-        substitute_hf_flash_attn(cp_group, heads_k_stride=1)
-        substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.model.attn)
-        from prime_rl.utils.cp import setup_hybrid_cp, setup_sparse_mla_cp
+        if config.model.cp_style == "ring":
+            substitute_hf_flash_attn(cp_group, heads_k_stride=1)
+            substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.model.attn)
+        else:
+            from prime_rl.trainer.models.layers.ulysses_attn import (
+                substitute_hf_ulysses_attn,
+                substitute_ulysses_attn,
+            )
 
-        setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
+            substitute_hf_ulysses_attn(cp_group)
+            substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
+        from prime_rl.utils.cp import (
+            assert_cp_style_supports_model,
+            setup_hybrid_cp,
+            setup_nemotron_h_cp,
+            setup_sparse_mla_cp,
+        )
+
+        assert_cp_style_supports_model(config.model.cp_style, model)
+        # sparse MLA is softmax (works with both ring and ulysses).
         setup_sparse_mla_cp(model, cp_group, cp_rank, parallel_dims.cp)
+        # Linear-attn / Mamba layers are only configured under ulysses; with ring
+        # we'd have already raised above.
+        if config.model.cp_style == "ulysses":
+            setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
+            setup_nemotron_h_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -354,6 +378,11 @@ def train(config: TrainerConfig):
             image_grid_thw = (
                 micro_batch["image_grid_thw"].to("cuda") if micro_batch.get("image_grid_thw") is not None else None
             )
+            mm_token_type_ids = (
+                micro_batch["mm_token_type_ids"].to("cuda")
+                if micro_batch.get("mm_token_type_ids") is not None
+                else None
+            )
 
             labels = shift_tensor_left(input_ids)
 
@@ -362,7 +391,9 @@ def train(config: TrainerConfig):
                 raise NotImplementedError("Context parallelism is not supported with VLM/multimodal training")
 
             if cp_enabled:
-                input_ids, forward_position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
+                input_ids, forward_position_ids = setup_cp_params(
+                    input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+                )
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
                 if routed_experts is not None:
                     routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
@@ -397,6 +428,7 @@ def train(config: TrainerConfig):
                     temperature=temperatures,
                     pixel_values=pixel_values,
                     image_grid_thw=image_grid_thw,
+                    mm_token_type_ids=mm_token_type_ids,
                     routed_experts=routed_experts,
                 )
 
@@ -433,8 +465,9 @@ def train(config: TrainerConfig):
                 else None,
                 advantages=advantages.squeeze().split(response_lengths),
                 loss_mask=loss_mask.squeeze().split(response_lengths),
-                loss_fn=loss_fn,
+                loss_fns=loss_fns,
                 loss_scale=loss_scale,
+                training_mode=micro_batch["training_mode"],
             )
 
             # Backward pass
@@ -442,8 +475,26 @@ def train(config: TrainerConfig):
                 loss.backward()
 
             # Add relevant tensors to tensor dict for logging purposes
-            tensors["entropy"].append(out["entropy"][loss_mask].detach().to("cpu"))
+            entropy = out["entropy"][loss_mask].detach().to("cpu")
+            tensors["entropy/all"].append(entropy)
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
+
+            env_names = micro_batch["env_names"]
+            masked_env_names = [env_name for env_name, keep in zip(env_names, loss_mask.flatten().tolist()) if keep]
+            env_to_indices: dict[str, list[int]] = {}
+            for idx, env_name in enumerate(masked_env_names):
+                env_to_indices.setdefault(env_name, []).append(idx)
+
+            for env_name, indices in env_to_indices.items():
+                tensors[f"entropy/{env_name}"].append(entropy[indices])
+
+            if micro_batch["training_mode"] != "sft":
+                with torch.no_grad():
+                    _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(out["logprobs"], inference_logprobs)
+                mismatch_kl = mismatch_kl[loss_mask].detach().to("cpu")
+                tensors["mismatch_kl/all"].append(mismatch_kl)
+                for env_name, indices in env_to_indices.items():
+                    tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)
@@ -453,13 +504,12 @@ def train(config: TrainerConfig):
 
             # Add loss tensors to tensor dict for logging purposes
             for key, loss_tensor in loss_tensors.items():
-                loss_tensor = loss_tensor.detach().to("cpu")
-                tensors[key].append(loss_tensor)
+                tensors[key].append(loss_tensor.detach().to("cpu"))
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f}"
-            if "mismatch_kl" in tensors:
-                micro_step_message += f" | Mismatch KL: {tensors['mismatch_kl'][-1].mean().item():.4f}"
+            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy/all'][-1].mean().item():.4f}"
+            if micro_batch["training_mode"] != "sft":
+                micro_step_message += f" | Mismatch KL: {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
@@ -501,16 +551,15 @@ def train(config: TrainerConfig):
         progress.total_tokens += num_tokens
         progress.total_samples += batch_size
         perf_counter = get_perf_counter(model, seq_len)
-        perf_counter.count_tokens(num_tokens)
-        throughput = perf_counter.get_tokens_per_second() or 0
-        mfu = perf_counter.get_mfu() or 0
+        throughput = perf_counter.get_step_tokens_per_second(num_tokens, forward_backward_time)
+        mfu = perf_counter.get_step_mfu(num_tokens, forward_backward_time)
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
 
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f}"
-        if "mismatch_kl/mean" in tensor_stats:
-            step_message += f" | Mismatch KL: {tensor_stats['mismatch_kl/mean']:.4f}"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/all/mean']:.4f}"
+        if "mismatch_kl/all/mean" in tensor_stats:
+            step_message += f" | Mismatch KL: {tensor_stats['mismatch_kl/all/mean']:.4f}"
         if grad_norm is not None:
             step_message += f" | Grad. Norm: {grad_norm:.4f}"
         step_message += f" | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
@@ -539,8 +588,8 @@ def train(config: TrainerConfig):
         monitor.log(optim_metrics, step=progress.step)
 
         # Compute derived metrics
-        entropy_mean = tensor_stats.get("entropy/mean", 0.0)
-        mismatch_kl_mean = tensor_stats.get("mismatch_kl/mean")
+        entropy_mean = tensor_stats.get("entropy/all/mean", 0.0)
+        mismatch_kl_mean = tensor_stats.get("mismatch_kl/all/mean")
         if mismatch_kl_mean is not None and entropy_mean > 0:
             tensor_stats["kl_ent_ratio/mean"] = mismatch_kl_mean / entropy_mean
 
@@ -574,8 +623,8 @@ def train(config: TrainerConfig):
                 peak_memory_gib=peak_memory,
                 learning_rate=current_lr,
                 mfu=mfu,
-                entropy=tensor_stats.get("entropy/mean", 0.0),
-                mismatch_kl=tensor_stats.get("mismatch_kl/mean", 0.0),
+                entropy=tensor_stats.get("entropy/all/mean", 0.0),
+                mismatch_kl=tensor_stats.get("mismatch_kl/all/mean", 0.0),
                 zero_grad_ratio=zero_grad_ratio,
             )
             # Update run/LoRA metrics

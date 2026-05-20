@@ -25,7 +25,7 @@ def test_perf_counter(model_name: str, active_params: int, flops_per_token: int)
                 None,
             )
         model = AutoModelForCausalLM.from_config(config)
-    perf_counter = PerfCounter(model, seq_len=1024, window_size=10)
+    perf_counter = PerfCounter(model, seq_len=1024)
 
     assert perf_counter.get_active_mm_params(config) == active_params, (
         f"Expected {active_params:,} active parameters, got {perf_counter.get_active_mm_params(config):,} active parameters"

@@ -199,12 +199,32 @@ def _convert_tools_to_oai_format(tool_defs: list) -> list[dict[str, Any]] | None
     ]
 
 
+def _tokenize_step_with_renderer(
+    step: vf.TrajectoryStep,
+    renderer,
+    tools: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Tokenize a trajectory step using a Renderer."""
+    from renderers.base import build_trajectory_step
+
+    prompt = _normalize_messages(step.get("prompt"), default_role="user")
+    completion = _normalize_messages(step.get("completion"), default_role="assistant")
+    prompt = _strip_message_content(_deserialize_tool_calls(prompt))
+    completion = _strip_message_content(_deserialize_tool_calls(completion))
+    return build_trajectory_step(renderer, prompt, completion, tools=tools)
+
+
 def pretokenize_rollout_trajectory(
     output: vf.RolloutOutput,
     tokenizer: PreTrainedTokenizer,
     processor=None,
+    renderer=None,
 ) -> bool:
-    """Populate missing step tokens from prompt/completion messages."""
+    """Populate missing step tokens from prompt/completion messages.
+
+    When a renderer is provided, uses it for tokenization (faster, deterministic).
+    Otherwise falls back to the tokenizer + apply_chat_template path.
+    """
     logger = get_logger()
     tools = _convert_tools_to_oai_format(output.get("tool_defs", []))
 
@@ -212,17 +232,19 @@ def pretokenize_rollout_trajectory(
         if step["tokens"] is not None:
             continue
 
-        reconstructed = _tokenize_step_from_messages(step, tokenizer, tools=tools, processor=processor)
-        if reconstructed["prompt_prefix_len"] < reconstructed["original_prompt_len"]:
-            logger.debug(
-                f"Prompt tokenization was non-prefix for example {output['example_id']} step {step_idx}. "
-                f"Using longest common prefix length {reconstructed['prompt_prefix_len']} "
-                f"(original prompt had {reconstructed['original_prompt_len']} tokens)."
-            )
-
-        reconstructed.pop("prompt_prefix_len")
-        reconstructed.pop("original_prompt_len")
-        step["tokens"] = reconstructed
+        if renderer is not None:
+            step["tokens"] = _tokenize_step_with_renderer(step, renderer, tools=tools)
+        else:
+            reconstructed = _tokenize_step_from_messages(step, tokenizer, tools=tools, processor=processor)
+            if reconstructed["prompt_prefix_len"] < reconstructed["original_prompt_len"]:
+                logger.debug(
+                    f"Prompt tokenization was non-prefix for example {output['example_id']} step {step_idx}. "
+                    f"Using longest common prefix length {reconstructed['prompt_prefix_len']} "
+                    f"(original prompt had {reconstructed['original_prompt_len']} tokens)."
+                )
+            reconstructed.pop("prompt_prefix_len")
+            reconstructed.pop("original_prompt_len")
+            step["tokens"] = reconstructed
 
     return True
 
@@ -231,6 +253,7 @@ def interleave_rollout(
     output: vf.RolloutOutput,
     vlm_cache: "VLMImageCache | None" = None,
     cache_key: int | None = None,
+    mm_token_type_ids_mapping: dict[int, int] | None = None,
 ) -> list[TrainingSample] | None:
     """
     Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
@@ -304,9 +327,9 @@ def interleave_rollout(
             tokens.get("routed_experts"),
             len(tokens["prompt_ids"]) + len(tokens["completion_ids"]),
         )
-
+        prompt_ids = list(tokens["prompt_ids"])
         return TrainingSample(
-            prompt_ids=list(tokens["prompt_ids"]),
+            prompt_ids=prompt_ids,
             prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
             completion_ids=completion_ids,
             completion_mask=completion_mask,
@@ -314,7 +337,9 @@ def interleave_rollout(
             completion_temperatures=[temperature] * len(completion_ids),
             teacher_logprobs=None,
             advantage=None,
+            env_name=output["env_name"],
             routed_experts=routed_experts,
+            mm_token_type_ids=None,
         )
 
     def extend_sample(sample: TrainingSample, prefix_len: int, step_idx: int) -> None:
@@ -351,11 +376,11 @@ def interleave_rollout(
             sample.routed_experts = _align_routed_experts(sample.routed_experts, expected_len)
 
     # Track [prefix_tokens, sample, last_step_idx] per active sample
-    active_samples: list[list] = []
+    active_samples: list[tuple[list[int], TrainingSample, int]] = []
 
     first_tokens = prepared_steps[0]
     first_prefix = first_tokens["prompt_ids"] + first_tokens["completion_ids"]
-    active_samples.append([first_prefix, make_sample(first_tokens), 0])
+    active_samples.append((first_prefix, make_sample(first_tokens), 0))
 
     for step_idx, _step in enumerate(trajectory[1:], start=1):
         tokens = prepared_steps[step_idx]
@@ -372,8 +397,7 @@ def interleave_rollout(
             # Extension holds - merge into matched sample
             prefix_tokens, sample, _ = active_samples[matched_idx]
             extend_sample(sample, len(prefix_tokens), step_idx=step_idx)
-            active_samples[matched_idx][0] = tokens["prompt_ids"] + tokens["completion_ids"]
-            active_samples[matched_idx][2] = step_idx
+            active_samples[matched_idx] = (tokens["prompt_ids"] + tokens["completion_ids"], sample, step_idx)
         else:
             # No prefix matches - start a new sample
             logger.debug(
@@ -381,9 +405,13 @@ def interleave_rollout(
                 f"Starting new sample (active_prefixes={len(active_samples)}, step_prompt_len={len(step_prompt_ids)})."
             )
             new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
-            active_samples.append([new_prefix, make_sample(tokens), step_idx])
+            active_samples.append((new_prefix, make_sample(tokens), step_idx))
 
-    # Attach images once per sample using only the last merged step
+    # Attach images once per sample using only the last merged step. Prompt
+    # tokens already contain fully expanded <|image_pad|> placeholders because
+    # VLMs go through MITO (chat completions), which runs apply_chat_template
+    # server-side; the orchestrator re-tokenizes via the same processor in the
+    # fallback path so features and tokens stay 1:1.
     if vlm_cache is not None:
         key = output["example_id"] if cache_key is None else cache_key
         for _, sample, last_step_idx in active_samples:
@@ -391,6 +419,10 @@ def interleave_rollout(
             sample.pixel_values = pv
             sample.pixel_values_shape = shape
             sample.image_grid_thw = grids
+            if mm_token_type_ids_mapping is not None:
+                sample.mm_token_type_ids = [
+                    mm_token_type_ids_mapping.get(token_id, 0) for token_id in sample.prompt_ids + sample.completion_ids
+                ]
 
     return [sample for _, sample, _ in active_samples]
 
@@ -792,7 +824,7 @@ def build_vlm_image_cache(rollouts: list[vf.RolloutOutput], processor) -> VLMIma
     Caches per rollout to keep images aligned with divergent multi-turn trajectories.
     """
     examples = [(idx, rollout) for idx, rollout in enumerate(rollouts)]
-    unique_example_ids = {rollout["example_id"] for rollout in rollouts}
+    unique_example_ids = {(rollout.get("env_name"), rollout["example_id"]) for rollout in rollouts}
 
     # Extract images (also strips base64 data from rollout prompts to free memory)
     extract_start = time.perf_counter()

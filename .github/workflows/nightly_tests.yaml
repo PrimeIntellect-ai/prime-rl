@@ -25,7 +25,7 @@ jobs:
             - name: Checkout repository
               uses: actions/checkout@v4
               with:
-                  submodules: true
+                  submodules: false
 
             - name: Build matrix from nightly test files
               id: build-matrix
@@ -57,7 +57,10 @@ jobs:
         runs-on: research-cluster
         container:
             image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
-            options: --gpus all
+            # --shm-size: vLLM V1's DP engine/API-server IPC uses POSIX shm-backed
+            # MessageQueue (~160MB per queue); Docker's default 64MB /dev/shm triggers
+            # SIGBUS in DP engine cores on VLM runs (mm data overflows tmpfs).
+            options: --gpus all --shm-size=16g
         timeout-minutes: 1440 # 24 hours
         strategy:
             fail-fast: false
@@ -72,7 +75,11 @@ jobs:
             - name: Checkout repository
               uses: actions/checkout@v4
               with:
-                  submodules: true
+                  submodules: false
+            - name: Init public submodules
+              run: |
+                  git config --global url."https://github.com/".insteadOf "git@github.com:"
+                  git submodule update --init --recursive -- deps/verifiers deps/renderers deps/research-environments deps/pydantic-config
             - name: Install uv
               uses: astral-sh/setup-uv@v5
               with:

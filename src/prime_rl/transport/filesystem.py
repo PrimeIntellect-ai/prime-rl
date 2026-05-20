@@ -6,8 +6,8 @@ from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender, Traini
 from prime_rl.transport.types import MicroBatch, TrainingBatch
 from prime_rl.utils.pathing import get_rollout_dir, get_step_path, sync_wait_for_path
 
-BATCH_FILE_TMP_NAME = "rollouts.bin.tmp"
-BATCH_FILE_NAME = "rollouts.bin"
+BATCH_FILE_TMP_NAME = "train_rollouts.bin.tmp"
+BATCH_FILE_NAME = "train_rollouts.bin"
 LOG_FREQ_SECONDS = 10
 
 

@@ -102,50 +102,76 @@ class ElasticInferencePool:
 
     def __init__(
         self,
-        hostname: str,
         client_config: ClientConfig,
         model_name: str,
-        port: int = 8000,
-        sync_interval: float = 5.0,
-        client_type: str = "openai_chat_completions",
-        router_url: str | None = None,
+        train_client_type: str = "openai_chat_completions",
+        eval_client_type: str = "openai_chat_completions",
+        renderer_name: str = "auto",
+        tool_parser: str | None = None,
+        reasoning_parser: str | None = None,
+        renderer_pool_size: int | None = None,
+        preserve_all_thinking: bool = False,
+        preserve_thinking_between_tool_calls: bool = False,
     ):
         self.logger = get_logger()
-        self.hostname = hostname
         self.client_config = client_config
         self.model_name = model_name
         self.base_model_name = model_name  # Keep original for health checks
-        self.port = port
-        self.sync_interval = sync_interval
-        self.client_type = client_type
-        self.router_url = router_url
+        self.renderer_model_name = model_name if train_client_type == "renderer" else None
+        self.hostname = client_config.elastic.hostname
+        self.port = client_config.elastic.port
+        self.sync_interval = client_config.elastic.sync_interval
+        self.train_client_type = train_client_type
+        self.eval_client_type = eval_client_type
+        self.renderer_name = renderer_name
+        self.tool_parser = tool_parser
+        self.reasoning_parser = reasoning_parser
+        self.renderer_pool_size = renderer_pool_size
+        self.preserve_all_thinking = preserve_all_thinking
+        self.preserve_thinking_between_tool_calls = preserve_thinking_between_tool_calls
+        self.router_url = client_config.router_url
 
         self._servers: dict[str, ServerState] = {}
         self._admin_clients: dict[str, AsyncClient] = {}
         self._lock = asyncio.Lock()
         self._desired: AdapterState = AdapterState()
 
-        self._clients: list[vf.ClientConfig] = []
+        self._train_clients: list[vf.ClientConfig] = []
+        self._eval_clients: list[vf.ClientConfig] = []
         self._client_urls: list[str] = []
-        self._client_index = 0
+
+        self._eval_index = 0
 
         self._sync_task: asyncio.Task | None = None
         self._started = False
 
     @classmethod
     async def from_config(
-        cls, config: ClientConfig, model_name: str, client_type: str = "openai_chat_completions"
+        cls,
+        client_config: ClientConfig,
+        model_name: str,
+        train_client_type: str = "openai_chat_completions",
+        eval_client_type: str = "openai_chat_completions",
+        renderer_name: str = "auto",
+        tool_parser: str | None = None,
+        reasoning_parser: str | None = None,
+        renderer_pool_size: int | None = None,
+        preserve_all_thinking: bool = False,
+        preserve_thinking_between_tool_calls: bool = False,
     ) -> ElasticInferencePool:
-        if config.elastic is None:
+        if client_config.elastic is None:
             raise ValueError("Elastic inference pool requires elastic config")
         pool = cls(
-            hostname=config.elastic.hostname,
-            client_config=config,
+            client_config,
             model_name=model_name,
-            port=config.elastic.port,
-            sync_interval=config.elastic.sync_interval,
-            client_type=client_type,
-            router_url=config.router_url,
+            train_client_type=train_client_type,
+            eval_client_type=eval_client_type,
+            renderer_name=renderer_name,
+            tool_parser=tool_parser,
+            reasoning_parser=reasoning_parser,
+            renderer_pool_size=renderer_pool_size,
+            preserve_all_thinking=preserve_all_thinking,
+            preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
         )
         await pool.start()
         return pool
@@ -163,8 +189,8 @@ class ElasticInferencePool:
     def ready_urls(self) -> list[str]:
         return [self._build_inference_url(ip) for ip, s in self._servers.items() if s.status == "ready"]
 
-    @property
-    def clients(self) -> list[vf.ClientConfig]:
+    def _rebuild_clients(self) -> None:
+        """Rebuild inference clients when the set of ready URLs changes."""
         # When a router URL is configured, route inference requests through it
         # instead of directly to discovered pods. Admin operations still use
         # individual pod IPs via admin_clients.
@@ -176,34 +202,51 @@ class ElasticInferencePool:
             urls = self.ready_urls
         if set(urls) != set(self._client_urls):
             self._client_urls = urls
-            self._client_index = 0
-            self._clients = (
+
+            self._eval_index = 0
+            url_config = ClientConfig(
+                timeout=self.client_config.timeout,
+                connect_timeout=self.client_config.connect_timeout,
+                base_url=urls,
+                api_key_var=self.client_config.api_key_var,
+                headers=self.client_config.headers,
+                headers_from_env=self.client_config.headers_from_env,
+                dp_rank_count=self.client_config.dp_rank_count,
+                extra_headers_from_state=self.client_config.extra_headers_from_state,
+            )
+            self._train_clients = (
                 setup_clients(
-                    ClientConfig(
-                        timeout=self.client_config.timeout,
-                        connect_timeout=self.client_config.connect_timeout,
-                        base_url=urls,
-                        api_key_var=self.client_config.api_key_var,
-                        headers=self.client_config.headers,
-                        dp_rank_count=self.client_config.dp_rank_count,
-                    ),
-                    client_type=self.client_type,
+                    url_config,
+                    client_type=self.train_client_type,
+                    renderer_name=self.renderer_name,
+                    renderer_model_name=self.renderer_model_name,
+                    tool_parser=self.tool_parser,
+                    reasoning_parser=self.reasoning_parser,
+                    renderer_pool_size=self.renderer_pool_size,
+                    preserve_all_thinking=self.preserve_all_thinking,
+                    preserve_thinking_between_tool_calls=self.preserve_thinking_between_tool_calls,
                 )
                 if urls
                 else []
             )
-        return self._clients
+            self._eval_clients = setup_clients(url_config, client_type=self.eval_client_type) if urls else []
 
     @property
-    def has_clients(self) -> bool:
-        return len(self.clients) > 0
+    def train_clients(self) -> list[vf.ClientConfig]:
+        self._rebuild_clients()
+        return self._train_clients
 
-    async def get_next_client(self) -> vf.ClientConfig:
-        """Get next client in round-robin fashion."""
-        while not self.has_clients:
+    @property
+    def eval_clients(self) -> list[vf.ClientConfig]:
+        self._rebuild_clients()
+        return self._eval_clients
+
+    async def get_eval_client(self) -> vf.ClientConfig:
+        """Get next eval client in round-robin fashion."""
+        while not self.eval_clients:
             await asyncio.sleep(self.sync_interval)
-        client = self._clients[self._client_index % len(self._clients)]
-        self._client_index += 1
+        client = self._eval_clients[self._eval_index % len(self._eval_clients)]
+        self._eval_index += 1
         return client
 
     @property
@@ -225,6 +268,7 @@ class ElasticInferencePool:
             base_url=[f"{url}/v1"],
             api_key_var=self.client_config.api_key_var,
             headers=self.client_config.headers,
+            headers_from_env=self.client_config.headers_from_env,
         )
         return setup_admin_clients(config)[0]
 
@@ -439,7 +483,8 @@ class ElasticInferencePool:
         for ip in list(self._servers.keys()):
             await self._remove_server(ip)
 
-        self._clients = []
+        self._train_clients = []
+        self._eval_clients = []
         self._client_urls = []
         self._started = False
 
@@ -453,7 +498,9 @@ class ElasticInferencePool:
             # Sync all servers in parallel for faster weight updates
             await asyncio.gather(*[self._sync_server_adapter(ip) for ip in self._servers.keys()])
 
-    async def wait_for_ready(self, model_name: str = "", timeout: int = 1800, min_servers: int = 1) -> None:
+    async def wait_for_ready(self, model_name: str = "", timeout: int | None = None, min_servers: int = 1) -> None:
+        if timeout is None:
+            timeout = self.client_config.wait_for_ready_timeout
         start = time.time()
         while time.time() - start < timeout:
             await self.sync()

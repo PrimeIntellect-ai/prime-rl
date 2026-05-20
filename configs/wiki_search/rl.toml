@@ -30,13 +30,13 @@ batch_size = 512
 rollouts_per_example = 16
 oversampling_factor = 2.0
 
-[orchestrator.sampling]
-max_tokens = 512
+[orchestrator.train.sampling]
+max_completion_tokens = 512
 
 [orchestrator.buffer]
 online_difficulty_filtering = true
 
-[[orchestrator.env]]
+[[orchestrator.train.env]]
 id = "wiki-search"
 
 [inference.model]

@@ -1,24 +1,30 @@
 import asyncio
 import time
+from concurrent.futures import ThreadPoolExecutor
 from itertools import cycle
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import verifiers as vf
-from openai.types.chat.chat_completion import ChatCompletion
 from rich.console import Console
 from rich.table import Table
 from verifiers.utils.client_utils import setup_openai_client
 
-from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.transport import TrainingSample
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import (
     format_time,
     get_broadcast_dir,
     get_ckpt_dir,
     get_step_path,
 )
+
+
+def set_default_executor(max_workers: int = 64) -> None:
+    """Scale the default asyncio thread pool so asyncio.to_thread has enough capacity."""
+    get_logger().info(f"Setting default executor to ThreadPoolExecutor(max_workers={max_workers})")
+    asyncio.get_event_loop().set_default_executor(ThreadPoolExecutor(max_workers=max_workers))
 
 
 def print_benchmark(history: dict[str, list[Any]]) -> None:
@@ -77,28 +83,52 @@ async def compute_teacher_logprobs(
     samples: list[TrainingSample],
 ) -> list[list[float]]:
     """Compute teacher model logprobs for a batch of training samples via prefill."""
+    import httpx
+    from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
 
     async def _compute_single(client_config: vf.ClientConfig, sample: TrainingSample) -> list[float]:
         client = setup_openai_client(client_config)
 
-        response = await client.post(
-            "/chat/completions/tokens",
+        # Two escape hatches from ``AsyncOpenAI.post``:
+        #   1. URL — ``/inference/v1/generate`` is mounted at server root, not
+        #      under ``/v1``. Pass an absolute URL so the SDK's
+        #      ``_prepare_url`` skips the base-url merge (it short-circuits
+        #      when the path passes ``httpx.URL.is_relative_url`` as False).
+        #   2. Parse — vLLM's ``GenerateResponse`` is a plain
+        #      ``pydantic.BaseModel`` and the SDK's parse layer rejects any
+        #      ``cast_to`` that doesn't subclass ``openai.BaseModel``. Use
+        #      ``cast_to=httpx.Response`` so the SDK still builds the request
+        #      (preserving ``auth_headers``, retries, timeouts, idempotency
+        #      keys) and just hands us the raw response to validate ourselves.
+        base = str(client.base_url).rstrip("/").removesuffix("/v1")
+        http_response = await client.post(
+            f"{base}/inference/v1/generate",
+            cast_to=httpx.Response,
             body={
                 "model": model_name,
-                "messages": [{"role": "user", "content": ""}],
-                "tokens": sample.prompt_ids + sample.completion_ids,
-                "max_tokens": 1,
-                "temperature": 1.0,
-                "top_p": 1.0,
-                "skip_special_tokens": False,
-                "prompt_logprobs": True,
+                "token_ids": list(sample.prompt_ids) + list(sample.completion_ids),
+                "sampling_params": {
+                    "max_tokens": 1,
+                    "temperature": 1.0,
+                    "top_p": 1.0,
+                    "prompt_logprobs": 1,
+                },
             },
-            cast_to=ChatCompletion,
         )
-        return [
-            0.0 if lp is None else float(next(iter(lp.values()))["logprob"])
-            for lp in getattr(response, "prompt_logprobs", [])
-        ]
+        response = GenerateResponse.model_validate_json(http_response.content)
+        # ``prompt_logprobs[i]`` is a ``{token_id: Logprob}`` dict for tokens
+        # the engine could score, or ``None`` for the leading token which has
+        # no preceding context. Flatten to ``list[float]`` with 0.0 in the
+        # unscored slot.
+        flat: list[float] = []
+        for entry in response.prompt_logprobs or []:
+            if not entry:
+                flat.append(0.0)
+                continue
+            first = next(iter(entry.values()))
+            lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
+            flat.append(float(lp) if lp is not None else 0.0)
+        return flat
 
     return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
 
@@ -146,21 +176,3 @@ def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_
         return broadcast_weight_dir
 
     raise FileNotFoundError(f"No weight directory found for checkpoint step {step}")
-
-
-def setup_external_rollout_model(config: OrchestratorConfig, logger) -> tuple[Any, str, bool]:
-    """Resolve rollout client/model and whether policy updates should be enabled."""
-    rollout_client_config = config.client
-    rollout_model_name = config.model.name
-    enable_policy_updates = True
-
-    if config.teacher_rollout_model is not None:
-        rollout_client_config = config.teacher_rollout_model.client
-        rollout_model_name = config.teacher_rollout_model.model.name
-        enable_policy_updates = False
-        logger.info(
-            f"Using external teacher rollout model (base_url={', '.join(rollout_client_config.base_url)}, "
-            f"model={rollout_model_name})"
-        )
-
-    return rollout_client_config, rollout_model_name, enable_policy_updates

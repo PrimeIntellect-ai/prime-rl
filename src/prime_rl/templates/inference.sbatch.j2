@@ -52,6 +52,7 @@ ln -sfn inference/node_0.log $OUTPUT_DIR/logs/inference.log
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
+export TRITON_CACHE_DIR=/tmp/triton-cache-$USER-$SLURM_JOB_ID
 export VLLM_CACHE_ROOT=/tmp/.vllm_cache_$(whoami)
 
 # Setup environment
@@ -107,6 +108,27 @@ echo "INFER_URLS=${INFER_URLS}"
 {{ pre_run_command }}
 {% endif %}
 
+# Cleanup stale node-local state from prior jobs. Orphan python/torchrun/vllm
+# processes and vLLM/torch IPC files under /dev/shm and /tmp can survive SLURM
+# termination and cause the next launch to hang (e.g. decode engines stuck at
+# "Waiting for READY message from DP Coordinator"). Harmless on clean nodes.
+srun bash -c '
+    pkill -9 -f "[p]ython.*prime_rl" 2>/dev/null
+    pkill -9 -f "[t]orchrun" 2>/dev/null
+    pkill -9 -f "[v]llm-router" 2>/dev/null
+    pkill -9 -f "[v]llm" 2>/dev/null
+    pkill -9 -f "[p]rime_rl" 2>/dev/null
+    # Also match prctl-set process names (kernel comm) like "vllm::router"
+    # which pkill -f does not see because -f only matches the cmdline.
+    pkill -9 "vllm" 2>/dev/null
+    pkill -9 "vllm::.*" 2>/dev/null
+    sleep 2
+    rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/vllm_* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null
+    procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::" | grep -v grep | wc -l)
+    gpu=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk "{s+=\$1} END {print s}")
+    echo "[node-cleanup] $(hostname) procs=$procs gpu_mem=${gpu}MiB"
+'
+
 # Run inference
 srun bash -c '
     cd $PROJECT_DIR
@@ -119,6 +141,10 @@ srun bash -c '
 
     INFER_NODE_RANK=$SLURM_PROCID
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
+
+{%- if kv_offload %}
+    ulimit -l unlimited
+{%- endif %}
 
 {% if disaggregated -%}
     # NVSHMEM libs for DeepEP — ensure the rpath target exists on all nodes
@@ -145,11 +171,17 @@ srun bash -c '
     export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
 
 {%- if kv_offload %}
-    PREFILL_KV_CFG='"'"'{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}},{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"block_size":{{ kv_offload_block_size }},"cpu_bytes_to_use":{{ kv_offload_cpu_bytes }}}}]}}'"'"'
+    PREFILL_KV_CFG='"'"'{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}},{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":{{ kv_offload_cpu_bytes }}}}]}}'"'"'
 {%- else %}
     PREFILL_KV_CFG='"'"'{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}}'"'"'
 {%- endif %}
+
+{%- if kv_offload %}
+    DECODE_KV_CFG='"'"'{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}},{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":{{ kv_offload_cpu_bytes }}}}]}}'"'"'
+{%- else %}
     DECODE_KV_CFG='"'"'{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}}'"'"'
+{%- endif %}
+
     DECODE_COMPILE_CFG='"'"'{"cudagraph_mode":"FULL_DECODE_ONLY"}'"'"'
 
     # Determine outer replica (P/D pair) and role
@@ -212,13 +244,13 @@ srun bash -c '
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
 
         vllm-router \
-            --policy consistent_hash \
+            --policy {{ router_policy }} \
             --vllm-pd-disaggregation \
             $REPLICA_ROUTER_ARGS \
             --host 0.0.0.0 \
             --port $ROUTER_PORT \
-            --intra-node-data-parallel-size 1 \
-            --worker-startup-timeout-secs 1200 \
+            --intra-node-data-parallel-size {{ dp_per_node }} \
+            --worker-startup-timeout-secs 4200 \
             --log-level debug \
             >> $ROUTER_LOG 2>&1 &
     fi
@@ -243,11 +275,12 @@ srun bash -c '
         echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT" | tee $ROUTER_LOG
 
         vllm-router \
-            --policy consistent_hash \
+            --policy {{ router_policy }} \
             --worker-urls $ROUTER_ARGS \
             --host 0.0.0.0 \
             --port $ROUTER_PORT \
-            --worker-startup-timeout-secs 1200 \
+            --intra-node-data-parallel-size {{ dp_per_node }} \
+            --worker-startup-timeout-secs 4200 \
             --log-level debug \
             >> $ROUTER_LOG 2>&1 &
     fi
