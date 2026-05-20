@@ -274,4 +274,45 @@ class ZMQTransportConfig(BaseTransportConfig):
     """High-water mark (max in-flight messages per ZMQ socket)."""
 
 
-TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig, Field(discriminator="type")]
+class RayTransportConfig(BaseTransportConfig):
+    """Configures Ray actor based transport for training examples."""
+
+    type: Literal["ray"] = "ray"
+    address: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Ray cluster address used by trainer/orchestrator role workers. "
+                "Use 'auto' to attach to the active local cluster."
+            )
+        ),
+    ] = "auto"
+    namespace: Annotated[str, Field(description="Ray namespace for the shared transport actor.")] = "prime-rl"
+    actor_name: Annotated[str, Field(description="Name of the Ray actor that stores rollout batches.")] = (
+        "prime-rl-transport"
+    )
+    max_queued_items: Annotated[
+        int,
+        Field(
+            ge=1,
+            description=(
+                "Maximum queued training or micro-batch payloads per sender (per data_rank for "
+                "micro-batches, per sender_id for training batches) before senders fail with backpressure."
+            ),
+        ),
+    ] = 64
+    reclaim_stale_actor: Annotated[
+        bool,
+        Field(
+            description=(
+                "If true, the Ray-native launcher will kill any pre-existing transport actor with the "
+                "same actor_name/namespace before creating its own. Default false: fail loudly on collision. "
+                "Use only on dedicated/per-run RayClusters; on shared clusters, prefer unique actor_name."
+            ),
+        ),
+    ] = False
+
+
+TransportConfig: TypeAlias = Annotated[
+    FileSystemTransportConfig | ZMQTransportConfig | RayTransportConfig, Field(discriminator="type")
+]

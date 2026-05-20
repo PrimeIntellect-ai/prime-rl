@@ -3,13 +3,14 @@ from typing import Annotated, Literal
 
 import pytest
 import tomli_w
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from pydantic_config import ConfigFileError
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.shared import TransportConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import BaseConfig, cli
@@ -192,6 +193,35 @@ def test_orchestrator_vlm_configs_must_disable_renderer():
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
+
+
+def test_ray_transport_config_parses():
+    adapter = TypeAdapter(TransportConfig)
+
+    config = adapter.validate_python(
+        {
+            "type": "ray",
+            "address": "auto",
+            "namespace": "test",
+            "actor_name": "rollout-store",
+            "max_queued_items": 2,
+            "reclaim_stale_actor": True,
+        }
+    )
+
+    assert config.type == "ray"
+    assert config.address == "auto"
+    assert config.namespace == "test"
+    assert config.actor_name == "rollout-store"
+    assert config.max_queued_items == 2
+    assert config.reclaim_stale_actor is True
+
+
+def test_ray_transport_config_rejects_non_positive_queue_size():
+    adapter = TypeAdapter(TransportConfig)
+
+    with pytest.raises(ValidationError, match="greater than or equal to 1"):
+        adapter.validate_python({"type": "ray", "max_queued_items": 0})
 
 
 def test_orchestrator_renderer_auto_rejects_unmapped_model():
