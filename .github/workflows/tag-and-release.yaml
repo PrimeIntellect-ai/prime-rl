@@ -37,6 +37,7 @@ jobs:
         id: tag
         env:
           BEFORE_SHA: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           echo "created=false" >> "$GITHUB_OUTPUT"
 
@@ -70,13 +71,36 @@ jobs:
 
           TAG="v${NEW_VERSION}"
 
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            echo "Tag ${TAG} already exists locally; skipping."
-            exit 0
+          # Check release notes BEFORE pushing the tag, so a missing notes
+          # file does not leave a stray tag on the remote.
+          NOTES="assets/release/RELEASE_${TAG}.md"
+          if [ ! -f "$NOTES" ]; then
+            echo "Release notes file $NOTES not found." >&2
+            echo "Add it in the same PR that bumps the version on main." >&2
+            exit 1
           fi
 
+          TAG_EXISTS_LOCAL=false
+          TAG_EXISTS_REMOTE=false
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            TAG_EXISTS_LOCAL=true
+          fi
           if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "Tag ${TAG} already exists on origin; skipping."
+            TAG_EXISTS_REMOTE=true
+          fi
+
+          if [ "$TAG_EXISTS_LOCAL" = "true" ] || [ "$TAG_EXISTS_REMOTE" = "true" ]; then
+            # Tag exists. If a GitHub Release already exists too, skip entirely;
+            # otherwise still emit outputs so release-from-auto-tag can publish
+            # against the existing tag (covers retries after a partial failure).
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "Tag ${TAG} and Release ${TAG} already exist; nothing to do."
+              exit 0
+            fi
+            echo "Tag ${TAG} already exists but no GitHub Release found; will publish."
+            echo "created=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -101,15 +125,6 @@ jobs:
         with:
           fetch-depth: 0
           ref: refs/tags/${{ needs.auto-tag-on-main.outputs.tag }}
-
-      - name: Verify release notes exist
-        run: |
-          NOTES="assets/release/RELEASE_${{ needs.auto-tag-on-main.outputs.tag }}.md"
-          if [ ! -f "$NOTES" ]; then
-            echo "Release notes file $NOTES not found." >&2
-            echo "Add it before bumping the version on main." >&2
-            exit 1
-          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
