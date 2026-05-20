@@ -57,6 +57,9 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     position_ids: list[int]
     temperatures: list[float]  # Per-token temperatures used during generation
     env_names: list[str]
+    # Per-token actor_id ("" for non-multi-agent or padding). Mirrors env_names
+    # so train.py can emit per-agent metric breakdowns.
+    actor_ids: list[str]
     teacher_logprobs: list[float] | None = None
     lora_num_tokens: list[int] | None = None
     routed_experts: list[list[list[int]]] | None = None
