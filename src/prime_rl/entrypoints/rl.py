@@ -541,7 +541,6 @@ def rl(config: RLConfig):
         clean_future_steps(config.output_dir, -1)
 
     if not config.dry_run:
-        import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
         from prime_rl.trainer.model import pre_download_model
 
         pre_download_model(config.trainer.model.name)

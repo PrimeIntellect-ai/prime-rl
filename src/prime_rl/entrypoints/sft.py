@@ -198,7 +198,6 @@ def sft(config: SFTConfig):
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
     if not config.dry_run:
-        import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
         from prime_rl.trainer.model import pre_download_model
 
         pre_download_model(config.model.name)
