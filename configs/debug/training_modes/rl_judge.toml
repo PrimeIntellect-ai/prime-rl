@@ -1,0 +1,85 @@
+# RL with a locally-launched LLM judge inference deployment (3 GPUs).
+#
+# The rl entrypoint brings up two inference deployments. GPU placement is
+# sequential across the [[inference]] list, then trainer:
+#   GPU 0: student vLLM (PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL)
+#   GPU 1: judge vLLM   (PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL — reused as judge)
+#   GPU 2: trainer
+#
+# Note: only `student` and `teacher` inference tags are auto-routed to the
+# orchestrator today (see #2554 out-of-scope). For the judge, the env-side
+# `judge_base_url` / `judge_model` kwargs must point at the launched judge
+# server explicitly — that's what [orchestrator.train.env.args] does below.
+# The math-env's `HybridMathRubric` uses the judge only as a fallback when
+# math_verify can't decide, so reward signal is mostly math_verify with judge
+# arbitration on the hard cases.
+#
+# Run:
+#   uv run rl @ configs/debug/training_modes/rl_judge.toml
+
+max_steps = 20
+seq_len = 4096
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+
+[wandb]
+project = "math-judge-debug"
+name = "debug-rl-with-judge"
+
+[orchestrator]
+batch_size = 32
+rollouts_per_example = 8
+
+[orchestrator.renderer]
+name = "qwen3"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 1024
+
+[[orchestrator.train.env]]
+id = "math-env"
+[orchestrator.train.env.args]
+dataset_name = "PrimeIntellect/INTELLECT-3-RL"
+dataset_subset = "math"
+dataset_split = "train"
+judge_model = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+judge_base_url = "http://localhost:8001/v1"
+judge_api_key_var = "OPENAI_API_KEY"   # any var: vLLM ignores the key value
+
+[orchestrator.eval]
+interval = 5
+num_examples = 32
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 1024
+
+[[orchestrator.eval.env]]
+id = "math-env"
+[orchestrator.eval.env.args]
+dataset_name = "PrimeIntellect/INTELLECT-3-RL"
+dataset_subset = "math"
+dataset_split = "train"
+judge_model = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+judge_base_url = "http://localhost:8001/v1"
+judge_api_key_var = "OPENAI_API_KEY"
+
+[trainer.optim]
+lr = 1e-6
+
+[deployment]
+gpus_per_node = 3
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[[inference]]
+tag = "student"
+gpu_memory_utilization = 0.5
+[inference.server]
+port = 8000
+
+[[inference]]
+tag = "judge"
+gpu_memory_utilization = 0.5
+[inference.server]
+port = 8001
