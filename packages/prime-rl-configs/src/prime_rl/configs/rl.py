@@ -475,6 +475,18 @@ class RLConfig(BaseConfig):
             self.trainer.pack_full_step = True
             if self.trainer.max_concurrent_runs < 2:
                 self.trainer.max_concurrent_runs = 2
+            # The orchestrator's output_dir defaults to ``outputs/run_default``,
+            # which collides with the trainer's ``output_dir/run_*`` glob (see
+            # MultiRunManager.discover_runs): the trainer would treat the
+            # orchestrator's home as a third "actor" run alongside
+            # run_proposer / run_responder and deadlock waiting for batches
+            # there. Re-leaf to ``outputs/orchestrator`` so it stays outside
+            # the discovery pattern. Mirrors the equivalent rewrite in
+            # validation.py for the shared-output_dir propagation path; only
+            # applies when the user hasn't overridden orchestrator.output_dir.
+            default_leaf = Path("outputs/run_default")
+            if self.orchestrator.output_dir == default_leaf:
+                self.orchestrator.output_dir = Path("outputs/orchestrator")
         return self
 
     @model_validator(mode="after")
