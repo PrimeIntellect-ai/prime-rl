@@ -72,7 +72,7 @@ class WandbMonitor(Monitor):
             mode = os.environ.get("WANDB_MODE", "offline" if config.offline else "online")
             settings = wandb.Settings(mode=mode)
 
-        retryable_errors = (CommError, ServerResponseError) if shared_mode and not primary else (CommError,)
+        retryable_errors = (CommError, ServerResponseError) if shared_mode else (CommError,)
 
         def init_wandb(max_retries: int):
             for attempt in range(max_retries):
@@ -99,6 +99,11 @@ class WandbMonitor(Monitor):
                     else:
                         msg = f"Transient W&B init error ({e}) - retrying in 10s ({attempt + 1}/{max_retries})"
                     self.logger.info(msg)
+                    # A failed wandb.init leaves the run_id registered in the local
+                    # wandb-core StreamMux, causing the next attempt to fail with
+                    # "run ID ... is in use". Tear down the service so the retry
+                    # starts from a clean state.
+                    wandb.teardown()
                     time.sleep(10)
 
         # Non-primary processes in shared mode wait for the primary to create the run.
