@@ -60,15 +60,9 @@ CLI: `--env.0.id reverse-text --env.1.id math-env`.
 
 In TOML, an empty section header (`[ckpt]`) does the same.
 
-## Domain notes
-
-- **SFT hard distill** — set `orchestrator.training_mode = "sft"` (or top-level `training_mode = "sft"`, which auto-propagates) and configure `orchestrator.teacher`. The trainer's `loss.type` is derived from `training_mode`. `[inference]` is still required for the student server unless `orchestrator.student.client.base_url` is set explicitly.
-- **RL rollout client** — text-only RL defaults to renderer-backed TITO (`use_renderer = true`). VLM and external-teacher rollouts must set `use_renderer = false`.
-
 ## Key files
 
-- `packages/prime-rl-configs/src/prime_rl/configs/` — all config classes
-- `packages/prime-rl-configs/src/prime_rl/utils/config.py` — re-exports `BaseConfig` and `cli`
+- `packages/prime-rl-configs/src/prime_rl/` — config classes under `configs/`; `utils/config.py` re-exports `BaseConfig` and `cli`
 - `configs/debug/` — minimal debug configs
 - `configs/private/` — private configs submodule (internal)
 - `examples/` — full example configs

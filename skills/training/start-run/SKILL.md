@@ -5,7 +5,21 @@ description: How to launch prime-rl training runs — the `rl`, `sft`, and `infe
 
 # Start a run
 
-All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/to.toml` plus CLI overrides. See the `configs` skill for the config system.
+All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/to.toml` plus CLI overrides.
+
+## Config system at a glance
+
+[`pydantic-config`](https://github.com/PrimeIntellect-ai/pydantic-config) — Pydantic-based TOML + CLI loader. Highlights (see the `configs` skill for full mechanics):
+
+- Config files via `@ path` (TOML / YAML / JSON); CLI args layer on top, deep-merged with class defaults.
+- Nested groups via dotted CLI paths — kebab-case on the CLI, snake_case in TOML.
+- Bool toggles: bare `--flag` enables, `--no-flag` disables (nested too).
+- Lists: space-separated or JSON literal. Dicts: JSON literal, deep-merged with file values.
+- Optional sub-configs (`WandbConfig | None`): bare `--wandb` enables defaults; `--wandb @ wandb.toml` enables from a file; `--no-wandb` disables.
+- Discriminated unions are switched by the `type` tag (e.g. `--optimizer.type muon`).
+- Validation aliases let renamed fields keep working; legacy keys can be remapped in a `model_validator(mode="before")`.
+- Auto-generated `--help` panels from `Field(description=...)` or PEP 224 docstrings.
+- Friendly errors: required-field boxes, validator errors point at the offending flag, unknown flags get a "did you mean" hint.
 
 ## `rl` — RL training
 
