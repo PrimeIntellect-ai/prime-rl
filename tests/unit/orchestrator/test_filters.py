@@ -1,9 +1,10 @@
 import math
 
-from prime_rl.configs.orchestrator import GibberishFilterConfig, RepetitionFilterConfig
+from prime_rl.configs.orchestrator import GibberishFilterConfig, RepetitionFilterConfig, ZeroAdvantageFilterConfig
 from prime_rl.orchestrator.filters import (
     GibberishFilter,
     RepetitionFilter,
+    ZeroAdvantageFilter,
     apply_filters,
     setup_filter,
     setup_filters,
@@ -59,6 +60,10 @@ def _make_repetition_filter(window=5, prob_threshold=0.99, enforce=False):
     return RepetitionFilter(
         name="repetition", window=window, logprob_threshold=math.log(prob_threshold), enforce=enforce
     )
+
+
+def _make_zero_advantage_filter(enforce=True):
+    return ZeroAdvantageFilter(name="zero_advantage", enforce=enforce)
 
 
 # --- GibberishFilter tests ---
@@ -169,6 +174,43 @@ def test_repetition_varied_probs_no_trigger():
     assert result.detected is False
 
 
+# --- ZeroAdvantageFilter tests ---
+
+
+def test_zero_advantage_detects_rollout_level_zero():
+    zero_advantage_filter = _make_zero_advantage_filter()
+    rollout = _make_rollout(completion_ids=[1], completion_logprobs=[-1.0])
+    rollout["advantage"] = 0.0
+
+    result = zero_advantage_filter.check(rollout)
+
+    assert result.detected is True
+
+
+def test_zero_advantage_uses_step_advantages_when_present():
+    zero_advantage_filter = _make_zero_advantage_filter()
+    rollout = _make_rollout(completion_ids=[1, 2], completion_logprobs=[-1.0, -1.0], multi_step=True)
+    rollout["advantage"] = 0.0
+    rollout["trajectory"][0]["advantage"] = 1.0
+    rollout["trajectory"][1]["advantage"] = -1.0
+
+    result = zero_advantage_filter.check(rollout)
+
+    assert result.detected is False
+
+
+def test_zero_advantage_detects_all_step_advantages_zero():
+    zero_advantage_filter = _make_zero_advantage_filter()
+    rollout = _make_rollout(completion_ids=[1, 2], completion_logprobs=[-1.0, -1.0], multi_step=True)
+    rollout["advantage"] = 1.0
+    rollout["trajectory"][0]["advantage"] = 0.0
+    rollout["trajectory"][1]["advantage"] = 0.0
+
+    result = zero_advantage_filter.check(rollout)
+
+    assert result.detected is True
+
+
 # --- setup_filter / setup_filters tests ---
 
 
@@ -202,6 +244,14 @@ def test_setup_filter_repetition_enforce():
     config = RepetitionFilterConfig(enforce=True)
     repetition_filter = setup_filter(config, vocab_size=128_000)
     assert repetition_filter.enforce is True
+
+
+def test_setup_filter_zero_advantage():
+    config = ZeroAdvantageFilterConfig()
+    zero_advantage_filter = setup_filter(config, vocab_size=128_000)
+    assert isinstance(zero_advantage_filter, ZeroAdvantageFilter)
+    assert zero_advantage_filter.name == "zero_advantage"
+    assert zero_advantage_filter.enforce is True
 
 
 def test_setup_filters_multiple():

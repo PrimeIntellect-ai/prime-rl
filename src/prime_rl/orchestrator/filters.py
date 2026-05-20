@@ -98,14 +98,22 @@ class RepetitionFilter:
 class ZeroAdvantageFilter:
     """Flags rollouts with zero advantage.
 
-    This filter is applied after advantages are computed and checks if the
-    rollout's advantage field is zero.
+    This filter is applied after advantages are computed. Multi-agent rollouts
+    may have per-step advantages even when the rollout-level advantage is zero.
     """
 
     name: str
     enforce: bool = True
 
     def check(self, rollout: vf.RolloutOutput) -> FilterResult:
+        step_advantages = [
+            step.get("advantage")
+            for step in rollout.get("trajectory", [])
+            if step.get("advantage") is not None
+        ]
+        if step_advantages:
+            return FilterResult(detected=all(advantage == 0.0 for advantage in step_advantages))
+
         advantage = rollout.get("advantage")
         if advantage is not None and advantage == 0.0:
             return FilterResult(detected=True)
