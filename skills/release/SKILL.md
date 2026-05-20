@@ -15,7 +15,7 @@ Your job in this skill is to prepare the release PR so a maintainer can simply r
    - `git fetch origin --tags`
    - Read the current version: `grep '^version' pyproject.toml`
    - Confirm the previous release tag matches: `gh release list --repo PrimeIntellect-ai/prime-rl --limit 1`
-2. **Decide the new version** with the user. Follow SemVer for prime-rl (`MAJOR.MINOR.PATCH`). Past versions: `v0.1`, `v0.2`, `v0.3.0`, `v0.4.0`, `v0.5.0`. If the user does not specify, suggest the next minor bump and ask before continuing.
+2. **Decide the new version** with the user. Follow SemVer for prime-rl (`MAJOR.MINOR.PATCH`); past versions are listed under `assets/release/`. If the user does not specify, suggest the next minor bump and ask before continuing.
 3. **Create a branch off main**: `git switch -c chore/release-v{NEW_VERSION}`
 4. **Bump the version** in `pyproject.toml` (the only place — there is no `__version__` in the source tree).
 5. **Draft release notes** at `assets/release/RELEASE_v{NEW_VERSION}.md` (see structure below).
