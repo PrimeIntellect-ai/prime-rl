@@ -9,7 +9,7 @@ dependencies = [
     # Direct git URL so the slim wheel resolves outside a uv workspace
     # (plain `pip install prime-rl-configs`). In-workspace builds use the
     # editable submodule via [tool.uv.sources] in the root pyproject.toml.
-    "prime-pydantic-config @ git+https://github.com/PrimeIntellect-ai/pydantic-config.git@df5b38e",
+    "prime-pydantic-config @ git+https://github.com/PrimeIntellect-ai/pydantic-config.git@7481096",
     # OrchestratorConfig validates renderer.name='auto' against
     # renderers.base.MODEL_RENDERER_MAP. Renderers itself is light; its only
     # weighty transitive (transformers) is lazy-imported via the validator,
