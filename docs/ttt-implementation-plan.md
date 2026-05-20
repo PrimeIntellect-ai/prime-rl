@@ -486,6 +486,194 @@ upstream** (PR #2482) and no longer needs reproduction. We still
 queue weight updates between rollouts in Phase A as a conservatism
 choice, not because of a known bug.
 
+## Future variants worth pursuing after Phase A works
+
+Two ideas captured here so they don't get lost between now and when
+basic chunked TTT validates. Neither changes Phase A scope; both
+become natural Phase B+ experiments once the chunked path is real
+and we have something to compare against.
+
+### Variant 1: LoRA only on the last N layers
+
+Restrict `target_modules` to a tail slice of the transformer (e.g.,
+last 8 of 28 layers) rather than applying LoRA throughout.
+
+**Why it pays off here:**
+
+- Learner-side memory drops in proportion to "how many layers above
+  the highest LoRA layer." Activations from earlier layers can be
+  discarded after the forward pass; full activation checkpointing
+  needs only the top range. Real per-chunk memory win on the learner,
+  which is the constraint that bites at high concurrency.
+- Backward compute drops too — fewer LoRA layers means fewer
+  rank-r matmuls in the backward pass, faster learner step time.
+- Configurable via the existing `target_modules` regex; no new code.
+
+**Risk:** whether last-layer-only adapts enough for TTT's actual goal
+(compressing trajectory-specific info into weights). The literature
+says "fine for most fine-tuning tasks, worse for ones needing deep
+representation shifts." For TTT the goal is closer to
+memorization-of-a-specific-trajectory than learning-a-new-task, so
+last-layer-only is probably enough — but it's empirical, ablate
+side-by-side.
+
+**Status:** add as a config flag, default to all-layer LoRA in Phase A,
+run an ablation early in Phase B.
+
+### Variant 2: Compaction-aligned TTT with summary-as-bridge
+
+Instead of (or in addition to) updating every `update_every_tokens`,
+fire a TTT update at the moment a long-context harness compacts the
+trajectory — i.e., right before the model summarizes and dismisses
+the prior conversation. The training data for the update is the
+pre-compaction context plus the summary itself.
+
+**The summary-as-bridge framing.**
+
+The summary plays a double role:
+
+1. It's the token sequence the model emits *before* compaction, so
+   it's a natural training target conditioned on the pre-compaction
+   context.
+2. It's the token sequence the model attends to *after* compaction.
+
+Training the LoRA on `(pre_compaction_context → summary)` makes the
+summary act as a learned **key** into the LoRA's encoded
+representation of the dismissed context. Post-compaction, the model's
+attention over the summary token activates the LoRA's stored
+knowledge. The summary is the bridge — in a literal sense, it's the
+only token sequence that exists in both pre- and post-compaction
+attention contexts. Build a key-value memory where the keys are the
+model's own summaries, with no separate retrieval mechanism, no extra
+parameters, no new losses.
+
+**Why this is interesting compared to chunked TTT:**
+
+| | Chunked TTT | Compaction-aligned |
+|---|---|---|
+| Updates per rollout (32k context) | ~32 | 1–3 |
+| Snapshot churn at steady state | ~16k live | a few hundred |
+| Replay complexity | per-chunk forwards | per-compaction forwards |
+| vLLM adapter cache pressure | high | low |
+| Storage / reaper pressure | the main bottleneck | trivial |
+| Signal density per update | low (random chunk boundaries) | high (semantic boundaries) |
+
+A bunch of the perf worries in this plan (snapshot transport,
+adapter-dir scaling, reaper aggressiveness) become much smaller
+problems if compaction-aligned ends up as the primary mode.
+
+**Property worth noting:** because compaction triggers on a configurable
+token threshold (`summarize_at_tokens` in RLM today), either the
+rollout is short enough that TTT wouldn't help anyway *or* the model
+compacts and TTT fires at exactly the right moment. The control
+surface is simple.
+
+**Detecting compaction events from the trajectory.**
+
+The RLM harness today doesn't emit a typed compaction event, but the
+detection signal is purely structural — no string matching required.
+From `deps/verifiers/.../harnesses/rlm.py:33–66`:
+
+A trajectory step whose `prompt` is *shorter* than the accumulated
+conversation up to that point means the harness reset the conversation
+to `[system, user(framing + summary)]`. That length comparison is the
+hard signal:
+
+```python
+def detect_compaction_events(trajectory):
+    if not trajectory:
+        return
+    prev_len = len(trajectory[0]["prompt"]) + len(trajectory[0]["completion"])
+    for i, step in enumerate(trajectory[1:], start=1):
+        if len(step["prompt"]) < prev_len:
+            yield i  # compaction event at this step boundary
+        prev_len = len(step["prompt"]) + len(step["completion"])
+```
+
+The `COMPACTION_BOUNDARY_MARKER` string in the harness is a debug aid
+for human-readable rendering; we don't depend on it.
+
+**Sub-LLM handling is already in place.**
+
+The RLM harness sets `X-RLM-Depth: 0` on parent calls and increments
+for each sub-agent level. The existing `keep_trajectory_step` filter
+in `harness.py` elides depth>0 calls before they reach prime-rl, so
+the trajectory consumed for training already contains only
+parent-agent steps. Compaction signals apply to parent-level
+compaction events, which is exactly what we want. Sub-agents have
+their own internal context but their compactions don't surface in the
+parent-agent trajectory — that's correct behavior, since we wouldn't
+be training on sub-agent contexts anyway.
+
+**V1 RLM: propose typed compaction metadata.**
+
+The structural inference works today but is a "we know what shape it
+has" trick. When the v1 RLM lands its compaction logic, the right
+move is to make compaction a typed event in the trajectory rather
+than something inferred. Two natural shapes:
+
+*Option A: per-step metadata (preferred).*
+
+```python
+class TrajectoryStep(TypedDict):
+    prompt: Messages
+    completion: Messages
+    ...
+    metadata: NotRequired[StepMetadata]
+
+class StepMetadata(TypedDict, total=False):
+    compaction: CompactionInfo | None
+
+class CompactionInfo(TypedDict):
+    dismissed_message_range: tuple[int, int]   # [start, end) into pre-compaction messages
+    summary_message_index: int                  # which message in step["prompt"] is the summary
+    pre_compaction_token_count: int             # sanity / debugging
+```
+
+*Option B: a top-level events list on `State`.*
+
+```python
+class State(TypedDict):
+    ...
+    events: NotRequired[list[TrajectoryEvent]]
+```
+
+Prefer A: compaction is inherently step-bound, so co-locating the
+metadata with the step that triggered it keeps the data cohesive.
+Use B only if/when a second event type appears that doesn't naturally
+bind to a step.
+
+The harness has all the info needed to populate `CompactionInfo`
+(it just dismissed those messages and produced that summary).
+Emitting metadata is ~5 lines on the harness side, zero work for the
+consumer beyond reading the field.
+
+**Migration path — three tiers, no coordinated cutover.**
+
+1. **Today.** Structural inference from `state["trajectory"]` step
+   prompt lengths. ~20-line parser in prime-rl. Works on the existing
+   RLM harness without any verifiers-side change.
+2. **Soon.** Typed `CompactionInfo` metadata on trajectory steps,
+   emitted by the v1 RLM harness. Cleaner contract, ~5 LOC in the
+   harness. Prime-rl parser adds an "if metadata present, use it; else
+   fall back to structural" branch.
+3. **Eventually.** Generalize metadata into `step.metadata.events`
+   if/when a second harness needs typed signals of a different kind.
+   Skip until there's a real second use case.
+
+**Constraint.** Compaction is RLM-harness-specific today. Other envs
+(`opencode`, `mini_swe_agent`, anything outside the experimental
+composable framework) don't compact, so compaction-aligned TTT is
+RLM-only in the short term. Chunked TTT remains the universal
+fallback for non-RLM rollouts.
+
+**Status.** Phase A stays chunked-only (universal coverage, simpler
+to validate end-to-end). Phase B adds compaction-aligned as an
+alternate `update_strategy`, reusing the chunk-train API with
+compaction-event boundaries. If the comparison experiment favors
+compaction-aligned + bridge training (likely for RLM specifically),
+it becomes the default for RLM and chunked stays as the fallback.
+
 ## Minimal safe run checklist
 
 Pulled from the post-mortem; the cheat-sheet has the full version. The
