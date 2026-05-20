@@ -71,13 +71,18 @@ jobs:
 
           TAG="v${NEW_VERSION}"
 
-          # Check release notes BEFORE pushing the tag, so a missing notes
-          # file does not leave a stray tag on the remote.
-          NOTES="assets/release/RELEASE_${TAG}.md"
-          if [ ! -f "$NOTES" ]; then
-            echo "Release notes file $NOTES not found." >&2
-            echo "Add it in the same PR that bumps the version on main." >&2
+          # A draft GitHub Release must already exist for this tag before we
+          # bump the version on main. The release skill creates it via
+          # `gh release create --draft` ahead of the PR merge.
+          STATE=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null || echo "missing")
+          if [ "$STATE" = "missing" ]; then
+            echo "No GitHub Release found for $TAG." >&2
+            echo "Create a draft release first: gh release create --draft $TAG --title $TAG --notes-file <notes>.md" >&2
             exit 1
+          fi
+          if [ "$STATE" = "false" ]; then
+            echo "Release $TAG is already published; skipping auto-tag."
+            exit 0
           fi
 
           TAG_EXISTS_LOCAL=false
@@ -90,14 +95,9 @@ jobs:
           fi
 
           if [ "$TAG_EXISTS_LOCAL" = "true" ] || [ "$TAG_EXISTS_REMOTE" = "true" ]; then
-            # Tag exists. If a GitHub Release already exists too, skip entirely;
-            # otherwise still emit outputs so release-from-auto-tag can publish
-            # against the existing tag (covers retries after a partial failure).
-            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              echo "Tag ${TAG} and Release ${TAG} already exist; nothing to do."
-              exit 0
-            fi
-            echo "Tag ${TAG} already exists but no GitHub Release found; will publish."
+            # Tag exists but draft hasn't been published — proceed to publish
+            # (covers retries after the release-from-auto-tag step failed).
+            echo "Tag ${TAG} already exists with a draft release; will publish."
             echo "created=true" >> "$GITHUB_OUTPUT"
             echo "tag=$TAG" >> "$GITHUB_OUTPUT"
             echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
@@ -120,18 +120,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout auto-created tag
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: refs/tags/${{ needs.auto-tag-on-main.outputs.tag }}
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.auto-tag-on-main.outputs.tag }}
-          name: ${{ needs.auto-tag-on-main.outputs.tag }}
-          body_path: assets/release/RELEASE_${{ needs.auto-tag-on-main.outputs.tag }}.md
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.auto-tag-on-main.outputs.tag }}
+        run: |
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
 
   tag-and-release:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
@@ -197,18 +191,22 @@ jobs:
             exit 1
           fi
 
-          NOTES="assets/release/RELEASE_${TAG}.md"
-          if [ ! -f "$NOTES" ]; then
-            echo "Release notes file $NOTES not found." >&2
-            exit 1
-          fi
-
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.release.outputs.tag }}
-          name: ${{ steps.release.outputs.tag }}
-          body_path: assets/release/RELEASE_${{ steps.release.outputs.tag }}.md
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          STATE=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null || echo "missing")
+          if [ "$STATE" = "missing" ]; then
+            echo "No GitHub Release found for $TAG." >&2
+            echo "Create a draft release first: gh release create --draft $TAG --title $TAG --notes-file <notes>.md" >&2
+            exit 1
+          fi
+          if [ "$STATE" = "false" ]; then
+            echo "Release $TAG is already published; nothing to do."
+            exit 0
+          fi
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
