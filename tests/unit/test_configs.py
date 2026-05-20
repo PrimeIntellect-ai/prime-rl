@@ -206,7 +206,7 @@ def test_shared_model_name_propagates_to_subconfigs():
     )
     assert config.trainer.model.name == model_name
     assert config.orchestrator.student.model.name == model_name
-    assert config.inference is not None and config.inference.model.name == model_name
+    assert config.student_inference is not None and config.student_inference.model.name == model_name
     assert config.trainer.tokenizer.name == model_name
     assert config.orchestrator.tokenizer.name == model_name
 
@@ -363,8 +363,8 @@ def test_trainer_chat_template_cascades_to_inference():
     )
     assert config.trainer.tokenizer.chat_template == "TPL"
     assert config.orchestrator.tokenizer.chat_template == "TPL"
-    assert config.inference is not None
-    assert config.inference.model.chat_template == "TPL"
+    assert config.student_inference is not None
+    assert config.student_inference.model.chat_template == "TPL"
 
 
 def test_shared_wandb_fields_propagate_to_subconfigs():
