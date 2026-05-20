@@ -488,3 +488,36 @@ def test_orchestrator_explicit_default_renderer_with_unmapped_model():
     )
     assert config.renderer.name == "default"
     assert config.renderer.tool_parser == "qwen3"
+
+
+def test_shared_model_name_resolves_inference_parsers():
+    """Shared [model] name must reach inference.model BEFORE ModelConfig's after-validator
+    runs auto_resolve_parsers — i.e. the parsers resolve from the propagated name, not
+    from an empty default.
+    """
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-Coder-30B-A3B-Instruct"},
+            "trainer": {},
+            "orchestrator": {"use_renderer": False},
+            "inference": {},
+        }
+    )
+    assert config.inference is not None
+    assert config.inference.model.name == "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+    assert config.inference.model.tool_call_parser == "qwen3_coder"
+
+
+def test_explicit_inference_parser_wins_over_auto():
+    """Explicit inference.model.tool_call_parser is preserved even when the shared model
+    name would otherwise auto-resolve to something else."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-Coder-30B-A3B-Instruct"},
+            "trainer": {},
+            "orchestrator": {"use_renderer": False},
+            "inference": {"model": {"tool_call_parser": "hermes"}},
+        }
+    )
+    assert config.inference is not None
+    assert config.inference.model.tool_call_parser == "hermes"
