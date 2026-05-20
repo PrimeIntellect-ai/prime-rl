@@ -2,7 +2,7 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
@@ -53,47 +53,38 @@ from prime_rl.utils.validation import (
 
 
 class RLExperimentalConfig(BaseConfig):
-    """Experimental features for RL training."""
+    pass
 
 
 class SharedLogConfig(BaseConfig):
-    """Configures shared logging."""
+    level: str | None = None
+    """Log level for trainer and orchestrator. When unset, each sub-config's own log level applies (defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``)."""
 
-    level: Annotated[
-        str | None,
-        Field(
-            description="The log level to use. When unset, the trainer and orchestrator log levels are used as-is (which themselves default to the PRIME_LOG_LEVEL env var if set, else 'info').",
-        ),
-    ] = None
-
-    json_logging: Annotated[
-        bool,
-        Field(description="Emit JSON logs (newline-delimited) for log aggregation (Loki, Grafana, etc.)."),
-    ] = False
+    json_logging: bool = False
+    """Emit newline-delimited JSON logs for aggregation (Loki, Grafana, etc.)."""
 
 
 class SharedWandbConfig(BaseConfig):
-    """Configures shared W&B configs."""
+    project: str | None = "prime-rl"
+    """W&B project."""
 
-    project: Annotated[str | None, Field(description="The W&B project to use.")] = "prime-rl"
+    entity: str | None = None
+    """W&B entity."""
 
-    entity: Annotated[str | None, Field(description="The W&B entity to use.")] = None
+    name: str | None = None
+    """W&B run name."""
 
-    name: Annotated[str | None, Field(description="The W&B run name to use.")] = None
+    group: str | None = None
+    """W&B group."""
 
-    group: Annotated[str | None, Field(description="The W&B group to use.")] = None
+    tags: list[str] | None = None
+    """W&B tags attached to the run."""
 
-    tags: Annotated[list[str] | None, Field(description="The W&B tags to attach to the run.")] = None
+    offline: bool | None = False
+    """Run W&B in offline mode."""
 
-    offline: Annotated[bool | None, Field(description="Whether to run W&B in offline mode.")] = False
-
-    shared: Annotated[
-        bool,
-        Field(
-            description="Use shared W&B mode to log trainer and orchestrator metrics to a single run. "
-            "Requires wandb SDK >= 0.19.9. Incompatible with offline mode.",
-        ),
-    ] = True
+    shared: bool = True
+    """Log trainer and orchestrator metrics to a single shared W&B run. Requires wandb SDK ≥ 0.19.9. Incompatible with offline mode."""
 
     @model_validator(mode="after")
     def validate_shared_not_offline(self):
@@ -103,88 +94,60 @@ class SharedWandbConfig(BaseConfig):
 
 
 class SharedCheckpointConfig(BaseConfig):
-    """Configures shared checkpoint configs."""
+    output_dir: Path | None = None
+    """Override directory for checkpoints and weights. When set, checkpoints and weight snapshots are written here instead of under the trainer ``output_dir``."""
 
-    output_dir: Annotated[
-        Path | None,
-        Field(
-            description="Override directory for checkpoints and weights. When set, checkpoints and weight snapshots are written here instead of under the trainer output_dir.",
-        ),
-    ] = None
+    interval: int | None = None
+    """Interval at which to save checkpoints."""
 
-    interval: Annotated[int | None, Field(description="The interval at which to save checkpoints.")] = None
+    resume_step: int | None = None
+    """Step to resume from. If None, does not resume from a checkpoint."""
 
-    resume_step: Annotated[
-        int | None, Field(description="The step to resume from. If None, will not resume from a checkpoint.")
-    ] = None
+    keep_last: int | None = Field(None, ge=1)
+    """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""
 
-    keep_last: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency.",
-        ),
-    ] = None
-
-    keep_interval: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description="Keep checkpoints at every N steps permanently (e.g., keep_interval=100 keeps step 100, 200, ...). If None, no interval-based keeping.",
-        ),
-    ] = None
+    keep_interval: int | None = Field(None, ge=1)
+    """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
 
 class SharedModelConfig(BaseConfig):
-    """Configures shared model settings."""
+    name: str = "Qwen/Qwen3-0.6B"
+    """HF model name or local path."""
 
-    name: Annotated[
-        str,
-        Field(description="The name of the model to use."),
-    ] = "Qwen/Qwen3-0.6B"
-
-    vlm: Annotated[
-        "VLMConfig | None",
-        Field(description="VLM configuration. Set to enable vision-language model support."),
-    ] = None
+    vlm: "VLMConfig | None" = None
+    """VLM configuration. Set this to enable vision-language model support."""
 
 
 class SharedWeightBroadcastConfig(BaseConfig):
-    """Configures shared weight broadcast settings."""
+    type: Literal["nccl", "filesystem"] = "filesystem"
+    """Weight broadcast transport."""
 
-    type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
-        "filesystem"
-    )
+    port: int = 29501
+    """Port for NCCL weight broadcast."""
 
-    port: Annotated[int, Field(description="The port to use for NCCL weight broadcast.")] = 29501
-    timeout: Annotated[int, Field(description="The timeout in seconds for NCCL weight broadcast.")] = 1200
-    quantize_in_weight_transfer: Annotated[
-        bool,
-        Field(
-            description=(
-                "Use kernel-format FP8 quantized NCCL transfer for weight updates. "
-                "When disabled, uses default HF checkpoint-format transfer."
-            ),
-        ),
-    ] = False
+    timeout: int = 1200
+    """Timeout in seconds for NCCL weight broadcast."""
+
+    quantize_in_weight_transfer: bool = False
+    """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
 
-class BaseDeploymentConfig(BaseModel):
-    """Configures a base deployment."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    gpus_per_node: Annotated[int, Field(description="Number of GPUs per node.")] = 8
+class BaseDeploymentConfig(BaseConfig):
+    gpus_per_node: int = 8
+    """GPUs per node."""
 
 
 class SingleNodeDeploymentConfig(BaseDeploymentConfig):
-    """Configures a single node deployment."""
-
     type: Literal["single_node"] = "single_node"
 
-    num_train_gpus: Annotated[int, Field(description="Number of training GPUs")] = 1
-    num_infer_gpus: Annotated[int, Field(description="Number of inference GPUs")] = 1
-    num_teacher_gpus: Annotated[int | None, Field(description="Number of teacher inference GPUs")] = None
+    num_train_gpus: int = 1
+    """GPUs allocated to the trainer."""
+
+    num_infer_gpus: int = 1
+    """GPUs allocated to inference."""
+
+    num_teacher_gpus: int | None = None
+    """GPUs allocated to teacher inference (None disables the teacher server)."""
 
     @model_validator(mode="after")
     def validate_gpu_count(self):
@@ -198,33 +161,22 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
 
 
 class MultiNodeDeploymentConfig(BaseDeploymentConfig):
-    """Configures a multi node deployment."""
-
     type: Literal["multi_node"] = "multi_node"
 
-    num_train_nodes: Annotated[int, Field(description="Number of training nodes.")]
-    num_infer_nodes: Annotated[
-        int,
-        Field(
-            ge=0,
-            description="Number of inference nodes per replica. Set to 0 to skip inference and orchestrator (requires fake data).",
-        ),
-    ]
-    num_infer_replicas: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Number of independent inference replicas. Total inference nodes = num_infer_nodes * num_infer_replicas.",
-        ),
-    ] = 1
-    num_teacher_nodes: Annotated[int | None, Field(description="Number of teacher inference nodes.")] = None
+    num_train_nodes: int
+    """Training nodes."""
 
-    nodes_per_fsdp_group: Annotated[
-        int | None,
-        Field(
-            description="Number of training nodes per FSDP island. Auto-sets trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group."
-        ),
-    ] = None
+    num_infer_nodes: int = Field(ge=0)
+    """Inference nodes per replica. Set to 0 to skip inference and orchestrator (requires fake data)."""
+
+    num_infer_replicas: int = Field(1, ge=1)
+    """Independent inference replicas. Total inference nodes = ``num_infer_nodes * num_infer_replicas``."""
+
+    num_teacher_nodes: int | None = None
+    """Teacher inference nodes."""
+
+    nodes_per_fsdp_group: int | None = None
+    """Training nodes per FSDP island. Auto-sets ``trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
 
     @property
     def total_infer_nodes(self) -> int:
@@ -243,127 +195,65 @@ DeploymentConfig: TypeAlias = Annotated[
 
 
 class RLConfig(BaseConfig):
-    """Configures an RL training run."""
-
     trainer: TrainerConfig
+
     orchestrator: OrchestratorConfig
-    inference: Annotated[
-        InferenceConfig | None,
-        Field(
-            description="The inference config. If None, the rl entrypoint will not start an inference server (useful for elastic inference pools or manually started servers)."
-        ),
-    ] = None
 
-    teacher_inference: Annotated[
-        InferenceConfig | None,
-        Field(
-            description="Teacher inference config. If None, will use the same config as inference or a default config. Only used when teacher GPUs or nodes are set."
-        ),
-    ] = None
+    inference: InferenceConfig | None = None
+    """Inference server configuration. If None, the rl entrypoint will not start an inference server (useful for elastic inference pools or manually started servers)."""
 
-    output_dir: Annotated[
-        Path,
-        Field(
-            description="The directory to store the outputs. Should be set to a unique directory identifying the experiment."
-        ),
-    ] = Path("outputs")
+    teacher_inference: InferenceConfig | None = None
+    """Teacher inference server configuration. If None, falls back to the same config as ``inference`` (or a default). Only used when teacher GPUs/nodes are set."""
 
-    clean_output_dir: Annotated[
-        bool,
-        Field(
-            description="If true, delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming.",
-        ),
-    ] = False
+    output_dir: Path = Path("outputs")
+    """Output directory. Should be unique per experiment."""
+
+    clean_output_dir: bool = False
+    """Delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming."""
 
     ### Shared configurations
 
-    log: Annotated[
-        SharedLogConfig,
-        Field(
-            description="Shared log configs. If None, will fallback to the log configs specified on submodule configs."
-        ),
-    ] = SharedLogConfig()
+    log: SharedLogConfig = SharedLogConfig()
+    """Shared log config. Propagated to trainer and orchestrator."""
 
-    ckpt: Annotated[
-        SharedCheckpointConfig | None,
-        Field(
-            description="Shared checkpoint configs. If None, will fallback to the checkpoint configs specified on submodule configs."
-        ),
-    ] = None
+    ckpt: SharedCheckpointConfig | None = None
+    """Shared checkpoint config. If None, falls back to the sub-config checkpoint settings."""
 
-    wandb: Annotated[
-        SharedWandbConfig | None,
-        Field(
-            description="Shared W&B configs. If None, will fallback to the W&B configs specified on submodule configs."
-        ),
-    ] = None
+    wandb: SharedWandbConfig | None = None
+    """Shared W&B config. If None, falls back to the sub-config W&B settings."""
 
-    model: Annotated[
-        SharedModelConfig | None,
-        Field(
-            description="Shared model configs. If None, will fallback to the model configs specified on submodule configs."
-        ),
-    ] = None
+    model: SharedModelConfig | None = None
+    """Shared model config. If None, falls back to the sub-config model settings."""
 
-    tokenizer: Annotated[
-        TokenizerConfig | None,
-        Field(
-            description="Shared tokenizer config. Propagated to trainer, orchestrator, and inference. "
-            "If None, each component uses its own tokenizer config (defaulting to model name).",
-        ),
-    ] = None
+    tokenizer: TokenizerConfig | None = None
+    """Shared tokenizer config. Propagated to trainer, orchestrator, and inference. If None, each component uses its own tokenizer config (defaulting to model name)."""
 
-    max_steps: Annotated[
-        int | None,
-        Field(
-            description="The maximum number of steps to train for. If None, will fallback to the max steps specified on submodule configs."
-        ),
-    ] = None
+    max_steps: int | None = None
+    """Shared maximum training steps. If None, falls back to the sub-config ``max_steps``."""
 
-    max_model_len: Annotated[
-        int | None,
-        Field(
-            description="The maximum model length to use. If None, will fallback to the max model length specified on submodule configs."
-        ),
-    ] = None
+    max_model_len: int | None = None
+    """Shared maximum model context length. If None, falls back to the sub-config ``max_model_len``."""
 
-    seq_len: Annotated[
-        int | None,
-        Field(
-            description="Shared sequence length. Propagates to trainer.model.seq_len and orchestrator.seq_len, "
-            "but only for those not explicitly set in the config. "
-            "Explicitly set per-component values always take precedence."
-        ),
-    ] = None
+    seq_len: int | None = None
+    """Shared sequence length. Propagates to ``trainer.model.seq_len`` and ``orchestrator.seq_len`` only when those values were not explicitly set; explicit per-component values always win."""
 
-    max_async_level: Annotated[
-        int | None,
-        Field(
-            description="The async level to use. If None, will fallback to the async level specified on submodule configs."
-        ),
-    ] = None
+    max_async_level: int | None = None
+    """Shared async level. If None, falls back to the sub-config ``max_async_level``."""
 
-    weight_broadcast: Annotated[
-        SharedWeightBroadcastConfig | None, Field(description="The weight broadcast config.")
-    ] = None
+    weight_broadcast: SharedWeightBroadcastConfig | None = None
 
-    bench: Annotated[
-        bool,
-        Field(
-            description="Whether to run in benchmark mode. Automatically sets the trainer and orchestrator to benchmark mode and, if present, suffixes the W&B project with `-bench`.",
-        ),
-    ] = False
+    bench: bool = False
+    """Benchmark mode. Sets trainer and orchestrator to benchmark mode and, when set, suffixes the W&B project with ``-bench``."""
 
     deployment: DeploymentConfig = SingleNodeDeploymentConfig()
 
-    slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
+    slurm: SlurmConfig | None = None
+    """SLURM configuration. If None, runs locally."""
 
-    dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
+    dry_run: bool = False
+    """Only validate and dump resolved configs, then exit early."""
 
-    experimental: Annotated[
-        RLExperimentalConfig,
-        Field(description="Experimental features for RL training."),
-    ] = RLExperimentalConfig()
+    experimental: RLExperimentalConfig = RLExperimentalConfig()
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
