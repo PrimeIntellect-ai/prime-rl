@@ -109,8 +109,11 @@ def test_prepare_sample_propagates_sft_loss(make_training_example):
 
 def test_prepare_sample_overlays_sft_advantage_length_normalized(make_training_example):
     """Length-normalized (ECHO) overlay: each sft_mask position gets
-    ``alpha / n_sft_tokens`` on the advantages tensor, and its loss_mask
-    flips to True so the SFT gradient reaches it."""
+    ``alpha / total_rollout_length`` on the advantages tensor, and its
+    loss_mask flips to True so the SFT gradient reaches it. The total
+    SFT loss contribution per rollout is
+    ``alpha × (n_sft_tokens / total_rollout_length)`` — proportional to
+    how much of the rollout is tool body."""
     # 2 prompt + 2 completion = 4 tokens; mark both prompt positions as SFT.
     example = make_training_example()
     example.sft_mask = [True, True, False, False]
@@ -118,9 +121,9 @@ def test_prepare_sample_overlays_sft_advantage_length_normalized(make_training_e
 
     micro_batch = prepare_sample(example, seq_len=16)
 
-    # n_sft = 2, alpha = 0.5 → weight = 0.25 on mask positions.
-    assert micro_batch.advantages[0] == 0.25
-    assert micro_batch.advantages[1] == 0.25
+    # total_length = 4, alpha = 0.5 → weight = 0.125 on mask positions.
+    assert micro_batch.advantages[0] == 0.125
+    assert micro_batch.advantages[1] == 0.125
     # Non-SFT positions keep the rollout's scalar advantage (1.0 from the fixture).
     assert micro_batch.advantages[2] == 1.0
     assert micro_batch.advantages[3] == 1.0
@@ -132,8 +135,8 @@ def test_prepare_sample_overlays_sft_advantage_length_normalized(make_training_e
 
 def test_prepare_sample_overlays_sft_advantage_disable_echo(make_training_example):
     """When ``disable_echo=True`` the weight is a constant ``alpha``,
-    not ``alpha / n_sft_tokens``. Useful for the ablation cell on the
-    ECHO normalization."""
+    not ``alpha / total_rollout_length``. Useful for the ablation cell
+    on the ECHO normalization."""
     example = make_training_example()
     example.sft_mask = [True, True, False, False]
     example.sft_alpha = 0.5

@@ -43,7 +43,7 @@ class BasePacker(ABC):
         self.tokenizer = tokenizer
         # Forwarded into ``prepare_batch`` / ``prepare_sample`` so the
         # SFT-on-tool-body advantage overlay knows whether to length-normalize
-        # by per-rollout n_sft_tokens (ECHO) or apply a constant alpha.
+        # by total rollout length (ECHO) or apply a constant alpha.
         self.disable_echo = disable_echo
         self.receiver = setup_training_batch_receiver(config)
         shutil.rmtree(get_rollout_dir(self.multi_run_manager.output_dir), ignore_errors=True)

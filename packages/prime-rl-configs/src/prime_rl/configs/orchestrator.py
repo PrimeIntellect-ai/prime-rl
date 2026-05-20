@@ -370,12 +370,15 @@ class SFTConfig(BaseConfig):
     """Per-env SFT-on-tool-body objective (the ECHO loss).
 
     When enabled, tool-message body tokens in the prompt receive a
-    constant positive advantage of ``alpha`` (length-normalized per
-    rollout unless ``trainer.loss.disable_echo`` is set), so the
-    policy learns to anticipate tool outputs alongside its standard
-    RL objective on assistant tokens. The scaffold around tool bodies
-    (``<|tool_response>`` specials, role-tag wraps, separators) is
-    excluded by construction — the mask is built from
+    per-token positive advantage of ``alpha / total_rollout_length``
+    (length-normalized — the ECHO objective; total SFT loss per
+    rollout is ``alpha × (n_sft_tokens / total_rollout_length)``).
+    When ``trainer.loss.disable_echo`` is set, each SFT-mask position
+    instead gets a constant ``alpha`` (no length normalization).
+    Either way the policy learns to anticipate tool outputs alongside
+    its standard RL objective on assistant tokens. The scaffold around
+    tool bodies (``<|tool_response>`` specials, role-tag wraps,
+    separators) is excluded by construction — the mask is built from
     ``prompt_attribution.is_content`` AND a per-message tool-name
     filter, never the raw token stream.
     """

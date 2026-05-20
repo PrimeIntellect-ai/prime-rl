@@ -10,10 +10,13 @@ def prepare_sample(training_example: TrainingSample, seq_len: int, disable_echo:
 
     When ``training_example`` carries an ``sft_mask`` + ``sft_alpha`` (the
     SFT-on-tool-body overlay), the masked prompt-side tool body tokens get
-    their advantage overwritten to ``alpha / n_sft_tokens`` (length-normalized
-    per rollout — the ECHO objective) and are flipped into ``loss_mask=True``
-    so they contribute to the loss. When ``disable_echo`` is True, the weight
-    is constant ``alpha`` instead of ``alpha / n``.
+    their advantage overwritten to ``alpha / total_rollout_length``
+    (length-normalized per rollout — the ECHO objective: total SFT loss per
+    rollout scales as ``alpha × (n_sft_tokens / total_rollout_length)``,
+    proportional to how much of the rollout was tool body) and are flipped
+    into ``loss_mask=True`` so they contribute to the loss. When
+    ``disable_echo`` is True, the weight is constant ``alpha`` instead of
+    ``alpha / total_rollout_length``.
     """
     input_ids = training_example.prompt_ids + training_example.completion_ids
     loss_mask = list(training_example.prompt_mask) + list(training_example.completion_mask)
@@ -27,13 +30,19 @@ def prepare_sample(training_example: TrainingSample, seq_len: int, disable_echo:
 
     # SFT-on-tool-body overlay: rewrite the advantage on masked tool body
     # tokens and flip them into the loss mask so they contribute. The
-    # constant alpha (or alpha/n under ECHO) lives on the advantage tensor;
-    # ``loss.default_loss_fn`` then forces IS ratio = 1 and zero KL on the
-    # same positions so the gradient direction matches SFT.
+    # constant alpha (or alpha/total_length under ECHO) lives on the
+    # advantage tensor; ``loss.default_loss_fn`` then forces IS ratio = 1
+    # and zero KL on the same positions so the gradient direction matches
+    # SFT. ECHO normalizes by total rollout length so the per-rollout SFT
+    # loss contribution is ``alpha × (n_sft_tokens / total_rollout_length)``
+    # — proportional to the fraction of the rollout that's tool body.
     if sft_mask is not None and training_example.sft_alpha is not None:
         n_sft = sum(sft_mask)
         if n_sft > 0:
-            weight = training_example.sft_alpha if disable_echo else training_example.sft_alpha / n_sft
+            if disable_echo:
+                weight = training_example.sft_alpha
+            else:
+                weight = training_example.sft_alpha / len(input_ids)
             for k in range(len(input_ids)):
                 if sft_mask[k]:
                     advantages[k] = weight

@@ -696,9 +696,12 @@ class DefaultLossConfig(BaseModel):
         Field(
             description=(
                 "Global flag for the SFT-on-tool-body advantage overlay. "
-                "False (default): per-token SFT advantage = alpha / n_sft_tokens_in_rollout "
-                "(length-normalized; the ECHO objective). True: per-token SFT advantage = alpha "
-                "(no length normalization). Only takes effect when at least one env has "
+                "False (default): per-token SFT advantage = alpha / total_rollout_length "
+                "(length-normalized; the ECHO objective — total SFT loss per rollout is "
+                "alpha × (n_sft_tokens / total_rollout_length), proportional to the fraction "
+                "of the rollout that is tool body). True: per-token SFT advantage = alpha "
+                "(no length normalization; constant per-token weight regardless of rollout "
+                "shape). Only takes effect when at least one env has "
                 "``train.env[*].sft.on_tool_outputs=True``."
             ),
         ),
