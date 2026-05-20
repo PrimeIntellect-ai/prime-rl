@@ -746,6 +746,22 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_session_headers(self):
+        """Ensure X-Session-ID header is always set for sticky DP-aware routing at the inference router."""
+        self.student.client.extra_headers_from_state.setdefault("X-Session-ID", "example_id")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_prime_monitor_run_name(self):
+        """Default ``prime_monitor.run_name`` to the W&B run name when monitoring
+        is enabled and the user hasn't named the prime-monitor run explicitly."""
+        if self.prime_monitor is None or self.prime_monitor.run_name is not None:
+            return self
+        if self.wandb is not None and self.wandb.name:
+            self.prime_monitor.run_name = self.wandb.name
+        return self
+
+    @model_validator(mode="after")
     def validate_unique_filter_types(self):
         types = [f.type for f in self.filters]
         if len(types) != len(set(types)):

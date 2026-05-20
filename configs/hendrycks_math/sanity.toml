@@ -25,9 +25,6 @@ id = "aime2024"
 name = "aime2024"
 rollouts_per_example = 16
 
-[trainer.model]
-name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
-
 [trainer.model.ac]
 
 [trainer.model.compile]
