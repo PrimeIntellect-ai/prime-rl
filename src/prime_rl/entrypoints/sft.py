@@ -8,14 +8,11 @@ from threading import Event, Thread
 
 import tomli_w
 
-import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
 from prime_rl.configs.sft import SFTConfig
-from prime_rl.trainer.model import pre_download_model
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import format_log_message, get_config_dir, get_log_dir, validate_output_dir
 from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process, set_proc_title
-from prime_rl.utils.utils import get_free_port
 
 SFT_TOML = "sft.toml"
 SFT_SBATCH = "sft.sbatch"
@@ -115,6 +112,8 @@ def sft_local(config: SFTConfig):
     log_dir = config.output_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
+    from prime_rl.utils.utils import get_free_port
+
     trainer_cmd = [
         "torchrun",
         "--role=trainer",
@@ -199,6 +198,9 @@ def sft(config: SFTConfig):
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
     if not config.dry_run:
+        import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
+        from prime_rl.trainer.model import pre_download_model
+
         pre_download_model(config.model.name)
 
     if config.slurm is not None:
