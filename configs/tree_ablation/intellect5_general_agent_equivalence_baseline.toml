@@ -1,0 +1,41 @@
+max_steps = 10
+output_dir = "outputs/tree_ablation/intellect5_general_agent_equivalence_baseline"
+clean_output_dir = true
+matmul_precision = "highest"
+
+[wandb]
+project = "prime-rl-tree-ablation"
+group = "qwen3-0.6b-intellect5-general-agent-effective-branches"
+name = "equivalence-baseline-intellect5-general-agent-effective-branches"
+tags = ["tree-training", "v1.1", "grouped-branches", "intellect-5", "general-agent", "effective-branches"]
+offline = true
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B"
+attn = "sdpa"
+impl = "hf"
+
+[data]
+type = "sft_raw_tool_caterpillar_grouped_branches"
+name = "PrimeIntellect/INTELLECT-5-SFT-Raw"
+subset = "general_agent_rlm"
+split = "train"
+batch_size = 4
+micro_batch_size = 1
+pack_function = "cat"
+seq_len = 8192
+max_packed_tokens = 32768
+selection_metric = "branching_score"
+selection_num_proc = 16
+sort_by_num_turns = false
+max_examples = 64
+filter_by_final_token_estimate = true
+seed = 0
+train_response = true
+train_reasoning = true
+
+[optim]
+lr = 2e-5
+
+[scheduler]
+type = "constant"

@@ -57,6 +57,158 @@ class FakeDataConfig(BaseDataConfig):
     """Token id generator: ``increasing`` for deterministic sequences, ``random`` for random ids."""
 
 
+class CaterpillarFakeDataConfig(BaseDataConfig):
+    """Configures synthetic tree data for Tree Training v1 validation."""
+
+    type: Literal["caterpillar_fake"] = "caterpillar_fake"
+
+    vocab_size: Annotated[int | None, Field(ge=1)] = None
+    num_turns: Annotated[int, Field(ge=1)] = 3
+    turns: Annotated[int | None, Field(ge=1)] = None
+    user_len: tuple[int, int] = (4, 4)
+    think_len: tuple[int, int] = (6, 6)
+    response_len: tuple[int, int] = (6, 6)
+    seed: int = 0
+    train_response: bool = True
+    train_think: bool = True
+
+    @model_validator(mode="after")
+    def validate_caterpillar_fake(self):
+        if self.turns is not None:
+            self.num_turns = self.turns
+        for name in ("user_len", "think_len", "response_len"):
+            low, high = getattr(self, name)
+            if low < 1 or high < 1:
+                raise ValueError(f"{name} bounds must be at least 1")
+            if low > high:
+                raise ValueError(f"{name} lower bound must be <= upper bound")
+        if not (self.train_response or self.train_think):
+            raise ValueError("At least one of train_response or train_think must be true")
+        return self
+
+
+class CaterpillarPerBranchDataConfig(BaseDataConfig):
+    """Per-branch baseline counterpart of CaterpillarFakeDataConfig.
+
+    Builds the same caterpillar trees (same seed, same turns), then yields each
+    leaf's root-to-leaf token path as an independent flat SFT sample. Pair with
+    CaterpillarFakeDataConfig (same fields) to form a tree-vs-baseline ablation.
+    """
+
+    type: Literal["caterpillar_per_branch"] = "caterpillar_per_branch"
+
+    vocab_size: Annotated[int | None, Field(ge=1)] = None
+    num_turns: Annotated[int, Field(ge=1)] = 3
+    turns: Annotated[int | None, Field(ge=1)] = None
+    user_len: tuple[int, int] = (4, 4)
+    think_len: tuple[int, int] = (6, 6)
+    response_len: tuple[int, int] = (6, 6)
+    seed: int = 0
+    train_response: bool = True
+    train_think: bool = True
+
+    @model_validator(mode="after")
+    def validate_caterpillar_per_branch(self):
+        if self.turns is not None:
+            self.num_turns = self.turns
+        for name in ("user_len", "think_len", "response_len"):
+            low, high = getattr(self, name)
+            if low < 1 or high < 1:
+                raise ValueError(f"{name} bounds must be at least 1")
+            if low > high:
+                raise ValueError(f"{name} lower bound must be <= upper bound")
+        if not (self.train_response or self.train_think):
+            raise ValueError("At least one of train_response or train_think must be true")
+        return self
+
+
+class _SFTCaterpillarBaseConfig(BaseDataConfig):
+    """Shared fields for the realistic SFT caterpillar datasets.
+
+    Wraps an HF SFT dataset whose assistant messages contain ``<think>...</think>``
+    segments. Each example becomes a 1-turn caterpillar: user prompt as the trunk's
+    user node, ``<think>...</think>`` as a leaf, the post-``</think>`` content as a
+    sibling leaf. Useful for tree-vs-baseline ablation on real reasoning data.
+    """
+
+    name: Annotated[str, Field(description="Name or path of the HF dataset to use.")] = (
+        "PrimeIntellect/INTELLECT-3-SFT-10K"
+    )
+    subset: Annotated[str | None, Field(description="HF subset (config) name.")] = "default"
+    split: Annotated[str, Field(description="HF split name.")] = "math"
+    shuffle: bool = True
+    seed: int = 0
+    train_response: bool = True
+    train_think: bool = True
+
+
+class SFTCaterpillarDataConfig(_SFTCaterpillarBaseConfig):
+    """Real-data tree-mode counterpart of CaterpillarFakeDataConfig."""
+
+    type: Literal["sft_caterpillar"] = "sft_caterpillar"
+
+
+class SFTCaterpillarPerBranchDataConfig(_SFTCaterpillarBaseConfig):
+    """Real-data per-branch baseline. Yields each leaf's root-to-leaf path as a flat sample."""
+
+    type: Literal["sft_caterpillar_per_branch"] = "sft_caterpillar_per_branch"
+
+
+class _SFTRawToolCaterpillarBaseConfig(BaseDataConfig):
+    """Shared fields for raw tool-trajectory caterpillar datasets.
+
+    Wraps raw multi-turn SFT trajectories whose assistant messages carry
+    ``reasoning_content`` separately from visible content/tool calls. Each assistant
+    turn adds a visible trunk continuation and, when non-empty, a reasoning side leaf.
+    """
+
+    name: Annotated[str, Field(description="Name or path of the HF dataset to use.")] = (
+        "PrimeIntellect/INTELLECT-5-SFT-Raw"
+    )
+    subset: Annotated[str | None, Field(description="HF subset (config) name.")] = "rlm_science"
+    split: Annotated[str, Field(description="HF split name.")] = "train"
+    sort_by_num_turns: bool = True
+    selection_metric: Literal["num_turns", "branching_score"] = "num_turns"
+    selection_num_proc: Annotated[int | None, Field(ge=1)] = None
+    max_examples: Annotated[int | None, Field(ge=1)] = None
+    max_packed_tokens: Annotated[int | None, Field(ge=1)] = None
+    filter_by_final_token_estimate: bool = True
+    seed: int = 0
+    train_response: bool = True
+    train_reasoning: bool = True
+    include_attn_mask: bool = True
+
+    @model_validator(mode="after")
+    def validate_raw_tool_tree_limits(self):
+        if self.max_packed_tokens is not None and self.max_packed_tokens < self.seq_len:
+            raise ValueError("max_packed_tokens must be greater than or equal to seq_len")
+        return self
+
+
+class SFTRawToolCaterpillarDataConfig(_SFTRawToolCaterpillarBaseConfig):
+    """Raw tool-trajectory tree-mode counterpart for reasoning_content ablations."""
+
+    type: Literal["sft_raw_tool_caterpillar"] = "sft_raw_tool_caterpillar"
+
+
+class SFTRawToolCaterpillarPerBranchDataConfig(_SFTRawToolCaterpillarBaseConfig):
+    """Raw tool-trajectory per-branch baseline."""
+
+    type: Literal["sft_raw_tool_caterpillar_per_branch"] = "sft_raw_tool_caterpillar_per_branch"
+
+
+class SFTRawToolCaterpillarGroupedBranchesDataConfig(_SFTRawToolCaterpillarBaseConfig):
+    """Raw tool-trajectory per-tree grouped branch equivalence baseline."""
+
+    type: Literal["sft_raw_tool_caterpillar_grouped_branches"] = "sft_raw_tool_caterpillar_grouped_branches"
+
+
+class SFTRawToolCurrentRLBaselineDataConfig(_SFTRawToolCaterpillarBaseConfig):
+    """Raw tool-trajectory baseline matching the current RL interleaved sample path."""
+
+    type: Literal["sft_raw_tool_current_rl_baseline"] = "sft_raw_tool_current_rl_baseline"
+
+
 class LossMaskConfig(BaseConfig):
     system: bool = False
     """System messages contribute to the loss."""
@@ -130,7 +282,19 @@ class SFTValConfig(BaseConfig):
     data: SFTDataConfig
 
 
-DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
+DataConfig: TypeAlias = Annotated[
+    FakeDataConfig
+    | CaterpillarFakeDataConfig
+    | CaterpillarPerBranchDataConfig
+    | SFTCaterpillarDataConfig
+    | SFTCaterpillarPerBranchDataConfig
+    | SFTRawToolCaterpillarDataConfig
+    | SFTRawToolCaterpillarPerBranchDataConfig
+    | SFTRawToolCaterpillarGroupedBranchesDataConfig
+    | SFTRawToolCurrentRLBaselineDataConfig
+    | SFTDataConfig,
+    Field(discriminator="type"),
+]
 
 
 class BaseDeploymentConfig(BaseConfig):
@@ -269,6 +433,32 @@ class SFTConfig(BaseConfig):
     def validate_deployment(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_tree_training_v1(self):
+        if self.data.type not in (
+            "caterpillar_fake",
+            "sft_caterpillar",
+            "sft_raw_tool_caterpillar",
+            "sft_raw_tool_caterpillar_grouped_branches",
+        ):
+            return self
+
+        if self.model.cp != 1:
+            raise ValueError("Tree Training v1 requires model.cp == 1")
+        if self.model.ep != 1:
+            raise ValueError("Tree Training v1 requires model.ep == 1")
+        if self.model.attn not in ("sdpa", "flex_attention"):
+            raise ValueError("Tree Training requires model.attn in {'sdpa', 'flex_attention'}")
+        if self.model.impl not in ("hf", "auto"):
+            raise ValueError("Tree Training v1 requires model.impl in {'hf', 'auto'}")
+        if self.loss_impl not in ("torch", "liger"):
+            raise ValueError("Tree Training v1 requires loss_impl in {'torch', 'liger'}")
+        if self.data.pack_function != "cat":
+            raise ValueError("Tree Training v1 requires data.pack_function == 'cat'")
+        if self.data.micro_batch_size != 1:
+            raise ValueError("Tree Training v1 requires data.micro_batch_size == 1")
         return self
 
     @model_validator(mode="after")

@@ -35,6 +35,13 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_dataloader, setup_dataset
+from prime_rl.trainer.tree import (
+    branch_group_nll_loss,
+    branch_group_weighted_token_count,
+    build_tree_block_mask,
+    tree_nll_loss,
+    tree_nll_weighted_token_count,
+)
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -244,13 +251,17 @@ def train(config: SFTConfig):
             raise ValueError(f"Invalid loss implementation: {config.loss_impl}")
 
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
+        """Forward pass returning weighted loss sum and matching token denominator."""
         input_ids = micro_batch["input_ids"].to("cuda")
         position_ids = micro_batch["position_ids"].to("cuda")
         target_ids = micro_batch["target_ids"].to("cuda")
         loss_mask = micro_batch["loss_mask"].to("cuda")
+        tree_batch = "prev_map" in micro_batch
+        branch_group_batch = "branch_loss_weights" in micro_batch
 
         if cp_enabled:
+            if tree_batch or branch_group_batch:
+                raise ValueError("Tree Training v1 and grouped branch baselines do not support context parallelism")
             input_ids, position_ids = setup_cp_params(
                 input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
             )
@@ -260,10 +271,59 @@ def train(config: SFTConfig):
         if config.model.lora is not None:
             set_lora_num_tokens(torch.full((1,), input_ids.numel(), dtype=torch.int32, device="cuda"))
 
-        token_count = loss_mask.sum(dtype=torch.int64)
+        prev_map = None
+        loss_weights = None
+        if tree_batch:
+            prev_map = micro_batch["prev_map"].to("cuda")
+            loss_weights = micro_batch["loss_weights"].to("cuda")
+            token_count = tree_nll_weighted_token_count(prev_map, loss_mask, loss_weights).to(torch.float32)
+        elif branch_group_batch:
+            branch_loss_weights = micro_batch["branch_loss_weights"].to("cuda")
+            token_count = branch_group_weighted_token_count(loss_mask, branch_loss_weights).to(torch.float32)
+        else:
+            token_count = loss_mask.sum(dtype=torch.float32)
 
+        out = None
         with maybe_activation_offloading(config.model.ac_offloading):
-            if config.loss_impl in ("liger_fused", "quack_fused"):
+            if tree_batch:
+                if config.model.attn == "flex_attention":
+                    if input_ids.shape[0] != 1:
+                        raise ValueError("Tree Training v1.1 FlexAttention requires one tree per micro-batch")
+                    attn_mask = build_tree_block_mask(
+                        micro_batch["node_of_token"].to("cuda")[0],
+                        micro_batch["is_ancestor_node"].to("cuda")[0],
+                        seq_len=input_ids.shape[1],
+                        device=input_ids.device,
+                    )
+                else:
+                    if "attn_mask" not in micro_batch:
+                        raise ValueError("Tree SDPA path requires dense attn_mask in the micro-batch")
+                    attn_mask = micro_batch["attn_mask"].to("cuda").unsqueeze(1)
+                out = forward(model, input_ids, position_ids, attn_mask=attn_mask)
+                logits = out["logits"]
+                assert prev_map is not None
+                assert loss_weights is not None
+                loss_sum = tree_nll_loss(logits, input_ids, prev_map, loss_mask, loss_weights)
+                del logits
+            elif branch_group_batch:
+                branch_loss_weights = micro_batch["branch_loss_weights"].to("cuda")
+                branch_lengths = micro_batch["branch_lengths"].to("cuda")
+                loss_sum = torch.zeros((), dtype=torch.float32, device="cuda")
+                for branch_idx, branch_len in enumerate(branch_lengths.tolist()):
+                    branch_out = forward(
+                        model,
+                        input_ids[branch_idx : branch_idx + 1, :branch_len],
+                        position_ids[branch_idx : branch_idx + 1, :branch_len],
+                    )
+                    logits = branch_out["logits"]
+                    loss_sum = loss_sum + branch_group_nll_loss(
+                        logits,
+                        target_ids[branch_idx : branch_idx + 1, :branch_len],
+                        loss_mask[branch_idx : branch_idx + 1, :branch_len],
+                        branch_loss_weights[branch_idx : branch_idx + 1],
+                    )
+                    del logits, branch_out
+            elif config.loss_impl in ("liger_fused", "quack_fused"):
                 masked_target_ids = target_ids.clone()
                 masked_target_ids[~loss_mask] = FUSED_CE_IGNORE_INDEX
                 out = forward(model, input_ids, position_ids, labels=masked_target_ids)
@@ -276,7 +336,8 @@ def train(config: SFTConfig):
                 loss_sum = token_loss[loss_mask].sum()
                 del logits
 
-        del out
+        if out is not None:
+            del out
         return loss_sum, token_count
 
     maybe_record_function = nullcontext
@@ -284,7 +345,7 @@ def train(config: SFTConfig):
     def run_eval_loop(data_iter):
         """Validation forward loop. Returns token-weighted global mean loss."""
         total_loss_sum = torch.tensor(0.0, device="cuda")
-        total_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
+        total_token_count = torch.tensor(0.0, device="cuda")
         nan_count = torch.tensor(0, device="cuda")
 
         with torch.no_grad():
@@ -379,7 +440,7 @@ def train(config: SFTConfig):
         forward_backward_start_time = time.perf_counter()
 
         step_loss_sum = torch.tensor(0.0, device="cuda")
-        step_local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
+        step_local_token_count = torch.tensor(0.0, device="cuda")
         nan_loss_count = torch.tensor(0, device="cuda")
         batch_max_vio = torch.tensor(0.0, device="cuda")
         for micro_step in range(grad_accum_steps):
@@ -538,6 +599,8 @@ def train(config: SFTConfig):
 
         loss_log_metrics = {
             "loss/mean": batch_loss,
+            "loss/sum": step_loss_sum.item(),
+            "loss/token_count": global_token_count_val,
             "loss/nan_count": nan_loss_count,
             "step": progress.step,
         }

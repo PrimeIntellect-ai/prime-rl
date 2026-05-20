@@ -278,6 +278,7 @@ addopts = "--strict-markers"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "gpu: marks tests as gpu (deselect with '-m \"not gpu\"')",
+    "perf: marks tests as performance checks",
 ]
 
 [build-system]
