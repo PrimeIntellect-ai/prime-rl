@@ -98,9 +98,7 @@ class _EnvBuffer:
             if num_rollouts:
                 metrics[f"filtered_rollouts/{self.env_name}/{pool}"] = self.num_rollouts_per_step[pool] / num_rollouts
         if num_rollouts:
-            metrics[f"filtered_rollouts/{self.env_name}/zero_std"] = (
-                self.num_zero_std_rollouts_per_step / num_rollouts
-            )
+            metrics[f"filtered_rollouts/{self.env_name}/zero_std"] = self.num_zero_std_rollouts_per_step / num_rollouts
 
         pool_counts = [len(self.easy_examples), self.num_normal, len(self.hard_examples)]
         pool_ratios = mean_normalize(pool_counts)

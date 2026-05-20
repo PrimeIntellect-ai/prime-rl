@@ -437,7 +437,10 @@ def _run_data(args: argparse.Namespace) -> int:
         raise SystemExit("--dataset is required when --filter-output is set")
 
     if args.baseline_config and not args.skip_baseline:
-        status = _run(["uv", "run", "--no-sync", "baseline-eval", "--config", str(args.baseline_config)], print_only=args.print_only)
+        status = _run(
+            ["uv", "run", "--no-sync", "baseline-eval", "--config", str(args.baseline_config)],
+            print_only=args.print_only,
+        )
         if status != 0:
             return status
 
@@ -506,12 +509,16 @@ def _add_common_offline_eval_args(parser: argparse.ArgumentParser) -> None:
         default=int(os.environ.get("OFFLINE_EVAL_SCORE_MAX_CONCURRENCY", "1024")),
     )
     parser.add_argument("--max-retries", type=int, default=int(os.environ.get("OFFLINE_EVAL_MAX_RETRIES", "3")))
-    parser.add_argument("--ks", type=_parse_csv_ints, default=_parse_csv_ints(os.environ.get("OFFLINE_EVAL_KS", "1,2,3,4,5,6,8")))
+    parser.add_argument(
+        "--ks", type=_parse_csv_ints, default=_parse_csv_ints(os.environ.get("OFFLINE_EVAL_KS", "1,2,3,4,5,6,8"))
+    )
     parser.add_argument("--nodes", type=int, default=int(os.environ.get("OFFLINE_EVAL_NODES", "8")))
     parser.add_argument("--gpus-per-node", type=int, default=int(os.environ.get("OFFLINE_EVAL_GPUS_PER_NODE", "4")))
     parser.add_argument("--dp-per-node", type=int, default=int(os.environ.get("OFFLINE_EVAL_DP_PER_NODE", "4")))
     parser.add_argument("--tp", type=int, default=int(os.environ.get("OFFLINE_EVAL_TP", "1")))
-    parser.add_argument("--api-server-count", type=int, default=int(os.environ.get("OFFLINE_EVAL_API_SERVER_COUNT", "4")))
+    parser.add_argument(
+        "--api-server-count", type=int, default=int(os.environ.get("OFFLINE_EVAL_API_SERVER_COUNT", "4"))
+    )
     parser.add_argument("--dp-local", type=int, default=int(os.environ.get("OFFLINE_EVAL_DP_LOCAL", "4")))
     parser.add_argument("--port", type=int, default=int(os.environ.get("OFFLINE_EVAL_PORT", "9800")))
     parser.add_argument(
@@ -532,9 +539,13 @@ def _add_common_offline_eval_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=int(os.environ.get("OFFLINE_EVAL_MAX_NUM_BATCHED_TOKENS", "65536")),
     )
-    parser.add_argument("--driver-node-count", type=int, default=int(os.environ.get("OFFLINE_EVAL_DRIVER_NODE_COUNT", "0")))
+    parser.add_argument(
+        "--driver-node-count", type=int, default=int(os.environ.get("OFFLINE_EVAL_DRIVER_NODE_COUNT", "0"))
+    )
     parser.add_argument("--router-policy", default=os.environ.get("PRIME_RL_VLLM_ROUTER_POLICY", "round_robin"))
-    parser.add_argument("--disable-router", action="store_true", default=os.environ.get("PRIME_RL_DISABLE_VLLM_ROUTER", "0") == "1")
+    parser.add_argument(
+        "--disable-router", action="store_true", default=os.environ.get("PRIME_RL_DISABLE_VLLM_ROUTER", "0") == "1"
+    )
     parser.add_argument("--wait-step", type=int)
     parser.add_argument("--compare-output", type=Path, default=DEFAULT_COMPARE_OUTPUT)
     parser.add_argument("--root", type=Path, default=REPO_ROOT)
@@ -574,8 +585,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     data = subparsers.add_parser("data", help="Generate baseline rollouts and/or filter a dataset from those rollouts.")
     data.add_argument("--baseline-config", type=Path, help="Run `baseline-eval --config` first.")
-    data.add_argument("--skip-baseline", action="store_true", help="Do not run baseline generation even if --baseline-config is set.")
-    data.add_argument("--baseline-rollouts", type=Path, help="Existing eval_rollouts.jsonl; inferred from --baseline-config if omitted.")
+    data.add_argument(
+        "--skip-baseline", action="store_true", help="Do not run baseline generation even if --baseline-config is set."
+    )
+    data.add_argument(
+        "--baseline-rollouts",
+        type=Path,
+        help="Existing eval_rollouts.jsonl; inferred from --baseline-config if omitted.",
+    )
     data.add_argument("--dataset", type=Path, help="Source dataset JSONL for filtering.")
     data.add_argument("--filter-output", type=Path, help="Filtered dataset JSONL output.")
     data.add_argument("--low", type=float, default=0.2)

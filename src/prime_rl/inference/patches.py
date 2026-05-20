@@ -97,8 +97,7 @@ def monkey_patch_topk_topp_noncontiguous_logits():
             state["converted"] += 1
             if state["converted"] <= 8:
                 logger.warning(
-                    "Making non-contiguous logits contiguous before vLLM top-k/top-p Triton kernel: "
-                    "shape=%s stride=%s",
+                    "Making non-contiguous logits contiguous before vLLM top-k/top-p Triton kernel: shape=%s stride=%s",
                     tuple(logits.shape),
                     tuple(logits.stride()),
                 )
