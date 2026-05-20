@@ -12,23 +12,18 @@ from threading import Event, Thread
 import pynvml
 import tomli_w
 
-import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
 from prime_rl.configs.rl import RLConfig
-from prime_rl.trainer.model import pre_download_model
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
     format_log_message,
     get_ckpt_dir,
+    get_log_dir,
     resolve_latest_ckpt_step,
     validate_output_dir,
 )
 from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process, set_proc_title
-from prime_rl.utils.utils import (
-    get_free_port,
-    get_log_dir,
-)
 
 RL_TOML = "rl.toml"
 RL_SBATCH = "rl.sbatch"
@@ -275,6 +270,8 @@ def rl_local(config: RLConfig):
         monitor_threads.append(monitor_thread)
 
         # Start training process
+        from prime_rl.utils.utils import get_free_port
+
         trainer_cmd = [
             "torchrun",
             "--role=trainer",
@@ -544,6 +541,8 @@ def rl(config: RLConfig):
         clean_future_steps(config.output_dir, -1)
 
     if not config.dry_run:
+        from prime_rl.trainer.model import pre_download_model
+
         pre_download_model(config.trainer.model.name)
 
     if config.slurm is not None:
