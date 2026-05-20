@@ -1,14 +1,11 @@
 import warnings
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
-from prime_rl.configs.orchestrator import (
-    CheckpointConfig as OrchestratorCheckpointConfig,
-)
 from prime_rl.configs.orchestrator import (
     FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig,
 )
@@ -21,17 +18,12 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.shared import (
     SlurmConfig,
     VLMConfig,
-    WandbConfig,
-    WandbWithExtrasConfig,
 )
 from prime_rl.configs.trainer import (
     BenchConfig,
     FakeDataLoaderConfig,
     TokenizerConfig,
     TrainerConfig,
-)
-from prime_rl.configs.trainer import (
-    CheckpointConfig as TrainerCheckpointConfig,
 )
 from prime_rl.configs.trainer import (
     FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig,
@@ -41,11 +33,13 @@ from prime_rl.configs.trainer import (
 )
 from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
+    propagate_shared_fields,
     validate_shared_ckpt_config,
     validate_shared_max_async_level,
     validate_shared_max_steps,
     validate_shared_model_name,
     validate_shared_output_dir,
+    validate_shared_seq_len,
     validate_shared_tokenizer,
     validate_shared_wandb_config,
     validate_shared_weight_broadcast,
@@ -53,47 +47,38 @@ from prime_rl.utils.validation import (
 
 
 class RLExperimentalConfig(BaseConfig):
-    """Experimental features for RL training."""
+    pass
 
 
 class SharedLogConfig(BaseConfig):
-    """Configures shared logging."""
+    level: str | None = None
+    """Log level for trainer and orchestrator. When unset, each sub-config's own log level applies (defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``)."""
 
-    level: Annotated[
-        str | None,
-        Field(
-            description="The log level to use. When unset, the trainer and orchestrator log levels are used as-is (which themselves default to the PRIME_LOG_LEVEL env var if set, else 'info').",
-        ),
-    ] = None
-
-    json_logging: Annotated[
-        bool,
-        Field(description="Emit JSON logs (newline-delimited) for log aggregation (Loki, Grafana, etc.)."),
-    ] = False
+    json_logging: bool = False
+    """Emit newline-delimited JSON logs for aggregation (Loki, Grafana, etc.)."""
 
 
 class SharedWandbConfig(BaseConfig):
-    """Configures shared W&B configs."""
+    project: str | None = "prime-rl"
+    """W&B project."""
 
-    project: Annotated[str | None, Field(description="The W&B project to use.")] = "prime-rl"
+    entity: str | None = None
+    """W&B entity."""
 
-    entity: Annotated[str | None, Field(description="The W&B entity to use.")] = None
+    name: str | None = None
+    """W&B run name."""
 
-    name: Annotated[str | None, Field(description="The W&B run name to use.")] = None
+    group: str | None = None
+    """W&B group."""
 
-    group: Annotated[str | None, Field(description="The W&B group to use.")] = None
+    tags: list[str] | None = None
+    """W&B tags attached to the run."""
 
-    tags: Annotated[list[str] | None, Field(description="The W&B tags to attach to the run.")] = None
+    offline: bool | None = False
+    """Run W&B in offline mode."""
 
-    offline: Annotated[bool | None, Field(description="Whether to run W&B in offline mode.")] = False
-
-    shared: Annotated[
-        bool,
-        Field(
-            description="Use shared W&B mode to log trainer and orchestrator metrics to a single run. "
-            "Requires wandb SDK >= 0.19.9. Incompatible with offline mode.",
-        ),
-    ] = True
+    shared: bool = True
+    """Log trainer and orchestrator metrics to a single shared W&B run. Requires wandb SDK ≥ 0.19.9. Incompatible with offline mode."""
 
     @model_validator(mode="after")
     def validate_shared_not_offline(self):
@@ -103,96 +88,57 @@ class SharedWandbConfig(BaseConfig):
 
 
 class SharedCheckpointConfig(BaseConfig):
-    """Configures shared checkpoint configs."""
+    output_dir: Path | None = None
+    """Override directory for checkpoints and weights. When set, checkpoints and weight snapshots are written here instead of under the trainer ``output_dir``."""
 
-    output_dir: Annotated[
-        Path | None,
-        Field(
-            description="Override directory for checkpoints and weights. When set, checkpoints and weight snapshots are written here instead of under the trainer output_dir.",
-        ),
-    ] = None
+    interval: int | None = None
+    """Interval at which to save checkpoints."""
 
-    interval: Annotated[int | None, Field(description="The interval at which to save checkpoints.")] = None
+    resume_step: int | None = None
+    """Step to resume from. If None, does not resume from a checkpoint."""
 
-    resume_step: Annotated[
-        int | None, Field(description="The step to resume from. If None, will not resume from a checkpoint.")
-    ] = None
+    keep_last: int | None = Field(None, ge=1)
+    """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""
 
-    keep_last: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency.",
-        ),
-    ] = None
-
-    keep_interval: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description="Keep checkpoints at every N steps permanently (e.g., keep_interval=100 keeps step 100, 200, ...). If None, no interval-based keeping.",
-        ),
-    ] = None
+    keep_interval: int | None = Field(None, ge=1)
+    """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
 
 class SharedModelConfig(BaseConfig):
-    """Configures shared model settings."""
+    name: str = "Qwen/Qwen3-0.6B"
+    """HF model name or local path."""
 
-    name: Annotated[
-        str,
-        Field(description="The name of the model to use."),
-    ] = "Qwen/Qwen3-0.6B"
-
-    vlm: Annotated[
-        "VLMConfig | None",
-        Field(description="VLM configuration. Set to enable vision-language model support."),
-    ] = None
+    vlm: "VLMConfig | None" = None
+    """VLM configuration. Set this to enable vision-language model support."""
 
 
 class SharedWeightBroadcastConfig(BaseConfig):
-    """Configures shared weight broadcast settings."""
+    type: Literal["nccl", "filesystem"] = "filesystem"
+    """Weight broadcast transport."""
 
-    type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
-        "filesystem"
-    )
+    port: int = 29501
+    """Port for NCCL weight broadcast."""
 
-    port: Annotated[int, Field(description="The port to use for NCCL weight broadcast.")] = 29501
-    timeout: Annotated[int, Field(description="The timeout in seconds for NCCL weight broadcast.")] = 1200
-    quantize_in_weight_transfer: Annotated[
-        bool,
-        Field(
-            description=(
-                "Use kernel-format FP8 quantized NCCL transfer for weight updates. "
-                "When disabled, uses default HF checkpoint-format transfer."
-            ),
-        ),
-    ] = False
+    timeout: int = 1200
+    """Timeout in seconds for NCCL weight broadcast."""
+
+    quantize_in_weight_transfer: bool = False
+    """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
 
-class BaseDeploymentConfig(BaseModel):
-    """Configures a base deployment."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    gpus_per_node: Annotated[int, Field(description="Number of GPUs per node.")] = 8
+class BaseDeploymentConfig(BaseConfig):
+    gpus_per_node: int = 8
+    """GPUs per node."""
 
 
 class SingleNodeDeploymentConfig(BaseDeploymentConfig):
-    """Configures a single node deployment."""
-
     type: Literal["single_node"] = "single_node"
 
-    num_train_gpus: Annotated[int, Field(description="Number of training GPUs")] = 1
-    num_infer_gpus: Annotated[
-        int,
-        Field(
-            description=(
-                "Number of GPUs allocated to the inference pool. When there is a single [[inference]] "
-                "entry this sizes its parallel.dp directly; with multiple entries each entry's GPU "
-                "count comes from its own parallel.dp * parallel.tp."
-            ),
-        ),
-    ] = 1
+    num_train_gpus: int = 1
+    """GPUs allocated to the trainer."""
+
+    num_infer_gpus: int = 1
+    """GPUs allocated to the inference pool. With a single ``[[inference]]`` entry this sizes its ``parallel.dp`` directly; with multiple entries each entry's GPU count comes from its own ``parallel.dp * parallel.tp``."""
 
     @model_validator(mode="after")
     def validate_gpu_count(self):
@@ -207,32 +153,19 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
 
 
 class MultiNodeDeploymentConfig(BaseDeploymentConfig):
-    """Configures a multi node deployment."""
-
     type: Literal["multi_node"] = "multi_node"
 
-    num_train_nodes: Annotated[int, Field(description="Number of training nodes.")]
-    num_infer_nodes: Annotated[
-        int,
-        Field(
-            ge=0,
-            description="Number of inference nodes per replica. Set to 0 to skip inference and orchestrator (requires fake data).",
-        ),
-    ]
-    num_infer_replicas: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Number of independent inference replicas. Total inference nodes = num_infer_nodes * num_infer_replicas.",
-        ),
-    ] = 1
+    num_train_nodes: int
+    """Training nodes."""
 
-    nodes_per_fsdp_group: Annotated[
-        int | None,
-        Field(
-            description="Number of training nodes per FSDP island. Auto-sets trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group."
-        ),
-    ] = None
+    num_infer_nodes: int = Field(ge=0)
+    """Inference nodes per replica. Set to 0 to skip inference and orchestrator (requires fake data)."""
+
+    num_infer_replicas: int = Field(1, ge=1)
+    """Independent inference replicas. Total inference nodes = ``num_infer_nodes * num_infer_replicas``."""
+
+    nodes_per_fsdp_group: int | None = None
+    """Training nodes per FSDP island. Auto-sets ``trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
 
     @property
     def total_infer_nodes(self) -> int:
@@ -245,128 +178,59 @@ DeploymentConfig: TypeAlias = Annotated[
 
 
 class RLConfig(BaseConfig):
-    """Configures an RL training run."""
-
     trainer: TrainerConfig
+
     orchestrator: OrchestratorConfig
-    inference: Annotated[
-        list[InferenceConfig],
-        Field(
-            description=(
-                "Inference deployments to launch alongside this RL run, written as repeated "
-                "[[inference]] TOML blocks. Each entry is tagged (`tag` field, defaults to "
-                "`student`); the launcher brings up one vLLM subprocess per entry, and the "
-                "orchestrator routes student/teacher requests by tag. An empty list means no "
-                "inference server is launched here (useful for elastic pools or manually "
-                "managed servers). For back-compat, a single `[inference]` block is auto-wrapped "
-                'into a list with tag="student".'
-            ),
-        ),
-    ] = []
 
-    output_dir: Annotated[
-        Path,
-        Field(
-            description="The directory to store the outputs. Should be set to a unique directory identifying the experiment."
-        ),
-    ] = Path("outputs")
+    inference: list[InferenceConfig] = []
+    """Inference deployments to launch alongside this RL run, written as repeated ``[[inference]]`` TOML blocks. Each entry is tagged (``tag`` field, defaults to ``student``); the launcher brings up one vLLM subprocess per entry, and the orchestrator routes student/teacher requests by tag. An empty list means no inference server is launched here (useful for elastic pools or manually managed servers). For back-compat, a single ``[inference]`` block is auto-wrapped into a list with ``tag = "student"``."""
 
-    clean_output_dir: Annotated[
-        bool,
-        Field(
-            description="If true, delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming.",
-        ),
-    ] = False
+    output_dir: Path = Path("outputs")
+    """Output directory. Should be unique per experiment."""
+
+    clean_output_dir: bool = False
+    """Delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming."""
 
     ### Shared configurations
 
-    log: Annotated[
-        SharedLogConfig,
-        Field(
-            description="Shared log configs. If None, will fallback to the log configs specified on submodule configs."
-        ),
-    ] = SharedLogConfig()
+    log: SharedLogConfig = SharedLogConfig()
+    """Shared log config. Propagated to trainer and orchestrator."""
 
-    ckpt: Annotated[
-        SharedCheckpointConfig | None,
-        Field(
-            description="Shared checkpoint configs. If None, will fallback to the checkpoint configs specified on submodule configs."
-        ),
-    ] = None
+    ckpt: SharedCheckpointConfig | None = None
+    """Shared checkpoint config. If None, falls back to the sub-config checkpoint settings."""
 
-    wandb: Annotated[
-        SharedWandbConfig | None,
-        Field(
-            description="Shared W&B configs. If None, will fallback to the W&B configs specified on submodule configs."
-        ),
-    ] = None
+    wandb: SharedWandbConfig | None = None
+    """Shared W&B config. If None, falls back to the sub-config W&B settings."""
 
-    model: Annotated[
-        SharedModelConfig | None,
-        Field(
-            description="Shared model configs. If None, will fallback to the model configs specified on submodule configs."
-        ),
-    ] = None
+    model: SharedModelConfig | None = None
+    """Shared model config. If None, falls back to the sub-config model settings."""
 
-    tokenizer: Annotated[
-        TokenizerConfig | None,
-        Field(
-            description="Shared tokenizer config. Propagated to trainer, orchestrator, and inference. "
-            "If None, each component uses its own tokenizer config (defaulting to model name).",
-        ),
-    ] = None
+    tokenizer: TokenizerConfig | None = None
+    """Shared tokenizer config. Propagated to trainer, orchestrator, and inference. If None, each component uses its own tokenizer config (defaulting to model name)."""
 
-    max_steps: Annotated[
-        int | None,
-        Field(
-            description="The maximum number of steps to train for. If None, will fallback to the max steps specified on submodule configs."
-        ),
-    ] = None
+    max_steps: int | None = None
+    """Shared maximum training steps. If None, falls back to the sub-config ``max_steps``."""
 
-    max_model_len: Annotated[
-        int | None,
-        Field(
-            description="The maximum model length to use. If None, will fallback to the max model length specified on submodule configs."
-        ),
-    ] = None
+    seq_len: int | None = None
+    """Shared sequence length. Propagates to ``trainer.model.seq_len`` and ``orchestrator.seq_len`` only when those values were not explicitly set; explicit per-component values always win."""
 
-    seq_len: Annotated[
-        int | None,
-        Field(
-            description="Shared sequence length. Propagates to trainer.model.seq_len and orchestrator.seq_len, "
-            "but only for those not explicitly set in the config. "
-            "Explicitly set per-component values always take precedence."
-        ),
-    ] = None
+    max_async_level: int | None = None
+    """Shared async level. If None, falls back to the sub-config ``max_async_level``."""
 
-    max_async_level: Annotated[
-        int | None,
-        Field(
-            description="The async level to use. If None, will fallback to the async level specified on submodule configs."
-        ),
-    ] = None
+    weight_broadcast: SharedWeightBroadcastConfig | None = None
 
-    weight_broadcast: Annotated[
-        SharedWeightBroadcastConfig | None, Field(description="The weight broadcast config.")
-    ] = None
-
-    bench: Annotated[
-        bool,
-        Field(
-            description="Whether to run in benchmark mode. Automatically sets the trainer and orchestrator to benchmark mode and, if present, suffixes the W&B project with `-bench`.",
-        ),
-    ] = False
+    bench: bool = False
+    """Benchmark mode. Sets trainer and orchestrator to benchmark mode and, when set, suffixes the W&B project with ``-bench``."""
 
     deployment: DeploymentConfig = SingleNodeDeploymentConfig()
 
-    slurm: Annotated[SlurmConfig | None, Field(description="SLURM configuration. If None, will run locally.")] = None
+    slurm: SlurmConfig | None = None
+    """SLURM configuration. If None, runs locally."""
 
-    dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
+    dry_run: bool = False
+    """Only validate and dump resolved configs, then exit early."""
 
-    experimental: Annotated[
-        RLExperimentalConfig,
-        Field(description="Experimental features for RL training."),
-    ] = RLExperimentalConfig()
+    experimental: RLExperimentalConfig = RLExperimentalConfig()
 
     ### Tagged inference helpers
 
@@ -526,215 +390,30 @@ class RLConfig(BaseConfig):
 
         return self
 
-    ### Auto-setup and validate shared configs
+    ### Auto-setup shared configs (before sub-config construction)
 
-    @model_validator(mode="after")
-    def auto_setup_output_dir(self):
-        """Auto-setup shared output directory for trainer and orchestrator."""
-        self.trainer.output_dir = self.output_dir
-        self.orchestrator.output_dir = self.output_dir / "run_default"
-
-        validate_shared_output_dir(self.trainer, self.orchestrator)
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_logs(self):
-        """Auto-setup shared log config for trainer and orchestrator."""
-        if self.log is not None:
-            if self.log.level is not None:
-                self.trainer.log.level = self.log.level
-                self.orchestrator.log.level = self.log.level
-            self.trainer.log.json_logging = self.log.json_logging
-            self.orchestrator.log.json_logging = self.log.json_logging
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_ckpt(self):
-        """Auto-setup shared checkpoint config for trainer and orchestrator."""
-        if self.ckpt is not None:
-            # Create checkpoint configs if not specified
-            if self.trainer.ckpt is None:
-                self.trainer.ckpt = TrainerCheckpointConfig()
-            if self.orchestrator.ckpt is None:
-                self.orchestrator.ckpt = OrchestratorCheckpointConfig()
-
-            # If specified, override checkpoint output directory
-            if self.ckpt.output_dir is not None:
-                self.trainer.ckpt.output_dir = self.ckpt.output_dir
-
-            # If specified, use the same ckpt interval
-            if self.ckpt.interval is not None:
-                self.trainer.ckpt.interval = self.ckpt.interval
-                self.orchestrator.ckpt.interval = self.ckpt.interval
-
-            # If resuming training, ensure orchestrator resume from the same step
-            if self.ckpt.resume_step is not None:
-                self.trainer.ckpt.resume_step = self.ckpt.resume_step
-                self.orchestrator.ckpt.resume_step = self.ckpt.resume_step
-
-            # If specified, propagate keep policy
-            if self.ckpt.keep_last is not None:
-                self.trainer.ckpt.keep_last = self.ckpt.keep_last
-                self.orchestrator.ckpt.keep_last = self.ckpt.keep_last
-
-            if self.ckpt.keep_interval is not None:
-                self.trainer.ckpt.keep_interval = self.ckpt.keep_interval
-                self.orchestrator.ckpt.keep_interval = self.ckpt.keep_interval
-
-        validate_shared_ckpt_config(self.trainer, self.orchestrator)
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_wandb(self):
-        """Auto-setup shared W&B config for trainer and orchestrator."""
-        if self.wandb is not None:
-            if not self.trainer.wandb:
-                self.trainer.wandb = WandbConfig()
-            if not self.orchestrator.wandb:
-                self.orchestrator.wandb = WandbWithExtrasConfig()
-
-            if self.wandb.project:
-                self.trainer.wandb.project = self.wandb.project
-                self.orchestrator.wandb.project = self.wandb.project
-
-            if self.wandb.entity:
-                self.trainer.wandb.entity = self.wandb.entity
-                self.orchestrator.wandb.entity = self.wandb.entity
-
-            if self.wandb.shared:
-                if self.wandb.name:
-                    self.trainer.wandb.name = self.wandb.name
-                    self.orchestrator.wandb.name = self.wandb.name
-            else:
-                if self.wandb.name:
-                    self.trainer.wandb.name = f"{self.wandb.name}-trainer"
-                    self.orchestrator.wandb.name = f"{self.wandb.name}-orchestrator"
-
-            if self.wandb.group:
-                self.trainer.wandb.group = self.wandb.group
-                self.orchestrator.wandb.group = self.wandb.group
-
-            if self.wandb.tags:
-                self.trainer.wandb.tags = self.wandb.tags.copy()
-                self.orchestrator.wandb.tags = self.wandb.tags.copy()
-
-            if self.wandb.offline:
-                self.trainer.wandb.offline = self.wandb.offline
-                self.orchestrator.wandb.offline = self.wandb.offline
-
-        validate_shared_wandb_config(self.trainer, self.orchestrator)
-
-        if self.orchestrator.prime_monitor is not None and self.orchestrator.prime_monitor.run_name is None:
-            if self.wandb and self.wandb.name:
-                self.orchestrator.prime_monitor.run_name = self.wandb.name
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_model(self):
-        """Auto-setup shared model config for trainer, orchestrator, and inference."""
-        if self.model is not None:
-            self.trainer.model.name = self.model.name
-            student_inf = self.student_inference
-            if student_inf is not None:
-                inference_model_explicitly_set = "name" in student_inf.model.model_fields_set
-                if not inference_model_explicitly_set:
-                    student_inf.model.name = self.model.name
-                self.orchestrator.student.model.name = student_inf.model.name
-            else:
-                self.orchestrator.student.model.name = self.model.name
-
-            if self.model.vlm is not None:
-                self.trainer.model.vlm = self.model.vlm
-                self.orchestrator.student.model.vlm = self.model.vlm
-                if student_inf is not None:
-                    student_inf.model.vlm = self.model.vlm
-
-        validate_shared_model_name(self.trainer, self.orchestrator, self.student_inference)
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_tokenizer(self):
-        """Auto-setup shared tokenizer config for trainer, orchestrator, and inference."""
-        if self.tokenizer is not None:
-            # Shared tokenizer config: propagate to all components, then fill
-            # in name/trust_remote_code from model config where still unset.
-            self.trainer.tokenizer = self.tokenizer.model_copy()
-            self.orchestrator.tokenizer = self.tokenizer.model_copy()
-            if self.trainer.tokenizer.name is None:
-                self.trainer.tokenizer.name = self.trainer.model.name
-            if self.trainer.tokenizer.trust_remote_code is None:
-                self.trainer.tokenizer.trust_remote_code = self.trainer.model.trust_remote_code
-            if self.orchestrator.tokenizer.name is None:
-                self.orchestrator.tokenizer.name = self.orchestrator.student.model.name
-            if self.orchestrator.tokenizer.trust_remote_code is None:
-                self.orchestrator.tokenizer.trust_remote_code = self.orchestrator.student.model.trust_remote_code
-        else:
-            # No shared tokenizer: re-derive from (now-correct) model names,
-            # since auto_setup_tokenizer on sub-configs already ran with defaults.
-            self.trainer.tokenizer.name = self.trainer.model.name
-            self.trainer.tokenizer.trust_remote_code = self.trainer.model.trust_remote_code
-            self.orchestrator.tokenizer.name = self.orchestrator.student.model.name
-            self.orchestrator.tokenizer.trust_remote_code = self.orchestrator.student.model.trust_remote_code
-
-        # Propagate chat_template to the student inference deployment (vLLM
-        # --chat-template). Other tags (e.g. teacher) keep their own template,
-        # which can differ when the teacher is a distinct model family.
-        chat_template = self.trainer.tokenizer.chat_template
-        if chat_template is not None:
-            student_inf = self.student_inference
-            if student_inf is not None and student_inf.model.chat_template is None:
-                student_inf.model.chat_template = chat_template
-
-        validate_shared_tokenizer(self.trainer, self.orchestrator, self.student_inference)
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_max_steps(self):
-        """Auto-setup shared max steps for trainer and orchestrator."""
-        if self.max_steps is not None:
-            self.trainer.max_steps = self.max_steps
-            self.orchestrator.max_steps = self.max_steps
-
-        validate_shared_max_steps(self.trainer, self.orchestrator)
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_async_level(self):
-        """Auto-setup shared async level for trainer and orchestrator."""
-        if self.max_async_level is not None:
-            self.trainer.max_async_level = self.max_async_level
-            self.orchestrator.max_async_level = self.max_async_level
-
-        validate_shared_max_async_level(self.trainer, self.orchestrator)
-
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_seq_len(self):
-        """Auto-setup shared seq_len for trainer and orchestrator.
-
-        Only propagates to components that weren't explicitly set in the config.
-        Uses model_fields_set to detect explicit assignment.
+    @model_validator(mode="before")
+    @classmethod
+    def auto_setup_shared_configs(cls, data: Any) -> Any:
+        """Propagate shared top-level fields into sub-config dicts before sub-configs
+        are constructed. See ``validation.propagate_shared_fields`` for the full
+        propagation table, transforms, and the mutex rule.
         """
-        if self.seq_len is not None:
-            if "seq_len" not in self.trainer.model.model_fields_set:
-                self.trainer.model.seq_len = self.seq_len
-            if "seq_len" not in self.orchestrator.model_fields_set:
-                self.orchestrator.seq_len = self.seq_len
+        return propagate_shared_fields(data)
 
-        if self.trainer.model.seq_len < self.orchestrator.seq_len:
-            raise ValueError(
-                f"Trainer model seq_len ({self.trainer.model.seq_len}) must be >= orchestrator seq_len ({self.orchestrator.seq_len}). "
-                f"The trainer needs to be able to handle sequences at least as long as those produced by the orchestrator."
-            )
+    ### Validate shared configs (after sub-config construction)
 
+    @model_validator(mode="after")
+    def validate_shared_configs(self):
+        """Validate consistency of shared configs across trainer, orchestrator, and inference."""
+        validate_shared_output_dir(self.trainer, self.orchestrator)
+        validate_shared_model_name(self.trainer, self.orchestrator, self.student_inference)
+        validate_shared_tokenizer(self.trainer, self.orchestrator, self.student_inference)
+        validate_shared_max_steps(self.trainer, self.orchestrator)
+        validate_shared_max_async_level(self.trainer, self.orchestrator)
+        validate_shared_seq_len(self.trainer, self.orchestrator)
+        validate_shared_ckpt_config(self.trainer, self.orchestrator)
+        validate_shared_wandb_config(self.trainer, self.orchestrator)
         return self
 
     @model_validator(mode="after")
