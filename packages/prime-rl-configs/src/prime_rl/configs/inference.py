@@ -7,6 +7,7 @@ from pydantic_config import BaseConfig
 
 from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
 from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
+from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
 
 # TODO: Set thinking/ solution budget
 
@@ -34,6 +35,13 @@ class ParallelConfig(BaseConfig):
 
 
 class ModelConfig(BaseModelConfig):
+    """Configures the inference model. Most arguments are passed directly to the vLLM LLM class (https://docs.vllm.ai/en/latest/api/vllm.LLM.html).
+
+    Parser fields (``tool_call_parser``, ``reasoning_parser``) default to ``"auto"``,
+    which resolves to a concrete parser name at validation time from the model name.
+    Set to ``None`` to disable.
+    """
+
     dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
     """dtype for model weights and activations. ``auto`` uses FP16 for FP32/FP16 models and BF16 for BF16 models. Forwarded as ``--dtype``."""
 
@@ -50,13 +58,27 @@ class ModelConfig(BaseModelConfig):
     """Chat template — a Jinja2 template string or path to a template file. Forwarded as ``--chat-template``. If None, uses the model's default."""
 
     tool_call_parser: str | None = "auto"
-    """Tool-call parser. Forwarded as ``--tool-call-parser``. Set to ``auto`` to infer from the model name."""
+    """Tool-call parser. Forwarded as ``--tool-call-parser``. Set to ``"auto"`` (default) to detect from the model name, or ``None`` to disable."""
 
-    reasoning_parser: str | None = None
-    """Parser for extracting reasoning content from model outputs. Forwarded as ``--reasoning-parser``. Setting this enables reasoning mode."""
+    reasoning_parser: str | None = "auto"
+    """Parser for extracting reasoning content from model outputs. Forwarded as ``--reasoning-parser``. Set to ``"auto"`` (default) to detect from the model name, or ``None`` to disable."""
 
     rope_scaling: dict[str, Any] | str | None = None
     """RoPE scaling configuration as a dict (e.g. ``{rope_type="yarn", factor=4.0, original_max_position_embeddings=32768}``). Forwarded as ``--rope-scaling``."""
+
+    @model_validator(mode="after")
+    def auto_resolve_parsers(self):
+        """Resolve ``"auto"`` parser values to concrete parser names from the model name.
+
+        Runs after ``RLConfig.auto_setup_shared_configs`` (mode=before) has
+        propagated the shared ``[model] name`` into ``inference.model``, so the
+        name is set even when only the shared block specifies it.
+        """
+        if self.tool_call_parser == "auto":
+            self.tool_call_parser = resolve_tool_call_parser(self.name)
+        if self.reasoning_parser == "auto":
+            self.reasoning_parser = resolve_reasoning_parser(self.name)
+        return self
 
 
 class WeightBroadcastConfig(BaseConfig):
@@ -412,6 +434,12 @@ class InferenceConfig(BaseConfig):
         # Remove chat_template if not set (vLLM doesn't accept None)
         if namespace.chat_template is None:
             delattr(namespace, "chat_template")
+
+        # Remove tool_call_parser if not set (vLLM doesn't accept None) and gate
+        # `enable_auto_tool_choice` on its presence.
+        if namespace.tool_call_parser is None:
+            delattr(namespace, "tool_call_parser")
+        namespace.enable_auto_tool_choice = hasattr(namespace, "tool_call_parser")
 
         # Remove reasoning_parser if not set (vLLM doesn't accept None)
         if namespace.reasoning_parser is None:
