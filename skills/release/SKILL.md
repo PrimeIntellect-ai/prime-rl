@@ -7,6 +7,8 @@ description: How to prepare and publish GitHub releases for prime-rl. Use when d
 
 Prime-rl releases are driven by [`.github/workflows/tag-and-release.yaml`](../../.github/workflows/tag-and-release.yaml). When a PR that bumps `version` in `pyproject.toml` lands on `main`, the workflow auto-creates the `v{version}` tag and the matching GitHub Release using the body from `assets/release/RELEASE_v{version}.md`. **Prime-rl is not published to PyPI** — the workflow does not publish a package.
 
+This skill covers **stable** releases only. The `devx_tag.yaml` workflow handles `.dev` tags independently — it runs on every push to `main` and creates `vX.Y.Z.devN` tags (no GitHub Release, no release notes file). The two workflows coexist: `tag-and-release.yaml` ignores `*dev*` tags via its trigger filter.
+
 Your job in this skill is to prepare the release PR so a maintainer can simply review and merge.
 
 ## Preparing the release PR

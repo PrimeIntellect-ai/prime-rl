@@ -5,7 +5,11 @@ on:
     branches:
       - main
     tags:
+      # Stable release tags only. `.dev` tags are created by `devx_tag.yaml`
+      # via GITHUB_TOKEN (which does not retrigger workflows), so they would
+      # not arrive here anyway — this exclusion is defensive for manual pushes.
       - 'v*'
+      - '!v*dev*'
   workflow_dispatch:
     inputs:
       tag:
