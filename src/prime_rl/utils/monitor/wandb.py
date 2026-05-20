@@ -9,6 +9,7 @@ import verifiers as vf
 import wandb
 from transformers.tokenization_utils import PreTrainedTokenizer
 from wandb.errors import CommError
+from wandb.sdk.mailbox.mailbox_handle import ServerResponseError
 
 from prime_rl.configs.shared import WandbConfig, WandbWithExtrasConfig
 from prime_rl.utils.chat_template import deserialize_tool_calls
@@ -71,11 +72,14 @@ class WandbMonitor(Monitor):
             mode = os.environ.get("WANDB_MODE", "offline" if config.offline else "online")
             settings = wandb.Settings(mode=mode)
 
+        retryable_errors = (CommError, ServerResponseError) if shared_mode and not primary else (CommError,)
+
         def init_wandb(max_retries: int):
             for attempt in range(max_retries):
                 try:
                     return wandb.init(
                         id=run_id,
+                        resume="allow" if run_id else None,
                         project=config.project,
                         entity=config.entity,
                         name=config.name,
@@ -85,7 +89,7 @@ class WandbMonitor(Monitor):
                         config=run_config.model_dump() if run_config else None,
                         settings=settings,
                     )
-                except CommError as e:
+                except retryable_errors as e:
                     if attempt + 1 == max_retries:
                         raise
                     if shared_mode and not primary:
