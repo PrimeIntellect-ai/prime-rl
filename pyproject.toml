@@ -125,7 +125,10 @@ dev = [
 members = [
     "packages/prime-rl-configs",
     "deps/pydantic-config",
-    "deps/verifiers",
+    # `deps/verifiers` itself is intentionally NOT a workspace member: the
+    # `verifiers` package is sourced from our fork via [tool.uv.sources] below.
+    # The environment sub-packages under deps/verifiers/environments/* remain
+    # workspace members so they can be imported by their workspace names.
     "deps/renderers",
     "deps/verifiers/environments/alphabet_sort",
     "deps/verifiers/environments/math_python",
@@ -193,7 +196,7 @@ nixl-cu12 = false
 
 [tool.uv.sources]
 prime-rl-configs = { workspace = true }
-verifiers = { workspace = true }
+verifiers = { git = "https://github.com/nph4rd/verifiers.git", branch = "multiagent-no-opponent-conditioning" }
 renderers = { workspace = true }
 aime2024 = { workspace = true }
 aime2025 = { workspace = true }

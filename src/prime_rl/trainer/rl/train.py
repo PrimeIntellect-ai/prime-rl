@@ -237,6 +237,7 @@ def train(config: TrainerConfig):
             config.model.cp,
             tokenizer,
             config.rollout_transport,
+            pack_full_step=config.pack_full_step,
         )
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
@@ -479,14 +480,27 @@ def train(config: TrainerConfig):
             tensors["entropy/all"].append(entropy)
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
+            keep_flags = loss_mask.flatten().tolist()
             env_names = micro_batch["env_names"]
-            masked_env_names = [env_name for env_name, keep in zip(env_names, loss_mask.flatten().tolist()) if keep]
+            masked_env_names = [env_name for env_name, keep in zip(env_names, keep_flags) if keep]
             env_to_indices: dict[str, list[int]] = {}
             for idx, env_name in enumerate(masked_env_names):
                 env_to_indices.setdefault(env_name, []).append(idx)
 
             for env_name, indices in env_to_indices.items():
                 tensors[f"entropy/{env_name}"].append(entropy[indices])
+
+            # Per-agent breakdown for multi-agent training. Skips agentless ("") tokens
+            # so single-agent runs don't emit a noisy `entropy/` key.
+            actor_ids = micro_batch["actor_ids"]
+            masked_actor_ids = [actor_id for actor_id, keep in zip(actor_ids, keep_flags) if keep]
+            actor_to_indices: dict[str, list[int]] = {}
+            for idx, actor_id in enumerate(masked_actor_ids):
+                if actor_id:
+                    actor_to_indices.setdefault(actor_id, []).append(idx)
+
+            for actor_id, indices in actor_to_indices.items():
+                tensors[f"entropy/actor/{actor_id}"].append(entropy[indices])
 
             if micro_batch["training_mode"] != "sft":
                 with torch.no_grad():
@@ -495,6 +509,8 @@ def train(config: TrainerConfig):
                 tensors["mismatch_kl/all"].append(mismatch_kl)
                 for env_name, indices in env_to_indices.items():
                     tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
+                for actor_id, indices in actor_to_indices.items():
+                    tensors[f"mismatch_kl/actor/{actor_id}"].append(mismatch_kl[indices])
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)

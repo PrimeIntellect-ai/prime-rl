@@ -598,6 +598,9 @@ class OrchestratorConfig(BaseConfig):
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
     """Transport used to receive updated weights from the trainer."""
 
+    multi_agent_lora: bool = False
+    """Enable per-agent LoRA training for multi-agent environments."""
+
     rollout_transport: TransportConfig = FileSystemTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
 

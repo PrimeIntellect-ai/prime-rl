@@ -7,7 +7,7 @@ import time
 import tomli_w
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
-from prime_rl.orchestrator.advantage import compute_advantages
+from prime_rl.orchestrator.advantage import compute_advantages, compute_per_agent_advantages
 from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
@@ -18,7 +18,12 @@ from prime_rl.orchestrator.trajectories import (
     offload_images_to_disk,
     pretokenize_rollout_trajectory,
 )
-from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
+from prime_rl.transport import (
+    TrainingBatch,
+    TrainingSample,
+    setup_multi_run_training_batch_sender,
+    setup_training_batch_sender,
+)
 from prime_rl.utils.pathing import get_log_dir, get_rollout_dir, get_step_path
 from prime_rl.utils.usage_reporter import UsageReporter
 
@@ -237,6 +242,32 @@ async def orchestrate(config: OrchestratorConfig):
         else:
             checkpoint_step = config.ckpt.resume_step
 
+    # Multi-agent LoRA: set up per-agent policy routing
+    actor_lora_mapping: dict[str, str] | None = None
+    if config.multi_agent_lora:
+        agent_sets = [tuple(getattr(env.env, "agents", ())) for env in train_envs]
+        agent_sets = [agents for agents in agent_sets if agents]
+        assert agent_sets, "multi_agent_lora requires at least one MultiAgentEnv with registered agents"
+        agents = agent_sets[0]
+        assert len(agents) >= 2, "multi_agent_lora requires a MultiAgentEnv with at least 2 registered agents"
+        assert all(agent_set == agents for agent_set in agent_sets), (
+            "multi_agent_lora requires all MultiAgentEnv train envs to use the same agents"
+        )
+        actor_lora_mapping = {agent_id: f"run_{agent_id}" for agent_id in agents}
+        logger.info(f"Multi-agent LoRA enabled: {actor_lora_mapping}")
+
+        # Create per-actor run directories with minimal orch.toml
+        # Only include model.lora.name and optim.lr — the trainer fills in the rest
+        for run_name in actor_lora_mapping.values():
+            run_config_dir = config.output_dir.parent / run_name / "control"
+            run_config_dir.mkdir(parents=True, exist_ok=True)
+            actor_orch_config = {
+                "model": {"lora": {"name": run_name}},
+                "optim": {"lr": config.optim.lr},
+            }
+            with open(run_config_dir / "orch.toml", "wb") as f:
+                tomli_w.dump(actor_orch_config, f)
+
     scheduler = Scheduler(
         train_envs=train_envs,
         buffer=buffer,
@@ -249,6 +280,7 @@ async def orchestrate(config: OrchestratorConfig):
         tasks_per_minute=config.tasks_per_minute,
         lora_name=config.student.model.lora.name if config.student.model.lora else None,
         config=config,
+        actor_lora_mapping=actor_lora_mapping,
     )
 
     # Wait for pools to be ready
@@ -281,7 +313,14 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Setup training batch sender for sending training examples to trainer
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
-    training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
+    if actor_lora_mapping is not None:
+        multi_run_sender = setup_multi_run_training_batch_sender(
+            config.output_dir.parent, list(actor_lora_mapping.values()), config.rollout_transport
+        )
+        training_batch_sender = multi_run_sender
+    else:
+        multi_run_sender = None
+        training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
     # Track last online eval checkpoint step per eval env
     last_eval_steps: dict[str, int] = {env.name: -1 for env in eval_envs} if eval_envs else {}
@@ -393,6 +432,7 @@ async def orchestrate(config: OrchestratorConfig):
                         ckpt_step=ckpt_step,
                         step=progress.step,
                         cache_salt=str(ckpt_step),
+                        actor_models=scheduler.actor_model_names or None,
                     )
                     for eval_env in envs_to_eval
                 ]
@@ -427,6 +467,7 @@ async def orchestrate(config: OrchestratorConfig):
             num_rollouts = len(train_rollouts)
             num_unique_examples = len({(r["env_name"], r["example_id"]) for r in train_rollouts})
             compute_advantages(train_rollouts, config.rollouts_per_example, config.advantage)
+            compute_per_agent_advantages(train_rollouts)
 
             # Apply rollout filters — sets rollout["filters"] and rollout["is_filtered"]
             apply_filters(rollout_filters, train_rollouts)
@@ -521,12 +562,15 @@ async def orchestrate(config: OrchestratorConfig):
             mm_token_type_ids_mapping = None
 
         # Process rollouts in parallel
+        split_by_agent = actor_lora_mapping is not None
+
         def process_rollout(rollout: vf.RolloutOutput, rollout_idx: int) -> list[TrainingSample] | None:
             return interleave_rollout(
                 rollout,
                 vlm_cache=vlm_cache,
                 cache_key=rollout_idx,
                 mm_token_type_ids_mapping=mm_token_type_ids_mapping,
+                split_by_agent=split_by_agent,
             )
 
         results = await asyncio.gather(
@@ -548,8 +592,10 @@ async def orchestrate(config: OrchestratorConfig):
                 samples = []
             rollout_samples_per_rollout.append(len(samples))
             for sample in samples:
-                sample.advantage = rollout["advantage"]
-                sample.reward = rollout["reward"]
+                if sample.advantage is None:
+                    sample.advantage = rollout["advantage"]
+                if sample.reward is None:
+                    sample.reward = rollout["reward"]
                 sample.env_name = rollout["env_name"]
                 sample.training_mode = config.training_mode
                 sample_decode_tokens = sum(sample.completion_mask)
@@ -590,7 +636,18 @@ async def orchestrate(config: OrchestratorConfig):
             step=progress.step,
         )
 
-        training_batch_sender.send(training_batch)
+        if multi_run_sender is not None and actor_lora_mapping is not None:
+            per_actor_examples: dict[str, list[TrainingSample]] = {
+                run_name: [] for run_name in actor_lora_mapping.values()
+            }
+            for sample in train_examples:
+                if sample.actor_id is not None and sample.actor_id in actor_lora_mapping:
+                    per_actor_examples[actor_lora_mapping[sample.actor_id]].append(sample)
+            for run_name, examples in per_actor_examples.items():
+                if examples:
+                    multi_run_sender.send_to_run(run_name, TrainingBatch(examples=examples, step=progress.step))
+        else:
+            training_batch_sender.send(training_batch)
 
         step_time = time.perf_counter() - step_start_time
 
@@ -820,6 +877,7 @@ async def orchestrate(config: OrchestratorConfig):
                     ckpt_step=ckpt_step,
                     step=progress.step,
                     cache_salt=str(ckpt_step),
+                    actor_models=scheduler.actor_model_names or None,
                 )
                 for eval_env in eval_envs
             ]

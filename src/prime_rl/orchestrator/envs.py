@@ -116,6 +116,7 @@ class Env:
         example: dict,
         model_name: str,
         cache_salt: str,
+        actor_models: dict[str, str] | None = None,
     ) -> vf.RolloutOutput:
         """Run a single rollout for an example."""
         return await self.env.run_rollout(
@@ -126,6 +127,7 @@ class Env:
             max_retries=self.config.max_retries,
             state_columns=REQUIRED_STATE_COLUMNS,
             env_client=self.env_client,
+            actor_models=actor_models,
         )
 
     async def run_group(
@@ -135,6 +137,7 @@ class Env:
         model_name: str,
         rollouts_per_example: int,
         cache_salt: str,
+        actor_models: dict[str, str] | None = None,
     ) -> list[vf.RolloutOutput]:
         """Run a group of rollouts for an example. Required for group-scoring envs."""
         return await self.env.run_group(
@@ -145,6 +148,7 @@ class Env:
             max_retries=self.config.max_retries,
             state_columns=REQUIRED_STATE_COLUMNS,
             env_client=self.env_client,
+            actor_models=actor_models,
         )
 
     def shutdown(self) -> None:
@@ -180,6 +184,7 @@ class EvalEnv(Env):
         ckpt_step: int,
         step: int,
         cache_salt: str,
+        actor_models: dict[str, str] | None = None,
     ) -> list[vf.RolloutOutput]:
         num_examples = len(self.examples)
         rollouts_per_example = self.config.rollouts_per_example
@@ -200,6 +205,7 @@ class EvalEnv(Env):
                         model_name=model_name,
                         rollouts_per_example=rollouts_per_example,
                         cache_salt=cache_salt,
+                        actor_models=actor_models,
                     )
                     pbar.update(rollouts_per_example)
                     return outputs
@@ -217,7 +223,11 @@ class EvalEnv(Env):
                 try:
                     client = await get_client()
                     output = await self.run_rollout(
-                        client=client, example=example, model_name=model_name, cache_salt=cache_salt
+                        client=client,
+                        example=example,
+                        model_name=model_name,
+                        cache_salt=cache_salt,
+                        actor_models=actor_models,
                     )
                     pbar.update(1)
                     return [output]

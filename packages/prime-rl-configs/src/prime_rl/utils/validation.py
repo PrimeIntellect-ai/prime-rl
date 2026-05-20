@@ -139,7 +139,8 @@ def propagate_shared_fields(data: Any) -> Any:
             if get(sub) is not None:
                 conflicts.append(("output_dir", sub))
         fill("trainer.output_dir", output_dir)
-        fill("orchestrator.output_dir", f"{output_dir}/run_default")
+        orchestrator_leaf = "orchestrator" if get("orchestrator.multi_agent_lora") is True else "run_default"
+        fill("orchestrator.output_dir", f"{output_dir}/{orchestrator_leaf}")
 
     # Cascade trainer.tokenizer.chat_template → inference.model.chat_template
     # (vLLM ``--chat-template``). Read trainer's value *after* the shared
