@@ -1,6 +1,8 @@
 import logging
 import os
+import shutil
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -13,6 +15,7 @@ import torch
 import torch._dynamo
 import torch.nn as nn
 from beartype import beartype as typechecker
+from filelock import FileLock
 from huggingface_hub import snapshot_download
 from jaxtyping import Float, Int, jaxtyped
 from torch import Tensor
@@ -53,10 +56,13 @@ from prime_rl.trainer.weights import (
     save_state_dict,
 )
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.hf_config import patch_transformers_config_rope_numeric_types
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 from prime_rl.utils.utils import format_time
 from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
+
+CONVERTED_SNAPSHOT_COMPLETE = ".prime_rl_conversion_complete"
 
 
 def pre_download_model(model_name: str) -> None:
@@ -70,6 +76,81 @@ def pre_download_model(model_name: str) -> None:
     get_logger().debug(
         f"Finished pre-downloading model {model_name} to {path} in {format_time(time.perf_counter() - t0)}"
     )
+
+
+def _expected_load_keys(model: nn.Module) -> set[str]:
+    state_dict = strip_lora_from_state_dict(model.state_dict())
+    if model.config.tie_word_embeddings:
+        state_dict.pop("lm_head.weight", None)
+    return set(state_dict)
+
+
+def _ensure_converted_snapshot(
+    source_path: Path,
+    converted_dir_name: str,
+    convert_state_dict: Callable[[dict[str, Tensor]], dict[str, Tensor] | None],
+    expected_keys: set[str],
+    *,
+    is_master: bool,
+) -> Path:
+    """Create a converted checkpoint cache without exposing partial writes.
+
+    Multiple training jobs can start from the same HF snapshot concurrently.
+    The converted ``prime``/``hf`` directory is a shared cache, so publishing it
+    before all shards and the index are present lets another job load a partial
+    checkpoint. Serialize writers with a lock and publish via same-directory
+    rename after key validation.
+    """
+    logger = get_logger()
+    target_path = source_path / converted_dir_name
+    marker_path = target_path / CONVERTED_SNAPSHOT_COMPLETE
+
+    if is_master:
+        lock_path = source_path / f".{converted_dir_name}.conversion.lock"
+        with FileLock(lock_path.as_posix()):
+            if not marker_path.exists():
+                for stale_tmp in source_path.glob(f".{converted_dir_name}.tmp.*"):
+                    if stale_tmp.is_dir():
+                        shutil.rmtree(stale_tmp)
+                    else:
+                        stale_tmp.unlink()
+
+                if target_path.exists():
+                    logger.warning(
+                        f"Removing incomplete converted checkpoint cache at {target_path}; "
+                        f"missing {CONVERTED_SNAPSHOT_COMPLETE} marker"
+                    )
+                    if target_path.is_dir():
+                        shutil.rmtree(target_path)
+                    else:
+                        target_path.unlink()
+
+                tmp_path = source_path / f".{converted_dir_name}.tmp.{os.getpid()}.{time.monotonic_ns()}"
+                snapshot_state_dict = load_state_dict(source_path)
+                converted_state_dict = convert_state_dict(snapshot_state_dict)
+                if converted_state_dict is None:
+                    converted_state_dict = snapshot_state_dict
+                save_state_dict(converted_state_dict, tmp_path)
+                del snapshot_state_dict, converted_state_dict
+
+                converted_keys = set(load_state_dict_keys(tmp_path))
+                missing_keys = sorted(expected_keys - converted_keys)
+                if missing_keys:
+                    shutil.rmtree(tmp_path)
+                    preview = ", ".join(missing_keys[:10])
+                    if len(missing_keys) > 10:
+                        preview += f", ... ({len(missing_keys)} total)"
+                    raise RuntimeError(
+                        f"Converted checkpoint cache at {tmp_path} is missing expected key(s): {preview}"
+                    )
+
+                (tmp_path / CONVERTED_SNAPSHOT_COMPLETE).write_text(
+                    f"source={source_path}\ncreated_at={time.time()}\n",
+                    encoding="utf-8",
+                )
+                tmp_path.rename(target_path)
+
+    return target_path
 
 
 def _patch_qwen3_5_moe_conversion_mapping():
@@ -428,6 +509,7 @@ def get_model(
         _patch_qwen3_5_moe_conversion_mapping()
         _patch_qwen3_5_linear_attn_varlen()
 
+    patch_transformers_config_rope_numeric_types()
     model_config = cast(
         PretrainedConfig,
         AutoConfig.from_pretrained(
@@ -567,6 +649,7 @@ def get_model(
 
 def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
     logger = get_logger()
+    patch_transformers_config_rope_numeric_types()
     tokenizer = AutoTokenizer.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
     if config.chat_template is not None:
         path = Path(config.chat_template)
@@ -736,34 +819,33 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     if isinstance(model, PreTrainedModelPrimeRL):
         snapshot_keys = dict.fromkeys(load_state_dict_keys(snapshot_path))
         model_keys = dict.fromkeys(model.state_dict().keys())
+        expected_keys = _expected_load_keys(model)
 
-        if model.is_hf_state_dict(snapshot_keys) and model.is_prime_state_dict(model_keys):
+        if expected_keys <= set(snapshot_keys):
+            logger.debug("Snapshot state dict already contains all expected model keys; loading without conversion")
+        elif model.is_hf_state_dict(snapshot_keys) and model.is_prime_state_dict(model_keys):
             logger.warning(
                 "Found HF weight format in snapshot state dict and PrimeRL weight format in model state dict. Trying to auto-convert..."
             )
-            snapshot_path = snapshot_path / "prime"
-            if not snapshot_path.exists() and get_world().is_master:
-                logger.debug(
-                    f"Converting snapshot state dict to PrimeRL format and saving to {snapshot_path} on master rank. This is a one-time operation."
-                )
-                snapshot_state_dict = load_state_dict(snapshot_path.parent)
-                model.convert_to_prime(snapshot_state_dict)
-                save_state_dict(snapshot_state_dict, snapshot_path)
-                del snapshot_state_dict
+            snapshot_path = _ensure_converted_snapshot(
+                snapshot_path,
+                "prime",
+                model.convert_to_prime,
+                expected_keys,
+                is_master=get_world().is_master,
+            )
 
         elif model.is_prime_state_dict(snapshot_keys) and model.is_hf_state_dict(model_keys):
             logger.warning(
                 "Found PrimeRL weight format in snapshot state dict and HF weight format in model state dict. Trying to auto-convert..."
             )
-            snapshot_path = snapshot_path / "hf"
-            if not snapshot_path.exists() and get_world().is_master:
-                logger.debug(
-                    f"Converting snapshot state dict to HF format and saving to {snapshot_path} on master rank. This is a one-time operation."
-                )
-                snapshot_state_dict = load_state_dict(snapshot_path.parent)
-                model.convert_to_hf(snapshot_state_dict)
-                save_state_dict(snapshot_state_dict, snapshot_path)
-                del snapshot_state_dict
+            snapshot_path = _ensure_converted_snapshot(
+                snapshot_path,
+                "hf",
+                model.convert_to_hf,
+                expected_keys,
+                is_master=get_world().is_master,
+            )
 
     # All ranks wait for master rank to finish conversion
     torch.distributed.barrier()

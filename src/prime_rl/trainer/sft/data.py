@@ -210,10 +210,11 @@ class FakeDataset(StatefulIterableDataset):
                 continue
 
             seq_len = int(torch.randint(1, self.seq_len, (1,)).item()) if self.length == "variable" else self.seq_len
+            token_count = seq_len + 1
             input_ids = (
-                [self.step - 1] * (seq_len + 1)
+                [self.step - 1] * token_count
                 if self.input_ids == "increasing"
-                else torch.randint(0, self.vocab_size, (self.seq_len + 1,)).long().tolist()
+                else torch.randint(0, self.vocab_size, (token_count,)).long().tolist()
             )
             position_ids = list(range(seq_len))
             loss_mask = [True] * seq_len
