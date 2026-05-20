@@ -157,6 +157,8 @@ class DataLoader:
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfig,
+        *,
+        pack_samples: bool = True,
     ):
         self.world = get_world()
 
@@ -168,6 +170,7 @@ class DataLoader:
                 transport_config=config,
                 pad_to_multiple_of=pad_to_multiple_of,
                 start_step=start_step,
+                pack_samples=pack_samples,
             )
 
         non_dp_world_size = self.world.world_size // dp_world_size

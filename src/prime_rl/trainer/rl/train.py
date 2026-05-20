@@ -236,6 +236,7 @@ def train(config: TrainerConfig):
             config.model.cp,
             tokenizer,
             config.rollout_transport,
+            pack_samples=config.pack_samples,
         )
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None

@@ -1,4 +1,5 @@
 import asyncio
+from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -6,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import verifiers as vf
 
 from prime_rl.configs.multi_agent import FixedMemberTargetConfig, MultiAgentConfig
-from prime_rl.orchestrator.scheduler import InflightRequest, Scheduler
+from prime_rl.orchestrator.scheduler import GroupState, InflightRequest, Scheduler
 from prime_rl.utils.async_utils import safe_cancel
 
 
@@ -237,3 +238,125 @@ def test_compile_generation_routes_multi_agent_env_with_global_config():
         cache_salt="1",
         dispatch_id="dispatch-1",
     )
+
+
+def test_pause_policy_updates_cancels_poller_and_waits_for_inflight_update():
+    async def run() -> None:
+        scheduler = make_scheduler()
+        poller_cancelled = asyncio.Event()
+        update_finished = asyncio.Event()
+
+        async def policy_poller() -> None:
+            try:
+                await asyncio.Future()
+            finally:
+                poller_cancelled.set()
+
+        async def inflight_update() -> None:
+            await asyncio.sleep(0)
+            update_finished.set()
+
+        scheduler.update_policy_task = asyncio.create_task(policy_poller())
+        scheduler.inflight_policy_update_task = asyncio.create_task(inflight_update())
+
+        await asyncio.sleep(0)
+        await scheduler.pause_policy_updates()
+
+        assert poller_cancelled.is_set()
+        assert update_finished.is_set()
+        assert scheduler.update_policy_task is None
+        assert scheduler.inflight_policy_update_task is None
+
+    asyncio.run(run())
+
+
+def test_sync_policy_for_step_waits_for_checkpoint_before_batch_generation():
+    async def run() -> None:
+        scheduler = make_scheduler()
+        applied_steps: list[int] = []
+
+        async def update_weights(weight_dir, lora_name=None, step=0) -> None:
+            applied_steps.append(step)
+
+        scheduler.inference_pool = SimpleNamespace(
+            update_weights=update_weights,
+            update_model_name=MagicMock(),
+        )
+        scheduler._update_off_policy = AsyncMock()
+
+        with (
+            patch("prime_rl.orchestrator.scheduler.get_latest_ckpt_step", return_value=0),
+            patch("prime_rl.orchestrator.scheduler.wait_for_path", new=AsyncMock()),
+        ):
+            await scheduler.sync_policy_for_step(11)
+
+        assert applied_steps == [10]
+        assert scheduler.step == 11
+        assert scheduler.ckpt_step == 10
+        assert scheduler.update_policy_task is not None
+
+        await scheduler.stop()
+
+    asyncio.run(run())
+
+
+def test_generate_batch_drops_timeout_error_and_continues():
+    async def run() -> None:
+        scheduler = make_scheduler()
+        scheduler.enable_policy_updates = False
+        scheduler.batch_size = 1
+        scheduler.token_batch_size = None
+        scheduler.rollouts_per_example = 1
+        scheduler.json_logging = True
+        scheduler.empty_rollouts_by_env = defaultdict(int)
+        scheduler.errored_rollouts_by_env = defaultdict(int)
+        scheduler.total_rollouts_by_env = defaultdict(int)
+        scheduler.deferred_group_scoring_tasks = set()
+        scheduler._fill_inflight_requests = AsyncMock()
+        scheduler.buffer = MagicMock()
+        scheduler.inference_pool = SimpleNamespace(get_metrics=lambda: {})
+        scheduler.train_envs = SimpleNamespace(get=lambda _name: SimpleNamespace(requires_group_scoring=False))
+
+        client = SimpleNamespace(api_base_url="http://test", extra_headers={})
+        success_rollout = {
+            "task": "debate",
+            "trajectory": [{"tokens": None}],
+            "error": None,
+        }
+
+        async def raise_timeout():
+            raise TimeoutError("Environment timeout for run_group request after 30s")
+
+        async def return_rollout():
+            await asyncio.sleep(0.01)
+            return success_rollout
+
+        timeout_task = asyncio.create_task(raise_timeout())
+        success_task = asyncio.create_task(return_rollout())
+
+        scheduler.groups = {
+            1: GroupState(example={"env_name": "debate"}, rollouts_to_schedule=0),
+            2: GroupState(example={"env_name": "debate"}, rollouts_to_schedule=0),
+        }
+        scheduler.inflight_requests = {
+            timeout_task: InflightRequest(off_policy_steps=0, client_config=client, env_name="debate", group_id=1),
+            success_task: InflightRequest(off_policy_steps=0, client_config=client, env_name="debate", group_id=2),
+        }
+        scheduler.buffer.sample_rollouts.return_value = [success_rollout]
+        scheduler.sync_policy_for_step = AsyncMock(side_effect=AssertionError("generate_batch must not resync policy"))
+
+        with patch("prime_rl.orchestrator.scheduler.ProgressTracker") as progress_tracker:
+            progress_tracker.return_value = SimpleNamespace(update=MagicMock(), close=MagicMock())
+            batch = await scheduler.generate_batch(step=3)
+
+        scheduler.sync_policy_for_step.assert_not_called()
+        assert batch == [success_rollout]
+        assert 1 not in scheduler.groups
+        assert 2 not in scheduler.groups
+        scheduler.buffer.update.assert_called_once_with([success_rollout])
+        assert any(
+            "Retryable rollout error in group 1" in str(call) and "TimeoutError" in str(call)
+            for call in scheduler.logger.warning.call_args_list
+        )
+
+    asyncio.run(run())

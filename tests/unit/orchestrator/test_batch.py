@@ -105,6 +105,26 @@ def test_prepare_batch_does_not_pack_mixed_sft_loss(make_training_example):
     assert {batch.sft_loss for batch in flat_batches} == {False, True}
 
 
+def test_prepare_batch_can_disable_sample_packing(make_training_example):
+    example1 = make_training_example(temperature=0.7)
+    example2 = make_training_example(temperature=1.1)
+
+    batches_per_gpu = prepare_batch(
+        rollouts=[example1, example2],
+        seq_len=16,
+        num_train_workers=1,
+        idxs=[0, 0],
+        num_loras=1,
+        pack_samples=False,
+    )
+
+    flat_batches = [batch for worker_batches in batches_per_gpu for batch in worker_batches]
+    assert len(flat_batches) == 2
+    assert [len(batch.input_ids) for batch in flat_batches] == [4, 4]
+    assert flat_batches[0].temperatures == [0.7, 0.7, 0.7, 0.7]
+    assert flat_batches[1].temperatures == [1.1, 1.1, 1.1, 1.1]
+
+
 def test_prepare_sample_with_routed_experts():
     """Routed experts are passed through prepare_sample and match input_ids length."""
     # 2 prompt + 2 completion = 4 tokens, 2 layers, topk=2

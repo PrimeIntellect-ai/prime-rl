@@ -1,5 +1,6 @@
 import asyncio
 import gc
+import json
 import os
 import time
 from pathlib import Path
@@ -90,6 +91,18 @@ SHUTDOWN_TIMEOUT_S = 300
 # rollouts are filtered out. After this many attempts, the orchestrator crashes
 # rather than silently skipping training steps.
 MAX_EMPTY_BATCH_ATTEMPTS = 3
+
+
+def _write_scalar_metrics(path: Path, metrics: dict[str, object]) -> None:
+    normalized = {}
+    for key, value in metrics.items():
+        try:
+            normalized[key] = float(value)
+        except (TypeError, ValueError):
+            continue
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(normalized, f, indent=2, sort_keys=True)
 
 
 async def _persist_rollouts_and_metrics(
@@ -439,6 +452,13 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Starting orchestrator step {progress.step}")
         step_start_time = time.perf_counter()
 
+        # Bring scheduler.ckpt_step up to the checkpoint required for this
+        # step before deciding whether eval is due. Otherwise checkpoint-bound
+        # evals can be noticed one loop late, after the next train batch has
+        # already filled the inference queue.
+        await scheduler.sync_policy_for_step(progress.step)
+        ckpt_step = scheduler.ckpt_step if enable_policy_updates else progress.step
+
         # Run evals BEFORE training (blocking). Weight updates are paused via
         # scheduler.checkpoint_ready during eval to ensure consistent weights.
         # Each eval env has its own interval, so we check each independently.
@@ -461,8 +481,12 @@ async def orchestrate(config: OrchestratorConfig):
             env_names = ", ".join(e.name for e in envs_to_eval)
             logger.info(f"Running evals at {ckpt_step=} for {env_names}")
 
-            # Pause weight updates and re-scheduling of training rollouts during eval
-            # to avoid evaluating across different checkpoints and avoid congestion
+            # Pause policy-update polling during eval so a newly saved trainer
+            # checkpoint cannot swap weights mid-evaluation.
+            await scheduler.pause_policy_updates()
+
+            # Pause re-scheduling of training rollouts during eval to avoid
+            # congestion.
             scheduler.checkpoint_ready.clear()
 
             # For heavy eval workloads, it might be necessary additionally cancel in-flight training rollouts
@@ -479,6 +503,7 @@ async def orchestrate(config: OrchestratorConfig):
                         step=progress.step,
                         cache_salt=str(ckpt_step),
                         multi_agent=config.multi_agent if eval_env.is_multi_agent else None,
+                        eval_clients=inference_pool.eval_clients,
                     )
                     for eval_env in envs_to_eval
                 ]
@@ -503,52 +528,53 @@ async def orchestrate(config: OrchestratorConfig):
         # Update prev_ckpt_step for next iteration
         prev_ckpt_step = ckpt_step
 
-        # Schedule generating the training batch. Retry on empty-after-filter
-        # batches so the trainer never receives an empty batch.
+        # Schedule generating the training batch. With online difficulty
+        # filtering enabled, zero-std groups are removed before buffer
+        # admission; retry here only if later rollout-level filters remove
+        # every training unit in a generated batch.
         generate_completions_time = 0.0
-        train_rollouts: list[vf.RolloutOutput] = []
-        num_rollouts = 0
-        num_unique_examples = 0
-        n_trainable = 0
-        training_units = []
-        rollout_to_unit_idxs: list[list[int]] = []
-        for attempt in range(MAX_EMPTY_BATCH_ATTEMPTS):
-            train_rollouts = await scheduler.generate_batch(step=progress.step)
-            generate_completions_time += scheduler.last_batch_generation_time
 
-            num_rollouts = len(train_rollouts)
-            num_unique_examples = len({(r["env_name"], r["example_id"]) for r in train_rollouts})
-
+        def prepare_candidate_batch(
+            candidate_rollouts: list[vf.RolloutOutput],
+        ) -> tuple[list[vf.RolloutOutput], list[list[int]]]:
+            num_candidate_rollouts = len(candidate_rollouts)
             if is_ma:
-                training_units, rollout_to_unit_idxs = fan_out_for_multi_agent(
-                    train_rollouts,
+                candidate_training_units, candidate_rollout_to_unit_idxs = fan_out_for_multi_agent(
+                    candidate_rollouts,
                     is_trainable_member=lambda rollout, member_id: is_bound_trainable_member(
                         config.multi_agent, rollout, member_id
                     ),
                 )
                 assert advantage_state is not None  # gated by MA validation above
-                advantages = compute_rae_advantages(training_units, advantage_state)
-                for unit, advantage in zip(training_units, advantages):
+                advantages = compute_rae_advantages(candidate_training_units, advantage_state)
+                for unit, advantage in zip(candidate_training_units, advantages):
                     unit["advantage"] = advantage
 
-                apply_filters(rollout_filters, training_units)
-                for rollout, unit_idxs in zip(train_rollouts, rollout_to_unit_idxs):
-                    unit_filters = [training_units[i]["filters"] for i in unit_idxs]
+                apply_filters(rollout_filters, candidate_training_units)
+                for rollout, unit_idxs in zip(candidate_rollouts, candidate_rollout_to_unit_idxs):
+                    unit_filters = [candidate_training_units[i]["filters"] for i in unit_idxs]
                     rollout["filters"] = {
                         name: any(flags.get(name, False) for flags in unit_filters)
                         for name in (unit_filters[0].keys() if unit_filters else [f.name for f in rollout_filters])
                     }
                     rollout["is_filtered"] = bool(unit_idxs) and all(
-                        training_units[i]["is_filtered"] for i in unit_idxs
+                        candidate_training_units[i]["is_filtered"] for i in unit_idxs
                     )
-                    unit_advantages = [training_units[i]["advantage"] for i in unit_idxs]
+                    unit_advantages = [candidate_training_units[i]["advantage"] for i in unit_idxs]
                     rollout["advantage"] = sum(unit_advantages) / len(unit_advantages) if unit_advantages else 0.0
             else:
-                training_units = list(train_rollouts)
-                rollout_to_unit_idxs = [[i] for i in range(num_rollouts)]
-                compute_advantages(train_rollouts, config.rollouts_per_example, config.advantage)
-                apply_filters(rollout_filters, train_rollouts)
+                candidate_training_units = list(candidate_rollouts)
+                candidate_rollout_to_unit_idxs = [[i] for i in range(num_candidate_rollouts)]
+                compute_advantages(candidate_rollouts, config.rollouts_per_example, config.advantage)
+                apply_filters(rollout_filters, candidate_rollouts)
+            return candidate_training_units, candidate_rollout_to_unit_idxs
 
+        for attempt in range(MAX_EMPTY_BATCH_ATTEMPTS):
+            train_rollouts = await scheduler.generate_batch(step=progress.step)
+            generate_completions_time += scheduler.last_batch_generation_time
+            training_units, rollout_to_unit_idxs = prepare_candidate_batch(train_rollouts)
+
+            num_rollouts = len(train_rollouts)
             n_trainable = sum(1 for u in training_units if not u["is_filtered"])
             if n_trainable > 0:
                 break
@@ -556,10 +582,10 @@ async def orchestrate(config: OrchestratorConfig):
             if attempt == MAX_EMPTY_BATCH_ATTEMPTS - 1:
                 logger.error(
                     f"Attempt {attempt + 1}/{MAX_EMPTY_BATCH_ATTEMPTS} at step {progress.step} "
-                    f"filtered out all {num_rollouts} rollouts - crashing orchestrator"
+                    f"filtered out all {len(train_rollouts)} rollouts - crashing orchestrator"
                 )
                 reason = (
-                    f"All {num_rollouts} rollouts were filtered out on "
+                    f"All rollouts were filtered out on "
                     f"{MAX_EMPTY_BATCH_ATTEMPTS} consecutive attempts at step {progress.step}"
                 )
                 evicted_path = config.output_dir / "control" / "evicted.txt"
@@ -569,9 +595,10 @@ async def orchestrate(config: OrchestratorConfig):
 
             logger.warning(
                 f"Attempt {attempt + 1}/{MAX_EMPTY_BATCH_ATTEMPTS} at step {progress.step} "
-                f"filtered out all {num_rollouts} rollouts - retrying batch generation"
+                f"filtered out all {len(train_rollouts)} rollouts - retrying batch generation"
             )
 
+        num_unique_examples = len({(r["env_name"], r["example_id"]) for r in train_rollouts})
         trainable_denominator = len(training_units) if is_ma else num_rollouts
         trainable_ratio = n_trainable / max(trainable_denominator, 1)
         if trainable_ratio <= 0.1:
@@ -778,6 +805,19 @@ async def orchestrate(config: OrchestratorConfig):
         by_example = results_df.groupby(["env_name", "example_id"])
 
         solve_none, solve_all, effective_batch_size = compute_solve_rates(results_df)
+        filtered_mask = results_df.is_filtered.astype(bool)
+        unfiltered_df = results_df.loc[~filtered_mask]
+        filtered_df = results_df.loc[filtered_mask]
+        train_batch_filter_metrics = {
+            "train_batch/rollouts_unconditioned_on_filtering": float(len(results_df)),
+            "train_batch/rollouts_conditioned_on_filtering": float(len(unfiltered_df)),
+            "train_batch/rollouts_filtered_out": float(len(filtered_df)),
+            "train_batch/reward_unconditioned_on_filtering/mean": results_df.reward.mean(),
+        }
+        if not unfiltered_df.empty:
+            train_batch_filter_metrics["train_batch/reward_conditioned_on_filtering/mean"] = unfiltered_df.reward.mean()
+        if not filtered_df.empty:
+            train_batch_filter_metrics["train_batch/reward_filtered_out/mean"] = filtered_df.reward.mean()
         to_log = {
             # Progress metrics
             "progress/tokens": num_tokens,
@@ -826,6 +866,7 @@ async def orchestrate(config: OrchestratorConfig):
             "reward/all/mean": by_example.reward.mean().mean(),
             "reward/all/max": by_example.reward.mean().max(),
             "reward/all/min": by_example.reward.mean().min(),
+            **train_batch_filter_metrics,
             # Solve / batch metrics
             "solve_none/all": solve_none,
             "solve_all/all": solve_all,
@@ -893,6 +934,14 @@ async def orchestrate(config: OrchestratorConfig):
             for name in filter_df.columns:
                 to_log[f"filters/{env}/{name}"] = env_filter_df[name].astype(float).mean()
 
+        train_comparison_metrics = {key: value for key, value in to_log.items() if key.startswith("train_batch/")}
+        train_comparison_metrics["step"] = progress.step
+        await asyncio.to_thread(
+            _write_scalar_metrics,
+            step_path / "train_filter_metrics.json",
+            train_comparison_metrics,
+        )
+
         # Log metrics to monitor(s)
         monitor.log(to_log, step=progress.step)
 
@@ -945,6 +994,7 @@ async def orchestrate(config: OrchestratorConfig):
                     step=progress.step,
                     cache_salt=str(ckpt_step),
                     multi_agent=config.multi_agent if eval_env.is_multi_agent else None,
+                    eval_clients=inference_pool.eval_clients,
                 )
                 for eval_env in eval_envs
             ]

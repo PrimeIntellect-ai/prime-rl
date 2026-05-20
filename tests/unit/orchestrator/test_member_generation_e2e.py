@@ -73,7 +73,11 @@ class _FakeSingleAgentEval(EvalEnv):
         self.config = type(
             "Config",
             (),
-            {"resolved_name": "single-eval", "rollouts_per_example": 1},
+            {
+                "resolved_name": "single-eval",
+                "rollouts_per_example": 1,
+                "max_concurrent_rollouts_per_client": None,
+            },
         )()
         self.examples = [
             {

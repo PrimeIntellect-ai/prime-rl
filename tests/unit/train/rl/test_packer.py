@@ -107,3 +107,56 @@ def test_packer_progress_updates_once_per_run(tmp_path: Path, monkeypatch: pytes
     sender = sender_holder["sender"]
     assert len(sender.sent) == 1
     assert len(sender.sent[0][0]) == 1
+
+
+def test_multi_packer_passes_pack_samples_to_prepare_batch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    reset_world()
+    runs._MULTI_RUN_MANAGER = None
+    manager = setup_multi_run_manager(output_dir=tmp_path, max_runs=1, device=torch.device("cpu"))
+
+    create_run_with_config(tmp_path, "run_test123")
+    manager.discover_runs()
+    run_idx = manager.id_2_idx["run_test123"]
+
+    class DummyReceiver:
+        def receive(self):
+            return []
+
+        def reset_run(self, idx: int) -> None:
+            pass
+
+    class DummySender:
+        def send(self, micro_batch_grid):
+            pass
+
+    captured: dict[str, bool] = {}
+
+    def fake_receiver(_config):
+        return DummyReceiver()
+
+    def fake_sender(_output_dir, _data_world_size, _current_step, _config):
+        return DummySender()
+
+    def fake_prepare_batch(*_args, pack_samples: bool, **_kwargs):
+        captured["pack_samples"] = pack_samples
+        return [[]]
+
+    monkeypatch.setattr("prime_rl.trainer.rl.packer.setup_training_batch_receiver", fake_receiver)
+    monkeypatch.setattr("prime_rl.trainer.rl.packer.setup_micro_batch_sender", fake_sender)
+    monkeypatch.setattr("prime_rl.trainer.rl.packer.prepare_batch", fake_prepare_batch)
+
+    packer = MultiPacker(
+        dp_world_size=1,
+        seq_len=4,
+        pad_to_multiple_of=1,
+        tokenizer=None,
+        config=FileSystemTransportConfig(),
+        start_step=0,
+        pack_samples=False,
+    )
+
+    packer.buffers[run_idx].append((make_training_sample(), 0))
+
+    packer.pack()
+
+    assert captured == {"pack_samples": False}

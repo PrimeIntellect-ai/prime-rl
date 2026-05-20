@@ -206,6 +206,7 @@ def prepare_batch(
     idxs: list[int],
     num_loras: int,
     pad_to_multiple_of: int = 1,
+    pack_samples: bool = True,
 ) -> list[list[MicroBatch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
@@ -218,7 +219,15 @@ def prepare_batch(
     """
     all_samples = [(idx, prepare_sample(rollout, seq_len)) for idx, rollout in zip(idxs, rollouts)]
 
-    micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras)
+    if pack_samples:
+        micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras)
+    else:
+        micro_batches = []
+        for idx, sample in all_samples:
+            sample.lora_num_tokens = [0] * num_loras
+            sample.lora_num_tokens[idx] = len(sample.input_ids)
+            micro_batches.append(sample)
+
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
 
     # Separate by modality so each step index has uniform modality across all ranks

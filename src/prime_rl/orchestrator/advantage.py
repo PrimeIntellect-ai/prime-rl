@@ -77,6 +77,27 @@ def default_advantage_fn(
     return AdvantageOutputs(advantages=rewards - baseline)
 
 
+def maxrl_advantage_fn(inputs: AdvantageInputs, eps: float = 1e-8) -> AdvantageOutputs:
+    """MaxRL advantage for binary verifier rewards.
+
+    Implements the on-policy MaxRL estimator from Tajwar et al. (2026): for each
+    prompt group, normalize rewards by the group mean reward and drop all-zero
+    groups. With fixed rollouts_per_example, the omitted 1/N factor is a global
+    learning-rate scale.
+    """
+    rewards = torch.tensor([[r["reward"] for r in group] for group in inputs.rollouts], dtype=torch.float32)
+    mean_reward = rewards.mean(dim=1, keepdim=True)
+    has_success = mean_reward > 0
+    advantages = rewards / mean_reward.clamp_min(eps) - 1
+    return AdvantageOutputs(advantages=torch.where(has_success, advantages, torch.zeros_like(rewards)))
+
+
+def reward_advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
+    """Raw reward advantage for reward-weighted REINFORCE objectives."""
+    rewards = torch.tensor([[r["reward"] for r in group] for group in inputs.rollouts], dtype=torch.float32)
+    return AdvantageOutputs(advantages=rewards)
+
+
 def _efficiency_shaping(
     rewards: Float[Tensor, "num_problems rollouts_per_example"],
     costs: Float[Tensor, "num_problems rollouts_per_example"],

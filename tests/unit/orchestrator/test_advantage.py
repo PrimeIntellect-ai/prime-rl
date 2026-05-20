@@ -11,6 +11,8 @@ from prime_rl.orchestrator.advantage import (
     AdvantageOutputs,
     compute_advantages,
     default_advantage_fn,
+    maxrl_advantage_fn,
+    reward_advantage_fn,
     setup_advantage_fn,
 )
 
@@ -58,6 +60,32 @@ def test_default_advantage_fn_simple_mean():
     assert result.advantages.shape == (2, 3)
     # Check that mean is subtracted per row
     assert torch.allclose(result.advantages.mean(dim=1), torch.zeros(2), atol=1e-6)
+
+
+def test_maxrl_advantage_normalizes_by_mean_reward():
+    inputs = _make_inputs(
+        rewards=[[1.0, 0.0, 0.0, 0.0], [1.0, 1.0, 0.0, 0.0]],
+        completion_lengths=[[10, 12, 8, 9], [15, 11, 9, 13]],
+    )
+    result = maxrl_advantage_fn(inputs)
+
+    expected = torch.tensor([[3.0, -1.0, -1.0, -1.0], [1.0, 1.0, -1.0, -1.0]])
+    assert torch.allclose(result.advantages, expected, atol=1e-6)
+    assert torch.allclose(result.advantages.mean(dim=1), torch.zeros(2), atol=1e-6)
+
+
+def test_maxrl_advantage_drops_all_zero_groups():
+    inputs = _make_inputs(rewards=[[0.0, 0.0, 0.0]], completion_lengths=[[10, 12, 8]])
+    result = maxrl_advantage_fn(inputs)
+
+    assert torch.equal(result.advantages, torch.zeros_like(result.advantages))
+
+
+def test_reward_advantage_returns_raw_rewards():
+    inputs = _make_inputs(rewards=[[1.0, 0.0, 0.5]], completion_lengths=[[10, 12, 8]])
+    result = reward_advantage_fn(inputs)
+
+    assert torch.equal(result.advantages, torch.tensor([[1.0, 0.0, 0.5]]))
 
 
 def test_efficiency_mixed_group():

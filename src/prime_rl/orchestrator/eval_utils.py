@@ -1,3 +1,5 @@
+from collections.abc import Iterable
+
 import numpy as np
 
 
@@ -27,18 +29,35 @@ def compute_eval_ckpt_step(
     return None
 
 
-def _pass_at_k(n: int, c: int, k: int) -> float:
+def estimate_pass_at_k(n: int, c: int, k: int) -> float | None:
     """Unbiased estimator of pass@k (Chen et al., 2021).
 
     Computes 1 - C(n-c, k) / C(n, k) in a numerically stable way.
     """
+    if not 0 <= c <= n:
+        raise ValueError(f"Expected 0 <= c <= n, got n={n}, c={c}")
+    if k > n:
+        return None
     if n - c < k:
         return 1.0
     return 1.0 - np.prod(1.0 - k / np.arange(n - c + 1, n + 1))
 
 
-def compute_pass_at_k(rewards: list[float]) -> dict[str, float]:
+def _pass_at_k(n: int, c: int, k: int) -> float:
+    value = estimate_pass_at_k(n, c, k)
+    if value is None:
+        raise ValueError(f"Cannot compute pass@{k} from only {n} samples")
+    return value
+
+
+def compute_pass_at_k(rewards: list[float], ks: Iterable[int] | None = None) -> dict[str, float]:
     n = len(rewards)
     c = sum(r == 1.0 for r in rewards)
-    ks = [2**i for i in range(n.bit_length())]
-    return {f"pass@{k}": _pass_at_k(n, c, k) for k in ks}
+    if ks is None:
+        ks = [2**i for i in range(n.bit_length())]
+    pass_at_k = {}
+    for k in ks:
+        value = estimate_pass_at_k(n, c, int(k))
+        if value is not None:
+            pass_at_k[f"pass@{int(k)}"] = value
+    return pass_at_k

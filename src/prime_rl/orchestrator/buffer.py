@@ -38,9 +38,11 @@ class _EnvBuffer:
         assert "prompt" in dataset.column_names, f"Dataset for {env.name} must contain a `prompt` column."
 
         self.examples: dict[int | str, dict] = {}
+        self._normal_example_ids: list[int | str] = []
+        self._normal_example_id_to_idx: dict[int | str, int] = {}
         for example in map(partial(cast, dict), dataset):
             example["env_name"] = env.name
-            self.examples[example["example_id"]] = example
+            self._add_normal_example(example)
 
         self.easy_examples: list[dict] = []
         self.hard_examples: list[dict] = []
@@ -56,8 +58,24 @@ class _EnvBuffer:
         return self.num_normal + len(self.easy_examples) + len(self.hard_examples)
 
     def sample_example(self) -> dict:
-        key = random.choice(tuple(self.examples))
+        key = random.choice(self._normal_example_ids)
         return self.examples[key]
+
+    def _add_normal_example(self, example: dict) -> None:
+        example_id = example["example_id"]
+        if example_id not in self.examples:
+            self._normal_example_id_to_idx[example_id] = len(self._normal_example_ids)
+            self._normal_example_ids.append(example_id)
+        self.examples[example_id] = example
+
+    def _pop_normal_example(self, example_id: int | str) -> dict:
+        example = self.examples.pop(example_id)
+        idx = self._normal_example_id_to_idx.pop(example_id)
+        last_example_id = self._normal_example_ids.pop()
+        if idx < len(self._normal_example_ids):
+            self._normal_example_ids[idx] = last_example_id
+            self._normal_example_id_to_idx[last_example_id] = idx
+        return example
 
     def get_example_hash(self, example: dict) -> str:
         hash_keys = [key for key in self.config.hash_keys if key in example]
@@ -74,7 +92,7 @@ class _EnvBuffer:
             pool = "normal"
 
         if pool != "normal" and example_id in self.examples:
-            example = self.examples.pop(example_id)
+            example = self._pop_normal_example(example_id)
             target = self.easy_examples if pool == "easy" else self.hard_examples
             target.append(example)
 
@@ -242,8 +260,8 @@ class Buffer:
                     if h in env_hashes:
                         example_id = env_hashes[h]
                         eb = self.env_buffers[env_name]
-                        matched = eb.examples.pop(example_id, None)
-                        if matched is not None:
+                        if example_id in eb.examples:
+                            matched = eb._pop_normal_example(example_id)
                             target = eb.easy_examples if pool_name == "easy" else eb.hard_examples
                             target.append(matched)
                             num_moved += 1
@@ -280,9 +298,9 @@ class Buffer:
             if num_to_move <= 0:
                 return 0
             for _ in range(num_to_move):
-                example = random.choice(pool)
-                pool.remove(example)
-                eb.examples[example["example_id"]] = example
+                idx = random.randrange(len(pool))
+                example = pool.pop(idx)
+                eb._add_normal_example(example)
             return num_to_move
 
         for eb in self.env_buffers.values():
