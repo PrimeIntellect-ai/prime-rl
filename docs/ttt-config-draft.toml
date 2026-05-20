@@ -1,0 +1,170 @@
+# Draft TTT-online-LoRA Forth config.
+#
+# This is a starting point for the configs/private branch. Mirrors
+# the production `qwen-rl.toml` Forth config (1 train node + 1 infer
+# node, batch=128, seq_len=32768) with only the TTT additions on top.
+#
+# When the configs/private branch picks this up, drop it as
+# `qwen-rl-ttt.toml` next to `qwen-rl.toml`.
+
+max_steps = 1000
+seq_len = 32768
+max_async_level = 1
+
+[log]
+level = "info"
+
+[wandb]
+project = "sft-process-thesis"
+name = "qwen-forth-lang-ttt-smoke"
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[weight_broadcast]
+type = "nccl"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+num_infer_replicas = 2
+gpus_per_node = 8
+
+[slurm]
+job_name = "qwen-forth-ttt"
+pre_run_command = "uv pip install -e /home/sebastian/research-prod/research-environments/environments/forth_lang -e /home/sebastian/prime-rl/deps/research-environments/environments/deepdive -e /home/sebastian/prime-rl/deps/research-environments/environments/general_agent -e /home/sebastian/prime-rl/deps/verifiers/environments/wordle"
+
+[trainer]
+dist_timeout_seconds = 7200
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_2"
+# Carry the production memory mitigation; TTT replay adds at most one
+# extra adapter-routed forward per microbatch, so peak should stay
+# under the 24 GiB headroom we currently have.
+optim_cpu_offload = true
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+
+[ckpt]
+interval = 25
+keep_last = 2
+keep_interval = 800
+resume_step = -1
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 8
+oversampling_factor = 4
+
+[[orchestrator.filters]]
+type = "gibberish"
+[[orchestrator.filters]]
+type = "repetition"
+[[orchestrator.filters]]
+type = "zero_advantage"
+
+[orchestrator.train.sampling]
+temperature = 1.0
+# IMPORTANT: with experimental.ttt enabled, the renderer enforces
+# `window_seq_len > max_completion_tokens + headroom`. Production
+# Forth runs at 8192/8192 — for TTT we need to leave prompt budget,
+# so this drops to 4096.
+max_completion_tokens = 4096
+
+[[orchestrator.train.env]]
+id = "forth-lang"
+name = "forth-lang-train"
+max_total_completion_tokens = 32768
+num_workers = 4
+
+# Per-env TTT opt-in (requires the global `experimental.ttt` block).
+ttt_enabled = true
+
+[orchestrator.train.env.args]
+max_turns = 200
+# inherit the same word list as production; mirror qwen-rl.toml here
+# when this is moved to configs/private
+
+[orchestrator.eval]
+interval = 25
+
+[orchestrator.eval.sampling]
+temperature = 0.6
+max_completion_tokens = 4096
+
+[[orchestrator.eval.env]]
+id = "forth-lang"
+name = "forth-lang-test"
+num_examples = -1
+rollouts_per_example = 1
+# Eval also runs TTT (otherwise eval measures a different inference
+# algorithm than train).
+ttt_enabled = true
+
+[[orchestrator.eval.env]]
+id = "deepdive"
+name = "deepdive-cheap"
+num_examples = 250
+rollouts_per_example = 1
+ttt_enabled = true
+
+[[orchestrator.eval.env]]
+id = "general-agent-solver-local"
+name = "ga-T03-cheap"
+num_examples = 250
+rollouts_per_example = 1
+ttt_enabled = true
+
+[[orchestrator.eval.env]]
+id = "wordle"
+name = "wordle-cheap"
+num_examples = 250
+rollouts_per_example = 1
+ttt_enabled = true
+
+# Global TTT settings. None of this is wired up yet — these are the
+# fields the implementation plan's config schema introduces.
+[orchestrator.experimental.ttt]
+mode = "online_lora"
+window_seq_len = 8192
+total_seq_len = 32768
+update_every_tokens = 1024
+require_exact_token_ids = true
+adapter_dir = "/beegfs/sebastian/ttt-adapters"
+
+[orchestrator.experimental.ttt.lora]
+rank = 8
+alpha = 16
+dropout = 0.0
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+[orchestrator.experimental.ttt.learner]
+endpoints = ["http://localhost:9000"]   # single-learner Phase A
+max_sessions_per_learner = 32           # small for smoke
+session_offload = "cpu_after_request"
+unload_vllm_adapters = true
+delete_consumed_adapters = true
+
+[inference]
+gpu_memory_utilization = 0.85
+
+[inference.model]
+max_model_len = 32768
+
+[inference.parallel]
+tp = 1
+dp = 8
+
+# Required for TTT: vLLM must serve LoRA adapters dynamically.
+[inference.lora]
+enable_lora = true
+max_lora_rank = 16          # >= experimental.ttt.lora.rank
+max_loras = 32              # sized for concurrent gen requests, not sessions

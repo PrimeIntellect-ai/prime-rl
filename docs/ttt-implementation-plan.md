@@ -25,7 +25,38 @@ gradients flow into base `Theta` correctly.
 
 Tool-output world-modeling (SFT-on-tool-body) is **independent** and
 already landed on `feat/sft-on-tool-outputs`. TTT does not depend on it
-and vice versa.
+and vice versa. As of 2026-05-20 the SFT-on-tool-outputs runs are live
+on the cluster and stepping cleanly — the `cmb-both-ct-a0.5` variant is
+leading the RL baseline on `forth-lang-test/pass@1`, validating the SFT
+path behaviorally.
+
+## Cluster context (2026-05-20)
+
+- H200 (140 GiB) × 8 per node, 2-4 nodes per run.
+- `/beegfs` shared storage (140T total, ~25T free).
+- Qwen3-4B-Instruct-2507 cached at `/beegfs/huggingface/hub/`.
+- vLLM `0.21.0` pinned; weight broadcast type is `nccl` in production.
+- Production Forth runs use `optim_cpu_offload=true` to stay under
+  140 GiB peak (was 126.6 GiB before); TTT adds learner-side
+  forward+backward, so memory accounting matters.
+- The trainer-side LoRA defaults are rank=16, alpha=32,
+  target_modules covering MLP + attention + MoE variants.
+- **Multi-LoRA infrastructure is production-hardened**: same code path
+  is used in hosted training where many users each have their own
+  adapter, and it's stable. The TTT-specific risk surface is the
+  chunked-snapshot churn pattern (32 snapshots/rollout × 512
+  rollouts/step), not the multi-LoRA machinery itself.
+- **The gate_up_proj layerwise fix landed upstream** (PR #2482,
+  `b2ba40b5e` on `main`), so it's in our branches via the ancestor
+  chain. The post-mortem's "vLLM crashes on mid-rollout weight update"
+  failure mode is no longer a known bug — only a defensive Phase A
+  precaution (one less moving part during smoke).
+- **Live risk**: per the `daniel/gptoss-lora-nan-repro` HANDOVER, vLLM
+  worker state can be poisoned when the same `lora_int_id` is reused
+  for a refreshed adapter. The TTT design avoids this by construction:
+  each chunk snapshot gets a fresh id and name, never reused. LRU
+  eviction handles cleanup. This needs to be a hard invariant, not a
+  convention.
 
 ## Existing prime-rl machinery we will reuse
 
@@ -383,6 +414,12 @@ These must be enforced at boot or in CI:
    into the adapter. Add a unit test for this.
 10. Snapshot deletion is reference-counted: vLLM "done" + trainer "done"
     + DP-step-committed. Never delete on session close alone.
+11. **Every chunk snapshot gets a fresh `lora_int_id` and a fresh
+    `lora_name`.** Never reuse. Per the
+    `daniel/gptoss-lora-nan-repro` HANDOVER, id reuse can poison
+    worker-side adapter state. LRU eviction in vLLM handles cleanup.
+    Enforce in `ttt_client.py`: id generator is a monotonic counter,
+    name encodes `(trajectory_id, chunk_idx)`.
 
 ## Performance considerations under high concurrency
 
@@ -426,31 +463,28 @@ and died on items from A. Don't skip A.
 
 ## Open questions for the cluster session
 
-These need actual GPUs / vLLM to answer:
+Concrete probe specs live in `docs/ttt-probes.md`. Summary of what
+each one resolves:
 
-1. **vLLM adapter swap latency** at the pinned vLLM version, with our
-   model size. Microbenchmark: load+unload N adapters back-to-back,
-   report p50/p99. If p50 > 100 ms or p99 > 500 ms, in-memory adapter
-   delivery is mandatory from Phase A.
-2. **MultiLoRA forward overhead vs adapter count**. The existing
-   `_grouped_mm` path is O(n_adapters * rank) for the stacking; how
-   does it scale at n_adapters = 8, 16, 64? This bounds how many
-   distinct chunk adapters can sit in one replay microbatch.
-3. **vLLM behavior under dynamic base weight update with active
-   adapters**. The prior runs saw failures near
-   `layers.0.mlp.gate_up_proj.weight`. We're deferring this entirely
-   in Phase A by queuing weight updates between rollouts, but we should
-   reproduce the failure mode on the current vLLM version so we know
-   what we're deferring.
-4. **uv.lock / submodule status** on the cluster checkout for
-   `feat/sft-on-tool-outputs`. The first cluster task should be a
-   smoke run of the SFT-on-tool-outputs branch *before* TTT is added,
-   to catch any environment issues independent of the new feature.
-5. **Single-learner forward+backward throughput** at our base model
-   size. For each chunk training event, how long does forward+backward
-   on `update_every_tokens` tokens take? If it's slower than the
-   between-chunk generation interval, the learner is the bottleneck
-   and we need Phase D earlier than later.
+1. **Snapshot churn** — per-adapter vLLM load latency at the pinned
+   0.21.0 with Qwen3-4B. Decides disk vs shm transport for Phase A.
+2. **Learner forward+backward latency** — 1024-token chunk on a single
+   H200. Decides whether single-tenant learner can keep up with
+   between-chunk generation gaps.
+3. **MultiLoRA forward overhead vs n_adapters** — `_grouped_mm` path at
+   `n_adapters ∈ {1, 8, 64, 256, 1024}`. Bounds how wide a replay
+   microbatch can be.
+4. **`/beegfs` write throughput** — producer-side snapshot write
+   latency. Decides whether shm is needed even on the producer.
+
+The SFT smoke task is **already done implicitly** — the live Forth
+runs (`forth-lang-qwen-{rl,cmb-code-ct,cmb-both-ct}-r1`) validate the
+SFT-on-tool-outputs path. No separate smoke needed.
+
+The dynamic-base-update-with-active-LoRAs failure is **resolved
+upstream** (PR #2482) and no longer needs reproduction. We still
+queue weight updates between rollouts in Phase A as a conservatism
+choice, not because of a known bug.
 
 ## Minimal safe run checklist
 

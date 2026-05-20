@@ -1,9 +1,31 @@
 # TTT Cheat-Sheet
 
 One-pager for the cluster session. Built from the post-mortem
-(`docs/test-time-training-lora.md`) and the implementation plan
-(`docs/ttt-implementation-plan.md`). When something looks broken or a
-config feels wrong, start here.
+(`docs/test-time-training-lora.md`), the implementation plan
+(`docs/ttt-implementation-plan.md`), and the probe specs
+(`docs/ttt-probes.md`). When something looks broken or a config feels
+wrong, start here.
+
+## Cluster facts (as of 2026-05-20)
+
+- **GPUs**: H200 (140 GiB), 8 per node, 2-4 nodes per run.
+- **Storage**: `/beegfs` (140T total, ~25T free — getting tight; reaper
+  cadence matters).
+- **HF cache**: `/beegfs/huggingface/hub/` — `Qwen3-4B-Instruct-2507`
+  already pinned there.
+- **vLLM**: `0.21.0` pinned (`vllm-0.21.0+cu129` wheel).
+- **Broadcast**: `nccl` in production.
+- **Production memory**: peak 126.6 GiB on the 140 GiB card before
+  `optim_cpu_offload=true` was added today. TTT adds learner-side
+  forward+backward; budget accordingly.
+- **Trainer LoRA defaults**: rank=16, alpha=32,
+  `target_modules = [q,k,v,o,gate,up,down]_proj + experts + fc1/2_latent_proj`.
+- **The gate_up_proj failure is fixed upstream** (`b2ba40b5e`, PR #2482,
+  on `main`). The remaining live risk is reusing the same
+  `lora_int_id` — see "Things that already burned us" below.
+- **Multi-LoRA infra is production-hardened** via hosted training; the
+  question for TTT is specifically the chunked-snapshot churn pattern,
+  not whether multi-LoRA works.
 
 ## Pre-flight (before any run)
 
@@ -34,20 +56,27 @@ If any of these are wrong, the run is invalid:
 - [ ] `experimental.ttt.adapter_dir` is on shared storage visible to
       learner, vLLM, and trainer. Probe writes from all three at boot.
 
-Recommended starting values (from the post-mortem, known to be safe):
+Recommended starting values (from the post-mortem, sized for Qwen3-4B
+on H200; pairs with production Forth config shape):
 
 ```toml
 [experimental.ttt]
 enabled = true
 window_seq_len = 8192
-max_completion_tokens = 2048   # or 4096
+max_completion_tokens = 2048   # or 4096; both leave real prompt budget
 max_total_completion_tokens = 32768
 update_every_tokens = 1024
+adapter_dir = "/beegfs/sebastian/ttt-adapters"
 
 [experimental.ttt.lora]
 rank = 8
 alpha = 16
 ```
+
+`update_every_tokens = 1024` with `total_seq_len = 32768` means up to
+32 chunk snapshots per rollout. With production oversampling=4 and
+batch=128, that's ~16k snapshots in flight at steady state — the
+reaper has to keep up.
 
 ## Things that already burned us
 
@@ -91,15 +120,33 @@ On rollout failure or reschedule, orchestrator MUST call
 learner's heartbeat reaper handles stragglers but should be a backstop,
 not the primary cleanup path.
 
+### vLLM adapter id reuse poisoning worker state
+
+Symptom (per `daniel/gptoss-lora-nan-repro` HANDOVER): "repeated LoRA
+reload/update may poison or fail to refresh vLLM worker-side adapter
+state, especially when the same adapter id is reused." Hosted issue
+was gpt-oss-20b MoE, but the underlying mechanism is the
+LoRA-id-reuse refresh path inside vLLM.
+
+Fix: **every chunk snapshot gets a fresh `lora_int_id` and a fresh
+`lora_name`.** Never reuse. Stale ids are evicted by vLLM's LRU
+cache. If you find a code path that reuses an id "to save a load,"
+that's the bug.
+
 ### vLLM dies on dynamic base weight update with active adapters
+(historical)
 
 Symptom: errors near `layers.0.mlp.gate_up_proj.weight` during a
 mid-rollout policy update.
 
-Fix in Phase A: don't allow it. Queue base weight updates between
-rollouts. The plan defers fixing this to Phase B+. If you see this
-error, the deferral is leaking — find the path that issues
-`update_weights` mid-rollout and gate it.
+**Status**: fixed upstream in PR #2482 (`b2ba40b5e` on `main`). The
+layerwise alias-buffer reload patch is already in our branch via the
+ancestor chain. If this error still surfaces in a TTT run, the
+patched path is regressing — check the diff against `main`.
+
+Phase A still queues base weight updates between rollouts, but as a
+conservatism choice (one less moving part during smoke), not because
+the bug remains.
 
 ### Trace double-count
 
@@ -167,20 +214,26 @@ Reuse these. The TTT changes are mostly glue, not new infrastructure.
 
 ## First cluster tasks (in order)
 
-1. **Smoke `feat/sft-on-tool-outputs`** end-to-end. Don't touch TTT
-   yet; catch any environment / submodule / uv.lock issues first.
-2. **vLLM adapter swap microbenchmark**. Load+unload N adapters
-   back-to-back, report p50 / p99. Sets whether disk transport is
-   viable for Phase A or we go straight to shm.
-3. **MultiLoRA forward overhead vs adapter count**. Microbench the
-   `_grouped_mm` path at n_adapters = 8 / 16 / 64. Sets the upper
-   bound on chunk adapters per replay microbatch.
-4. **Phase A skeleton**: config schema, learner service, orchestrator
+1. **Smoke `feat/sft-on-tool-outputs`** — *effectively already done*.
+   Three runs are live on `/beegfs/outputs/forth-lang-qwen-{rl,cmb-code-ct,cmb-both-ct}-r1`
+   under `wandb://sft-process-thesis`. The `cmb-both-ct-a0.5` run is
+   pulling ahead on `forth-lang-test/pass@1` by step 200 and tool-call
+   frequencies (`run_code_calls`, `submit_code_calls`) are diverging
+   from baseline, which validates the SFT path behaviorally. No
+   separate smoke run needed.
+2. **Probes** — see `docs/ttt-probes.md` for the four probe specs.
+   Order: snapshot churn → learner forward+backward → multi-LoRA
+   forward overhead → adapter write throughput. The first two are
+   single-GPU and small; can run during a 10-minute compute gap.
+3. **Phase A skeleton**: config schema, learner service, orchestrator
    client, transport types, trainer-side replay path. Lean on the
    implementation plan for file-by-file scope.
-5. **One Forth + one retrieval smoke run**.
+4. **One Forth + one retrieval smoke TTT run** — pair with the
+   existing `qwen-rl.toml` so the only delta is TTT-enabled.
 
-If 1 fails, do not move on. The whole stack is built on it.
+If the probes show snapshot churn > 200ms p99 or learner
+forward+backward > the between-chunk interval, halt and revisit
+Phase A scope before writing code.
 
 ## When in doubt
 
