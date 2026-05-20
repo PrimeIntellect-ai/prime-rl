@@ -24,8 +24,7 @@ Naming: CLI uses kebab-case (`--model.max-model-len`); TOML uses snake_case (`ma
 ## Inspect & validate
 
 ```bash
-uv run rl --help                                  # defaults from class
-uv run rl @ rl.toml --help                        # defaults merged with TOML
+uv run rl --help                                  # all fields and defaults
 uv run rl @ rl.toml --dry-run --output-dir /tmp/x # write resolved TOML to /tmp/x/configs
 ```
 
