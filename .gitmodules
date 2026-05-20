@@ -11,6 +11,7 @@
 [submodule "configs/private"]
 	path = configs/private
 	url = git@github.com:PrimeIntellect-ai/research-configs.git
+	branch = feat/ttt-online-lora-plan
 [submodule "pydantic-config"]
 	path = deps/pydantic-config
 	url = https://github.com/PrimeIntellect-ai/pydantic-config
