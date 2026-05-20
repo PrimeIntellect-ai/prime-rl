@@ -5,7 +5,7 @@ description: How the prime-rl config system works — TOML files, CLI overrides,
 
 # Configs
 
-prime-rl uses `pydantic_config` (combining `tyro` and `pydantic`). Every entrypoint accepts TOML files via `@` and CLI overrides.
+prime-rl uses [`pydantic-config`](https://github.com/PrimeIntellect-ai/pydantic-config) — a Pydantic-based TOML + CLI config system (no tyro). Every entrypoint accepts TOML files via `@` and CLI overrides.
 
 ## Loading and composition
 
