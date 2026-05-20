@@ -26,12 +26,17 @@ from prime_rl.utils.config import BaseConfig, find_package_resource
 
 
 class BaseDataConfig(BaseModel):
-    """Base config for SFT data."""
+    batch_size: int = Field(128, ge=1)
+    """Global batch size."""
 
-    batch_size: Annotated[int, Field(ge=1)] = 128
-    seq_len: Annotated[int, Field(ge=1)] = 128
+    seq_len: int = Field(128, ge=1)
+    """Sequence length."""
+
     pack_function: Literal["cat", "stack"] = "cat"
-    micro_batch_size: Annotated[int, Field(ge=1)] = 1
+    """Sample packing strategy. ``cat`` concatenates; ``stack`` requires ``seq_len`` divisible by 256."""
+
+    micro_batch_size: int = Field(1, ge=1)
+    """Per-step micro batch size. ``batch_size`` must be divisible by this."""
 
     @model_validator(mode="after")
     def validate_batch_size(self):
@@ -43,50 +48,56 @@ class BaseDataConfig(BaseModel):
 
 
 class FakeDataConfig(BaseDataConfig):
-    """Configures fake data used for debugging."""
-
     type: Literal["fake"] = "fake"
 
     length: Literal["fixed", "variable"] = "fixed"
+    """Use fixed-length samples or variable-length samples."""
+
     input_ids: Literal["increasing", "random"] = "increasing"
+    """Token id generator: ``increasing`` for deterministic sequences, ``random`` for random ids."""
 
 
 class LossMaskConfig(BaseConfig):
-    """Configures which message types contribute to the loss. If True, the loss_mask will be True and the message type will contribute to the loss."""
+    system: bool = False
+    """System messages contribute to the loss."""
 
-    system: Annotated[bool, Field(description="Whether system messages contribute to the loss.")] = False
-    user: Annotated[bool, Field(description="Whether user messages contribute to the loss.")] = False
-    assistant: Annotated[bool, Field(description="Whether assistant messages contribute to the loss.")] = True
-    tool: Annotated[bool, Field(description="Whether tool messages contribute to the loss.")] = False
+    user: bool = False
+    """User messages contribute to the loss."""
+
+    assistant: bool = True
+    """Assistant messages contribute to the loss."""
+
+    tool: bool = False
+    """Tool messages contribute to the loss."""
 
 
 class SFTDataConfig(BaseDataConfig):
-    """Configures the data used for training."""
-
     type: Literal["sft"] = "sft"
 
-    name: Annotated[str, Field(description="Name or path of the HF dataset to use.")] = (
-        "PrimeIntellect/Reverse-Text-SFT"
-    )
-    subsets: Annotated[list[str] | None, Field(description="Subsets to use from the HF dataset.")] = None
-    splits: Annotated[list[str] | None, Field(description="Splits to use from the HF dataset.")] = None
-    probabilities: Annotated[list[float] | None, Field(description="Probabilities to use for each subset/split.")] = (
-        None
-    )
-    stopping_strategy: Annotated[
-        Literal["first_exhausted", "all_exhausted"],
-        Field(description=""),
-    ] = "all_exhausted"
-    shuffle: Annotated[bool, Field(description="Whether to shuffle the dataset at the beginning of each epoch.")] = True
-    seed: Annotated[
-        int,
-        Field(
-            description="Random seed to use for shuffling the dataset. We also shuffle at the end of each epoch by adding epoch count to the seed."
-        ),
-    ] = 0
+    name: str = "PrimeIntellect/Reverse-Text-SFT"
+    """HF dataset name or path."""
+
+    subsets: list[str] | None = None
+    """Subsets to load from the HF dataset."""
+
+    splits: list[str] | None = None
+    """Splits to load from the HF dataset."""
+
+    probabilities: list[float] | None = None
+    """Sampling probabilities for each subset/split."""
+
+    stopping_strategy: Literal["first_exhausted", "all_exhausted"] = "all_exhausted"
+    """Stopping strategy when interleaving multiple subsets/splits."""
+
+    shuffle: bool = True
+    """Shuffle the dataset at the start of each epoch."""
+
+    seed: int = 0
+    """Random seed for shuffling. Re-shuffled per epoch by adding the epoch count to the seed."""
 
     # Configuring
     loss_mask: LossMaskConfig = LossMaskConfig()
+    """Which message types contribute to the loss."""
 
     @model_validator(mode="after")
     def validate_subsets_and_splits(self):
@@ -110,28 +121,31 @@ class SFTDataConfig(BaseDataConfig):
 
 
 class SFTValConfig(BaseConfig):
-    interval: Annotated[int, Field(ge=1, description="Run validation every N training steps.")] = 50
-    eval_on_start: Annotated[bool, Field(description="Run validation before the first training step.")] = False
+    interval: int = Field(50, ge=1)
+    """Run validation every N training steps."""
+
+    eval_on_start: bool = False
+    """Run validation before the first training step."""
+
     data: SFTDataConfig
+    """Validation data configuration."""
 
 
 DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
 
 
 class BaseDeploymentConfig(BaseModel):
-    """Base deployment config for SFT."""
-
     model_config = ConfigDict(extra="forbid")
 
-    gpus_per_node: Annotated[int, Field(description="Number of GPUs per node.")] = 8
+    gpus_per_node: int = 8
+    """GPUs per node."""
 
 
 class SingleNodeDeploymentConfig(BaseDeploymentConfig):
-    """Configures a single-node SFT deployment."""
-
     type: Literal["single_node"] = "single_node"
 
-    num_gpus: Annotated[int, Field(description="Number of GPUs.")] = 1
+    num_gpus: int = 1
+    """GPUs to use."""
 
     @model_validator(mode="after")
     def validate_gpu_count(self):
@@ -141,18 +155,13 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
 
 
 class MultiNodeDeploymentConfig(BaseDeploymentConfig):
-    """Configures a multi-node SFT deployment."""
-
     type: Literal["multi_node"] = "multi_node"
 
-    num_nodes: Annotated[int, Field(description="Number of training nodes.")] = 2
+    num_nodes: int = 2
+    """Training nodes."""
 
-    nodes_per_fsdp_group: Annotated[
-        int | None,
-        Field(
-            description="Number of nodes per FSDP island. Auto-sets model.dp_replicate = num_nodes / nodes_per_fsdp_group."
-        ),
-    ] = None
+    nodes_per_fsdp_group: int | None = None
+    """Nodes per FSDP island. Auto-sets ``model.dp_replicate = num_nodes / nodes_per_fsdp_group``."""
 
 
 SFTDeploymentConfig: TypeAlias = Annotated[
@@ -161,139 +170,87 @@ SFTDeploymentConfig: TypeAlias = Annotated[
 
 
 class SFTExperimentalConfig(BaseConfig):
-    """Experimental features for SFT training."""
+    pass
 
 
 class SFTConfig(BaseConfig):
-    """Configures the SFT trainer"""
-
-    # The model configuration
     model: ModelConfig = ModelConfig()
+    """Model configuration."""
 
-    # The tokenizer configuration
     tokenizer: TokenizerConfig = TokenizerConfig()
+    """Tokenizer configuration."""
 
-    # The renderer configuration (only used when use_renderer=True)
     renderer: RendererConfig = RendererConfig()
+    """Client-side renderer configuration. Only consumed when ``use_renderer=true``."""
 
-    use_renderer: Annotated[
-        bool,
-        Field(
-            description=(
-                "If True, tokenize SFT samples through the `renderers` library "
-                "(single render() + message_indices mask) instead of the default "
-                "`build_incremental_token_mask` path. Required for chat templates "
-                "that render position-dependently (e.g. Qwen3, Qwen3.5)."
-            ),
-        ),
-    ] = False
+    use_renderer: bool = False
+    """Tokenize SFT samples through the ``renderers`` library (single ``render()`` + ``message_indices`` mask) instead of the default ``build_incremental_token_mask`` path. Required for chat templates that render position-dependently (e.g. Qwen3, Qwen3.5)."""
 
-    # The data configuration
     data: DataConfig = SFTDataConfig()
+    """Training data configuration."""
 
-    # Optional validation configuration
     val: SFTValConfig | None = None
+    """Validation configuration. If None, no validation runs."""
 
-    # The optimizer configuration
     optim: OptimizerConfig = AdamWConfig()
+    """Optimizer configuration."""
 
-    # The learning rate scheduler configuration
     scheduler: SchedulerConfig = ConstantSchedulerConfig()
+    """Learning-rate scheduler configuration."""
 
-    # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
+    """Checkpoint configuration."""
 
-    # The logging configuration
     log: TrainerLogConfig = TrainerLogConfig()
+    """Logger configuration."""
 
-    # The wandb configuration
     wandb: WandbConfig | None = None
+    """Weights & Biases configuration."""
 
-    output_dir: Annotated[
-        Path,
-        Field(
-            description="Directory to write outputs to. Will be populated with checkpoints and logs as subdirectories. Should be set to a persistent directory with enough disk space. This value should be distinct across experiments running on a single node. See the README for more details."
-        ),
-    ] = Path("outputs")
+    output_dir: Path = Path("outputs")
+    """Directory to write outputs to — checkpoints and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
 
-    clean_output_dir: Annotated[
-        bool,
-        Field(
-            description="If true, delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming.",
-        ),
-    ] = False
+    clean_output_dir: bool = False
+    """Delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming."""
 
-    matmul_precision: Annotated[
-        Literal["highest", "high", "medium"],
-        Field(
-            description=(
-                "Precision for float32 matrix multiplications. "
-                "Use 'highest' for full FP32 (required on ROCm/AMD GPUs to avoid "
-                "catastrophic precision loss in softmax over large vocabularies). "
-                "Use 'high' to enable TF32 on NVIDIA GPUs for a speedup with minor "
-                "precision tradeoff. See torch.set_float32_matmul_precision docs."
-            ),
-        ),
-    ] = "high"
+    matmul_precision: Literal["highest", "high", "medium"] = "high"
+    """Precision for float32 matrix multiplications. ``highest`` is full FP32 (required on ROCm/AMD GPUs to avoid catastrophic precision loss in softmax over large vocabularies). ``high`` enables TF32 on NVIDIA GPUs for a speedup with minor precision tradeoff. See ``torch.set_float32_matmul_precision``."""
 
-    max_steps: Annotated[
-        int | None,
-        Field(description="Maximum number of steps to run training for. If None, will run indefinitely."),
-    ] = None
+    max_steps: int | None = None
+    """Maximum training steps. If None, runs indefinitely."""
 
-    memory_profiler_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
+    memory_profiler_path: Path | None = None
+    """Path to write the memory profile to."""
 
-    bench: Annotated[
-        BenchConfig | None,
-        Field(
-            description="Whether to run in benchmark mode. It will automatically set the maximum number of steps to run to 4 and use fake data.",
-        ),
-    ] = None
+    bench: BenchConfig | None = None
+    """Benchmark-mode configuration. When set, ``max_steps`` is forced to 4 and fake data is used."""
 
-    gc: Annotated[
-        GCConfig | None,
-        Field(
-            description="Garbage collection config. Disables automatic GC and runs deterministic collections every N steps to avoid stragglers. Set to null to use Python's default GC behavior.",
-        ),
-    ] = GCConfig()
+    gc: GCConfig | None = GCConfig()
+    """Garbage collection config. Disables automatic GC and runs deterministic collections every N steps to avoid stragglers. Set to null to use Python's default GC behavior."""
 
-    trace_path: Annotated[Path | None, Field(description="Path to write pytorch profiler trace to.")] = None
+    trace_path: Path | None = None
+    """Path to write the PyTorch profiler trace to."""
 
-    dist_timeout_seconds: Annotated[
-        int,
-        Field(
-            description="Timeout in seconds for torch distributed ops. Defaults to 600 seconds.",
-        ),
-    ] = 600
+    dist_timeout_seconds: int = 600
+    """Timeout in seconds for torch distributed ops."""
 
-    loss_impl: Annotated[
-        Literal["liger", "torch", "liger_fused", "quack_fused"],
-        Field(
-            description="Implementation of the cross entropy loss function to use. "
-            "'liger_fused' fuses the lm_head projection with the CE loss to avoid materializing full logits. "
-            "'quack_fused' uses quack-kernels for chunked linear + CE with CuTe DSL CUDA kernels."
-        ),
-    ] = "torch"
+    loss_impl: Literal["liger", "torch", "liger_fused", "quack_fused"] = "torch"
+    """Cross-entropy loss implementation. ``liger_fused`` fuses the lm_head projection with the CE loss to avoid materializing full logits. ``quack_fused`` uses quack-kernels for chunked linear + CE with CuTe DSL CUDA kernels."""
 
-    heartbeat: Annotated[
-        HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
-    ] = None
+    heartbeat: HeartbeatConfig | None = None
+    """BetterStack heartbeat configuration for monitoring training progress."""
 
     deployment: SFTDeploymentConfig = SingleNodeDeploymentConfig()
+    """Deployment topology."""
 
-    slurm: Annotated[
-        SlurmConfig | None,
-        Field(
-            description="SLURM configuration. If set, the run will be submitted as a SLURM job instead of running locally.",
-        ),
-    ] = None
+    slurm: SlurmConfig | None = None
+    """SLURM configuration. When set, the run is submitted as a SLURM job instead of running locally."""
 
-    dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
+    dry_run: bool = False
+    """Only validate and dump resolved configs, then exit early."""
 
-    experimental: Annotated[
-        SFTExperimentalConfig,
-        Field(description="Experimental features for SFT training."),
-    ] = SFTExperimentalConfig()
+    experimental: SFTExperimentalConfig = SFTExperimentalConfig()
+    """Experimental SFT features."""
 
     ### Pre-validation normalization
 

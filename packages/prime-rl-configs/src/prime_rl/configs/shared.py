@@ -8,55 +8,32 @@ from prime_rl.utils.config import BaseConfig
 
 
 class SlurmConfig(BaseConfig):
-    """Configures SLURM scheduling."""
+    job_name: str = "prime-rl"
+    """SLURM job name."""
 
-    job_name: Annotated[str, Field(description="The SLURM job name.")] = "prime-rl"
+    project_dir: Path = Path(".")
+    """Path to the project root, used to source .env, activate .venv, and run uv sync."""
 
-    project_dir: Annotated[
-        Path,
-        Field(description="Path to the project root. Used to source .env, activate .venv, and run uv sync."),
-    ] = Path(".")
+    template_path: Path | None = None
+    """SLURM template file. If None, uses the bundled single-node or multi-node template."""
 
-    template_path: Annotated[
-        Path | None,
-        Field(
-            description="The path to the SLURM template file. If None, will use the default single-node/multi-node template."
-        ),
-    ] = None
+    partition: str = "cluster"
+    """SLURM partition (#SBATCH --partition)."""
 
-    partition: Annotated[
-        str, Field(description="The SLURM partition to use. Will be passed as #SBATCH --partition.")
-    ] = "cluster"
+    nodelist: str | None = None
+    """Comma-separated list of specific nodes to run on (#SBATCH --nodelist)."""
 
-    nodelist: Annotated[
-        str | None,
-        Field(description="Comma-separated list of specific nodes to run on. Passed as #SBATCH --nodelist."),
-    ] = None
+    exclude: str | None = None
+    """Comma-separated list of nodes to exclude (#SBATCH --exclude)."""
 
-    exclude: Annotated[
-        str | None,
-        Field(description="Comma-separated list of nodes to exclude. Passed as #SBATCH --exclude."),
-    ] = None
+    account: str | None = None
+    """SLURM account to charge (#SBATCH --account)."""
 
-    account: Annotated[
-        str | None,
-        Field(description="SLURM account to charge. Passed as #SBATCH --account."),
-    ] = None
+    time: str | None = None
+    """Maximum wall time, e.g. '24:00:00' or '7-00:00:00' (#SBATCH --time)."""
 
-    time: Annotated[
-        str | None,
-        Field(description="Maximum wall time (e.g. '24:00:00', '7-00:00:00'). Passed as #SBATCH --time."),
-    ] = None
-
-    pre_run_command: Annotated[
-        str | None,
-        Field(
-            description="Shell command to run on the head node before starting the job. "
-            "Runs after cd into project dir, .env sourcing, and venv activation. "
-            "Useful for cleanup routines like 'sudo pkill -f vllm'. "
-            "To run on all nodes, wrap with srun: 'srun bash -c \"pkill -f vllm || true\"'.",
-        ),
-    ] = None
+    pre_run_command: str | None = None
+    """Shell command to run on the head node after cd, .env sourcing, and venv activation. Useful for cleanup like ``sudo pkill -f vllm``; wrap with ``srun bash -c '...'`` to fan out to all nodes."""
 
     @property
     def template_vars(self) -> dict:
@@ -82,54 +59,25 @@ ServerType = Literal["vllm", "openai"]
 
 
 class VLMConfig(BaseConfig):
-    """Configures vision-language model support.
+    vision_encoder_attr: str
+    """Dotted attribute path to the vision encoder module (e.g. ``model.visual``)."""
 
-    Presence of this config enables VLM mode. You must specify where the
-    vision encoder and language model live on the model object.
+    language_model_attr: str
+    """Dotted attribute path to the language model module (e.g. ``model.language_model``)."""
 
-    Usage:
-        [model.vlm]
-        vision_encoder_attr = "model.visual"
-        language_model_attr = "model.language_model"
-    """
-
-    vision_encoder_attr: Annotated[
-        str,
-        Field(description="Dotted attribute path to the vision encoder module (e.g. 'model.visual')."),
-    ]
-
-    language_model_attr: Annotated[
-        str,
-        Field(description="Dotted attribute path to the language model module (e.g. 'model.language_model')."),
-    ]
-
-    freeze_vision_encoder: Annotated[
-        bool,
-        Field(
-            description="Whether to freeze the vision encoder. When False, the vision encoder is trainable "
-            "and FSDP-sharded per-block. Has no effect with LoRA (LoRA freezes all non-adapter parameters).",
-        ),
-    ] = True
+    freeze_vision_encoder: bool = True
+    """Freeze the vision encoder. When False, it is trainable and FSDP-sharded per-block. No effect with LoRA (LoRA freezes all non-adapter parameters)."""
 
 
 class BaseModelConfig(BaseConfig):
-    """Configures the model."""
+    name: str = "Qwen/Qwen3-0.6B"
+    """HF model name or local path."""
 
-    name: Annotated[str, Field(description="Name or path of the HF model to use.")] = "Qwen/Qwen3-0.6B"
+    trust_remote_code: bool = False
+    """Trust remote code when initializing the tokenizer."""
 
-    trust_remote_code: Annotated[
-        bool,
-        Field(
-            description="Whether to trust remote code for tokenizer initialization.",
-        ),
-    ] = False
-
-    vlm: Annotated[
-        "VLMConfig | None",
-        Field(
-            description="VLM configuration. Set this to enable vision-language model support.",
-        ),
-    ] = None
+    vlm: "VLMConfig | None" = None
+    """VLM configuration. Setting this enables vision-language model support."""
 
     @property
     def is_vlm(self) -> bool:
@@ -137,234 +85,75 @@ class BaseModelConfig(BaseConfig):
 
 
 class RendererConfig(BaseConfig):
-    """Configures the client-side renderer (chat-template + response parsing).
+    name: str = "auto"
+    """Renderer used for chat-template tokenization. One of: ``auto`` (detect from tokenizer), ``qwen3``, ``qwen3_vl``, ``qwen3.5``, ``glm5``, ``glm4.5``, ``minimax-m2``, ``deepseek_v3``, ``kimi_k2``, ``kimi_k25``, ``nemotron3``, ``gpt_oss``, ``default``."""
 
-    Consumed when ``use_renderer = true``. The renderer
-    owns both directions: render messages → token ids on the client, and
-    parse model output tokens → structured ``content`` / ``reasoning_content``
-    / ``tool_calls``.
-    """
+    tool_parser: str | None = None
+    """Tool parser from ``renderers.parsers``. Only consumed by DefaultRenderer; model-specific renderers bake their own parsing in. Options: ``qwen3``, ``qwen3.5``, ``glm``, ``deepseek_v3``."""
 
-    name: Annotated[
-        str,
-        Field(
-            description=(
-                "Renderer to use for chat template tokenization. "
-                "Options: 'auto' (detect from tokenizer), 'qwen3', 'qwen3_vl', "
-                "'qwen3.5', 'glm5', 'glm4.5', 'minimax-m2', 'deepseek_v3', "
-                "'kimi_k2', 'kimi_k25', 'nemotron3', 'gpt_oss', 'default'."
-            ),
-        ),
-    ] = "auto"
+    reasoning_parser: str | None = None
+    """Reasoning parser from ``renderers.parsers``. Only consumed by DefaultRenderer. Options: ``think``."""
 
-    tool_parser: Annotated[
-        str | None,
-        Field(
-            description=(
-                "Name of a tool parser in renderers.parsers. Only consumed by "
-                "DefaultRenderer (model-specific renderers bake their own parsing "
-                "in). Options today: 'qwen3', 'qwen3.5', 'glm', 'deepseek_v3'."
-            ),
-        ),
-    ] = None
+    pool_size: int | None = Field(None, ge=1)
+    """Number of renderer slots shared across concurrent rollouts. Bump for long multi-turn prompts where client-side jinja tokenization serializes."""
 
-    reasoning_parser: Annotated[
-        str | None,
-        Field(
-            description=(
-                "Name of a reasoning parser in renderers.parsers. Only consumed "
-                "by DefaultRenderer. Options today: 'think'."
-            ),
-        ),
-    ] = None
+    preserve_all_thinking: bool = False
+    """Re-emit every past-assistant turn's ``reasoning_content`` between ``<think>``/``</think>`` (or the model's equivalent), even when the chat template would drop it. Strict superset of preserve_thinking_between_tool_calls."""
 
-    pool_size: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description=(
-                "Number of renderer slots shared across concurrent rollouts. "
-                "None keeps the verifiers default (1). Bump for long multi-turn "
-                "prompts where client-side jinja tokenization serializes."
-            ),
-        ),
-    ] = None
-
-    preserve_all_thinking: Annotated[
-        bool,
-        Field(
-            description=(
-                "Override flag forwarded to the renderer at construction. When "
-                "True, every past-assistant turn's ``reasoning_content`` is "
-                "re-emitted between ``<think>``/``</think>`` (or the model's "
-                "equivalent), even if the underlying chat template would drop "
-                "it. Off by default — preserves byte-identical output to the "
-                "stock template. Strict superset of "
-                "``preserve_thinking_between_tool_calls``."
-            ),
-        ),
-    ] = False
-
-    preserve_thinking_between_tool_calls: Annotated[
-        bool,
-        Field(
-            description=(
-                "Override flag forwarded to the renderer at construction. When "
-                "True, preserves past-assistant ``reasoning_content`` only "
-                "inside the *current* tool cycle — the contiguous "
-                "assistant→tool→…→assistant block after the most recent user "
-                "message, when that block contains at least one tool response. "
-                "A new user turn closes the block; older blocks fall back to "
-                "the template default (typically dropped). Use "
-                "``preserve_all_thinking`` to keep older blocks too."
-            ),
-        ),
-    ] = False
+    preserve_thinking_between_tool_calls: bool = False
+    """Preserve past-assistant ``reasoning_content`` only inside the current tool cycle — the contiguous assistant→tool→…→assistant block after the most recent user message, when that block contains at least one tool response. A new user turn closes the block."""
 
 
 class ElasticConfig(BaseConfig):
-    """Configures elastic inference pool with DNS-based service discovery.
+    hostname: str
+    """DNS hostname that resolves to inference server IPs."""
 
-    Works with any DNS hostname that resolves to multiple IP addresses.
-    """
+    port: int = 8000
+    """Port that inference servers listen on."""
 
-    hostname: Annotated[
-        str,
-        Field(
-            description="DNS hostname that resolves to inference server IPs.",
-        ),
-    ]
-
-    port: Annotated[
-        int,
-        Field(
-            description="Port that inference servers listen on.",
-        ),
-    ] = 8000
-
-    sync_interval: Annotated[
-        float,
-        Field(
-            description="Interval in seconds between server discovery checks.",
-        ),
-    ] = 5.0
+    sync_interval: float = 5.0
+    """Seconds between server discovery checks."""
 
 
 class ClientConfig(BaseConfig):
-    """Configures the OAI client.
+    timeout: int = 1200
+    """Request timeout in seconds."""
 
-    Supports two modes:
-    - Static mode (default): Uses fixed base_url list
-    - Elastic mode: Uses DNS-based service discovery via hostname
+    connect_timeout: float = 30.0
+    """TCP connect timeout in seconds for inference API requests."""
 
-    If elastic config is provided, base_url is ignored and servers are discovered dynamically.
-    """
+    wait_for_ready_timeout: int = 1800
+    """Seconds to wait at startup for the inference pool to become ready. Applies to both the static health check and elastic DNS-based discovery."""
 
-    timeout: Annotated[
-        int,
-        Field(
-            description="Timeout in seconds. By default, it is set to 1200 seconds.",
-        ),
-    ] = 1200
+    base_url: list[str] = ["http://localhost:8000/v1"]
+    """Base URLs for the OpenAI API. With more than one URL, the client round-robins (chat) completion requests across all servers. Ignored when ``elastic`` is set."""
 
-    connect_timeout: Annotated[
-        float,
-        Field(
-            description="TCP connect timeout in seconds for inference API requests.",
-        ),
-    ] = 30.0
+    api_key_var: str = "VLLM_API_KEY"
+    """Environment variable name containing the API key, resolved via ``os.getenv``. Can be any string when the server is not protected by an API key; the same key is used for every URL."""
 
-    wait_for_ready_timeout: Annotated[
-        int,
-        Field(
-            description="Timeout in seconds for waiting for the inference pool to become ready at startup. "
-            "Applies to both the static health check and elastic DNS-based discovery. Defaults to 1800 seconds.",
-        ),
-    ] = 1800
+    headers: dict[str, str] = {}
+    """Static headers sent with every request."""
 
-    base_url: Annotated[
-        list[str],
-        Field(
-            description="Base URLs to use for the OpenAI API. By default, it is set to a single server on localhost at port 8000 which matches the default local vLLM server configuration. If you specify more than one URL, the client will round-robin (chat) completion requests across all servers. Ignored if elastic config is provided.",
-        ),
-    ] = ["http://localhost:8000/v1"]
+    headers_from_env: dict[str, str] = {}
+    """Maps HTTP header names to environment variable names; each entry is resolved via ``os.getenv`` and merged into request headers. e.g. ``{"X-Prime-Team-ID": "PRIME_TEAM_ID"}``."""
 
-    api_key_var: Annotated[
-        str,
-        Field(
-            description="Name of environment variable containing the API key to use for the inference API. Will parse using `os.getenv(client_config.api_key_var)`. Can be set to an arbitrary string if the inference server is not protected by an API key. If multiple URLs are specified, the same API key will be used for all servers.",
-        ),
-    ] = "VLLM_API_KEY"
+    extra_headers_from_state: dict[str, str] = {}
+    """Maps HTTP header names to rollout-state field names. The header value is read from the rollout state dict on every request. e.g. ``{"X-Session-ID": "example_id"}`` enables sticky routing at the inference router."""
 
-    headers: Annotated[
-        dict[str, str],
-        Field(
-            description="Headers to use for the OpenAI API. By default, it is set to an empty dictionary.",
-        ),
-    ] = {}
+    skip_model_check: bool = False
+    """Skip checking that the model is available in the inference pool. Useful for external APIs or keys that do not expose ``/models``."""
 
-    headers_from_env: Annotated[
-        dict[str, str],
-        Field(
-            description='Maps HTTP header names to environment variable names. At runtime each entry is resolved via os.getenv and merged into the request headers. e.g. {"X-Prime-Team-ID": "PRIME_TEAM_ID"}.',
-        ),
-    ] = {}
+    dp_rank_count: int = Field(1, ge=1)
+    """Number of data-parallel ranks behind each base URL. When > 1, each URL is expanded into ``dp_rank_count`` logical clients pinned via the ``X-data-parallel-rank`` header, so every request within a rollout hits the same DP engine and reuses KV cache. Auto-set from the inference config when using the RL entrypoint."""
 
-    extra_headers_from_state: Annotated[
-        dict[str, str],
-        Field(
-            description="Maps HTTP header names to state field names. For each inference request, "
-            "the header value is dynamically read from the rollout state dict. "
-            'e.g. {"X-Session-ID": "example_id"} enables sticky routing at the inference router.',
-        ),
-    ] = {}
+    admin_base_url: list[str] | None = None
+    """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in disaggregated P/D deployments where the router must not handle admin traffic."""
 
-    skip_model_check: Annotated[
-        bool,
-        Field(
-            description="Whether to skip checking if the model is available in the inference pool. Useful for external APIs or API Keys that don't support the /models endpoint.",
-        ),
-    ] = False
+    elastic: ElasticConfig | None = None
+    """Elastic inference pool config for DNS-based service discovery. When set, ``base_url`` is ignored and inference servers are discovered dynamically via DNS."""
 
-    dp_rank_count: Annotated[
-        int,
-        Field(
-            ge=1,
-            description=(
-                "Number of data-parallel ranks behind each base URL. When > 1, "
-                "each URL is expanded into dp_rank_count logical clients, each "
-                "pinned to a specific DP rank via the X-data-parallel-rank header. "
-                "This ensures all requests within a multi-turn rollout hit the same "
-                "DP engine, maximizing KV cache reuse. Auto-set from "
-                "inference.data_parallel_size_local (or inference.parallel.dp) "
-                "when using the RL entrypoint."
-            ),
-        ),
-    ] = 1
-
-    admin_base_url: Annotated[
-        list[str] | None,
-        Field(
-            description="Separate base URLs for admin operations (weight updates, health checks). "
-            "When set, admin clients use these URLs instead of base_url, allowing weight "
-            "updates to bypass routers and hit each server directly. Used in disaggregated "
-            "P/D deployments where the inference router should not handle admin traffic.",
-        ),
-    ] = None
-
-    elastic: Annotated[
-        ElasticConfig | None,
-        Field(
-            description="Elastic inference pool configuration for DNS-based service discovery. If provided, base_url is ignored and inference servers are discovered dynamically via DNS.",
-        ),
-    ] = None
-
-    router_url: Annotated[
-        str | None,
-        Field(
-            description="URL of a vllm-router for load-aware inference routing. When set with elastic mode, inference requests go through the router while admin operations (weight updates, LoRA loading) still go directly to discovered pods.",
-        ),
-    ] = None
+    router_url: str | None = None
+    """vllm-router URL for load-aware inference routing. With elastic mode, inference requests go through the router while admin ops still hit discovered pods directly."""
 
     @property
     def is_elastic(self) -> bool:
@@ -373,225 +162,116 @@ class ClientConfig(BaseConfig):
 
 
 class LogConfig(BaseConfig):
-    """Configures the logger."""
+    level: str = Field(default_factory=lambda: os.environ.get("PRIME_LOG_LEVEL", "info"))
+    """Log level for the process. Defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``."""
 
-    level: Annotated[
-        str,
-        Field(
-            default_factory=lambda: os.environ.get("PRIME_LOG_LEVEL", "info"),
-            description="Logging level for the process. Will determine the logging verbosity and format. Defaults to the PRIME_LOG_LEVEL env var if set, else 'info'.",
-        ),
-    ]
+    vf_level: str = Field(default_factory=lambda: os.environ.get("PRIME_VF_LOG_LEVEL", "info"))
+    """Log level for the verifiers package. Defaults to ``$PRIME_VF_LOG_LEVEL`` if set, else ``info``."""
 
-    vf_level: Annotated[
-        str,
-        Field(
-            default_factory=lambda: os.environ.get("PRIME_VF_LOG_LEVEL", "info"),
-            description="Logging level for the verifiers package. Will determine the logging verbosity and format. Defaults to the PRIME_VF_LOG_LEVEL env var if set, else 'info'.",
-        ),
-    ]
+    json_logging: bool = False
+    """Emit newline-delimited JSON logs for aggregation (Loki, Grafana, etc.)."""
 
-    json_logging: Annotated[
-        bool,
-        Field(
-            description="Emit JSON logs (newline-delimited) for log aggregation (Loki, Grafana, etc.).",
-        ),
-    ] = False
-
-    log_data: Annotated[
-        bool,
-        Field(
-            description="Whether to log the first data sample to the logger.",
-        ),
-    ] = False
+    log_data: bool = False
+    """Log the first data sample at startup."""
 
 
 class TrainerLogConfig(LogConfig):
-    """Trainer-specific log config."""
-
-    ranks_filter: Annotated[
-        list[int],
-        Field(description="Which trainer ranks to show in console output. Passed to torchrun's --local-ranks-filter."),
-    ] = [0]
+    ranks_filter: list[int] = [0]
+    """Trainer ranks to show in console output. Passed to ``torchrun --local-ranks-filter``."""
 
 
 class LogExtrasConfig(BaseConfig):
-    """Configures extra logging for monitoring platforms."""
+    samples: bool = True
+    """Log prompt/response samples."""
 
-    samples: Annotated[
-        bool,
-        Field(
-            description="Whether to log prompt/response samples.",
-        ),
-    ] = True
+    distributions: bool = True
+    """Log distributions (rewards, advantages, etc.)."""
 
-    distributions: Annotated[
-        bool,
-        Field(
-            description="Whether to log distributions (like rewards, advantages, etc.).",
-        ),
-    ] = True
+    interval: int = Field(10, ge=1)
+    """Step interval between extras logs."""
 
-    interval: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Step interval at which to log extras.",
-        ),
-    ] = 10
-
-    sample_ratio: Annotated[
-        float | None,
-        Field(
-            ge=0.0,
-            le=1.0,
-            description="Fraction of rollouts to log per step (0.0–1.0). "
-            "When set, the effective sample cap is len(rollouts) * sample_ratio. "
-            "1.0 = all rollouts, 0.5 = half, 0.0 = none. "
-            "None (default)",
-        ),
-    ] = None
+    sample_ratio: float | None = Field(None, ge=0.0, le=1.0)
+    """Fraction of rollouts to log per step. The effective cap is ``len(rollouts) * sample_ratio``; 1.0 = all, 0.5 = half, 0.0 = none."""
 
 
 class WandbConfig(BaseConfig):
-    """Configures logging to Weights and Biases."""
-
     # Shared configs (May be overwritten by WandbConfig from `rl.py`)
-    project: Annotated[str, Field(description="The W&B project to log to.")] = "prime-rl"
+    project: str = "prime-rl"
+    """W&B project to log to."""
 
-    entity: Annotated[
-        str | None,
-        Field(
-            description="The W&B entity to log to.",
-        ),
-    ] = None
+    entity: str | None = None
+    """W&B entity to log to."""
 
-    name: Annotated[
-        str | None,
-        Field(
-            description="The W&B name to to use for logging.",
-        ),
-    ] = None
+    name: str | None = None
+    """W&B run name."""
 
-    group: Annotated[
-        str | None,
-        Field(
-            description="The W&B group to use for logging.",
-        ),
-    ] = None
+    group: str | None = None
+    """W&B group."""
 
-    tags: Annotated[
-        list[str] | None,
-        Field(
-            description="The W&B tags to attach to the run.",
-        ),
-    ] = None
+    tags: list[str] | None = None
+    """W&B tags attached to the run."""
 
-    offline: Annotated[bool, Field(description="Whether to run W&B in offline mode.")] = False
+    offline: bool = False
+    """Run W&B in offline mode."""
 
 
 class WandbWithExtrasConfig(WandbConfig):
-    """Configures logging to Weights and Biases with extras."""
-
-    log_extras: Annotated[
-        LogExtrasConfig | None,
-        Field(
-            description="Configuration for logging extras. If None, no extras are logged.",
-        ),
-    ] = LogExtrasConfig()
+    log_extras: LogExtrasConfig | None = LogExtrasConfig()
+    """Extras logging configuration. If None, no extras are logged."""
 
 
 class PrimeMonitorConfig(BaseConfig):
-    """Configures logging to Prime Intellect API."""
+    base_url: str = "https://api.primeintellect.ai/api/v1/rft"
+    """Base URL for the Prime Intellect monitoring API."""
 
-    base_url: Annotated[
-        str,
-        Field(
-            description="The base URL for Prime Intellect monitoring API.",
-        ),
-    ] = "https://api.primeintellect.ai/api/v1/rft"
+    api_key_var: str = "PRIME_API_KEY"
+    """Environment variable name containing the Prime Intellect API key, resolved via ``os.getenv``."""
 
-    api_key_var: Annotated[
-        str,
-        Field(
-            description="Name of environment variable containing the API key for Prime Intellect API. Will parse using `os.getenv(config.api_key_var)`.",
-        ),
-    ] = "PRIME_API_KEY"
+    log_extras: LogExtrasConfig | None = LogExtrasConfig()
+    """Extras logging configuration. If None, no extras are logged."""
 
-    log_extras: Annotated[
-        LogExtrasConfig | None,
-        Field(
-            description="Configuration for logging extras. If None, no extras are logged.",
-        ),
-    ] = LogExtrasConfig()
+    run_name: str | None = None
+    """Run name shown on the platform. Defaults to the W&B run name when set, otherwise the platform auto-generates one."""
 
-    run_name: Annotated[
-        str | None,
-        Field(
-            description="Name for the run shown on the platform. Defaults to the W&B run name if set, otherwise auto-generated by the platform.",
-        ),
-    ] = None
+    team_id: str | None = None
+    """Team ID to associate the run with."""
 
-    team_id: Annotated[
-        str | None,
-        Field(
-            description="Team ID to associate the run with.",
-        ),
-    ] = None
-
-    frontend_url: Annotated[
-        str | None,
-        Field(
-            description="Frontend base URL used for the dashboard link shown after registration. Defaults to the Prime CLI frontend URL when unset.",
-        ),
-    ] = None
+    frontend_url: str | None = None
+    """Frontend base URL used for the dashboard link printed after registration. Defaults to the Prime CLI frontend URL when unset."""
 
 
 class HeartbeatConfig(BaseConfig):
-    """Configures the heartbeat for BetterStack."""
-
-    url: Annotated[str, Field(description="The URL to send the heartbeat to.")]
+    url: str
+    """URL to send the heartbeat to."""
 
 
 class MetricsServerConfig(BaseConfig):
-    """Configures the Prometheus metrics server for trainer observability."""
+    port: int = Field(8000, ge=1, le=65535)
+    """Port to expose metrics and health endpoints on."""
 
-    port: Annotated[
-        int,
-        Field(
-            ge=1,
-            le=65535,
-            description="Port to expose metrics and health endpoints. Defaults to 8000.",
-        ),
-    ] = 8000
-
-    host: Annotated[
-        str,
-        Field(
-            description="Host to bind the server to. Defaults to 0.0.0.0.",
-        ),
-    ] = "0.0.0.0"
+    host: str = "0.0.0.0"
+    """Host to bind the server to."""
 
 
 class BaseTransportConfig(BaseModel):
-    """Base configuration for transport."""
-
     pass
 
 
 class FileSystemTransportConfig(BaseTransportConfig):
-    """Configures filesystem-based transport for training examples."""
-
     type: Literal["filesystem"] = "filesystem"
 
 
 class ZMQTransportConfig(BaseTransportConfig):
-    """Configures ZMQ-based transport for training examples."""
-
     type: Literal["zmq"] = "zmq"
-    host: Annotated[str, Field(description="The host address for ZMQ transport.")] = "localhost"
-    port: Annotated[int, Field(description="The base port for ZMQ transport.")] = 5555
-    hwm: Annotated[int, Field(description="High water mark (max messages in queue) for ZMQ sockets.")] = 10
+
+    host: str = "localhost"
+    """Host address for ZMQ transport."""
+
+    port: int = 5555
+    """Base port for ZMQ transport."""
+
+    hwm: int = 10
+    """High-water mark (max in-flight messages per ZMQ socket)."""
 
 
 TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig, Field(discriminator="type")]
