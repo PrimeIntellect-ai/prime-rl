@@ -2,7 +2,7 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from prime_rl.configs.shared import (
     HeartbeatConfig,
@@ -25,7 +25,7 @@ from prime_rl.configs.trainer import (
 from prime_rl.utils.config import BaseConfig, find_package_resource
 
 
-class BaseDataConfig(BaseModel):
+class BaseDataConfig(BaseConfig):
     batch_size: int = Field(128, ge=1)
     """Global batch size."""
 
@@ -128,15 +128,12 @@ class SFTValConfig(BaseConfig):
     """Run validation before the first training step."""
 
     data: SFTDataConfig
-    """Validation data configuration."""
 
 
 DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
 
 
-class BaseDeploymentConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class BaseDeploymentConfig(BaseConfig):
     gpus_per_node: int = 8
     """GPUs per node."""
 
@@ -175,10 +172,8 @@ class SFTExperimentalConfig(BaseConfig):
 
 class SFTConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
-    """Model configuration."""
 
     tokenizer: TokenizerConfig = TokenizerConfig()
-    """Tokenizer configuration."""
 
     renderer: RendererConfig = RendererConfig()
     """Client-side renderer configuration. Only consumed when ``use_renderer=true``."""
@@ -187,25 +182,19 @@ class SFTConfig(BaseConfig):
     """Tokenize SFT samples through the ``renderers`` library (single ``render()`` + ``message_indices`` mask) instead of the default ``build_incremental_token_mask`` path. Required for chat templates that render position-dependently (e.g. Qwen3, Qwen3.5)."""
 
     data: DataConfig = SFTDataConfig()
-    """Training data configuration."""
 
     val: SFTValConfig | None = None
     """Validation configuration. If None, no validation runs."""
 
     optim: OptimizerConfig = AdamWConfig()
-    """Optimizer configuration."""
 
     scheduler: SchedulerConfig = ConstantSchedulerConfig()
-    """Learning-rate scheduler configuration."""
 
     ckpt: CheckpointConfig | None = None
-    """Checkpoint configuration."""
 
     log: TrainerLogConfig = TrainerLogConfig()
-    """Logger configuration."""
 
     wandb: WandbConfig | None = None
-    """Weights & Biases configuration."""
 
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — checkpoints and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
@@ -241,7 +230,6 @@ class SFTConfig(BaseConfig):
     """BetterStack heartbeat configuration for monitoring training progress."""
 
     deployment: SFTDeploymentConfig = SingleNodeDeploymentConfig()
-    """Deployment topology."""
 
     slurm: SlurmConfig | None = None
     """SLURM configuration. When set, the run is submitted as a SLURM job instead of running locally."""
@@ -250,7 +238,6 @@ class SFTConfig(BaseConfig):
     """Only validate and dump resolved configs, then exit early."""
 
     experimental: SFTExperimentalConfig = SFTExperimentalConfig()
-    """Experimental SFT features."""
 
     ### Pre-validation normalization
 

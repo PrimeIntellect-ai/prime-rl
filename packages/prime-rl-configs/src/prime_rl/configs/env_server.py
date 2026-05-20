@@ -9,10 +9,8 @@ from prime_rl.utils.config import BaseConfig
 
 class EnvServerConfig(BaseConfig):
     env: EnvConfig = EnvConfig()
-    """Environment configuration."""
 
     log: LogConfig = LogConfig()
-    """Logger configuration."""
 
     env_install_prerelease: bool = False
     """Allow pre-release versions when installing environments. Passes ``--prerelease`` to ``prime env install``."""

@@ -2,7 +2,7 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
@@ -132,9 +132,7 @@ class SharedWeightBroadcastConfig(BaseConfig):
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
 
-class BaseDeploymentConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class BaseDeploymentConfig(BaseConfig):
     gpus_per_node: int = 8
     """GPUs per node."""
 
@@ -198,10 +196,8 @@ DeploymentConfig: TypeAlias = Annotated[
 
 class RLConfig(BaseConfig):
     trainer: TrainerConfig
-    """Trainer configuration."""
 
     orchestrator: OrchestratorConfig
-    """Orchestrator configuration."""
 
     inference: InferenceConfig | None = None
     """Inference server configuration. If None, the rl entrypoint will not start an inference server (useful for elastic inference pools or manually started servers)."""
@@ -245,13 +241,11 @@ class RLConfig(BaseConfig):
     """Shared async level. If None, falls back to the sub-config ``max_async_level``."""
 
     weight_broadcast: SharedWeightBroadcastConfig | None = None
-    """Shared weight broadcast configuration."""
 
     bench: bool = False
     """Benchmark mode. Sets trainer and orchestrator to benchmark mode and, when set, suffixes the W&B project with ``-bench``."""
 
     deployment: DeploymentConfig = SingleNodeDeploymentConfig()
-    """Deployment topology."""
 
     slurm: SlurmConfig | None = None
     """SLURM configuration. If None, runs locally."""
@@ -260,7 +254,6 @@ class RLConfig(BaseConfig):
     """Only validate and dump resolved configs, then exit early."""
 
     experimental: RLExperimentalConfig = RLExperimentalConfig()
-    """Experimental RL features."""
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 

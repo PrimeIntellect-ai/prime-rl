@@ -2,7 +2,7 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -264,11 +264,11 @@ class TokenizerConfig(BaseConfig):
     """Chat template for the tokenizer. Either a Jinja2 template string or a path to a template file. If None, the tokenizer's default chat template is used."""
 
 
-class ConstantSchedulerConfig(BaseModel):
+class ConstantSchedulerConfig(BaseConfig):
     type: Literal["constant"] = "constant"
 
 
-class LinearSchedulerConfig(BaseModel):
+class LinearSchedulerConfig(BaseConfig):
     type: Literal["linear"] = "linear"
 
     warmup_steps: int = Field(10, ge=0)
@@ -281,7 +281,7 @@ class LinearSchedulerConfig(BaseModel):
     """Minimum learning rate to converge to."""
 
 
-class CosineSchedulerConfig(BaseModel):
+class CosineSchedulerConfig(BaseConfig):
     type: Literal["cosine"] = "cosine"
 
     warmup_steps: int = Field(10, ge=0)
@@ -296,7 +296,7 @@ SchedulerConfig: TypeAlias = Annotated[
 ]
 
 
-class BaseOptimizerConfig(BaseModel):
+class BaseOptimizerConfig(BaseConfig):
     lr: float = Field(1e-6, ge=0)
     """Peak learning rate."""
 
@@ -398,7 +398,7 @@ class CheckpointConfig(BaseConfig):
     """Skip loading the optimizer state from checkpoint."""
 
 
-class DefaultLossConfig(BaseModel):
+class DefaultLossConfig(BaseConfig):
     type: Literal["default"] = "default"
 
     dppo_mask_low: float = Field(0.2, ge=0)
@@ -414,7 +414,7 @@ class DefaultLossConfig(BaseModel):
     """Temperature for the KL term."""
 
 
-class CustomLossConfig(BaseModel):
+class CustomLossConfig(BaseConfig):
     type: Literal["custom"] = "custom"
 
     import_path: str
@@ -440,7 +440,7 @@ class DataLoaderConfig(BaseConfig):
     """Use a fake data loader sampling random micro-batches (for debugging)."""
 
 
-class BaseWeightBroadcastConfig(BaseModel):
+class BaseWeightBroadcastConfig(BaseConfig):
     pass
 
 
@@ -485,22 +485,17 @@ class TrainerExperimentalConfig(BaseConfig):
 
 class TrainerConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
-    """Model configuration."""
 
     tokenizer: TokenizerConfig = TokenizerConfig()
-    """Tokenizer configuration."""
 
     data: DataLoaderConfig = DataLoaderConfig()
-    """Data loader configuration."""
 
     loss: LossConfig = DefaultLossConfig()
     """Loss config for rl-mode batches. opd and sft batches dispatch to their own loss fns unconditionally and do not read this."""
 
     optim: OptimizerConfig = AdamWConfig()
-    """Optimizer configuration."""
 
     scheduler: SchedulerConfig = ConstantSchedulerConfig()
-    """Learning-rate scheduler configuration."""
 
     ckpt: CheckpointConfig | None = None
     """Full training-state checkpoint configuration (model + optimizer + scheduler). If None, no resume-capable checkpoints are written."""
@@ -512,10 +507,8 @@ class TrainerConfig(BaseConfig):
     """Transport used to ship rollouts from orchestrator to trainer."""
 
     log: TrainerLogConfig = TrainerLogConfig()
-    """Logger configuration."""
 
     wandb: WandbConfig | None = None
-    """Weights & Biases configuration."""
 
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
@@ -557,7 +550,6 @@ class TrainerConfig(BaseConfig):
     """Maximum number of concurrent runs to allow. If 1, only one run may run at a time."""
 
     experimental: TrainerExperimentalConfig = TrainerExperimentalConfig()
-    """Experimental trainer features."""
 
     @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):

@@ -3,7 +3,7 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -428,9 +428,7 @@ class BufferConfig(BaseConfig):
         return self
 
 
-class TokensLengthPenaltyConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class TokensLengthPenaltyConfig(BaseConfig):
     type: Literal["tokens"] = "tokens"
 
     completion_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
@@ -440,9 +438,7 @@ class TokensLengthPenaltyConfig(BaseModel):
     """Weight on tool-response tokens (read from the rollout's ``*_total_tool_response_tokens`` harness metric; 0 if absent). Finite and non-negative."""
 
 
-class TurnsLengthPenaltyConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class TurnsLengthPenaltyConfig(BaseConfig):
     type: Literal["turns"] = "turns"
 
 
@@ -452,16 +448,14 @@ LengthPenaltyConfig: TypeAlias = Annotated[
 ]
 
 
-class DefaultAdvantageConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class DefaultAdvantageConfig(BaseConfig):
     type: Literal["default"] = "default"
 
     length_penalty: LengthPenaltyConfig | None = None
     """Correctness-gated length penalty. ``tokens`` shapes by weighted token cost; ``turns`` shapes by trajectory turn count; None disables shaping. In mixed groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost rollouts get advantage in [0, 1], others get 0."""
 
 
-class CustomAdvantageConfig(BaseModel):
+class CustomAdvantageConfig(BaseConfig):
     type: Literal["custom"] = "custom"
 
     import_path: str
@@ -478,9 +472,7 @@ AdvantageConfig: TypeAlias = Annotated[
 
 
 # Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387).
-class GibberishFilterConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class GibberishFilterConfig(BaseConfig):
     type: Literal["gibberish"] = "gibberish"
 
     enforce: bool = False
@@ -496,9 +488,7 @@ class GibberishFilterConfig(BaseModel):
 # Flags rollouts stuck in a repetition loop: emits high-confidence tokens for an extended stretch.
 # Flagged when `window` consecutive tokens are each sampled with probability above `prob_threshold`.
 # (Section 3.2, https://arxiv.org/abs/2506.13585)
-class RepetitionFilterConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class RepetitionFilterConfig(BaseConfig):
     type: Literal["repetition"] = "repetition"
 
     enforce: bool = False
@@ -512,9 +502,7 @@ class RepetitionFilterConfig(BaseModel):
 
 
 # Flags rollouts with zero advantage.
-class ZeroAdvantageFilterConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class ZeroAdvantageFilterConfig(BaseConfig):
     type: Literal["zero_advantage"] = "zero_advantage"
 
     enforce: bool = True
@@ -527,11 +515,11 @@ FilterConfig: TypeAlias = Annotated[
 ]
 
 
-class FileSystemWeightBroadcastConfig(BaseModel):
+class FileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
 
 
-class NCCLWeightBroadcastConfig(BaseModel):
+class NCCLWeightBroadcastConfig(BaseConfig):
     type: Literal["nccl"] = "nccl"
 
     host: str = "localhost"
@@ -561,10 +549,8 @@ class OrchestratorExperimentalConfig(BaseConfig):
 
 class RolloutModelConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
-    """Model configuration."""
 
     client: ClientConfig = ClientConfig()
-    """Inference client configuration."""
 
 
 class OrchestratorConfig(BaseConfig):
@@ -578,10 +564,8 @@ class OrchestratorConfig(BaseConfig):
     """Teacher rollout participant (model + client). Role depends on ``training_mode``: ``opd`` — teacher computes logprobs; ``sft`` — teacher generates rollouts."""
 
     train: TrainConfig = TrainConfig()
-    """Training environments and sampling."""
 
     tokenizer: TokenizerConfig = TokenizerConfig()
-    """Tokenizer configuration."""
 
     renderer: RendererConfig = RendererConfig()
     """Client-side renderer configuration. Only consumed when ``use_renderer=true``."""
@@ -593,22 +577,17 @@ class OrchestratorConfig(BaseConfig):
     """Evaluation configuration."""
 
     buffer: BufferConfig = BufferConfig()
-    """Rollout buffer configuration."""
 
     advantage: AdvantageConfig | None = DefaultAdvantageConfig()
-    """Advantage estimator configuration."""
 
     filters: list[FilterConfig] = [GibberishFilterConfig(), RepetitionFilterConfig(), ZeroAdvantageFilterConfig()]
     """Rollout filters. Each filter can ``monitor`` (default) or ``enforce`` (skip rollouts)."""
 
     log: LogConfig = LogConfig()
-    """Logger configuration."""
 
     wandb: WandbWithExtrasConfig | None = None
-    """Weights & Biases configuration."""
 
     prime_monitor: PrimeMonitorConfig | None = None
-    """Prime Intellect monitoring configuration."""
 
     collect_inference_metrics: bool = True
     """Collect inference-server metrics (requires wandb)."""
@@ -681,7 +660,6 @@ class OrchestratorConfig(BaseConfig):
     """Allow pre-release versions when installing environments (e.g. ``verifiers>=0.1.12.dev5``). Passes ``--prerelease`` to ``prime env install``."""
 
     experimental: OrchestratorExperimentalConfig = OrchestratorExperimentalConfig()
-    """Experimental orchestrator features."""
 
     @model_validator(mode="before")
     @classmethod

@@ -2,7 +2,7 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
 from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
@@ -33,8 +33,6 @@ class ParallelConfig(BaseConfig):
         return f"tp={self.tp} dp={self.dp}"
 
 
-# Most arguments are forwarded directly to the vLLM LLM class
-# (https://docs.vllm.ai/en/latest/api/vllm.LLM.html).
 class ModelConfig(BaseModelConfig):
     dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
     """dtype for model weights and activations. ``auto`` uses FP16 for FP32/FP16 models and BF16 for BF16 models. Forwarded as ``--dtype``."""
@@ -66,9 +64,7 @@ class WeightBroadcastConfig(BaseConfig):
     """Weight broadcast transport."""
 
 
-class KVCacheOffloadConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class KVCacheOffloadConfig(BaseConfig):
     cpu_bytes: int = Field(1_000_000_000, gt=0)
     """CPU bytes available for KV cache offloading per worker."""
 
@@ -87,9 +83,7 @@ All2AllBackend = Literal[
 ]
 
 
-class BaseInferenceDeploymentConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class BaseInferenceDeploymentConfig(BaseConfig):
     gpus_per_node: int = 8
     """GPUs per node."""
 
@@ -185,10 +179,8 @@ class InferenceExperimentalConfig(BaseConfig):
 
 class InferenceConfig(BaseConfig):
     server: ServerConfig = ServerConfig()
-    """Inference server configuration."""
 
     model: ModelConfig = Field(default_factory=ModelConfig)
-    """Inference model configuration."""
 
     parallel: ParallelConfig = ParallelConfig()
     """Multi-node and multi-GPU parallelism (TP, DP, PP)."""
@@ -245,7 +237,6 @@ class InferenceConfig(BaseConfig):
     """Force DeepGEMM FP8 kernels via ``VLLM_USE_DEEP_GEMM=1``. Only works with per-tensor FP8 quantization (e.g. GLM-5-FP8)."""
 
     weight_broadcast: WeightBroadcastConfig = WeightBroadcastConfig()
-    """Weight broadcast configuration."""
 
     kv_cache_offload: KVCacheOffloadConfig | None = None
     """CPU KV cache offload for inference workers. Standard inference uses vLLM's ``OffloadingConnector``. Disaggregated P/D deployments combine it with NIXL through ``MultiConnector`` in the SLURM launcher."""
@@ -262,7 +253,6 @@ class InferenceConfig(BaseConfig):
     # Launcher-only fields
 
     deployment: InferenceDeploymentConfig = SingleNodeInferenceDeploymentConfig()
-    """Deployment topology for inference."""
 
     slurm: SlurmConfig | None = None
     """SLURM configuration. When set, the run is submitted as a SLURM job instead of running locally."""
@@ -274,7 +264,6 @@ class InferenceConfig(BaseConfig):
     """Only validate and dump resolved configs, then exit early."""
 
     experimental: InferenceExperimentalConfig = InferenceExperimentalConfig()
-    """Experimental inference features."""
 
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):

@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
 from prime_rl.utils.config import BaseConfig
 
@@ -253,7 +253,7 @@ class MetricsServerConfig(BaseConfig):
     """Host to bind the server to."""
 
 
-class BaseTransportConfig(BaseModel):
+class BaseTransportConfig(BaseConfig):
     pass
 
 
