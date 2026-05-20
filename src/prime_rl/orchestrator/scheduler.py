@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections import Counter, defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 import verifiers as vf
@@ -21,6 +23,78 @@ from prime_rl.utils.utils import (
     get_step_path,
     wait_for_path,
 )
+
+_ERROR_NAME_RE = re.compile(r"\b[A-Z][A-Za-z0-9_]*(?=\s*(?:\(|->|$))")
+
+
+def _public_verifiers_retryable_error_names() -> frozenset[str]:
+    retryable_bases = (vf.InfraError, vf.InvalidModelResponseError)
+    return frozenset(
+        name for name, value in vars(vf).items() if isinstance(value, type) and issubclass(value, retryable_bases)
+    )
+
+
+# verifiers serializes ErrorInfo before prime-rl sees rollout failures. The
+# public base classes are derived from vf.InfraError/vf.InvalidModelResponseError;
+# the extra names are known non-exported verifiers subclasses that can appear in
+# serialized chains without their base class names.
+_SERIALIZED_RETRYABLE_ERROR_NAMES = _public_verifiers_retryable_error_names() | {
+    "AgentError",
+    "InterceptionError",
+    "PythonWorkerDeadError",
+    "PythonWorkerNotReadyError",
+    "PythonWorkerRequestError",
+    "RLMSandboxCommandTimeout",
+    "RLMSessionError",
+    "RLMSetupError",
+    "RLMWorkerError",
+    "RLMWorkerRecoveryError",
+    "SandboxCreationError",
+    "SandboxNotReadyError",
+    "SandboxSetupError",
+    "StreamInterrupted",
+    "SubLLMEmptyModelResponseError",
+}
+
+
+class NonReschedulableRolloutError(RuntimeError):
+    """Raised when a serialized rollout error should abort instead of spawning replacement rollouts."""
+
+
+def _serialized_error_names(error: object) -> set[str]:
+    if isinstance(error, BaseException):
+        return {type(error).__name__}
+    if not isinstance(error, Mapping):
+        return set()
+
+    names: set[str] = set()
+    for key in ("error", "error_chain_str", "error_chain_repr"):
+        value = error.get(key)
+        if not isinstance(value, str):
+            continue
+        names.update(_ERROR_NAME_RE.findall(value))
+    return names
+
+
+def is_reschedulable_rollout_error(error: object) -> bool:
+    """Match verifiers maybe_retry semantics for serialized RolloutOutput errors.
+
+    verifiers retries vf.InfraError and vf.InvalidModelResponseError by type.
+    prime-rl receives serialized ErrorInfo dictionaries, so this compatibility
+    bridge compares class-name tokens from those serialized chains instead.
+    """
+    if isinstance(error, (vf.InfraError, vf.InvalidModelResponseError)):
+        return True
+    return bool(_serialized_error_names(error) & _SERIALIZED_RETRYABLE_ERROR_NAMES)
+
+
+def _rollout_error_reason(error: object) -> str:
+    if isinstance(error, Mapping):
+        for key in ("error_chain_repr", "error_chain_str", "error"):
+            value = error.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return repr(error)
 
 
 @dataclass
@@ -458,10 +532,15 @@ class Scheduler:
                     for rollout in rollouts:
                         if rollout["error"] is not None:
                             self.errored_rollouts_by_env[env_name] += 1
+                            last_failure_reason = _rollout_error_reason(rollout["error"])
+                            if not is_reschedulable_rollout_error(rollout["error"]):
+                                raise NonReschedulableRolloutError(
+                                    f"Non-retryable rollout error in group {group_id} ({env_name}); "
+                                    f"not rescheduling replacement rollouts. Last failure: {last_failure_reason}"
+                                )
                             has_failures = True
-                            last_failure_reason = rollout["error"]["error_chain_repr"]
                             self.logger.warning(
-                                f"Rollout error in group {group_id} ({env_name}), re-scheduling "
+                                f"Retryable rollout error in group {group_id} ({env_name}), re-scheduling "
                                 f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete): "
                                 f"{last_failure_reason}"
                             )
@@ -520,6 +599,10 @@ class Scheduler:
                     if group_id is not None:
                         await self.drop_group(group_id)
                     continue
+                except NonReschedulableRolloutError:
+                    if group_id is not None:
+                        await self.drop_group(group_id)
+                    raise
                 except Exception as e:
                     self.logger.warning(f"Rollout failed: {e}")
                     if group_id is not None:

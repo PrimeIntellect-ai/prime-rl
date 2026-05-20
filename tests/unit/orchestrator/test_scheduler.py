@@ -1,12 +1,28 @@
 import asyncio
+from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 import verifiers as vf
 
-from prime_rl.orchestrator.scheduler import GroupState, InflightRequest, Scheduler
+from prime_rl.orchestrator.scheduler import (
+    GroupState,
+    InflightRequest,
+    NonReschedulableRolloutError,
+    Scheduler,
+    is_reschedulable_rollout_error,
+)
 from prime_rl.utils.async_utils import safe_cancel
+
+
+def make_error(error: str, error_chain_str: str | None = None, error_chain_repr: str | None = None) -> dict:
+    return {
+        "error": error,
+        "error_chain_str": error_chain_str or error,
+        "error_chain_repr": error_chain_repr or f"{error}()",
+    }
 
 
 def make_scheduler() -> Scheduler:
@@ -21,17 +37,109 @@ def make_scheduler() -> Scheduler:
     scheduler.checkpoint_ready.set()
     scheduler.lora_name = None
     scheduler.model_name = "test-model"
+    scheduler.batch_size = 1
+    scheduler.token_batch_size = None
+    scheduler.rollouts_per_example = 1
+    scheduler.max_inflight_rollouts = 1
     scheduler.update_weights_time = 0
     scheduler.wait_for_ckpt_time = 0
     scheduler.inflight_requests = {}
     scheduler.groups = {}
     scheduler.max_off_policy_steps = 1
     scheduler.cancelled_rollouts_count = 0
+    scheduler.empty_rollouts_by_env = defaultdict(int)
+    scheduler.errored_rollouts_by_env = defaultdict(int)
+    scheduler.total_rollouts_by_env = defaultdict(int)
+    scheduler.dropped_groups_by_env = defaultdict(int)
+    scheduler.json_logging = False
+    scheduler.last_batch_generation_time = 0.0
     scheduler.policy_update_lock = asyncio.Lock()
     scheduler.inflight_policy_update_task = None
     scheduler.update_policy_task = None
     scheduler.rate_limiter = None
     return scheduler
+
+
+def test_reschedulable_serialized_errors_match_verifiers_retry_semantics():
+    retryable_errors = [
+        make_error("InfraError"),
+        make_error("SandboxError", "SandboxError -> TimeoutError"),
+        make_error("SandboxCreationError", "SandboxCreationError"),
+        make_error("TunnelError"),
+        make_error("BrowserSandboxError"),
+        make_error("InvalidModelResponseError"),
+        make_error("EmptyModelResponseError"),
+        make_error("SubLLMEmptyModelResponseError"),
+    ]
+
+    for error in retryable_errors:
+        assert is_reschedulable_rollout_error(error), error
+
+
+def test_plain_model_error_and_unknown_serialized_errors_are_terminal():
+    no_workers = make_error(
+        "ModelError",
+        "ModelError -> InternalServerError",
+        "ModelError() -> InternalServerError('No available workers (all circuits open or unhealthy)')",
+    )
+    unknown = make_error("MysteryRolloutError")
+
+    assert not is_reschedulable_rollout_error(no_workers)
+    assert not is_reschedulable_rollout_error(unknown)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        make_error(
+            "ModelError",
+            "ModelError -> InternalServerError",
+            "ModelError() -> InternalServerError('No available workers (all circuits open or unhealthy)')",
+        ),
+        make_error("MysteryRolloutError"),
+    ],
+)
+def test_generate_batch_aborts_non_reschedulable_serialized_errors(error: dict):
+    async def run() -> None:
+        scheduler = make_scheduler()
+        scheduler.maybe_update_policy = AsyncMock()
+        scheduler.update_policy_loop = AsyncMock()
+        scheduler._fill_inflight_requests = AsyncMock()
+        scheduler.buffer = MagicMock()
+        scheduler.train_envs = SimpleNamespace(get=MagicMock(return_value=SimpleNamespace(requires_group_scoring=True)))
+        scheduler.groups = {
+            0: GroupState(
+                example={"env_name": "swe", "example_id": "ex-1"},
+                rollouts_to_schedule=0,
+            )
+        }
+
+        task = asyncio.create_task(asyncio.sleep(0, result={"error": error, "trajectory": []}))
+        await asyncio.sleep(0)
+        scheduler.inflight_requests = {
+            task: InflightRequest(
+                off_policy_steps=0,
+                client_config=SimpleNamespace(api_base_url="http://test", extra_headers={}),
+                env_name="swe",
+                group_id=0,
+            )
+        }
+
+        with (
+            patch(
+                "prime_rl.orchestrator.scheduler.ProgressTracker",
+                return_value=SimpleNamespace(update=MagicMock(), close=MagicMock()),
+            ),
+            pytest.raises(NonReschedulableRolloutError, match="not rescheduling replacement rollouts"),
+        ):
+            await scheduler.generate_batch(step=1)
+
+        assert scheduler.groups == {}
+        assert scheduler.errored_rollouts_by_env["swe"] == 1
+        scheduler._fill_inflight_requests.assert_awaited_once()
+        scheduler.buffer.update.assert_not_called()
+
+    asyncio.run(run())
 
 
 def test_update_off_policy_does_not_increment_interleaved_on_policy_tasks():
