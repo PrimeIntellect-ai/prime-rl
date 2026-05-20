@@ -21,6 +21,11 @@ class InferencePool(Protocol):
     """Protocol for inference pools (static or elastic)."""
 
     @property
+    def model_name(self) -> str:
+        """Get current model name for inference requests."""
+        ...
+
+    @property
     def train_clients(self) -> list[vf.ClientConfig]:
         """Get inference clients."""
         ...
@@ -137,8 +142,6 @@ async def setup_inference_pool(
     preserve_thinking_between_tool_calls: bool = False,
 ) -> InferencePool:
     """Create an inference pool from config (static or elastic)."""
-    logger = get_logger()
-
     if client_config.is_elastic:
         from prime_rl.utils.elastic import ElasticInferencePool
 
@@ -155,11 +158,6 @@ async def setup_inference_pool(
             preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
         )
 
-    logger.info(
-        f"Initializing static inference pool (base_url={', '.join(client_config.base_url)}, "
-        f"dp_rank_count={client_config.dp_rank_count}, "
-        f"api_key_var={client_config.api_key_var}, headers={client_config.headers})"
-    )
     return StaticInferencePool(
         client_config,
         model_name=model_name,
@@ -196,9 +194,12 @@ def setup_clients(
             "preserve_all_thinking": preserve_all_thinking,
             "preserve_thinking_between_tool_calls": preserve_thinking_between_tool_calls,
         }
+    env_headers = {
+        k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
+    }
     for base_url in client_config.base_url:
         for dp_rank in range(client_config.dp_rank_count):
-            headers = client_config.headers.copy()
+            headers = {**client_config.headers, **env_headers}
             if client_config.dp_rank_count > 1:
                 headers["X-data-parallel-rank"] = str(dp_rank)
             clients.append(
@@ -236,7 +237,10 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
     urls = client_config.admin_base_url if client_config.admin_base_url else client_config.base_url
 
     def _setup_admin_client(base_url: str) -> httpx.AsyncClient:
-        headers = client_config.headers.copy()  # avoid mutating config
+        env_headers = {
+            k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
+        }
+        headers = {**client_config.headers, **env_headers}
         api_key = os.getenv(client_config.api_key_var, "EMPTY")
         if api_key and api_key != "EMPTY":
             headers["Authorization"] = f"Bearer {api_key}"

@@ -210,6 +210,7 @@ class ElasticInferencePool:
                 base_url=urls,
                 api_key_var=self.client_config.api_key_var,
                 headers=self.client_config.headers,
+                headers_from_env=self.client_config.headers_from_env,
                 dp_rank_count=self.client_config.dp_rank_count,
                 extra_headers_from_state=self.client_config.extra_headers_from_state,
             )
@@ -267,6 +268,7 @@ class ElasticInferencePool:
             base_url=[f"{url}/v1"],
             api_key_var=self.client_config.api_key_var,
             headers=self.client_config.headers,
+            headers_from_env=self.client_config.headers_from_env,
         )
         return setup_admin_clients(config)[0]
 

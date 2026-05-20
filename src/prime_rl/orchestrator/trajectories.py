@@ -18,7 +18,7 @@ from prime_rl.utils.chat_template import (
 from prime_rl.utils.logger import get_logger
 
 # We use list() instead of deepcopy() for flat lists (token IDs, logprobs) - safe because
-# primitives are immutable. pixel_values/image_grid_thw are not mutated after creation.
+# primitives are immutable. mm_kwargs payloads are not mutated after creation.
 
 
 def _align_routed_experts(

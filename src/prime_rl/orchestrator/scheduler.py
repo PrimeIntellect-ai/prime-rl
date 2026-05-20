@@ -73,7 +73,8 @@ class Scheduler:
     def __init__(
         self,
         train_envs: TrainEnvs,
-        inference_pool: InferencePool,
+        student_inference: InferencePool,
+        teacher_inference: InferencePool | None,
         buffer: Buffer,
         config: OrchestratorConfig,
         max_inflight_rollouts: int,
@@ -81,7 +82,6 @@ class Scheduler:
         max_off_policy_steps: int,
         strict_async_level: bool,
         tasks_per_minute: int | None,
-        enable_policy_updates: bool = True,
         lora_name: str | None = None,
     ):
         self.logger = get_logger()
@@ -99,13 +99,21 @@ class Scheduler:
         self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
         self.strict_async_level = strict_async_level
-        self.enable_policy_updates = enable_policy_updates
         self.lora_name = lora_name
-        self.model_name = self.config.model.name
         self.json_logging = config.log.json_logging
 
-        # Inference pool - used for admin operations (adapter sync) and metrics
-        self.inference_pool = inference_pool
+        # student_inference is the weight-sync target. teacher_inference is set
+        # in opd (for logprobs) and sft (for rollouts). rollout_inference is
+        # whichever pool serves train rollouts for this mode.
+        self.student_inference = student_inference
+        self.teacher_inference = teacher_inference
+        if config.training_mode == "sft":
+            assert teacher_inference is not None
+            self.rollout_inference = teacher_inference
+        else:
+            self.rollout_inference = student_inference
+        # model_name is the name to send on rollout requests - matches the rollout pool
+        self.model_name = self.rollout_inference.model_name
 
         group_scoring_envs = [env.name for env in train_envs if env.requires_group_scoring]
         if group_scoring_envs:
@@ -175,10 +183,10 @@ class Scheduler:
         Uses (api_base_url, dp_rank) as identity rather than client_idx so that
         load tracking survives elastic pool refreshes (which reassign indices).
         """
-        clients = self.inference_pool.train_clients
+        clients = self.rollout_inference.train_clients
         while not clients:
             await asyncio.sleep(1)
-            clients = self.inference_pool.train_clients
+            clients = self.rollout_inference.train_clients
         inflight = Counter(self._client_identity(info.client_config) for info in self.inflight_requests.values())
         return min(clients, key=lambda c: inflight[self._client_identity(c)])
 
@@ -320,14 +328,18 @@ class Scheduler:
 
         update_weights_start_time = time.perf_counter()
         weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
-        await self.inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
+        await self.student_inference.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
         self.update_weights_time = time.perf_counter() - update_weights_start_time
         self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
         self.ckpt_step = next_ckpt_step
         if self.lora_name is not None:
-            self.model_name = self.lora_name
-            self.inference_pool.update_model_name(self.model_name)
+            self.student_inference.update_model_name(self.lora_name)
+            # Only redirect rollout requests to the new LoRA when rollouts come from
+            # student inference (rl/opd). In sft, rollouts go to the teacher and
+            # the student's LoRA name is irrelevant to them.
+            if self.rollout_inference is self.student_inference:
+                self.model_name = self.lora_name
 
         self.checkpoint_ready.set()
         await self._update_off_policy()
@@ -350,11 +362,6 @@ class Scheduler:
 
     async def maybe_update_policy(self):
         """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
-        if not self.enable_policy_updates:
-            self.ckpt_step = self.step
-            self.checkpoint_ready.set()
-            return
-
         while True:
             next_ckpt_step = self._compute_next_ckpt_step()
             if next_ckpt_step <= self.ckpt_step:
@@ -394,18 +401,14 @@ class Scheduler:
         """Continuously generates a batch of rollouts."""
         self.step = step
 
-        if self.enable_policy_updates:
-            # Cancel the previous update policy task to avoid concurrent updates
-            if self.update_policy_task is not None:
-                await safe_cancel(self.update_policy_task)
+        # Cancel the previous update policy task to avoid concurrent updates
+        if self.update_policy_task is not None:
+            await safe_cancel(self.update_policy_task)
 
-            # Manually check the async barrier before starting the step, then re-create the update policy loop
-            # This ensures that we respect max_async_level, while still listening for policy updates mid-step
-            await self.maybe_update_policy()
-            self.update_policy_task = asyncio.create_task(self.update_policy_loop())
-        else:
-            self.ckpt_step = step
-            self.checkpoint_ready.set()
+        # Manually check the async barrier before starting the step, then re-create the update policy loop
+        # This ensures that we respect max_async_level, while still listening for policy updates mid-step
+        await self.maybe_update_policy()
+        self.update_policy_task = asyncio.create_task(self.update_policy_loop())
 
         batch_start_time = time.perf_counter()
 
@@ -598,7 +601,7 @@ class Scheduler:
         self.total_rollouts_by_env.clear()
         self.dropped_groups_by_env.clear()
 
-        # Add inference pool metrics (e.g. elastic pool server counts)
-        metrics.update(self.inference_pool.get_metrics())
+        # Add train pool metrics (e.g. elastic pool server counts)
+        metrics.update(self.rollout_inference.get_metrics())
 
         return metrics

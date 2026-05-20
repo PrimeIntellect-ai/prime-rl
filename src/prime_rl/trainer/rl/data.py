@@ -41,8 +41,9 @@ class TensorMicroBatch(TypedDict):
     # mm_token_type_ids: token type per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
 
-    # When True, trainer uses SFT loss instead of RL loss for this batch
-    sft_loss: bool
+    # Selects loss dispatch (rl/opd → default loss with mode-specific taus,
+    # sft → sft loss). All samples in a micro batch share the same mode.
+    training_mode: str
 
 
 class FakeDataLoader:
@@ -116,7 +117,7 @@ class FakeDataLoader:
             "routed_experts": None,
             "mm_kwargs": None,
             "mm_token_type_ids": None,
-            "sft_loss": False,
+            "training_mode": "rl",
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -143,7 +144,7 @@ class FakeDataLoader:
             "routed_experts": None,
             "mm_kwargs": None,
             "mm_token_type_ids": None,
-            "sft_loss": False,
+            "training_mode": "rl",
         }
 
 
@@ -227,7 +228,7 @@ class DataLoader:
             )  # [1, seq_len, layers, topk]
             if micro_batch.routed_experts is not None
             else None,
-            sft_loss=micro_batch.sft_loss,
+            training_mode=micro_batch.training_mode,
         )
 
 

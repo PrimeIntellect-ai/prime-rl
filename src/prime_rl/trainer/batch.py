@@ -78,7 +78,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_kwargs=training_example.mm_kwargs,
-        sft_loss=training_example.sft_loss,
+        training_mode=training_example.training_mode,
     )
 
 
@@ -95,7 +95,7 @@ def packed_samples_into_micro_bs(
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
     With per-token temperatures, samples can be packed together regardless of their temperature values.
 
-    NOTE: Multimodal samples (with pixel_values) are NOT packed together as they have variable-sized
+    NOTE: Multimodal samples (with mm_kwargs) are NOT packed together as they have variable-sized
     vision data that doesn't pack well. Each multimodal sample becomes its own micro batch.
     """
     # Sort by (lora_idx, -length) for packing efficiency
@@ -120,7 +120,7 @@ def packed_samples_into_micro_bs(
             # Check if sequence fits in this bin
             if (
                 len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len
-                and bin_content.sft_loss == sample.sft_loss
+                and bin_content.training_mode == sample.training_mode
             ):
                 bin_content.input_ids.extend(sample.input_ids)
                 bin_content.loss_mask.extend(sample.loss_mask)

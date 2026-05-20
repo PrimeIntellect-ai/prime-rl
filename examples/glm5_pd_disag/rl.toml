@@ -6,9 +6,6 @@ level = "debug"
 [wandb]
 project = "glm5-pd-disag"
 
-[model]
-name = "zai-org/GLM-5"
-
 [weight_broadcast]
 type = "nccl"
 port = 29502
@@ -38,6 +35,7 @@ interval = 100
 dist_timeout_seconds = 7200
 
 [trainer.model]
+name = "zai-org/GLM-5"
 impl = "custom"
 attn = "flash_attention_2" # dsa is skipping flash attn anyway
 fused_lm_head_token_chunk_size = 2048
@@ -67,6 +65,9 @@ batch_size = 4096
 rollouts_per_example = 16
 oversampling_factor = 3
 max_off_policy_steps = 16
+
+[orchestrator.student.model]
+name = "zai-org/GLM-5-FP8"
 
 [orchestrator.eval]
 interval = 20

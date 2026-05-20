@@ -1,0 +1,113 @@
+import os
+import signal
+import subprocess
+import time
+from pathlib import Path
+from typing import Callable, Generator
+
+import httpx
+import pytest
+
+from prime_rl.utils.process import cleanup_process
+from tests.conftest import ProcessResult
+from tests.utils import check_eval_avg_goes_up, check_no_error, strip_escape_codes
+
+pytestmark = [pytest.mark.gpu, pytest.mark.slow]
+
+TIMEOUT = 600  # 10 minutes
+TEACHER_PORT = 8001
+TEACHER_READY_TIMEOUT_S = 300
+
+
+def _wait_for_teacher(port: int, timeout_s: int) -> None:
+    """Block until the teacher inference server's /v1/models endpoint is reachable."""
+    url = f"http://localhost:{port}/v1/models"
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            r = httpx.get(url, timeout=2.0)
+            if r.status_code == 200:
+                return
+        except (httpx.ConnectError, httpx.ReadTimeout):
+            pass
+        time.sleep(1.0)
+    raise TimeoutError(f"Teacher inference server at {url} did not become ready within {timeout_s}s")
+
+
+@pytest.fixture(scope="module")
+def teacher_inference(output_dir: Path) -> Generator[subprocess.Popen, None, None]:
+    """Spawn a `uv run inference` teacher on GPU 0 (shared with the rl-launched
+    student) at 40% gpu_memory_utilization. Tears down at module scope.
+    """
+    # The rl entrypoint's --clean-output-dir wipes the rl output_dir on start,
+    # so park the teacher log next to it instead of inside it.
+    teacher_log_dir = output_dir.parent / f"{output_dir.name}_teacher"
+    teacher_log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = teacher_log_dir / "teacher_inference.log"
+    cmd = [
+        "uv",
+        "run",
+        "inference",
+        "--model.name",
+        "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL",
+        "--server.port",
+        str(TEACHER_PORT),
+        "--gpu-memory-utilization",
+        "0.4",
+    ]
+    env = {**os.environ, "CUDA_VISIBLE_DEVICES": "0"}
+    with open(log_path, "w") as log_file:
+        proc = subprocess.Popen(cmd, env=env, stdout=log_file, stderr=log_file)
+    try:
+        _wait_for_teacher(TEACHER_PORT, TEACHER_READY_TIMEOUT_S)
+        yield proc
+    finally:
+        cleanup_process(proc.pid, signal.SIGTERM)
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            cleanup_process(proc.pid, signal.SIGKILL)
+            proc.wait()
+
+
+@pytest.fixture(scope="module")
+def wandb_name(branch_name: str) -> str:
+    return f"test-reverse-text-rl-sft:{branch_name}"
+
+
+@pytest.fixture(scope="module")
+def rl_sft_process(
+    teacher_inference,
+    run_process: Callable[..., ProcessResult],
+    output_dir: Path,
+    wandb_project: str,
+    wandb_name: str,
+) -> ProcessResult:
+    """Run the RL entrypoint with training_mode = "sft"; teacher_inference is
+    a fixture-managed external vLLM at http://localhost:8001/v1."""
+    cmd = [
+        "uv",
+        "run",
+        "rl",
+        "@",
+        "configs/ci/integration/reverse_text_rl_sft/start.toml",
+        "--clean-output-dir",
+        "--wandb.project",
+        wandb_project,
+        "--wandb.name",
+        wandb_name,
+        "--output-dir",
+        output_dir.as_posix(),
+    ]
+    return run_process(cmd, timeout=TIMEOUT)
+
+
+@pytest.fixture(scope="module")
+def test_no_error(rl_sft_process: ProcessResult, output_dir: Path):
+    check_no_error(rl_sft_process, output_dir)
+
+
+def test_eval_avg_goes_up(rl_sft_process: ProcessResult, test_no_error, output_dir: Path):
+    with open(output_dir / "logs" / "orchestrator.log", "r") as f:
+        orchestrator_stdout = strip_escape_codes(f.read()).splitlines()
+    check_eval_avg_goes_up(orchestrator_stdout, env_name="reverse-text")

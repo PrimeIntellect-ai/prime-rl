@@ -1,4 +1,8 @@
+from typing import Literal
+
 import msgspec
+
+TrainingMode = Literal["rl", "opd", "sft"]
 
 
 # Encoded tensor: {dtype: "float32", shape: [...], data: <bytes>}.
@@ -40,7 +44,9 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: list[int] | None = None
 
-    sft_loss: bool = False  # When True, trainer uses SFT loss instead of RL loss for this sample
+    # Loss dispatch is batch-driven: rl/opd use default_loss_fn (with mode-specific
+    # taus), sft uses sft_loss_fn. Stamped by the orchestrator from training_mode.
+    training_mode: TrainingMode = "rl"
 
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -71,4 +77,6 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: list[int] | None = None
 
-    sft_loss: bool = False  # When True, trainer uses SFT loss instead of RL loss for this batch
+    # Loss dispatch is batch-driven (rl/opd → default loss with mode-specific taus,
+    # sft → sft loss). All samples packed into a micro batch share the same mode.
+    training_mode: TrainingMode = "rl"

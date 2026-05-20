@@ -1,5 +1,7 @@
 import torch
 
+from prime_rl.inference.vllm.padded_input_scrub import monkey_patch_vllm_padded_input_scrub
+
 
 def transformers_v5_compat():
     """vLLM general plugin: patch transformers v5 config attrs that vLLM still expects.
@@ -16,6 +18,7 @@ def transformers_v5_compat():
     _patch_lora_key_prefix()
     monkey_patch_dp_engine_core_pause_resume_deadlock()
     monkey_patch_vllm_layerwise_reload_alias_buffers()
+    monkey_patch_vllm_padded_input_scrub()
 
 
 def monkey_patch_vllm_layerwise_reload_alias_buffers():
@@ -26,6 +29,8 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
     # storage *after* the parameter has been correctly reloaded. Skip the copy
     # for any buffer that shares storage with a parameter; _place_kernel_tensors
     # re-registers the original view, which trivially reflects the parameter.
+    # Remove this patch once https://github.com/vllm-project/vllm/pull/42481 is
+    # included in the vLLM release we pin/use.
     from vllm.logger import init_logger
     from vllm.model_executor.model_loader.reload import layerwise as reload_layerwise
 

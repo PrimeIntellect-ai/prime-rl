@@ -44,7 +44,6 @@ class WandbMonitor(Monitor):
             return
 
         assert config is not None
-        self.logger.info(f"Initializing {self.__class__.__name__} ({config})")
         self._maybe_overwrite_wandb_command()
 
         # WANDB_MODE=disabled/offline takes precedence over shared mode — shared mode
