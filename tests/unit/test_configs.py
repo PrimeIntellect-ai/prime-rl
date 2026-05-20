@@ -194,6 +194,255 @@ def test_selective_activation_checkpointing_requires_custom_impl():
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
 
 
+def test_shared_model_name_propagates_to_subconfigs():
+    model_name = "PrimeIntellect/test-model"
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": model_name},
+            "trainer": {},
+            "orchestrator": {"use_renderer": False},
+            "inference": {},
+        }
+    )
+    assert config.trainer.model.name == model_name
+    assert config.orchestrator.student.model.name == model_name
+    assert config.inference is not None and config.inference.model.name == model_name
+    assert config.trainer.tokenizer.name == model_name
+    assert config.orchestrator.tokenizer.name == model_name
+
+
+def test_shared_tokenizer_propagates_when_subconfigs_unset():
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "tokenizer": {"name": "my-tokenizer"},
+            "trainer": {},
+            "orchestrator": {"use_renderer": False},
+        }
+    )
+    assert config.trainer.tokenizer.name == "my-tokenizer"
+    assert config.orchestrator.tokenizer.name == "my-tokenizer"
+
+
+def test_shared_and_sub_tokenizer_name_conflict_raises():
+    """Setting tokenizer.name in both [tokenizer] and [trainer.tokenizer]
+    is a config conflict — the sub-config would silently win, and any later
+    CLI override of [tokenizer].name would silently no-op for the trainer."""
+    with pytest.raises(ValidationError, match=r"tokenizer.name.*trainer.tokenizer.name"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "tokenizer": {"name": "shared-tok"},
+                "trainer": {"tokenizer": {"name": "trainer-tok"}},
+                "orchestrator": {"use_renderer": False},
+            }
+        )
+
+
+def test_tokenizer_name_falls_back_to_model_name_when_unset():
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "tokenizer": {"trust_remote_code": True},
+            "trainer": {},
+            "orchestrator": {"use_renderer": False},
+        }
+    )
+    assert config.trainer.tokenizer.name == "my-model"
+    assert config.orchestrator.tokenizer.name == "my-model"
+    assert config.trainer.tokenizer.trust_remote_code is True
+    assert config.orchestrator.tokenizer.trust_remote_code is True
+
+
+def test_explicit_subconfig_tokenizer_name_survives_shared_model_propagation():
+    """Regression: shared ``[model] name = "M"`` must propagate model names but
+    must NOT clobber an explicit ``[orchestrator.tokenizer] name = "T"``.
+
+    This is the case that the old RL-level ``auto_setup_tokenizer`` fix-up got
+    wrong: it unconditionally re-derived ``orchestrator.tokenizer.name`` from
+    ``orchestrator.student.model.name`` after propagation, silently overriding
+    the user's explicit value. The ``mode="before"`` ``auto_setup_shared_configs``
+    propagator fixes this because it propagates the model name into the raw
+    dict before sub-configs are built, so ``OrchestratorConfig``'s own
+    ``auto_setup_tokenizer`` (mode=after) sees the resolved name *and* the
+    explicit user-set tokenizer name, and the ``fill``-if-absent semantic
+    leaves the explicit value alone.
+    """
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "M"},
+            "trainer": {},
+            "orchestrator": {
+                "use_renderer": False,
+                "tokenizer": {"name": "explicit-orch-tok"},
+            },
+        }
+    )
+    # Shared model.name reached every sub-config that didn't override it.
+    assert config.trainer.model.name == "M"
+    assert config.orchestrator.student.model.name == "M"
+    # Trainer didn't specify a tokenizer, so it falls back to the propagated model name.
+    assert config.trainer.tokenizer.name == "M"
+    # Orchestrator's explicit tokenizer name survived.
+    assert config.orchestrator.tokenizer.name == "explicit-orch-tok"
+
+
+def test_tokenizer_chat_template_mismatch_raises():
+    with pytest.raises(ValidationError, match="chat_template"):
+        RLConfig.model_validate(
+            {
+                "trainer": {"tokenizer": {"chat_template": "A"}},
+                "orchestrator": {"use_renderer": False, "tokenizer": {"chat_template": "B"}},
+            }
+        )
+
+
+def test_shared_seq_len_propagates_to_subconfigs():
+    config = RLConfig.model_validate(
+        {
+            "seq_len": 4096,
+            "trainer": {},
+            "orchestrator": {"use_renderer": False},
+        }
+    )
+    assert config.trainer.model.seq_len == 4096
+    assert config.orchestrator.seq_len == 4096
+
+
+def test_shared_and_sub_seq_len_conflict_raises():
+    """Setting seq_len at the shared level and on a sub-config is a conflict —
+    forces the user to pick one place to express the value rather than
+    relying on the silent 'sub wins' rule."""
+    with pytest.raises(ValidationError, match=r"seq_len.*trainer.model.seq_len"):
+        RLConfig.model_validate(
+            {
+                "seq_len": 4096,
+                "trainer": {"model": {"seq_len": 8192}},
+                "orchestrator": {"use_renderer": False},
+            }
+        )
+
+
+def test_shared_and_sub_model_name_conflict_raises():
+    """Setting model.name at the shared level and on a sub-config is a conflict."""
+    with pytest.raises(ValidationError, match=r"model.name.*trainer.model.name"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "X"},
+                "trainer": {"model": {"name": "Y"}},
+                "orchestrator": {"use_renderer": False},
+            }
+        )
+
+
+def test_shared_and_sub_max_steps_conflict_raises():
+    """Top-level scalar shared fields also participate in the mutex check."""
+    with pytest.raises(ValidationError, match=r"max_steps.*orchestrator.max_steps"):
+        RLConfig.model_validate(
+            {
+                "max_steps": 100,
+                "trainer": {},
+                "orchestrator": {"use_renderer": False, "max_steps": 200},
+            }
+        )
+
+
+def test_trainer_chat_template_cascades_to_inference():
+    """``[trainer.tokenizer] chat_template`` set directly (no shared
+    ``[tokenizer] chat_template``) must still reach
+    ``inference.model.chat_template`` so vLLM's ``--chat-template`` is wired
+    up. Regression: the original ``auto_setup_tokenizer`` cascaded this; the
+    refactored propagator must keep doing it."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "trainer": {"tokenizer": {"chat_template": "TPL"}},
+            "orchestrator": {"use_renderer": False, "tokenizer": {"chat_template": "TPL"}},
+            "inference": {},
+        }
+    )
+    assert config.trainer.tokenizer.chat_template == "TPL"
+    assert config.orchestrator.tokenizer.chat_template == "TPL"
+    assert config.inference is not None
+    assert config.inference.model.chat_template == "TPL"
+
+
+def test_shared_wandb_fields_propagate_to_subconfigs():
+    """Every ``SharedWandbConfig`` leaf (project, entity, group, tags, offline)
+    propagates to both trainer.wandb and orchestrator.wandb, not just project
+    and offline. Regression for a miss in the inline propagator."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "wandb": {
+                "project": "shared-proj",
+                "entity": "shared-entity",
+                "group": "shared-group",
+                "tags": ["a", "b"],
+                "shared": False,
+                "offline": True,
+            },
+            "trainer": {},
+            "orchestrator": {"use_renderer": False},
+        }
+    )
+    for component in (config.trainer.wandb, config.orchestrator.wandb):
+        assert component is not None
+        assert component.project == "shared-proj"
+        assert component.entity == "shared-entity"
+        assert component.group == "shared-group"
+        assert component.tags == ["a", "b"]
+        assert component.offline is True
+
+
+def test_empty_shared_ckpt_block_does_not_conflict_with_subconfig_ckpt():
+    """An empty shared [ckpt] block is a presence-only signal, not a field
+    setting — it should not conflict with a non-empty [trainer.ckpt]."""
+    config = RLConfig.model_validate(
+        {
+            "ckpt": {},  # empty block, no field set
+            "trainer": {"ckpt": {"interval": 50}},
+            "orchestrator": {"use_renderer": False, "ckpt": {"interval": 50}},
+        }
+    )
+    assert config.trainer.ckpt is not None
+    assert config.trainer.ckpt.interval == 50
+
+
+def test_shared_and_subconfig_disjoint_fields_coexist():
+    """Per-field mutex only forbids conflicts on the SAME field — disjoint
+    fields in [model] vs [trainer.model] are fine."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "trainer": {"model": {"impl": "custom"}},
+            "orchestrator": {"use_renderer": False},
+        }
+    )
+    assert config.trainer.model.name == "Qwen/Qwen3-0.6B"
+    assert config.trainer.model.impl == "custom"
+
+
+def test_shared_output_dir_propagates_through_cli(tmp_path):
+    """Shared output_dir from CLI reaches sub-configs even when tyro constructs sub-configs before the before-validator."""
+    toml_path = tmp_path / "cfg.toml"
+    write_toml(
+        toml_path,
+        {
+            "max_steps": 1,
+            "seq_len": 128,
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "trainer": {},
+            "orchestrator": {"batch_size": 16, "rollouts_per_example": 1},
+            "inference": {},
+        },
+    )
+    shared_out = tmp_path / "shared"
+    config = cli(RLConfig, args=["@", str(toml_path), "--output-dir", str(shared_out)])
+    assert config.trainer.output_dir == shared_out
+    assert config.orchestrator.output_dir == shared_out / "run_default"
+
+
 def test_orchestrator_renderer_auto_rejects_unmapped_model():
     """use_renderer=True with renderer.name='auto' must reject models not in MODEL_RENDERER_MAP."""
     with pytest.raises(ValidationError, match="silently fall back to DefaultRenderer"):
