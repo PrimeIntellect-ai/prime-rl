@@ -77,7 +77,7 @@ def dummy_envs(mock_openai_client, dummy_dataset) -> Envs:
 @pytest.fixture
 def make_rollouts():
     def _make_rollouts(
-        buffer: Buffer, env_name: str, indices: list[int], rewards: list[float]
+        buffer: Buffer, env_name: str, indices: list[int], rewards: list[float | list[float]]
     ) -> list[vf.RolloutOutput]:
         all_rollouts = []
         eb = buffer.env_buffers[env_name]
@@ -95,11 +95,12 @@ def make_rollouts():
                     completion_mask=[1],
                     completion_logprobs=[0.0],
                     is_truncated=False,
-                    reward=reward,
+                    reward=r,
                     advantage=1.0,
                     metrics={},
                 )
-            ] * 2
+                for r in (reward if isinstance(reward, list) else [reward, reward])
+            ]
             for r in rollouts:
                 r["env_name"] = env_name
             all_rollouts.extend(rollouts)
@@ -132,15 +133,29 @@ def test_buffer_problem_pool_assignment(dummy_envs, make_rollouts):
 
 
 def test_buffer_online_difficulty_filtering(dummy_envs, make_rollouts):
-    """With online_difficulty_filtering=True, only partial reward rollouts are kept."""
+    """With online_difficulty_filtering=True, only non-zero-std reward groups are kept."""
     buffer = Buffer(
         dummy_envs,
         BufferConfig(online_difficulty_filtering=True),
     )
-    buffer.update(make_rollouts(buffer, "env_a", list(range(5)), rewards=[1.0, 0.5, 0.0, 0.5, 0.5]))
+    buffer.update(
+        make_rollouts(
+            buffer,
+            "env_a",
+            list(range(5)),
+            rewards=[
+                [1.0, 1.0],
+                [0.0, 1.0],
+                [0.0, 0.0],
+                [0.5, 0.5],
+                [0.0, 0.5],
+            ],
+        )
+    )
 
-    # Only 3 problems with reward 0.5 -> 6 rollouts kept
-    assert len(buffer.rollout_buffer) == 6
+    # Only the two groups with reward variance provide GRPO signal.
+    assert len(buffer.rollout_buffer) == 4
+    assert buffer.get_metrics()["filtered_rollouts/zero_std"] == pytest.approx(0.6)
 
 
 def test_buffer_no_filtering_by_default(dummy_envs, make_rollouts):

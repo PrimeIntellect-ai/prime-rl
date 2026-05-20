@@ -80,9 +80,11 @@ def monkey_patch_topk_topp_noncontiguous_logits():
     try:
         import vllm.v1.sample.ops.topk_topp_sampler as sampler_mod
         import vllm.v1.sample.ops.topk_topp_triton as triton_mod
-    except Exception as exc:
-        logger.warning("Could not install vLLM top-k/top-p layout guard: %r", exc)
-        return
+    except ImportError as exc:
+        raise RuntimeError(
+            "Could not install vLLM top-k/top-p layout guard. "
+            "Set PRIME_TTP_DISABLE_CONTIGUOUS_GUARD=1 only if you accept the known sampler layout bug."
+        ) from exc
 
     if getattr(triton_mod, "_prime_ttp_contiguous_guard_installed", False):
         return
@@ -95,7 +97,8 @@ def monkey_patch_topk_topp_noncontiguous_logits():
             state["converted"] += 1
             if state["converted"] <= 8:
                 logger.warning(
-                    "Making non-contiguous logits contiguous before vLLM top-k/top-p Triton kernel: shape=%s stride=%s",
+                    "Making non-contiguous logits contiguous before vLLM top-k/top-p Triton kernel: "
+                    "shape=%s stride=%s",
                     tuple(logits.shape),
                     tuple(logits.stride()),
                 )

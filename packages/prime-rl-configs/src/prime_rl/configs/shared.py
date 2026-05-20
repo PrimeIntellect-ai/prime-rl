@@ -261,6 +261,17 @@ class ClientConfig(BaseConfig):
         ),
     ] = "VLLM_API_KEY"
 
+    api_profile: Annotated[
+        Literal["openai_strict", "vllm_permissive", "anthropic", "nemorl"] | None,
+        Field(
+            description=(
+                "Endpoint request-shape profile passed to verifiers clients. "
+                "The RL inference pool defaults to vLLM-compatible servers, so vLLM-only "
+                "sampling extras such as cache_salt should be preserved unless explicitly disabled."
+            ),
+        ),
+    ] = "vllm_permissive"
+
     headers: Annotated[
         dict[str, str],
         Field(

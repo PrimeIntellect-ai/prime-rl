@@ -1,0 +1,273 @@
+#!/bin/bash
+set -euo pipefail
+
+# --- Rendered config ---
+export PROJECT_DIR={{ project_dir }}
+export CONFIG_DIR={{ config_dir }}
+export OUTPUT_DIR={{ output_dir }}
+export ORCHESTRATOR_OUTPUT_DIR={{ orchestrator_output_dir }}
+export NUM_LAYOUT_NODES={{ num_nodes }}
+export TRAINER_NODE_INDEX={{ trainer_node_idx }}
+export TRAINER_GPU_IDS="{{ trainer_gpu_ids }}"
+export TRAINER_GPU_COUNT={{ trainer_gpu_count }}
+export MASTER_PORT={{ master_port }}
+
+mkdir -p "$OUTPUT_DIR/logs/inference" "$OUTPUT_DIR/logs/trainer/torchrun"
+ln -sfn "trainer/node_${TRAINER_NODE_INDEX}.log" "$OUTPUT_DIR/logs/trainer.log"
+ln -sfn "inference/server_0.log" "$OUTPUT_DIR/logs/inference.log"
+
+# --- Resolve hosts ---
+if [ -n "${GPU_LAYOUT_HOSTS:-}" ]; then
+    read -ra HOSTNAMES <<< "$GPU_LAYOUT_HOSTS"
+else
+    HOSTNAMES=( $(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n "$NUM_LAYOUT_NODES") )
+fi
+
+HOST_COUNT=0
+for _host in "${HOSTNAMES[@]}"; do
+    HOST_COUNT=$((HOST_COUNT + 1))
+done
+if [ "$HOST_COUNT" -ne "$NUM_LAYOUT_NODES" ]; then
+    echo "Expected $NUM_LAYOUT_NODES hosts, got $HOST_COUNT: ${HOSTNAMES[*]}" >&2
+    exit 1
+fi
+
+export MASTER_ADDR="${HOSTNAMES[$TRAINER_NODE_INDEX]}"
+export HOSTNAMES_STR="${HOSTNAMES[*]}"
+
+# Node identity via SLURM_PROCID (srun --ntasks-per-node=1 assigns 0..N-1)
+NODE_INDEX=${SLURM_PROCID:-0}
+if [ "$NODE_INDEX" -ge "$NUM_LAYOUT_NODES" ]; then
+    echo "SLURM_PROCID=${NODE_INDEX} out of range [0, ${NUM_LAYOUT_NODES})" >&2
+    exit 1
+fi
+
+# --- Build inference URLs (ADMIN_URLS = INFER_URLS for gpu_layout) ---
+INFER_URLS=""
+{% for server in inference_servers %}
+INFER_URLS="${INFER_URLS:+$INFER_URLS }http://${HOSTNAMES[{{ server.node_idx }}]}:{{ server.port }}/v1"
+{% endfor %}
+export INFER_URLS
+export ADMIN_URLS="$INFER_URLS"
+
+echo "GPU layout hosts: ${HOSTNAMES[*]}"
+echo "NODE_INDEX=${NODE_INDEX} MASTER_ADDR=${MASTER_ADDR}"
+echo "INFER_URLS=${INFER_URLS}"
+
+# --- Environment ---
+cd "$PROJECT_DIR"
+set -a
+[ -f .env ] && source .env
+set +a
+source .venv/bin/activate
+
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
+export PYTHONUNBUFFERED=1
+export OMP_NUM_THREADS=1
+export GIT_LFS_SKIP_SMUDGE=1
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
+export VLLM_NO_USAGE_STATS=1
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
+
+{% if wandb_shared -%}
+export WANDB_SHARED_MODE=1
+export WANDB_SHARED_RUN_ID="${WANDB_SHARED_RUN_ID:-$(uv run --no-sync python -c "import uuid; print(uuid.uuid4().hex)")}"
+{%- endif %}
+
+# --- GPU ids this node will claim (for scoped pre-run cleanup) ---
+case "$NODE_INDEX" in
+{% for node in range(num_nodes) %}
+    {{ node }})
+        _NODE_GPU_IDS_RAW="{% for server in inference_servers if server.node_idx == node %}{{ server.gpu_id }},{% endfor %}{% if node == trainer_node_idx %}{{ trainer_gpu_ids }}{% endif %}"
+        ;;
+{% endfor %}
+    *) _NODE_GPU_IDS_RAW="" ;;
+esac
+# normalize: drop empties, dedup, comma-join (physical GPU indices)
+NODE_GPU_IDS=$(printf '%s' "$_NODE_GPU_IDS_RAW" | tr ',' '\n' | grep -E '^[0-9]+$' | sort -un | paste -sd, -)
+
+# --- Pre-run cleanup: free ONLY the GPUs this node will claim ---
+# Purpose: clear orphan compute processes wedging the exact GPUs this run binds
+# (from a prior crashed run). Scoped strictly to this node's claimed GPU ids via
+# nvidia-smi compute-apps → co-tenant-safe by construction: processes on other
+# GPUs of a shared node, and the orchestrating `rl_gpu_layout_allocation` python
+# (not a CUDA compute app), are never matched. Replaces the former node-global
+# name-pattern pkill. `|| true` required under `set -e`.
+if [ -n "$NODE_GPU_IDS" ]; then
+    mapfile -t _WEDGE_PIDS < <(nvidia-smi --query-compute-apps=pid --format=csv,noheader -i "$NODE_GPU_IDS" 2>/dev/null | tr -d ' ' | grep -E '^[0-9]+$' || true)
+    for _pid in "${_WEDGE_PIDS[@]:-}"; do
+        [ -n "$_pid" ] && kill -KILL "$_pid" 2>/dev/null || true
+    done
+fi
+rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/vllm_* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null || true
+sleep 2
+
+# --- Inference specs for this node ---
+INFERENCE_SPECS=()
+case "$NODE_INDEX" in
+{% for node in range(num_nodes) %}
+    {{ node }})
+{% for server in inference_servers if server.node_idx == node %}
+        INFERENCE_SPECS+=("{{ server.gpu_id }}:{{ server.port }}:{{ server.server_idx }}")
+{% endfor %}
+        ;;
+{% endfor %}
+    *)
+        echo "Unexpected NODE_INDEX=${NODE_INDEX}" >&2
+        exit 1
+        ;;
+esac
+
+# --- Process lifecycle ---
+# Exported on the common path: both the orchestrator and the non-trainer
+# completion-waiter run as `setsid bash -c` (separate env) and read this.
+export TRAINING_COMPLETE_FLAG="$OUTPUT_DIR/TRAINING_COMPLETE"
+# Every backgrounded managed job is setsid'd; CHILD_PIDS holds their SIDs so
+# cleanup() can reap each whole session by id (no untracked bg job → the final
+# `wait` in cleanup() cannot hang).
+CHILD_PIDS=()
+
+cleanup() {
+    # Each component is launched via `setsid` so it is a SESSION LEADER and
+    # CHILD_PIDS[i] == its session id (SID). Reap each tracked component's whole
+    # session subtree (vLLM workers, torchrun children) with `pkill -s "$sid"`.
+    # This is PRECISE: it cannot touch the launcher, the parent
+    # `rl_gpu_layout_allocation` python, or any co-tenant (all in different
+    # sessions). `|| true` required under `set -e`.
+    local sid
+    for sid in "${CHILD_PIDS[@]:-}"; do
+        [ -n "$sid" ] || continue
+        pkill -KILL -s "$sid" 2>/dev/null || true
+    done
+    wait 2>/dev/null || true
+}
+trap cleanup EXIT TERM INT
+
+# --- Start inference servers (one per GPU, backgrounded) ---
+for spec in "${INFERENCE_SPECS[@]}"; do
+    IFS=: read -r gpu_id port server_idx <<< "$spec"
+    log_file="$OUTPUT_DIR/logs/inference/server_${server_idx}.log"
+    rpc_root="/tmp/vllm-rpc-${USER:-prime}-${SLURM_JOB_ID:-0}-${server_idx}"
+    cache_root="/tmp/prime-rl-vllm-cache-${USER:-prime}-${SLURM_JOB_ID:-0}-${server_idx}"
+    rm -rf "$rpc_root"
+    mkdir -p "$rpc_root" "$cache_root/vllm" "$cache_root/torchinductor" "$cache_root/triton" "$cache_root/xdg"
+    echo "Starting inference server_${server_idx} on $(hostname) gpu=${gpu_id} port=${port}" | tee "$log_file"
+    # setsid → this server is a session leader; $! == its SID (the backgrounded
+    # child is not a pgroup leader, so setsid execs in place without forking).
+    # cleanup() reaps the whole session by SID. `env` scopes the per-server vars.
+    setsid env \
+        CUDA_VISIBLE_DEVICES="$gpu_id" \
+        VLLM_RPC_BASE_PATH="$rpc_root" \
+        VLLM_CACHE_ROOT="$cache_root/vllm" \
+        TORCHINDUCTOR_CACHE_DIR="$cache_root/torchinductor" \
+        TRITON_CACHE_DIR="$cache_root/triton" \
+        XDG_CACHE_HOME="$cache_root/xdg" \
+        uv run --no-sync inference \
+            @ "$CONFIG_DIR/inference.toml" \
+            --server.host 0.0.0.0 \
+            --server.port "$port" \
+            --parallel.tp 1 \
+            --parallel.dp 1 >> "$log_file" 2>&1 &
+    CHILD_PIDS+=("$!")
+done
+
+if [ "$NODE_INDEX" -eq "$TRAINER_NODE_INDEX" ]; then
+    # --- Trainer node: inference + orchestrator + trainer, all backgrounded ---
+    rm -f "$TRAINING_COMPLETE_FLAG"
+    touch "$OUTPUT_DIR/logs/trainer/node_${TRAINER_NODE_INDEX}.log"
+
+    # Orchestrator subshell. The orchestrator owns run completion: it breaks at
+    # max_steps, runs final evals, then a bounded graceful shutdown. It exits
+    # well AFTER the trainer (which breaks at max_steps and returns fast), so
+    # completion MUST be keyed off the orchestrator — keying off the trainer
+    # would tear the step down mid final-evals/shutdown. Signal
+    # TRAINING_COMPLETE only when the orchestrator itself exits cleanly.
+    ORCH_ARGS="@ $CONFIG_DIR/orchestrator.toml"
+    ORCH_ARGS="$ORCH_ARGS --client.base-url $INFER_URLS"
+    ORCH_ARGS="$ORCH_ARGS --client.admin-base-url $ADMIN_URLS"
+    ORCH_ARGS="$ORCH_ARGS --client.dp-rank-count 1"
+    ORCH_ARGS="$ORCH_ARGS --weight_broadcast.host $MASTER_ADDR"
+
+    export ORCH_ARGS  # TRAINING_COMPLETE_FLAG already exported on the common path
+    # setsid → orchestrator is a session leader; $! == its SID (cleanup() reaps
+    # the whole session). Explicit `set +e` + rc capture is the control flow
+    # (not inherited errexit timing). The flag is touched ONLY on a clean
+    # orchestrator exit — the orchestrator owns run completion.
+    setsid bash -c '
+        set +e
+        {% if wandb_shared %}WANDB_SHARED_LABEL=orchestrator {% endif %}uv run --no-sync orchestrator $ORCH_ARGS >> "$OUTPUT_DIR/logs/orchestrator.log" 2>&1
+        rc=$?
+        [ "$rc" -eq 0 ] && touch "$TRAINING_COMPLETE_FLAG"
+        exit "$rc"
+    ' &
+    CHILD_PIDS+=("$!")
+
+    # Trainer subshell: runs torchrun and exits its own status. It does NOT
+    # signal completion — it finishes at max_steps before the orchestrator's
+    # finalization tail, and a clean early trainer exit must not end the run.
+    export CUDA_VISIBLE_DEVICES="$TRAINER_GPU_IDS"
+    export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+
+    # setsid → trainer (torchrun) is a session leader; $! == its SID (cleanup()
+    # reaps the whole torchrun session subtree by SID).
+    setsid {% if wandb_shared %}env WANDB_SHARED_LABEL=trainer {% endif %}uv run --no-sync torchrun \
+        --role=trainer \
+        --nnodes=1 \
+        --nproc-per-node="$TRAINER_GPU_COUNT" \
+        --rdzv-endpoint="$MASTER_ADDR:$MASTER_PORT" \
+        --rdzv-id="gpu_layout_${SLURM_JOB_ID:-0}_$(basename "$OUTPUT_DIR")" \
+        --log-dir="$OUTPUT_DIR/logs/trainer/torchrun" \
+        --tee=3 \
+        --redirects=3 \
+        --local-ranks-filter={{ ranks_filter }} \
+        -m prime_rl.trainer.rl.train \
+        @ "$CONFIG_DIR/trainer.toml" \
+        --weight_broadcast.host 0.0.0.0 \
+        >> "$OUTPUT_DIR/logs/trainer/node_${TRAINER_NODE_INDEX}.log" 2>&1 &
+    CHILD_PIDS+=("$!")
+
+    # Wait for the orchestrator to signal clean completion, or any component to
+    # fail. Only the trainer is expected to exit cleanly early (at max_steps);
+    # tolerate that and keep waiting for the orchestrator's finalization. Any
+    # non-zero exit before the flag is a real failure -> tear down (the srun is
+    # launched with --kill-on-bad-exit=1, which propagates the teardown to the
+    # inference-only nodes).
+    while true; do
+        set +e
+        wait -n
+        FIRST_STATUS=$?
+        set -e
+
+        if [ -f "$TRAINING_COMPLETE_FLAG" ]; then
+            echo "Orchestrator completed cleanly; run finished"
+            exit 0
+        fi
+        if [ "$FIRST_STATUS" -ne 0 ]; then
+            echo "Component exited non-zero (status $FIRST_STATUS) before completion; tearing down" >&2
+            exit 1
+        fi
+        echo "A component exited cleanly; awaiting orchestrator completion"
+    done
+
+else
+    # --- Non-trainer nodes: inference + completion waiter ---
+    # setsid → the waiter is a session leader; $! == its SID, tracked like every
+    # other managed job so cleanup() reaps it by SID (a plain `( … ) &` subshell
+    # is NOT a session leader → pkill -s would miss it and cleanup()'s `wait`
+    # would block on the sleep loop on the failure path).
+    setsid bash -c 'while [ ! -f "$TRAINING_COMPLETE_FLAG" ]; do sleep 5; done' &
+    CHILD_PIDS+=("$!")
+
+    # set +e so non-zero from wait -n doesn't skip the flag check
+    set +e
+    wait -n
+    FIRST_STATUS=$?
+    set -e
+
+    if [ -f "$TRAINING_COMPLETE_FLAG" ]; then
+        exit 0
+    fi
+
+    echo "Inference server exited with status $FIRST_STATUS; tearing down" >&2
+    exit 1
+fi

@@ -88,12 +88,6 @@ max_off_policy_steps = 8
 type = "default"
 length_shaping = false
 
-[orchestrator.train_batch_refill]
-enabled = true
-max_refill_rounds = 4
-candidate_groups_per_round = 32
-max_candidate_groups = 128
-
 [orchestrator.train]
 num_workers = 28
 

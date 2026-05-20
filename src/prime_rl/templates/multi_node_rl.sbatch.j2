@@ -68,9 +68,84 @@ export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
 export TRITON_CACHE_DIR=/tmp/triton-cache-$USER-$SLURM_JOB_ID
 
+configure_prime_rl_runtime() {
+    module load brics/aws-ofi-nccl 2>/dev/null || true
+
+    cd "$PROJECT_DIR"
+    export PATH="$PROJECT_DIR/.venv/bin:$PATH"
+    set -a
+    [ -f .env ] && source .env
+    set +a
+    source .venv/bin/activate
+
+    # Isambard GH200: prefer aws-ofi-nccl over CXI and keep every knob overridable.
+    # PRIME_RL_NCCL_DEBUG lets short smokes use INFO without forcing it globally.
+    export NCCL_NET="${NCCL_NET:-AWS Libfabric}"
+    export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-hsn}"
+    export NCCL_DEBUG="${NCCL_DEBUG:-${PRIME_RL_NCCL_DEBUG:-INFO}}"
+    export NCCL_NET_GDR_LEVEL="${NCCL_NET_GDR_LEVEL:-PHB}"
+    export NCCL_CROSS_NIC="${NCCL_CROSS_NIC:-1}"
+    export NCCL_MIN_NCHANNELS="${NCCL_MIN_NCHANNELS:-4}"
+    export NCCL_GDRCOPY_ENABLE="${NCCL_GDRCOPY_ENABLE:-1}"
+    export NCCL_NET_FORCE_FLUSH="${NCCL_NET_FORCE_FLUSH:-0}"
+
+    export FI_CXI_DEFAULT_CQ_SIZE="${FI_CXI_DEFAULT_CQ_SIZE:-131072}"
+    export FI_CXI_DEFAULT_TX_SIZE="${FI_CXI_DEFAULT_TX_SIZE:-2048}"
+    export FI_CXI_DISABLE_NON_INJECT_MSG_IDC="${FI_CXI_DISABLE_NON_INJECT_MSG_IDC:-1}"
+    export FI_HMEM_CUDA_USE_GDRCOPY="${FI_HMEM_CUDA_USE_GDRCOPY:-1}"
+    export FI_CXI_DISABLE_HOST_REGISTER="${FI_CXI_DISABLE_HOST_REGISTER:-1}"
+    export FI_MR_CACHE_MONITOR="${FI_MR_CACHE_MONITOR:-userfaultfd}"
+    export FI_CXI_RDZV_PROTO="${FI_CXI_RDZV_PROTO:-alt_read}"
+    export FI_CXI_RDZV_THRESHOLD="${FI_CXI_RDZV_THRESHOLD:-0}"
+    export FI_CXI_RDZV_GET_MIN="${FI_CXI_RDZV_GET_MIN:-0}"
+    export FI_CXI_RDZV_EAGER_SIZE="${FI_CXI_RDZV_EAGER_SIZE:-0}"
+    export FI_CXI_RX_MATCH_MODE="${FI_CXI_RX_MATCH_MODE:-hybrid}"
+}
+export -f configure_prime_rl_runtime
+
+configure_node_local_compile_cache() {
+    local role="$1"
+    local cache_root="/tmp/prime-rl-compile-cache-${USER:-prime}-${SLURM_JOB_ID:-0}-${role}"
+
+    rm -rf "$cache_root"
+    mkdir -p "$cache_root/vllm" "$cache_root/torchinductor" "$cache_root/triton" "$cache_root/xdg" "$cache_root/rpc"
+
+    export VLLM_CACHE_ROOT="$cache_root/vllm"
+    export TORCHINDUCTOR_CACHE_DIR="$cache_root/torchinductor"
+    export TRITON_CACHE_DIR="$cache_root/triton"
+    export XDG_CACHE_HOME="$cache_root/xdg"
+    export VLLM_RPC_BASE_PATH="$cache_root/rpc"
+}
+export -f configure_node_local_compile_cache
+
+configure_prime_rl_runtime
+
+echo "runtime torch/nccl: $(uv run --no-sync python -c 'import torch; print(torch.__version__, torch.version.cuda, torch.cuda.nccl.version())')"
+
+SRUN_NETWORK="${PRIME_RL_SRUN_NETWORK:-no_vni,disable_rdzv_get}"
+SRUN_ARGS=(--overlap --jobid="$SLURM_JOB_ID")
+if [ -n "$SRUN_NETWORK" ]; then
+    SRUN_ARGS+=(--network="$SRUN_NETWORK")
+fi
+MAIN_SRUN_ARGS=(--mpi=pmi2 "${SRUN_ARGS[@]}")
+export SRUN_NETWORK
+
+VLLM_ROUTER_BIN=""
+if command -v vllm-router >/dev/null 2>&1; then
+    VLLM_ROUTER_BIN=$(command -v vllm-router)
+fi
+export VLLM_ROUTER_BIN
+export USE_VLLM_ROUTER=0
+if [ "${PRIME_RL_DISABLE_VLLM_ROUTER:-0}" = "1" ]; then
+    echo "PRIME_RL_DISABLE_VLLM_ROUTER=1; using direct backend URLs when topology allows it."
+elif [ -n "$VLLM_ROUTER_BIN" ]; then
+    USE_VLLM_ROUTER=1
+fi
+export VLLM_ROUTER_POLICY="${PRIME_RL_VLLM_ROUTER_POLICY:-round_robin}"
+
 {% if wandb_shared -%}
 export WANDB_SHARED_MODE=1
-export WANDB_SHARED_RUN_ID=$(python3 -c "import uuid; print(uuid.uuid4().hex)")
+export WANDB_SHARED_RUN_ID=$(cd "$PROJECT_DIR" && uv run --no-sync python -c "import uuid; print(uuid.uuid4().hex)")
 {%- endif %}
 
 # Networking
@@ -80,6 +155,28 @@ export HOSTNAMES_STR="${HOSTNAMES[*]}"
 
 {% if num_infer_nodes > 0 -%}
 INFER_HOSTS=( ${HOSTNAMES[@]:0:$NUM_INFER_NODES} )
+
+{% if is_disaggregated -%}
+if [ "$USE_VLLM_ROUTER" -ne 1 ]; then
+    echo "vllm-router is required for disaggregated inference but is not available on PATH."
+    exit 1
+fi
+{%- else -%}
+if [ "$USE_VLLM_ROUTER" -ne 1 ]; then
+    if [ "${PRIME_RL_ALLOW_DIRECT_BACKEND:-0}" = "1" ] && [ "$NODES_PER_INFER_REPLICA" -eq 1 ] && [ "$INFERENCE_DP_LOCAL" -eq 1 ]; then
+        echo "PRIME_RL_ALLOW_DIRECT_BACKEND=1; using direct backend for a single-server inference replica."
+    else
+        echo "vllm-router is required for non-disaggregated multi-node inference. Direct-backend fallback silently under-balances multi-server vLLM; set PRIME_RL_ALLOW_DIRECT_BACKEND=1 only for a deliberate single-server debug run."
+        exit 1
+    fi
+fi
+if [ "$USE_VLLM_ROUTER" -ne 1 ] && [ "$NODES_PER_INFER_REPLICA" -ne 1 ]; then
+    echo "direct-backend fallback is only valid for one-node inference replicas."
+    exit 1
+fi
+{%- endif %}
+echo "USE_VLLM_ROUTER=${USE_VLLM_ROUTER} VLLM_ROUTER_BIN=${VLLM_ROUTER_BIN:-none}"
+echo "VLLM_ROUTER_POLICY=${VLLM_ROUTER_POLICY}"
 
 # Build per-replica router URLs, admin URLs, and backend args for the router
 INFER_URLS=""
@@ -110,7 +207,11 @@ done
 for ((r=0; r<NUM_INFER_REPLICAS; r++)); do
     head_idx=$((r * NODES_PER_INFER_REPLICA))
     router_host="${INFER_HOSTS[$head_idx]}"
-    INFER_URLS="${INFER_URLS:+$INFER_URLS }http://${router_host}:${ROUTER_PORT}/v1"
+    if [ "$USE_VLLM_ROUTER" -eq 1 ]; then
+        INFER_URLS="${INFER_URLS:+$INFER_URLS }http://${router_host}:${ROUTER_PORT}/v1"
+    else
+        INFER_URLS="${INFER_URLS:+$INFER_URLS }http://${router_host}:${BACKEND_PORT}/v1"
+    fi
 
     REPLICA_ROUTER_ARGS=""
     for ((n=0; n<NODES_PER_INFER_REPLICA; n++)); do
@@ -143,9 +244,7 @@ echo "MASTER_PORT=${MASTER_PORT}"
 
 # Setup environment
 cd $PROJECT_DIR
-[ -f .env ] && source .env
-source .venv/bin/activate
-uv sync --all-extras
+configure_prime_rl_runtime
 
 {% if pre_run_command %}
 # Pre-run command
@@ -156,29 +255,29 @@ uv sync --all-extras
 # processes and vLLM/torch IPC files under /dev/shm and /tmp can survive SLURM
 # termination and cause the next launch to hang (e.g. decode engines stuck at
 # "Waiting for READY message from DP Coordinator"). Harmless on clean nodes.
-srun bash -c '
-    pkill -9 -f "[p]ython.*prime_rl" 2>/dev/null
-    pkill -9 -f "[t]orchrun" 2>/dev/null
-    pkill -9 -f "[v]llm-router" 2>/dev/null
-    pkill -9 -f "[v]llm" 2>/dev/null
-    pkill -9 -f "[p]rime_rl" 2>/dev/null
-    # Also match prctl-set process names (kernel comm) like "vllm::router"
-    # which pkill -f does not see because -f only matches the cmdline.
-    pkill -9 "vllm" 2>/dev/null
-    pkill -9 "vllm::.*" 2>/dev/null
+srun "${SRUN_ARGS[@]}" bash -c '
+    pkill -9 -f "[p]ython.*prime_rl" 2>/dev/null || true
+    pkill -9 -f "[t]orchrun" 2>/dev/null || true
+    pkill -9 -f "[v]llm-router" 2>/dev/null || true
+    pkill -9 -f "[v]llm" 2>/dev/null || true
+    pkill -9 -f "[p]rime_rl" 2>/dev/null || true
+    for proc_name in inference orchestrator trainer torchrun vllm vllm-router; do
+        pkill -9 -x "$proc_name" 2>/dev/null || true
+    done
+    # Also match prctl-set process names (kernel comm) like "vllm::router".
+    pkill -9 "vllm" 2>/dev/null || true
+    pkill -9 "vllm::.*" 2>/dev/null || true
     sleep 2
-    rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/vllm_* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null
+    rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/vllm_* /tmp/torch-* /tmp/torchelastic_* /tmp/prime-rl-compile-cache-${USER:-prime}-* 2>/dev/null
     procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::" | grep -v grep | wc -l)
     gpu=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk "{s+=\$1} END {print s}")
     echo "[node-cleanup] $(hostname) procs=$procs gpu_mem=${gpu}MiB"
 '
 
 # Run RL
-srun bash -c '
+srun "${MAIN_SRUN_ARGS[@]}" bash -c '
     # Source environment
-    cd $PROJECT_DIR
-    [ -f .env ] && source .env
-    source .venv/bin/activate
+    configure_prime_rl_runtime
     # Do not sync to avoid conflicts with lockfile
 
     # Higher ulimit
@@ -186,8 +285,12 @@ srun bash -c '
     export GIT_LFS_SKIP_SMUDGE=1
 
     # Infiniband setup
-    IB_HCA=$(ibv_devinfo | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" |paste -sd,)
-    export NCCL_IB_HCA=$IB_HCA
+    if command -v ibv_devinfo >/dev/null 2>&1; then
+        IB_HCA=$(ibv_devinfo | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" | paste -sd,)
+        export NCCL_IB_HCA=$IB_HCA
+    else
+        unset NCCL_IB_HCA
+    fi
 
 {% if num_infer_nodes > 0 -%}
 
@@ -195,6 +298,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
     INFER_NODE_RANK=$SLURM_PROCID
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
+    configure_node_local_compile_cache "infer-${INFER_NODE_RANK}"
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
 
 {%- if kv_offload %}
@@ -295,18 +399,19 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
 
-        vllm-router \
-            --policy consistent_hash \
+        "$VLLM_ROUTER_BIN" \
+            --policy "$VLLM_ROUTER_POLICY" \
             --vllm-pd-disaggregation \
             $REPLICA_ROUTER_ARGS \
             --host 0.0.0.0 \
             --port $ROUTER_PORT \
             --intra-node-data-parallel-size {{ dp_per_node }} \
+            --api-key "${VLLM_API_KEY:-EMPTY}" \
             --worker-startup-timeout-secs 4200 \
             >> $ROUTER_LOG 2>&1 &
     fi
 
-    uv run inference \
+    uv run --no-sync inference \
         @ $CONFIG_DIR/inference.toml \
         --server.host 0.0.0.0 \
         --server.port $PORT \
@@ -316,20 +421,24 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
 {%- else -%}
     # Start vllm-router on the first node of each replica
-    if [ "$RANK_IN_REPLICA" -eq 0 ]; then
+    if [ "$USE_VLLM_ROUTER" -eq 1 ] && [ "$RANK_IN_REPLICA" -eq 0 ]; then
         ROUTER_LOG="$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log"
         echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG
 
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
 
-        vllm-router \
-            --policy consistent_hash \
+        "$VLLM_ROUTER_BIN" \
+            --policy "$VLLM_ROUTER_POLICY" \
             --worker-urls $REPLICA_ROUTER_ARGS \
             --host 0.0.0.0 \
             --port $ROUTER_PORT \
             --intra-node-data-parallel-size {{ dp_per_node }} \
+            --api-key "${VLLM_API_KEY:-EMPTY}" \
             --worker-startup-timeout-secs 4200 \
             >> $ROUTER_LOG 2>&1 &
+    elif [ "$RANK_IN_REPLICA" -eq 0 ]; then
+        ROUTER_LOG="$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log"
+        echo "vllm-router unavailable; using direct backend http://$LOCAL_IP:$BACKEND_PORT/v1 for replica $REPLICA_IDX" | tee $ROUTER_LOG
     fi
 
     if [ "$USE_DISTRIBUTED_EP" -eq 1 ]; then
@@ -343,7 +452,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             VLLM_EXTRA="{\"data_parallel_address\": \"$REPLICA_HEAD_HOST\", \"data_parallel_start_rank\": $INFER_DP_START_RANK, \"data_parallel_hybrid_lb\": true}"
         fi
 
-        uv run inference \
+        uv run --no-sync inference \
             @ $CONFIG_DIR/inference.toml \
             --server.host 0.0.0.0 \
             --server.port $BACKEND_PORT \
@@ -351,7 +460,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             --vllm-extra "$VLLM_EXTRA" \
             2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
     else
-        uv run inference \
+        uv run --no-sync inference \
             @ $CONFIG_DIR/inference.toml \
             --server.host 0.0.0.0 \
             --server.port $BACKEND_PORT \
@@ -361,13 +470,14 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 
 else
     TRAIN_NODE_RANK=$((SLURM_PROCID - NUM_INFER_NODES))
+    configure_node_local_compile_cache "train-${TRAIN_NODE_RANK}"
 
     if [ "$TRAIN_NODE_RANK" -eq 0 ]; then
         ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.toml"
         ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --client.base-url $INFER_URLS"
         ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --client.admin-base-url $ADMIN_URLS"
         {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
-        {% endif %}{% if wandb_shared %}WANDB_SHARED_LABEL=orchestrator {% endif %}uv run orchestrator $ORCHESTRATOR_ARGS \
+        {% endif %}{% if wandb_shared %}WANDB_SHARED_LABEL=orchestrator {% endif %}uv run --no-sync orchestrator $ORCHESTRATOR_ARGS \
             2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &
     fi
 {%- else %}
@@ -381,7 +491,7 @@ else
 
     echo $HOSTNAMES_STR | tee $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
 
-    {% if wandb_shared %}WANDB_SHARED_LABEL=trainer {% endif %}uv run torchrun \
+    {% if wandb_shared %}WANDB_SHARED_LABEL=trainer {% endif %}uv run --no-sync torchrun \
         --role=trainer \
         --nnodes=$NUM_TRAIN_NODES \
         --nproc-per-node=$GPUS_PER_NODE \

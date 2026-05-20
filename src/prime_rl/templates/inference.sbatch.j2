@@ -57,6 +57,7 @@ export VLLM_CACHE_ROOT=/tmp/.vllm_cache_$(whoami)
 
 # Setup environment
 cd $PROJECT_DIR
+export PATH="$PROJECT_DIR/.venv/bin:$PATH"
 [ -f .env ] && source .env
 source .venv/bin/activate
 uv sync --all-extras
@@ -132,8 +133,12 @@ srun bash -c '
 # Run inference
 srun bash -c '
     cd $PROJECT_DIR
+    export PATH="$PROJECT_DIR/.venv/bin:$PATH"
     [ -f .env ] && source .env
     source .venv/bin/activate
+{% if disaggregated or num_nodes > 1 %}
+    ROUTER_POLICY="${PRIME_RL_VLLM_ROUTER_POLICY:-{{ router_policy }}}"
+{% endif %}
 
     # Infiniband setup
     IB_HCA=$(ibv_devinfo 2>/dev/null | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" | paste -sd,)
@@ -244,12 +249,13 @@ srun bash -c '
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
 
         vllm-router \
-            --policy {{ router_policy }} \
+            --policy "$ROUTER_POLICY" \
             --vllm-pd-disaggregation \
             $REPLICA_ROUTER_ARGS \
             --host 0.0.0.0 \
             --port $ROUTER_PORT \
             --intra-node-data-parallel-size {{ dp_per_node }} \
+            --api-key "${VLLM_API_KEY:-EMPTY}" \
             --worker-startup-timeout-secs 4200 \
             --log-level debug \
             >> $ROUTER_LOG 2>&1 &
@@ -275,11 +281,12 @@ srun bash -c '
         echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT" | tee $ROUTER_LOG
 
         vllm-router \
-            --policy {{ router_policy }} \
+            --policy "$ROUTER_POLICY" \
             --worker-urls $ROUTER_ARGS \
             --host 0.0.0.0 \
             --port $ROUTER_PORT \
             --intra-node-data-parallel-size {{ dp_per_node }} \
+            --api-key "${VLLM_API_KEY:-EMPTY}" \
             --worker-startup-timeout-secs 4200 \
             --log-level debug \
             >> $ROUTER_LOG 2>&1 &

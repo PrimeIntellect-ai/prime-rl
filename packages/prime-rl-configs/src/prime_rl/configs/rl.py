@@ -197,6 +197,116 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
         return self
 
 
+class GpuLayoutNodeConfig(BaseModel):
+    """GPU role placement for one allocated node.
+
+    The node's position in ``GpuLayoutDeploymentConfig.nodes`` matches its
+    position in the selected Slurm host list.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    inference: Annotated[
+        list[int],
+        Field(default_factory=list, description="GPU ids on this node that run one vLLM server each."),
+    ]
+    trainer: Annotated[
+        list[int],
+        Field(default_factory=list, description="GPU ids on this node that run trainer ranks."),
+    ]
+
+
+class GpuLayoutDeploymentConfig(BaseDeploymentConfig):
+    """Configures a role-based GPU layout across allocated nodes.
+
+    This is for sub-node packing, e.g. 6 one-GPU inference servers plus a
+    2-GPU trainer on two 4-GPU nodes. It intentionally models placement, not a
+    workload-specific "custom" mode.
+    """
+
+    type: Literal["gpu_layout"] = "gpu_layout"
+
+    nodes: Annotated[
+        list[GpuLayoutNodeConfig],
+        Field(min_length=1, description="Per-node GPU role placements in selected host order."),
+    ]
+
+    inference_port_start: Annotated[
+        int,
+        Field(ge=1, le=65535, description="First port assigned to per-GPU inference servers."),
+    ] = 8000
+
+    hosts: Annotated[
+        list[str] | None,
+        Field(
+            description=(
+                "Optional Slurm hostnames to use for this layout. If unset, the launcher "
+                "uses SLURM_JOB_NODELIST only when it exactly matches len(nodes); set hosts "
+                "explicitly for shared allocations with extra nodes."
+            ),
+        ),
+    ] = None
+
+    @property
+    def num_nodes(self) -> int:
+        return len(self.nodes)
+
+    @property
+    def total_infer_gpus(self) -> int:
+        return sum(len(node.inference) for node in self.nodes)
+
+    @property
+    def total_train_gpus(self) -> int:
+        return sum(len(node.trainer) for node in self.nodes)
+
+    @property
+    def trainer_node_indices(self) -> list[int]:
+        return [idx for idx, node in enumerate(self.nodes) if node.trainer]
+
+    @model_validator(mode="after")
+    def validate_layout(self):
+        if self.hosts is not None and len(self.hosts) != len(self.nodes):
+            raise ValueError(f"hosts has {len(self.hosts)} entries, but nodes has {len(self.nodes)} entries.")
+
+        if self.total_train_gpus < 1:
+            raise ValueError("gpu_layout requires at least one trainer GPU.")
+        if self.total_infer_gpus < 1:
+            raise ValueError("gpu_layout requires at least one inference GPU.")
+
+        trainer_node_indices = self.trainer_node_indices
+        if len(trainer_node_indices) != 1:
+            raise ValueError(
+                "gpu_layout currently supports exactly one trainer node. "
+                f"Found trainer GPUs on {len(trainer_node_indices)} nodes."
+            )
+
+        for node_idx, node in enumerate(self.nodes):
+            if not node.inference and not node.trainer:
+                raise ValueError(f"Node {node_idx} has no GPUs assigned to any role.")
+
+            used: dict[int, str] = {}
+            for role, gpu_ids in (("inference", node.inference), ("trainer", node.trainer)):
+                if len(set(gpu_ids)) != len(gpu_ids):
+                    raise ValueError(f"Node {node_idx} has duplicate GPU ids in {role}: {gpu_ids}.")
+                for gpu_id in gpu_ids:
+                    if gpu_id < 0 or gpu_id >= self.gpus_per_node:
+                        raise ValueError(
+                            f"Node {node_idx} {role} GPU id {gpu_id} is outside 0..{self.gpus_per_node - 1}."
+                        )
+                    if gpu_id in used:
+                        raise ValueError(f"Node {node_idx} GPU {gpu_id} is assigned to both {used[gpu_id]} and {role}.")
+                    used[gpu_id] = role
+
+        last_port = self.inference_port_start + self.total_infer_gpus - 1
+        if last_port > 65535:
+            raise ValueError(
+                f"inference_port_start={self.inference_port_start} with {self.total_infer_gpus} "
+                "inference GPUs exceeds port 65535."
+            )
+
+        return self
+
+
 class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     """Configures a multi node deployment."""
 
@@ -238,7 +348,7 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
 
 
 DeploymentConfig: TypeAlias = Annotated[
-    SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
+    SingleNodeDeploymentConfig | GpuLayoutDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
 ]
 
 
@@ -384,6 +494,9 @@ class RLConfig(BaseConfig):
                     "Must use fake data (trainer.data.fake or bench = true) when num_infer_nodes = 0, "
                     "since no orchestrator or inference server will be running."
                 )
+        elif self.deployment.type == "gpu_layout":
+            if self.inference is None:
+                raise ValueError("Must configure inference when using gpu_layout deployment.")
         return self
 
     # TODO: fix this
@@ -814,6 +927,34 @@ class RLConfig(BaseConfig):
                 if self.inference.api_server_count < dp and not self.inference.enable_lora:
                     self.inference.api_server_count = dp
 
+        elif self.deployment.type == "gpu_layout":
+            non_data_parallel_size = self.trainer.model.cp
+            if self.deployment.total_train_gpus % non_data_parallel_size != 0:
+                raise ValueError(
+                    "gpu_layout trainer GPU count must be divisible by trainer.model.cp "
+                    f"({self.deployment.total_train_gpus} % {non_data_parallel_size} != 0)."
+                )
+            self.orchestrator.num_train_workers = self.deployment.total_train_gpus // non_data_parallel_size
+            self.orchestrator.client.dp_rank_count = 1
+
+            if self.inference is not None:
+                if self.inference.parallel.tp != 1:
+                    raise ValueError(
+                        "gpu_layout currently launches one-GPU inference servers; set inference.parallel.tp = 1."
+                    )
+                if "dp" in self.inference.parallel.model_fields_set and self.inference.parallel.dp != 1:
+                    raise ValueError(
+                        "gpu_layout launches each inference server with dp = 1; set inference.parallel.dp = 1."
+                    )
+                self.inference.parallel.dp = 1
+                self.inference.data_parallel_size_local = 1
+                self.inference.api_server_count = 1
+
+            if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
+                self.trainer.weight_broadcast.host = "0.0.0.0"
+                self.trainer.weight_broadcast.inference_world_size = self.deployment.total_infer_gpus
+                self.orchestrator.weight_broadcast.inference_world_size = self.deployment.total_infer_gpus
+
         elif self.deployment.type == "multi_node":  # multi-node
             self.orchestrator.num_train_workers = self.deployment.num_train_nodes * self.deployment.gpus_per_node
 
@@ -882,10 +1023,8 @@ class RLConfig(BaseConfig):
                 api_server_count = self.inference.api_server_count if self.inference else 1
                 tp = self.inference.parallel.tp if self.inference else 1
                 total_infer_workers = self.deployment.total_infer_nodes * api_server_count * tp
-                assert self.trainer.weight_broadcast.type == "nccl"
                 self.trainer.weight_broadcast.host = "0.0.0.0"
                 self.trainer.weight_broadcast.inference_world_size = total_infer_workers
-                assert self.orchestrator.weight_broadcast.type == "nccl"
                 self.orchestrator.weight_broadcast.inference_world_size = total_infer_workers
 
         return self
@@ -909,9 +1048,7 @@ class RLConfig(BaseConfig):
 
         total_infer_gpus = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
         if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
-            assert self.trainer.weight_broadcast.type == "nccl"
             self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
-            assert self.orchestrator.weight_broadcast.type == "nccl"
             self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
 
         return self
@@ -979,6 +1116,8 @@ class RLConfig(BaseConfig):
             if templates_dir is not None:
                 if self.deployment.type == "single_node":
                     self.slurm.template_path = templates_dir / "single_node_rl.sbatch.j2"
+                elif self.deployment.type == "gpu_layout":
+                    self.slurm.template_path = templates_dir / "gpu_layout_rl.sbatch.j2"
                 else:
                     self.slurm.template_path = templates_dir / "multi_node_rl.sbatch.j2"
         return self

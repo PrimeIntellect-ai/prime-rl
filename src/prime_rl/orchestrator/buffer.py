@@ -85,17 +85,22 @@ class _EnvBuffer:
         zero = lambda: {p: 0 for p in POOLS}
         self.num_examples_per_step = zero()
         self.num_rollouts_per_step = zero()
+        self.num_zero_std_rollouts_per_step = 0
 
     def get_metrics(self) -> dict[str, float]:
         metrics = {}
         num_examples = sum(self.num_examples_per_step.values())
-        num_rollouts = sum(self.num_rollouts_per_step.values())
+        num_rollouts = sum(self.num_rollouts_per_step.values()) + self.num_zero_std_rollouts_per_step
 
         for pool in ["easy", "hard"]:
             if num_examples:
                 metrics[f"evicted_examples/{self.env_name}/{pool}"] = self.num_examples_per_step[pool] / num_examples
             if num_rollouts:
                 metrics[f"filtered_rollouts/{self.env_name}/{pool}"] = self.num_rollouts_per_step[pool] / num_rollouts
+        if num_rollouts:
+            metrics[f"filtered_rollouts/{self.env_name}/zero_std"] = (
+                self.num_zero_std_rollouts_per_step / num_rollouts
+            )
 
         pool_counts = [len(self.easy_examples), self.num_normal, len(self.hard_examples)]
         pool_ratios = mean_normalize(pool_counts)
@@ -163,15 +168,16 @@ class Buffer:
 
         for (env_name, example_id), example_rollouts in rollouts_by_example.items():
             eb = self.env_buffers[env_name]
-            avg_reward = mean([r["reward"] for r in example_rollouts])
-            eb.update_pools(example_id, avg_reward)
+            rewards = [r["reward"] for r in example_rollouts]
+            avg_reward = mean(rewards)
+            pool = eb.update_pools(example_id, avg_reward)
 
             if self.config.online_difficulty_filtering:
-                if avg_reward == 0.0:
-                    eb.num_rollouts_per_step["hard"] += len(example_rollouts)
+                if len(set(rewards)) == 1:
+                    eb.num_zero_std_rollouts_per_step += len(example_rollouts)
                     continue
-                elif avg_reward == 1.0:
-                    eb.num_rollouts_per_step["easy"] += len(example_rollouts)
+                if pool != "normal":
+                    eb.num_rollouts_per_step[pool] += len(example_rollouts)
                     continue
 
             eb.num_rollouts_per_step["normal"] += len(example_rollouts)
@@ -295,19 +301,23 @@ class Buffer:
         # Aggregate cross-env totals
         total_examples_per_pool = {p: 0 for p in POOLS}
         total_rollouts_per_pool = {p: 0 for p in POOLS}
+        total_zero_std_rollouts = 0
         for eb in self.env_buffers.values():
             for p in POOLS:
                 total_examples_per_pool[p] += eb.num_examples_per_step[p]
                 total_rollouts_per_pool[p] += eb.num_rollouts_per_step[p]
+            total_zero_std_rollouts += eb.num_zero_std_rollouts_per_step
 
         total_examples = sum(total_examples_per_pool.values())
-        total_rollouts = sum(total_rollouts_per_pool.values())
+        total_rollouts = sum(total_rollouts_per_pool.values()) + total_zero_std_rollouts
 
         for pool in ["easy", "hard"]:
             if total_examples:
                 metrics[f"evicted_examples/{pool}"] = total_examples_per_pool[pool] / total_examples
             if total_rollouts:
                 metrics[f"filtered_rollouts/{pool}"] = total_rollouts_per_pool[pool] / total_rollouts
+        if total_rollouts:
+            metrics["filtered_rollouts/zero_std"] = total_zero_std_rollouts / total_rollouts
 
         total_normal = sum(eb.num_normal for eb in self.env_buffers.values())
         total_easy = sum(len(eb.easy_examples) for eb in self.env_buffers.values())

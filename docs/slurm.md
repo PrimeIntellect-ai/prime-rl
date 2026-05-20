@@ -37,6 +37,69 @@ For **single-node** jobs, the entire config is dumped to a TOML file and the tem
 
 For **multi-node** jobs, sub-configs are written separately and `srun` dispatches processes across nodes.
 
+## Running inside an existing Isambard allocation
+
+When an agent is already inside a researcher-held Isambard allocation, do not
+add `[slurm]` submission settings just to launch a canary or smoke test. The
+allocation wrapper provides the SLURM context; the PRIME config should describe
+the experiment topology, not request a new job.
+
+From the next allocation that uses the `mnode` wrapper, expect these values to
+be pre-baked into the shell environment:
+
+| Variable | Expected value |
+|---|---|
+| `MASTER_ADDR` | head node hostname |
+| `MASTER_PORT` | `29500` |
+| `NNODES` | `$SLURM_NNODES` |
+| `NPROC_PER_NODE` | `4` on GH200 nodes |
+| `GPUSTAT_DIR` | `$PROJECTDIR/joanv.a6r/.gpustat/$SLURM_JOB_ID` |
+| `CUDA_HOME` | NVHPC CUDA 13.1 from `.env` |
+
+The wrapper also sources the CUDA forward-compat environment from `.env`, so
+`nvidia-smi` should report CUDA 13.1 through the compat `libcuda` shim and
+PyTorch should report the CUDA 13 runtime. Verify this at the start of a fresh
+allocation before launching GPU-bearing work:
+
+```bash
+nvidia-smi | grep CUDA
+nvcc --version
+uv run --no-sync python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.device_count())"
+```
+
+Keep CUDA/NCCL wheel versions in `uv.lock`; `uv pip install` is only a
+temporary live-environment override and plain `uv run` will sync back to the
+lock. If the lock pins `nvidia-nccl-cu13==2.30.4`, this probe should print
+`23004`:
+
+```bash
+source .env
+uv run python -c "import ctypes; lib=ctypes.CDLL('libnccl.so.2'); v=ctypes.c_int(); lib.ncclGetVersion(ctypes.byref(v)); print(v.value)"
+```
+
+For that exact `ctypes.CDLL('libnccl.so.2')` probe to work, `.env` must prepend
+the virtualenv NCCL wheel library directory to `LD_LIBRARY_PATH`, for example
+`${PWD}/.venv/lib/python3.12/site-packages/nvidia/nccl/lib`.
+
+For distributed launches started from the allocation shell, prefer the wrapper
+environment over rediscovering rendezvous values:
+
+```bash
+srun --overlap --jobid=$SLURM_JOB_ID --nodes=$NNODES --ntasks-per-node=4 \
+  torchrun --nnodes=$NNODES --nproc-per-node=$NPROC_PER_NODE \
+  --rdzv-endpoint=$MASTER_ADDR:$MASTER_PORT train.py
+```
+
+Be precise about wrapper units: `launch-script-mnode 4` means 4 nodes, not 4
+GPUs. For single-node work, use the single-node/GPU wrapper instead.
+
+Each `srun` consumes one per-job step id until the job ends. Never put `srun`
+inside `watch`, polling loops, or repeated liveness probes. The mnode wrapper's
+gpustat daemon is the intended low-step-cost monitor: it uses one persistent
+step for the allocation and writes the latest per-node GPU state into
+`GPUSTAT_DIR`. Treat those files as live snapshots, not historical utilization
+logs; use W&B or explicit metric logging for time series.
+
 ## Configuration
 
 ### `[slurm]` — Job submission (shared between RL and SFT)

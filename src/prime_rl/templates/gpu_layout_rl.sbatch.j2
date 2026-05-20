@@ -1,0 +1,56 @@
+#!/bin/bash
+
+#SBATCH --job-name={{ job_name }}
+#SBATCH --nodes={{ num_nodes }}
+#SBATCH --ntasks-per-node=1
+#SBATCH --gres=gpu:{{ gpus_per_node }}
+#SBATCH --partition={{ partition }}
+{%- if account %}
+#SBATCH --account={{ account }}
+{%- endif %}
+{%- if time %}
+#SBATCH --time={{ time }}
+{%- endif %}
+{%- if nodelist %}
+#SBATCH --nodelist={{ nodelist }}
+{%- endif %}
+{%- if exclude %}
+#SBATCH --exclude={{ exclude }}
+{%- endif %}
+#SBATCH --exclusive
+#SBATCH --output={{ output_dir }}/job_%j.log
+#SBATCH --error={{ output_dir }}/job_%j.log
+
+{% if pre_run_command %}
+# Pre-run command
+{{ pre_run_command }}
+{% endif %}
+
+# Per-step CPU/mem from the first allocated node's PHYSICAL resources minus a
+# margin (consistent with rl_gpu_layout_allocation). scontrol node facts are
+# path-independent; SLURM_*_PER_NODE are request-scoped and unreliable here.
+_first_host=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n1)
+_node_info=$(scontrol show node "$_first_host" -o)
+_cpu_tot=$(echo "$_node_info" | tr ' ' '\n' | sed -n 's/^CPUTot=//p')
+_real_mem=$(echo "$_node_info" | tr ' ' '\n' | sed -n 's/^RealMemory=//p')
+if [ -z "$_cpu_tot" ] || [ -z "$_real_mem" ]; then
+    echo "gpu_layout: failed to parse CPUTot/RealMemory for $_first_host" >&2
+    exit 1
+fi
+GPU_LAYOUT_CPB=$((_cpu_tot - {{ gpu_layout_cpu_margin }}))
+GPU_LAYOUT_MEMB=$((_real_mem - {{ gpu_layout_mem_margin_mb }}))
+if [ "$GPU_LAYOUT_CPB" -lt 1 ] || [ "$GPU_LAYOUT_MEMB" -lt 1024 ]; then
+    echo "gpu_layout: node $_first_host too small (CPUTot=$_cpu_tot RealMemory=$_real_mem)" >&2
+    exit 1
+fi
+
+# Single srun step. --kill-on-bad-exit=1 propagates a component failure on any
+# node to the whole step; on clean completion the launcher's TRAINING_COMPLETE
+# flag makes every task exit 0 so srun (and thus this job) returns 0. The job's
+# State therefore reflects the run: COMPLETED on success, FAILED on failure.
+srun --exact --ntasks-per-node=1 \
+    --cpus-per-task="$GPU_LAYOUT_CPB" \
+    --mem="${GPU_LAYOUT_MEMB}M" \
+    --gres=gpu:{{ gpus_per_node }} \
+    --kill-on-bad-exit=1 \
+    bash {{ output_dir }}/{{ gpu_layout_script_name }}

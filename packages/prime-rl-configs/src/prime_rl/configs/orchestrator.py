@@ -90,6 +90,11 @@ class TrainSamplingConfig(BaseConfig):
         ),
     ] = 1.0
 
+    top_p: Annotated[
+        float,
+        Field(description="Nucleus sampling threshold."),
+    ] = 1.0
+
     max_completion_tokens: Annotated[
         int | None,
         Field(
@@ -127,7 +132,7 @@ class TrainSamplingConfig(BaseConfig):
         # Top-level OAI params
         args: dict[str, Any] = {
             "temperature": self.temperature,
-            "top_p": 1.0,
+            "top_p": self.top_p,
             "logprobs": True,
         }
         if self.max_completion_tokens is not None:
@@ -395,6 +400,15 @@ class EvalEnvConfig(EnvConfig):
         ),
     ] = -1
 
+    seed: Annotated[
+        int | None,
+        Field(
+            description=(
+                "Seed for selecting eval examples. Set to None to preserve the environment's default ordering."
+            ),
+        ),
+    ] = None
+
     rollouts_per_example: Annotated[
         int,
         Field(
@@ -402,6 +416,18 @@ class EvalEnvConfig(EnvConfig):
             description="Number of rollouts generated per example. Used for pass@k estimation (e.g. rollouts_per_example=8 enables pass@1 through pass@8).",
         ),
     ] = 1
+
+    max_concurrent_rollouts_per_client: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description=(
+                "Maximum number of eval rollouts to keep in flight per inference client. "
+                "If unset, eval launches all rollouts immediately. Setting this enables "
+                "dynamic refill/load balancing across clients and reduces long-tail server bubbles."
+            ),
+        ),
+    ] = None
 
     interval: Annotated[
         int,
@@ -484,10 +510,30 @@ class EvalConfig(BaseConfig):
         ),
     ] = -1
 
+    seed: Annotated[
+        int | None,
+        Field(
+            description=(
+                "Default seed for selecting eval examples. Set to None to preserve each environment's default ordering."
+            ),
+        ),
+    ] = None
+
     rollouts_per_example: Annotated[
         int,
         Field(ge=1, description="Default number of rollouts per example. Can be overridden per env."),
     ] = 1
+
+    max_concurrent_rollouts_per_client: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description=(
+                "Default eval rollout concurrency window per inference client. "
+                "Can be overridden per env. If unset, eval launches all rollouts immediately."
+            ),
+        ),
+    ] = None
 
     num_workers: Annotated[
         int | Literal["auto"],
@@ -511,7 +557,7 @@ class EvalConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling, num_workers, max_retries, num_examples, rollouts_per_example, and interval. Then resolve auto num_workers."""
+        """Resolve per-env overrides: inherit group-level sampling, num_workers, max_retries, num_examples, seed, rollouts_per_example, and interval. Then resolve auto num_workers."""
         group_sampling = self.sampling.model_dump()
         for env in self.env:
             if "sampling" not in env.model_fields_set:
@@ -521,8 +567,12 @@ class EvalConfig(BaseConfig):
                 env.sampling = EvalSamplingConfig(**merged)
             if "num_examples" not in env.model_fields_set:
                 env.num_examples = self.num_examples
+            if "seed" not in env.model_fields_set:
+                env.seed = self.seed
             if "rollouts_per_example" not in env.model_fields_set:
                 env.rollouts_per_example = self.rollouts_per_example
+            if "max_concurrent_rollouts_per_client" not in env.model_fields_set:
+                env.max_concurrent_rollouts_per_client = self.max_concurrent_rollouts_per_client
             if "interval" not in env.model_fields_set:
                 env.interval = self.interval
             if "num_workers" not in env.model_fields_set:
@@ -671,7 +721,11 @@ class BufferConfig(BaseConfig):
     online_difficulty_filtering: Annotated[
         bool,
         Field(
-            description="Whether to filter rollouts based on difficulty. If True, rollouts with average reward 0.0 or 1.0 are not added to the buffer.",
+            description=(
+                "Whether to skip zero-std reward groups and rollouts assigned to easy or hard pools. "
+                "Skipped groups do not enter the training buffer, so batch progress is counted only on "
+                "groups with learning signal."
+            ),
         ),
     ] = False
 
@@ -754,6 +808,19 @@ class DefaultAdvantageConfig(BaseModel):
             )
         ),
     ] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _translate_length_shaping(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "length_shaping" in data:
+            length_shaping = data.pop("length_shaping")
+            if length_shaping and "length_penalty" not in data:
+                data["length_penalty"] = {
+                    "type": "tokens",
+                    "completion_weight": 1.0,
+                    "tool_response_weight": 0.0,
+                }
+        return data
 
 
 class CustomAdvantageConfig(BaseModel):
