@@ -11,7 +11,7 @@
 # [[inference]] tag="teacher" entry by `auto_setup_inference_clients`.
 #
 # Run:
-#   uv run rl @ configs/debug/training_modes/opd_local_teacher.toml
+#   uv run rl @ configs/debug/multi_inference/opd_local_teacher.toml
 
 max_steps = 20
 seq_len = 2048

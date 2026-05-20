@@ -15,7 +15,7 @@
 # arbitration on the hard cases.
 #
 # Run:
-#   uv run rl @ configs/debug/training_modes/rl_judge.toml
+#   uv run rl @ configs/debug/multi_inference/rl_judge.toml
 
 max_steps = 20
 seq_len = 4096
