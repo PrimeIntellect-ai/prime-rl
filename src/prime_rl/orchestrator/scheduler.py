@@ -24,10 +24,6 @@ from prime_rl.utils.utils import (
 )
 
 
-class NonReschedulableRolloutError(RuntimeError):
-    """Raised when a serialized rollout error should abort instead of spawning replacement rollouts."""
-
-
 def is_reschedulable_rollout_error(error: object) -> bool:
     """Use verifiers' serialized retryability decision for rollout errors."""
     if isinstance(error, (vf.InfraError, vf.InvalidModelResponseError)):
@@ -464,6 +460,7 @@ class Scheduler:
                 group_id = rollout_info.group_id
                 env_name = rollout_info.env_name
 
+                terminal_error: RuntimeError | None = None
                 try:
                     group = self.groups.get(group_id)
                     if group is None:
@@ -483,10 +480,11 @@ class Scheduler:
                             self.errored_rollouts_by_env[env_name] += 1
                             last_failure_reason = _rollout_error_reason(rollout["error"])
                             if not is_reschedulable_rollout_error(rollout["error"]):
-                                raise NonReschedulableRolloutError(
+                                terminal_error = RuntimeError(
                                     f"Non-retryable rollout error in group {group_id} ({env_name}); "
                                     f"not rescheduling replacement rollouts. Last failure: {last_failure_reason}"
                                 )
+                                break
                             has_failures = True
                             self.logger.warning(
                                 f"Retryable rollout error in group {group_id} ({env_name}), re-scheduling "
@@ -505,7 +503,10 @@ class Scheduler:
                             rollout["env_name"] = env_name
                             valid_rollouts.append(rollout)
 
-                    if has_failures:
+                    if terminal_error is not None:
+                        if group_id is not None:
+                            await self.drop_group(group_id)
+                    elif has_failures:
                         # Dedupe failures within the same dispatch round: an
                         # individual-scoring env dispatches N rollouts at once,
                         # so a single failed round can produce up to N failed
@@ -531,32 +532,32 @@ class Scheduler:
                             await self.drop_group(group_id)
                             continue
 
-                    if has_failures and env.requires_group_scoring:
-                        # Group scoring requires all rollouts — discard partial results, reschedule full group
-                        group.completed_rollouts.clear()
-                        group.rollouts_to_schedule = self.rollouts_per_example
-                        continue
+                    if terminal_error is None:
+                        if has_failures and env.requires_group_scoring:
+                            # Group scoring requires all rollouts — discard partial results, reschedule full group
+                            group.completed_rollouts.clear()
+                            group.rollouts_to_schedule = self.rollouts_per_example
+                            continue
 
-                    # For individual scoring, reschedule only the failed ones
-                    group.rollouts_to_schedule += len(rollouts) - len(valid_rollouts)
-                    group.completed_rollouts.extend(valid_rollouts)
-                    if len(group.completed_rollouts) < self.rollouts_per_example:
-                        continue
-                    completed_rollouts = self.groups.pop(group_id).completed_rollouts
+                        # For individual scoring, reschedule only the failed ones
+                        group.rollouts_to_schedule += len(rollouts) - len(valid_rollouts)
+                        group.completed_rollouts.extend(valid_rollouts)
+                        if len(group.completed_rollouts) < self.rollouts_per_example:
+                            continue
+                        completed_rollouts = self.groups.pop(group_id).completed_rollouts
 
                 except asyncio.CancelledError:
                     if group_id is not None:
                         await self.drop_group(group_id)
                     continue
-                except NonReschedulableRolloutError:
-                    if group_id is not None:
-                        await self.drop_group(group_id)
-                    raise
                 except Exception as e:
                     self.logger.warning(f"Rollout failed: {e}")
                     if group_id is not None:
                         await self.drop_group(group_id)
                     continue
+
+                if terminal_error is not None:
+                    raise terminal_error
 
                 self.buffer.update(completed_rollouts)
                 accepted_rollouts = self.buffer.sample_rollouts(n=self.rollouts_per_example)

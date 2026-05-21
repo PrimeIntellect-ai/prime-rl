@@ -10,7 +10,6 @@ import verifiers as vf
 from prime_rl.orchestrator.scheduler import (
     GroupState,
     InflightRequest,
-    NonReschedulableRolloutError,
     Scheduler,
     is_reschedulable_rollout_error,
 )
@@ -145,7 +144,7 @@ def test_generate_batch_aborts_non_reschedulable_serialized_errors(error: dict):
                 "prime_rl.orchestrator.scheduler.ProgressTracker",
                 return_value=SimpleNamespace(update=MagicMock(), close=MagicMock()),
             ),
-            pytest.raises(NonReschedulableRolloutError, match="not rescheduling replacement rollouts"),
+            pytest.raises(RuntimeError, match="not rescheduling replacement rollouts"),
         ):
             await scheduler.generate_batch(step=1)
 
