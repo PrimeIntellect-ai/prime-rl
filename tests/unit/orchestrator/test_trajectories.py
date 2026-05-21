@@ -6,10 +6,10 @@ import pytest
 import verifiers as vf
 
 from prime_rl.orchestrator.trajectories import (
-    _align_routed_experts,
-    _deserialize_tool_calls,
+    align_routed_experts,
     interleave_rollout,
 )
+from prime_rl.utils.chat_template import deserialize_tool_calls
 
 _interleave_rollout = interleave_rollout
 
@@ -49,7 +49,7 @@ def _sample_routed_experts(sample) -> np.ndarray:
 def test_deserialize_tool_calls_does_not_inject_missing_key():
     messages = [{"role": "assistant", "content": "hello"}]
 
-    deserialized = _deserialize_tool_calls(messages)
+    deserialized = deserialize_tool_calls(messages)
 
     assert "tool_calls" not in deserialized[0]
 
@@ -68,7 +68,7 @@ def test_deserialize_tool_calls_parses_arguments_when_present():
         }
     ]
 
-    deserialized = _deserialize_tool_calls(messages)
+    deserialized = deserialize_tool_calls(messages)
 
     assert deserialized[0]["tool_calls"][0]["function"]["arguments"] == {"x": 1}
 
@@ -823,12 +823,12 @@ def test_interleave_rollout_error_masks_all_false():
 
 
 def test_align_routed_experts_none():
-    assert _align_routed_experts(None, 10) is None
+    assert align_routed_experts(None, 10) is None
 
 
 def test_align_routed_experts_empty():
     experts = np.empty((0, 2, 2), dtype=np.uint8)
-    result = _align_routed_experts(experts, 10)
+    result = align_routed_experts(experts, 10)
     assert result is not None
     assert result.shape == (10, 2, 2)
     assert np.all(result == 0)
@@ -837,14 +837,14 @@ def test_align_routed_experts_empty():
 def test_align_routed_experts_no_deficit():
     # 3 tokens, 2 layers, topk=2
     experts = np.asarray([[[0, 1], [2, 3]], [[4, 5], [6, 7]], [[0, 2], [1, 3]]], dtype=np.uint8)
-    result = _align_routed_experts(experts, expected_len=3)
+    result = align_routed_experts(experts, expected_len=3)
     np.testing.assert_array_equal(result, experts)
 
 
 def test_align_routed_experts_with_deficit():
     # 2 tokens but expected 4 (deficit of 2)
     experts = np.asarray([[[1, 2], [3, 4]], [[5, 6], [7, 0]]], dtype=np.uint8)
-    result = _align_routed_experts(experts, expected_len=4)
+    result = align_routed_experts(experts, expected_len=4)
     assert result is not None
     assert result.shape == (4, 2, 2)
     np.testing.assert_array_equal(result[:2], experts)
@@ -855,7 +855,7 @@ def test_align_routed_experts_with_deficit():
 
 def test_align_routed_experts_excess_length():
     experts = np.asarray([[[1, 2]], [[3, 4]], [[5, 6]]], dtype=np.uint8)
-    result = _align_routed_experts(experts, expected_len=2)
+    result = align_routed_experts(experts, expected_len=2)
     np.testing.assert_array_equal(result, experts[:2])
 
 

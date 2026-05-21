@@ -23,19 +23,7 @@ from prime_rl.utils.logger import get_logger
 # primitives are immutable. mm_kwargs payloads are not mutated after creation.
 
 
-def _decode_routed_experts(payload: dict[str, Any] | None) -> np.ndarray | None:
-    if payload is None:
-        return None
-    shape = [int(dim) for dim in payload["shape"]]
-    decoded = pybase64.b64decode_as_bytearray(payload["data"])
-    expected_size = int(np.prod(shape, dtype=np.int64))
-    assert len(decoded) == expected_size, (len(decoded), expected_size, shape)
-    routed_experts = np.frombuffer(decoded, dtype=np.uint8).reshape(shape)
-    assert routed_experts.ndim == 3
-    return routed_experts
-
-
-def _align_routed_experts(
+def align_routed_experts(
     routed_experts: np.ndarray | None,
     expected_len: int,
 ) -> np.ndarray | None:
@@ -57,58 +45,16 @@ def _align_routed_experts(
     return np.concatenate((routed_experts, padding), axis=0)
 
 
-def _set_sample_routed_experts(sample: TrainingSample, routed_experts: np.ndarray | None) -> None:
-    if routed_experts is None:
-        sample.routed_experts = None
-        return
-    routed_experts = np.ascontiguousarray(routed_experts)
-    sample.routed_experts = RoutedExperts(
-        data=routed_experts.tobytes(),
-        shape=list(routed_experts.shape),
-        dtype=str(routed_experts.dtype),
-    )
-
-
-def _common_prefix_len(a: list[int], b: list[int]) -> int:
-    return common_prefix_len(a, b)
-
-
-def _normalize_messages(messages: Any, default_role: str) -> list[dict[str, Any]]:
-    return normalize_messages(messages, default_role)
-
-
-def _deserialize_tool_calls(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return deserialize_tool_calls(messages)
-
-
-def _strip_message_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return strip_message_content(messages)
-
-
-def _render_messages(
-    tokenizer: PreTrainedTokenizer,
-    messages: list[dict[str, Any]],
-    add_generation_prompt: bool = False,
-    tools: list[dict[str, Any]] | None = None,
-) -> list[int]:
-    return render_messages(
-        tokenizer,
-        messages,
-        add_generation_prompt=add_generation_prompt,
-        tools=tools,
-    )
-
-
 def _tokenize_step_from_messages(
     step: vf.TrajectoryStep,
     tokenizer: PreTrainedTokenizer,
     tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    prompt = _normalize_messages(step.get("prompt"), default_role="user")
-    completion = _normalize_messages(step.get("completion"), default_role="assistant")
+    prompt = normalize_messages(step.get("prompt"), default_role="user")
+    completion = normalize_messages(step.get("completion"), default_role="assistant")
 
-    prompt = _strip_message_content(_deserialize_tool_calls(prompt))
-    completion = _strip_message_content(_deserialize_tool_calls(completion))
+    prompt = strip_message_content(deserialize_tool_calls(prompt))
+    completion = strip_message_content(deserialize_tool_calls(completion))
 
     assert all(m.get("role") == "assistant" for m in completion), (
         "Expected all completion messages to be assistant role for SFT distillation, "
@@ -117,19 +63,19 @@ def _tokenize_step_from_messages(
 
     all_messages = prompt + completion
     prompt_has_assistant_completion = len(completion) > 0 and completion[0].get("role") == "assistant"
-    prompt_ids = _render_messages(
+    prompt_ids = render_messages(
         tokenizer,
         prompt,
         add_generation_prompt=prompt_has_assistant_completion,
         tools=tools,
     )
-    full_ids = _render_messages(
+    full_ids = render_messages(
         tokenizer,
         all_messages,
         tools=tools,
     )
 
-    split_idx = _common_prefix_len(prompt_ids, full_ids)
+    split_idx = common_prefix_len(prompt_ids, full_ids)
     original_prompt_len = len(prompt_ids)
 
     prompt_ids = full_ids[:split_idx]
@@ -181,10 +127,10 @@ def _tokenize_step_with_renderer(
     """Tokenize a trajectory step using a Renderer."""
     from renderers.base import build_trajectory_step
 
-    prompt = _normalize_messages(step.get("prompt"), default_role="user")
-    completion = _normalize_messages(step.get("completion"), default_role="assistant")
-    prompt = _strip_message_content(_deserialize_tool_calls(prompt))
-    completion = _strip_message_content(_deserialize_tool_calls(completion))
+    prompt = normalize_messages(step.get("prompt"), default_role="user")
+    completion = normalize_messages(step.get("completion"), default_role="assistant")
+    prompt = strip_message_content(deserialize_tool_calls(prompt))
+    completion = strip_message_content(deserialize_tool_calls(completion))
     return build_trajectory_step(renderer, prompt, completion, tools=tools)
 
 
@@ -263,7 +209,20 @@ def interleave_rollout(
     def prepare_step_tokens(step: vf.TrajectoryStep, step_idx: int) -> dict[str, Any] | None:
         tokens = step["tokens"]
         if tokens is not None:
-            routed_experts = _decode_routed_experts(tokens.get("routed_experts"))
+            routed_experts_payload = tokens.get("routed_experts")
+            routed_experts = None
+            if routed_experts_payload is not None:
+                shape = [int(dim) for dim in routed_experts_payload["shape"]]
+                decoded_routed_experts = pybase64.b64decode_as_bytearray(routed_experts_payload["data"])
+                expected_size = int(np.prod(shape, dtype=np.int64))
+                assert len(decoded_routed_experts) == expected_size, (
+                    len(decoded_routed_experts),
+                    expected_size,
+                    shape,
+                )
+                routed_experts = np.frombuffer(decoded_routed_experts, dtype=np.uint8).reshape(shape)
+                assert routed_experts.ndim == 3
+
             return {
                 "prompt_ids": list(tokens["prompt_ids"]),
                 "prompt_mask": [bool(i) for i in tokens["prompt_mask"]],
@@ -296,7 +255,7 @@ def interleave_rollout(
             completion_mask = [bool(i) for i in tokens["completion_mask"]]
         completion_ids = list(tokens["completion_ids"])
 
-        routed_experts = _align_routed_experts(
+        routed_experts = align_routed_experts(
             tokens.get("routed_experts"),
             len(tokens["prompt_ids"]) + len(tokens["completion_ids"]),
         )
@@ -313,7 +272,13 @@ def interleave_rollout(
             env_name=output["env_name"],
             mm_token_type_ids=None,
         )
-        _set_sample_routed_experts(sample, routed_experts)
+        if routed_experts is not None:
+            routed_experts = np.ascontiguousarray(routed_experts)
+            sample.routed_experts = RoutedExperts(
+                data=routed_experts.tobytes(),
+                shape=list(routed_experts.shape),
+                dtype=str(routed_experts.dtype),
+            )
         return sample, routed_experts
 
     def extend_sample(
@@ -344,7 +309,7 @@ def interleave_rollout(
 
         if tokens.get("routed_experts") is not None and sample_routed_experts is not None:
             step_routed = tokens["routed_experts"]
-            # The previous step's last routing entry was zero-padded by _align_routed_experts
+            # The previous step's last routing entry was zero-padded by align_routed_experts
             # (vLLM only captures num_tokens-1 routings per request). This step actually
             # processed that boundary token as part of its prompt, so replace the zero-fill
             # with the real routing decision before appending new entries.
@@ -352,8 +317,13 @@ def interleave_rollout(
                 sample_routed_experts[prefix_len - 1] = step_routed[prefix_len - 1]
             sample_routed_experts = np.concatenate((sample_routed_experts, step_routed[prefix_len:]), axis=0)
             expected_len = len(sample.prompt_ids) + len(sample.completion_ids)
-            sample_routed_experts = _align_routed_experts(sample_routed_experts, expected_len)
-            _set_sample_routed_experts(sample, sample_routed_experts)
+            sample_routed_experts = align_routed_experts(sample_routed_experts, expected_len)
+            sample_routed_experts = np.ascontiguousarray(sample_routed_experts)
+            sample.routed_experts = RoutedExperts(
+                data=sample_routed_experts.tobytes(),
+                shape=list(sample_routed_experts.shape),
+                dtype=str(sample_routed_experts.dtype),
+            )
         return sample_routed_experts
 
     # Track (prefix_tokens, sample, step_indices) per active sample. step_indices
