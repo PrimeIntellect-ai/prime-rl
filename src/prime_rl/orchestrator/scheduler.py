@@ -121,6 +121,7 @@ class Scheduler:
         self.cancelled_rollouts_count = 0
         self.empty_rollouts_by_env: dict[str, int] = defaultdict(int)
         self.errored_rollouts_by_env: dict[str, int] = defaultdict(int)
+        self.errors_by_type: dict[str, int] = defaultdict(int)
         self.total_rollouts_by_env: dict[str, int] = defaultdict(int)
         self.dropped_groups_by_env: dict[str, int] = defaultdict(int)
         self.last_batch_generation_time = 0.0
@@ -444,6 +445,7 @@ class Scheduler:
                     for rollout in rollouts:
                         if rollout["error"] is not None:
                             self.errored_rollouts_by_env[env_name] += 1
+                            self.errors_by_type[rollout["error"]["error"]] += 1
                             if failure_reason is None:
                                 failure_reason = rollout["error"]["error_chain_repr"]
                         elif len(rollout["trajectory"]) == 0:
@@ -541,6 +543,8 @@ class Scheduler:
             metrics[f"errored_rollouts/{env_name}"] = self.errored_rollouts_by_env.get(env_name, 0) / env_total
         for env_name, count in self.dropped_groups_by_env.items():
             metrics[f"dropped_groups/{env_name}"] = count
+        for error_type, count in self.errors_by_type.items():
+            metrics[f"error/{error_type}/count"] = count
         by_env: dict[str, list[int]] = {}
         for info in self.inflight_requests.values():
             by_env.setdefault(info.env_name, []).append(info.off_policy_steps)
@@ -550,6 +554,7 @@ class Scheduler:
         self.cancelled_rollouts_count = 0
         self.empty_rollouts_by_env.clear()
         self.errored_rollouts_by_env.clear()
+        self.errors_by_type.clear()
         self.total_rollouts_by_env.clear()
         self.dropped_groups_by_env.clear()
 
