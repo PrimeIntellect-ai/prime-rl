@@ -67,7 +67,11 @@ cd $PROJECT_DIR && uv sync --all-extras
 # Cleanup stale node-local state from prior jobs. Orphan python/torchrun/vllm
 # processes and vLLM/torch IPC files under /dev/shm and /tmp can survive SLURM
 # termination and cause the next launch to hang. Harmless on clean nodes.
-srun bash -c '
+#
+# `bash -s` with a heredoc on stdin keeps the script body out of every bash
+# / srun argv — otherwise `pkill -f "[v]llm"` self-matches the cleanup procs
+# because the surviving literal `vllm` strings below appear in the cmdline.
+srun bash -s <<'CLEANUP_SH'
     pkill -9 -f "[p]ython.*prime_rl" 2>/dev/null
     pkill -9 -f "[t]orchrun" 2>/dev/null
     pkill -9 -f "[v]llm-router" 2>/dev/null
@@ -82,7 +86,7 @@ srun bash -c '
     procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::" | grep -v grep | wc -l)
     gpu=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk "{s+=\$1} END {print s}")
     echo "[node-cleanup] $(hostname) procs=$procs gpu_mem=${gpu}MiB"
-'
+CLEANUP_SH
 
 # Run SFT
 # --kill-on-bad-exit=1 propagates a non-zero exit on any node to all other
