@@ -168,12 +168,11 @@ print(d.get('ssh', ''))
 
     echo "  Launching ${#pod_configs[@]} experiments..."
     config_args="${pod_configs[*]}"
-    ssh $SSH_OPTS "$ssh_info" \
-        "cd ~/prime-rl && nohup bash configs/sweep-v2/pod-run.sh $config_args > ~/sweep-run.log 2>&1 &" &
+    # Use -f to background SSH properly: tells SSH to go to background just before command execution
+    ssh -f $SSH_OPTS "$ssh_info" \
+        "cd ~/prime-rl && nohup bash configs/sweep-v2/pod-run.sh $config_args > ~/sweep-run.log 2>&1 &"
     echo "  Experiments launched in background on pod $pod_id"
 done
-
-wait
 
 echo ""
 echo "=========================================="
