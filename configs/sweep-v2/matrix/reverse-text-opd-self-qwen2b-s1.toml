@@ -1,0 +1,48 @@
+max_steps = 100
+seq_len = 2048
+
+[model]
+name = "Qwen/Qwen3.5-2B"
+
+[wandb]
+project = "sweep-v2-full"
+name = "reverse-text-opd-self-qwen2b-s1"
+
+[orchestrator]
+training_mode = "opd"
+batch_size = 128
+rollouts_per_example = 8
+seed = 1
+
+[orchestrator.renderer]
+name = "qwen3"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 256
+
+[[orchestrator.train.env]]
+id = "reverse-text"
+
+[orchestrator.eval]
+interval = 10
+num_examples = 200
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 256
+
+[[orchestrator.eval.env]]
+id = "reverse-text"
+
+[orchestrator.teacher.model]
+name = "Qwen/Qwen3.5-2B"
+
+[orchestrator.teacher.client]
+base_url = ["http://localhost:8001/v1"]
+
+[trainer.optim]
+lr = 3e-6
+
+[ckpt]
+
+[inference]
+gpu_memory_utilization = 0.5

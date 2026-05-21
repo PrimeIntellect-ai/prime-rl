@@ -1,0 +1,54 @@
+# Start teacher first:
+#   CUDA_VISIBLE_DEVICES=1 uv run inference \
+#     --model.name Qwen/Qwen3-0.6B \
+#     --server.port 8001 --gpu-memory-utilization 0.5 --model.enforce-eager
+
+max_steps = 50
+seq_len = 2048
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+
+[wandb]
+project = "sweep-v2"
+name = "wordle-opd"
+
+[orchestrator]
+training_mode = "opd"
+batch_size = 128
+rollouts_per_example = 8
+
+[orchestrator.renderer]
+name = "qwen3"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 1024
+
+[[orchestrator.train.env]]
+id = "wordle"
+args = { num_eval_examples = 100 }
+
+[orchestrator.eval]
+interval = 5
+num_examples = 100
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 1024
+
+[[orchestrator.eval.env]]
+id = "wordle"
+args = { num_eval_examples = 100 }
+
+[orchestrator.teacher.model]
+name = "Qwen/Qwen3-0.6B"
+
+[orchestrator.teacher.client]
+base_url = ["http://localhost:8001/v1"]
+
+[trainer.optim]
+lr = 3e-6
+
+[ckpt]
+
+[inference]
+gpu_memory_utilization = 0.5
