@@ -449,102 +449,114 @@ class Scheduler:
                 group_id = rollout_info.group_id
                 env_name = rollout_info.env_name
 
-                group = self.groups.get(group_id)
-                if group is None:
-                    continue
-
-                env = self.train_envs.get(env_name)
                 try:
-                    result = finished_task.result()
+                    group = self.groups.get(group_id)
+                    if group is None:
+                        continue
+
+                    env = self.train_envs.get(env_name)
+                    try:
+                        result = finished_task.result()
+                    except asyncio.CancelledError:
+                        if group_id is not None:
+                            await self.drop_group(group_id)
+                        continue
+                    except Exception as e:
+                        self.logger.warning(f"Rollout failed: {e}")
+                        if group_id is not None:
+                            await self.drop_group(group_id)
+                        continue
+
+                    rollouts: list[vf.RolloutOutput] = result if isinstance(result, list) else [result]
+                    self.total_rollouts_by_env[env_name] += len(rollouts)
+
+                    # Check for empty/errored rollouts and reschedule
+                    valid_rollouts = []
+                    has_failures = False
+                    last_failure_reason: str | None = None
+                    for rollout in rollouts:
+                        rollout_error = rollout["error"]
+                        if rollout_error is not None:
+                            self.errored_rollouts_by_env[env_name] += 1
+                            last_failure_reason = str(
+                                rollout_error.get("error_chain_repr")
+                                or rollout_error.get("error_chain_str")
+                                or rollout_error.get("error")
+                            )
+                            if not is_reschedulable_rollout_error(rollout_error):
+                                raise RuntimeError(
+                                    f"Non-retryable rollout error in group {group_id} ({env_name}); "
+                                    f"not rescheduling replacement rollouts. Last failure: {last_failure_reason}"
+                                )
+                            has_failures = True
+                            self.logger.warning(
+                                f"Retryable rollout error in group {group_id} ({env_name}), re-scheduling "
+                                f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete): "
+                                f"{last_failure_reason}"
+                            )
+                        elif len(rollout["trajectory"]) == 0:
+                            self.empty_rollouts_by_env[env_name] += 1
+                            has_failures = True
+                            last_failure_reason = "empty trajectory"
+                            self.logger.warning(
+                                f"Empty trajectory in group {group_id} ({env_name}), re-scheduling "
+                                f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete)"
+                            )
+                        else:
+                            rollout["env_name"] = env_name
+                            valid_rollouts.append(rollout)
+
+                    if has_failures:
+                        # Dedupe failures within the same dispatch round: an
+                        # individual-scoring env dispatches N rollouts at once,
+                        # so a single failed round can produce up to N failed
+                        # tasks. We only count the round once.
+                        if rollout_info.round_id > group.last_failed_round:
+                            group.failed_attempts += 1
+                            group.last_failed_round = rollout_info.round_id
+                            group.current_round = rollout_info.round_id + 1
+                        max_attempts = self.config.max_error_reschedule_attempts
+                        if max_attempts is not None and group.failed_attempts >= max_attempts:
+                            # Permanently-stuck group: drop it from this step and let the
+                            # rest of the batch proceed. Avoids a single bad example (e.g.
+                            # an agent rollout whose sandbox poll keeps timing out)
+                            # blocking step progress forever.
+                            self.dropped_groups_by_env[env_name] += 1
+                            self.logger.warning(
+                                f"Dropping group {group_id} ({env_name}) after {group.failed_attempts} "
+                                f"failed dispatch rounds ({len(group.completed_rollouts)}/{self.rollouts_per_example} "
+                                f"complete). Last failure: {last_failure_reason}. Set "
+                                f"orchestrator.max_error_reschedule_attempts higher (or to None) "
+                                f"to retry more aggressively."
+                            )
+                            await self.drop_group(group_id)
+                            continue
+
+                    if has_failures and env.requires_group_scoring:
+                        # Group scoring requires all rollouts — discard partial results, reschedule full group
+                        group.completed_rollouts.clear()
+                        group.rollouts_to_schedule = self.rollouts_per_example
+                        continue
+
+                    # For individual scoring, reschedule only the failed ones
+                    group.rollouts_to_schedule += len(rollouts) - len(valid_rollouts)
+                    group.completed_rollouts.extend(valid_rollouts)
+                    if len(group.completed_rollouts) < self.rollouts_per_example:
+                        continue
+                    completed_rollouts = self.groups.pop(group_id).completed_rollouts
                 except asyncio.CancelledError:
                     if group_id is not None:
                         await self.drop_group(group_id)
                     continue
+                except RuntimeError:
+                    if group_id is not None:
+                        await self.drop_group(group_id)
+                    raise
                 except Exception as e:
                     self.logger.warning(f"Rollout failed: {e}")
                     if group_id is not None:
                         await self.drop_group(group_id)
                     continue
-
-                rollouts: list[vf.RolloutOutput] = result if isinstance(result, list) else [result]
-                self.total_rollouts_by_env[env_name] += len(rollouts)
-
-                # Check for empty/errored rollouts and reschedule
-                valid_rollouts = []
-                has_failures = False
-                last_failure_reason: str | None = None
-                for rollout in rollouts:
-                    rollout_error = rollout["error"]
-                    if rollout_error is not None:
-                        self.errored_rollouts_by_env[env_name] += 1
-                        last_failure_reason = str(
-                            rollout_error.get("error_chain_repr")
-                            or rollout_error.get("error_chain_str")
-                            or rollout_error.get("error")
-                        )
-                        if not is_reschedulable_rollout_error(rollout_error):
-                            if group_id is not None:
-                                await self.drop_group(group_id)
-                            raise RuntimeError(
-                                f"Non-retryable rollout error in group {group_id} ({env_name}); "
-                                f"not rescheduling replacement rollouts. Last failure: {last_failure_reason}"
-                            )
-                        has_failures = True
-                        self.logger.warning(
-                            f"Retryable rollout error in group {group_id} ({env_name}), re-scheduling "
-                            f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete): "
-                            f"{last_failure_reason}"
-                        )
-                    elif len(rollout["trajectory"]) == 0:
-                        self.empty_rollouts_by_env[env_name] += 1
-                        has_failures = True
-                        last_failure_reason = "empty trajectory"
-                        self.logger.warning(
-                            f"Empty trajectory in group {group_id} ({env_name}), re-scheduling "
-                            f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete)"
-                        )
-                    else:
-                        rollout["env_name"] = env_name
-                        valid_rollouts.append(rollout)
-
-                if has_failures:
-                    # Dedupe failures within the same dispatch round: an
-                    # individual-scoring env dispatches N rollouts at once,
-                    # so a single failed round can produce up to N failed
-                    # tasks. We only count the round once.
-                    if rollout_info.round_id > group.last_failed_round:
-                        group.failed_attempts += 1
-                        group.last_failed_round = rollout_info.round_id
-                        group.current_round = rollout_info.round_id + 1
-                    max_attempts = self.config.max_error_reschedule_attempts
-                    if max_attempts is not None and group.failed_attempts >= max_attempts:
-                        # Permanently-stuck group: drop it from this step and let the
-                        # rest of the batch proceed. Avoids a single bad example (e.g.
-                        # an agent rollout whose sandbox poll keeps timing out)
-                        # blocking step progress forever.
-                        self.dropped_groups_by_env[env_name] += 1
-                        self.logger.warning(
-                            f"Dropping group {group_id} ({env_name}) after {group.failed_attempts} "
-                            f"failed dispatch rounds ({len(group.completed_rollouts)}/{self.rollouts_per_example} "
-                            f"complete). Last failure: {last_failure_reason}. Set "
-                            f"orchestrator.max_error_reschedule_attempts higher (or to None) "
-                            f"to retry more aggressively."
-                        )
-                        await self.drop_group(group_id)
-                        continue
-
-                if has_failures and env.requires_group_scoring:
-                    # Group scoring requires all rollouts — discard partial results, reschedule full group
-                    group.completed_rollouts.clear()
-                    group.rollouts_to_schedule = self.rollouts_per_example
-                    continue
-
-                # For individual scoring, reschedule only the failed ones
-                group.rollouts_to_schedule += len(rollouts) - len(valid_rollouts)
-                group.completed_rollouts.extend(valid_rollouts)
-                if len(group.completed_rollouts) < self.rollouts_per_example:
-                    continue
-                completed_rollouts = self.groups.pop(group_id).completed_rollouts
 
                 self.buffer.update(completed_rollouts)
                 accepted_rollouts = self.buffer.sample_rollouts(n=self.rollouts_per_example)
