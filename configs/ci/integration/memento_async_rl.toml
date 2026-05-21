@@ -1,0 +1,64 @@
+# Full Prime RL orchestration smoke for Memento/block-masking on vLLM.
+#
+# Intended to run inside the Truss/Baseten smoke after
+# scripts/prepare_memento_sft.py writes /tmp/memento-test-prep/model.
+# This short async smoke validates rollout + trainer backward. It does not
+# require the orchestrator to observe a fresh trainer broadcast before exit.
+
+output_dir = "/b10/workspace/outputs/memento-rl-prod-async"
+clean_output_dir = true
+max_steps = 2
+max_async_level = 1
+seq_len = 1024
+
+[model]
+name = "/tmp/memento-test-prep/model"
+
+[deployment]
+type = "single_node"
+gpus_per_node = 2
+num_infer_gpus = 1
+num_train_gpus = 1
+
+[ckpt]
+
+[weight_broadcast]
+type = "filesystem"
+
+[trainer.optim]
+lr = 1e-6
+
+[orchestrator]
+training_mode = "rl"
+batch_size = 4
+rollouts_per_example = 2
+max_inflight_rollouts = 4
+max_error_reschedule_attempts = 1
+collect_inference_metrics = false
+filters = []
+
+[orchestrator.renderer]
+name = "qwen3"
+preserve_all_thinking = true
+
+[orchestrator.train.sampling]
+temperature = 0.7
+max_completion_tokens = 96
+
+[orchestrator.train.sampling.extra_body]
+skip_special_tokens = false
+spaces_between_special_tokens = false
+
+[[orchestrator.train.env]]
+id = "alphabet-sort"
+name = "memento-alphabet-sort"
+args = { min_turns = 2, max_turns = 2, min_names_per_turn = 1, max_names_per_turn = 3, similarity_power = 4, power_per_turn = false }
+
+[inference]
+gpu_memory_utilization = 0.5
+block_masking_config = { enable = true, mask_delimiters = false, keep_last_n_blocks = 0, async_mode = "async_barrier", debug = true }
+
+[inference.model]
+dtype = "float16"
+max_model_len = 2048
+enforce_eager = true

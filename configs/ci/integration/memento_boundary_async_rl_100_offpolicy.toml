@@ -1,0 +1,60 @@
+# 100-step Prime async RL run with deterministic Memento boundary-token history
+# and intentional async/off-policy pressure.
+
+output_dir = "/b10/workspace/outputs/memento-rl-boundary-offpolicy100"
+clean_output_dir = true
+max_steps = 100
+max_async_level = 4
+seq_len = 1024
+
+[model]
+name = "/tmp/memento-test-prep/model"
+
+[deployment]
+type = "single_node"
+gpus_per_node = 2
+num_infer_gpus = 1
+num_train_gpus = 1
+
+[ckpt]
+
+[weight_broadcast]
+type = "filesystem"
+
+[trainer.optim]
+lr = 1e-6
+
+[orchestrator]
+training_mode = "rl"
+batch_size = 4
+rollouts_per_example = 2
+max_inflight_rollouts = 16
+max_error_reschedule_attempts = 1
+collect_inference_metrics = false
+filters = []
+
+[orchestrator.renderer]
+name = "qwen3"
+preserve_all_thinking = true
+
+[orchestrator.train.sampling]
+temperature = 0.7
+max_completion_tokens = 64
+
+[orchestrator.train.sampling.extra_body]
+skip_special_tokens = false
+spaces_between_special_tokens = false
+
+[[orchestrator.train.env]]
+id = "memento-boundary-env"
+name = "memento-boundary-fixture"
+args = { num_examples = 16, answer = "84" }
+
+[inference]
+gpu_memory_utilization = 0.5
+block_masking_config = { enable = true, mask_delimiters = false, keep_last_n_blocks = 0, async_mode = "async_barrier", debug = true }
+
+[inference.model]
+dtype = "float16"
+max_model_len = 2048
+enforce_eager = true

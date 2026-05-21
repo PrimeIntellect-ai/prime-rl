@@ -19,6 +19,7 @@ def transformers_v5_compat():
     monkey_patch_dp_engine_core_pause_resume_deadlock()
     monkey_patch_vllm_layerwise_reload_alias_buffers()
     monkey_patch_vllm_padded_input_scrub()
+    monkey_patch_block_masking()
 
 
 def monkey_patch_vllm_layerwise_reload_alias_buffers():
@@ -621,6 +622,14 @@ def monkey_patch_dp_engine_core_pause_resume_deadlock():
     from vllm.v1.engine.core import DPEngineCoreProc, EngineCore, EngineCoreProc
     from vllm.v1.request import Request
 
+    if getattr(DPEngineCoreProc, "_prime_rl_dp_pause_resume_patched", False):
+        return
+
+    if not hasattr(EngineCoreProc, "_pause_complete") or not hasattr(
+        EngineCoreProc, "resume_scheduler"
+    ):
+        return
+
     _base_add_request = EngineCore.add_request
     _base_handle_client_request = EngineCoreProc._handle_client_request
     _base_pause_complete = EngineCoreProc._pause_complete
@@ -673,6 +682,7 @@ def monkey_patch_dp_engine_core_pause_resume_deadlock():
     DPEngineCoreProc._pause_complete = _patched_pause_complete
     DPEngineCoreProc.resume_scheduler = _patched_resume_scheduler
     DPEngineCoreProc._has_global_unfinished_reqs = _patched_has_global_unfinished_reqs
+    DPEngineCoreProc._prime_rl_dp_pause_resume_patched = True
 
 
 def monkey_patch_no_moe_lora():
@@ -763,3 +773,483 @@ def monkey_patch_fp32_lm_head():
     LogitsProcessor.__init__ = _patched_init
     LogitsProcessor._get_logits = _patched_get_logits
     logger.info("Installed fp32 lm_head patch (native out_dtype=fp32 mm).")
+
+
+def monkey_patch_block_masking():
+    """Block masking monkey-patches for Memento-style KV cache compaction.
+
+    Safe to apply unconditionally — all changes are no-ops when block masking
+    is disabled (compacted_tokens_cpu stays zero, scheduler output fields are
+    empty/absent).
+
+    Patches:
+      - InputBatch: adds compacted_tokens_cpu tracking
+      - GPUModelRunner: KV copy operations, physical position slot mapping,
+        physical seq_lens, skip_sampling for deferred compaction
+      - AsyncLLM / LLMEngine: reads block_masking_config from additional_config,
+        initializes token IDs, sets config on VllmConfig before EngineCore spawns
+    """
+    from vllm.config import VllmConfig
+    if not hasattr(VllmConfig, "block_masking_config"):
+        VllmConfig.block_masking_config = None
+
+    _patch_input_batch_compacted_tokens()
+    _patch_gpu_model_runner_block_masking()
+    _patch_engine_core_block_masking_barrier()
+    _patch_engine_init_block_masking()
+
+
+def _patch_input_batch_compacted_tokens():
+    """Add compacted_tokens_cpu array to InputBatch for tracking compacted token counts."""
+    import numpy as np
+    from vllm.v1.worker.gpu_input_batch import InputBatch
+
+    if getattr(InputBatch, "_prime_rl_block_masking_patched", False):
+        return
+
+    _orig_init = InputBatch.__init__
+    _orig_add = InputBatch.add_request
+    _orig_condense = InputBatch.condense
+
+    def _patched_init(self, *args, **kwargs):
+        _orig_init(self, *args, **kwargs)
+        self.compacted_tokens_cpu = np.zeros_like(self.num_computed_tokens_cpu)
+
+    def _patched_add(self, request):
+        req_index = _orig_add(self, request)
+        self.compacted_tokens_cpu[req_index] = 0
+        return req_index
+
+    def _patched_condense(self):
+        saved = {
+            req_id: int(self.compacted_tokens_cpu[idx])
+            for req_id, idx in self.req_id_to_index.items()
+        }
+        _orig_condense(self)
+        for req_id, val in saved.items():
+            idx = self.req_id_to_index.get(req_id)
+            if idx is not None:
+                self.compacted_tokens_cpu[idx] = val
+
+    _orig_swap = InputBatch.swap_states
+
+    def _patched_swap(self, i1, i2):
+        self.compacted_tokens_cpu[i1], self.compacted_tokens_cpu[i2] = (
+            self.compacted_tokens_cpu[i2],
+            self.compacted_tokens_cpu[i1],
+        )
+        _orig_swap(self, i1, i2)
+
+    InputBatch.__init__ = _patched_init
+    InputBatch.add_request = _patched_add
+    InputBatch.condense = _patched_condense
+    InputBatch.swap_states = _patched_swap
+    InputBatch._prime_rl_block_masking_patched = True
+
+
+def _patch_gpu_model_runner_block_masking():
+    """Patch GPUModelRunner for KV cache compaction.
+
+    _update_states: execute KV copy operations and block table truncations
+    before stock logic, then track compacted_tokens_cpu after.
+
+    _prepare_inputs: after stock logic, adjust seq_lens and slot_mapping to
+    use physical (post-compaction) values, handle skip_sampling_req_ids.
+    """
+    import os
+    import numpy as np
+    from vllm.logger import init_logger
+    from vllm.v1.worker.gpu_model_runner import GPUModelRunner
+
+    if getattr(GPUModelRunner, "_prime_rl_block_masking_patched", False):
+        return
+
+    logger = init_logger(__name__)
+    _orig_update = GPUModelRunner._update_states
+    _orig_prepare = GPUModelRunner._prepare_inputs
+
+    def _block_masking_debug_enabled(self) -> bool:
+        vllm_config = getattr(self, "vllm_config", None)
+        config = getattr(vllm_config, "block_masking_config", None)
+        return bool(config is not None and getattr(config, "debug", False))
+
+    def _record_block_masking_event(message: str) -> None:
+        event_log = os.environ.get("PRIME_RL_BLOCK_MASKING_EVENT_LOG")
+        if not event_log:
+            return
+        with open(event_log, "a", encoding="utf-8") as f:
+            f.write(message + "\n")
+
+    def _execute_kv_copy_operations(
+        self,
+        kv_copy_operations: dict[str, list[tuple[int, int, int, int]]],
+    ) -> None:
+        # Assumes single KV group (all layers share one block pool).
+        # Multi-pool architectures would need per-group dispatch.
+        if not self.kv_caches:
+            return
+        all_ops: list[tuple[int, int, int, int]] = []
+        for ops in kv_copy_operations.values():
+            all_ops.extend(ops)
+        if not all_ops:
+            return
+        if _block_masking_debug_enabled(self):
+            logger.info(
+                "Block masking KV copy ops executed: requests=%d ops=%d",
+                len(kv_copy_operations),
+                len(all_ops),
+            )
+        _record_block_masking_event(
+            "Block masking KV copy ops executed: "
+            f"requests={len(kv_copy_operations)} ops={len(all_ops)}"
+        )
+        for kv_cache in self.kv_caches:
+            if kv_cache.shape[0] == 2:
+                # FlashAttention layout: [2, num_blocks, block_size, num_kv_heads, head_size]
+                k, v = kv_cache[0], kv_cache[1]
+                for sb, so, db, do in all_ops:
+                    k[db, do].copy_(k[sb, so])
+                    v[db, do].copy_(v[sb, so])
+            else:
+                # FlashInfer layout: [num_blocks, 2, block_size, num_kv_heads, head_size]
+                for sb, so, db, do in all_ops:
+                    kv_cache[db, :, do].copy_(kv_cache[sb, :, so])
+
+    def _patched_update_states(self, scheduler_output):
+        # Execute KV copy operations BEFORE block table updates.
+        kv_ops = getattr(scheduler_output, "kv_copy_operations", None)
+        if kv_ops:
+            _execute_kv_copy_operations(self, kv_ops)
+
+        # Execute block table truncations BEFORE appending new blocks.
+        truncations = getattr(scheduler_output, "block_table_truncations", None)
+        if truncations:
+            truncation_count = 0
+            for req_id, num_blocks in truncations.items():
+                req_index = self.input_batch.req_id_to_index.get(req_id)
+                if req_index is not None:
+                    self.input_batch.block_table.truncate_row(req_index, num_blocks)
+                    truncation_count += 1
+            if truncation_count and _block_masking_debug_enabled(self):
+                logger.info(
+                    "Block masking block table truncations applied: requests=%d",
+                    truncation_count,
+                )
+            _record_block_masking_event(
+                "Block masking block table truncations applied: "
+                f"requests={truncation_count}"
+            )
+
+        result = _orig_update(self, scheduler_output)
+
+        # Track compacted tokens per request from scheduler output.
+        req_data = scheduler_output.scheduled_cached_reqs
+        counts = getattr(req_data, "compacted_token_counts", None)
+        if counts:
+            for i, req_id in enumerate(req_data.req_ids):
+                idx = self.input_batch.req_id_to_index.get(req_id)
+                if idx is not None:
+                    self.input_batch.compacted_tokens_cpu[idx] = counts[i]
+
+        return result
+
+    def _patched_prepare_inputs(self, scheduler_output, num_scheduled_tokens):
+        result = _orig_prepare(self, scheduler_output, num_scheduled_tokens)
+
+        num_reqs = self.input_batch.num_reqs
+        if num_reqs == 0:
+            return result
+
+        compacted = self.input_batch.compacted_tokens_cpu[:num_reqs]
+        has_compaction = np.any(compacted > 0)
+        skip_ids = getattr(scheduler_output, "skip_sampling_req_ids", None)
+
+        if not has_compaction and not skip_ids:
+            return result
+
+        total = scheduler_output.total_num_scheduled_tokens
+
+        if has_compaction:
+            # Save stock discard_request_mask BEFORE adjustments.
+            # Stock code computes: optimistic_seq_lens < num_tokens (both logical).
+            # Compacted terms cancel, so the mask is already correct.
+            # Our adjustment makes optimistic_seq_lens physical while num_tokens
+            # stays logical, which would break the comparison.
+            saved_discard_mask = self.discard_request_mask.np[:num_reqs].copy()
+
+            compacted_t = torch.from_numpy(compacted.copy())
+
+            # Adjust GPU seq_lens: physical = logical - compacted
+            self.seq_lens[:num_reqs] -= compacted_t.to(
+                device=self.seq_lens.device, non_blocking=True
+            )
+
+            # Adjust CPU optimistic_seq_lens for attention metadata
+            self.optimistic_seq_lens_cpu[:num_reqs] -= compacted_t
+
+            # Recompute slot_mapping with physical positions.
+            # self.positions has logical positions (correct for RoPE).
+            req_indices = np.repeat(self.arange_np[:num_reqs], num_scheduled_tokens)
+            expanded = torch.from_numpy(
+                self.input_batch.compacted_tokens_cpu[req_indices].copy()
+            ).to(device=self.positions.device, dtype=torch.int64, non_blocking=True)
+            physical_positions = self.positions[:total] - expanded
+            self.input_batch.block_table.compute_slot_mapping(
+                num_reqs,
+                self.query_start_loc.gpu[:num_reqs + 1],
+                physical_positions,
+            )
+
+            # Restore the saved discard mask (correct with logical values).
+            self.discard_request_mask.np[:num_reqs] = saved_discard_mask
+
+        # Apply skip_sampling on top of the (restored) discard mask.
+        if skip_ids:
+            for req_id in skip_ids:
+                idx = self.input_batch.req_id_to_index.get(req_id)
+                if idx is not None:
+                    self.discard_request_mask.np[idx] = True
+
+        if has_compaction or skip_ids:
+            self.discard_request_mask.copy_to_gpu(num_reqs)
+
+        return result
+
+    GPUModelRunner._execute_kv_copy_operations = _execute_kv_copy_operations
+    GPUModelRunner._update_states = _patched_update_states
+    GPUModelRunner._prepare_inputs = _patched_prepare_inputs
+    GPUModelRunner._prime_rl_block_masking_patched = True
+
+
+def _patch_engine_core_block_masking_barrier():
+    """Serialize async scheduling around deferred block masking compaction.
+
+    vLLM async scheduling advances output placeholders before the model output
+    is processed. Deferred compaction mutates KV/block-table state, so compaction
+    steps must run only when prior async batches have been processed.
+    """
+    from vllm.logger import init_logger
+    from vllm.v1.engine.core import EngineCore
+
+    if getattr(EngineCore, "_prime_rl_block_masking_barrier_patched", False):
+        return
+
+    logger = init_logger(__name__)
+    _orig_step_with_batch_queue = EngineCore.step_with_batch_queue
+
+    def _block_masking_async_mode(self) -> str | None:
+        config = getattr(self.vllm_config, "block_masking_config", None)
+        if config is None or not getattr(config, "enable", False):
+            return None
+        return getattr(config, "async_mode", "safe_sync")
+
+    def _has_pending_block_masking_barrier(self) -> bool:
+        if _block_masking_async_mode(self) != "async_barrier":
+            return False
+        scheduler = getattr(self, "scheduler", None)
+        if scheduler is None:
+            return False
+        if getattr(scheduler, "block_masking_processor", None) is None:
+            return False
+        for request in getattr(scheduler, "requests", {}).values():
+            state = getattr(request, "block_masking_state", None)
+            if state is None or not state.pending_compactions:
+                continue
+            if state.deferred_compaction_scheduled:
+                continue
+            if len(getattr(request, "output_token_ids", ())) > 0:
+                continue
+            return True
+        return False
+
+    def _process_next_batch_queue_item(self, batch_queue, model_executed=False):
+        future, scheduler_output, exec_model_fut = batch_queue.pop()
+        with (
+            self.log_error_detail(scheduler_output),
+            self.log_iteration_details(scheduler_output),
+        ):
+            model_output = future.result()
+            if model_output is None:
+                exec_model_fut.result()
+                raise RuntimeError("unexpected error")
+
+        self._process_aborts_queue()
+        engine_core_outputs = self.scheduler.update_from_output(
+            scheduler_output, model_output
+        )
+        return (
+            engine_core_outputs,
+            model_executed or scheduler_output.total_num_scheduled_tokens > 0,
+        )
+
+    def _patched_step_with_batch_queue(self):
+        batch_queue = self.batch_queue
+        assert batch_queue is not None
+
+        if batch_queue and _has_pending_block_masking_barrier(self):
+            config = getattr(self.vllm_config, "block_masking_config", None)
+            if config is not None and getattr(config, "debug", False):
+                logger.warning(
+                    "Block masking async barrier draining %d queued batch(es)",
+                    len(batch_queue),
+                )
+            return _process_next_batch_queue_item(self, batch_queue)
+
+        if _block_masking_async_mode(self) != "async_barrier":
+            return _orig_step_with_batch_queue(self)
+
+        if not getattr(self, "_prime_rl_block_masking_barrier_step_seen", False):
+            logger.warning(
+                "Block masking async barrier engine path active "
+                "(batch_queue_size=%d)",
+                self.batch_queue_size,
+            )
+            self._prime_rl_block_masking_barrier_step_seen = True
+
+        model_executed = False
+        deferred_scheduler_output = None
+        if self.scheduler.has_requests():
+            scheduler_output = self.scheduler.schedule()
+            barrier = getattr(scheduler_output, "block_masking_barrier", False)
+            if barrier:
+                logger.warning(
+                    "Block masking async barrier scheduled for request ids: %s",
+                    sorted(scheduler_output.skip_sampling_req_ids or ()),
+                )
+            with self.log_error_detail(scheduler_output):
+                exec_future = self.model_executor.execute_model(
+                    scheduler_output, non_block=True
+                )
+            if self.is_ec_consumer:
+                model_executed = scheduler_output.total_num_scheduled_tokens > 0
+
+            if self.is_pooling_model or not model_executed:
+                future = exec_future
+            else:
+                if not scheduler_output.pending_structured_output_tokens:
+                    grammar_output = self.scheduler.get_grammar_bitmask(
+                        scheduler_output
+                    )
+                    future = self.model_executor.sample_tokens(
+                        grammar_output, non_block=True
+                    )
+                else:
+                    deferred_scheduler_output = scheduler_output
+
+            if not deferred_scheduler_output:
+                batch_queue.appendleft((future, scheduler_output, exec_future))
+                if (
+                    model_executed
+                    and not barrier
+                    and len(batch_queue) < self.batch_queue_size
+                    and not batch_queue[-1][0].done()
+                ):
+                    return None, True
+
+        elif not batch_queue:
+            return None, False
+
+        engine_core_outputs, _ = _process_next_batch_queue_item(
+            self, batch_queue, model_executed
+        )
+
+        if deferred_scheduler_output:
+            if self.use_spec_decode:
+                draft_token_ids = self.model_executor.take_draft_token_ids()
+                assert draft_token_ids is not None
+                self.scheduler.update_draft_token_ids_in_output(
+                    draft_token_ids, deferred_scheduler_output
+                )
+            grammar_output = self.scheduler.get_grammar_bitmask(
+                deferred_scheduler_output
+            )
+            future = self.model_executor.sample_tokens(grammar_output, non_block=True)
+            batch_queue.appendleft((future, deferred_scheduler_output, exec_future))
+
+        return engine_core_outputs, model_executed
+
+    EngineCore.step_with_batch_queue = _patched_step_with_batch_queue
+    EngineCore._prime_rl_block_masking_barrier_patched = True
+
+
+def _patch_engine_init_block_masking():
+    """Patch engine init to read block_masking_config from additional_config.
+
+    Reads block_masking_config dict from vllm_config.additional_config,
+    creates BlockMaskingConfig, initializes token IDs with the tokenizer,
+    and sets the config on VllmConfig before EngineCore subprocesses spawn.
+    """
+    from vllm.v1.engine.async_llm import AsyncLLM
+
+    def _setup_block_masking(vllm_config):
+        additional = getattr(vllm_config, "additional_config", None) or {}
+        bm_dict = additional.get("block_masking_config")
+        if not bm_dict or not isinstance(bm_dict, dict):
+            return
+        from prime_rl.inference.block_masking.config import BlockMaskingConfig
+
+        bm_config = BlockMaskingConfig(**bm_dict)
+        if not bm_config.enable:
+            return
+
+        if bm_config.async_mode == "async_native":
+            raise NotImplementedError(
+                "block masking async_mode='async_native' is not implemented; "
+                "use 'safe_sync' or 'async_barrier'."
+            )
+
+        scheduler_config = getattr(vllm_config, "scheduler_config", None)
+        if (scheduler_config is not None and
+            getattr(scheduler_config, "async_scheduling", False)):
+            from vllm.logger import init_logger
+
+            logger = init_logger(__name__)
+            if bm_config.async_mode == "safe_sync":
+                logger.warning(
+                    "Block masking currently disables vLLM async scheduling. "
+                    "Set async_mode='async_barrier' to keep async scheduling "
+                    "enabled with compaction barriers.")
+                scheduler_config.async_scheduling = False
+            elif bm_config.async_mode == "async_barrier":
+                logger.warning(
+                    "Block masking keeps vLLM async scheduling enabled with "
+                    "compaction barriers.")
+
+        if not vllm_config.model_config.skip_tokenizer_init:
+            from vllm.tokenizers import get_tokenizer
+
+            tokenizer = get_tokenizer(
+                vllm_config.model_config.tokenizer,
+                trust_remote_code=vllm_config.model_config.trust_remote_code,
+                revision=vllm_config.model_config.tokenizer_revision,
+            )
+            bm_config.initialize_token_ids(tokenizer)
+
+        vllm_config.block_masking_config = bm_config
+
+    if not getattr(AsyncLLM, "_prime_rl_block_masking_init_patched", False):
+        _orig_async_init = AsyncLLM.__init__
+
+        def _patched_async_init(self, vllm_config, *args, **kwargs):
+            _setup_block_masking(vllm_config)
+            _orig_async_init(self, vllm_config, *args, **kwargs)
+
+        AsyncLLM.__init__ = _patched_async_init
+        AsyncLLM._prime_rl_block_masking_init_patched = True
+
+    try:
+        from vllm.v1.engine.llm_engine import LLMEngine
+
+        if getattr(LLMEngine, "_prime_rl_block_masking_init_patched", False):
+            return
+
+        _orig_llm_init = LLMEngine.__init__
+
+        def _patched_llm_init(self, vllm_config, *args, **kwargs):
+            _setup_block_masking(vllm_config)
+            _orig_llm_init(self, vllm_config, *args, **kwargs)
+
+        LLMEngine.__init__ = _patched_llm_init
+        LLMEngine._prime_rl_block_masking_init_patched = True
+    except ImportError:
+        pass

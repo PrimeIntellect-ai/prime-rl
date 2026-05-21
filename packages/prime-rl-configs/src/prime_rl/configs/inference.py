@@ -256,7 +256,7 @@ class InferenceConfig(BaseConfig):
     """Enable dual batch overlap (DBO). Forwarded as ``--enable-dbo``."""
 
     use_deep_gemm: bool = False
-    """Force DeepGEMM FP8 kernels via ``VLLM_USE_DEEP_GEMM=1``. Only works with per-tensor FP8 quantization (e.g. GLM-5-FP8)."""
+    """Enable DeepGEMM FP8 kernels via ``VLLM_USE_DEEP_GEMM=1``. When false, explicitly disables vLLM's DeepGEMM (which defaults to enabled in 0.21+). Only enable for per-tensor FP8 quantization (e.g. GLM-5-FP8)."""
 
     weight_broadcast: WeightBroadcastConfig = WeightBroadcastConfig()
 
@@ -268,6 +268,9 @@ class InferenceConfig(BaseConfig):
 
     enable_fp32_lm_head: bool = False
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented as a monkey-patch over vLLM's LogitsProcessor, activated by setting ``additional_config["fp32_lm_head"] = True`` on the vLLM config."""
+
+    block_masking_config: dict[str, Any] | None = None
+    """Block masking (Memento-style KV cache compaction) configuration. Passed through ``additional_config["block_masking_config"]`` and read by the engine init monkey-patch to create a ``BlockMaskingConfig`` on ``VllmConfig``."""
 
     vllm_extra: dict[str, Any] = {}
     """Extra arguments forwarded to vLLM. Applied as attributes on the vLLM namespace after config translation."""
@@ -426,10 +429,13 @@ class InferenceConfig(BaseConfig):
 
         # Pass prime-rl-specific flags through vLLM's additional_config dict;
         # workers read these via get_current_vllm_config().additional_config.
+        additional = getattr(namespace, "additional_config", None) or {}
         if self.enable_fp32_lm_head:
-            existing = getattr(namespace, "additional_config", None) or {}
-            existing["fp32_lm_head"] = True
-            rsetattr(namespace, "additional_config", existing)
+            additional["fp32_lm_head"] = True
+        if self.block_masking_config is not None:
+            additional["block_masking_config"] = self.block_masking_config
+        if additional:
+            rsetattr(namespace, "additional_config", additional)
 
         # Remove chat_template if not set (vLLM doesn't accept None)
         if namespace.chat_template is None:

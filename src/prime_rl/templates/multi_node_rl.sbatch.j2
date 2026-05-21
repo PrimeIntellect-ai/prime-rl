@@ -224,6 +224,10 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
 {%- if use_deep_gemm %}
     export VLLM_USE_DEEP_GEMM=1
+    export VLLM_MOE_USE_DEEP_GEMM=1
+{%- else %}
+    export VLLM_USE_DEEP_GEMM=0
+    export VLLM_MOE_USE_DEEP_GEMM=0
 {%- endif %}
 
     export GLOO_SOCKET_IFNAME=bond0
