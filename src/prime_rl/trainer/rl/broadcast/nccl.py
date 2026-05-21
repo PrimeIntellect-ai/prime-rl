@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Callable, Generator, cast
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from torch import Tensor
 from torch.distributed.tensor import DTensor
@@ -209,7 +210,10 @@ class NCCLWeightBroadcast(WeightBroadcast):
         notified_runs = self._compute_notified_runs()
         if self.world.is_master:
             self._notify_orchestrator(notified_runs)
+        self._sync_trainer_ranks()
         self._wait_for_nccl_ready(notified_runs)
+        for idx, _ in notified_runs:
+            self.multi_run_manager.ready_to_update[idx] = False
         self.nccl_broadcast_sender.broadcast_weights(model, step)
         self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
@@ -245,14 +249,14 @@ class NCCLWeightBroadcast(WeightBroadcast):
         for idx, save_dir in notified_runs:
             try:
                 save_dir.mkdir(parents=True, exist_ok=True)
+                (save_dir / NCCL_READY_MARKER).unlink(missing_ok=True)
                 stable_file = save_dir / "STABLE"
+                stable_file.unlink(missing_ok=True)
                 stable_file.touch()
             except FileNotFoundError:
                 self.logger.warning(f"Run {idx} is deleted, skipping")
             except Exception as e:
                 self.logger.error(f"Error broadcasting weights for run {idx}: {e}")
-            finally:
-                self.multi_run_manager.ready_to_update[idx] = False
 
     def _wait_for_nccl_ready(self, notified_runs: list[tuple[int, Path]]):
         """Wait for inference workers to signal they are ready to receive NCCL broadcast."""
@@ -261,3 +265,11 @@ class NCCLWeightBroadcast(WeightBroadcast):
             self.logger.debug(f"Waiting for NCCL_READY marker at {nccl_ready_file}")
             sync_wait_for_path(nccl_ready_file, interval=0.1, log_interval=10)
             self.logger.debug(f"Inference workers ready for NCCL broadcast (run {idx})")
+
+    def _sync_trainer_ranks(self) -> None:
+        """Keep non-master ranks out of broadcast prep until master has inference ready."""
+        if self.world.world_size <= 1:
+            return
+        if not dist.is_available() or not dist.is_initialized():
+            raise RuntimeError("Distributed process group must be initialized before NCCL weight broadcast")
+        dist.barrier()
