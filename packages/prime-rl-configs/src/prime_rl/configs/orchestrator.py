@@ -680,22 +680,36 @@ class OrchestratorConfig(BaseConfig):
         if not isinstance(data, dict):
             return data
 
-        # 1. Re-nest top-level [orchestrator.client] under student.client.
-        if "client" in data:
+        def _deep_merge_into(dst: dict, src: dict) -> None:
+            """In-place recursive merge of ``src`` into ``dst``. ``src`` wins at the leaf."""
+            for k, v in src.items():
+                if isinstance(v, dict) and isinstance(dst.get(k), dict):
+                    _deep_merge_into(dst[k], v)
+                else:
+                    dst[k] = v
+
+        # 1. Re-nest top-level [orchestrator.client] under student.client. Deep-merge
+        # so a CLI override like `--client.base-url URL` reaches `student.client.base_url`
+        # even when the TOML already populated `[student.client]`.
+        legacy_client = data.pop("client", None)
+        if isinstance(legacy_client, dict):
             student = data.setdefault("student", {})
-            if isinstance(student, dict) and "client" not in student:
-                student["client"] = data.pop("client")
+            if isinstance(student, dict):
+                _deep_merge_into(student.setdefault("client", {}), legacy_client)
+            else:
+                # Mismatched types - put it back and let pydantic surface the error.
+                data["client"] = legacy_client
 
         # 2. Consolidate the legacy `model` alias into `student` so the
-        # flat-layout fix-up below sees a single target.
+        # flat-layout fix-up below sees a single target. Deep-merge with the
+        # legacy keys winning so a CLI `--model.<k>` overrides TOML `student.model.<k>`.
         legacy_model = data.pop("model", None)
         if legacy_model is not None:
             existing = data.get("student")
             if existing is None:
                 data["student"] = legacy_model
             elif isinstance(existing, dict) and isinstance(legacy_model, dict):
-                for k, v in legacy_model.items():
-                    existing.setdefault(k, v)
+                _deep_merge_into(existing, legacy_model)
             else:
                 # Mismatched types - put it back and let pydantic surface the error.
                 data["model"] = legacy_model
