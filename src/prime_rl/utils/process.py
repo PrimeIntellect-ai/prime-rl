@@ -11,6 +11,7 @@ import setproctitle
 from prime_rl.utils.logger import get_logger
 
 PRIME_RL_PROC_PREFIX = "PRIME-RL"
+TORCHRUN_LOG_PREFIX_PATTERN = r"s/^\[[a-zA-Z]*[0-9]*\]://"
 
 
 def set_proc_title(name: str) -> None:
@@ -60,6 +61,30 @@ def cleanup_processes(processes: list[Popen]):
         except subprocess.TimeoutExpired:
             cleanup_process(process.pid, signal.SIGKILL)
         get_logger().debug(f"Cleaned up process {process.pid}")
+
+
+def start_tail_processes(
+    log_path: str | os.PathLike[str],
+    *,
+    strip_torchrun_prefix: bool = False,
+) -> list[Popen]:
+    """Start subprocesses that stream a log file without invoking a shell."""
+    tail_process = Popen(
+        ["tail", "-F", os.fspath(log_path)],
+        stdout=subprocess.PIPE if strip_torchrun_prefix else None,
+    )
+    if not strip_torchrun_prefix:
+        return [tail_process]
+
+    if tail_process.stdout is None:
+        raise RuntimeError("tail process stdout was not captured")
+
+    sed_process = Popen(
+        ["sed", "-u", TORCHRUN_LOG_PREFIX_PATTERN],
+        stdin=tail_process.stdout,
+    )
+    tail_process.stdout.close()
+    return [tail_process, sed_process]
 
 
 def monitor_process(process: Popen, stop_event: Event, error_queue: list, process_name: str):

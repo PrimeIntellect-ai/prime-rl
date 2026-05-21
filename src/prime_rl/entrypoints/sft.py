@@ -12,7 +12,13 @@ from prime_rl.configs.sft import SFTConfig
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import format_log_message, get_config_dir, get_log_dir, validate_output_dir
-from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process, set_proc_title
+from prime_rl.utils.process import (
+    cleanup_processes,
+    cleanup_threads,
+    monitor_process,
+    set_proc_title,
+    start_tail_processes,
+)
 
 SFT_TOML = "sft.toml"
 SFT_SBATCH = "sft.sbatch"
@@ -161,11 +167,11 @@ def sft_local(config: SFTConfig):
         monitor_threads.append(monitor_thread)
 
         logger.success("Startup complete. Showing trainer logs...")
-        tail_process = Popen(
-            f"tail -F '{log_dir / 'trainer.log'}' | sed -u 's/^\\[[a-zA-Z]*[0-9]*\\]://'",
-            shell=True,
+        tail_processes = start_tail_processes(
+            log_dir / "trainer.log",
+            strip_torchrun_prefix=True,
         )
-        processes.append(tail_process)
+        processes.extend(tail_processes)
 
         stop_event.wait()
 

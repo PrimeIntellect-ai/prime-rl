@@ -23,7 +23,13 @@ from prime_rl.utils.pathing import (
     resolve_latest_ckpt_step,
     validate_output_dir,
 )
-from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process, set_proc_title
+from prime_rl.utils.process import (
+    cleanup_processes,
+    cleanup_threads,
+    monitor_process,
+    set_proc_title,
+    start_tail_processes,
+)
 
 RL_TOML = "rl.toml"
 RL_SBATCH = "rl.sbatch"
@@ -321,11 +327,8 @@ def rl_local(config: RLConfig):
         # Monitor all processes for failures
         logger.success("Startup complete. Showing orchestrator logs...")
 
-        tail_process = Popen(
-            f"tail -F '{log_dir / 'orchestrator.log'}'",
-            shell=True,
-        )
-        processes.append(tail_process)
+        tail_processes = start_tail_processes(log_dir / "orchestrator.log")
+        processes.extend(tail_processes)
 
         # Check for errors from monitor threads
         while not (stop_events["orchestrator"].is_set() and stop_events["trainer"].is_set()):
