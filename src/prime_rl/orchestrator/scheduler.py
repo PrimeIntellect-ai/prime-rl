@@ -438,16 +438,18 @@ class Scheduler:
                     # Env-side retries (env.max_retries) already absorb transient
                     # failures; anything that bubbles up here is treated as
                     # non-retryable, and partial groups aren't trainable.
+                    # Tally every failure (group-scoring envs return N rollouts
+                    # per task) so error-rate metrics aren't deflated.
                     failure_reason: str | None = None
                     for rollout in rollouts:
                         if rollout["error"] is not None:
                             self.errored_rollouts_by_env[env_name] += 1
-                            failure_reason = rollout["error"]["error_chain_repr"]
-                            break
-                        if len(rollout["trajectory"]) == 0:
+                            if failure_reason is None:
+                                failure_reason = rollout["error"]["error_chain_repr"]
+                        elif len(rollout["trajectory"]) == 0:
                             self.empty_rollouts_by_env[env_name] += 1
-                            failure_reason = "empty trajectory"
-                            break
+                            if failure_reason is None:
+                                failure_reason = "empty trajectory"
 
                     if failure_reason is not None:
                         self.dropped_groups_by_env[env_name] += 1
