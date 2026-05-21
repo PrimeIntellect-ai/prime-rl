@@ -157,18 +157,20 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
-def test_orchestrator_vlm_configs_must_disable_renderer():
-    with pytest.raises(ValidationError, match="orchestrator.use_renderer is not supported for VLMs"):
+def test_orchestrator_vlm_requires_renderer():
+    with pytest.raises(ValidationError, match="orchestrator.use_renderer must be true when model.vlm is set"):
         OrchestratorConfig.model_validate(
             {
                 "student": {
                     "model": {
+                        "name": "Qwen/Qwen3-VL-4B-Instruct",
                         "vlm": {
                             "vision_encoder_attr": "model.visual",
                             "language_model_attr": "model.language_model",
-                        }
+                        },
                     }
-                }
+                },
+                "use_renderer": False,
             }
         )
 
@@ -176,17 +178,17 @@ def test_orchestrator_vlm_configs_must_disable_renderer():
         {
             "student": {
                 "model": {
+                    "name": "Qwen/Qwen3-VL-4B-Instruct",
                     "vlm": {
                         "vision_encoder_attr": "model.visual",
                         "language_model_attr": "model.language_model",
-                    }
+                    },
                 }
             },
-            "use_renderer": False,
         }
     )
 
-    assert config.use_renderer is False
+    assert config.use_renderer is True
 
 
 def test_selective_activation_checkpointing_requires_custom_impl():

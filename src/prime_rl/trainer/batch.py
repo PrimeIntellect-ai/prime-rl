@@ -77,17 +77,14 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
-        # Multimodal fields (Qwen3-VL) - passed through without modification
-        pixel_values=training_example.pixel_values,
-        pixel_values_shape=training_example.pixel_values_shape,
-        image_grid_thw=training_example.image_grid_thw,
+        mm_kwargs=training_example.mm_kwargs,
         training_mode=training_example.training_mode,
     )
 
 
 def _is_multimodal_sample(sample: MicroBatch) -> bool:
     """Check if a sample contains multimodal data (images)."""
-    return sample.pixel_values is not None
+    return sample.mm_kwargs is not None
 
 
 def packed_samples_into_micro_bs(
@@ -98,7 +95,7 @@ def packed_samples_into_micro_bs(
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
     With per-token temperatures, samples can be packed together regardless of their temperature values.
 
-    NOTE: Multimodal samples (with pixel_values) are NOT packed together as they have variable-sized
+    NOTE: Multimodal samples (with mm_kwargs) are NOT packed together as they have variable-sized
     vision data that doesn't pack well. Each multimodal sample becomes its own micro batch.
     """
     # Sort by (lora_idx, -length) for packing efficiency
