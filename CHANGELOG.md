@@ -2,6 +2,7 @@
 
 Documenting **breaking** configuration changes — renamed, removed, or moved fields that require users to update existing configs.
 
+- **`[model.vlm]` requires `orchestrator.use_renderer = true`**: VLMs must go through the renderer path; the `vlm_requires_renderer` validator rejects `use_renderer = false` when `[model.vlm]` is set. The renderer owns the HF processor per-slot and ships generic `mm_kwargs` keyed by the model's forward signature. Since `use_renderer` already defaults to `true`, most VLM configs need no change. (2026-05-19)
 - **First-class `training_mode` + batch-driven loss dispatch** (collection of removals/renames). Loss selection is now driven by `TrainingSample.training_mode` (`rl` / `opd` / `sft`), set under `[orchestrator]`. The trainer is mode-agnostic and dispatches per batch.
   - **`orchestrator.use_sft_loss` removed**: replaced by `[orchestrator] training_mode = "sft"`. The orchestrator stamps each sample's `training_mode` and the trainer dispatches to `sft_loss_fn` per batch.
   - **`orchestrator.teacher_rollout_model` removed (no alias)**: configs must rename to `[orchestrator.teacher]` (`teacher_model` is also accepted as a back-compat alias for `teacher`). Used in both opd and sft modes; the role is determined by `training_mode`.

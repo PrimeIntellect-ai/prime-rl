@@ -13,7 +13,6 @@ from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import (
-    build_vlm_image_cache,
     interleave_rollout,
     offload_images_to_disk,
     pretokenize_rollout_trajectory,
@@ -34,7 +33,6 @@ monkey_patch_chat_completion_logprobs()
 import pandas as pd
 import verifiers as vf
 from renderers.base import create_renderer
-from transformers import AutoProcessor
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.buffer import Buffer
@@ -118,16 +116,8 @@ async def orchestrate(config: OrchestratorConfig):
     for env_id in env_ids_to_install:
         install_env(env_id, prerelease=config.env_install_prerelease)
 
-    # Load tokenizer and processor (processor only for VLM models)
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
-
-    processor = None
-    if config.student.model.is_vlm:
-        logger.info(f"Loading VLM processor for {config.student.model.name}")
-        processor = AutoProcessor.from_pretrained(
-            config.student.model.name, trust_remote_code=config.student.model.trust_remote_code, use_fast=True
-        )
 
     # Set up student inference pool (required for all training modes).
     logger.info(
@@ -139,6 +129,18 @@ async def orchestrate(config: OrchestratorConfig):
         tokenizer=tokenizer,
         logger=logger,
     )
+
+    # Token-id → modality marker (1 = image patch, 2 = video patch) used
+    # to build ``mm_token_type_ids`` per sample. The renderer is the
+    # single source of truth — it already knows its own special-token
+    # IDs (``<|image_pad|>`` etc.) from the tokenizer it owns, so the
+    # orchestrator never needs to load a separate ``AutoProcessor``.
+    # Text-only renderers expose an empty map (or no attribute).
+    mm_token_type_ids_mapping: dict[int, int] | None = (
+        getattr(renderer, "mm_token_type_id_map", None) if renderer is not None else None
+    )
+    if mm_token_type_ids_mapping == {}:
+        mm_token_type_ids_mapping = None
 
     # Set up teacher inference pool (configured for opd or sft). Always MITO for
     # simplicity - this also keeps external OAI-compatible teachers (PI inference,
@@ -468,69 +470,41 @@ async def orchestrate(config: OrchestratorConfig):
             save_rollouts, train_rollouts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
         )
 
-        # VLM: offload base64 images to disk immediately to free memory
-        if config.student.model.is_vlm:
-            offload_start = time.perf_counter()
-            num_offloaded = offload_images_to_disk(train_rollouts, config.output_dir)
-            if num_offloaded:
-                logger.info(
-                    f"VLM offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
-                )
+        # Offload base64 images to disk to free memory. No-op for text-only
+        # rollouts (no ``data:image`` URLs to find); cheap to call always.
+        offload_start = time.perf_counter()
+        num_offloaded = offload_images_to_disk(train_rollouts, config.output_dir)
+        if num_offloaded:
+            logger.info(
+                f"Offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
+            )
 
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
 
-        # Stage 1: pretokenize + (for VLM) build image cache concurrently.
         # Pretokenize is a no-op when the renderer client already populated
-        # `tokens` on each trajectory step, but the fallback-tokenizer path
-        # and image-cache build are both CPU-heavy. Running them on threads
-        # and awaiting a single gather lets whichever finishes first free
-        # the event loop immediately and, with max_async_level >= 2, overlaps
-        # this whole stage with inference for the next batch.
-        async def _pretokenize_all() -> None:
-            await asyncio.gather(
-                *(
-                    asyncio.to_thread(
-                        pretokenize_rollout_trajectory,
-                        rollout,
-                        tokenizer,
-                        processor=processor,
-                        renderer=renderer,
-                    )
-                    for rollout in train_rollouts
+        # ``tokens`` on each trajectory step (renderer path); the fallback
+        # tokenizer-only branch handles text-only rollouts whose tokens
+        # were not pre-rendered. Run on threads so CPU work overlaps with
+        # inference for the next batch (via max_async_level >= 2).
+        await asyncio.gather(
+            *(
+                asyncio.to_thread(
+                    pretokenize_rollout_trajectory,
+                    rollout,
+                    tokenizer,
+                    renderer=renderer,
                 )
+                for rollout in train_rollouts
             )
-
-        if config.student.model.is_vlm:
-            mm_token_type_ids_mapping = {}
-            if hasattr(processor, "image_token_id") and processor.image_token_id is not None:
-                mm_token_type_ids_mapping[processor.image_token_id] = 1
-            if hasattr(processor, "video_token_id") and processor.video_token_id is not None:
-                mm_token_type_ids_mapping[processor.video_token_id] = 2
-            _, vlm_cache = await asyncio.gather(
-                _pretokenize_all(),
-                asyncio.to_thread(build_vlm_image_cache, train_rollouts, processor),
-            )
-            logger.info(
-                f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s "
-                f"({vlm_cache.num_unique_images} unique images from {vlm_cache.num_unique_examples} examples)"
-            )
-        else:
-            await _pretokenize_all()
-            vlm_cache = None
-            mm_token_type_ids_mapping = None
+        )
 
         # Process rollouts in parallel
-        def process_rollout(rollout: vf.RolloutOutput, rollout_idx: int) -> list[TrainingSample] | None:
-            return interleave_rollout(
-                rollout,
-                vlm_cache=vlm_cache,
-                cache_key=rollout_idx,
-                mm_token_type_ids_mapping=mm_token_type_ids_mapping,
-            )
-
         results = await asyncio.gather(
-            *(asyncio.to_thread(process_rollout, r, rollout_idx) for rollout_idx, r in enumerate(train_rollouts))
+            *(
+                asyncio.to_thread(interleave_rollout, r, mm_token_type_ids_mapping=mm_token_type_ids_mapping)
+                for r in train_rollouts
+            )
         )
 
         # Collect results and assign advantages. Metrics are computed over all
@@ -793,7 +767,7 @@ async def orchestrate(config: OrchestratorConfig):
         is_first_step = False
 
         # Free large per-step objects to prevent memory accumulation
-        del train_rollouts, train_examples, training_batch, vlm_cache
+        del train_rollouts, train_examples, training_batch
         del results_df, metrics_df
         gc.collect()
         # Return free glibc heap pages to the OS. numpy/pandas allocate array data
@@ -903,10 +877,8 @@ async def setup_student_inference_pool(
     Routing policy is driven by ``config.use_renderer``:
 
       - ``use_renderer=True``  → renderer-backed TITO client (``/v1/generate``).
-        Default for text-only rollouts. Not allowed for VLMs (validated at
-        config time).
-      - ``use_renderer=False`` → MITO (``openai_chat_completions``). VLMs
-        land here too.
+        Default for both text-only and VLM rollouts; required for VLMs.
+      - ``use_renderer=False`` → MITO (``openai_chat_completions``).
 
     Eval clients always use MITO. In sft mode ``use_renderer`` is forced off
     by a config validator, so the student pool is plain MITO end-to-end.

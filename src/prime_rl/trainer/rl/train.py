@@ -338,9 +338,15 @@ def train(config: TrainerConfig):
         forward_backward_start_time = time.perf_counter()
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
-        # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
-        loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
-        loss_scale = max(loss_scale, 1)
+        # Normalize by the global (dp_cp) number of unmasked tokens in the batch, so every rank
+        # divides by the same denominator. With a per-rank denominator, ranks with fewer loss
+        # tokens implicitly upweight their per-token gradient contribution after FSDP averaging.
+        # FSDP's per-rank divide is undone after the microbatch loop via fsdp_gradient_divide_factor.
+        local_loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
+        global_loss_scale = torch.tensor(local_loss_scale, dtype=torch.int64, device="cuda")
+        dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
+        dist.all_reduce(global_loss_scale, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        loss_scale = max(global_loss_scale.item(), 1)
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
@@ -371,13 +377,12 @@ def train(config: TrainerConfig):
                 # we could've gotten routed experts from the inference server, but we didn't enable router replay
                 routed_experts = None
 
-            # Multimodal fields (Qwen3-VL) - only present for VLM training
-            pixel_values = (
-                micro_batch["pixel_values"].to("cuda") if micro_batch.get("pixel_values") is not None else None
-            )
-            image_grid_thw = (
-                micro_batch["image_grid_thw"].to("cuda") if micro_batch.get("image_grid_thw") is not None else None
-            )
+            # Multimodal kwargs are an opaque per-model dict (e.g.
+            # {"pixel_values": ..., "image_grid_thw": ...} for Qwen3-VL,
+            # just {"pixel_values": ...} for Gemma3-VL) — we move every
+            # tensor to CUDA and let the model's forward sort them.
+            mm_kwargs_raw = micro_batch.get("mm_kwargs")
+            mm_kwargs = {k: v.to("cuda") for k, v in mm_kwargs_raw.items()} if mm_kwargs_raw else None
             mm_token_type_ids = (
                 micro_batch["mm_token_type_ids"].to("cuda")
                 if micro_batch.get("mm_token_type_ids") is not None
@@ -387,7 +392,7 @@ def train(config: TrainerConfig):
             labels = shift_tensor_left(input_ids)
 
             # VLM + CP is not supported: MRoPE requires global positions but CP shards the sequence
-            if cp_enabled and pixel_values is not None:
+            if cp_enabled and mm_kwargs is not None:
                 raise NotImplementedError("Context parallelism is not supported with VLM/multimodal training")
 
             if cp_enabled:
@@ -426,8 +431,7 @@ def train(config: TrainerConfig):
                     forward_position_ids,
                     labels=labels,
                     temperature=temperatures,
-                    pixel_values=pixel_values,
-                    image_grid_thw=image_grid_thw,
+                    mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_token_type_ids,
                     routed_experts=routed_experts,
                 )
@@ -513,6 +517,12 @@ def train(config: TrainerConfig):
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
+
+        # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
+        # across dp_cp so the final gradient is the true per-token mean over the global batch.
+        for param in model.parameters():
+            if param.grad is not None:
+                param.grad.mul_(parallel_dims.fsdp_gradient_divide_factor)
 
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None

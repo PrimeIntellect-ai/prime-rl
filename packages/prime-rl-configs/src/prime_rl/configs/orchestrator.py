@@ -197,7 +197,7 @@ class EnvConfig(BaseConfig):
     ratio: float | None = Field(None, gt=0)
     """Sampling weight for this environment in the buffer. When None for all envs, samples uniformly across all available problems. When set, must be set on all envs — values are relative weights normalized to probabilities (e.g. [1, 1] and [0.5, 0.5] are equivalent)."""
 
-    max_retries: int = Field(0, ge=0)
+    max_retries: int = Field(3, ge=0)
     """Times the env server retries a failed rollout before returning an error."""
 
     max_total_completion_tokens: int = -1
@@ -264,7 +264,7 @@ class TrainConfig(BaseConfig):
     num_workers: int | Literal["auto"] = "auto"
     """Default worker processes for env servers. Can be overridden per env."""
 
-    max_retries: int = Field(0, ge=0)
+    max_retries: int = Field(3, ge=0)
     """Default retries for failed rollouts. Can be overridden per env."""
 
     @model_validator(mode="after")
@@ -319,7 +319,7 @@ class EvalConfig(BaseConfig):
     num_workers: int | Literal["auto"] = "auto"
     """Default worker processes for env servers. Can be overridden per env."""
 
-    max_retries: int = Field(0, ge=0)
+    max_retries: int = Field(3, ge=0)
     """Default retries for failed rollouts. Can be overridden per env."""
 
     interval: int = Field(100, ge=1)
@@ -635,9 +635,6 @@ class OrchestratorConfig(BaseConfig):
     max_off_policy_steps: int = Field(8, ge=0)
     """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
 
-    max_error_reschedule_attempts: int | None = Field(3, ge=1)
-    """The group is dropped from the current step's batch once this many of its dispatch rounds have returned errored or empty rollouts (the trainer proceeds with the rollouts from other groups). Counts rounds, not individual rollouts: a non-group-scoring env that dispatches ``rollouts_per_example`` rollouts at once still only counts one round per failed batch. None retries indefinitely. Useful for unblocking single-example hangs in agent envs."""
-
     max_async_level: int = Field(1, ge=0)
     """Maximum steps inference can be ahead of training. ``0`` degenerates to synchronous on-policy RL; ``≥1`` overlaps training and inference."""
 
@@ -654,7 +651,7 @@ class OrchestratorConfig(BaseConfig):
     """BetterStack heartbeat configuration for monitoring training progress."""
 
     use_renderer: bool = True
-    """Use the renderer-backed TITO client (client-side tokenization via the ``renderers`` package, served by ``/v1/generate``). When True, the ``[orchestrator.renderer]`` block applies. This is the default for text-only rollouts. False falls back to MITO (``openai_chat_completions``); VLMs and external teacher rollouts require MITO."""
+    """Use the renderer-backed TITO client (client-side tokenization via the ``renderers`` package, served by ``/v1/generate``). When True, the ``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) applies. Default for both text-only and VLM rollouts; VLMs require it. False falls back to MITO (``openai_chat_completions``)."""
 
     env_install_prerelease: bool = False
     """Allow pre-release versions when installing environments (e.g. ``verifiers>=0.1.12.dev5``). Passes ``--prerelease`` to ``prime env install``."""
@@ -680,22 +677,34 @@ class OrchestratorConfig(BaseConfig):
         if not isinstance(data, dict):
             return data
 
+        def deep_merge(dst: dict, src: dict) -> None:
+            """In-place recursive merge of ``src`` into ``dst``. ``src`` wins at the leaf."""
+            for k, v in src.items():
+                if isinstance(v, dict) and isinstance(dst.get(k), dict):
+                    deep_merge(dst[k], v)
+                else:
+                    dst[k] = v
+
         # 1. Re-nest top-level [orchestrator.client] under student.client.
-        if "client" in data:
+        legacy_client = data.pop("client", None)
+        if isinstance(legacy_client, dict):
             student = data.setdefault("student", {})
-            if isinstance(student, dict) and "client" not in student:
-                student["client"] = data.pop("client")
+            if isinstance(student, dict):
+                deep_merge(student.setdefault("client", {}), legacy_client)
+            else:
+                # Mismatched types - put it back and let pydantic surface the error.
+                data["client"] = legacy_client
 
         # 2. Consolidate the legacy `model` alias into `student` so the
-        # flat-layout fix-up below sees a single target.
+        # flat-layout fix-up below sees a single target. Deep-merge with the
+        # legacy keys winning so a CLI `--model.<k>` overrides TOML `student.model.<k>`.
         legacy_model = data.pop("model", None)
         if legacy_model is not None:
             existing = data.get("student")
             if existing is None:
                 data["student"] = legacy_model
             elif isinstance(existing, dict) and isinstance(legacy_model, dict):
-                for k, v in legacy_model.items():
-                    existing.setdefault(k, v)
+                deep_merge(existing, legacy_model)
             else:
                 # Mismatched types - put it back and let pydantic surface the error.
                 data["model"] = legacy_model
@@ -789,20 +798,6 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_renderer_vs_vlm(self):
-        """The renderer client takes plain message dicts and tokenizes
-        them client-side. VLMs need server-side image preprocessing and
-        chat templating, so they must use MITO — fail
-        loudly when both are set."""
-        if self.use_renderer and self.student.model.vlm is not None:
-            raise ValueError(
-                "orchestrator.use_renderer is not supported for VLMs. Use MITO "
-                "(``use_renderer=false``) so image preprocessing and chat templating stay on the "
-                "inference server."
-            )
-        return self
-
-    @model_validator(mode="after")
     def validate_renderer_args(self):
         """``[orchestrator.renderer]`` knobs are only meaningful when
         ``use_renderer=True``. Reject otherwise so callers don't silently
@@ -830,6 +825,21 @@ class OrchestratorConfig(BaseConfig):
             raise ValueError(
                 "Renderer-specific args set without orchestrator.use_renderer=True: "
                 f"{', '.join(renderer_args_set)}. Either enable the renderer client or remove these knobs."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def vlm_requires_renderer(self):
+        """VLMs (``[model.vlm]`` block set) must go through the renderer.
+
+        The renderer owns the processor per-slot, produces byte-identical
+        tokens, and ships generic ``mm_kwargs`` keyed by whatever the
+        model's forward signature expects.
+        """
+        if self.student.model.vlm is not None and not self.use_renderer:
+            raise ValueError(
+                "orchestrator.use_renderer must be true when model.vlm is set. "
+                "VLMs must go through a renderer (e.g. Qwen3VLRenderer) that owns the processor."
             )
         return self
 

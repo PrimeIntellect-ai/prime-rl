@@ -1,20 +1,12 @@
-import base64
-from io import BytesIO
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 import verifiers as vf
-from PIL import Image
 
 from prime_rl.orchestrator.trajectories import (
-    VLMImageCache,
     _align_routed_experts,
     _deserialize_tool_calls,
-    _extract_images_from_examples,
-    _extract_images_from_messages,
-    _ImageStore,
-    build_vlm_image_cache,
     interleave_rollout,
 )
 
@@ -26,15 +18,16 @@ def interleave_rollout(output, *args, **kwargs):
     return _interleave_rollout(output, *args, **kwargs)
 
 
-def _pixels(data: list[list[float]]) -> tuple[bytes, list[int]]:
-    """Convert pixel values list to (bytes, shape) for test cache data."""
-    arr = np.array(data, dtype=np.float32)
-    return arr.tobytes(), list(arr.shape)
+def _decode_mm_pixels(sample) -> list:
+    """Decode ``sample.mm_kwargs['pixel_values']`` to a nested list."""
+    p = sample.mm_kwargs["pixel_values"]
+    return np.frombuffer(p.data, dtype=np.dtype(p.dtype)).reshape(p.shape).tolist()
 
 
-def _decode_pixels(pixel_bytes: bytes, shape: list[int]) -> list[list[float]]:
-    """Decode raw pixel bytes back to nested list for assertions."""
-    return np.frombuffer(pixel_bytes, dtype=np.float32).reshape(shape).tolist()
+def _decode_mm_thw(sample) -> list:
+    """Decode ``sample.mm_kwargs['image_grid_thw']`` to a nested list."""
+    g = sample.mm_kwargs["image_grid_thw"]
+    return np.frombuffer(g.data, dtype=np.dtype(g.dtype)).reshape(g.shape).tolist()
 
 
 def test_deserialize_tool_calls_does_not_inject_missing_key():
@@ -739,803 +732,6 @@ def test_interleave_rollout_interleaved_agents(interleaved_agents_trajectory):
     assert agent2_sample.completion_logprobs == [-0.5, -0.6]
 
 
-# =============================================================================
-# VLM Multi-Turn Tests
-# =============================================================================
-
-
-def _create_test_image(color: str = "red") -> str:
-    """Create a small test image and return its base64 data URL."""
-    colors = {"red": (255, 0, 0), "green": (0, 255, 0), "blue": (0, 0, 255)}
-    img = Image.new("RGB", (10, 10), colors.get(color, (255, 255, 255)))
-    buffer = BytesIO()
-    img.save(buffer, format="PNG")
-    b64 = base64.b64encode(buffer.getvalue()).decode()
-    return f"data:image/png;base64,{b64}"
-
-
-def _create_image_message(image_url: str, text: str = "What is this?") -> dict:
-    """Create an OpenAI-style user message with an image."""
-    return {
-        "role": "user",
-        "content": [
-            {"type": "image_url", "image_url": {"url": image_url}},
-            {"type": "text", "text": text},
-        ],
-    }
-
-
-def test_extract_images_from_messages_no_images():
-    messages = [{"role": "user", "content": "Hello"}]
-    images = _extract_images_from_messages(messages)
-    assert images == []
-
-
-def test_extract_images_from_messages_single_image():
-    image_url = _create_test_image("red")
-    messages = [_create_image_message(image_url)]
-    images = _extract_images_from_messages(messages)
-    assert len(images) == 1
-    assert isinstance(images[0][0], Image.Image)
-
-
-def test_extract_images_from_messages_multiple_images():
-    messages = [
-        _create_image_message(_create_test_image("red")),
-        {"role": "assistant", "content": "I see a red image"},
-        _create_image_message(_create_test_image("green")),
-    ]
-    images = _extract_images_from_messages(messages)
-    assert len(images) == 2
-
-
-def test_extract_images_from_examples_single_turn():
-    image_url = _create_test_image("red")
-    output = vf.RolloutOutput(
-        example_id=1,
-        trajectory=[
-            vf.TrajectoryStep(
-                prompt=[_create_image_message(image_url)],
-                completion=[{"role": "assistant", "content": "A red square"}],
-                response=MagicMock(),
-                tokens=MagicMock(),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-        ],
-        sampling_args={"temperature": 1.0},
-        error=None,
-    )
-
-    all_images, images_per_step = _extract_images_from_examples([(1, output)])
-
-    assert len(all_images) == 1
-    assert images_per_step == {1: [[0]]}  # step 0 has image at index 0
-
-
-def test_extract_images_from_examples_multi_turn_new_image_each_turn():
-    """Test that new images in later turns are correctly extracted."""
-    red_url = _create_test_image("red")
-    green_url = _create_test_image("green")
-
-    output = vf.RolloutOutput(
-        example_id=1,
-        trajectory=[
-            # Turn 1: just the red image
-            vf.TrajectoryStep(
-                prompt=[_create_image_message(red_url, "What color is this?")],
-                completion=[{"role": "assistant", "content": "Red"}],
-                response=MagicMock(),
-                tokens=MagicMock(),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-            # Turn 2: cumulative prompt with red image + green image
-            vf.TrajectoryStep(
-                prompt=[
-                    _create_image_message(red_url, "What color is this?"),
-                    {"role": "assistant", "content": "Red"},
-                    _create_image_message(green_url, "And this one?"),
-                ],
-                completion=[{"role": "assistant", "content": "Green"}],
-                response=MagicMock(),
-                tokens=MagicMock(),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-        ],
-        sampling_args={"temperature": 1.0},
-        error=None,
-    )
-
-    all_images, images_per_step = _extract_images_from_examples([(1, output)])
-
-    assert len(all_images) == 2  # 2 unique images total
-    assert images_per_step == {1: [[0], [0, 1]]}  # step 0: [red], step 1: [red, green]
-
-
-def test_extract_images_from_examples_multi_turn_no_new_images():
-    """Test turns where no new images are added."""
-    red_url = _create_test_image("red")
-
-    output = vf.RolloutOutput(
-        example_id=1,
-        trajectory=[
-            vf.TrajectoryStep(
-                prompt=[_create_image_message(red_url)],
-                completion=[{"role": "assistant", "content": "Red"}],
-                response=MagicMock(),
-                tokens=MagicMock(),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-            # Turn 2: same image, no new ones
-            vf.TrajectoryStep(
-                prompt=[
-                    _create_image_message(red_url),
-                    {"role": "assistant", "content": "Red"},
-                    {"role": "user", "content": "Are you sure?"},  # text only
-                ],
-                completion=[{"role": "assistant", "content": "Yes"}],
-                response=MagicMock(),
-                tokens=MagicMock(),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-        ],
-        sampling_args={"temperature": 1.0},
-        error=None,
-    )
-
-    all_images, images_per_step = _extract_images_from_examples([(1, output)])
-
-    assert len(all_images) == 1  # Only 1 unique image (deduped)
-    assert images_per_step == {1: [[0], [0]]}  # both steps reference the same image
-
-
-def test_extract_images_from_examples_step_with_fewer_images_than_prior_steps():
-    """Test that image counts reflect the prompt's actual images, not a monotonically increasing total.
-
-    When a later step's prompt contains fewer images than the cumulative total from prior steps
-    (i.e. the prompt is not strictly cumulative), the count for that step should match
-    the number of images actually present in that step's prompt.
-    """
-    red_url = _create_test_image("red")
-    green_url = _create_test_image("green")
-
-    output = vf.RolloutOutput(
-        example_id=1,
-        trajectory=[
-            # Step 0: red only
-            vf.TrajectoryStep(
-                prompt=[_create_image_message(red_url)],
-                completion=[],
-                response=MagicMock(),
-                tokens=MagicMock(),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-            # Step 1: cumulative — red + green
-            vf.TrajectoryStep(
-                prompt=[_create_image_message(red_url), _create_image_message(green_url)],
-                completion=[],
-                response=MagicMock(),
-                tokens=MagicMock(),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-            # Step 2: only green — fewer images than cumulative total
-            vf.TrajectoryStep(
-                prompt=[_create_image_message(green_url)],
-                completion=[],
-                response=MagicMock(),
-                tokens=MagicMock(),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-        ],
-        sampling_args={"temperature": 1.0},
-        error=None,
-    )
-
-    _, images_per_step = _extract_images_from_examples([(1, output)])
-
-    # Step 0: [red] → index 0; Step 1: [red, green] → indices [0, 1]; Step 2: [green] → index [1]
-    assert images_per_step == {1: [[0], [0, 1], [1]]}
-
-
-def test_vlm_image_cache_get_for_step():
-    cache_data = {
-        1: [
-            (*_pixels([[1.0, 2.0]]), [[1, 2, 3]]),  # Step 0: 1 image
-            (*_pixels([[1.0, 2.0], [3.0, 4.0]]), [[1, 2, 3], [1, 4, 4]]),  # Step 1: 2 images cumulative
-        ],
-    }
-    cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
-
-    # Step 0 should have 1 image
-    pv, shape, grid = cache.get_for_step(1, 0)
-    assert _decode_pixels(pv, shape) == [[1.0, 2.0]]
-    assert grid == [[1, 2, 3]]
-
-    # Step 1 should have 2 images
-    pv, shape, grid = cache.get_for_step(1, 1)
-    assert _decode_pixels(pv, shape) == [[1.0, 2.0], [3.0, 4.0]]
-    assert grid == [[1, 2, 3], [1, 4, 4]]
-
-
-def test_vlm_image_cache_get_all():
-    cache_data = {
-        1: [
-            (*_pixels([[1.0]]), [[1, 2, 3]]),
-            (*_pixels([[1.0], [2.0]]), [[1, 2, 3], [1, 4, 4]]),
-        ],
-    }
-    cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
-
-    # get_all should return the last step's data
-    pv, shape, grid = cache.get_all(1)
-    assert _decode_pixels(pv, shape) == [[1.0], [2.0]]
-    assert grid == [[1, 2, 3], [1, 4, 4]]
-
-
-def test_vlm_image_cache_step_out_of_range():
-    cache_data = {
-        1: [
-            (*_pixels([[1.0]]), [[1, 2, 3]]),
-        ],
-    }
-    cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
-
-    pv, shape, grid = cache.get_for_step(1, 2)
-    assert pv is None
-    assert shape is None
-    assert grid is None
-
-
-def test_vlm_image_cache_missing_example():
-    cache = VLMImageCache({}, num_unique_examples=0, extract_time=0.0, preprocess_time=0.0)
-
-    pv, shape, grid = cache.get_for_step(999, 0)
-    assert pv is None
-    assert shape is None
-    assert grid is None
-
-    pv, shape, grid = cache.get_all(999)
-    assert pv is None
-    assert shape is None
-    assert grid is None
-
-
-def test_interleave_rollout_with_vlm_cache():
-    """Test that interleave_rollout correctly uses per-step images from VLM cache."""
-    cache_data = {
-        1: [
-            (*_pixels([[1.0]]), [[1, 2, 3]]),  # Step 0
-            (*_pixels([[1.0], [2.0]]), [[1, 2, 3], [1, 4, 4]]),  # Step 1
-        ],
-    }
-    cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
-
-    output = vf.RolloutOutput(
-        example_id=1,
-        trajectory=[
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Turn 1"}],
-                completion=[{"role": "assistant", "content": "Response 1"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[1, 2],
-                    prompt_mask=[0, 0],
-                    completion_ids=[3, 4],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.1, -0.2],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Turn 2"}],
-                completion=[{"role": "assistant", "content": "Response 2"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[1, 2, 3, 4, 5],
-                    prompt_mask=[0, 0, 0, 0, 0],
-                    completion_ids=[6, 7],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.3, -0.4],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-        ],
-        sampling_args={"temperature": 1.0},
-        error=None,
-    )
-
-    # Token 2 is an image token, token 5 is a video token
-    mm_mapping = {2: 1, 5: 2}
-    rollouts = interleave_rollout(output, vlm_cache=cache, mm_token_type_ids_mapping=mm_mapping)
-
-    # Extension holds (step 1 prompt [1,2,3,4,5] extends prefix [1,2,3,4])
-    # so both steps merge into a single sample with cumulative images from step 1
-    assert rollouts is not None
-    assert len(rollouts) == 1
-    rollout = rollouts[0]
-    assert rollout.prompt_ids == [1, 2]
-    assert rollout.completion_ids == [3, 4, 5, 6, 7]
-    assert rollout.completion_mask == [True, True, False, True, True]
-    assert rollout.completion_logprobs == [-0.1, -0.2, 0.0, -0.3, -0.4]
-    # Images: cumulative from last merged step (step 1 has 2 images)
-    assert _decode_pixels(rollout.pixel_values, rollout.pixel_values_shape) == [[1.0], [2.0]]
-    assert rollout.image_grid_thw == [[1, 2, 3], [1, 4, 4]]
-    # mm_token_type_ids: full sequence [1,2,3,4,5,6,7] → [0,1,0,0,2,0,0]
-    assert rollout.mm_token_type_ids == [0, 1, 0, 0, 2, 0, 0]
-
-
-def test_interleave_rollout_uses_cache_key_override():
-    cache_data = {
-        7: [
-            (*_pixels([[9.0]]), [[1, 2, 3]]),
-        ],
-    }
-    cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
-
-    output = vf.RolloutOutput(
-        example_id=123,
-        trajectory=[
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Turn 1"}],
-                completion=[{"role": "assistant", "content": "Response 1"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[1, 2],
-                    prompt_mask=[0, 0],
-                    completion_ids=[3, 4],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.1, -0.2],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-        ],
-        sampling_args={"temperature": 1.0},
-        error=None,
-    )
-
-    rollouts = interleave_rollout(output, vlm_cache=cache, cache_key=7)
-
-    assert rollouts is not None
-    assert len(rollouts) == 1
-    assert _decode_pixels(rollouts[0].pixel_values, rollouts[0].pixel_values_shape) == [[9.0]]
-    assert rollouts[0].image_grid_thw == [[1, 2, 3]]
-
-
-def test_interleave_rollout_vlm_image_then_text_turns():
-    """
-    VLM 3-step trajectory: image in step 0, text-only in steps 1 and 2.
-    Extension holds throughout so all steps merge into 1 sample carrying
-    step 0's pixel_values (no new images added in later steps).
-    """
-    cache_data = {
-        1: [
-            (*_pixels([[1.0, 2.0]]), [[1, 3, 3]]),  # Step 0: 1 image
-            (*_pixels([[1.0, 2.0]]), [[1, 3, 3]]),  # Step 1: same 1 image (no new)
-            (*_pixels([[1.0, 2.0]]), [[1, 3, 3]]),  # Step 2: same 1 image (no new)
-        ],
-    }
-    cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
-
-    output = vf.RolloutOutput(
-        example_id=1,
-        trajectory=[
-            # Step 0: user sends image
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Describe"}],
-                completion=[{"role": "assistant", "content": "A cat"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[1, 2],
-                    prompt_mask=[0, 0],
-                    completion_ids=[3, 4],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.1, -0.2],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-            # Step 1: text-only follow-up (extension holds)
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "More detail"}],
-                completion=[{"role": "assistant", "content": "Fluffy"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[1, 2, 3, 4, 5, 6],
-                    prompt_mask=[0, 0, 0, 0, 0, 0],
-                    completion_ids=[7, 8],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.3, -0.4],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-            # Step 2: another text-only follow-up (extension holds)
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Color?"}],
-                completion=[{"role": "assistant", "content": "Orange"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-                    prompt_mask=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                    completion_ids=[11, 12],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.5, -0.6],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-        ],
-        sampling_args={"temperature": 1.0},
-        error=None,
-    )
-
-    rollouts = interleave_rollout(output, vlm_cache=cache)
-
-    # All 3 steps merge into 1 sample (extension always holds)
-    assert rollouts is not None
-    assert len(rollouts) == 1
-    rollout = rollouts[0]
-    assert rollout.prompt_ids == [1, 2]
-    # completion: step0 [3,4] + step1 new prompt [5,6] + step1 completion [7,8]
-    #             + step2 new prompt [9,10] + step2 completion [11,12]
-    assert rollout.completion_ids == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-    assert rollout.completion_mask == [True, True, False, False, True, True, False, False, True, True]
-    # pixel_values from step 2 (cumulative = same 1 image throughout)
-    assert _decode_pixels(rollout.pixel_values, rollout.pixel_values_shape) == [[1.0, 2.0]]
-    assert rollout.image_grid_thw == [[1, 3, 3]]
-
-
-def test_interleave_rollout_vlm_new_image_mid_conversation():
-    """
-    VLM 3-step trajectory: image in step 0, text in step 1, NEW image in step 2.
-    Extension holds throughout, so 1 merged sample with cumulative images from step 2.
-    """
-    cache_data = {
-        1: [
-            (*_pixels([[1.0]]), [[1, 2, 3]]),  # Step 0: 1 image
-            (*_pixels([[1.0]]), [[1, 2, 3]]),  # Step 1: still 1 image
-            (*_pixels([[1.0], [2.0]]), [[1, 2, 3], [1, 4, 4]]),  # Step 2: 2 images
-        ],
-    }
-    cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
-
-    output = vf.RolloutOutput(
-        example_id=1,
-        trajectory=[
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Image 1"}],
-                completion=[{"role": "assistant", "content": "A"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[1, 2],
-                    prompt_mask=[0, 0],
-                    completion_ids=[3, 4],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.1, -0.2],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Text only"}],
-                completion=[{"role": "assistant", "content": "B"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[1, 2, 3, 4, 5, 6],
-                    prompt_mask=[0, 0, 0, 0, 0, 0],
-                    completion_ids=[7, 8],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.3, -0.4],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Image 2"}],
-                completion=[{"role": "assistant", "content": "C"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-                    prompt_mask=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                    completion_ids=[11, 12],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.5, -0.6],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-        ],
-        sampling_args={"temperature": 1.0},
-        error=None,
-    )
-
-    rollouts = interleave_rollout(output, vlm_cache=cache)
-
-    assert rollouts is not None
-    assert len(rollouts) == 1
-    rollout = rollouts[0]
-    assert rollout.prompt_ids == [1, 2]
-    assert rollout.completion_ids == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-    # Cumulative images from last merged step (step 2): both images
-    assert _decode_pixels(rollout.pixel_values, rollout.pixel_values_shape) == [[1.0], [2.0]]
-    assert rollout.image_grid_thw == [[1, 2, 3], [1, 4, 4]]
-
-
-def test_interleave_rollout_vlm_extension_break():
-    """
-    VLM 3-step trajectory where extension breaks at step 2.
-    Step 0 has image, step 1 extends (text-only), step 2 breaks (different prefix).
-    Should produce 2 samples, each with their own cumulative images.
-    """
-    cache_data = {
-        1: [
-            (*_pixels([[1.0]]), [[1, 2, 3]]),  # Step 0: 1 image
-            (*_pixels([[1.0]]), [[1, 2, 3]]),  # Step 1: still 1 image
-            (*_pixels([[1.0], [2.0]]), [[1, 2, 3], [1, 4, 4]]),  # Step 2: 2 images (new image added)
-        ],
-    }
-    cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
-
-    output = vf.RolloutOutput(
-        example_id=1,
-        trajectory=[
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Image 1"}],
-                completion=[{"role": "assistant", "content": "A"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[1, 2],
-                    prompt_mask=[0, 0],
-                    completion_ids=[3, 4],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.1, -0.2],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-            # Step 1: extends step 0
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Follow-up"}],
-                completion=[{"role": "assistant", "content": "B"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[1, 2, 3, 4, 5, 6],
-                    prompt_mask=[0, 0, 0, 0, 0, 0],
-                    completion_ids=[7, 8],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.3, -0.4],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-            # Step 2: extension breaks (different prefix, e.g. context compaction)
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Image 2"}],
-                completion=[{"role": "assistant", "content": "C"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[100, 101, 102, 103],
-                    prompt_mask=[0, 0, 0, 0],
-                    completion_ids=[104, 105],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.5, -0.6],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-        ],
-        sampling_args={"temperature": 1.0},
-        error=None,
-    )
-
-    rollouts = interleave_rollout(output, vlm_cache=cache)
-
-    assert rollouts is not None
-    assert len(rollouts) == 2
-
-    # Sample 1: steps 0-1 merged, images from step 1 (still 1 image)
-    assert rollouts[0].prompt_ids == [1, 2]
-    assert rollouts[0].completion_ids == [3, 4, 5, 6, 7, 8]
-    assert _decode_pixels(rollouts[0].pixel_values, rollouts[0].pixel_values_shape) == [[1.0]]
-    assert rollouts[0].image_grid_thw == [[1, 2, 3]]
-
-    # Sample 2: step 2 alone (extension broke), images from step 2 (2 images)
-    assert rollouts[1].prompt_ids == [100, 101, 102, 103]
-    assert rollouts[1].completion_ids == [104, 105]
-    assert _decode_pixels(rollouts[1].pixel_values, rollouts[1].pixel_values_shape) == [[1.0], [2.0]]
-    assert rollouts[1].image_grid_thw == [[1, 2, 3], [1, 4, 4]]
-
-
-def test_interleave_rollout_vlm_image_appears_late():
-    """
-    VLM 3-step trajectory: text-only in steps 0 and 1, first image in step 2.
-    Extension holds throughout so all steps merge into 1 sample.
-    The sample should have pixel_values=None until step 2 sets them.
-    """
-    cache_data = {
-        1: [
-            (None, None, None),  # Step 0: no images
-            (None, None, None),  # Step 1: no images
-            (*_pixels([[5.0, 6.0]]), [[1, 3, 3]]),  # Step 2: first image appears
-        ],
-    }
-    cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
-
-    output = vf.RolloutOutput(
-        example_id=1,
-        trajectory=[
-            # Step 0: text-only
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Hello"}],
-                completion=[{"role": "assistant", "content": "Hi"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[1, 2],
-                    prompt_mask=[0, 0],
-                    completion_ids=[3, 4],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.1, -0.2],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-            # Step 1: text-only (extension holds)
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Question"}],
-                completion=[{"role": "assistant", "content": "Answer"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[1, 2, 3, 4, 5, 6],
-                    prompt_mask=[0, 0, 0, 0, 0, 0],
-                    completion_ids=[7, 8],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.3, -0.4],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-            # Step 2: user sends image (extension holds)
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Describe this"}],
-                completion=[{"role": "assistant", "content": "A photo"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-                    prompt_mask=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                    completion_ids=[11, 12],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.5, -0.6],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-        ],
-        sampling_args={"temperature": 1.0},
-        error=None,
-    )
-
-    rollouts = interleave_rollout(output, vlm_cache=cache)
-
-    assert rollouts is not None
-    assert len(rollouts) == 1
-    rollout = rollouts[0]
-    assert rollout.prompt_ids == [1, 2]
-    assert rollout.completion_ids == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-    assert rollout.completion_mask == [True, True, False, False, True, True, False, False, True, True]
-    # pixel_values from step 2 (the first step with an image)
-    assert _decode_pixels(rollout.pixel_values, rollout.pixel_values_shape) == [[5.0, 6.0]]
-    assert rollout.image_grid_thw == [[1, 3, 3]]
-
-
 def test_interleave_rollout_empty_trajectory():
     """Empty trajectory returns None."""
     output = vf.RolloutOutput(
@@ -1608,257 +804,6 @@ def test_interleave_rollout_error_masks_all_false():
     # Logprobs and temperatures still present
     assert rollout.completion_logprobs == [-0.1, -0.2, 0.0, 0.0, -0.3, -0.4]
     assert rollout.completion_temperatures == [0.8] * 6
-
-
-def test_interleave_rollout_vlm_interleaved_agents():
-    """
-    VLM + interleaved agents: agent1 and agent2 interleaved, each with images.
-    agent1 gets cumulative images from its own steps, agent2 from its step.
-
-    Steps (0-indexed):
-      0: agent1-step1 (image A)
-      1: agent1-step2 (extends step 0, image A still)
-      2: agent2-step1 (different prefix, image B)
-      3: agent1-step3 (extends step 0+1, image A + new image C)
-
-    Expected: 2 samples
-      - agent1: merged steps 0,1,3 → pixel_values from step 3 (images A+C)
-      - agent2: step 2 alone → pixel_values from step 2 (image B)
-    """
-    cache_data = {
-        1: [
-            (*_pixels([[1.0]]), [[1, 2, 2]]),  # Step 0: image A
-            (*_pixels([[1.0]]), [[1, 2, 2]]),  # Step 1: still image A
-            (*_pixels([[9.0]]), [[1, 5, 5]]),  # Step 2: image B (agent2)
-            (*_pixels([[1.0], [3.0]]), [[1, 2, 2], [1, 3, 3]]),  # Step 3: images A+C (agent1)
-        ],
-    }
-    cache = VLMImageCache(cache_data, num_unique_examples=1, extract_time=0.0, preprocess_time=0.0)
-
-    output = vf.RolloutOutput(
-        example_id=1,
-        trajectory=[
-            # Step 0: agent1-step1
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Image A"}],
-                completion=[{"role": "assistant", "content": "A1"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[1, 2],
-                    prompt_mask=[0, 0],
-                    completion_ids=[3, 4],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.1, -0.2],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-            # Step 1: agent1-step2 (extends step 0)
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Follow-up"}],
-                completion=[{"role": "assistant", "content": "A2"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[1, 2, 3, 4, 5, 6],
-                    prompt_mask=[0, 0, 0, 0, 0, 0],
-                    completion_ids=[7, 8],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.3, -0.4],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-            # Step 2: agent2-step1 (different prefix)
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Image B"}],
-                completion=[{"role": "assistant", "content": "B1"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[100, 101],
-                    prompt_mask=[0, 0],
-                    completion_ids=[102, 103],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.5, -0.6],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-            # Step 3: agent1-step3 (extends agent1, merges back)
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Image C added"}],
-                completion=[{"role": "assistant", "content": "A3"}],
-                response=MagicMock(),
-                tokens=vf.TrajectoryStepTokens(
-                    prompt_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-                    prompt_mask=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                    completion_ids=[11, 12],
-                    completion_mask=[1, 1],
-                    completion_logprobs=[-0.7, -0.8],
-                    overlong_prompt=False,
-                    is_truncated=False,
-                ),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-        ],
-        error=None,
-        sampling_args={"temperature": 1.0},
-    )
-
-    rollouts = interleave_rollout(output, vlm_cache=cache)
-
-    assert rollouts is not None
-    assert len(rollouts) == 2
-
-    # Agent1: steps 0,1,3 merged → images from step 3 (A+C)
-    agent1 = rollouts[0]
-    assert agent1.prompt_ids == [1, 2]
-    assert agent1.completion_ids == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-    assert agent1.completion_mask == [True, True, False, False, True, True, False, False, True, True]
-    assert _decode_pixels(agent1.pixel_values, agent1.pixel_values_shape) == [[1.0], [3.0]]
-    assert agent1.image_grid_thw == [[1, 2, 2], [1, 3, 3]]
-
-    # Agent2: step 2 alone → images from step 2 (B)
-    agent2 = rollouts[1]
-    assert agent2.prompt_ids == [100, 101]
-    assert agent2.completion_ids == [102, 103]
-    assert agent2.completion_mask == [True, True]
-    assert _decode_pixels(agent2.pixel_values, agent2.pixel_values_shape) == [[9.0]]
-    assert agent2.image_grid_thw == [[1, 5, 5]]
-
-
-def test_build_vlm_image_cache_handles_divergent_rollouts():
-    """Test that build_vlm_image_cache keys images per rollout when trajectories diverge."""
-    import torch
-
-    red_url = _create_test_image("red")
-    blue_url = _create_test_image("blue")
-    green_url = _create_test_image("green")
-
-    rollout_a = vf.RolloutOutput(
-        example_id=1,
-        trajectory=[
-            vf.TrajectoryStep(
-                prompt=[_create_image_message(red_url, "What color?")],
-                completion=[{"role": "assistant", "content": "Red"}],
-                response=MagicMock(),
-                tokens=MagicMock(),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-        ],
-        sampling_args={"temperature": 1.0},
-        error=None,
-    )
-
-    rollout_b = vf.RolloutOutput(
-        example_id=1,
-        trajectory=[
-            vf.TrajectoryStep(
-                prompt=[_create_image_message(blue_url, "What color?")],
-                completion=[{"role": "assistant", "content": "Blue"}],
-                response=MagicMock(),
-                tokens=MagicMock(),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-            vf.TrajectoryStep(
-                prompt=[
-                    _create_image_message(blue_url, "What color?"),
-                    {"role": "assistant", "content": "Blue"},
-                    _create_image_message(green_url, "And this one?"),
-                ],
-                completion=[{"role": "assistant", "content": "Green"}],
-                response=MagicMock(),
-                tokens=MagicMock(),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            ),
-        ],
-        sampling_args={"temperature": 1.0},
-        error=None,
-    )
-
-    # Mock processor that returns predictable tensors
-    mock_processor = MagicMock()
-    mock_processor.image_processor = MagicMock(
-        side_effect=lambda images, return_tensors: {
-            "pixel_values": torch.arange(len(images), dtype=torch.float32).view(-1, 1),
-            "image_grid_thw": torch.tensor([[1, 1, 1]] * len(images)),
-        }
-    )
-
-    rollouts = [rollout_a, rollout_b]
-    cache = build_vlm_image_cache(rollouts, mock_processor)
-
-    assert cache.num_unique_examples == 1
-
-    pv, shape, grid = cache.get_for_step(0, 0)
-    assert _decode_pixels(pv, shape) == [[0.0]]
-    assert grid == [[1, 1, 1]]
-
-    pv, shape, grid = cache.get_for_step(1, 0)
-    assert _decode_pixels(pv, shape) == [[1.0]]
-    assert grid == [[1, 1, 1]]
-
-    pv, shape, grid = cache.get_for_step(1, 1)
-    assert _decode_pixels(pv, shape) == [[1.0], [2.0]]
-    assert grid == [[1, 1, 1], [1, 1, 1]]
-
-
-def test_build_vlm_image_cache_no_images():
-    output = vf.RolloutOutput(
-        example_id=1,
-        trajectory=[
-            vf.TrajectoryStep(
-                prompt=[{"role": "user", "content": "Hello"}],
-                completion=[{"role": "assistant", "content": "Hi"}],
-                response=MagicMock(),
-                tokens=MagicMock(),
-                reward=None,
-                advantage=None,
-                is_truncated=False,
-                trajectory_id="1",
-                extras={},
-            )
-        ],
-        sampling_args={"temperature": 1.0},
-        error=None,
-    )
-
-    cache = build_vlm_image_cache([output], MagicMock())
-
-    pv, shape, grid = cache.get_for_step(0, 0)
-    assert pv is None
-    assert shape is None
-    assert grid is None
 
 
 def test_align_routed_experts_none():
@@ -2047,126 +992,82 @@ def test_interleave_rollout_none_routed_experts_stays_none():
 
 
 # =============================================================================
-# _ImageStore and store-backed VLMImageCache tests
+# Renderer-emitted multimodal data
 # =============================================================================
 
 
-def test_image_store_assemble():
-    """_ImageStore.assemble joins per-image bytes and computes correct shape/grids."""
-    # 2 images: image 0 has 3 patches, image 1 has 2 patches, patch_dim=4
-    patch_dim = 4
-    img0 = np.arange(3 * patch_dim, dtype=np.float32).tobytes()
-    img1 = np.arange(2 * patch_dim, dtype=np.float32).tobytes()
+def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
+    """``interleave_rollout`` packs renderer-emitted ``multi_modal_data``
+    (pixel_values / image_grid_thw / mm_token_type_ids) onto the
+    TrainingSample.
 
-    store = _ImageStore(
-        image_bytes=[img0, img1],
-        image_num_patches=[3, 2],
-        patch_dim=patch_dim,
-        image_grids=[[1, 1, 3], [1, 1, 2]],
+    verifiers' ``_delta_intermediate_mm_data`` ships per-step *delta*
+    mm_data (each step contains only items not present in the prior
+    step's cumulative set). Prime-rl unions across the sample's step
+    range to recover the cumulative set in image-placeholder order.
+    """
+    import torch as _torch
+    from renderers.base import MultiModalData, PlaceholderRange
+
+    # Two synthetic single-image items — values are arbitrary, what
+    # matters is that the packer concatenates them correctly.
+    item1_pv = _torch.tensor([[1.0, 2.0]], dtype=_torch.float32)
+    item2_pv = _torch.tensor([[3.0, 4.0]], dtype=_torch.float32)
+    item1_thw = _torch.tensor([[1, 2, 3]], dtype=_torch.int64)
+    item2_thw = _torch.tensor([[1, 4, 4]], dtype=_torch.int64)
+
+    # Step 0: image h1 (first time it's seen, included in delta).
+    mm_step_0 = MultiModalData(
+        mm_hashes={"image": ["h1"]},
+        mm_placeholders={"image": [PlaceholderRange(offset=1, length=1)]},
+        mm_items={"image": [{"pixel_values": item1_pv, "image_grid_thw": item1_thw}]},
     )
-
-    # Assemble both images
-    pixel_bytes, shape, grids = store.assemble([0, 1])
-    assert shape == [5, 4]
-    assert grids == [[1, 1, 3], [1, 1, 2]]
-    assert pixel_bytes == img0 + img1
-
-    # Assemble single image
-    pixel_bytes, shape, grids = store.assemble([1])
-    assert shape == [2, 4]
-    assert grids == [[1, 1, 2]]
-    assert pixel_bytes == img1
-
-    # Assemble in reverse order
-    pixel_bytes, shape, grids = store.assemble([1, 0])
-    assert shape == [5, 4]
-    assert grids == [[1, 1, 2], [1, 1, 3]]
-    assert pixel_bytes == img1 + img0
-
-
-def test_vlm_image_cache_from_store():
-    """VLMImageCache.from_store provides correct get_for_step/get_all via lazy assembly."""
-    patch_dim = 2
-    img0_data = np.array([[1.0, 2.0]], dtype=np.float32)
-    img1_data = np.array([[3.0, 4.0]], dtype=np.float32)
-
-    store = _ImageStore(
-        image_bytes=[img0_data.tobytes(), img1_data.tobytes()],
-        image_num_patches=[1, 1],
-        patch_dim=patch_dim,
-        image_grids=[[1, 2, 3], [1, 4, 4]],
+    # Step 1: post-delta — only h2 (h1 was dropped because it was in
+    # the prior step's cumulative set). Renderer's bridge would have
+    # produced cumulative [h1, h2] before verifiers' delta rewrite.
+    mm_step_1 = MultiModalData(
+        mm_hashes={"image": ["h2"]},
+        mm_placeholders={"image": [PlaceholderRange(offset=4, length=1)]},
+        mm_items={"image": [{"pixel_values": item2_pv, "image_grid_thw": item2_thw}]},
     )
-
-    step_indices = {
-        1: [[0], [0, 1]],  # step 0: image 0; step 1: images 0+1
-    }
-
-    cache = VLMImageCache.from_store(
-        store=store,
-        step_indices=step_indices,
-        num_unique_examples=1,
-        num_unique_images=2,
-        extract_time=0.0,
-        preprocess_time=0.0,
-    )
-
-    # Step 0: just image 0
-    pv, shape, grid = cache.get_for_step(1, 0)
-    assert _decode_pixels(pv, shape) == [[1.0, 2.0]]
-    assert grid == [[1, 2, 3]]
-
-    # Step 1: images 0 + 1
-    pv, shape, grid = cache.get_for_step(1, 1)
-    assert _decode_pixels(pv, shape) == [[1.0, 2.0], [3.0, 4.0]]
-    assert grid == [[1, 2, 3], [1, 4, 4]]
-
-    # get_all returns last step
-    pv, shape, grid = cache.get_all(1)
-    assert _decode_pixels(pv, shape) == [[1.0, 2.0], [3.0, 4.0]]
-    assert grid == [[1, 2, 3], [1, 4, 4]]
-
-    # Missing key
-    pv, shape, grid = cache.get_for_step(999, 0)
-    assert pv is None
-
-    # Out of range step
-    pv, shape, grid = cache.get_for_step(1, 5)
-    assert pv is None
-
-
-def test_vlm_image_cache_from_store_no_images():
-    """from_store with store=None returns (None, None, None) for all queries."""
-    step_indices = {0: [[], []]}  # 2 steps with no images
-
-    cache = VLMImageCache.from_store(
-        store=None,
-        step_indices=step_indices,
-        num_unique_examples=1,
-        num_unique_images=0,
-        extract_time=0.0,
-        preprocess_time=0.0,
-    )
-
-    pv, shape, grid = cache.get_for_step(0, 0)
-    assert pv is None
-    assert shape is None
-    assert grid is None
-
-
-def test_build_vlm_image_cache_uses_store():
-    """build_vlm_image_cache returns a store-backed cache."""
-    import torch
-
-    red_url = _create_test_image("red")
 
     output = vf.RolloutOutput(
         example_id=1,
         trajectory=[
             vf.TrajectoryStep(
-                prompt=[_create_image_message(red_url, "What color?")],
-                completion=[{"role": "assistant", "content": "Red"}],
+                prompt=[{"role": "user", "content": "Turn 1"}],
+                completion=[{"role": "assistant", "content": "Response 1"}],
                 response=MagicMock(),
-                tokens=MagicMock(),
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2],
+                    prompt_mask=[0, 0],
+                    completion_ids=[3, 4],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.1, -0.2],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                    multi_modal_data=mm_step_0,
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            ),
+            vf.TrajectoryStep(
+                prompt=[{"role": "user", "content": "Turn 2"}],
+                completion=[{"role": "assistant", "content": "Response 2"}],
+                response=MagicMock(),
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2, 3, 4, 5],
+                    prompt_mask=[0, 0, 0, 0, 0],
+                    completion_ids=[6, 7],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.3, -0.4],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                    multi_modal_data=mm_step_1,
+                ),
                 reward=None,
                 advantage=None,
                 is_truncated=False,
@@ -2178,22 +1079,21 @@ def test_build_vlm_image_cache_uses_store():
         error=None,
     )
 
-    mock_processor = MagicMock()
-    mock_processor.image_processor = MagicMock(
-        side_effect=lambda images, return_tensors: {
-            "pixel_values": torch.arange(len(images), dtype=torch.float32).view(-1, 1),
-            "image_grid_thw": torch.tensor([[1, 1, 1]] * len(images)),
-        }
-    )
+    # Token 2 is the image placeholder, token 5 is the video placeholder.
+    mm_mapping = {2: 1, 5: 2}
+    rollouts = interleave_rollout(output, mm_token_type_ids_mapping=mm_mapping)
 
-    cache = build_vlm_image_cache([output], mock_processor)
-
-    # Should be store-backed
-    assert cache._store is not None
-    assert cache._step_indices is not None
-
-    # Should still work correctly
-    pv, shape, grid = cache.get_for_step(0, 0)
-    assert pv is not None
-    assert shape == [1, 1]
-    assert grid == [[1, 1, 1]]
+    assert rollouts is not None and len(rollouts) == 1
+    sample = rollouts[0]
+    # Extension holds; both steps merge into one sample. mm_data is
+    # the union of step 0's delta ([h1]) and step 1's delta ([h2]).
+    assert sample.prompt_ids == [1, 2]
+    assert sample.completion_ids == [3, 4, 5, 6, 7]
+    # Pixel values packed by concatenating step 0's item then step 1's.
+    assert _decode_mm_pixels(sample) == [
+        [1.0, 2.0],
+        [3.0, 4.0],
+    ]
+    assert _decode_mm_thw(sample) == [[1, 2, 3], [1, 4, 4]]
+    # mm_token_type_ids: image at token 2, video at token 5, rest 0.
+    assert sample.mm_token_type_ids == [0, 1, 0, 0, 2, 0, 0]
