@@ -208,14 +208,14 @@ class DataLoader:
                 for key, payload in micro_batch.mm_kwargs.items()
             }
         routed_experts = None
-        if micro_batch.routed_experts is not None:
-            assert micro_batch.routed_experts_shape is not None
+        packed_routed_experts = micro_batch.routed_experts
+        if packed_routed_experts is not None:
             routed_experts = (
                 torch.frombuffer(
-                    micro_batch.routed_experts,
-                    dtype=torch.uint8,
+                    packed_routed_experts.data,
+                    dtype=_torch_dtype(packed_routed_experts.dtype),
                 )
-                .reshape(micro_batch.routed_experts_shape)
+                .reshape(packed_routed_experts.shape)
                 .to(torch.int32)
                 .unsqueeze(0)
             )

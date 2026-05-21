@@ -9,7 +9,7 @@ import torch
 import verifiers as vf
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.transport import TrainingSample
+from prime_rl.transport import RoutedExperts, TrainingSample
 from prime_rl.utils.chat_template import (
     common_prefix_len,
     deserialize_tool_calls,
@@ -60,11 +60,13 @@ def _align_routed_experts(
 def _set_sample_routed_experts(sample: TrainingSample, routed_experts: np.ndarray | None) -> None:
     if routed_experts is None:
         sample.routed_experts = None
-        sample.routed_experts_shape = None
         return
     routed_experts = np.ascontiguousarray(routed_experts)
-    sample.routed_experts = routed_experts.tobytes()
-    sample.routed_experts_shape = list(routed_experts.shape)
+    sample.routed_experts = RoutedExperts(
+        data=routed_experts.tobytes(),
+        shape=list(routed_experts.shape),
+        dtype=str(routed_experts.dtype),
+    )
 
 
 def _common_prefix_len(a: list[int], b: list[int]) -> int:

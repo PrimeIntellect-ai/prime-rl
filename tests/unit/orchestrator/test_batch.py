@@ -2,12 +2,16 @@ import numpy as np
 import pytest
 
 from prime_rl.trainer.batch import prepare_batch, prepare_sample
-from prime_rl.transport.types import TrainingSample
+from prime_rl.transport.types import RoutedExperts, TrainingSample
 
 
 def _routed_experts(data, dtype=np.uint8):
     routed_experts = np.asarray(data, dtype=dtype)
-    return routed_experts.tobytes(), list(routed_experts.shape)
+    return RoutedExperts(
+        data=routed_experts.tobytes(),
+        shape=list(routed_experts.shape),
+        dtype=str(routed_experts.dtype),
+    )
 
 
 @pytest.fixture
@@ -134,7 +138,7 @@ def test_prepare_sample_with_routed_experts():
     """Routed experts are passed through prepare_sample and match input_ids length."""
     # 2 prompt + 2 completion = 4 tokens, 2 layers, topk=2
     routed_experts = [[[0, 1], [2, 3]], [[4, 5], [6, 7]], [[0, 2], [1, 3]], [[1, 0], [3, 2]]]
-    routed_bytes, routed_shape = _routed_experts(routed_experts)
+    routed_payload = _routed_experts(routed_experts)
     sample = TrainingSample(
         prompt_ids=[1, 2],
         prompt_mask=[False, False],
@@ -144,21 +148,19 @@ def test_prepare_sample_with_routed_experts():
         completion_temperatures=[1.0, 1.0],
         advantage=1.0,
         env_name="test-env",
-        routed_experts=routed_bytes,
-        routed_experts_shape=routed_shape,
+        routed_experts=routed_payload,
     )
 
     micro_batch = prepare_sample(sample, seq_len=8)
     assert micro_batch.routed_experts is not None
-    assert micro_batch.routed_experts == routed_bytes
-    assert micro_batch.routed_experts_shape == routed_shape
+    assert micro_batch.routed_experts == routed_payload
 
 
 def test_prepare_sample_truncates_routed_experts():
     """Routed experts are truncated to seq_len when input exceeds it."""
     routed_experts = [[[0, 1]], [[2, 3]], [[4, 5]], [[6, 7]]]
-    routed_bytes, routed_shape = _routed_experts(routed_experts)
-    expected_bytes, expected_shape = _routed_experts(routed_experts[:3])
+    routed_payload = _routed_experts(routed_experts)
+    expected_payload = _routed_experts(routed_experts[:3])
     sample = TrainingSample(
         prompt_ids=[1, 2],
         prompt_mask=[False, False],
@@ -168,14 +170,12 @@ def test_prepare_sample_truncates_routed_experts():
         completion_temperatures=[1.0, 1.0],
         advantage=1.0,
         env_name="test-env",
-        routed_experts=routed_bytes,
-        routed_experts_shape=routed_shape,
+        routed_experts=routed_payload,
     )
 
     micro_batch = prepare_sample(sample, seq_len=3)
     assert micro_batch.routed_experts is not None
-    assert micro_batch.routed_experts == expected_bytes
-    assert micro_batch.routed_experts_shape == expected_shape
+    assert micro_batch.routed_experts == expected_payload
     assert micro_batch.env_names == ["test-env"] * 3
 
 
