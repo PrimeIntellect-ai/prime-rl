@@ -26,8 +26,6 @@ from prime_rl.utils.utils import (
 
 def is_reschedulable_rollout_error(error: object) -> bool:
     """Use verifiers' serialized retryability decision for rollout errors."""
-    if isinstance(error, (vf.InfraError, vf.InvalidModelResponseError)):
-        return True
     if isinstance(error, Mapping):
         return error.get("is_retryable") is True
     return False
