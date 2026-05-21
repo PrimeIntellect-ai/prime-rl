@@ -680,22 +680,20 @@ class OrchestratorConfig(BaseConfig):
         if not isinstance(data, dict):
             return data
 
-        def _deep_merge_into(dst: dict, src: dict) -> None:
+        def deep_merge(dst: dict, src: dict) -> None:
             """In-place recursive merge of ``src`` into ``dst``. ``src`` wins at the leaf."""
             for k, v in src.items():
                 if isinstance(v, dict) and isinstance(dst.get(k), dict):
-                    _deep_merge_into(dst[k], v)
+                    deep_merge(dst[k], v)
                 else:
                     dst[k] = v
 
-        # 1. Re-nest top-level [orchestrator.client] under student.client. Deep-merge
-        # so a CLI override like `--client.base-url URL` reaches `student.client.base_url`
-        # even when the TOML already populated `[student.client]`.
+        # 1. Re-nest top-level [orchestrator.client] under student.client.
         legacy_client = data.pop("client", None)
         if isinstance(legacy_client, dict):
             student = data.setdefault("student", {})
             if isinstance(student, dict):
-                _deep_merge_into(student.setdefault("client", {}), legacy_client)
+                deep_merge(student.setdefault("client", {}), legacy_client)
             else:
                 # Mismatched types - put it back and let pydantic surface the error.
                 data["client"] = legacy_client
@@ -709,7 +707,7 @@ class OrchestratorConfig(BaseConfig):
             if existing is None:
                 data["student"] = legacy_model
             elif isinstance(existing, dict) and isinstance(legacy_model, dict):
-                _deep_merge_into(existing, legacy_model)
+                deep_merge(existing, legacy_model)
             else:
                 # Mismatched types - put it back and let pydantic surface the error.
                 data["model"] = legacy_model
