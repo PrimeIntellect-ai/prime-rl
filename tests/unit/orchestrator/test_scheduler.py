@@ -17,12 +17,20 @@ from prime_rl.orchestrator.scheduler import (
 from prime_rl.utils.async_utils import safe_cancel
 
 
-def make_error(error: str, error_chain_str: str | None = None, error_chain_repr: str | None = None) -> dict:
-    return {
+def make_error(
+    error: str,
+    error_chain_str: str | None = None,
+    error_chain_repr: str | None = None,
+    is_retryable: bool | None = None,
+) -> dict:
+    error_info = {
         "error": error,
         "error_chain_str": error_chain_str or error,
         "error_chain_repr": error_chain_repr or f"{error}()",
     }
+    if is_retryable is not None:
+        error_info["is_retryable"] = is_retryable
+    return error_info
 
 
 def make_scheduler() -> Scheduler:
@@ -62,18 +70,23 @@ def make_scheduler() -> Scheduler:
 
 def test_reschedulable_serialized_errors_match_verifiers_retry_semantics():
     retryable_errors = [
-        make_error("InfraError"),
-        make_error("SandboxError", "SandboxError -> TimeoutError"),
-        make_error("SandboxCreationError", "SandboxCreationError"),
-        make_error("TunnelError"),
-        make_error("BrowserSandboxError"),
-        make_error("InvalidModelResponseError"),
-        make_error("EmptyModelResponseError"),
-        make_error("SubLLMEmptyModelResponseError"),
+        make_error("InfraError", is_retryable=True),
+        make_error("SandboxError", "SandboxError -> TimeoutError", is_retryable=True),
+        make_error("SandboxCreationError", "SandboxCreationError", is_retryable=True),
+        make_error("TunnelError", is_retryable=True),
+        make_error("BrowserSandboxError", is_retryable=True),
+        make_error("InvalidModelResponseError", is_retryable=True),
+        make_error("EmptyModelResponseError", is_retryable=True),
+        make_error("SubLLMEmptyModelResponseError", is_retryable=True),
     ]
 
     for error in retryable_errors:
         assert is_reschedulable_rollout_error(error), error
+
+
+def test_serialized_error_names_without_retryable_flag_are_terminal():
+    assert not is_reschedulable_rollout_error(make_error("SandboxError"))
+    assert not is_reschedulable_rollout_error(make_error("EmptyModelResponseError"))
 
 
 def test_plain_model_error_and_unknown_serialized_errors_are_terminal():
@@ -81,6 +94,7 @@ def test_plain_model_error_and_unknown_serialized_errors_are_terminal():
         "ModelError",
         "ModelError -> InternalServerError",
         "ModelError() -> InternalServerError('No available workers (all circuits open or unhealthy)')",
+        is_retryable=False,
     )
     unknown = make_error("MysteryRolloutError")
 
@@ -95,6 +109,7 @@ def test_plain_model_error_and_unknown_serialized_errors_are_terminal():
             "ModelError",
             "ModelError -> InternalServerError",
             "ModelError() -> InternalServerError('No available workers (all circuits open or unhealthy)')",
+            is_retryable=False,
         ),
         make_error("MysteryRolloutError"),
     ],

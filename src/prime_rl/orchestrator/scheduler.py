@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping
@@ -24,68 +23,18 @@ from prime_rl.utils.utils import (
     wait_for_path,
 )
 
-_ERROR_NAME_RE = re.compile(r"\b[A-Z][A-Za-z0-9_]*(?=\s*(?:\(|->|$))")
-
-
-def _public_verifiers_retryable_error_names() -> frozenset[str]:
-    retryable_bases = (vf.InfraError, vf.InvalidModelResponseError)
-    return frozenset(
-        name for name, value in vars(vf).items() if isinstance(value, type) and issubclass(value, retryable_bases)
-    )
-
-
-# verifiers serializes ErrorInfo before prime-rl sees rollout failures. The
-# public base classes are derived from vf.InfraError/vf.InvalidModelResponseError;
-# the extra names are known non-exported verifiers subclasses that can appear in
-# serialized chains without their base class names.
-_SERIALIZED_RETRYABLE_ERROR_NAMES = _public_verifiers_retryable_error_names() | {
-    "AgentError",
-    "InterceptionError",
-    "PythonWorkerDeadError",
-    "PythonWorkerNotReadyError",
-    "PythonWorkerRequestError",
-    "RLMSandboxCommandTimeout",
-    "RLMSessionError",
-    "RLMSetupError",
-    "RLMWorkerError",
-    "RLMWorkerRecoveryError",
-    "SandboxCreationError",
-    "SandboxNotReadyError",
-    "SandboxSetupError",
-    "StreamInterrupted",
-    "SubLLMEmptyModelResponseError",
-}
-
 
 class NonReschedulableRolloutError(RuntimeError):
     """Raised when a serialized rollout error should abort instead of spawning replacement rollouts."""
 
 
-def _serialized_error_names(error: object) -> set[str]:
-    if isinstance(error, BaseException):
-        return {type(error).__name__}
-    if not isinstance(error, Mapping):
-        return set()
-
-    names: set[str] = set()
-    for key in ("error", "error_chain_str", "error_chain_repr"):
-        value = error.get(key)
-        if not isinstance(value, str):
-            continue
-        names.update(_ERROR_NAME_RE.findall(value))
-    return names
-
-
 def is_reschedulable_rollout_error(error: object) -> bool:
-    """Match verifiers maybe_retry semantics for serialized RolloutOutput errors.
-
-    verifiers retries vf.InfraError and vf.InvalidModelResponseError by type.
-    prime-rl receives serialized ErrorInfo dictionaries, so this compatibility
-    bridge compares class-name tokens from those serialized chains instead.
-    """
+    """Use verifiers' serialized retryability decision for rollout errors."""
     if isinstance(error, (vf.InfraError, vf.InvalidModelResponseError)):
         return True
-    return bool(_serialized_error_names(error) & _SERIALIZED_RETRYABLE_ERROR_NAMES)
+    if isinstance(error, Mapping):
+        return error.get("is_retryable") is True
+    return False
 
 
 def _rollout_error_reason(error: object) -> str:
