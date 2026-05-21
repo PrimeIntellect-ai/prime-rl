@@ -68,8 +68,6 @@ class StaticInferencePool:
         tool_parser: str | None = None,
         reasoning_parser: str | None = None,
         renderer_pool_size: int | None = None,
-        preserve_all_thinking: bool = False,
-        preserve_thinking_between_tool_calls: bool = False,
     ):
         renderer_model_name = model_name if train_client_type == "renderer" else None
         self._train_clients = setup_clients(
@@ -80,8 +78,6 @@ class StaticInferencePool:
             tool_parser=tool_parser,
             reasoning_parser=reasoning_parser,
             renderer_pool_size=renderer_pool_size,
-            preserve_all_thinking=preserve_all_thinking,
-            preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
         )
         self._eval_clients = setup_clients(client_config, client_type=eval_client_type)
         self._admin_clients = setup_admin_clients(client_config)
@@ -133,8 +129,6 @@ async def setup_inference_pool(
     tool_parser: str | None = None,
     reasoning_parser: str | None = None,
     renderer_pool_size: int | None = None,
-    preserve_all_thinking: bool = False,
-    preserve_thinking_between_tool_calls: bool = False,
 ) -> InferencePool:
     """Create an inference pool from config (static or elastic)."""
     logger = get_logger()
@@ -158,8 +152,6 @@ async def setup_inference_pool(
             tool_parser=tool_parser,
             reasoning_parser=reasoning_parser,
             renderer_pool_size=renderer_pool_size,
-            preserve_all_thinking=preserve_all_thinking,
-            preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
         )
 
     logger.info(
@@ -176,8 +168,6 @@ async def setup_inference_pool(
         tool_parser=tool_parser,
         reasoning_parser=reasoning_parser,
         renderer_pool_size=renderer_pool_size,
-        preserve_all_thinking=preserve_all_thinking,
-        preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
     )
 
 
@@ -189,8 +179,6 @@ def setup_clients(
     tool_parser: str | None = None,
     reasoning_parser: str | None = None,
     renderer_pool_size: int | None = None,
-    preserve_all_thinking: bool = False,
-    preserve_thinking_between_tool_calls: bool = False,
 ) -> list[vf.ClientConfig]:
     clients = []
     client_idx = 0
@@ -208,8 +196,6 @@ def setup_clients(
                     renderer_pool_size=renderer_pool_size,
                     tool_parser=tool_parser,
                     reasoning_parser=reasoning_parser,
-                    preserve_all_thinking=preserve_all_thinking,
-                    preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
                     api_base_url=base_url,
                     api_key_var=client_config.api_key_var,
                     timeout=client_config.timeout,

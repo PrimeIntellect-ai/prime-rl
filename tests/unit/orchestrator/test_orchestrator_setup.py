@@ -50,8 +50,6 @@ def test_setup_rollout_inference_pool_uses_direct_renderer_client_for_local_vllm
                 tool_parser=None,
                 reasoning_parser=None,
                 pool_size=None,
-                preserve_all_thinking=True,
-                preserve_thinking_between_tool_calls=False,
             ),
         )
         rollout_client_config = SimpleNamespace(base_url=["http://localhost:8000/v1"])
@@ -81,8 +79,6 @@ def test_setup_rollout_inference_pool_uses_direct_renderer_client_for_local_vllm
             renderer="qwen3_vl",
             tool_parser=None,
             reasoning_parser=None,
-            preserve_all_thinking=True,
-            preserve_thinking_between_tool_calls=False,
         )
         setup_pool_mock.assert_awaited_once_with(
             rollout_client_config,
@@ -93,8 +89,6 @@ def test_setup_rollout_inference_pool_uses_direct_renderer_client_for_local_vllm
             tool_parser=None,
             reasoning_parser=None,
             renderer_pool_size=None,
-            preserve_all_thinking=True,
-            preserve_thinking_between_tool_calls=False,
         )
 
     asyncio.run(run())
