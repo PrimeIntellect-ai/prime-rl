@@ -33,7 +33,6 @@ class BasePacker(ABC):
         tokenizer: PreTrainedTokenizer,
         config: TransportConfig,
         start_step: int = 0,
-        disable_echo: bool = False,
     ):
         self.logger = get_logger()
         self.multi_run_manager = get_multi_run_manager()
@@ -41,10 +40,6 @@ class BasePacker(ABC):
         self.seq_len = seq_len
         self.pad_to_multiple_of = pad_to_multiple_of
         self.tokenizer = tokenizer
-        # Forwarded into ``prepare_batch`` / ``prepare_sample`` so the
-        # SFT-on-tool-body advantage overlay knows whether to length-normalize
-        # by total rollout length (ECHO) or apply a constant alpha.
-        self.disable_echo = disable_echo
         self.receiver = setup_training_batch_receiver(config)
         shutil.rmtree(get_rollout_dir(self.multi_run_manager.output_dir), ignore_errors=True)
         self.sender: MicroBatchSender = setup_micro_batch_sender(
@@ -90,11 +85,8 @@ class SinglePacker(BasePacker):
         tokenizer: PreTrainedTokenizer,
         config: TransportConfig,
         start_step: int = 0,
-        disable_echo: bool = False,
     ):
-        super().__init__(
-            dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step, disable_echo=disable_echo
-        )
+        super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
         assert self.multi_run_manager.max_runs == 1, "SinglePacker only supports one run"
 
     def pack(self):
@@ -118,7 +110,6 @@ class SinglePacker(BasePacker):
             num_train_workers=self.dp_world_size,
             idxs=[0] * len(batch.examples),
             num_loras=self.multi_run_manager.max_runs,
-            disable_echo=self.disable_echo,
         )
 
         self.sender.send(micro_batch_grid)
@@ -133,11 +124,8 @@ class MultiPacker(BasePacker):
         tokenizer: PreTrainedTokenizer,
         config: TransportConfig,
         start_step: int = 0,
-        disable_echo: bool = False,
     ):
-        super().__init__(
-            dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step, disable_echo=disable_echo
-        )
+        super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step)
         # Per-run buffer: stores (TrainingSample, step) tuples
         self.buffers: list[deque[tuple[TrainingSample, int]]] = [
             deque() for _ in range(self.multi_run_manager.max_runs)
@@ -339,7 +327,6 @@ class MultiPacker(BasePacker):
                 num_train_workers=self.dp_world_size,
                 idxs=[run_idx] * len(run_samples),
                 num_loras=self.multi_run_manager.max_runs,
-                disable_echo=self.disable_echo,
             )
             # Merge into combined grid
             for worker_idx, worker_batches in enumerate(run_micro_batch_grid):
@@ -355,7 +342,6 @@ def setup_packer(
     tokenizer: PreTrainedTokenizer,
     transport_config: TransportConfig,
     start_step: int = 0,
-    disable_echo: bool = False,
 ) -> BasePacker:
     multi_run_manager = get_multi_run_manager()
     if multi_run_manager.max_runs == 1:
@@ -366,7 +352,6 @@ def setup_packer(
             tokenizer,
             transport_config,
             start_step,
-            disable_echo=disable_echo,
         )
     else:
         return MultiPacker(
@@ -376,5 +361,4 @@ def setup_packer(
             tokenizer,
             transport_config,
             start_step,
-            disable_echo=disable_echo,
         )

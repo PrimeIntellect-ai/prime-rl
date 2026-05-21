@@ -107,21 +107,19 @@ def test_prepare_sample_propagates_sft_loss(make_training_example):
     assert micro_batch.sft_loss is True
 
 
-def test_prepare_sample_overlays_sft_advantage_length_normalized(make_training_example):
-    """Length-normalized (ECHO) overlay: each sft_mask position gets
-    ``alpha / total_rollout_length`` on the advantages tensor, and its
-    loss_mask flips to True so the SFT gradient reaches it. The total
-    SFT loss contribution per rollout is
-    ``alpha × (n_sft_tokens / total_rollout_length)`` — proportional to
-    how much of the rollout is tool body."""
-    # 2 prompt + 2 completion = 4 tokens; mark both prompt positions as SFT.
+def test_prepare_sample_sft_overlay_all_tokens(make_training_example):
+    """``normalization='all_tokens'`` (default, ECHO): weight = α / T.
+
+    Fixture: 2 prompt + 2 completion = 4 tokens (T=4), both prompt
+    positions marked SFT (S=2), α=0.5 → per-token weight = 0.5/4 = 0.125.
+    Total SFT loss = 2 × 0.125 = 0.25 = α × (S/T)."""
     example = make_training_example()
     example.sft_mask = [True, True, False, False]
     example.sft_alpha = 0.5
+    example.sft_normalization = "all_tokens"
 
     micro_batch = prepare_sample(example, seq_len=16)
 
-    # total_length = 4, alpha = 0.5 → weight = 0.125 on mask positions.
     assert micro_batch.advantages[0] == 0.125
     assert micro_batch.advantages[1] == 0.125
     # Non-SFT positions keep the rollout's scalar advantage (1.0 from the fixture).
@@ -129,25 +127,95 @@ def test_prepare_sample_overlays_sft_advantage_length_normalized(make_training_e
     assert micro_batch.advantages[3] == 1.0
     # SFT prompt positions are now loss-trainable; completion mask preserved.
     assert micro_batch.loss_mask == [True, True, True, True]
-    # The mask itself rides through unchanged.
     assert micro_batch.sft_mask == [True, True, False, False]
 
 
-def test_prepare_sample_overlays_sft_advantage_disable_echo(make_training_example):
-    """When ``disable_echo=True`` the weight is a constant ``alpha``,
-    not ``alpha / total_rollout_length``. Useful for the ablation cell
-    on the ECHO normalization."""
+def test_prepare_sample_sft_overlay_defaults_to_all_tokens(make_training_example):
+    """When ``sft_normalization`` is None on the rollout, the dispatch
+    falls back to ``"all_tokens"``. Belt-and-braces: ensures rollouts
+    produced by older orchestrators (pre-normalization-field) don't
+    silently flip to a different mode."""
     example = make_training_example()
     example.sft_mask = [True, True, False, False]
     example.sft_alpha = 0.5
+    example.sft_normalization = None
 
-    micro_batch = prepare_sample(example, seq_len=16, disable_echo=True)
+    micro_batch = prepare_sample(example, seq_len=16)
 
-    # Constant alpha across all SFT positions.
+    # Same as the all_tokens test above: weight = 0.5 / 4 = 0.125.
+    assert micro_batch.advantages[0] == 0.125
+    assert micro_batch.advantages[1] == 0.125
+
+
+def test_prepare_sample_sft_overlay_sft_tokens(make_training_example):
+    """``normalization='sft_tokens'``: weight = α / S.
+
+    S=2, α=0.5 → weight = 0.25. Total SFT loss = 2 × 0.25 = 0.5 = α
+    (constant per rollout, independent of T)."""
+    example = make_training_example()
+    example.sft_mask = [True, True, False, False]
+    example.sft_alpha = 0.5
+    example.sft_normalization = "sft_tokens"
+
+    micro_batch = prepare_sample(example, seq_len=16)
+
+    assert micro_batch.advantages[0] == 0.25
+    assert micro_batch.advantages[1] == 0.25
+    assert micro_batch.advantages[2] == 1.0
+    assert micro_batch.advantages[3] == 1.0
+    assert micro_batch.loss_mask == [True, True, True, True]
+
+
+def test_prepare_sample_sft_overlay_ratio(make_training_example):
+    """``normalization='ratio'``: weight = α × R / S.
+
+    R = sum(completion_mask) = 2 (both completion positions True in the
+    fixture). S = 2. α = 0.5 → weight = 0.5 × 2 / 2 = 0.5. Total SFT
+    loss = 2 × 0.5 = 1.0 = α × R."""
+    example = make_training_example()
+    example.sft_mask = [True, True, False, False]
+    example.sft_alpha = 0.5
+    example.sft_normalization = "ratio"
+
+    micro_batch = prepare_sample(example, seq_len=16)
+
+    assert micro_batch.advantages[0] == 0.5
+    assert micro_batch.advantages[1] == 0.5
+    # Non-SFT positions keep their original scalar advantage. Note that
+    # completion positions (which are R=2 here) are NOT overwritten —
+    # ratio only scales the SFT weight; RL advantages are untouched.
+    assert micro_batch.advantages[2] == 1.0
+    assert micro_batch.advantages[3] == 1.0
+
+
+def test_prepare_sample_sft_overlay_none(make_training_example):
+    """``normalization='none'``: weight = α (no normalization).
+
+    Each SFT position gets the raw α regardless of S, T, or R. Total
+    SFT loss = S × α, scaling linearly with the SFT token count."""
+    example = make_training_example()
+    example.sft_mask = [True, True, False, False]
+    example.sft_alpha = 0.5
+    example.sft_normalization = "none"
+
+    micro_batch = prepare_sample(example, seq_len=16)
+
     assert micro_batch.advantages[0] == 0.5
     assert micro_batch.advantages[1] == 0.5
     assert micro_batch.advantages[2] == 1.0
     assert micro_batch.advantages[3] == 1.0
+
+
+def test_prepare_sample_sft_overlay_rejects_unknown_normalization(make_training_example):
+    """Pin the dispatch: an unknown mode raises ValueError loudly rather
+    than silently falling through to default."""
+    example = make_training_example()
+    example.sft_mask = [True, True, False, False]
+    example.sft_alpha = 0.5
+    example.sft_normalization = "totally_made_up_mode"
+
+    with pytest.raises(ValueError, match="Unknown sft_normalization"):
+        prepare_sample(example, seq_len=16)
 
 
 def test_prepare_sample_skips_sft_overlay_without_alpha(make_training_example):

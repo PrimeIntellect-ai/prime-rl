@@ -229,11 +229,11 @@ def train(config: TrainerConfig):
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake, config.model.seq_len, parallel_dims.get_mesh("dp").size())
     else:
-        # The packer process consumes ``disable_echo`` when applying the
-        # SFT-on-tool-body advantage overlay in ``prepare_sample``. Read it
-        # from the loss config; non-default losses (SFTLossConfig,
-        # CustomLossConfig) don't carry the flag and default to ECHO on.
-        disable_echo = getattr(config.loss, "disable_echo", False)
+        # The SFT-on-tool-body advantage overlay (in ``prepare_sample``)
+        # selects its normalization mode per-rollout from
+        # ``TrainingSample.sft_normalization``, populated by the
+        # orchestrator from the per-env ``SFTConfig.normalization``.
+        # No global flag needed here.
         dataloader = DataLoader(
             config.output_dir,
             progress.step,
@@ -242,7 +242,6 @@ def train(config: TrainerConfig):
             config.model.cp,
             tokenizer,
             config.rollout_transport,
-            disable_echo=disable_echo,
         )
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None

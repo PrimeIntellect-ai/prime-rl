@@ -36,13 +36,18 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # above: that switches the whole sample to the SFT loss function; this is a
     # per-token overlay co-existing with the RL loss in default_loss_fn.
     sft_mask: list[bool] | None = None
-    # Per-env constant weight on the SFT advantage. The trainer overlays
-    # ``alpha / total_rollout_length`` (the ECHO objective) — or ``alpha``
-    # if trainer config sets ``disable_echo`` — on the advantages tensor at
-    # sft_mask positions. Total SFT loss contribution per rollout scales as
-    # ``alpha × (n_sft_tokens / total_rollout_length)``, proportional to how
-    # much of the rollout was tool body. None when sft_mask is None.
+    # Per-env constant weight on the SFT advantage. The per-token weight
+    # formula depends on ``sft_normalization``; see SFTConfig for the
+    # four modes. None when sft_mask is None.
     sft_alpha: float | None = None
+    # Per-env normalization mode for the SFT-on-tool-body advantage weight.
+    # One of ``"all_tokens"`` (default ECHO), ``"sft_tokens"`` (constant
+    # total per rollout), ``"ratio"`` (calibrates against RL signal
+    # magnitude via R/S), or ``"none"`` (no normalization). See SFTConfig
+    # docstring for the per-token formulas. Transported as ``str`` for
+    # msgspec compatibility; validated at the config layer. None when
+    # sft_mask is None.
+    sft_normalization: str | None = None
 
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):

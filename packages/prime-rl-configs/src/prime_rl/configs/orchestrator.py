@@ -367,18 +367,38 @@ class EnvConfig(BaseConfig):
 
 
 class SFTConfig(BaseConfig):
-    """Per-env SFT-on-tool-body objective (the ECHO loss).
+    """Per-env SFT-on-tool-body objective (the ECHO-family losses).
 
-    When enabled, tool-message body tokens in the prompt receive a
-    per-token positive advantage of ``alpha / total_rollout_length``
-    (length-normalized — the ECHO objective; total SFT loss per
-    rollout is ``alpha × (n_sft_tokens / total_rollout_length)``).
-    When ``trainer.loss.disable_echo`` is set, each SFT-mask position
-    instead gets a constant ``alpha`` (no length normalization).
-    Either way the policy learns to anticipate tool outputs alongside
-    its standard RL objective on assistant tokens. The scaffold around
-    tool bodies (``<|tool_response>`` specials, role-tag wraps,
-    separators) is excluded by construction — the mask is built from
+    When enabled, tool-message body tokens in the prompt get a per-token
+    positive advantage and are flipped into the loss mask so they
+    contribute to the gradient. The per-token weight depends on the
+    chosen ``normalization`` mode (notation: ``α`` = ``alpha``,
+    ``T`` = total rollout length, ``S`` = ``n_sft_tokens``,
+    ``R`` = ``n_rl_tokens`` = ``sum(completion_mask)``):
+
+    - ``"all_tokens"`` (default, the ECHO objective): weight = ``α / T``;
+      total SFT loss per rollout is ``α × (S/T)``, scaling with how much
+      of the rollout is tool body.
+    - ``"sft_tokens"``: weight = ``α / S``; total SFT loss per rollout
+      is ``α`` (constant — independent of how much tool body the rollout
+      had).
+    - ``"ratio"``: weight = ``α × R / S``; total SFT loss per rollout is
+      ``α × R``, scaling with the RL signal magnitude. When SFT is rare
+      (sparse tool outputs), per-SFT-token weight goes up. When SFT is
+      dense (most of the rollout is tool body), per-SFT-token weight
+      goes down.
+    - ``"none"``: weight = ``α`` (no normalization); total SFT loss per
+      rollout is ``α × S``, scaling linearly with the count of SFT
+      tokens.
+
+    All counts are taken pre-truncation from the rollout's
+    ``TrainingSample`` so the weight reflects the actual rollout shape,
+    not the artifact of ``seq_len`` truncation.
+
+    The policy learns to anticipate tool outputs alongside its standard
+    RL objective on assistant tokens. The scaffold around tool bodies
+    (``<|tool_response>`` specials, role-tag wraps, separators) is
+    excluded by construction — the mask is built from
     ``prompt_attribution.is_content`` AND a per-message tool-name
     filter, never the raw token stream.
     """
@@ -397,6 +417,20 @@ class SFTConfig(BaseConfig):
             description="Restrict SFT to these tool function names; None = all tools.",
         ),
     ] = None
+    normalization: Annotated[
+        Literal["all_tokens", "sft_tokens", "ratio", "none"],
+        Field(
+            description=(
+                "Per-token weight formula on SFT positions. ``all_tokens`` = "
+                "α/T (ECHO, default); ``sft_tokens`` = α/S (constant total "
+                "per rollout); ``ratio`` = α × R/S (calibrates against the "
+                "RL signal magnitude); ``none`` = α (no normalization). "
+                "T = total rollout length, S = n_sft_tokens, "
+                "R = n_rl_tokens = sum(completion_mask). All counts taken "
+                "pre-truncation."
+            ),
+        ),
+    ] = "all_tokens"
 
 
 class TrainEnvConfig(EnvConfig):

@@ -3,20 +3,27 @@ import copy
 from prime_rl.transport.types import MicroBatch, TrainingSample
 
 
-def prepare_sample(training_example: TrainingSample, seq_len: int, disable_echo: bool = False) -> MicroBatch:
+def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch:
     """
     Prepare a problem for sequence packing training.
     Tokenize and prepare tensors.
 
     When ``training_example`` carries an ``sft_mask`` + ``sft_alpha`` (the
     SFT-on-tool-body overlay), the masked prompt-side tool body tokens get
-    their advantage overwritten to ``alpha / total_rollout_length``
-    (length-normalized per rollout — the ECHO objective: total SFT loss per
-    rollout scales as ``alpha × (n_sft_tokens / total_rollout_length)``,
-    proportional to how much of the rollout was tool body) and are flipped
-    into ``loss_mask=True`` so they contribute to the loss. When
-    ``disable_echo`` is True, the weight is constant ``alpha`` instead of
-    ``alpha / total_rollout_length``.
+    their advantage overwritten to a per-token weight selected by
+    ``sft_normalization`` and are flipped into ``loss_mask=True`` so they
+    contribute to the loss. Notation: ``α`` = ``sft_alpha``,
+    ``T`` = total rollout length, ``S`` = ``n_sft_tokens``,
+    ``R`` = ``n_rl_tokens`` = ``sum(completion_mask)``.
+
+    Normalization modes (default ``"all_tokens"``):
+    - ``"all_tokens"`` (ECHO): weight = ``α / T``.
+    - ``"sft_tokens"``: weight = ``α / S``.
+    - ``"ratio"``: weight = ``α × R / S``.
+    - ``"none"``: weight = ``α``.
+
+    All counts are taken pre-truncation so the weight reflects the actual
+    rollout shape, not the artifact of ``seq_len`` truncation.
     """
     input_ids = training_example.prompt_ids + training_example.completion_ids
     loss_mask = list(training_example.prompt_mask) + list(training_example.completion_mask)
@@ -30,19 +37,31 @@ def prepare_sample(training_example: TrainingSample, seq_len: int, disable_echo:
 
     # SFT-on-tool-body overlay: rewrite the advantage on masked tool body
     # tokens and flip them into the loss mask so they contribute. The
-    # constant alpha (or alpha/total_length under ECHO) lives on the
-    # advantage tensor; ``loss.default_loss_fn`` then forces IS ratio = 1
-    # and zero KL on the same positions so the gradient direction matches
-    # SFT. ECHO normalizes by total rollout length so the per-rollout SFT
-    # loss contribution is ``alpha × (n_sft_tokens / total_rollout_length)``
-    # — proportional to the fraction of the rollout that's tool body.
+    # per-token weight lives on the advantage tensor; ``loss.default_loss_fn``
+    # then forces IS ratio = 1 and zero KL on the same positions so the
+    # gradient direction matches SFT.
     if sft_mask is not None and training_example.sft_alpha is not None:
         n_sft = sum(sft_mask)
         if n_sft > 0:
-            if disable_echo:
-                weight = training_example.sft_alpha
+            normalization = training_example.sft_normalization or "all_tokens"
+            alpha = training_example.sft_alpha
+            if normalization == "all_tokens":
+                weight = alpha / len(input_ids)
+            elif normalization == "sft_tokens":
+                weight = alpha / n_sft
+            elif normalization == "ratio":
+                # n_rl = 0 → weight = 0 (degenerate but harmless; no
+                # completion tokens means no RL signal to calibrate against,
+                # and the SFT contribution drops out).
+                n_rl = sum(training_example.completion_mask)
+                weight = alpha * n_rl / n_sft
+            elif normalization == "none":
+                weight = alpha
             else:
-                weight = training_example.sft_alpha / len(input_ids)
+                raise ValueError(
+                    f"Unknown sft_normalization {normalization!r}; expected one of "
+                    f"'all_tokens', 'sft_tokens', 'ratio', 'none'."
+                )
             for k in range(len(input_ids)):
                 if sft_mask[k]:
                     advantages[k] = weight
@@ -268,7 +287,6 @@ def prepare_batch(
     idxs: list[int],
     num_loras: int,
     pad_to_multiple_of: int = 1,
-    disable_echo: bool = False,
 ) -> list[list[MicroBatch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
@@ -279,11 +297,11 @@ def prepare_batch(
     a text-only batch, the all-gather will hang. We separate micro batches by modality
     and distribute them so that at each step index, all ranks see the same modality.
 
-    ``disable_echo`` controls the SFT-on-tool-body advantage shape (see ``prepare_sample``).
+    The SFT-on-tool-body advantage shape is selected per-rollout from
+    ``TrainingSample.sft_normalization`` — see ``prepare_sample`` for the
+    four modes.
     """
-    all_samples = [
-        (idx, prepare_sample(rollout, seq_len, disable_echo=disable_echo)) for idx, rollout in zip(idxs, rollouts)
-    ]
+    all_samples = [(idx, prepare_sample(rollout, seq_len)) for idx, rollout in zip(idxs, rollouts)]
 
     micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
