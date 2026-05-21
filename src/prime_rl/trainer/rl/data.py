@@ -12,12 +12,6 @@ from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
 from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfig, setup_micro_batch_receiver
 
-ROUTED_EXPERTS_TORCH_DTYPES = {
-    "uint8": torch.uint8,
-    "int16": torch.int16,
-    "int32": torch.int32,
-}
-
 
 class TensorMicroBatch(TypedDict):
     """A micro batch of data for training."""
@@ -30,6 +24,7 @@ class TensorMicroBatch(TypedDict):
     teacher_logprobs: Float[Tensor, "batch seq"] | None
     loss_mask: Bool[Tensor, "batch seq"]
     temperatures: Float[Tensor, "batch seq"]  # Per-token temperatures
+    env_names: list[str]
 
     # Batch level
     lora_num_tokens: Int[Tensor, "n_loras"]
@@ -37,16 +32,18 @@ class TensorMicroBatch(TypedDict):
     # MoE router replay
     routed_experts: Int[Tensor, "batch seq layers topk"] | None
 
-    # Multimodal fields (Qwen3-VL)
-    # pixel_values: flattened image patches [num_patches, patch_dim] where patch_dim=1176 for Qwen3-VL
-    pixel_values: Float[Tensor, "num_patches patch_dim"] | None
-    # image_grid_thw: grid dimensions [num_images, 3] where each entry is [temporal, height, width]
-    image_grid_thw: Int[Tensor, "num_images 3"] | None
+    # Generic multimodal kwargs — flat dict matching the model's forward
+    # signature (e.g. ``{"pixel_values": ..., "image_grid_thw": ...}`` for
+    # Qwen3-VL; ``{"pixel_values": ...}`` for Gemma3-VL). The trainer
+    # ``**`` -unpacks this into the forward call, so any HF VLM whose
+    # processor and forward agree on kwarg names works out of the box.
+    mm_kwargs: dict[str, Tensor] | None
     # mm_token_type_ids: token type per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
 
-    # When True, trainer uses SFT loss instead of RL loss for this batch
-    sft_loss: bool
+    # Selects loss dispatch (rl/opd → default loss with mode-specific taus,
+    # sft → sft loss). All samples in a micro batch share the same mode.
+    training_mode: str
 
 
 class FakeDataLoader:
@@ -114,13 +111,13 @@ class FakeDataLoader:
             "inference_logprobs": inference_logprobs.unsqueeze(0),
             "teacher_logprobs": None,
             "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
+            "env_names": ["fake"] * input_ids.shape[0],
             "loss_mask": loss_mask.unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
             "routed_experts": None,
-            "pixel_values": None,
-            "image_grid_thw": None,
+            "mm_kwargs": None,
             "mm_token_type_ids": None,
-            "sft_loss": False,
+            "training_mode": "rl",
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -141,13 +138,13 @@ class FakeDataLoader:
             "inference_logprobs": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
             "teacher_logprobs": None,
             "temperatures": torch.ones(self.seq_len).unsqueeze(0),
+            "env_names": ["fake"] * self.seq_len,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
             "routed_experts": None,
-            "pixel_values": None,
-            "image_grid_thw": None,
+            "mm_kwargs": None,
             "mm_token_type_ids": None,
-            "sft_loss": False,
+            "training_mode": "rl",
         }
 
 
@@ -201,15 +198,24 @@ class DataLoader:
         if micro_batch.lora_num_tokens is None:
             micro_batch.lora_num_tokens = [0] * self.multi_run_manager.max_runs
             micro_batch.lora_num_tokens[0] = len(micro_batch.input_ids)
+        mm_kwargs: dict[str, Tensor] | None = None
+        if micro_batch.mm_kwargs:
+            # Each value is an EncodedTensor (dtype, shape, raw bytes).
+            # No batch dim — the orchestrator concatenates per-image along
+            # dim=0 generically, matching what each HF VLM's forward expects.
+            mm_kwargs = {
+                key: torch.frombuffer(bytearray(payload.data), dtype=_torch_dtype(payload.dtype)).reshape(payload.shape)
+                for key, payload in micro_batch.mm_kwargs.items()
+            }
         routed_experts = None
-        packed_routed_experts = micro_batch.routed_experts
-        if packed_routed_experts is not None:
+        if micro_batch.routed_experts is not None:
+            assert micro_batch.routed_experts_shape is not None
             routed_experts = (
                 torch.frombuffer(
-                    packed_routed_experts.data,
-                    dtype=ROUTED_EXPERTS_TORCH_DTYPES[packed_routed_experts.dtype],
+                    micro_batch.routed_experts,
+                    dtype=torch.uint8,
                 )
-                .reshape(packed_routed_experts.shape)
+                .reshape(micro_batch.routed_experts_shape)
                 .to(torch.int32)
                 .unsqueeze(0)
             )
@@ -223,19 +229,24 @@ class DataLoader:
             else None,
             loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
             temperatures=torch.tensor(micro_batch.temperatures, dtype=torch.float).unsqueeze(0),
+            env_names=micro_batch.env_names,
             lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
-            # Multimodal fields - no batch dimension for these as they are variable-sized
-            pixel_values=torch.frombuffer(bytearray(micro_batch.pixel_values), dtype=torch.float32).reshape(
-                micro_batch.pixel_values_shape
-            )
-            if micro_batch.pixel_values is not None
-            else None,
-            image_grid_thw=torch.tensor(micro_batch.image_grid_thw, dtype=torch.long)
-            if micro_batch.image_grid_thw is not None
-            else None,
+            mm_kwargs=mm_kwargs,
             mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)
             if micro_batch.mm_token_type_ids is not None
             else None,
             routed_experts=routed_experts,
-            sft_loss=micro_batch.sft_loss,
+            training_mode=micro_batch.training_mode,
         )
+
+
+def _torch_dtype(name: str) -> torch.dtype:
+    """Resolve a numpy/torch dtype name (e.g. ``"float32"``) to torch.dtype."""
+    # Strip the ``numpy.`` prefix some dtype reprs carry.
+    name = name.replace("numpy.", "")
+    if hasattr(torch, name):
+        return getattr(torch, name)
+    # numpy ↔ torch alias mismatches (rare but possible) — fall back via numpy.
+    import numpy as np
+
+    return torch.from_numpy(np.zeros(1, dtype=np.dtype(name))).dtype

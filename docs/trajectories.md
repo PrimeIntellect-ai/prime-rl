@@ -39,7 +39,7 @@ Interleaving enforces a strict invariant:
 
 > The prompt at turn $t$ must be the exact concatenation of prior messages exactly as the LLM originally generated them
 
-We call this the "exact prefix" invariant. For example, at turn 2, the LLM should see U1,A1,U2 as the prompt, where U1 exactly matches the user message in turn 1 and A1 exactly matches the produced assistant message in turn 1. Any violation to this invariant will result in downstream problems when computing the importance sampling ratio during training.
+We call this the "exact prefix" invariant. For example, at turn 2, the LLM should see U1,A1,U2 as the prompt, where U1 exactly matches the user message in turn 1 and A1 exactly matches the produced assistant message in turn 1. Any violation of this invariant will result in downstream problems when computing the importance sampling ratio during training.
 
 For example, assume that at turn 2 the prompt is U1,A1',U2 where A1' varies from A1. In this scenario it is not clear whether to add A1 or A1' to the interleaved rollout:
 - If we add A1', the logprobs from turn 1 might be off because the inference LLM produced A1 but the trainer LLM is computing logprobs for A1'

@@ -5,14 +5,65 @@ description: How to prepare and publish GitHub releases for prime-rl. Use when d
 
 # Releases
 
-## Preparing release notes
+Releases are driven by [`.github/workflows/tag-and-release.yaml`](../../.github/workflows/tag-and-release.yaml). The flow:
 
-1. **Style reference**: check the previous release (`gh release list --limit 1` then `gh release view <tag>`) to match the tone and formatting.
-2. **Gather changes**: use `git log <last-tag>..origin/main --oneline --no-merges` to list all commits since the last release.
-3. **Check for new commits**: always `git fetch origin main` and re-check right before publishing, since PRs may have been merged while drafting.
-4. **Structure**: organize notes into numbered highlight sections (`# 1.`, `# 2.`, ...), then `# Breaking Changes`, `# Bug Fixes`, and `# Misc`.
-5. **Highlights**: group related PRs under a single highlight. Use `##` subsections when a highlight contains multiple items (e.g. Performance & Parallelism). Keep the top highlights for the most impactful user-facing features.
-6. **Config examples**: when referencing TOML config, verify the exact field names against the actual code or docs — don't guess.
-7. **Links**: use clickable links for docs (`[docs/foo.md](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/docs/foo.md)`) and PR references (`[#1234](https://github.com/PrimeIntellect-ai/prime-rl/pull/1234)`).
-8. **Contributors**: list all contributors ranked by number of commits, using their GitHub `@username`. Get usernames via the GitHub API, not git author names (which can be inconsistent).
-9. **Draft first**: always create releases as `--draft` first, iterate on content, then publish.
+1. You create a **draft GitHub Release** with the notes inline (`gh release create --draft`).
+2. You open a **draft PR** that bumps `version` in `pyproject.toml`.
+3. Maintainer merges. The workflow tags the commit and promotes the draft.
+
+Release notes live on the GitHub Release, not in the repo. Prime-rl is **not** on PyPI. `.dev` tags are handled separately by `devx_tag.yaml`; `tag-and-release.yaml` ignores them.
+
+## 1. Decide the version
+
+```bash
+git fetch origin --tags
+grep '^version' pyproject.toml
+gh release list --repo PrimeIntellect-ai/prime-rl --limit 5
+```
+
+SemVer (`MAJOR.MINOR.PATCH`). Confirm with the user before continuing.
+
+## 2. Draft the notes
+
+Match the prior release's structure: numbered highlights (`# 1.`, ...), then `# Breaking Changes`, `# Bug Fixes`, `# Misc`, `# Contributors`. Use `##` subsections inside a highlight when it bundles multiple items.
+
+```bash
+PREV=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+gh release view "$PREV" --json body --jq .body          # style reference
+git log "$PREV"..origin/main --oneline --no-merges      # commits since
+gh pr list --base main --state merged --search \
+  "merged:>=$(gh release view "$PREV" --json publishedAt --jq .publishedAt)" \
+  --limit 500 --json number,title,author                # for PR links + contributors
+```
+
+Tips:
+- PR refs: `[#1234](https://github.com/PrimeIntellect-ai/prime-rl/pull/1234)`.
+- Contributors: order by commit count, use the GH `@username` from the API (not git author names).
+- Verify any TOML field names against the actual config classes.
+
+## 3. Create the draft release
+
+```bash
+NEW=v0.6.0
+gh release create --draft "$NEW" --title "$NEW" --target main --notes-file /tmp/release-notes-$NEW.md
+gh release view "$NEW" --json isDraft,tagName --jq '{tagName, isDraft}'   # expect isDraft: true
+```
+
+Iterate with `gh release edit "$NEW" --notes-file /tmp/release-notes-$NEW.md`.
+
+## 4. Open the version-bump PR
+
+```bash
+git switch -c chore/release-$NEW
+# bump `version = "..."` in pyproject.toml
+git add pyproject.toml
+git commit -m "chore: release $NEW"
+git push -u origin "chore/release-$NEW"
+gh pr create --draft --title "chore: release $NEW" --body "Bumps version to ${NEW#v}. Draft release: https://github.com/PrimeIntellect-ai/prime-rl/releases/tag/$NEW"
+```
+
+Stop. Do not tag, push tags, or flip the draft to published — the workflow does that on merge.
+
+## Recovery
+
+If the workflow tagged the commit but failed to promote the draft, the next main push (or `workflow_dispatch` with `tag: v{new}`) re-promotes it.

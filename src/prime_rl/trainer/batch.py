@@ -1,52 +1,33 @@
 import copy
 
-from prime_rl.transport.types import MicroBatch, RoutedExperts, TrainingSample
-
-ROUTED_EXPERTS_DTYPE_ITEMSIZE = {
-    "uint8": 1,
-    "int16": 2,
-    "int32": 4,
-}
+from prime_rl.transport.types import MicroBatch, TrainingSample
 
 
-def _copy_routed_experts(routed_experts: RoutedExperts) -> RoutedExperts:
-    return RoutedExperts(
-        data=routed_experts.data,
-        shape=list(routed_experts.shape),
-        dtype=routed_experts.dtype,
-    )
+def _routed_experts_row_size(shape: list[int]) -> int:
+    return shape[1] * shape[2]
 
 
-def _routed_experts_row_size(routed_experts: RoutedExperts) -> int:
-    return routed_experts.shape[1] * routed_experts.shape[2] * ROUTED_EXPERTS_DTYPE_ITEMSIZE[routed_experts.dtype]
-
-
-def _slice_routed_experts(routed_experts: RoutedExperts, seq_len: int) -> RoutedExperts:
-    row_size = _routed_experts_row_size(routed_experts)
-    return RoutedExperts(
-        data=routed_experts.data[: seq_len * row_size],
-        shape=[seq_len, routed_experts.shape[1], routed_experts.shape[2]],
-        dtype=routed_experts.dtype,
-    )
+def _slice_routed_experts(data: bytes, shape: list[int], seq_len: int) -> tuple[bytes, list[int]]:
+    row_size = _routed_experts_row_size(shape)
+    return data[: seq_len * row_size], [seq_len, shape[1], shape[2]]
 
 
 def _append_routed_experts(dst: MicroBatch, src: MicroBatch) -> None:
-    dst_routed = dst.routed_experts
-    src_routed = src.routed_experts
-    assert dst_routed is not None
-    assert src_routed is not None
-    assert dst_routed.dtype == src_routed.dtype
-    assert dst_routed.shape[1:] == src_routed.shape[1:]
-    dst_routed.data += src_routed.data
-    dst_routed.shape[0] += src_routed.shape[0]
+    assert dst.routed_experts is not None
+    assert dst.routed_experts_shape is not None
+    assert src.routed_experts is not None
+    assert src.routed_experts_shape is not None
+    assert dst.routed_experts_shape[1:] == src.routed_experts_shape[1:]
+    dst.routed_experts += src.routed_experts
+    dst.routed_experts_shape[0] += src.routed_experts_shape[0]
 
 
 def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
-    routed_experts = micro_batch.routed_experts
-    assert routed_experts is not None
-    row_size = _routed_experts_row_size(routed_experts)
-    routed_experts.data += b"\0" * (padding_size * row_size)
-    routed_experts.shape[0] += padding_size
+    assert micro_batch.routed_experts is not None
+    assert micro_batch.routed_experts_shape is not None
+    row_size = _routed_experts_row_size(micro_batch.routed_experts_shape)
+    micro_batch.routed_experts += b"\0" * (padding_size * row_size)
+    micro_batch.routed_experts_shape[0] += padding_size
 
 
 def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch:
@@ -60,6 +41,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     advantages = [training_example.advantage] * len(input_ids)
     position_ids = list(range(len(input_ids)))
     mm_token_type_ids = training_example.mm_token_type_ids
+    assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
+    env_names = [training_example.env_name] * len(input_ids)
 
     # Per-token temperatures: prompt tokens use first completion temp (masked out anyway)
     # Default to 1.0 if completion is empty (e.g., model generated only tool calls with no text)
@@ -69,9 +52,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     # Teacher logprobs already cover the full sequence (prompt + completion),
     # computed via prefill in the orchestrator when a teacher model is configured
     teacher_logprobs = training_example.teacher_logprobs
-    routed_experts = (
-        _copy_routed_experts(training_example.routed_experts) if training_example.routed_experts is not None else None
-    )
+    routed_experts = training_example.routed_experts
+    routed_experts_shape = training_example.routed_experts_shape
 
     if len(input_ids) > seq_len:
         input_ids = input_ids[:seq_len]
@@ -83,9 +65,11 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         if teacher_logprobs is not None:
             teacher_logprobs = teacher_logprobs[:seq_len]
         if routed_experts is not None:
-            routed_experts = _slice_routed_experts(routed_experts, seq_len)
+            assert routed_experts_shape is not None
+            routed_experts, routed_experts_shape = _slice_routed_experts(routed_experts, routed_experts_shape, seq_len)
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:seq_len]
+        env_names = env_names[:seq_len]
 
     assert (
         len(input_ids)
@@ -101,15 +85,17 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         assert len(teacher_logprobs) == len(input_ids), f"teacher_logprobs: {len(teacher_logprobs)}"
 
     if routed_experts is not None:
-        assert routed_experts.shape[0] == len(input_ids), (
-            f"routed_experts: {routed_experts.shape}, input_ids: {len(input_ids)}"
+        assert routed_experts_shape is not None
+        assert routed_experts_shape[0] == len(input_ids), (
+            f"routed_experts: {routed_experts_shape}, input_ids: {len(input_ids)}"
         )
-        assert len(routed_experts.data) == len(input_ids) * _routed_experts_row_size(routed_experts)
+        assert len(routed_experts) == len(input_ids) * _routed_experts_row_size(routed_experts_shape)
 
     if mm_token_type_ids is not None:
         assert len(mm_token_type_ids) == len(input_ids), (
             f"mm_token_type_ids: {len(mm_token_type_ids)}, input_ids: {len(input_ids)}"
         )
+    assert len(env_names) == len(input_ids), f"env_names: {len(env_names)}, input_ids: {len(input_ids)}"
 
     return MicroBatch(
         input_ids=input_ids,
@@ -120,18 +106,17 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         teacher_logprobs=teacher_logprobs,
         temperatures=temperatures,
         routed_experts=routed_experts,
+        routed_experts_shape=routed_experts_shape,
         mm_token_type_ids=mm_token_type_ids,
-        # Multimodal fields (Qwen3-VL) - passed through without modification
-        pixel_values=training_example.pixel_values,
-        pixel_values_shape=training_example.pixel_values_shape,
-        image_grid_thw=training_example.image_grid_thw,
-        sft_loss=training_example.sft_loss,
+        env_names=env_names,
+        mm_kwargs=training_example.mm_kwargs,
+        training_mode=training_example.training_mode,
     )
 
 
 def _is_multimodal_sample(sample: MicroBatch) -> bool:
     """Check if a sample contains multimodal data (images)."""
-    return sample.pixel_values is not None
+    return sample.mm_kwargs is not None
 
 
 def packed_samples_into_micro_bs(
@@ -142,7 +127,7 @@ def packed_samples_into_micro_bs(
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
     With per-token temperatures, samples can be packed together regardless of their temperature values.
 
-    NOTE: Multimodal samples (with pixel_values) are NOT packed together as they have variable-sized
+    NOTE: Multimodal samples (with mm_kwargs) are NOT packed together as they have variable-sized
     vision data that doesn't pack well. Each multimodal sample becomes its own micro batch.
     """
     # Sort by (lora_idx, -length) for packing efficiency
@@ -167,7 +152,7 @@ def packed_samples_into_micro_bs(
             # Check if sequence fits in this bin
             if (
                 len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len
-                and bin_content.sft_loss == sample.sft_loss
+                and bin_content.training_mode == sample.training_mode
             ):
                 bin_content.input_ids.extend(sample.input_ids)
                 bin_content.loss_mask.extend(sample.loss_mask)
@@ -180,11 +165,16 @@ def packed_samples_into_micro_bs(
                     bin_content.teacher_logprobs.extend(sample.teacher_logprobs)
                 assert (bin_content.routed_experts is None) == (sample.routed_experts is None)
                 if sample.routed_experts is not None:
-                    _append_routed_experts(bin_content, sample)
+                    if bin_content.routed_experts is None:
+                        bin_content.routed_experts = sample.routed_experts
+                        bin_content.routed_experts_shape = list(sample.routed_experts_shape)
+                    else:
+                        _append_routed_experts(bin_content, sample)
                 if sample.mm_token_type_ids is not None:
                     if bin_content.mm_token_type_ids is None:
                         bin_content.mm_token_type_ids = []
                     bin_content.mm_token_type_ids.extend(sample.mm_token_type_ids)
+                bin_content.env_names.extend(sample.env_names)
                 bin_content.position_ids.extend(sample.position_ids)
                 bin_content.lora_num_tokens[idx] += len(sample.input_ids)
                 break
@@ -209,6 +199,12 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
 
     padding_size = (pad_to_multiple_of - (len(micro_batch.input_ids) % pad_to_multiple_of)) % pad_to_multiple_of
 
+    if len(micro_batch.env_names) != len(micro_batch.input_ids):
+        raise ValueError(
+            f"MicroBatch.env_names must match input_ids length before padding: "
+            f"env_names={len(micro_batch.env_names)}, input_ids={len(micro_batch.input_ids)}"
+        )
+
     if not (pad_to_multiple_of > 1 and padding_size > 0):
         return micro_batch
 
@@ -228,6 +224,7 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
         micro_batch.mm_token_type_ids.extend([0] * padding_size)
     if micro_batch.routed_experts is not None:
         _pad_routed_experts(micro_batch, padding_size)
+    micro_batch.env_names.extend([""] * padding_size)
 
     return micro_batch
 

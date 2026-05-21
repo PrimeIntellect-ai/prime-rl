@@ -1,5 +1,6 @@
 import torch
-from vllm.triton_utils import tl, triton
+
+from prime_rl.inference.vllm.padded_input_scrub import monkey_patch_vllm_padded_input_scrub
 
 
 def transformers_v5_compat():
@@ -15,10 +16,9 @@ def transformers_v5_compat():
 
     _patch_qwen35_lora()
     _patch_lora_key_prefix()
-    monkey_patch_deep_gemm_ep_scatter()
-    monkey_patch_deep_gemm_silu_mul_quant_int64()
     monkey_patch_dp_engine_core_pause_resume_deadlock()
     monkey_patch_vllm_layerwise_reload_alias_buffers()
+    monkey_patch_vllm_padded_input_scrub()
     monkey_patch_return_routed_experts_with_nixl_connector()
 
 
@@ -74,6 +74,8 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
     # storage *after* the parameter has been correctly reloaded. Skip the copy
     # for any buffer that shares storage with a parameter; _place_kernel_tensors
     # re-registers the original view, which trivially reflects the parameter.
+    # Remove this patch once https://github.com/vllm-project/vllm/pull/42481 is
+    # included in the vLLM release we pin/use.
     from vllm.logger import init_logger
     from vllm.model_executor.model_loader.reload import layerwise as reload_layerwise
 
@@ -94,294 +96,6 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
 
     reload_layerwise._copy_and_restore_kernel_tensors = _copy_and_restore_kernel_tensors
     logger.warning("Enabled vLLM layerwise reload alias-buffer patch.")
-
-
-@triton.jit
-def _apply_expert_map_triton(expert_id, expert_map):
-    if expert_id != -1:
-        expert_id = tl.load(expert_map + expert_id).to(expert_id.dtype)
-    return expert_id
-
-
-@triton.jit
-def _fwd_kernel_ep_scatter_2_int64(
-    total_token_num,
-    expert_start_loc,
-    recv_x,
-    recv_x_stride0,
-    recv_x_stride1,
-    recv_x_scale,
-    recv_x_scale_stride0,
-    recv_x_scale_stride1,
-    recv_topk,
-    recv_topk_stride0,
-    recv_topk_stride1,
-    output_tensor,
-    output_tensor_stride0,
-    output_tensor_stride1,
-    output_tensor_scale,
-    output_tensor_scale_stride0,
-    output_tensor_scale_stride1,
-    output_index,
-    output_index_stride0,
-    output_index_stride1,
-    topk_num: tl.constexpr,
-    expert_map,
-    HAS_EXPERT_MAP: tl.constexpr,
-    HIDDEN_SIZE: tl.constexpr,
-    HIDDEN_SIZE_PAD: tl.constexpr,
-    SCALE_HIDDEN_SIZE: tl.constexpr,
-    SCALE_HIDDEN_SIZE_PAD: tl.constexpr,
-):
-    start_token_id = tl.program_id(0)
-    grid_num = tl.num_programs(0)
-
-    offset_in = tl.arange(0, HIDDEN_SIZE_PAD)
-    mask = offset_in < HIDDEN_SIZE
-
-    offset_in_s = tl.arange(0, SCALE_HIDDEN_SIZE_PAD)
-    mask_s = offset_in_s < SCALE_HIDDEN_SIZE
-
-    output_tensor_stride0 = output_tensor_stride0.to(tl.int64)
-
-    for token_id in range(start_token_id, total_token_num, grid_num):
-        to_copy = tl.load(recv_x + token_id * recv_x_stride0 + offset_in, mask=mask)
-        to_copy_s = tl.load(
-            recv_x_scale + token_id * recv_x_scale_stride0 + offset_in_s,
-            mask=mask_s,
-        )
-
-        for topk_index in tl.range(0, topk_num, 1, num_stages=4):
-            expert_id = tl.load(recv_topk + token_id * recv_topk_stride0 + topk_index)
-
-            if HAS_EXPERT_MAP:
-                expert_id = _apply_expert_map_triton(expert_id, expert_map)
-
-            if expert_id >= 0:
-                dest_token_index = tl.atomic_add(expert_start_loc + expert_id, 1)
-                dest_token_index_i64 = dest_token_index.to(tl.int64)
-
-                tl.store(
-                    output_index + token_id * output_index_stride0 + topk_index,
-                    dest_token_index,
-                )
-
-                output_tensor_ptr = output_tensor + dest_token_index_i64 * output_tensor_stride0
-                output_tensor_scale_ptr = output_tensor_scale + dest_token_index * output_tensor_scale_stride0
-                tl.store(output_tensor_ptr + offset_in, to_copy, mask=mask)
-                tl.store(output_tensor_scale_ptr + offset_in_s, to_copy_s, mask=mask_s)
-
-
-def _triton_ep_scatter_int64(
-    recv_x: torch.Tensor,
-    recv_x_scale: torch.Tensor,
-    recv_topk: torch.Tensor,
-    num_recv_tokens_per_expert: torch.Tensor,
-    expert_map: torch.Tensor | None,
-    expert_start_loc: torch.Tensor,
-    output_tensor: torch.Tensor,
-    output_tensor_scale: torch.Tensor,
-    m_indices: torch.Tensor,
-    output_index: torch.Tensor,
-) -> None:
-    from vllm.model_executor.layers.fused_moe import deep_gemm_utils
-
-    block_e = 128
-    num_warps = 8
-    num_experts = num_recv_tokens_per_expert.shape[0]
-    hidden_size = recv_x.shape[1]
-
-    assert m_indices.shape[0] % block_e == 0
-    assert expert_start_loc.shape[0] == num_experts
-
-    deep_gemm_utils._fwd_kernel_ep_scatter_1[(num_experts,)](
-        num_recv_tokens_per_expert,
-        expert_start_loc,
-        m_indices,
-        num_experts=num_experts,
-        num_warps=num_warps,
-        BLOCK_E=block_e,
-        BLOCK_EXPERT_NUM=triton.next_power_of_2(num_experts),
-    )
-
-    grid = min(recv_topk.shape[0], 1024 * 8)
-    _fwd_kernel_ep_scatter_2_int64[(grid,)](
-        recv_topk.shape[0],
-        expert_start_loc,
-        recv_x,
-        recv_x.stride(0),
-        recv_x.stride(1),
-        recv_x_scale,
-        recv_x_scale.stride(0),
-        recv_x_scale.stride(1),
-        recv_topk,
-        recv_topk.stride(0),
-        recv_topk.stride(1),
-        output_tensor,
-        output_tensor.stride(0),
-        output_tensor.stride(1),
-        output_tensor_scale,
-        output_tensor_scale.stride(0),
-        output_tensor_scale.stride(1),
-        output_index,
-        output_index.stride(0),
-        output_index.stride(1),
-        topk_num=recv_topk.shape[1],
-        expert_map=expert_map,
-        HAS_EXPERT_MAP=expert_map is not None,
-        num_warps=num_warps,
-        HIDDEN_SIZE=hidden_size,
-        HIDDEN_SIZE_PAD=triton.next_power_of_2(hidden_size),
-        SCALE_HIDDEN_SIZE=recv_x_scale.shape[1],
-        SCALE_HIDDEN_SIZE_PAD=triton.next_power_of_2(recv_x_scale.shape[1]),
-    )
-
-
-def monkey_patch_deep_gemm_ep_scatter():
-    # Temporary local carry of the upstream fix while it is under review:
-    # issue: https://github.com/vllm-project/vllm/issues/39211
-    # PR:    https://github.com/vllm-project/vllm/pull/39213
-    from vllm.logger import init_logger
-    from vllm.model_executor.layers.fused_moe import deep_gemm_utils
-
-    logger = init_logger(__name__)
-
-    deep_gemm_utils.ep_scatter = torch.no_grad()(_triton_ep_scatter_int64)
-    logger.warning("Enabled int64-addressing Triton patch for vLLM DeepGEMM ep_scatter.")
-
-
-@triton.jit
-def _silu_mul_per_token_group_quant_fp8_colmajor_int64_kernel(
-    y_ptr,
-    y_q_ptr,
-    y_s_ptr,
-    M: tl.int64,
-    N: tl.int64,
-    y_s_col_stride: tl.int64,
-    eps,
-    fp8_min: tl.constexpr,
-    fp8_max: tl.constexpr,
-    use_ue8m0: tl.constexpr,
-    GROUP_SIZE: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-):
-    pid_m = tl.program_id(0)
-    pid_n = tl.program_id(1)
-    N_2 = N // 2
-
-    m_offset = (pid_m * BLOCK_M).to(tl.int64)
-    n_offset = (pid_n * BLOCK_N).to(tl.int64)
-    if m_offset >= M:
-        return
-
-    offs_n = tl.arange(0, BLOCK_N).to(tl.int64)
-    offs_m = tl.arange(0, BLOCK_M).to(tl.int64)
-
-    base_y_ptr = y_ptr + m_offset * N + n_offset
-    act_in_ptrs = base_y_ptr + offs_m[:, None] * N + offs_n[None, :]
-
-    act_in = tl.load(act_in_ptrs)
-    mul_in = tl.load(act_in_ptrs + N_2)
-
-    act_in = act_in.to(tl.float32)
-    one_f32 = tl.cast(1, tl.float32)
-    silu_out = (act_in / (one_f32 + tl.exp(-act_in))).to(y_ptr.dtype.element_ty)
-    y = (silu_out * mul_in).to(tl.float32)
-
-    absmax = tl.maximum(tl.max(tl.abs(y), axis=1), eps)
-    scale_raw = absmax * (1.0 / fp8_max)
-    y_s = tl.math.exp2(tl.ceil(tl.log2(scale_raw))) if use_ue8m0 else scale_raw
-    y_s = tl.reshape(y_s, (BLOCK_M, 1))
-    y_q = tl.clamp(y / y_s, fp8_min, fp8_max).to(y_q_ptr.dtype.element_ty)
-
-    base_y_q_ptr = y_q_ptr + m_offset * N_2 + n_offset
-    y_q_ptrs = base_y_q_ptr + offs_m[:, None] * N_2 + offs_n[None, :]
-    tl.store(y_q_ptrs, y_q)
-
-    group_id = n_offset // GROUP_SIZE
-    base_y_s_ptr = y_s_ptr + group_id * y_s_col_stride + m_offset
-    y_s_ptrs = base_y_s_ptr + offs_m
-    y_s = tl.reshape(y_s, (BLOCK_M,))
-    tl.store(y_s_ptrs, y_s)
-
-
-def _silu_mul_per_token_group_quant_fp8_colmajor_int64(
-    input: torch.Tensor,
-    output: torch.Tensor | None = None,
-    use_ue8m0: bool | None = None,
-    eps: float = 1e-10,
-):
-    from vllm.platforms import current_platform
-    from vllm.utils.deep_gemm import is_deep_gemm_e8m0_used
-
-    group_size = 128
-    assert input.ndim == 2
-    if output is not None:
-        assert output.ndim == 2
-    assert input.size(0) % group_size == 0
-    assert input.size(1) % (group_size * 2) == 0
-
-    if use_ue8m0 is None:
-        use_ue8m0 = is_deep_gemm_e8m0_used()
-
-    M, N = input.size()
-    N_2 = N // 2
-
-    fp8_dtype = current_platform.fp8_dtype()
-    if output is None:
-        output = torch.empty((M, N_2), dtype=fp8_dtype, device=input.device)
-
-    output_scales = torch.empty(((N_2 // group_size), M), dtype=torch.float32, device=input.device).transpose(0, 1)
-
-    block_m = 8
-    block_n = group_size
-    assert M % block_m == 0
-    assert N_2 % block_n == 0
-
-    finfo = torch.finfo(fp8_dtype)
-    fp8_min = -224.0 if current_platform.is_fp8_fnuz() else finfo.min
-    fp8_max = 224.0 if current_platform.is_fp8_fnuz() else finfo.max
-
-    grid = (M // block_m, N_2 // block_n)
-    _silu_mul_per_token_group_quant_fp8_colmajor_int64_kernel[grid](
-        input,
-        output,
-        output_scales,
-        M,
-        N,
-        output_scales.stride(-1),
-        eps,
-        fp8_min,
-        fp8_max,
-        use_ue8m0,
-        group_size,
-        block_m,
-        block_n,
-    )
-
-    return output, output_scales
-
-
-def monkey_patch_deep_gemm_silu_mul_quant_int64():
-    # Temporary local carry for large DeepGEMM profile shapes whose row offsets
-    # exceed signed int32 address arithmetic in vLLM's Triton kernel.
-    import sys
-
-    from vllm.logger import init_logger
-    from vllm.model_executor.layers.quantization.utils import fp8_utils
-
-    logger = init_logger(__name__)
-
-    fp8_utils.silu_mul_per_token_group_quant_fp8_colmajor = _silu_mul_per_token_group_quant_fp8_colmajor_int64
-
-    deep_gemm_moe_module = sys.modules.get("vllm.model_executor.layers.fused_moe.experts.deep_gemm_moe")
-    if deep_gemm_moe_module is not None:
-        deep_gemm_moe_module.silu_mul_per_token_group_quant_fp8_colmajor = (
-            _silu_mul_per_token_group_quant_fp8_colmajor_int64
-        )
-
-    logger.warning("Enabled int64-addressing Triton patch for vLLM DeepGEMM SiLU/mul FP8 quant.")
 
 
 def _patch_qwen35_lora():

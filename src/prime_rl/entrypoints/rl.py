@@ -12,23 +12,18 @@ from threading import Event, Thread
 import pynvml
 import tomli_w
 
-import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
 from prime_rl.configs.rl import RLConfig
-from prime_rl.trainer.model import pre_download_model
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
     format_log_message,
     get_ckpt_dir,
+    get_log_dir,
     resolve_latest_ckpt_step,
     validate_output_dir,
 )
 from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process, set_proc_title
-from prime_rl.utils.utils import (
-    get_free_port,
-    get_log_dir,
-)
 
 RL_TOML = "rl.toml"
 RL_SBATCH = "rl.sbatch"
@@ -76,26 +71,6 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     if teacher_inference is not None:
         with open(output_dir / TEACHER_INFERENCE_TOML, "wb") as f:
             tomli_w.dump(teacher_inference.model_dump(exclude_none=True, mode="json"), f)
-
-
-def check_gpus_available(gpu_ids: list[int]) -> None:
-    """Raise error if there are existing processes on the specified GPUs."""
-    pynvml.nvmlInit()
-
-    occupied = []
-    for gpu_id in gpu_ids:
-        handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_id)
-        processes = pynvml.nvmlDeviceGetComputeRunningProcesses(handle)
-        if processes:
-            pids = [p.pid for p in processes]
-            occupied.append((gpu_id, pids))
-
-    if occupied:
-        msg = "Existing processes found on GPUs:\n"
-        for gpu_id, pids in occupied:
-            msg += f"  GPU {gpu_id}: PIDs {pids}\n"
-        msg += "Kill these processes or use different GPUs."
-        raise RuntimeError(msg)
 
 
 def rl_local(config: RLConfig):
@@ -148,21 +123,17 @@ def rl_local(config: RLConfig):
         wandb_shared_env["WANDB_SHARED_MODE"] = "1"
         wandb_shared_env["WANDB_SHARED_RUN_ID"] = os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex)
 
-    # Check for existing processes on GPUs
-    all_gpu_ids = list(set(infer_gpu_ids + trainer_gpu_ids + teacher_gpu_ids))
-    check_gpus_available(all_gpu_ids)
-
     # Validate client port matches inference server port
-    if config.inference is not None and not config.orchestrator.client.is_elastic:
+    if config.inference is not None and not config.orchestrator.student.client.is_elastic:
         from urllib.parse import urlparse
 
-        base_url = config.orchestrator.client.base_url[0]
+        base_url = config.orchestrator.student.client.base_url[0]
         parsed = urlparse(base_url)
         client_port = parsed.port
         expected_port = config.inference.server.port
         if client_port != expected_port:
             raise ValueError(
-                f"orchestrator.client.base_url port ({client_port}) does not match "
+                f"orchestrator.student.client.base_url port ({client_port}) does not match "
                 f"inference.server.port ({expected_port}). "
                 f"Update the base_url to use port {expected_port} to match the inference server."
             )
@@ -215,14 +186,13 @@ def rl_local(config: RLConfig):
             monitor_thread.start()
             monitor_threads.append(monitor_thread)
         else:
-            if config.orchestrator.teacher_rollout_model is None:
-                logger.warning(
-                    "No inference config specified, skipping starting inference server. Make sure your inference server is running."
-                )
-            else:
-                logger.info(
-                    "No inference config specified, using orchestrator.teacher_rollout_model for rollout generation."
-                )
+            logger.warning(
+                "No [inference] block configured - the student inference server will not be started here. "
+                "All training modes (rl/opd/sft) require a student inference pool for evals + weight sync; "
+                "make sure one is running at orchestrator.student.client.base_url "
+                f"({', '.join(config.orchestrator.student.client.base_url)}), otherwise the orchestrator "
+                "will hang waiting for it."
+            )
 
         # Optionally, start teacher inference process
         if config.teacher_inference:
@@ -230,7 +200,7 @@ def rl_local(config: RLConfig):
                 raise ValueError(
                     "teacher_inference is configured but deployment.num_teacher_gpus is not set. "
                     "Either set deployment.num_teacher_gpus to start a teacher inference server, "
-                    "or omit teacher_inference and configure orchestrator.teacher_model to use an existing server."
+                    "or omit teacher_inference and configure orchestrator.teacher to use an existing server."
                 )
 
             teacher_inference_cmd = ["inference", "@", (config_dir / TEACHER_INFERENCE_TOML).as_posix()]
@@ -258,12 +228,10 @@ def rl_local(config: RLConfig):
             )
             monitor_thread.start()
             monitor_threads.append(monitor_thread)
-        elif (
-            config.trainer.loss.type == "default" and config.trainer.loss.teacher_tau > 0
-        ) or config.orchestrator.teacher_model:
+        elif config.orchestrator.teacher:
             logger.warning(
                 "No teacher_inference config specified, skipping starting teacher inference server. "
-                "Is your teacher inference server running? Make sure orchestrator.teacher_model is configured."
+                "Is your teacher inference server running? Make sure orchestrator.teacher is configured."
             )
 
         # Start orchestrator process
@@ -302,6 +270,8 @@ def rl_local(config: RLConfig):
         monitor_threads.append(monitor_thread)
 
         # Start training process
+        from prime_rl.utils.utils import get_free_port
+
         trainer_cmd = [
             "torchrun",
             "--role=trainer",
@@ -349,10 +319,10 @@ def rl_local(config: RLConfig):
         monitor_threads.append(monitor_thread)
 
         # Monitor all processes for failures
-        logger.success("Startup complete. Showing trainer logs...")
+        logger.success("Startup complete. Showing orchestrator logs...")
 
         tail_process = Popen(
-            f"tail -F '{log_dir / 'trainer.log'}' | sed -u 's/^\\[[a-zA-Z]*[0-9]*\\]://'",
+            f"tail -F '{log_dir / 'orchestrator.log'}'",
             shell=True,
         )
         processes.append(tail_process)
@@ -571,6 +541,8 @@ def rl(config: RLConfig):
         clean_future_steps(config.output_dir, -1)
 
     if not config.dry_run:
+        from prime_rl.trainer.model import pre_download_model
+
         pre_download_model(config.trainer.model.name)
 
     if config.slurm is not None:

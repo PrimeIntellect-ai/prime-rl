@@ -1,0 +1,37 @@
+max_steps = 15
+seq_len = 2048
+
+[ckpt]
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[trainer.optim]
+lr = 5e-5
+
+[trainer.model.lora]
+rank = 8
+
+[trainer.ckpt.weights]
+save_adapter_separately = true
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 16
+
+[orchestrator.model.lora]
+name = "r8-1e-4"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.train.env]]
+id = "reverse-text"
+
+[inference]
+enable_lora = true
+gpu_memory_utilization = 0.7
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"

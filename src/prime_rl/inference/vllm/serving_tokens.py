@@ -189,10 +189,8 @@ class PrimeRlServingTokens(ServingTokens):
         # but never threads it into the engine, so PD disagg never fires on
         # ``/inference/v1/generate`` — decode receives an empty NIXL handshake
         # and ends up re-prefilling the prompt locally (~100× slower under
-        # concurrency). The chat path bridges this via
-        # ``ChatCompletionRequestWithTokens.to_sampling_params``; we mirror that
-        # bridge here so the engine's KV connector picks the params up out of
-        # ``sampling_params.extra_args``.
+        # concurrency). Bridge it through ``sampling_params.extra_args`` so the
+        # engine's KV connector picks the params up.
         #
         # Upstream fix: https://github.com/vllm-project/vllm/pull/42644 — drop
         # this block once we pin a vLLM version that includes it.
@@ -263,12 +261,9 @@ class PrimeRlServingTokens(ServingTokens):
         model_name: str,
         request_metadata: RequestResponseMetadata,
     ) -> ErrorResponse | GenerateResponse:
-        # Mirror serving_chat_with_tokens: wrap the result generator to capture
-        # routed_experts as it streams, defer the rest to upstream, then post-
-        # process the response into our PrimeRlGenerateResponse subclass so the
-        # encoded experts surface in the JSON. Skipping the wrapper when the
-        # engine isn't producing routed experts keeps us a no-op subclass on
-        # the common path.
+        # Capture routed_experts as vLLM streams request outputs, then post-process
+        # the final response into our GenerateResponse subclass so the encoded
+        # experts surface in the JSON.
         capture: _GenerateRoutedExpertsCapture | None = None
         if self.model_config.enable_return_routed_experts:
             capture = _GenerateRoutedExpertsCapture(result_generator)

@@ -352,10 +352,16 @@ class Tensors(defaultdict):
     def compute_stats(self) -> dict[str, float | int]:
         """Synchronize the tensor statistic across all ranks for each key and compute relevant statistics."""
 
+        local_keys = list(self.keys())
+        gathered_keys: list[list[str] | None] = [None] * dist.get_world_size()
+        dist.all_gather_object(gathered_keys, local_keys)
+        keys = sorted({key for rank_keys in gathered_keys if rank_keys is not None for key in rank_keys})
+
         metrics = {}
-        for key in list(self.keys()):
+        for key in keys:
             # All-gather tensors across steps and ranks (get global distribution)
-            tensors = torch.cat(self.pop(key), dim=0).to("cuda")
+            values = self.pop(key, [])
+            tensors = torch.cat(values, dim=0).to("cuda") if values else torch.empty(0, device="cuda")
             assert tensors.ndim == 1, "Can only aggregate 1D tensors"
             tensors = flexible_all_gather(tensors)
             assert tensors.ndim == 1, "Can only aggregate 1D tensors"
@@ -382,6 +388,11 @@ class Tensors(defaultdict):
         return metrics
 
 
+def _is_env_tensor_stat(key: str, allowed_stats: set[str]) -> bool:
+    parts = key.split("/")
+    return len(parts) >= 3 and parts[-1] in allowed_stats
+
+
 def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) -> dict[str, float | int]:
     """Drop noisy per-token distribution keys before sending RL trainer stats to W&B."""
     skip_prefixes = ("trainer_probs/", "inference_probs/")
@@ -389,6 +400,8 @@ def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) ->
         "is_masked/",
         "is_masked_low/",
         "is_masked_high/",
+        "masked_advantage_positive/",
+        "masked_advantage_negative/",
         "mismatch_kl/",
         "masked_mismatch_kl/",
         "unmasked_mismatch_kl/",
@@ -400,9 +413,12 @@ def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) ->
             continue
         if any(k.startswith(p) for p in skip_prefixes):
             continue
-        if k.startswith("entropy/") and k != "entropy/mean":
+        if k.startswith("entropy/") and not _is_env_tensor_stat(k, {"mean", "std", "max"}):
             continue
         if any(k.startswith(p) for p in mean_max_only_prefixes):
+            if _is_env_tensor_stat(k, {"mean", "std", "max"}):
+                out[k] = v
+                continue
             if not (k.endswith("/mean") or k.endswith("/max")):
                 continue
         out[k] = v

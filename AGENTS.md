@@ -3,6 +3,7 @@
 ## Writing code
 
 - **Minimal try/except**: let errors propagate — silent failures hide bugs. Only catch exceptions for intentional fault tolerance (retries, robustness).
+- **Don't touch `optimization_dtype` / `reduce_dtype`**: never change these model config fields (or their defaults in `trainer.py`) unless the user explicitly asks. They're load-bearing numerical knobs — flipping bfloat16/float32 silently changes training dynamics.
 - **Targeted comments**: don't explain your work process or reference old code. Use targeted comments sparingly to clarify ambiguous logic.
 - **Zen of Python**: remember the Zen of Python when writing code.
 ```
