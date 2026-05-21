@@ -455,18 +455,19 @@ class Scheduler:
                         continue
 
                     env = self.train_envs.get(env_name)
-                    try:
-                        result = finished_task.result()
-                    except asyncio.CancelledError:
-                        if group_id is not None:
-                            await self.drop_group(group_id)
-                        continue
-                    except Exception as e:
-                        self.logger.warning(f"Rollout failed: {e}")
+                    if finished_task.cancelled():
                         if group_id is not None:
                             await self.drop_group(group_id)
                         continue
 
+                    task_exception = finished_task.exception()
+                    if task_exception is not None:
+                        self.logger.warning(f"Rollout failed: {task_exception}")
+                        if group_id is not None:
+                            await self.drop_group(group_id)
+                        continue
+
+                    result = finished_task.result()
                     rollouts: list[vf.RolloutOutput] = result if isinstance(result, list) else [result]
                     self.total_rollouts_by_env[env_name] += len(rollouts)
 
@@ -475,15 +476,14 @@ class Scheduler:
                     has_failures = False
                     last_failure_reason: str | None = None
                     for rollout in rollouts:
-                        rollout_error = rollout["error"]
-                        if rollout_error is not None:
+                        if rollout["error"] is not None:
                             self.errored_rollouts_by_env[env_name] += 1
                             last_failure_reason = str(
-                                rollout_error.get("error_chain_repr")
-                                or rollout_error.get("error_chain_str")
-                                or rollout_error.get("error")
+                                rollout["error"].get("error_chain_repr")
+                                or rollout["error"].get("error_chain_str")
+                                or rollout["error"].get("error")
                             )
-                            if not is_reschedulable_rollout_error(rollout_error):
+                            if not is_reschedulable_rollout_error(rollout["error"]):
                                 raise RuntimeError(
                                     f"Non-retryable rollout error in group {group_id} ({env_name}); "
                                     f"not rescheduling replacement rollouts. Last failure: {last_failure_reason}"
