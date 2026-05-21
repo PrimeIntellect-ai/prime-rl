@@ -29,8 +29,9 @@ from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
+    compute_importance_ratio_and_mismatch_kl,
     selective_log_softmax,
-    setup_loss_fn,
+    setup_loss_fns,
     shift_tensor_left,
     shift_tensor_right,
 )
@@ -149,7 +150,7 @@ def train(config: TrainerConfig):
 
     # Set up the loss function
     logger.info(f"Setting up loss function ({config.loss})")
-    loss_fn = setup_loss_fn(config.loss)
+    loss_fns = setup_loss_fns(config.loss)
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -337,9 +338,15 @@ def train(config: TrainerConfig):
         forward_backward_start_time = time.perf_counter()
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
-        # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
-        loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
-        loss_scale = max(loss_scale, 1)
+        # Normalize by the global (dp_cp) number of unmasked tokens in the batch, so every rank
+        # divides by the same denominator. With a per-rank denominator, ranks with fewer loss
+        # tokens implicitly upweight their per-token gradient contribution after FSDP averaging.
+        # FSDP's per-rank divide is undone after the microbatch loop via fsdp_gradient_divide_factor.
+        local_loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
+        global_loss_scale = torch.tensor(local_loss_scale, dtype=torch.int64, device="cuda")
+        dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
+        dist.all_reduce(global_loss_scale, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        loss_scale = max(global_loss_scale.item(), 1)
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
@@ -370,13 +377,12 @@ def train(config: TrainerConfig):
                 # we could've gotten routed experts from the inference server, but we didn't enable router replay
                 routed_experts = None
 
-            # Multimodal fields (Qwen3-VL) - only present for VLM training
-            pixel_values = (
-                micro_batch["pixel_values"].to("cuda") if micro_batch.get("pixel_values") is not None else None
-            )
-            image_grid_thw = (
-                micro_batch["image_grid_thw"].to("cuda") if micro_batch.get("image_grid_thw") is not None else None
-            )
+            # Multimodal kwargs are an opaque per-model dict (e.g.
+            # {"pixel_values": ..., "image_grid_thw": ...} for Qwen3-VL,
+            # just {"pixel_values": ...} for Gemma3-VL) — we move every
+            # tensor to CUDA and let the model's forward sort them.
+            mm_kwargs_raw = micro_batch.get("mm_kwargs")
+            mm_kwargs = {k: v.to("cuda") for k, v in mm_kwargs_raw.items()} if mm_kwargs_raw else None
             mm_token_type_ids = (
                 micro_batch["mm_token_type_ids"].to("cuda")
                 if micro_batch.get("mm_token_type_ids") is not None
@@ -386,7 +392,7 @@ def train(config: TrainerConfig):
             labels = shift_tensor_left(input_ids)
 
             # VLM + CP is not supported: MRoPE requires global positions but CP shards the sequence
-            if cp_enabled and pixel_values is not None:
+            if cp_enabled and mm_kwargs is not None:
                 raise NotImplementedError("Context parallelism is not supported with VLM/multimodal training")
 
             if cp_enabled:
@@ -425,8 +431,7 @@ def train(config: TrainerConfig):
                     forward_position_ids,
                     labels=labels,
                     temperature=temperatures,
-                    pixel_values=pixel_values,
-                    image_grid_thw=image_grid_thw,
+                    mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_token_type_ids,
                     routed_experts=routed_experts,
                 )
@@ -464,9 +469,9 @@ def train(config: TrainerConfig):
                 else None,
                 advantages=advantages.squeeze().split(response_lengths),
                 loss_mask=loss_mask.squeeze().split(response_lengths),
-                loss_fn=loss_fn,
+                loss_fns=loss_fns,
                 loss_scale=loss_scale,
-                sft_loss=micro_batch["sft_loss"],
+                training_mode=micro_batch["training_mode"],
             )
 
             # Backward pass
@@ -474,8 +479,26 @@ def train(config: TrainerConfig):
                 loss.backward()
 
             # Add relevant tensors to tensor dict for logging purposes
-            tensors["entropy"].append(out["entropy"][loss_mask].detach().to("cpu"))
+            entropy = out["entropy"][loss_mask].detach().to("cpu")
+            tensors["entropy/all"].append(entropy)
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
+
+            env_names = micro_batch["env_names"]
+            masked_env_names = [env_name for env_name, keep in zip(env_names, loss_mask.flatten().tolist()) if keep]
+            env_to_indices: dict[str, list[int]] = {}
+            for idx, env_name in enumerate(masked_env_names):
+                env_to_indices.setdefault(env_name, []).append(idx)
+
+            for env_name, indices in env_to_indices.items():
+                tensors[f"entropy/{env_name}"].append(entropy[indices])
+
+            if micro_batch["training_mode"] != "sft":
+                with torch.no_grad():
+                    _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(out["logprobs"], inference_logprobs)
+                mismatch_kl = mismatch_kl[loss_mask].detach().to("cpu")
+                tensors["mismatch_kl/all"].append(mismatch_kl)
+                for env_name, indices in env_to_indices.items():
+                    tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)
@@ -485,16 +508,21 @@ def train(config: TrainerConfig):
 
             # Add loss tensors to tensor dict for logging purposes
             for key, loss_tensor in loss_tensors.items():
-                loss_tensor = loss_tensor.detach().to("cpu")
-                tensors[key].append(loss_tensor)
+                tensors[key].append(loss_tensor.detach().to("cpu"))
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy'][-1].mean().item():.4f}"
-            if "mismatch_kl" in tensors:
-                micro_step_message += f" | Mismatch KL: {tensors['mismatch_kl'][-1].mean().item():.4f}"
+            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy/all'][-1].mean().item():.4f}"
+            if micro_batch["training_mode"] != "sft":
+                micro_step_message += f" | Mismatch KL: {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
+
+        # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
+        # across dp_cp so the final gradient is the true per-token mean over the global batch.
+        for param in model.parameters():
+            if param.grad is not None:
+                param.grad.mul_(parallel_dims.fsdp_gradient_divide_factor)
 
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
@@ -539,9 +567,9 @@ def train(config: TrainerConfig):
 
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/mean']:.4f}"
-        if "mismatch_kl/mean" in tensor_stats:
-            step_message += f" | Mismatch KL: {tensor_stats['mismatch_kl/mean']:.4f}"
+        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/all/mean']:.4f}"
+        if "mismatch_kl/all/mean" in tensor_stats:
+            step_message += f" | Mismatch KL: {tensor_stats['mismatch_kl/all/mean']:.4f}"
         if grad_norm is not None:
             step_message += f" | Grad. Norm: {grad_norm:.4f}"
         step_message += f" | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
@@ -570,8 +598,8 @@ def train(config: TrainerConfig):
         monitor.log(optim_metrics, step=progress.step)
 
         # Compute derived metrics
-        entropy_mean = tensor_stats.get("entropy/mean", 0.0)
-        mismatch_kl_mean = tensor_stats.get("mismatch_kl/mean")
+        entropy_mean = tensor_stats.get("entropy/all/mean", 0.0)
+        mismatch_kl_mean = tensor_stats.get("mismatch_kl/all/mean")
         if mismatch_kl_mean is not None and entropy_mean > 0:
             tensor_stats["kl_ent_ratio/mean"] = mismatch_kl_mean / entropy_mean
 
@@ -605,8 +633,8 @@ def train(config: TrainerConfig):
                 peak_memory_gib=peak_memory,
                 learning_rate=current_lr,
                 mfu=mfu,
-                entropy=tensor_stats.get("entropy/mean", 0.0),
-                mismatch_kl=tensor_stats.get("mismatch_kl/mean", 0.0),
+                entropy=tensor_stats.get("entropy/all/mean", 0.0),
+                mismatch_kl=tensor_stats.get("mismatch_kl/all/mean", 0.0),
                 zero_grad_ratio=zero_grad_ratio,
             )
             # Update run/LoRA metrics

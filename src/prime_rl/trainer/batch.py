@@ -14,6 +14,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     advantages = [training_example.advantage] * len(input_ids)
     position_ids = list(range(len(input_ids)))
     mm_token_type_ids = training_example.mm_token_type_ids
+    assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
+    env_names = [training_example.env_name] * len(input_ids)
 
     # Per-token temperatures: prompt tokens use first completion temp (masked out anyway)
     # Default to 1.0 if completion is empty (e.g., model generated only tool calls with no text)
@@ -38,6 +40,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             routed_experts = routed_experts[:seq_len]
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:seq_len]
+        env_names = env_names[:seq_len]
 
     assert (
         len(input_ids)
@@ -61,6 +64,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         assert len(mm_token_type_ids) == len(input_ids), (
             f"mm_token_type_ids: {len(mm_token_type_ids)}, input_ids: {len(input_ids)}"
         )
+    assert len(env_names) == len(input_ids), f"env_names: {len(env_names)}, input_ids: {len(input_ids)}"
 
     return MicroBatch(
         input_ids=input_ids,
@@ -72,17 +76,15 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         temperatures=temperatures,
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
-        # Multimodal fields (Qwen3-VL) - passed through without modification
-        pixel_values=training_example.pixel_values,
-        pixel_values_shape=training_example.pixel_values_shape,
-        image_grid_thw=training_example.image_grid_thw,
-        sft_loss=training_example.sft_loss,
+        env_names=env_names,
+        mm_kwargs=training_example.mm_kwargs,
+        training_mode=training_example.training_mode,
     )
 
 
 def _is_multimodal_sample(sample: MicroBatch) -> bool:
     """Check if a sample contains multimodal data (images)."""
-    return sample.pixel_values is not None
+    return sample.mm_kwargs is not None
 
 
 def packed_samples_into_micro_bs(
@@ -93,7 +95,7 @@ def packed_samples_into_micro_bs(
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
     With per-token temperatures, samples can be packed together regardless of their temperature values.
 
-    NOTE: Multimodal samples (with pixel_values) are NOT packed together as they have variable-sized
+    NOTE: Multimodal samples (with mm_kwargs) are NOT packed together as they have variable-sized
     vision data that doesn't pack well. Each multimodal sample becomes its own micro batch.
     """
     # Sort by (lora_idx, -length) for packing efficiency
@@ -118,7 +120,7 @@ def packed_samples_into_micro_bs(
             # Check if sequence fits in this bin
             if (
                 len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len
-                and bin_content.sft_loss == sample.sft_loss
+                and bin_content.training_mode == sample.training_mode
             ):
                 bin_content.input_ids.extend(sample.input_ids)
                 bin_content.loss_mask.extend(sample.loss_mask)
@@ -137,6 +139,7 @@ def packed_samples_into_micro_bs(
                     if bin_content.mm_token_type_ids is None:
                         bin_content.mm_token_type_ids = []
                     bin_content.mm_token_type_ids.extend(sample.mm_token_type_ids)
+                bin_content.env_names.extend(sample.env_names)
                 bin_content.position_ids.extend(sample.position_ids)
                 bin_content.lora_num_tokens[idx] += len(sample.input_ids)
                 break
@@ -161,6 +164,12 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
 
     padding_size = (pad_to_multiple_of - (len(micro_batch.input_ids) % pad_to_multiple_of)) % pad_to_multiple_of
 
+    if len(micro_batch.env_names) != len(micro_batch.input_ids):
+        raise ValueError(
+            f"MicroBatch.env_names must match input_ids length before padding: "
+            f"env_names={len(micro_batch.env_names)}, input_ids={len(micro_batch.input_ids)}"
+        )
+
     if not (pad_to_multiple_of > 1 and padding_size > 0):
         return micro_batch
 
@@ -178,6 +187,7 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     )
     if micro_batch.mm_token_type_ids is not None:
         micro_batch.mm_token_type_ids.extend([0] * padding_size)
+    micro_batch.env_names.extend([""] * padding_size)
 
     return micro_batch
 
