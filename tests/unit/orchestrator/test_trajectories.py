@@ -6,10 +6,10 @@ import pytest
 import verifiers as vf
 
 from prime_rl.orchestrator.trajectories import (
+    _deserialize_tool_calls,
     align_routed_experts,
     interleave_rollout,
 )
-from prime_rl.utils.chat_template import deserialize_tool_calls
 
 _interleave_rollout = interleave_rollout
 
@@ -49,7 +49,7 @@ def _sample_routed_experts(sample) -> np.ndarray:
 def test_deserialize_tool_calls_does_not_inject_missing_key():
     messages = [{"role": "assistant", "content": "hello"}]
 
-    deserialized = deserialize_tool_calls(messages)
+    deserialized = _deserialize_tool_calls(messages)
 
     assert "tool_calls" not in deserialized[0]
 
@@ -68,7 +68,7 @@ def test_deserialize_tool_calls_parses_arguments_when_present():
         }
     ]
 
-    deserialized = deserialize_tool_calls(messages)
+    deserialized = _deserialize_tool_calls(messages)
 
     assert deserialized[0]["tool_calls"][0]["function"]["arguments"] == {"x": 1}
 

@@ -45,16 +45,46 @@ def align_routed_experts(
     return np.concatenate((routed_experts, padding), axis=0)
 
 
+def _common_prefix_len(a: list[int], b: list[int]) -> int:
+    return common_prefix_len(a, b)
+
+
+def _normalize_messages(messages: Any, default_role: str) -> list[dict[str, Any]]:
+    return normalize_messages(messages, default_role)
+
+
+def _deserialize_tool_calls(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return deserialize_tool_calls(messages)
+
+
+def _strip_message_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return strip_message_content(messages)
+
+
+def _render_messages(
+    tokenizer: PreTrainedTokenizer,
+    messages: list[dict[str, Any]],
+    add_generation_prompt: bool = False,
+    tools: list[dict[str, Any]] | None = None,
+) -> list[int]:
+    return render_messages(
+        tokenizer,
+        messages,
+        add_generation_prompt=add_generation_prompt,
+        tools=tools,
+    )
+
+
 def _tokenize_step_from_messages(
     step: vf.TrajectoryStep,
     tokenizer: PreTrainedTokenizer,
     tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    prompt = normalize_messages(step.get("prompt"), default_role="user")
-    completion = normalize_messages(step.get("completion"), default_role="assistant")
+    prompt = _normalize_messages(step.get("prompt"), default_role="user")
+    completion = _normalize_messages(step.get("completion"), default_role="assistant")
 
-    prompt = strip_message_content(deserialize_tool_calls(prompt))
-    completion = strip_message_content(deserialize_tool_calls(completion))
+    prompt = _strip_message_content(_deserialize_tool_calls(prompt))
+    completion = _strip_message_content(_deserialize_tool_calls(completion))
 
     assert all(m.get("role") == "assistant" for m in completion), (
         "Expected all completion messages to be assistant role for SFT distillation, "
@@ -63,19 +93,19 @@ def _tokenize_step_from_messages(
 
     all_messages = prompt + completion
     prompt_has_assistant_completion = len(completion) > 0 and completion[0].get("role") == "assistant"
-    prompt_ids = render_messages(
+    prompt_ids = _render_messages(
         tokenizer,
         prompt,
         add_generation_prompt=prompt_has_assistant_completion,
         tools=tools,
     )
-    full_ids = render_messages(
+    full_ids = _render_messages(
         tokenizer,
         all_messages,
         tools=tools,
     )
 
-    split_idx = common_prefix_len(prompt_ids, full_ids)
+    split_idx = _common_prefix_len(prompt_ids, full_ids)
     original_prompt_len = len(prompt_ids)
 
     prompt_ids = full_ids[:split_idx]
@@ -127,10 +157,10 @@ def _tokenize_step_with_renderer(
     """Tokenize a trajectory step using a Renderer."""
     from renderers.base import build_trajectory_step
 
-    prompt = normalize_messages(step.get("prompt"), default_role="user")
-    completion = normalize_messages(step.get("completion"), default_role="assistant")
-    prompt = strip_message_content(deserialize_tool_calls(prompt))
-    completion = strip_message_content(deserialize_tool_calls(completion))
+    prompt = _normalize_messages(step.get("prompt"), default_role="user")
+    completion = _normalize_messages(step.get("completion"), default_role="assistant")
+    prompt = _strip_message_content(_deserialize_tool_calls(prompt))
+    completion = _strip_message_content(_deserialize_tool_calls(completion))
     return build_trajectory_step(renderer, prompt, completion, tools=tools)
 
 
