@@ -62,11 +62,22 @@ def get_teachers(student_key):
                 "sft_client": "pinference",
                 "opd_client": "local:8001",
             },
-            "same-fam": {
+            "same-fam-4b": {
                 "model": "qwen/qwen3-4b-instruct-2507",
                 "sft_client": "pinference",
                 "opd_client": "local:8001",
                 "opd_model": "Qwen/Qwen3-4B-Instruct-2507",
+            },
+            "same-fam-8b": {
+                "model": "qwen/qwen3-8b-instruct-2507",
+                "sft_client": "pinference",
+                "opd_client": "local:8001",
+                "opd_model": "Qwen/Qwen3-8B-Instruct-2507",
+            },
+            "same-fam-235b": {
+                "model": "qwen/qwen3-235b-a22b-instruct-2507",
+                "sft_client": "pinference",
+                "opd_client": None,  # Too large for local vLLM
             },
             "cross-fam": {
                 "model": "openai/gpt-5-mini",
@@ -81,11 +92,22 @@ def get_teachers(student_key):
                 "sft_client": "pinference",
                 "opd_client": "local:8001",
             },
-            "same-fam": {
+            "same-fam-4b": {
                 "model": "qwen/qwen3-4b-instruct-2507",
                 "sft_client": "pinference",
                 "opd_client": "local:8001",
                 "opd_model": "Qwen/Qwen3-4B-Instruct-2507",
+            },
+            "same-fam-8b": {
+                "model": "qwen/qwen3-8b-instruct-2507",
+                "sft_client": "pinference",
+                "opd_client": "local:8001",
+                "opd_model": "Qwen/Qwen3-8B-Instruct-2507",
+            },
+            "same-fam-235b": {
+                "model": "qwen/qwen3-235b-a22b-instruct-2507",
+                "sft_client": "pinference",
+                "opd_client": None,  # Too large for local vLLM
             },
             "cross-fam": {
                 "model": "openai/gpt-5-mini",

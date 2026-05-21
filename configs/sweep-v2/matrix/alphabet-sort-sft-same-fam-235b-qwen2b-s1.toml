@@ -1,0 +1,55 @@
+max_steps = 100
+seq_len = 2048
+
+[model]
+name = "Qwen/Qwen3.5-2B"
+
+[wandb]
+project = "sweep-v2-full"
+name = "alphabet-sort-sft-same-fam-235b-qwen2b-s1"
+
+[orchestrator]
+training_mode = "sft"
+batch_size = 128
+rollouts_per_example = 8
+seed = 1
+
+[orchestrator.renderer]
+name = "qwen3"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 2048
+extra_body = { reasoning_effort = "minimal" }
+
+[[orchestrator.train.env]]
+id = "alphabet-sort"
+args = { min_turns = 2, max_turns = 3 }
+
+[orchestrator.eval]
+interval = 10
+num_examples = 64
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 768
+
+[[orchestrator.eval.env]]
+id = "alphabet-sort"
+args = { min_turns = 2, max_turns = 3 }
+
+[orchestrator.teacher.model]
+name = "qwen/qwen3-235b-a22b-instruct-2507"
+
+[orchestrator.teacher.client]
+base_url = ["https://api.pinference.ai/api/v1"]
+api_key_var = "PRIME_API_KEY"
+
+[orchestrator.teacher.client.headers_from_env]
+X-Prime-Team-ID = "PRIME_TEAM_ID"
+
+[trainer.optim]
+lr = 3e-6
+
+[ckpt]
+
+[inference]
+gpu_memory_utilization = 0.5

@@ -1,0 +1,50 @@
+max_steps = 100
+seq_len = 2048
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+
+[wandb]
+project = "sweep-v2-full"
+name = "alphabet-sort-opd-same-fam-8b-qwen06b-s1"
+
+[orchestrator]
+training_mode = "opd"
+batch_size = 128
+rollouts_per_example = 8
+seed = 1
+
+[orchestrator.renderer]
+name = "qwen3"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 768
+
+[[orchestrator.train.env]]
+id = "alphabet-sort"
+args = { min_turns = 2, max_turns = 3 }
+
+[orchestrator.eval]
+interval = 10
+num_examples = 64
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 768
+
+[[orchestrator.eval.env]]
+id = "alphabet-sort"
+args = { min_turns = 2, max_turns = 3 }
+
+[orchestrator.teacher.model]
+name = "Qwen/Qwen3-8B-Instruct-2507"
+
+[orchestrator.teacher.client]
+base_url = ["http://localhost:8001/v1"]
+
+[trainer.optim]
+lr = 3e-6
+
+[ckpt]
+
+[inference]
+gpu_memory_utilization = 0.5

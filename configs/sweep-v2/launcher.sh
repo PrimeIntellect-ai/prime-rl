@@ -13,8 +13,7 @@ SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_rsa}"
 SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=30"
 
 # --- Configuration ---
-GPU_ID="8b33a6"                   # A6000 48GB x2, $1.08/hr (cheapest 2-GPU)
-# GPU_ID="3aa391"                 # H100 80GB x2, $4.70/hr (fastest)
+GPU_ID="3aa391"                   # H100 80GB x2, $4.70/hr
 POD_NAME_PREFIX="sweep-v2"
 CONFIGS_PER_POD=12                # 12 configs per pod (runs sequentially)
 BRANCH="worktree-sweep-eval-splits"
