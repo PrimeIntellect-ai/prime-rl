@@ -17,6 +17,7 @@ from pathlib import Path
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers import Glm4MoeForCausalLM as HFGlm4MoeForCausalLM
+from transformers import ZayaForCausalLM as HFZayaForCausalLM
 from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
     Qwen3_5MoeForConditionalGeneration as HFQwen3_5MoeVLM,
 )
@@ -29,6 +30,8 @@ from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2Config
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2ForCausalLM as PrimeRLMiniMaxM2ForCausalLM
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM as PrimeRLQwen3_5MoeVLM
+from prime_rl.trainer.models.zaya import ZayaConfig
+from prime_rl.trainer.models.zaya import ZayaForCausalLM as PrimeRLZayaForCausalLM
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.utils import default_dtype
 
@@ -191,6 +194,50 @@ ARCH_PRESETS = {
         "prime_model_class": PrimeRLQwen3_5MoeVLM,
         "tokenizer_source": "Qwen/Qwen3.5-35B-A3B",
         "is_vlm": True,
+    },
+    "zaya": {
+        "config_class": ZayaConfig,
+        "config_kwargs": dict(
+            vocab_size=128,
+            hidden_size=32,
+            ffn_hidden_size=16,
+            num_hidden_layers=4,
+            num_experts=3,
+            num_attention_heads=4,
+            num_query_groups=2,
+            num_key_value_heads=2,
+            head_dim=8,
+            max_position_embeddings=512,
+            norm_epsilon=1e-5,
+            rope_theta=10000.0,
+            partial_rotary_factor=0.5,
+            moe_router_topk=1,
+            zaya_mlp_expansion=8,
+            zaya_use_mod=True,
+            zaya_use_eda=True,
+            add_bias_linear=False,
+            attention_bias=False,
+            lm_head_bias=False,
+            tie_word_embeddings=True,
+            use_cache=False,
+            use_grouped_mm=False,
+            pad_token_id=0,
+            bos_token_id=1,
+            eos_token_id=2,
+            layer_types=["hybrid", "hybrid", "hybrid", "hybrid"],
+            rope_parameters={
+                "hybrid": {
+                    "rope_type": "default",
+                    "rope_theta": 10000.0,
+                    "partial_rotary_factor": 0.5,
+                }
+            },
+            _attn_implementation="sdpa",
+        ),
+        "hf_model_class": HFZayaForCausalLM,
+        "prime_model_class": PrimeRLZayaForCausalLM,
+        # Different weight format from official release but this the 'official' HF supported version
+        "tokenizer_source": "JJJYmmm/ZAYA1-8B-HF",
     },
     # glm_moe_dsa: HF implementation is incorrect, not supported here
 }

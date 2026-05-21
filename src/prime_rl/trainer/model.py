@@ -44,7 +44,7 @@ from prime_rl.trainer.models.layers.checkpointing import (
 )
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.layers.moe import LatentMoE, MoE
+from prime_rl.trainer.models.layers.moe import LatentMoE, MoE, ZayaMoE
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.weights import (
     load_state_dict,
@@ -333,8 +333,8 @@ def freeze_moe_router(model: nn.Module) -> None:
         if mlp is None:
             continue
 
-        # Custom implementation: MoE/LatentMoE class with router attribute
-        if isinstance(mlp, (MoE, LatentMoE)):
+        # Custom implementation: MoE/LatentMoE/ZayaMoE class with router attribute
+        if isinstance(mlp, (MoE, LatentMoE, ZayaMoE)):
             for param in mlp.router.parameters():
                 param.requires_grad = False
                 num_frozen += 1
@@ -383,7 +383,7 @@ def configure_moe_ep_backend(model: nn.Module, config: ModelConfig) -> None:
         configure_num_sms(config.deepep_num_sms)
     language_model = get_language_model(model)
     for transformer_block in language_model.layers:
-        if not isinstance(transformer_block.mlp, (MoE, LatentMoE)):
+        if not isinstance(transformer_block.mlp, (MoE, LatentMoE, ZayaMoE)):
             continue
         transformer_block.mlp.set_ep_comm_backend(backend)
         transformer_block.mlp.set_deepep_token_chunk_size(config.deepep_token_chunk_size)
@@ -616,7 +616,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     for transformer_block in transformer_layers:
         block_mlp = getattr(transformer_block, "mlp", None)
-        if parallel_dims.ep_enabled and block_mlp is not None and isinstance(block_mlp, (MoE, LatentMoE)):
+        if parallel_dims.ep_enabled and block_mlp is not None and isinstance(block_mlp, (MoE, LatentMoE, ZayaMoE)):
             fully_shard(block_mlp.experts, mesh=dp_mod_ep_mesh, **fsdp_config)
 
             block_mlp.experts.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
@@ -673,7 +673,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     for transformer_block, next_transformer_block in zip(transformer_blocks, next_transformer_blocks):
         if next_transformer_block is not None:
             next_mlp = getattr(next_transformer_block, "mlp", None)
-            if next_mlp is not None and isinstance(next_mlp, (MoE, LatentMoE)):
+            if next_mlp is not None and isinstance(next_mlp, (MoE, LatentMoE, ZayaMoE)):
                 transformer_block.set_modules_to_forward_prefetch([next_transformer_block, next_mlp.experts])
             else:
                 transformer_block.set_modules_to_forward_prefetch([next_transformer_block])
@@ -694,7 +694,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     for transformer_block, prev_transformer_block in zip(reversed_transformer_blocks, prev_transformer_blocks):
         if prev_transformer_block is not None:
             prev_mlp = getattr(prev_transformer_block, "mlp", None)
-            if prev_mlp is not None and isinstance(prev_mlp, (MoE, LatentMoE)):
+            if prev_mlp is not None and isinstance(prev_mlp, (MoE, LatentMoE, ZayaMoE)):
                 transformer_block.set_modules_to_backward_prefetch([prev_transformer_block, prev_mlp.experts])
             else:
                 transformer_block.set_modules_to_backward_prefetch([prev_transformer_block])
@@ -938,7 +938,7 @@ def apply_ep(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims)
     language_model = get_language_model(model)
     for transformer_block in language_model.layers:
         block_mlp = getattr(transformer_block, "mlp", None)
-        if block_mlp is not None and isinstance(block_mlp, (MoE, LatentMoE)):
+        if block_mlp is not None and isinstance(block_mlp, (MoE, LatentMoE, ZayaMoE)):
             if config.ep_comm_backend == "torch":
                 parallelize_plan = ExpertParallel()
             else:
@@ -961,7 +961,7 @@ def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:
 
 def _reset_runtime_moe_buffers(model: nn.Module) -> None:
     for module in model.modules():
-        if isinstance(module, (MoE, LatentMoE)) and module.tokens_per_expert.device.type != "meta":
+        if isinstance(module, (MoE, LatentMoE, ZayaMoE)) and module.tokens_per_expert.device.type != "meta":
             module.tokens_per_expert.zero_()
 
 

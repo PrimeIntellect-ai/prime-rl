@@ -15,9 +15,13 @@ def load_weights_checkpoint_layerwise(
     model_config,
     vllm_config,
 ) -> None:
-    logger.info("Reloading checkpoint-format weights with vLLM layerwise processing")
     device = next(model.parameters()).device
     with torch.device(device), set_current_vllm_config(vllm_config):
+        if getattr(model_config.hf_config, "model_type", None) == "zaya":
+            model.load_weights(state_iter)  # type: ignore
+            return
+
+        logger.info("Reloading checkpoint-format weights with vLLM layerwise processing")
         initialize_layerwise_reload(model)
         model.load_weights(state_iter)  # type: ignore
         finalize_layerwise_reload(model, model_config)

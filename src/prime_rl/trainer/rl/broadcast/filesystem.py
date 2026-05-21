@@ -43,7 +43,9 @@ class FileSystemWeightBroadcast(WeightBroadcast):
 
         if not adapter_only:
             state_dict = gather_weights_on_master(model, is_master=self.world.is_master)
-            if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
+            if isinstance(model, PreTrainedModelPrimeRL) and getattr(model.config, "model_type", None) == "zaya":
+                state_dict = model.convert_to_vllm(state_dict)
+            elif isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
                 model.convert_to_hf(state_dict)
             else:
                 # For regular transformers models, revert internal format to original HF hub format
