@@ -42,8 +42,8 @@ class ModelConfig(BaseModelConfig):
 
 
 class TrainSamplingConfig(BaseConfig):
-    temperature: float = Field(1.0, ge=0)
-    """Sampling temperature."""
+    temperature: float = Field(1.0, gt=0)
+    """Sampling temperature. Must be strictly positive — the trainer divides logits by it."""
 
     top_p: float = Field(1.0, gt=0, le=1)
     """Nucleus sampling threshold. 1.0 disables. When < 1.0, the trainer replays the same truncation when computing logprobs so the importance ratio stays unbiased."""

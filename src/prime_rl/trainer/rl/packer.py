@@ -164,11 +164,6 @@ class MultiPacker(BasePacker):
                 False,
                 f"Run wrote a sample with completion logprobs length != completion ids length ({len(sample.completion_logprobs)} != {len(sample.completion_ids)})",
             )
-        if sample.temperature <= 0:
-            return (
-                False,
-                f"Run wrote a sample with non-positive temperature ({sample.temperature})",
-            )
         if sample_length == 0:
             return False, "Run wrote a sample with no tokens"
         if sample_length > self.seq_len:
