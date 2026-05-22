@@ -3,11 +3,13 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+import pybase64
 import torch
 import verifiers as vf
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.transport import TrainingSample
+from prime_rl.transport import RoutedExperts, TrainingSample
 from prime_rl.utils.chat_template import (
     common_prefix_len,
     deserialize_tool_calls,
@@ -21,25 +23,26 @@ from prime_rl.utils.logger import get_logger
 # primitives are immutable. mm_kwargs payloads are not mutated after creation.
 
 
-def _align_routed_experts(
-    routed_experts: list[list[list[int]]] | None,
+def align_routed_experts(
+    routed_experts: np.ndarray | None,
     expected_len: int,
-) -> list[list[list[int]]] | None:
+) -> np.ndarray | None:
     """Align routed_experts length with the expected token count.
 
     VLLM's capturer uses `num_tokens - 1` slot mappings because the final
     generated token was never fed as input to a forward pass and has no
     routing decision. Append zero-filled entries for the missing positions.
     """
-    if routed_experts is None or not routed_experts:
+    if routed_experts is None:
         return routed_experts
-    deficit = expected_len - len(routed_experts)
+    assert routed_experts.ndim == 3
+    if routed_experts.shape[0] > expected_len:
+        return np.ascontiguousarray(routed_experts[:expected_len])
+    deficit = expected_len - routed_experts.shape[0]
     if deficit <= 0:
         return routed_experts
-    num_layers = len(routed_experts[0])
-    topk = len(routed_experts[0][0])
-    zero_entry = [[0] * topk for _ in range(num_layers)]
-    return routed_experts + [zero_entry for _ in range(deficit)]
+    padding = np.zeros((deficit, routed_experts.shape[1], routed_experts.shape[2]), dtype=routed_experts.dtype)
+    return np.concatenate((routed_experts, padding), axis=0)
 
 
 def _common_prefix_len(a: list[int], b: list[int]) -> int:
@@ -236,13 +239,21 @@ def interleave_rollout(
     def prepare_step_tokens(step: vf.TrajectoryStep, step_idx: int) -> dict[str, Any] | None:
         tokens = step["tokens"]
         if tokens is not None:
+            routed_experts_payload = tokens.get("routed_experts")
+            routed_experts = None
+            if routed_experts_payload is not None:
+                decoded_routed_experts = pybase64.b64decode_as_bytearray(routed_experts_payload["data"])
+                routed_experts = np.frombuffer(decoded_routed_experts, dtype=np.uint8).reshape(
+                    routed_experts_payload["shape"]
+                )
+
             return {
                 "prompt_ids": list(tokens["prompt_ids"]),
                 "prompt_mask": [bool(i) for i in tokens["prompt_mask"]],
                 "completion_ids": list(tokens["completion_ids"]),
                 "completion_mask": [bool(i) for i in tokens["completion_mask"]],
                 "completion_logprobs": list(tokens["completion_logprobs"]),
-                "routed_experts": tokens.get("routed_experts"),
+                "routed_experts": routed_experts,
                 # Renderer-emitted multimodal sidecar (placeholders + per-item
                 # processed tensors). Populated when the rollout went through
                 # a multimodal-aware renderer (e.g. Qwen3VLRenderer); absent
@@ -268,12 +279,21 @@ def interleave_rollout(
             completion_mask = [bool(i) for i in tokens["completion_mask"]]
         completion_ids = list(tokens["completion_ids"])
 
-        routed_experts = _align_routed_experts(
+        routed_experts = align_routed_experts(
             tokens.get("routed_experts"),
             len(tokens["prompt_ids"]) + len(tokens["completion_ids"]),
         )
+        packed_routed_experts = None
+        if routed_experts is not None:
+            routed_experts = np.ascontiguousarray(routed_experts)
+            packed_routed_experts = RoutedExperts(
+                data=routed_experts.tobytes(),
+                shape=list(routed_experts.shape),
+                dtype=str(routed_experts.dtype),
+            )
+
         prompt_ids = list(tokens["prompt_ids"])
-        return TrainingSample(
+        sample = TrainingSample(
             prompt_ids=prompt_ids,
             prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
             completion_ids=completion_ids,
@@ -283,11 +303,17 @@ def interleave_rollout(
             teacher_logprobs=None,
             advantage=None,
             env_name=output["env_name"],
-            routed_experts=routed_experts,
             mm_token_type_ids=None,
+            routed_experts=packed_routed_experts,
         )
+        return sample, routed_experts
 
-    def extend_sample(sample: TrainingSample, prefix_len: int, step_idx: int) -> None:
+    def extend_sample(
+        sample: TrainingSample,
+        sample_routed_experts: np.ndarray | None,
+        prefix_len: int,
+        step_idx: int,
+    ) -> np.ndarray | None:
         """Extend an existing sample with a new trajectory step (extension property holds)."""
         tokens = prepared_steps[step_idx]
 
@@ -308,26 +334,35 @@ def interleave_rollout(
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
         sample.completion_temperatures.extend([temperature] * len(completion_ids))
 
-        if tokens.get("routed_experts") is not None and sample.routed_experts is not None:
+        if tokens.get("routed_experts") is not None and sample_routed_experts is not None:
             step_routed = tokens["routed_experts"]
-            # The previous step's last routing entry was zero-padded by _align_routed_experts
+            # The previous step's last routing entry was zero-padded by align_routed_experts
             # (vLLM only captures num_tokens-1 routings per request). This step actually
             # processed that boundary token as part of its prompt, so replace the zero-fill
             # with the real routing decision before appending new entries.
-            if prefix_len > 0 and prefix_len <= len(step_routed):
-                sample.routed_experts[prefix_len - 1] = step_routed[prefix_len - 1]
-            sample.routed_experts.extend(step_routed[prefix_len:])
+            if prefix_len > 0 and prefix_len <= step_routed.shape[0]:
+                sample_routed_experts[prefix_len - 1] = step_routed[prefix_len - 1]
+            sample_routed_experts = np.concatenate((sample_routed_experts, step_routed[prefix_len:]), axis=0)
             expected_len = len(sample.prompt_ids) + len(sample.completion_ids)
-            sample.routed_experts = _align_routed_experts(sample.routed_experts, expected_len)
+            sample_routed_experts = align_routed_experts(sample_routed_experts, expected_len)
+            sample_routed_experts = np.ascontiguousarray(sample_routed_experts)
+            packed_routed_experts = RoutedExperts(
+                data=sample_routed_experts.tobytes(),
+                shape=list(sample_routed_experts.shape),
+                dtype=str(sample_routed_experts.dtype),
+            )
+            sample.routed_experts = packed_routed_experts
+        return sample_routed_experts
 
     # Track (prefix_tokens, sample, step_indices) per active sample. step_indices
     # is the explicit list of prepared_steps positions merged into this sample —
     # non-contiguous when other agents' steps interleave.
-    active_samples: list[tuple[list[int], TrainingSample, list[int]]] = []
+    active_samples: list[tuple[list[int], TrainingSample, list[int], np.ndarray | None]] = []
 
     first_tokens = prepared_steps[0]
     first_prefix = first_tokens["prompt_ids"] + first_tokens["completion_ids"]
-    active_samples.append((first_prefix, make_sample(first_tokens), [0]))
+    first_sample, first_routed_experts = make_sample(first_tokens)
+    active_samples.append((first_prefix, first_sample, [0], first_routed_experts))
 
     for step_idx, _step in enumerate(trajectory[1:], start=1):
         tokens = prepared_steps[step_idx]
@@ -335,19 +370,20 @@ def interleave_rollout(
 
         # Check if this step extends ANY active prefix
         matched_idx = None
-        for idx, (prefix_tokens, _, _) in enumerate(active_samples):
+        for idx, (prefix_tokens, _, _, _) in enumerate(active_samples):
             if step_prompt_ids[: len(prefix_tokens)] == prefix_tokens:
                 matched_idx = idx
                 break
 
         if matched_idx is not None:
             # Extension holds - merge into matched sample
-            prefix_tokens, sample, step_indices = active_samples[matched_idx]
-            extend_sample(sample, len(prefix_tokens), step_idx=step_idx)
+            prefix_tokens, sample, step_indices, sample_routed_experts = active_samples[matched_idx]
+            sample_routed_experts = extend_sample(sample, sample_routed_experts, len(prefix_tokens), step_idx=step_idx)
             active_samples[matched_idx] = (
                 tokens["prompt_ids"] + tokens["completion_ids"],
                 sample,
                 step_indices + [step_idx],
+                sample_routed_experts,
             )
         else:
             # No prefix matches - start a new sample
@@ -356,7 +392,8 @@ def interleave_rollout(
                 f"Starting new sample (active_prefixes={len(active_samples)}, step_prompt_len={len(step_prompt_ids)})."
             )
             new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
-            active_samples.append((new_prefix, make_sample(tokens), [step_idx]))
+            sample, routed_experts = make_sample(tokens)
+            active_samples.append((new_prefix, sample, [step_idx], routed_experts))
 
     # Attach images by concatenating mm_items across every step the
     # sample covers. verifiers' ``state_to_output`` ships per-step
@@ -365,7 +402,7 @@ def interleave_rollout(
     # reading the last step alone would miss every earlier-turn image.
     # Concat in step order recovers the per-sample cumulative set;
     # deduping again here would drop legitimate duplicate placeholders.
-    for _, sample, step_indices in active_samples:
+    for _, sample, step_indices, _ in active_samples:
         renderer_mm = _union_step_mm_data(prepared_steps, step_indices)
         if renderer_mm is not None:
             mm_kwargs = _pack_mm_kwargs_from_renderer(renderer_mm)
@@ -380,7 +417,7 @@ def interleave_rollout(
                         for token_id in sample.prompt_ids + sample.completion_ids
                     ]
 
-    return [sample for _, sample, _ in active_samples]
+    return [sample for _, sample, _, _ in active_samples]
 
 
 def _union_step_mm_data(
