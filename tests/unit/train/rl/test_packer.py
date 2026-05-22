@@ -29,7 +29,7 @@ def create_run_with_config(output_dir: Path, run_name: str) -> Path:
     config = {
         "model": {"name": "test-model"},
         "batch_size": 2,
-        "rollouts_per_example": 1,
+        "group_size": 1,
         "env": [{"id": "test-env"}],
         "sampling": {"temperature": 1.0},
         # test-model isn't in MODEL_RENDERER_MAP; bypass the renderer-resolution validator.

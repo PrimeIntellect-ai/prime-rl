@@ -70,7 +70,7 @@ kwargs = { clip_eps = 0.2 }
 
 ## 2. Custom Advantage Functions
 
-Advantages are computed **per-group** (one example × N rollouts). You provide a function that computes advantages for a single group; the framework calls it once per group and stitches the results back together. Groups may have fewer than `rollouts_per_example` rollouts when some rollouts in the group errored (partial-group training).
+Advantages are computed **per-group** (one example × N rollouts). You provide a function that computes advantages for a single group; the framework calls it once per group and stitches the results back together. Groups may have fewer than `group_size` rollouts when some rollouts in the group errored (partial-group training).
 
 ### Interface
 

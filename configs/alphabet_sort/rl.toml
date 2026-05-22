@@ -11,7 +11,7 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [orchestrator]
 batch_size = 512
-rollouts_per_example = 16
+group_size = 16
 
 [orchestrator.train.sampling]
 max_completion_tokens = 512
@@ -28,7 +28,7 @@ interval = 50
 id = "alphabet-sort"
 name = "alphabet-sort"
 num_examples = 50
-rollouts_per_example = 4
+group_size = 4
 args = { min_turns = 2, max_turns = 2 }
 
 [trainer]

@@ -614,7 +614,7 @@ async def orchestrate(config: OrchestratorConfig):
             """Compute solve_none, solve_all, effective_batch_size for a set of rollouts."""
             reward_per_problem = df.groupby(["env_name", "example_id"]).reward.sum()
             solve_none = (reward_per_problem == 0).mean()
-            solve_all = (reward_per_problem == config.rollouts_per_example).mean()
+            solve_all = (reward_per_problem == config.group_size).mean()
             return solve_none, solve_all, 1 - solve_none - solve_all
 
         # Group by (env_name, example_id) to average across rollouts within each problem

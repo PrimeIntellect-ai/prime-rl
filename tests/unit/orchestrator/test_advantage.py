@@ -288,7 +288,7 @@ def test_compute_advantages_without_config():
 
 
 def test_compute_advantages_partial_groups():
-    """Partial groups (size < rollouts_per_example) are advantaged against their own mean.
+    """Partial groups (size < group_size) are advantaged against their own mean.
 
     Two groups of different sizes must round-trip cleanly: each group's advantages
     must sum to zero and not leak into the other.
