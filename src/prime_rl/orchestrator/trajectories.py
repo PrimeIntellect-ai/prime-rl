@@ -230,12 +230,10 @@ def interleave_rollout(
         return None
 
     has_error = output["error"] is not None
-    # this field should be guaranteed because we set temperature in get_sampling_args
     sampling_args = output["sampling_args"]
     temperature = sampling_args["temperature"]
-    # top_k lives in extra_body (vLLM extension), top_p is top-level OAI.
-    top_p = sampling_args.get("top_p", 1.0)
-    top_k = sampling_args.get("extra_body", {}).get("top_k", -1)
+    top_p = sampling_args["top_p"]
+    top_k = sampling_args["extra_body"]["top_k"]
 
     def prepare_step_tokens(step: vf.TrajectoryStep, step_idx: int) -> dict[str, Any] | None:
         tokens = step["tokens"]

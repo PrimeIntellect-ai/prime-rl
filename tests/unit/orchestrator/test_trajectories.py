@@ -82,7 +82,7 @@ def single_step_trajectory_output():
                 extras={},
             )
         ],
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
     return output
@@ -136,7 +136,7 @@ def multi_step_trajectory_output():
                 extras={},
             ),
         ],
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
     return output
@@ -194,7 +194,7 @@ def multi_step_trajectory_with_tool_calls_output():
         advantage=None,
         stop_condition=None,
         metrics={"has_error": 0.0, "tool_calls": 1.0},
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
     return output
@@ -253,7 +253,7 @@ def multi_step_trajectory_extension_never_holds():
                 extras={},
             ),
         ],
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
     return output
@@ -312,7 +312,7 @@ def multi_step_trajectory_with_tool_calls_extension_never_holds():
         reward=1.0,
         advantage=None,
         stop_condition=None,
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         metrics={"has_error": 0.0, "tool_calls": 1.0},
         error=None,
     )
@@ -560,7 +560,7 @@ def five_step_trajectory_with_extension_break():
                 trajectory_id="1",
             ),
         ],
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
     return output
@@ -697,7 +697,7 @@ def interleaved_agents_trajectory():
                 extras={},
             ),
         ],
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
     return output
@@ -790,7 +790,7 @@ def test_interleave_rollout_error_masks_all_false():
             ),
         ],
         error="timeout: environment exceeded time limit",
-        sampling_args={"temperature": 0.8},
+        sampling_args={"temperature": 0.8, "top_p": 1.0, "extra_body": {"top_k": -1}},
     )
 
     rollouts = interleave_rollout(output)
@@ -869,7 +869,7 @@ def test_interleave_rollout_single_step_with_routed_experts():
                 extras={},
             )
         ],
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
 
@@ -941,7 +941,7 @@ def test_interleave_rollout_multi_step_with_routed_experts():
                 extras={},
             ),
         ],
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
 
@@ -982,7 +982,7 @@ def test_interleave_rollout_none_routed_experts_stays_none():
                 extras={},
             )
         ],
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
 
@@ -1075,7 +1075,7 @@ def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
                 extras={},
             ),
         ],
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
 

@@ -94,11 +94,6 @@ def packed_samples_into_micro_bs(
     Pack samples into micro_batch efficiently.
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
 
-    Samples can only be packed together when they share ``training_mode`` and
-    sampling args (temperature, top_k, top_p), since those are scalar per
-    micro batch. In practice all training samples share the same sampling
-    config, so this is non-restrictive.
-
     NOTE: Multimodal samples (with mm_kwargs) are NOT packed together as they have variable-sized
     vision data that doesn't pack well. Each multimodal sample becomes its own micro batch.
     """
