@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from time import time
 
@@ -18,11 +19,14 @@ class FileSystemTrainingBatchSender(TrainingBatchSender):
         super().__init__(output_dir)
         self.rollout_dir = get_rollout_dir(output_dir)
 
-    def send(self, batch: TrainingBatch) -> None:
-        """Send a batch by writing it to disk"""
+    async def send(self, batch: TrainingBatch) -> None:
+        """Send a batch by writing it to disk. Encode + write run in a worker
+        thread so the orch event loop stays responsive during step transitions."""
         step_path = get_step_path(self.rollout_dir, batch.step)
         step_path.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(self._encode_and_write, batch, step_path)
 
+    def _encode_and_write(self, batch: TrainingBatch, step_path: Path) -> None:
         buffer = self.encoder.encode(batch)
         tmp_path = step_path / BATCH_FILE_TMP_NAME
         with open(tmp_path, "wb") as f:
@@ -87,6 +91,7 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
             self.logger.debug(f"Looking for batches in {current_paths}{waiting_suffix}")
             self._last_logged_paths = current_paths
             self._last_logged_time = now
+
         for idx in self.multi_run_manager.used_idxs:
             if self.multi_run_manager.ready_to_update[idx]:
                 continue
@@ -123,7 +128,6 @@ class FileSystemMicroBatchSender(MicroBatchSender):
 
     def send(self, micro_batch_grid: list[list[MicroBatch]]) -> None:
         """Send grid of micro batches to the trainers."""
-        # Validation
         assert len(micro_batch_grid) == self.data_world_size, "Number of micro batch lists must match data world size"
         for micro_batch_list in micro_batch_grid:
             assert len(micro_batch_list) == len(micro_batch_grid[0]), "All micro batch lists must have the same length"
@@ -152,15 +156,12 @@ class FileSystemMicroBatchReceiver(MicroBatchReceiver):
         return get_step_path(self.rollout_dir, self.current_step) / f"rank_{self.data_rank}.bin"
 
     def wait(self) -> None:
-        """Wait for the micro batch file to appear on disk."""
         sync_wait_for_path(self._get_micro_batch_path())
 
     def can_receive(self) -> bool:
-        """Check if the micro batch file exists."""
         return self._get_micro_batch_path().exists()
 
     def receive(self) -> list[MicroBatch]:
-        """Read and return the micro batches from disk."""
         with open(self._get_micro_batch_path(), "rb") as f:
             micro_batches: list[MicroBatch] = self.decoder.decode(f.read())
         self.current_step += 1
