@@ -16,7 +16,7 @@ class TrainingBatchSender(ABC):
         self.output_dir = output_dir
 
     @abstractmethod
-    def send(self, batch: TrainingBatch) -> None:
+    async def send(self, batch: TrainingBatch) -> None:
         """Send a batch of training examples to the trainer(s).
 
         Args:
