@@ -10,20 +10,11 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
 
     When ``training_example`` carries an ``sft_mask`` + ``sft_alpha`` (the
     SFT-on-tool-body overlay), the masked prompt-side tool body tokens get
-    their advantage overwritten to a per-token weight selected by
-    ``sft_normalization`` and are flipped into ``loss_mask=True`` so they
-    contribute to the loss. Notation: ``α`` = ``sft_alpha``,
-    ``T`` = total rollout length, ``S`` = ``n_sft_tokens``,
-    ``R`` = ``n_rl_tokens`` = ``sum(completion_mask)``.
-
-    Normalization modes (default ``"all_tokens"``):
-    - ``"all_tokens"`` (ECHO): weight = ``α / T``.
-    - ``"sft_tokens"``: weight = ``α / S``.
-    - ``"ratio"``: weight = ``α × R / S``.
-    - ``"none"``: weight = ``α``.
-
-    All counts are taken pre-truncation so the weight reflects the actual
-    rollout shape, not the artifact of ``seq_len`` truncation.
+    their advantage overwritten to ``sft_alpha`` and are flipped into
+    ``loss_mask=True``. ``default_loss_fn`` then bypasses the IS-ratio
+    and KL on SFT positions, leaving ``alpha × log p_θ`` as the SFT
+    policy-gradient contribution — pure cross-entropy in the SFT
+    direction.
     """
     input_ids = training_example.prompt_ids + training_example.completion_ids
     loss_mask = list(training_example.prompt_mask) + list(training_example.completion_mask)
@@ -35,38 +26,16 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     env_names = [training_example.env_name] * len(input_ids)
     sft_mask = list(training_example.sft_mask) if training_example.sft_mask is not None else None
 
-    # SFT-on-tool-body overlay: rewrite the advantage on masked tool body
-    # tokens and flip them into the loss mask so they contribute. The
-    # per-token weight lives on the advantage tensor; ``loss.default_loss_fn``
-    # routes SFT positions through ``advantages * trainer_logprobs`` so the
-    # gradient w.r.t. trainer_logprobs equals the per-token weight, and
-    # zeroes KL on those positions.
+    # SFT-on-tool-body overlay: set advantage = alpha on SFT-mask positions
+    # and flip them into the loss mask. ``default_loss_fn`` then bypasses
+    # IS-ratio and KL on those positions, leaving alpha × log p_θ as the
+    # SFT contribution.
     if sft_mask is not None and training_example.sft_alpha is not None:
-        n_sft = sum(sft_mask)
-        if n_sft > 0:
-            normalization = training_example.sft_normalization or "all_tokens"
-            alpha = training_example.sft_alpha
-            if normalization == "all_tokens":
-                weight = alpha / len(input_ids)
-            elif normalization == "sft_tokens":
-                weight = alpha / n_sft
-            elif normalization == "ratio":
-                # n_rl = 0 → weight = 0 (degenerate but harmless; no
-                # completion tokens means no RL signal to calibrate against,
-                # and the SFT contribution drops out).
-                n_rl = sum(training_example.completion_mask)
-                weight = alpha * n_rl / n_sft
-            elif normalization == "none":
-                weight = alpha
-            else:
-                raise ValueError(
-                    f"Unknown sft_normalization {normalization!r}; expected one of "
-                    f"'all_tokens', 'sft_tokens', 'ratio', 'none'."
-                )
-            for k in range(len(input_ids)):
-                if sft_mask[k]:
-                    advantages[k] = weight
-                    loss_mask[k] = True
+        alpha = training_example.sft_alpha
+        for k in range(len(input_ids)):
+            if sft_mask[k]:
+                advantages[k] = alpha
+                loss_mask[k] = True
 
     # Per-token temperatures: prompt tokens use first completion temp (masked out anyway)
     # Default to 1.0 if completion is empty (e.g., model generated only tool calls with no text)
@@ -297,10 +266,6 @@ def prepare_batch(
     processes a multimodal batch (triggering the vision encoder) while another processes
     a text-only batch, the all-gather will hang. We separate micro batches by modality
     and distribute them so that at each step index, all ranks see the same modality.
-
-    The SFT-on-tool-body advantage shape is selected per-rollout from
-    ``TrainingSample.sft_normalization`` — see ``prepare_sample`` for the
-    four modes.
     """
     all_samples = [(idx, prepare_sample(rollout, seq_len)) for idx, rollout in zip(idxs, rollouts)]
 

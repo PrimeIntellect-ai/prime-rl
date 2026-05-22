@@ -561,13 +561,12 @@ async def orchestrate(config: OrchestratorConfig):
                 sample.env_name = rollout["env_name"]
                 if config.use_sft_loss:
                     sample.sft_loss = True
-                # Per-env SFT-on-tool-body weight + normalization mode.
-                # ``sft_mask`` was populated by interleave_rollout when the env
-                # opted in; we attach the alpha + normalization here so the
-                # trainer-side overlay knows the weight formula per env.
+                # Per-env SFT-on-tool-body advantage. ``sft_mask`` was populated
+                # by interleave_rollout when the env opted in; we attach the
+                # alpha here so prepare_sample sets advantage = alpha on those
+                # positions and the trainer's default_loss_fn picks it up.
                 if env_sft_config is not None and env_sft_config.on_tool_outputs and sample.sft_mask is not None:
                     sample.sft_alpha = env_sft_config.alpha
-                    sample.sft_normalization = env_sft_config.normalization
                 sample_decode_tokens = sum(sample.completion_mask)
                 sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens
                 rollout_decode_tokens += sample_decode_tokens

@@ -229,11 +229,6 @@ def train(config: TrainerConfig):
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake, config.model.seq_len, parallel_dims.get_mesh("dp").size())
     else:
-        # The SFT-on-tool-body advantage overlay (in ``prepare_sample``)
-        # selects its normalization mode per-rollout from
-        # ``TrainingSample.sft_normalization``, populated by the
-        # orchestrator from the per-env ``SFTConfig.normalization``.
-        # No global flag needed here.
         dataloader = DataLoader(
             config.output_dir,
             progress.step,
