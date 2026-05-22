@@ -6,7 +6,7 @@ num_train_gpus = 4
 num_infer_gpus = 4
 
 [wandb]
-project = "general-agent"
+project = "general-agent-debug"
 name = "qwen3-4b-rlm"
 
 [ckpt]

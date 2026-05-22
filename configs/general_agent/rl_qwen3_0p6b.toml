@@ -3,7 +3,7 @@ seq_len = 8192
 
 [wandb]
 project = "general-agent-debug"
-name = "qwen3-0p6b-rlm-debug"
+name = "qwen3-0p6b-rlm"
 
 [model]
 name = "Qwen/Qwen3-0.6B"

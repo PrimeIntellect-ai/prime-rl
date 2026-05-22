@@ -10,7 +10,7 @@ num_train_nodes = 1
 num_infer_nodes = 1
 
 [wandb]
-project = "general-agent"
+project = "general-agent-debug"
 name = "qwen3-30b-a3b-rlm"
 
 [ckpt]
