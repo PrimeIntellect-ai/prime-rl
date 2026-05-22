@@ -25,6 +25,12 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     completion_logprobs: list[float]
     completion_temperatures: list[float]  # Per-token temperatures used during generation
     env_name: str
+    # Per-token top_k / top_p used during generation. The trainer replays the
+    # same truncation when computing logprobs so the importance ratio stays
+    # unbiased. -1 (top_k) and 1.0 (top_p) mean no truncation. None on
+    # legacy / SFT samples.
+    completion_top_k: list[int] | None = None
+    completion_top_p: list[float] | None = None
     teacher_logprobs: list[float] | None = None
     advantage: float | None = None
     reward: float | None = None
@@ -68,6 +74,11 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     position_ids: list[int]
     temperatures: list[float]  # Per-token temperatures used during generation
     env_names: list[str]
+    # Per-token top_k / top_p used during generation. -1 / 1.0 disable. The
+    # trainer replays the truncation when computing logprobs so the
+    # importance ratio against ``inference_logprobs`` stays unbiased.
+    top_k: list[int] | None = None
+    top_p: list[float] | None = None
     teacher_logprobs: list[float] | None = None
     lora_num_tokens: list[int] | None = None
     routed_experts: list[list[list[int]]] | None = None

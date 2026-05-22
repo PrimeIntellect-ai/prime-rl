@@ -25,6 +25,11 @@ class TensorMicroBatch(TypedDict):
     teacher_logprobs: Float[Tensor, "batch seq"] | None
     loss_mask: Bool[Tensor, "batch seq"]
     temperatures: Float[Tensor, "batch seq"]  # Per-token temperatures
+    # Per-token top-k / top-p used during generation (-1 / 1.0 means no
+    # truncation). The trainer applies the same truncation to its logits so
+    # the importance ratio against ``inference_logprobs`` stays unbiased.
+    top_k: Int[Tensor, "batch seq"] | None
+    top_p: Float[Tensor, "batch seq"] | None
     env_names: list[str]
 
     # Batch level
@@ -113,6 +118,8 @@ class FakeDataLoader:
             "inference_logprobs": inference_logprobs.unsqueeze(0),
             "teacher_logprobs": None,
             "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
+            "top_k": None,
+            "top_p": None,
             "env_names": ["fake"] * input_ids.shape[0],
             "loss_mask": loss_mask.unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
@@ -141,6 +148,8 @@ class FakeDataLoader:
             "inference_logprobs": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
             "teacher_logprobs": None,
             "temperatures": torch.ones(self.seq_len).unsqueeze(0),
+            "top_k": None,
+            "top_p": None,
             "env_names": ["fake"] * self.seq_len,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
@@ -223,6 +232,12 @@ class DataLoader:
             else None,
             loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
             temperatures=torch.tensor(micro_batch.temperatures, dtype=torch.float).unsqueeze(0),
+            top_k=torch.tensor(micro_batch.top_k, dtype=torch.long).unsqueeze(0)
+            if micro_batch.top_k is not None
+            else None,
+            top_p=torch.tensor(micro_batch.top_p, dtype=torch.float).unsqueeze(0)
+            if micro_batch.top_p is not None
+            else None,
             env_names=micro_batch.env_names,
             lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
             mm_kwargs=mm_kwargs,

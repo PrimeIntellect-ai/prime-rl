@@ -45,6 +45,12 @@ class TrainSamplingConfig(BaseConfig):
     temperature: float = Field(1.0, ge=0)
     """Sampling temperature."""
 
+    top_p: float = Field(1.0, gt=0, le=1)
+    """Nucleus sampling threshold. 1.0 disables. When < 1.0, the trainer replays the same truncation when computing logprobs so the importance ratio stays unbiased."""
+
+    top_k: int = Field(-1, ge=-1)
+    """Top-k sampling. -1 disables. When > 0, the trainer replays the same truncation when computing logprobs so the importance ratio stays unbiased."""
+
     repetition_penalty: float = Field(1.0, ge=0)
     """Repetition penalty. Values > 1.0 discourage repetition, < 1.0 encourage it, 1.0 disables."""
 
@@ -69,7 +75,7 @@ class TrainSamplingConfig(BaseConfig):
         # Top-level OAI params
         args: dict[str, Any] = {
             "temperature": self.temperature,
-            "top_p": 1.0,
+            "top_p": self.top_p,
             "logprobs": True,
         }
         if self.max_completion_tokens is not None:
@@ -79,6 +85,7 @@ class TrainSamplingConfig(BaseConfig):
 
         # vLLM extra_body params
         extra_body = dict(self.extra_body)
+        extra_body.setdefault("top_k", self.top_k)
         if self.min_tokens > 0:
             extra_body["min_tokens"] = self.min_tokens
         if self.repetition_penalty != 1.0:
@@ -954,7 +961,6 @@ class OrchestratorConfig(BaseConfig):
         for env in self.train.env:
             env.extra_env_kwargs.update(max_seq_len=self.seq_len)
             if is_vllm:
-                env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)
                 env.sampling.extra_body.setdefault("return_token_ids", True)
         return self

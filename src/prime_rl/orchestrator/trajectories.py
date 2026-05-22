@@ -231,7 +231,12 @@ def interleave_rollout(
 
     has_error = output["error"] is not None
     # this field should be guaranteed because we set temperature in get_sampling_args
-    temperature = output["sampling_args"]["temperature"]
+    sampling_args = output["sampling_args"]
+    temperature = sampling_args["temperature"]
+    # top_p is a top-level OAI param; top_k is a vLLM extension and lives in
+    # ``extra_body``. Default to no truncation if absent.
+    top_p = sampling_args.get("top_p", 1.0)
+    top_k = sampling_args.get("extra_body", {}).get("top_k", -1)
 
     def prepare_step_tokens(step: vf.TrajectoryStep, step_idx: int) -> dict[str, Any] | None:
         tokens = step["tokens"]
@@ -280,6 +285,8 @@ def interleave_rollout(
             completion_mask=completion_mask,
             completion_logprobs=list(tokens["completion_logprobs"]),
             completion_temperatures=[temperature] * len(completion_ids),
+            completion_top_k=[top_k] * len(completion_ids),
+            completion_top_p=[top_p] * len(completion_ids),
             teacher_logprobs=None,
             advantage=None,
             env_name=output["env_name"],
@@ -297,6 +304,10 @@ def interleave_rollout(
         sample.completion_mask.extend([False] * len(new_prompt_ids))
         sample.completion_logprobs.extend([0.0] * len(new_prompt_ids))
         sample.completion_temperatures.extend([temperature] * len(new_prompt_ids))
+        if sample.completion_top_k is not None:
+            sample.completion_top_k.extend([top_k] * len(new_prompt_ids))
+        if sample.completion_top_p is not None:
+            sample.completion_top_p.extend([top_p] * len(new_prompt_ids))
 
         # Extend with new completion tokens
         completion_ids = tokens["completion_ids"]
@@ -307,6 +318,10 @@ def interleave_rollout(
             sample.completion_mask.extend(bool(i) for i in tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
         sample.completion_temperatures.extend([temperature] * len(completion_ids))
+        if sample.completion_top_k is not None:
+            sample.completion_top_k.extend([top_k] * len(completion_ids))
+        if sample.completion_top_p is not None:
+            sample.completion_top_p.extend([top_p] * len(completion_ids))
 
         if tokens.get("routed_experts") is not None and sample.routed_experts is not None:
             step_routed = tokens["routed_experts"]

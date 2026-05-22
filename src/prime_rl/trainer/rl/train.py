@@ -27,6 +27,7 @@ from prime_rl.utils.cp import (
 )
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
+    apply_top_k_top_p,
     compute_entropy,
     compute_loss,
     compute_importance_ratio_and_mismatch_kl,
@@ -421,10 +422,33 @@ def train(config: TrainerConfig):
                 set_lora_num_tokens(lora_num_tokens)
 
             temperatures = micro_batch["temperatures"].to("cuda")
+            top_k = micro_batch.get("top_k")
+            top_p = micro_batch.get("top_p")
+            top_k = top_k.to("cuda") if top_k is not None else None
+            top_p = top_p.to("cuda") if top_p is not None else None
+            # Align top_k / top_p with the label being predicted (input_ids[p+1]),
+            # mirroring shift_tensor_left applied to input_ids. Padding past the
+            # last token gets pass-through (-1 / 1.0) so the boundary doesn't
+            # mask a padding-token logprob to -inf.
+            if top_k is not None:
+                top_k = torch.cat(
+                    [top_k[:, 1:], torch.full((top_k.shape[0], 1), -1, device=top_k.device, dtype=top_k.dtype)], dim=1
+                )
+            if top_p is not None:
+                top_p = torch.cat(
+                    [top_p[:, 1:], torch.full((top_p.shape[0], 1), 1.0, device=top_p.device, dtype=top_p.dtype)], dim=1
+                )
+            truncate_logits = (top_k is not None and bool((top_k > 0).any())) or (
+                top_p is not None and bool((top_p < 1.0).any())
+            )
 
             # Shard temperatures for context parallelism if enabled
             if cp_enabled:
                 temperatures = shard_for_cp(temperatures, cp_rank=cp_rank, cp_world_size=cp_size)
+                if top_k is not None:
+                    top_k = shard_for_cp(top_k, cp_rank=cp_rank, cp_world_size=cp_size)
+                if top_p is not None:
+                    top_p = shard_for_cp(top_p, cp_rank=cp_rank, cp_world_size=cp_size)
 
             # Forward pass with per-token temperatures
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
@@ -445,9 +469,26 @@ def train(config: TrainerConfig):
                 logits = out["logits"]
                 # Per-token temperature scaling: temperatures is [batch, seq], logits is [batch, seq, vocab]
                 scaled_logits = logits / temperatures.unsqueeze(-1)
-                out["logprobs"] = selective_log_softmax(scaled_logits, labels)
+                # Entropy is reported on the full (un-truncated) distribution so
+                # it stays comparable across runs that do/don't truncate.
                 out["entropy"] = compute_entropy(scaled_logits)
-            # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures
+                # Replay vLLM's top-k / top-p truncation so trainer logprobs
+                # are over the same support as the inference-time sample
+                # (otherwise the importance ratio is biased). Pass labels so
+                # FP-precision boundary cases (the sampled token falling just
+                # outside the trainer's top-k) don't blow up the loss.
+                scaled_logits = apply_top_k_top_p(scaled_logits, top_k, top_p, labels=labels)
+                out["logprobs"] = selective_log_softmax(scaled_logits, labels)
+            else:
+                # FusedOutputLinear was used - logprobs already computed with per-token temperatures.
+                # The fused kernel streams over vocab chunks and can't apply a global top-k / top-p
+                # threshold without materializing the full logits, so reject the combination.
+                if truncate_logits:
+                    raise ValueError(
+                        "top_k / top_p truncation requires the vanilla LM head - set "
+                        "model.fused_lm_head_token_chunk_size = 'disabled' or run with top_k=-1 "
+                        "and top_p=1.0."
+                    )
 
             if cp_enabled:
                 out["logprobs"] = gather_for_cp(out["logprobs"], cp_group)
