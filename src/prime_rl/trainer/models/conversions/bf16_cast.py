@@ -18,5 +18,5 @@ def fp32_cast(src: Tensor, out: Tensor, scale_out: Tensor | None = None) -> None
     out.copy_(src.to(torch.float32))
 
 
-register("bf16_cast", bf16_cast, requires_scale=False, dst_dtype=torch.bfloat16)
-register("fp32_cast", fp32_cast, requires_scale=False, dst_dtype=torch.float32)
+register("bf16_cast", bf16_cast, requires_scale=False)
+register("fp32_cast", fp32_cast, requires_scale=False)

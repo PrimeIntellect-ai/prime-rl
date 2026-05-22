@@ -6,7 +6,6 @@ based on ``src.ndim``.
 
 from __future__ import annotations
 
-import torch
 from torch import Tensor
 
 from prime_rl.trainer.models.conversions import register
@@ -21,9 +20,4 @@ def fp8_128x128(src: Tensor, out: Tensor, scale_out: Tensor | None) -> None:
         fp8_block_quantize(src, out=out, sf=scale_out)
 
 
-register(
-    "fp8_128x128",
-    fp8_128x128,
-    requires_scale=True,
-    dst_dtype=torch.float8_e4m3fn,
-)
+register("fp8_128x128", fp8_128x128, requires_scale=True)
