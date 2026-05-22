@@ -7,7 +7,6 @@ import msgspec
 import torch
 from modelexpress import p2p_pb2
 from torch import Tensor
-from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.models.slots import Slot
 from prime_rl.transport.nixl_agent import NixlAgentWrapper
@@ -66,15 +65,8 @@ class TransportPlan:
     def prepare_writes(self, state_dict: dict[str, Tensor], slots: list[Slot]) -> Iterator[tuple[Any, Any, WriteEntry]]:
         """Iterator yielding (local_prep, remote_prep, write_entry) tuples for each write. To be posted by the caller"""
 
-        bf16_state: dict[str, Tensor] = {}
-        for k, v in state_dict.items():
-            if isinstance(v, DTensor):
-                bf16_state[k] = v.to(torch.bfloat16)
-            else:
-                bf16_state[k] = v.to(torch.bfloat16) if v.is_floating_point() else v
-
         for slot in slots:
-            slot.convert(bf16_state)
+            slot.convert(state_dict)
 
         torch.cuda.synchronize()
 

@@ -1,6 +1,7 @@
 import torch
 from torch import Tensor
 
+from prime_rl.trainer.models.conversion_spec import ConversionSpec, MaybeQuantize
 from prime_rl.trainer.models.fp8 import quantize_to_fp8_blockwise
 
 
@@ -144,6 +145,107 @@ def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
     num_layers = get_max_layer_num(state_dict)
     for i in range(num_layers):
         convert_tt_layer_to_hf(state_dict, i)
+
+
+BASE_LAYER_CONVERSION_SPEC: tuple[ConversionSpec, ...] = (
+    ConversionSpec(
+        "input_layernorm.weight",
+        ("input_layernorm.weight",),
+        conversion=MaybeQuantize("passthrough"),
+    ),
+    ConversionSpec(
+        "post_attention_layernorm.weight",
+        ("post_attention_layernorm.weight",),
+        conversion=MaybeQuantize("passthrough"),
+    ),
+    ConversionSpec(
+        "self_attn.fused_qkv_a_proj.weight",
+        ("self_attn.q_a_proj.weight", "self_attn.kv_a_proj_with_mqa.weight"),
+    ),
+    ConversionSpec(
+        "self_attn.q_a_layernorm.weight",
+        ("self_attn.q_a_layernorm.weight",),
+        conversion=MaybeQuantize("passthrough"),
+    ),
+    ConversionSpec(
+        "self_attn.kv_a_layernorm.weight",
+        ("self_attn.kv_a_layernorm.weight",),
+        conversion=MaybeQuantize("passthrough"),
+    ),
+    ConversionSpec("self_attn.q_b_proj.weight", ("self_attn.q_b_proj.weight",)),
+    ConversionSpec("self_attn.kv_b_proj.weight", ("self_attn.kv_b_proj.weight",)),
+    ConversionSpec("self_attn.o_proj.weight", ("self_attn.o_proj.weight",)),
+    ConversionSpec("self_attn.indexer.wq_b.weight", ("self_attn.indexer.wq_b.weight",)),
+    ConversionSpec(
+        "self_attn.indexer.wk_weights_proj.weight",
+        ("self_attn.indexer.wk.weight", "self_attn.indexer.weights_proj.weight"),
+        conversion=MaybeQuantize("passthrough"),
+    ),
+    ConversionSpec(
+        "self_attn.indexer.k_norm.weight",
+        ("self_attn.indexer.k_norm.weight",),
+        conversion=MaybeQuantize("float32_passthrough"),
+    ),
+    ConversionSpec(
+        "self_attn.indexer.k_norm.bias",
+        ("self_attn.indexer.k_norm.bias",),
+        conversion=MaybeQuantize("float32_passthrough"),
+    ),
+)
+
+
+DENSE_LAYER_CONVERSION_SPEC: tuple[ConversionSpec, ...] = (
+    ConversionSpec("mlp.gate_up_proj.weight", ("mlp.gate_proj.weight", "mlp.up_proj.weight")),
+    ConversionSpec("mlp.down_proj.weight", ("mlp.down_proj.weight",)),
+)
+
+
+SPARSE_LAYER_CONVERSION_SPEC: tuple[ConversionSpec, ...] = (
+    ConversionSpec(
+        "mlp.gate.weight",
+        ("mlp.router.gate.weight",),
+        conversion=MaybeQuantize("passthrough"),
+    ),
+    ConversionSpec(
+        "mlp.gate.e_score_correction_bias",
+        ("mlp.expert_bias",),
+        conversion=MaybeQuantize("float32_passthrough"),
+    ),
+    ConversionSpec("mlp.experts.w13_weight", ("mlp.experts.w1", "mlp.experts.w3"), cat_dim=1),
+    ConversionSpec("mlp.experts.w2_weight", ("mlp.experts.w2",)),
+    ConversionSpec(
+        "mlp.shared_experts.gate_up_proj.weight",
+        ("mlp.shared_expert.w1", "mlp.shared_expert.w3"),
+    ),
+    ConversionSpec("mlp.shared_experts.down_proj.weight", ("mlp.shared_expert.w2",)),
+)
+
+
+NON_LAYER_CONVERSION_SPEC: tuple[ConversionSpec, ...] = (
+    ConversionSpec(
+        "model.embed_tokens.weight",
+        ("model.embed_tokens.weight",),
+        conversion=MaybeQuantize("passthrough"),
+    ),
+    ConversionSpec(
+        "model.norm.weight",
+        ("model.norm.weight",),
+        conversion=MaybeQuantize("passthrough"),
+    ),
+    ConversionSpec(
+        "lm_head.weight",
+        ("lm_head.weight",),
+        conversion=MaybeQuantize("passthrough"),
+    ),
+)
+
+
+CONVERSION_SPECS = {
+    "base_layer": BASE_LAYER_CONVERSION_SPEC,
+    "dense_layer": DENSE_LAYER_CONVERSION_SPEC,
+    "sparse_layer": SPARSE_LAYER_CONVERSION_SPEC,
+    "non_layer": NON_LAYER_CONVERSION_SPEC,
+}
 
 
 def convert_tt_layer_to_vllm_kernel(

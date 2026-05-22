@@ -23,6 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+import torch
 from torch import Tensor
 from transformers import AutoConfig
 
@@ -33,15 +34,29 @@ ConversionFn = Callable[[Tensor, Tensor, "Tensor | None"], None]
 class ConversionEntry:
     fn: ConversionFn
     requires_scale: bool
+    dst_dtype: torch.dtype | None = None
+    preserve_source_dtype: bool = False
 
 
 _REGISTRY: dict[str, ConversionEntry] = {}
 
 
-def register(name: str, fn: ConversionFn, *, requires_scale: bool) -> None:
+def register(
+    name: str,
+    fn: ConversionFn,
+    *,
+    requires_scale: bool,
+    dst_dtype: torch.dtype | None = None,
+    preserve_source_dtype: bool = False,
+) -> None:
     if name in _REGISTRY:
         raise ValueError(f"conversion {name!r} is already registered")
-    _REGISTRY[name] = ConversionEntry(fn=fn, requires_scale=requires_scale)
+    _REGISTRY[name] = ConversionEntry(
+        fn=fn,
+        requires_scale=requires_scale,
+        dst_dtype=dst_dtype,
+        preserve_source_dtype=preserve_source_dtype,
+    )
 
 
 def get(name: str) -> ConversionEntry:
