@@ -19,6 +19,13 @@ class LossInputs:
     teacher_logprobs: Float[Tensor, " seq"] | None
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
+    # Per-token mask flagging SFT-on-tool-body positions (positions where
+    # the advantage tensor carries a constant alpha/n weight, not the
+    # rollout's RL advantage). The default_loss_fn forces IS ratio = 1
+    # and skips both DPPO trust-region clipping and the KL penalty on
+    # these positions so the gradient direction matches pure SFT. None
+    # when the rollout's env has SFT-on-tool-body disabled.
+    sft_mask: Bool[Tensor, " seq"] | None = None
 
 
 @dataclass
@@ -130,10 +137,25 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     teacher_logprobs = inputs.teacher_logprobs
     advantages = inputs.advantages
     loss_mask = inputs.loss_mask
+    sft_mask = inputs.sft_mask
 
     log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
         trainer_logprobs, inference_logprobs
     )
+
+    # SFT-on-tool-body positions: the model never sampled these tokens, so
+    # the off-policy correction concept doesn't apply. Force log-ratio to 0
+    # so ``kl_loss = loss_mask * log_importance_ratio**2`` is zero on these
+    # positions, and zero out ``mismatch_kl`` for metrics. The pg_loss term
+    # itself is built separately below — on SFT positions it routes through
+    # ``trainer_logprobs`` directly so the gradient flows; routing it
+    # through ``importance_ratio`` here would not, because
+    # ``torch.where(cond, zeros_like(x), x)`` blocks the gradient through
+    # ``x`` on the True branch.
+    if sft_mask is not None:
+        log_importance_ratio = torch.where(sft_mask, torch.zeros_like(log_importance_ratio), log_importance_ratio)
+        importance_ratio = torch.exp(log_importance_ratio)
+        mismatch_kl = importance_ratio - log_importance_ratio - 1
 
     probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
     dppo_invalid_mask_high = probs_diff > loss_config.dppo_mask_high
@@ -141,6 +163,14 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     positive_advantages = advantages > 0
     negative_advantages = advantages < 0
     dppo_invalid_mask = torch.where(positive_advantages, dppo_invalid_mask_high, dppo_invalid_mask_low)
+
+    # SFT positions: never trust-region-clip. The inference logprob for
+    # prompt tokens is placeholder 0.0 (not a real sample), so probs_diff
+    # ≈ exp(trainer_logprob) - 1 and would almost always trigger the
+    # high-side mask — silently dropping the SFT gradient. Exclude SFT
+    # positions from the trust-region check by construction.
+    if sft_mask is not None:
+        dppo_invalid_mask = dppo_invalid_mask & ~sft_mask
 
     is_masked = dppo_invalid_mask
     is_masked_high = positive_advantages & dppo_invalid_mask_high
@@ -155,7 +185,18 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     else:
         teacher_kl = None
 
-    pg_loss = keep_mask * advantages * importance_ratio
+    # pg_loss on RL positions: standard policy gradient with IS correction.
+    # On SFT positions: use ``advantages * trainer_logprobs`` directly so
+    # the gradient w.r.t. ``trainer_logprobs`` equals ``advantages`` (the
+    # per-token SFT weight overlaid in prepare_sample). After the negation
+    # in ``loss = -pg_loss.sum()``, this gives parameter updates in the
+    # ``+∇log p`` direction on SFT positions — pure SFT gradient.
+    rl_pg = keep_mask * advantages * importance_ratio
+    if sft_mask is not None:
+        sft_pg = advantages * trainer_logprobs
+        pg_loss = torch.where(sft_mask, sft_pg, rl_pg)
+    else:
+        pg_loss = rl_pg
     kl_loss = loss_mask * log_importance_ratio**2
     loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
 
@@ -171,39 +212,20 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     if teacher_kl is not None:
         metrics["teacher_kl"] = _safe_mean(teacher_kl, loss_mask)
 
-    return LossOutputs(loss=loss, metrics=metrics)
+    # SFT-on-tool-body world-model loss: per-rollout NLL on the body tokens
+    # the trainer is supervising. ``sft_train_mask`` is the intersection of
+    # loss_mask (so we count only trainable positions) and sft_mask; for
+    # rollouts whose env has SFT disabled, sft_mask is None and the metrics
+    # default to zero / non-NaN so downstream aggregation stays clean.
+    if sft_mask is not None:
+        sft_train_mask = loss_mask & sft_mask
+        metrics["sft_nll_mean"] = _safe_mean(-trainer_logprobs, sft_train_mask)
+        metrics["sft_token_count"] = sft_train_mask.sum().float()
+        if sft_train_mask.any():
+            metrics["sft_nll_max"] = (-trainer_logprobs[sft_train_mask]).max()
+        else:
+            metrics["sft_nll_max"] = torch.tensor(0.0, device=trainer_logprobs.device)
 
-
-def sft_pg_loss_fn(inputs: LossInputs) -> LossOutputs:
-    """SFT-on-tool-body policy-gradient direction.
-
-    Pairs with the SFT-overlay compute_loss call from train.py, where
-    ``loss_mask`` is the SFT mask, ``advantages`` carries the per-rollout
-    mode weight (α / X) set in ``prepare_sample``, and ``loss_scale=1`` so
-    the per-rollout normalization is the only normalization applied.
-
-    Per-SFT-token gradient w.r.t. ``trainer_logprobs[s]`` is ``-advantages[s]``
-    (the per-rollout mode weight). After the negation in
-    ``loss = -pg_loss.sum()`` this gives parameter updates in the
-    ``+∇log p`` direction on SFT positions — pure SFT gradient.
-
-    No batch-level normalization here: the caller passes ``loss_scale=1`` and
-    the per-rollout-mode weight is the only scaling. RL loss meanwhile is
-    normalized by ``N_rl_batch`` via its own ``compute_loss`` call.
-    """
-    trainer_logprobs = inputs.trainer_logprobs
-    advantages = inputs.advantages
-    loss_mask = inputs.loss_mask
-
-    loss = -(advantages * trainer_logprobs * loss_mask).sum()
-    metrics = {
-        "nll_mean": _safe_mean(-trainer_logprobs, loss_mask),
-        "token_count": loss_mask.sum().to(torch.float32),
-    }
-    if loss_mask.any():
-        metrics["nll_max"] = (-trainer_logprobs[loss_mask]).max()
-    else:
-        metrics["nll_max"] = torch.tensor(0.0, device=trainer_logprobs.device)
     return LossOutputs(loss=loss, metrics=metrics)
 
 
@@ -248,6 +270,7 @@ def compute_loss(
     loss_fn: LossFn,
     loss_scale: int,
     sft_loss: bool = False,
+    sft_mask: list[Bool[Tensor, " seq_i"]] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -261,6 +284,11 @@ def compute_loss(
         loss_fn: Per-sequence loss function
         loss_scale: Scale factor to normalize the loss
         sft_loss: If True, use SFT loss instead of the configured loss_fn for this batch
+        sft_mask: Per-sequence SFT-on-tool-body masks (parallel to loss_mask).
+            When provided, ``default_loss_fn`` gates IS-ratio / DPPO / KL on
+            these positions and emits sft_nll_mean / sft_nll_max /
+            sft_token_count metrics. None when no rollout in this batch
+            opted into SFT-on-tool-body.
 
     Returns:
         Tuple of (scaled_loss, aggregated_metrics)
@@ -272,13 +300,18 @@ def compute_loss(
 
     if teacher_logprobs is None:
         teacher_logprobs = [None] * len(trainer_logprobs)
+    if sft_mask is None:
+        sft_mask_list: list[Bool[Tensor, " seq_i"] | None] = [None] * len(trainer_logprobs)
+    else:
+        sft_mask_list = list(sft_mask)
 
-    for t_logp, i_logp, teach_logp, adv, mask in zip(
+    for t_logp, i_logp, teach_logp, adv, mask, sft_m in zip(
         trainer_logprobs,
         inference_logprobs,
         teacher_logprobs,
         advantages,
         loss_mask,
+        sft_mask_list,
     ):
         inputs = LossInputs(
             trainer_logprobs=t_logp,
@@ -286,6 +319,7 @@ def compute_loss(
             teacher_logprobs=teach_logp,
             advantages=adv,
             loss_mask=mask,
+            sft_mask=sft_m,
         )
 
         result = effective_loss_fn(inputs)
