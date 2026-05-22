@@ -80,3 +80,4 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # Loss dispatch is batch-driven (rl/opd → default loss with mode-specific taus,
     # sft → sft loss). All samples packed into a micro batch share the same mode.
     training_mode: TrainingMode = "rl"
+    rewards: list[float] | None = None

@@ -12,6 +12,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     loss_mask = training_example.prompt_mask + training_example.completion_mask
     inference_logprobs = [0.0] * len(training_example.prompt_ids) + training_example.completion_logprobs
     advantages = [training_example.advantage] * len(input_ids)
+    reward = training_example.reward if training_example.reward is not None else float("nan")
+    rewards = [reward] * len(input_ids)
     position_ids = list(range(len(input_ids)))
     mm_token_type_ids = training_example.mm_token_type_ids
     assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
@@ -33,6 +35,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         inference_logprobs = inference_logprobs[:seq_len]
         position_ids = position_ids[:seq_len]
         advantages = advantages[:seq_len]
+        rewards = rewards[:seq_len]
         temperatures = temperatures[:seq_len]
         if teacher_logprobs is not None:
             teacher_logprobs = teacher_logprobs[:seq_len]
@@ -48,9 +51,10 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         == len(loss_mask)
         == len(position_ids)
         == len(inference_logprobs)
+        == len(rewards)
         == len(temperatures)
     ), (
-        f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}, temperatures: {len(temperatures)}"
+        f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}, rewards: {len(rewards)}, temperatures: {len(temperatures)}"
     )
     if teacher_logprobs is not None:
         assert len(teacher_logprobs) == len(input_ids), f"teacher_logprobs: {len(teacher_logprobs)}"
@@ -74,6 +78,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         inference_logprobs=inference_logprobs,
         teacher_logprobs=teacher_logprobs,
         temperatures=temperatures,
+        rewards=rewards,
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
@@ -122,9 +127,16 @@ def packed_samples_into_micro_bs(
                 len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len
                 and bin_content.training_mode == sample.training_mode
             ):
+                existing_len = len(bin_content.input_ids)
                 bin_content.input_ids.extend(sample.input_ids)
                 bin_content.loss_mask.extend(sample.loss_mask)
                 bin_content.advantages.extend(sample.advantages)
+                if sample.rewards is not None:
+                    if bin_content.rewards is None:
+                        bin_content.rewards = [float("nan")] * existing_len
+                    bin_content.rewards.extend(sample.rewards)
+                elif bin_content.rewards is not None:
+                    bin_content.rewards.extend([float("nan")] * len(sample.input_ids))
                 bin_content.inference_logprobs.extend(sample.inference_logprobs)
                 bin_content.temperatures.extend(sample.temperatures)
                 if sample.teacher_logprobs is not None:
@@ -175,6 +187,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
 
     micro_batch.input_ids.extend([1] * padding_size)
     micro_batch.advantages.extend([0.0] * padding_size)
+    if micro_batch.rewards is not None:
+        micro_batch.rewards.extend([float("nan")] * padding_size)
     micro_batch.loss_mask.extend([False] * padding_size)
     micro_batch.position_ids.extend(list(range(padding_size)))
     micro_batch.inference_logprobs.extend([0.0] * padding_size)

@@ -479,8 +479,30 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
+class TokenExportConfig(BaseConfig):
+    """Configures per-token rollout exports from the RL trainer."""
+
+    path: Annotated[
+        Path | None,
+        Field(
+            description=(
+                "JSONL output file. If unset, writes to "
+                "`<output_dir>/token_exports/rank_<rank>.jsonl`. Relative paths are resolved under output_dir."
+            ),
+        ),
+    ] = None
+
+
 class TrainerExperimentalConfig(BaseConfig):
-    pass
+    token_export: Annotated[
+        TokenExportConfig | None,
+        Field(
+            description=(
+                "Opt-in per-token JSONL export for rollout visualization. "
+                "When enabled, writes token ids and aligned trainer metrics after each forward pass."
+            ),
+        ),
+    ] = None
 
 
 class TrainerConfig(BaseConfig):
