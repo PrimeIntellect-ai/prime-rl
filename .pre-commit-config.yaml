@@ -12,7 +12,7 @@ repos:
 
 - repo: local
   hooks:
-    - id: regen-docs-reference
+    - id: docs-reference
       name: Regenerate docs/reference.md
       language: system
       entry: uv run python scripts/generate_docs_reference.py
