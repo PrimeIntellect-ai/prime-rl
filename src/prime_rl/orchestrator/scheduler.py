@@ -42,6 +42,12 @@ class GroupState:
     rollouts_to_schedule: int
     completed_rollouts: list[vf.RolloutOutput] = field(default_factory=list)
     pinned_client: vf.ClientConfig | None = None
+    # Count of dispatched rollouts that came back with an error or empty
+    # trajectory. Partial-group training drops these from the group instead of
+    # rescheduling, so the group finalizes once
+    # ``len(completed_rollouts) + failed_rollouts == rollouts_per_example``.
+    failed_rollouts: int = 0
+    last_failure_reason: str | None = None
 
 
 class Scheduler:
@@ -435,39 +441,67 @@ class Scheduler:
                     rollouts: list[vf.RolloutOutput] = result if isinstance(result, list) else [result]
                     self.total_rollouts_by_env[env_name] += len(rollouts)
 
-                    # Drop the whole group on any rollout error or empty trajectory.
-                    # Env-side retries (env.max_retries) already absorb transient
-                    # failures; anything that bubbles up here is treated as
-                    # non-retryable, and partial groups aren't trainable.
-                    # Tally every failure (group-scoring envs return N rollouts
-                    # per task) so error-rate metrics aren't deflated.
-                    failure_reason: str | None = None
+                    # Partition rollouts into valid vs failed and tally per-rollout
+                    # error metrics. Tally every failure (group-scoring envs return
+                    # N rollouts per task) so error-rate metrics aren't deflated.
+                    env = self.train_envs.get(env_name)
+                    valid_rollouts: list[vf.RolloutOutput] = []
                     for rollout in rollouts:
                         if rollout["error"] is not None:
                             self.errored_rollouts_by_env[env_name] += 1
                             self.errors_by_type[rollout["error"]["error"]] += 1
-                            if failure_reason is None:
-                                failure_reason = rollout["error"]["error_chain_repr"]
+                            group.last_failure_reason = rollout["error"]["error_chain_repr"]
                         elif len(rollout["trajectory"]) == 0:
                             self.empty_rollouts_by_env[env_name] += 1
-                            if failure_reason is None:
-                                failure_reason = "empty trajectory"
+                            group.last_failure_reason = "empty trajectory"
+                        else:
+                            rollout["env_name"] = env_name
+                            valid_rollouts.append(rollout)
 
-                    if failure_reason is not None:
+                    num_failed = len(rollouts) - len(valid_rollouts)
+                    group.failed_rollouts += num_failed
+
+                    # Group-scoring envs compute scores over all N rollouts
+                    # together; the surviving rollouts carry scores computed against
+                    # the (now-missing) failed ones, so partial salvage is unsafe.
+                    # Drop the whole group on any failure.
+                    if num_failed > 0 and env.requires_group_scoring:
                         self.dropped_groups_by_env[env_name] += 1
                         self.logger.warning(
-                            f"Dropping group {group_id} ({env_name}) after rollout failure "
-                            f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete): "
-                            f"{failure_reason}"
+                            f"Dropping group-scored group {group_id} ({env_name}) after rollout failure - "
+                            f"{group.last_failure_reason}"
                         )
                         await self.drop_group(group_id)
                         continue
 
-                    for rollout in rollouts:
-                        rollout["env_name"] = env_name
-                    group.completed_rollouts.extend(rollouts)
-                    if len(group.completed_rollouts) < self.rollouts_per_example:
+                    group.completed_rollouts.extend(valid_rollouts)
+
+                    # Wait until every dispatched rollout has come back (succeeded
+                    # or failed) before finalizing. The group may finalize as a
+                    # partial group (< rollouts_per_example) when some rollouts
+                    # errored - downstream advantage computation groups by
+                    # (env_name, example_id), so variable-size groups are fine.
+                    if len(group.completed_rollouts) + group.failed_rollouts < self.rollouts_per_example:
                         continue
+
+                    if not group.completed_rollouts:
+                        self.dropped_groups_by_env[env_name] += 1
+                        self.logger.warning(
+                            f"Dropping group {group_id} ({env_name}) - all "
+                            f"{self.rollouts_per_example} rollouts failed - last failure: "
+                            f"{group.last_failure_reason}"
+                        )
+                        self.groups.pop(group_id, None)
+                        continue
+
+                    if group.failed_rollouts > 0:
+                        self.logger.warning(
+                            f"Partial group {group_id} ({env_name}) - "
+                            f"{len(group.completed_rollouts)}/{self.rollouts_per_example} valid "
+                            f"({group.failed_rollouts} failed) - last failure: "
+                            f"{group.last_failure_reason}"
+                        )
+
                     completed_rollouts = self.groups.pop(group_id).completed_rollouts
 
                 except asyncio.CancelledError:
@@ -481,7 +515,7 @@ class Scheduler:
                     continue
 
                 self.buffer.update(completed_rollouts)
-                accepted_rollouts = self.buffer.sample_rollouts(n=self.rollouts_per_example)
+                accepted_rollouts = self.buffer.sample_rollouts(n=len(completed_rollouts))
 
                 batch_rollouts.extend(accepted_rollouts)
                 progress_increment = self.get_batch_progress_increment(accepted_rollouts)

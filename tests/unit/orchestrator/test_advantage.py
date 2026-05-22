@@ -15,7 +15,13 @@ from prime_rl.orchestrator.advantage import (
 )
 
 
-def _make_rollout(reward: float, completion_len: int = 0, num_turns: int = 1) -> dict:
+def _make_rollout(
+    reward: float,
+    completion_len: int = 0,
+    num_turns: int = 1,
+    env_name: str = "test",
+    example_id: int = 0,
+) -> dict:
     """Create a minimal rollout dict for advantage testing.
 
     `completion_len` tokens are split across `num_turns` trajectory steps.
@@ -25,7 +31,12 @@ def _make_rollout(reward: float, completion_len: int = 0, num_turns: int = 1) ->
         {"tokens": {"prompt_ids": [0], "completion_ids": list(range(per_turn + (rem if i == 0 else 0)))}}
         for i in range(num_turns)
     ]
-    return {"reward": reward, "trajectory": trajectory}
+    return {
+        "reward": reward,
+        "trajectory": trajectory,
+        "env_name": env_name,
+        "example_id": example_id,
+    }
 
 
 def _make_inputs(rewards, completion_lengths=None, num_turns=None) -> AdvantageInputs:
@@ -38,7 +49,7 @@ def _make_inputs(rewards, completion_lengths=None, num_turns=None) -> AdvantageI
         for j in range(rollouts_per_example):
             cl = int(completion_lengths[i][j]) if completion_lengths is not None else 0
             nt = int(num_turns[i][j]) if num_turns is not None else 1
-            group.append(_make_rollout(float(rewards_t[i, j]), cl, nt))
+            group.append(_make_rollout(float(rewards_t[i, j]), cl, nt, example_id=i))
         rollouts.append(group)
     return AdvantageInputs(rollouts=rollouts)
 
@@ -306,9 +317,9 @@ def test_efficiency_turns_penalty():
 def test_compute_advantages_with_config():
     rewards = [1.0, 0.5, 0.8, 0.2, 0.9, 0.1]
     lengths = [10, 12, 8, 15, 11, 9]
-    rollouts = [_make_rollout(r, l) for r, l in zip(rewards, lengths)]
+    rollouts = [_make_rollout(r, l, example_id=i // 3) for i, (r, l) in enumerate(zip(rewards, lengths))]
 
-    compute_advantages(rollouts, samples_per_problem=3, advantage_config=DefaultAdvantageConfig())
+    compute_advantages(rollouts, advantage_config=DefaultAdvantageConfig())
 
     advantages = [r["advantage"] for r in rollouts]
     assert len(advantages) == 6
@@ -321,13 +332,12 @@ def test_compute_advantages_no_cross_group_leakage():
 
     Two problems with very different reward scales — cross-group leakage would pull the
     small-scale group's advantages toward the large-scale group's mean (and vice versa).
-    Distinct positional values also catch slicing/transpose bugs in the flat→grouped→flat
-    round-trip.
+    Distinct positional values also catch ordering bugs in the group→flat round-trip.
     """
     rewards = [10.0, 20.0, 30.0, 0.0, 0.1, 0.2]
-    rollouts = [_make_rollout(r) for r in rewards]
+    rollouts = [_make_rollout(r, example_id=i // 3) for i, r in enumerate(rewards)]
 
-    compute_advantages(rollouts, samples_per_problem=3, advantage_config=DefaultAdvantageConfig())
+    compute_advantages(rollouts, advantage_config=DefaultAdvantageConfig())
 
     advantages = [r["advantage"] for r in rollouts]
     expected = [-10.0, 0.0, 10.0, -0.1, 0.0, 0.1]
@@ -340,10 +350,77 @@ def test_compute_advantages_without_config():
     lengths = [10, 12, 8]
     rollouts = [_make_rollout(r, l) for r, l in zip(rewards, lengths)]
 
-    compute_advantages(rollouts, samples_per_problem=3, advantage_config=None)
+    compute_advantages(rollouts, advantage_config=None)
 
     advantages = [r["advantage"] for r in rollouts]
     assert advantages == rewards
+
+
+def test_compute_advantages_partial_groups():
+    """Partial groups (size < rollouts_per_example) are advantaged against their own mean.
+
+    Bucketing by size lets two groups of different sizes round-trip cleanly: each
+    group's advantages must sum to zero and not leak into the other.
+    """
+    # Group A (example_id=0): 4 rollouts. Group B (example_id=1): 2 rollouts.
+    rollouts = [
+        _make_rollout(1.0, example_id=0),
+        _make_rollout(0.0, example_id=0),
+        _make_rollout(1.0, example_id=0),
+        _make_rollout(0.0, example_id=0),
+        _make_rollout(0.3, example_id=1),
+        _make_rollout(0.7, example_id=1),
+    ]
+
+    compute_advantages(rollouts, advantage_config=DefaultAdvantageConfig())
+
+    advantages = [r["advantage"] for r in rollouts]
+    # Group A: mean=0.5, advantages=[0.5, -0.5, 0.5, -0.5]
+    expected_a = [0.5, -0.5, 0.5, -0.5]
+    # Group B: mean=0.5, advantages=[-0.2, 0.2]
+    expected_b = [-0.2, 0.2]
+    for got, want in zip(advantages[:4], expected_a):
+        assert abs(got - want) < 1e-5, (advantages[:4], expected_a)
+    for got, want in zip(advantages[4:], expected_b):
+        assert abs(got - want) < 1e-5, (advantages[4:], expected_b)
+
+
+def test_compute_advantages_singleton_group_gets_zero_advantage():
+    """A group of size 1 has reward == mean, so its advantage is 0 (filterable downstream)."""
+    rollouts = [
+        _make_rollout(0.5, example_id=0),
+        _make_rollout(0.8, example_id=0),
+        _make_rollout(0.3, example_id=1),  # singleton group
+    ]
+
+    compute_advantages(rollouts, advantage_config=DefaultAdvantageConfig())
+
+    advantages = [r["advantage"] for r in rollouts]
+    # Group 0: mean=0.65, advantages=[-0.15, 0.15]
+    assert abs(advantages[0] + 0.15) < 1e-5
+    assert abs(advantages[1] - 0.15) < 1e-5
+    # Group 1 (singleton): advantage=0
+    assert abs(advantages[2]) < 1e-5
+
+
+def test_compute_advantages_disambiguates_example_id_across_envs():
+    """example_id=0 in env A and example_id=0 in env B must not be grouped together."""
+    rollouts = [
+        _make_rollout(1.0, env_name="env_a", example_id=0),
+        _make_rollout(0.0, env_name="env_a", example_id=0),
+        _make_rollout(100.0, env_name="env_b", example_id=0),
+        _make_rollout(200.0, env_name="env_b", example_id=0),
+    ]
+
+    compute_advantages(rollouts, advantage_config=DefaultAdvantageConfig())
+
+    advantages = [r["advantage"] for r in rollouts]
+    # env_a group: mean=0.5, advantages=[0.5, -0.5]
+    assert abs(advantages[0] - 0.5) < 1e-5
+    assert abs(advantages[1] + 0.5) < 1e-5
+    # env_b group: mean=150, advantages=[-50, 50]
+    assert abs(advantages[2] + 50.0) < 1e-5
+    assert abs(advantages[3] - 50.0) < 1e-5
 
 
 def test_setup_advantage_fn_with_custom_config():

@@ -1,3 +1,4 @@
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Callable
 
@@ -136,31 +137,37 @@ def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
 
 def compute_advantages(
     rollouts: list[vf.RolloutOutput],
-    samples_per_problem: int,
     advantage_config: AdvantageConfig | None,
 ) -> None:
     """
-    Computes advantages from rollouts, grouped by problem.
-    Stores advantages in-place on the rollouts.
+    Computes advantages from rollouts, grouped by (env_name, example_id), and
+    stores them in-place on the rollouts.
+
+    Groups may have varying sizes (partial-group training drops failed rollouts
+    rather than rescheduling them), so groups are bucketed by size and each
+    advantage_fn call sees a uniform 2D rewards tensor.
 
     Args:
         rollouts: List of rollouts to store advantages on
-        samples_per_problem: Number of samples (and thus, rewards) per problem
         advantage_config: Configuration for advantage computation (DefaultAdvantageConfig or CustomAdvantageConfig)
     """
-    rewards = [r["reward"] for r in rollouts]
-
     if not advantage_config:
-        for rollout, reward in zip(rollouts, rewards):
-            rollout["advantage"] = reward
+        for rollout in rollouts:
+            rollout["advantage"] = rollout["reward"]
         return
 
     advantage_fn = setup_advantage_fn(advantage_config)
-    grouped = [rollouts[i : i + samples_per_problem] for i in range(0, len(rollouts), samples_per_problem)]
-    inputs = AdvantageInputs(rollouts=grouped)
 
-    result = advantage_fn(inputs)
-    advantages = result.advantages.flatten().tolist()
+    groups_by_example: dict[tuple[str, int], list[vf.RolloutOutput]] = defaultdict(list)
+    for rollout in rollouts:
+        groups_by_example[(rollout["env_name"], rollout["example_id"])].append(rollout)
 
-    for rollout, advantage in zip(rollouts, advantages):
-        rollout["advantage"] = advantage
+    groups_by_size: dict[int, list[list[vf.RolloutOutput]]] = defaultdict(list)
+    for group in groups_by_example.values():
+        groups_by_size[len(group)].append(group)
+
+    for groups in groups_by_size.values():
+        result = advantage_fn(AdvantageInputs(rollouts=groups))
+        advantages = result.advantages.flatten().tolist()
+        for rollout, advantage in zip((r for g in groups for r in g), advantages):
+            rollout["advantage"] = advantage
