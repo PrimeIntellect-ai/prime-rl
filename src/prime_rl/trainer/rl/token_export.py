@@ -1,8 +1,6 @@
 import atexit
 import json
 import math
-import queue
-import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -14,52 +12,6 @@ from prime_rl.configs.trainer import DefaultLossConfig, TokenExportConfig, Train
 from prime_rl.trainer.rl.loss import compute_importance_ratio_and_mismatch_kl
 
 SCHEMA_VERSION = 1
-_STOP = object()
-
-
-class AsyncJsonlWriter:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self._queue: queue.Queue[dict[str, Any] | object] = queue.Queue()
-        self._error: BaseException | None = None
-        self._closed = False
-        self._lock = threading.Lock()
-        self._thread = threading.Thread(target=self._run, name=f"token-export-writer:{path}", daemon=True)
-        self._thread.start()
-        atexit.register(self.close)
-
-    def write(self, record: dict[str, Any]) -> None:
-        self._raise_if_failed()
-        if self._closed:
-            raise RuntimeError(f"Token export writer is closed for {self.path}")
-        self._queue.put(record)
-
-    def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            self._queue.put(_STOP)
-        self._thread.join()
-        self._raise_if_failed()
-
-    def _run(self) -> None:
-        try:
-            with self.path.open("a", encoding="utf-8") as f:
-                while True:
-                    record = self._queue.get()
-                    try:
-                        if record is _STOP:
-                            break
-                        f.write(json.dumps(record, separators=(",", ":"), allow_nan=False) + "\n")
-                    finally:
-                        self._queue.task_done()
-        except BaseException as exc:
-            self._error = exc
-
-    def _raise_if_failed(self) -> None:
-        if self._error is not None:
-            raise RuntimeError(f"Token export writer failed for {self.path}") from self._error
 
 
 class DisabledTokenExporter:
@@ -81,9 +33,11 @@ class TokenExporter:
         self.rank = rank
         self.path = self._resolve_path(config.path, output_dir, rank)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._writer = AsyncJsonlWriter(self.path)
+        self._file = self.path.open("a", encoding="utf-8")
+        self._closed = False
         self._current_step: int | None = None
         self._sequences_this_step = 0
+        atexit.register(self.close)
 
     def export(
         self,
@@ -119,11 +73,19 @@ class TokenExporter:
             start = end
             if record is None:
                 continue
-            self._writer.write(record)
+            self._write(record)
             self._sequences_this_step += 1
 
     def close(self) -> None:
-        self._writer.close()
+        if self._closed:
+            return
+        self._closed = True
+        self._file.close()
+
+    def _write(self, record: dict[str, Any]) -> None:
+        if self._closed:
+            raise RuntimeError(f"Token exporter is closed for {self.path}")
+        self._file.write(json.dumps(record, separators=(",", ":"), allow_nan=False) + "\n")
 
     @staticmethod
     def _resolve_path(path: Path | None, output_dir: Path, rank: int) -> Path:
@@ -263,27 +225,19 @@ def _compute_export_tensors(
     with torch.no_grad():
         log_ratio, ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(trainer_logprobs, inference_logprobs)
         prob_delta = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
-        fields.update(
-            {
-                "log_importance_ratio": log_ratio,
-                "importance_ratio": ratio,
-                "mismatch_kl": mismatch_kl,
-                "prob_delta": prob_delta,
-            }
-        )
+        fields["log_importance_ratio"] = log_ratio
+        fields["importance_ratio"] = ratio
+        fields["mismatch_kl"] = mismatch_kl
+        fields["prob_delta"] = prob_delta
         if isinstance(loss_config, DefaultLossConfig):
             invalid_high = prob_delta > loss_config.dppo_mask_high
             invalid_low = prob_delta < -loss_config.dppo_mask_low
             positive_advantages = advantages > 0
             negative_advantages = advantages < 0
             invalid = torch.where(positive_advantages, invalid_high, invalid_low)
-            fields.update(
-                {
-                    "is_masked": loss_mask & invalid,
-                    "is_masked_high": loss_mask & positive_advantages & invalid_high,
-                    "is_masked_low": loss_mask & negative_advantages & invalid_low,
-                }
-            )
+            fields["is_masked"] = loss_mask & invalid
+            fields["is_masked_high"] = loss_mask & positive_advantages & invalid_high
+            fields["is_masked_low"] = loss_mask & negative_advantages & invalid_low
     return fields
 
 

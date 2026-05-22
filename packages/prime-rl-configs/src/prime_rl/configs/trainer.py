@@ -494,8 +494,6 @@ class TokenExportConfig(BaseConfig):
 
 
 class TrainerExperimentalConfig(BaseConfig):
-    pass
-
     token_export: Annotated[
         TokenExportConfig | None,
         Field(
