@@ -28,10 +28,11 @@ from prime_rl.utils.cp import (
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
     compute_entropy,
-    compute_loss,
     compute_importance_ratio_and_mismatch_kl,
+    compute_loss,
     selective_log_softmax,
     setup_loss_fn,
+    sft_pg_loss_fn,
     shift_tensor_left,
     shift_tensor_right,
 )
@@ -462,23 +463,43 @@ def train(config: TrainerConfig):
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
-            sft_mask_batch = micro_batch.get("sft_mask")
-            sft_mask_split = (
-                sft_mask_batch.to("cuda").squeeze().split(response_lengths) if sft_mask_batch is not None else None
+            split_trainer_logprobs = out["logprobs"].squeeze().split(response_lengths)
+            split_inference_logprobs = inference_logprobs.squeeze().split(response_lengths)
+            split_teacher_logprobs = (
+                teacher_logprobs.squeeze().split(response_lengths) if teacher_logprobs is not None else None
             )
+            split_advantages = advantages.squeeze().split(response_lengths)
             loss, loss_tensors = compute_loss(
-                trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
-                inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
-                teacher_logprobs=teacher_logprobs.squeeze().split(response_lengths)
-                if teacher_logprobs is not None
-                else None,
-                advantages=advantages.squeeze().split(response_lengths),
+                trainer_logprobs=split_trainer_logprobs,
+                inference_logprobs=split_inference_logprobs,
+                teacher_logprobs=split_teacher_logprobs,
+                advantages=split_advantages,
                 loss_mask=loss_mask.squeeze().split(response_lengths),
                 loss_fn=loss_fn,
                 loss_scale=loss_scale,
                 sft_loss=micro_batch["sft_loss"],
-                sft_mask=sft_mask_split,
             )
+
+            # SFT-on-tool-body overlay: separate compute_loss call so the SFT
+            # term gets per-rollout normalization (already baked into the
+            # advantage by ``prepare_sample``) and NO batch-level division.
+            # Shares the same ``out["logprobs"]`` tensor as the RL call, so a
+            # single forward + single backward covers both terms.
+            sft_mask_batch = micro_batch.get("sft_mask")
+            if sft_mask_batch is not None:
+                split_sft_mask = sft_mask_batch.to("cuda").squeeze().split(response_lengths)
+                sft_loss, sft_loss_tensors = compute_loss(
+                    trainer_logprobs=split_trainer_logprobs,
+                    inference_logprobs=split_inference_logprobs,
+                    teacher_logprobs=None,
+                    advantages=split_advantages,
+                    loss_mask=split_sft_mask,
+                    loss_fn=sft_pg_loss_fn,
+                    loss_scale=1,
+                )
+                loss = loss + sft_loss
+                for key, value in sft_loss_tensors.items():
+                    loss_tensors[f"sft_{key}"] = value
 
             # Backward pass
             with maybe_record_function("backward"):

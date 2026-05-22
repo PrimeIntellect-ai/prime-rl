@@ -11,10 +11,14 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     When ``training_example`` carries an ``sft_mask`` + ``sft_alpha`` (the
     SFT-on-tool-body overlay), the masked prompt-side tool body tokens get
     their advantage overwritten to a per-token weight selected by
-    ``sft_normalization`` and are flipped into ``loss_mask=True`` so they
-    contribute to the loss. Notation: ``α`` = ``sft_alpha``,
-    ``T`` = total rollout length, ``S`` = ``n_sft_tokens``,
-    ``R`` = ``n_rl_tokens`` = ``sum(completion_mask)``.
+    ``sft_normalization``. ``loss_mask`` is NOT modified — the RL loss path
+    continues to operate on the RL completion mask only. The trainer's
+    separate ``sft_pg_loss_fn`` ``compute_loss`` call (``train.py``) reads
+    these advantages with ``sft_mask`` as its ``loss_mask`` and applies the
+    SFT contribution to the gradient with no further normalization.
+
+    Notation: ``α`` = ``sft_alpha``, ``T`` = total rollout length,
+    ``S`` = ``n_sft_tokens``, ``R`` = ``n_rl_tokens`` = ``sum(completion_mask)``.
 
     Normalization modes (default ``"all_tokens"``):
     - ``"all_tokens"`` (ECHO): weight = ``α / T``.
@@ -36,11 +40,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     sft_mask = list(training_example.sft_mask) if training_example.sft_mask is not None else None
 
     # SFT-on-tool-body overlay: rewrite the advantage on masked tool body
-    # tokens and flip them into the loss mask so they contribute. The
-    # per-token weight lives on the advantage tensor; ``loss.default_loss_fn``
-    # routes SFT positions through ``advantages * trainer_logprobs`` so the
-    # gradient w.r.t. trainer_logprobs equals the per-token weight, and
-    # zeroes KL on those positions.
+    # tokens to the per-rollout mode weight. Do NOT touch ``loss_mask`` —
+    # SFT positions stay out of the RL loss path, and the trainer's separate
+    # SFT compute_loss call uses ``sft_mask`` as its own loss mask.
     if sft_mask is not None and training_example.sft_alpha is not None:
         n_sft = sum(sft_mask)
         if n_sft > 0:
@@ -66,7 +68,6 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             for k in range(len(input_ids)):
                 if sft_mask[k]:
                     advantages[k] = weight
-                    loss_mask[k] = True
 
     # Per-token temperatures: prompt tokens use first completion temp (masked out anyway)
     # Default to 1.0 if completion is empty (e.g., model generated only tool calls with no text)
