@@ -443,6 +443,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             inference_tp=config.inference.parallel.tp if config.inference else 1,
             inference_enable_expert_parallel=config.inference.enable_expert_parallel if config.inference else False,
             inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port if config.inference else 29600,
+            use_deep_gemm=config.inference.use_deep_gemm if config.inference else False,
             dp_per_node=(config.deployment.gpus_per_node // config.inference.parallel.tp) if config.inference else 1,
             kv_offload=config.inference is not None and config.inference.kv_cache_offload is not None,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
