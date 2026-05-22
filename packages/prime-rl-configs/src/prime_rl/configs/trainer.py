@@ -470,9 +470,6 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     inference_world_size: int = 1
     """Number of GPUs used for inference."""
 
-    inference_model_name: str = ""
-    """HF model name of the inference target."""
-
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
