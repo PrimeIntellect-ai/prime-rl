@@ -42,24 +42,6 @@ from prime_rl.transport.wire import LayoutEntry, PeerInfo, WriteEntry
 SMALL_NON_EXPERT_BYTES = 2 * 1024 * 1024
 
 
-_CAST_SLOT_DTYPES = {
-    "bf16_cast": torch.bfloat16,
-    "fp32_cast": torch.float32,
-}
-
-
-def _source_for_transfer(src: Tensor) -> Tensor:
-    if not src.is_floating_point():
-        return src
-    return src.to(torch.bfloat16)
-
-
-def _slot_dtype(conversion_type: str, conversion: ConversionEntry, base_dtype: torch.dtype) -> torch.dtype:
-    if conversion.requires_scale:
-        return torch.float8_e4m3fn
-    return _CAST_SLOT_DTYPES.get(conversion_type, base_dtype)
-
-
 # --- Slot protocol --------------------------------------------------------- #
 
 
@@ -188,7 +170,9 @@ class ShardedSlot:
         return out
 
     def convert(self, state_dict: dict[str, Tensor]) -> None:
-        src = _source_for_transfer(state_dict[self.source_name])
+        src = state_dict[self.source_name]
+        if src.is_floating_point():
+            src = src.to(torch.bfloat16)
         if isinstance(src, DTensor):
             src = src.full_tensor() if self.weight.shape[0] == src.shape[0] else src.to_local()
         self.conversion.fn(src, self.weight, self.scale)
@@ -346,7 +330,9 @@ class GatheredSlot:
         return out
 
     def convert(self, state_dict: dict[str, Tensor]) -> None:
-        src = _source_for_transfer(state_dict[self.source_name])
+        src = state_dict[self.source_name]
+        if src.is_floating_point():
+            src = src.to(torch.bfloat16)
         if isinstance(src, DTensor):
             src = src.full_tensor() if self.weight.shape[0] == src.shape[0] else src.to_local()
         self.conversion.fn(src, self.weight, self.scale)
@@ -528,7 +514,9 @@ class ExpertSlot:
     def convert(self, state_dict: dict[str, Tensor]) -> None:
         srcs = []
         for name in self.source_names:
-            t = _source_for_transfer(state_dict[name])
+            t = state_dict[name]
+            if t.is_floating_point():
+                t = t.to(torch.bfloat16)
             srcs.append(t.to_local() if isinstance(t, DTensor) else t)
         tensor = srcs[0] if len(srcs) == 1 else torch.cat(srcs, dim=self.cat_dim)
         self.conversion.fn(tensor, self.weight, self.scale)
@@ -602,7 +590,14 @@ def build_slots_for_conversion_spec(
     """
     conversion_type = spec.conversion.conversion_type or default_conversion
     conversion = resolve(conversion_type, default_conversion)
-    slot_dtype = _slot_dtype(conversion_type, conversion, base_dtype)
+    if conversion.requires_scale:
+        slot_dtype = torch.float8_e4m3fn
+    elif conversion_type == "bf16_cast":
+        slot_dtype = torch.bfloat16
+    elif conversion_type == "fp32_cast":
+        slot_dtype = torch.float32
+    else:
+        slot_dtype = base_dtype
     if spec.is_expert_spec:
         return [
             ExpertSlot.from_spec(
