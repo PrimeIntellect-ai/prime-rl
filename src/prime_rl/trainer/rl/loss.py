@@ -49,8 +49,8 @@ def selective_log_softmax(
 
 def apply_top_k_top_p(
     logits: Tensor,
-    top_k: Tensor | None,
-    top_p: Tensor | None,
+    top_k: int | None,
+    top_p: float | None,
     labels: Tensor | None = None,
 ) -> Tensor:
     """Mirror vLLM's top-k / top-p truncation so the trainer logits sum over
@@ -58,59 +58,45 @@ def apply_top_k_top_p(
     are pushed to ``-inf`` so the downstream log-softmax matches vLLM's
     processed_logprobs.
 
-    Per-token k / p (broadcast from the same scalar per rollout). ``k <= 0``
-    leaves the row untouched; ``p >= 1`` leaves it untouched. When all rows
-    are passthrough, returns ``logits`` unchanged.
+    Scalar k / p — all rows in the batch use the same truncation. ``k <= 0``
+    and ``p >= 1.0`` are no-ops.
 
     When ``labels`` is given, the label token's original logit is restored
     after masking. Inference sampled the label from the truncated set, so it
-    *was* in top-k / top-p there — but the trainer runs the model independently
-    (different kernels, mixed precision) and at the boundary the ranks can
-    differ enough to mask the label. Restoring keeps that token's logprob
-    finite (and ≈ matches what vLLM saw) so the importance ratio doesn't blow
-    up. The cost is at most one extra token in the renormalization, which is
-    negligible when ranks agree.
-    """
-    if top_k is None and top_p is None:
-        return logits
+    *was* in top-k / top-p there — but the trainer runs the model
+    independently (different kernels, mixed precision) and at the boundary
+    the ranks can differ enough to mask the label. Restoring keeps that
+    token's logprob finite (and ≈ matches what vLLM saw) so the importance
+    ratio doesn't blow up. The cost is at most one extra token in the
+    renormalization, which is negligible when ranks agree.
 
-    do_top_k = top_k is not None and bool((top_k > 0).any())
-    do_top_p = top_p is not None and bool((top_p < 1.0).any())
+    With scalar top-k applied uniformly, prompt and padding positions also
+    get truncated. Their labels (the next prompt token, or the padding token)
+    are usually not in the model's top-k, which would otherwise push their
+    logprobs to ``-inf`` and NaN out the masked loss. The label safety guard
+    handles this — pass ``labels`` whenever truncation is active.
+    """
+    vocab_size = logits.shape[-1]
+    do_top_k = top_k is not None and 0 < top_k < vocab_size
+    do_top_p = top_p is not None and top_p < 1.0
     if not do_top_k and not do_top_p:
         return logits
 
-    # Save original label logits before any in-place masking happens below.
+    # Save original label logits before any masking happens below.
     label_logits = logits.gather(-1, labels.unsqueeze(-1)) if labels is not None else None
 
-    vocab_size = logits.shape[-1]
-
     if do_top_k:
-        # We compute a topk over ``max_k`` and pick the per-row threshold from
-        # that slice. Rows that want pass-through (top_k <= 0 or >= vocab_size)
-        # are explicitly given a -inf threshold so nothing is masked.
-        passthrough_k = (top_k <= 0) | (top_k >= vocab_size)
-        k = torch.where(passthrough_k, torch.full_like(top_k, 1), top_k)
-        max_k = int(k.max().item())
-        max_k = min(max_k, vocab_size)
-        top_values, _ = logits.topk(max_k, dim=-1)
-        k_idx = (k.clamp(max=max_k) - 1).unsqueeze(-1)
-        threshold = top_values.gather(-1, k_idx)
-        threshold = torch.where(
-            passthrough_k.unsqueeze(-1),
-            torch.full_like(threshold, float("-inf")),
-            threshold,
-        )
+        top_values, _ = logits.topk(top_k, dim=-1)
+        threshold = top_values[..., -1:]
         logits = logits.masked_fill(logits < threshold, float("-inf"))
 
     if do_top_p:
         # Sort ascending so the low-probability tail sits at the front; mirrors
-        # vLLM's apply_top_k_top_p_pytorch implementation. Rows with p >= 1.0
-        # naturally produce a 0 threshold so nothing is masked.
+        # vLLM's apply_top_k_top_p_pytorch implementation.
         sorted_logits, sorted_idx = logits.sort(dim=-1, descending=False)
         sorted_probs = sorted_logits.softmax(dim=-1)
         cumprobs = sorted_probs.cumsum(dim=-1)
-        p_threshold = (1.0 - top_p).unsqueeze(-1)
-        top_p_mask = cumprobs <= p_threshold
+        top_p_mask = cumprobs <= (1.0 - top_p)
         # Always keep at least one token (the largest logit, at index -1).
         top_p_mask[..., -1] = False
         sorted_logits = sorted_logits.masked_fill(top_p_mask, float("-inf"))

@@ -19,26 +19,6 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
     env_names = [training_example.env_name] * len(input_ids)
 
-    # Per-token temperatures: prompt tokens use first completion temp (masked out anyway)
-    # Default to 1.0 if completion is empty (e.g., model generated only tool calls with no text)
-    prompt_temp = training_example.completion_temperatures[0] if training_example.completion_temperatures else 1.0
-    temperatures = [prompt_temp] * len(training_example.prompt_ids) + training_example.completion_temperatures
-
-    # Per-token top_k / top_p, aligned with input_ids: top_k[i] is the
-    # truncation used to *produce* input_ids[i]. Prompt tokens weren't
-    # sampled, so they carry pass-through (-1 / 1.0). The trainer
-    # shift_left-aligns these to labels before applying truncation so the
-    # boundary token (e.g. first completion, first pad) is handled correctly.
-    completion_top_k = training_example.completion_top_k
-    if completion_top_k is None:
-        completion_top_k = [-1] * len(training_example.completion_ids)
-    top_k = [-1] * len(training_example.prompt_ids) + completion_top_k
-
-    completion_top_p = training_example.completion_top_p
-    if completion_top_p is None:
-        completion_top_p = [1.0] * len(training_example.completion_ids)
-    top_p = [1.0] * len(training_example.prompt_ids) + completion_top_p
-
     # Teacher logprobs already cover the full sequence (prompt + completion),
     # computed via prefill in the orchestrator when a teacher model is configured
     teacher_logprobs = training_example.teacher_logprobs
@@ -51,9 +31,6 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         position_ids = position_ids[:seq_len]
         advantages = advantages[:seq_len]
         rewards = rewards[:seq_len]
-        temperatures = temperatures[:seq_len]
-        top_k = top_k[:seq_len]
-        top_p = top_p[:seq_len]
         if teacher_logprobs is not None:
             teacher_logprobs = teacher_logprobs[:seq_len]
         if routed_experts is not None:
@@ -69,11 +46,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         == len(position_ids)
         == len(inference_logprobs)
         == len(rewards)
-        == len(temperatures)
-        == len(top_k)
-        == len(top_p)
     ), (
-        f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}, rewards: {len(rewards)}, temperatures: {len(temperatures)}, top_k: {len(top_k)}, top_p: {len(top_p)}"
+        f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}, rewards: {len(rewards)}"
     )
     if teacher_logprobs is not None:
         assert len(teacher_logprobs) == len(input_ids), f"teacher_logprobs: {len(teacher_logprobs)}"
@@ -96,9 +70,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         position_ids=position_ids,
         inference_logprobs=inference_logprobs,
         teacher_logprobs=teacher_logprobs,
-        temperatures=temperatures,
-        top_k=top_k,
-        top_p=top_p,
+        temperature=training_example.completion_temperature,
+        top_k=training_example.completion_top_k,
+        top_p=training_example.completion_top_p,
         rewards=rewards,
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
@@ -119,7 +93,11 @@ def packed_samples_into_micro_bs(
     """
     Pack samples into micro_batch efficiently.
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
-    With per-token temperatures, samples can be packed together regardless of their temperature values.
+
+    Samples can only be packed together when they share ``training_mode`` and
+    sampling args (temperature, top_k, top_p), since those are scalar per
+    micro batch. In practice all training samples share the same sampling
+    config, so this is non-restrictive.
 
     NOTE: Multimodal samples (with mm_kwargs) are NOT packed together as they have variable-sized
     vision data that doesn't pack well. Each multimodal sample becomes its own micro batch.
@@ -143,10 +121,13 @@ def packed_samples_into_micro_bs(
             # Don't pack into multimodal micro batches
             if _is_multimodal_sample(bin_content):
                 continue
-            # Check if sequence fits in this bin
+            # Check if sequence fits in this bin and shares scalar sampling args.
             if (
                 len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len
                 and bin_content.training_mode == sample.training_mode
+                and bin_content.temperature == sample.temperature
+                and bin_content.top_k == sample.top_k
+                and bin_content.top_p == sample.top_p
             ):
                 existing_len = len(bin_content.input_ids)
                 bin_content.input_ids.extend(sample.input_ids)
@@ -159,19 +140,6 @@ def packed_samples_into_micro_bs(
                 elif bin_content.rewards is not None:
                     bin_content.rewards.extend([float("nan")] * len(sample.input_ids))
                 bin_content.inference_logprobs.extend(sample.inference_logprobs)
-                bin_content.temperatures.extend(sample.temperatures)
-                if sample.top_k is not None:
-                    if bin_content.top_k is None:
-                        bin_content.top_k = [-1] * existing_len
-                    bin_content.top_k.extend(sample.top_k)
-                elif bin_content.top_k is not None:
-                    bin_content.top_k.extend([-1] * len(sample.input_ids))
-                if sample.top_p is not None:
-                    if bin_content.top_p is None:
-                        bin_content.top_p = [1.0] * existing_len
-                    bin_content.top_p.extend(sample.top_p)
-                elif bin_content.top_p is not None:
-                    bin_content.top_p.extend([1.0] * len(sample.input_ids))
                 if sample.teacher_logprobs is not None:
                     if bin_content.teacher_logprobs is None:
                         bin_content.teacher_logprobs = []
@@ -225,12 +193,6 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.loss_mask.extend([False] * padding_size)
     micro_batch.position_ids.extend(list(range(padding_size)))
     micro_batch.inference_logprobs.extend([0.0] * padding_size)
-    # Use temperature 1.0 for padding tokens (doesn't matter since loss_mask is False)
-    micro_batch.temperatures.extend([1.0] * padding_size)
-    if micro_batch.top_k is not None:
-        micro_batch.top_k.extend([-1] * padding_size)
-    if micro_batch.top_p is not None:
-        micro_batch.top_p.extend([1.0] * padding_size)
     if micro_batch.teacher_logprobs is not None:
         micro_batch.teacher_logprobs.extend([0.0] * padding_size)
     micro_batch.lora_num_tokens[-1] += (

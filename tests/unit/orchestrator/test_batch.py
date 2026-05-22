@@ -17,7 +17,7 @@ def make_training_example():
             completion_ids=[3, 4],
             completion_mask=[True, True],
             completion_logprobs=[-0.1, -0.2],
-            completion_temperatures=[temperature, temperature],  # Per-token temperatures
+            completion_temperature=temperature,
             teacher_logprobs=[0.0, 0.0, 0.0, 0.0],
             advantage=1.0,
             env_name=env_name,
@@ -35,7 +35,7 @@ def test_training_sample_requires_env_name():
             completion_ids=[3, 4],
             completion_mask=[True, True],
             completion_logprobs=[-0.1, -0.2],
-            completion_temperatures=[1.0, 1.0],
+            completion_temperature=1.0,
             advantage=1.0,
         )
 
@@ -74,8 +74,9 @@ def test_prepare_batch_balances_micro_batches_across_workers(
         assert sum(1 for loss_mask in batch.loss_mask if loss_mask) == 0
 
 
-def test_prepare_batch_packs_different_temperatures(make_training_example):
-    """With per-token temperatures, samples can be packed together regardless of their temperature values."""
+def test_prepare_batch_does_not_pack_different_temperatures(make_training_example):
+    """Temperature is a scalar per micro batch, so samples with different
+    temperatures land in separate micro batches even when they would fit."""
     example1 = make_training_example(temperature=0.7, env_name="env-a")
     example2 = make_training_example(temperature=1.1, env_name="env-b")
 
@@ -88,15 +89,11 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
     )
 
     flat_batches = [batch for worker_batches in batches_per_gpu for batch in worker_batches]
-    # With per-token temperatures, samples can now be packed together
-    assert len(flat_batches) == 1
-    # Each sample has 4 tokens (2 prompt + 2 completion), so 8 total tokens
-    assert len(flat_batches[0].temperatures) == 8
-    # First sample (4 tokens): all get temp 0.7
-    assert flat_batches[0].temperatures[:4] == [0.7, 0.7, 0.7, 0.7]
-    # Second sample (4 tokens): all get temp 1.1
-    assert flat_batches[0].temperatures[4:8] == [1.1, 1.1, 1.1, 1.1]
-    assert flat_batches[0].env_names == ["env-a"] * 4 + ["env-b"] * 4
+    assert len(flat_batches) == 2
+    assert {b.temperature for b in flat_batches} == {0.7, 1.1}
+    # Each micro batch holds exactly one sample (4 tokens: 2 prompt + 2 completion)
+    for batch in flat_batches:
+        assert len(batch.input_ids) == 4
 
 
 def test_prepare_sample_propagates_training_mode(make_training_example):
@@ -134,7 +131,7 @@ def test_prepare_sample_with_routed_experts():
         completion_ids=[3, 4],
         completion_mask=[True, True],
         completion_logprobs=[-0.1, -0.2],
-        completion_temperatures=[1.0, 1.0],
+        completion_temperature=1.0,
         advantage=1.0,
         env_name="test-env",
         routed_experts=routed_experts,
@@ -155,7 +152,7 @@ def test_prepare_sample_truncates_routed_experts():
         completion_ids=[3, 4],
         completion_mask=[True, True],
         completion_logprobs=[-0.1, -0.2],
-        completion_temperatures=[1.0, 1.0],
+        completion_temperature=1.0,
         advantage=1.0,
         env_name="test-env",
         routed_experts=routed_experts,
@@ -176,7 +173,7 @@ def test_prepare_sample_none_routed_experts():
         completion_ids=[3, 4],
         completion_mask=[True, True],
         completion_logprobs=[-0.1, -0.2],
-        completion_temperatures=[1.0, 1.0],
+        completion_temperature=1.0,
         advantage=1.0,
         env_name="test-env",
     )

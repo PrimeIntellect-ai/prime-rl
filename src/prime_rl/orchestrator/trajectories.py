@@ -284,9 +284,9 @@ def interleave_rollout(
             completion_ids=completion_ids,
             completion_mask=completion_mask,
             completion_logprobs=list(tokens["completion_logprobs"]),
-            completion_temperatures=[temperature] * len(completion_ids),
-            completion_top_k=[top_k] * len(completion_ids),
-            completion_top_p=[top_p] * len(completion_ids),
+            completion_temperature=float(temperature),
+            completion_top_k=int(top_k),
+            completion_top_p=float(top_p),
             teacher_logprobs=None,
             advantage=None,
             env_name=output["env_name"],
@@ -303,11 +303,6 @@ def interleave_rollout(
         sample.completion_ids.extend(new_prompt_ids)
         sample.completion_mask.extend([False] * len(new_prompt_ids))
         sample.completion_logprobs.extend([0.0] * len(new_prompt_ids))
-        sample.completion_temperatures.extend([temperature] * len(new_prompt_ids))
-        if sample.completion_top_k is not None:
-            sample.completion_top_k.extend([top_k] * len(new_prompt_ids))
-        if sample.completion_top_p is not None:
-            sample.completion_top_p.extend([top_p] * len(new_prompt_ids))
 
         # Extend with new completion tokens
         completion_ids = tokens["completion_ids"]
@@ -317,11 +312,6 @@ def interleave_rollout(
         else:
             sample.completion_mask.extend(bool(i) for i in tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
-        sample.completion_temperatures.extend([temperature] * len(completion_ids))
-        if sample.completion_top_k is not None:
-            sample.completion_top_k.extend([top_k] * len(completion_ids))
-        if sample.completion_top_p is not None:
-            sample.completion_top_p.extend([top_p] * len(completion_ids))
 
         if tokens.get("routed_experts") is not None and sample.routed_experts is not None:
             step_routed = tokens["routed_experts"]

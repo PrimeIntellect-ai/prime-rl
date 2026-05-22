@@ -421,34 +421,14 @@ def train(config: TrainerConfig):
                     )
                 set_lora_num_tokens(lora_num_tokens)
 
-            temperatures = micro_batch["temperatures"].to("cuda")
-            top_k = micro_batch.get("top_k")
-            top_p = micro_batch.get("top_p")
-            top_k = top_k.to("cuda") if top_k is not None else None
-            top_p = top_p.to("cuda") if top_p is not None else None
-            # Align top_k / top_p with the label being predicted (input_ids[p+1]),
-            # mirroring shift_tensor_left applied to input_ids. Padding past the
-            # last token gets pass-through (-1 / 1.0) so the boundary doesn't
-            # mask a padding-token logprob to -inf.
-            if top_k is not None:
-                top_k = torch.cat(
-                    [top_k[:, 1:], torch.full((top_k.shape[0], 1), -1, device=top_k.device, dtype=top_k.dtype)], dim=1
-                )
-            if top_p is not None:
-                top_p = torch.cat(
-                    [top_p[:, 1:], torch.full((top_p.shape[0], 1), 1.0, device=top_p.device, dtype=top_p.dtype)], dim=1
-                )
-            truncate_logits = (top_k is not None and bool((top_k > 0).any())) or (
-                top_p is not None and bool((top_p < 1.0).any())
-            )
-
-            # Shard temperatures for context parallelism if enabled
-            if cp_enabled:
-                temperatures = shard_for_cp(temperatures, cp_rank=cp_rank, cp_world_size=cp_size)
-                if top_k is not None:
-                    top_k = shard_for_cp(top_k, cp_rank=cp_rank, cp_world_size=cp_size)
-                if top_p is not None:
-                    top_p = shard_for_cp(top_p, cp_rank=cp_rank, cp_world_size=cp_size)
+            temperature = micro_batch["temperature"]
+            top_k = micro_batch["top_k"]
+            top_p = micro_batch["top_p"]
+            truncate_logits = (top_k > 0) or (top_p < 1.0)
+            # The fused LM head expects a per-token temperature tensor; build
+            # one by broadcasting the scalar across the (already CP-sharded if
+            # applicable) sequence dimension.
+            temperatures = torch.full(input_ids.shape, temperature, dtype=torch.float32, device="cuda")
 
             # Forward pass with per-token temperatures
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):

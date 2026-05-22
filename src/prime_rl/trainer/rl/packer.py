@@ -164,20 +164,10 @@ class MultiPacker(BasePacker):
                 False,
                 f"Run wrote a sample with completion logprobs length != completion ids length ({len(sample.completion_logprobs)} != {len(sample.completion_ids)})",
             )
-        if len(sample.completion_temperatures) != len(sample.completion_ids):
+        if sample.completion_temperature <= 0:
             return (
                 False,
-                f"Run wrote a sample with completion temperatures length != completion ids length ({len(sample.completion_temperatures)} != {len(sample.completion_ids)})",
-            )
-        if sample.completion_top_k is not None and len(sample.completion_top_k) != len(sample.completion_ids):
-            return (
-                False,
-                f"Run wrote a sample with completion top_k length != completion ids length ({len(sample.completion_top_k)} != {len(sample.completion_ids)})",
-            )
-        if sample.completion_top_p is not None and len(sample.completion_top_p) != len(sample.completion_ids):
-            return (
-                False,
-                f"Run wrote a sample with completion top_p length != completion ids length ({len(sample.completion_top_p)} != {len(sample.completion_ids)})",
+                f"Run wrote a sample with non-positive temperature ({sample.completion_temperature})",
             )
         if sample_length == 0:
             return False, "Run wrote a sample with no tokens"
