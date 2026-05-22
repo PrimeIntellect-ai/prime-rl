@@ -28,10 +28,10 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # `top_k = -1` and `top_p = 1.0` disable truncation. The trainer replays
     # the same truncation so the importance ratio against the inference
     # logprobs stays unbiased.
-    completion_temperature: float
+    temperature: float
     env_name: str
-    completion_top_k: int = -1
-    completion_top_p: float = 1.0
+    top_k: int = -1
+    top_p: float = 1.0
     teacher_logprobs: list[float] | None = None
     advantage: float | None = None
     reward: float | None = None
