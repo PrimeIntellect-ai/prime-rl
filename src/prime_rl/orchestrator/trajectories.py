@@ -242,16 +242,10 @@ def interleave_rollout(
             routed_experts_payload = tokens.get("routed_experts")
             routed_experts = None
             if routed_experts_payload is not None:
-                shape = [int(dim) for dim in routed_experts_payload["shape"]]
                 decoded_routed_experts = pybase64.b64decode_as_bytearray(routed_experts_payload["data"])
-                expected_size = int(np.prod(shape, dtype=np.int64))
-                assert len(decoded_routed_experts) == expected_size, (
-                    len(decoded_routed_experts),
-                    expected_size,
-                    shape,
+                routed_experts = np.frombuffer(decoded_routed_experts, dtype=np.uint8).reshape(
+                    routed_experts_payload["shape"]
                 )
-                routed_experts = np.frombuffer(decoded_routed_experts, dtype=np.uint8).reshape(shape)
-                assert routed_experts.ndim == 3
 
             return {
                 "prompt_ids": list(tokens["prompt_ids"]),
@@ -289,6 +283,15 @@ def interleave_rollout(
             tokens.get("routed_experts"),
             len(tokens["prompt_ids"]) + len(tokens["completion_ids"]),
         )
+        packed_routed_experts = None
+        if routed_experts is not None:
+            routed_experts = np.ascontiguousarray(routed_experts)
+            packed_routed_experts = RoutedExperts(
+                data=routed_experts.tobytes(),
+                shape=list(routed_experts.shape),
+                dtype=str(routed_experts.dtype),
+            )
+
         prompt_ids = list(tokens["prompt_ids"])
         sample = TrainingSample(
             prompt_ids=prompt_ids,
@@ -301,14 +304,8 @@ def interleave_rollout(
             advantage=None,
             env_name=output["env_name"],
             mm_token_type_ids=None,
+            routed_experts=packed_routed_experts,
         )
-        if routed_experts is not None:
-            routed_experts = np.ascontiguousarray(routed_experts)
-            sample.routed_experts = RoutedExperts(
-                data=routed_experts.tobytes(),
-                shape=list(routed_experts.shape),
-                dtype=str(routed_experts.dtype),
-            )
         return sample, routed_experts
 
     def extend_sample(
@@ -349,11 +346,12 @@ def interleave_rollout(
             expected_len = len(sample.prompt_ids) + len(sample.completion_ids)
             sample_routed_experts = align_routed_experts(sample_routed_experts, expected_len)
             sample_routed_experts = np.ascontiguousarray(sample_routed_experts)
-            sample.routed_experts = RoutedExperts(
+            packed_routed_experts = RoutedExperts(
                 data=sample_routed_experts.tobytes(),
                 shape=list(sample_routed_experts.shape),
                 dtype=str(sample_routed_experts.dtype),
             )
+            sample.routed_experts = packed_routed_experts
         return sample_routed_experts
 
     # Track (prefix_tokens, sample, step_indices) per active sample. step_indices
