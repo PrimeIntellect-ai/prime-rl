@@ -235,6 +235,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
 {%- if use_deep_gemm %}
     export VLLM_USE_DEEP_GEMM=1
+    export VLLM_MOE_USE_DEEP_GEMM=1
 {%- endif %}
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
 
