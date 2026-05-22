@@ -26,10 +26,12 @@ class TensorMicroBatch(TypedDict):
     input_ids: Int[Tensor, "batch seq"]
     position_ids: Int[Tensor, "batch seq"]
     advantages: Float[Tensor, "batch seq"]
+    rewards: Float[Tensor, "batch seq"] | None
     inference_logprobs: Float[Tensor, "batch seq"]
     teacher_logprobs: Float[Tensor, "batch seq"] | None
     loss_mask: Bool[Tensor, "batch seq"]
     temperatures: Float[Tensor, "batch seq"]  # Per-token temperatures
+    env_names: list[str]
 
     # Batch level
     lora_num_tokens: Int[Tensor, "n_loras"]
@@ -111,9 +113,11 @@ class FakeDataLoader:
             "input_ids": input_ids.unsqueeze(0),
             "position_ids": position_ids.unsqueeze(0),
             "advantages": advantages.unsqueeze(0),
+            "rewards": None,
             "inference_logprobs": inference_logprobs.unsqueeze(0),
             "teacher_logprobs": None,
             "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
+            "env_names": ["fake"] * input_ids.shape[0],
             "loss_mask": loss_mask.unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
             "routed_experts": None,
@@ -138,9 +142,11 @@ class FakeDataLoader:
             ),
             "position_ids": torch.cat([torch.arange(self.seq_len)]).unsqueeze(0),
             "advantages": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
+            "rewards": None,
             "inference_logprobs": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
             "teacher_logprobs": None,
             "temperatures": torch.ones(self.seq_len).unsqueeze(0),
+            "env_names": ["fake"] * self.seq_len,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
             "routed_experts": None,
@@ -217,12 +223,16 @@ class DataLoader:
             input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
             advantages=torch.tensor(micro_batch.advantages, dtype=torch.float).unsqueeze(0),
+            rewards=torch.tensor(micro_batch.rewards, dtype=torch.float).unsqueeze(0)
+            if micro_batch.rewards is not None
+            else None,
             inference_logprobs=torch.tensor(micro_batch.inference_logprobs, dtype=torch.float).unsqueeze(0),
             teacher_logprobs=torch.tensor(micro_batch.teacher_logprobs, dtype=torch.float).unsqueeze(0)
             if micro_batch.teacher_logprobs is not None
             else None,
             loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
             temperatures=torch.tensor(micro_batch.temperatures, dtype=torch.float).unsqueeze(0),
+            env_names=micro_batch.env_names,
             lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
             # Multimodal fields - no batch dimension for these as they are variable-sized
             pixel_values=torch.frombuffer(bytearray(micro_batch.pixel_values), dtype=torch.float32).reshape(

@@ -429,7 +429,7 @@ async def orchestrate(config: OrchestratorConfig):
             # Compute advantages (in-place)
             num_rollouts = len(train_rollouts)
             num_unique_examples = len({(r["env_name"], r["example_id"]) for r in train_rollouts})
-            compute_advantages(train_rollouts, config.rollouts_per_example, config.advantage)
+            compute_advantages(train_rollouts, config.advantage)
 
             # Apply rollout filters — sets rollout["filters"] and rollout["is_filtered"]
             apply_filters(rollout_filters, train_rollouts)
@@ -553,6 +553,7 @@ async def orchestrate(config: OrchestratorConfig):
             for sample in samples:
                 sample.advantage = rollout["advantage"]
                 sample.reward = rollout["reward"]
+                sample.env_name = rollout["env_name"]
                 if config.use_sft_loss:
                     sample.sft_loss = True
                 sample_decode_tokens = sum(sample.completion_mask)

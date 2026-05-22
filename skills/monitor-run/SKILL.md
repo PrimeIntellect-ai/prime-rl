@@ -143,8 +143,10 @@ These tell you whether training is healthy or diverging.
 
 | Metric | Source | Description |
 |--------|--------|-------------|
-| `mismatch_kl/mean` | trainer | KL divergence between trainer and (old) inference policy  |
-| `entropy/mean` | trainer | policy entropy |
+| `mismatch_kl/{all,env}/{mean,std,max}` | trainer | KL divergence between trainer and (old) inference policy over trainable tokens (W&B) |
+| `entropy/{all,env}/{mean,std,max}` | trainer | policy entropy over trainable tokens (W&B) |
+| `masked_advantage_positive/mean` | trainer | fraction of DPPO-masked trainable tokens with positive advantage (W&B) |
+| `masked_advantage_negative/mean` | trainer | fraction of DPPO-masked trainable tokens with negative advantage (W&B) |
 | `optim/grad_norm` | trainer | gradient norm — spikes may precede divergence |
 
 #### Performance
@@ -251,4 +253,3 @@ PRIME-RL::Launcher
 ```
 
 For multi-node runs, trainer and inference processes are distributed across separate nodes. Use `srun` or `ssh` to inspect processes on other nodes directly.
-

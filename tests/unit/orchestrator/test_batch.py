@@ -16,7 +16,11 @@ def _routed_experts(data, dtype=np.uint8):
 
 @pytest.fixture
 def make_training_example():
-    def _make_training_example(temperature: float = 1.0, sft_loss: bool = False) -> TrainingSample:
+    def _make_training_example(
+        temperature: float = 1.0,
+        sft_loss: bool = False,
+        env_name: str = "test-env",
+    ) -> TrainingSample:
         return TrainingSample(
             prompt_ids=[1, 2],
             prompt_mask=[False, False],
@@ -26,10 +30,24 @@ def make_training_example():
             completion_temperatures=[temperature, temperature],  # Per-token temperatures
             teacher_logprobs=[0.0, 0.0, 0.0, 0.0],
             advantage=1.0,
+            env_name=env_name,
             sft_loss=sft_loss,
         )
 
     return _make_training_example
+
+
+def test_training_sample_requires_env_name():
+    with pytest.raises(TypeError, match="env_name"):
+        TrainingSample(
+            prompt_ids=[1, 2],
+            prompt_mask=[False, False],
+            completion_ids=[3, 4],
+            completion_mask=[True, True],
+            completion_logprobs=[-0.1, -0.2],
+            completion_temperatures=[1.0, 1.0],
+            advantage=1.0,
+        )
 
 
 @pytest.mark.parametrize(
@@ -68,8 +86,8 @@ def test_prepare_batch_balances_micro_batches_across_workers(
 
 def test_prepare_batch_packs_different_temperatures(make_training_example):
     """With per-token temperatures, samples can be packed together regardless of their temperature values."""
-    example1 = make_training_example(temperature=0.7)
-    example2 = make_training_example(temperature=1.1)
+    example1 = make_training_example(temperature=0.7, env_name="env-a")
+    example2 = make_training_example(temperature=1.1, env_name="env-b")
 
     batches_per_gpu = prepare_batch(
         rollouts=[example1, example2],
@@ -88,6 +106,7 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
     assert flat_batches[0].temperatures[:4] == [0.7, 0.7, 0.7, 0.7]
     # Second sample (4 tokens): all get temp 1.1
     assert flat_batches[0].temperatures[4:8] == [1.1, 1.1, 1.1, 1.1]
+    assert flat_batches[0].env_names == ["env-a"] * 4 + ["env-b"] * 4
 
 
 def test_prepare_sample_propagates_sft_loss(make_training_example):
@@ -128,6 +147,7 @@ def test_prepare_sample_with_routed_experts():
         completion_logprobs=[-0.1, -0.2],
         completion_temperatures=[1.0, 1.0],
         advantage=1.0,
+        env_name="test-env",
         routed_experts=routed,
     )
 
@@ -136,6 +156,7 @@ def test_prepare_sample_with_routed_experts():
     assert micro_batch.routed_experts.data == routed.data
     assert micro_batch.routed_experts.shape == routed.shape
     assert micro_batch.routed_experts.dtype == routed.dtype
+    assert micro_batch.env_names == ["test-env"] * 4
 
 
 def test_prepare_sample_truncates_routed_experts():
@@ -151,6 +172,7 @@ def test_prepare_sample_truncates_routed_experts():
         completion_logprobs=[-0.1, -0.2],
         completion_temperatures=[1.0, 1.0],
         advantage=1.0,
+        env_name="test-env",
         routed_experts=routed,
     )
 
@@ -159,6 +181,7 @@ def test_prepare_sample_truncates_routed_experts():
     assert micro_batch.routed_experts.data == expected.data
     assert micro_batch.routed_experts.shape == expected.shape
     assert micro_batch.routed_experts.dtype == expected.dtype
+    assert micro_batch.env_names == ["test-env"] * 3
 
 
 def test_prepare_sample_none_routed_experts():
@@ -171,6 +194,7 @@ def test_prepare_sample_none_routed_experts():
         completion_logprobs=[-0.1, -0.2],
         completion_temperatures=[1.0, 1.0],
         advantage=1.0,
+        env_name="test-env",
     )
 
     micro_batch = prepare_sample(sample, seq_len=8)
