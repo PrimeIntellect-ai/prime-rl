@@ -70,7 +70,7 @@ kwargs = { clip_eps = 0.2 }
 
 ## 2. Custom Advantage Functions
 
-Advantages are computed **per-example** (grouped by `rollouts_per_example`). You provide a function that computes advantages for a batch of examples.
+Advantages are computed **per-group** (one example × N rollouts). You provide a function that computes advantages for a single group; the framework calls it once per group and stitches the results back together. Groups may have fewer than `rollouts_per_example` rollouts when some rollouts in the group errored (partial-group training).
 
 ### Interface
 
@@ -86,8 +86,8 @@ def my_custom_advantage(inputs: AdvantageInputs, **kwargs) -> AdvantageOutputs:
 ```python
 @dataclass
 class AdvantageInputs:
-    # Rollouts grouped by problem: rollouts[i][j] is the j-th rollout for problem i.
-    rollouts: list[list[vf.RolloutOutput]]
+    # All rollouts for a single example (one group).
+    rollouts: list[vf.RolloutOutput]
 ```
 
 Each `vf.RolloutOutput` carries the full rollout (`reward`, `trajectory`, etc.), so custom advantages can read any metadata they need (e.g. completion-token counts, turn counts, tool calls).
@@ -97,7 +97,7 @@ Each `vf.RolloutOutput` carries the full rollout (`reward`, `trajectory`, etc.),
 ```python
 @dataclass
 class AdvantageOutputs:
-    advantages: Float[Tensor, "num_examples rollouts_per_example"]
+    advantages: Float[Tensor, "group_size"]
 ```
 
 ### Example: Normalized Advantage
@@ -107,11 +107,9 @@ import torch
 from prime_rl.orchestrator.advantage import AdvantageInputs, AdvantageOutputs
 
 def normalized_advantage(inputs: AdvantageInputs, eps: float = 1e-8) -> AdvantageOutputs:
-    """Normalize advantages to zero mean and unit variance per example."""
-    rewards = torch.tensor([[r["reward"] for r in group] for group in inputs.rollouts])
-    mean = rewards.mean(dim=1, keepdim=True)
-    std = rewards.std(dim=1, keepdim=True)
-    advantages = (rewards - mean) / (std + eps)
+    """Normalize advantages to zero mean and unit variance within the group."""
+    rewards = torch.tensor([r["reward"] for r in inputs.rollouts])
+    advantages = (rewards - rewards.mean()) / (rewards.std() + eps)
     return AdvantageOutputs(advantages=advantages)
 ```
 
