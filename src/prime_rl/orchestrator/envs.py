@@ -113,11 +113,9 @@ class Env:
     @property
     def state_columns(self) -> list[str]:
         """Required columns plus any extras configured on the env, deduped (required first)."""
-        seen: set[str] = set()
         merged: list[str] = []
         for col in (*REQUIRED_STATE_COLUMNS, *self.config.state_columns):
-            if col not in seen:
-                seen.add(col)
+            if col not in merged:
                 merged.append(col)
         return merged
 
