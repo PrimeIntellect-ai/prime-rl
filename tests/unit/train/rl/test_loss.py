@@ -120,6 +120,57 @@ def test_sft_loss_override_uses_masked_nll_with_default_loss_config():
     assert "mismatch_kl" not in metrics
 
 
+def test_default_loss_fn_sft_mask_gradient_flows():
+    """Gradient on SFT positions flows via ``trainer_logprobs``.
+
+    Regression test: previously ``pg_loss = advantages * importance_ratio``
+    routed SFT positions through ``importance_ratio`` which was forced to 1
+    via ``torch.where(sft_mask, zeros_like(log_ratio), log_ratio)`` — that
+    construction blocks the gradient through ``trainer_logprobs`` on the
+    True branch, silently zeroing the SFT signal. Fix routes SFT positions
+    through ``advantages * trainer_logprobs`` directly.
+
+    On SFT positions: ``pg_loss = adv * trainer_logprob`` and
+    ``loss = -pg_loss.sum()`` so ``d(loss)/d(trainer_logprob[s]) = -adv[s]``.
+    KL is zero on SFT positions (log_ratio forced to 0), so no KL gradient
+    contribution.
+    """
+    seq_len = 5
+    sft_alpha = 0.5
+    n_sft = 2
+    per_token_sft_weight = sft_alpha / n_sft  # sft_tokens mode formula
+
+    trainer_logprobs = torch.tensor([-0.1, -0.2, -0.3, -0.4, -0.5], dtype=torch.float32, requires_grad=True).cuda()
+    inference_logprobs = torch.tensor([-0.05, 0.0, -0.4, 0.0, -0.6], dtype=torch.float32).cuda()
+    advantages = torch.tensor([1.0, per_token_sft_weight, 1.0, per_token_sft_weight, 1.0], dtype=torch.float32).cuda()
+    loss_mask = torch.ones(seq_len, dtype=torch.bool).cuda()
+    sft_mask = torch.tensor([False, True, False, True, False], dtype=torch.bool).cuda()
+
+    loss_fn = setup_loss_fn(DefaultLossConfig(dppo_mask_high=10.0, dppo_mask_low=10.0))
+    loss, _ = compute_loss(
+        trainer_logprobs=[trainer_logprobs],
+        inference_logprobs=[inference_logprobs],
+        teacher_logprobs=None,
+        advantages=[advantages],
+        loss_mask=[loss_mask],
+        loss_fn=loss_fn,
+        loss_scale=1,
+        sft_mask=[sft_mask],
+    )
+    loss.backward()
+    grad = trainer_logprobs.grad
+    assert grad is not None
+
+    # Regression check: gradient on SFT positions must be non-zero.
+    assert grad[1].abs() > 1e-6, f"SFT position 1: gradient was zeroed ({grad[1].item()})"
+    assert grad[3].abs() > 1e-6, f"SFT position 3: gradient was zeroed ({grad[3].item()})"
+
+    # Exact magnitude: -advantage on SFT positions.
+    expected = torch.tensor(-per_token_sft_weight, device=grad.device)
+    assert torch.isclose(grad[1], expected, atol=1e-6)
+    assert torch.isclose(grad[3], expected, atol=1e-6)
+
+
 def _dummy_custom_loss(inputs: LossInputs, multiplier: float = 1.0) -> LossOutputs:
     """A simple custom loss for testing."""
     loss = (inputs.trainer_logprobs[inputs.loss_mask].sum() * multiplier).abs()

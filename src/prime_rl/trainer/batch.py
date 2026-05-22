@@ -38,8 +38,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     # SFT-on-tool-body overlay: rewrite the advantage on masked tool body
     # tokens and flip them into the loss mask so they contribute. The
     # per-token weight lives on the advantage tensor; ``loss.default_loss_fn``
-    # then forces IS ratio = 1 and zero KL on the same positions so the
-    # gradient direction matches SFT.
+    # routes SFT positions through ``advantages * trainer_logprobs`` so the
+    # gradient w.r.t. trainer_logprobs equals the per-token weight, and
+    # zeroes KL on those positions.
     if sft_mask is not None and training_example.sft_alpha is not None:
         n_sft = sum(sft_mask)
         if n_sft > 0:

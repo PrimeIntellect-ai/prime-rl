@@ -145,11 +145,13 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
 
     # SFT-on-tool-body positions: the model never sampled these tokens, so
     # the off-policy correction concept doesn't apply. Force log-ratio to 0
-    # → importance_ratio=1, mismatch_kl=0, and the downstream
-    # ``kl_loss = loss_mask * log_importance_ratio**2`` is zero on these
-    # positions too. The advantage tensor already carries alpha/n here
-    # (overlaid in prepare_sample), so the policy-gradient term becomes
-    # ``alpha/n * trainer_logprob`` — pure SFT gradient direction.
+    # so ``kl_loss = loss_mask * log_importance_ratio**2`` is zero on these
+    # positions, and zero out ``mismatch_kl`` for metrics. The pg_loss term
+    # itself is built separately below — on SFT positions it routes through
+    # ``trainer_logprobs`` directly so the gradient flows; routing it
+    # through ``importance_ratio`` here would not, because
+    # ``torch.where(cond, zeros_like(x), x)`` blocks the gradient through
+    # ``x`` on the True branch.
     if sft_mask is not None:
         log_importance_ratio = torch.where(sft_mask, torch.zeros_like(log_importance_ratio), log_importance_ratio)
         importance_ratio = torch.exp(log_importance_ratio)
@@ -183,7 +185,18 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     else:
         teacher_kl = None
 
-    pg_loss = keep_mask * advantages * importance_ratio
+    # pg_loss on RL positions: standard policy gradient with IS correction.
+    # On SFT positions: use ``advantages * trainer_logprobs`` directly so
+    # the gradient w.r.t. ``trainer_logprobs`` equals ``advantages`` (the
+    # per-token SFT weight overlaid in prepare_sample). After the negation
+    # in ``loss = -pg_loss.sum()``, this gives parameter updates in the
+    # ``+∇log p`` direction on SFT positions — pure SFT gradient.
+    rl_pg = keep_mask * advantages * importance_ratio
+    if sft_mask is not None:
+        sft_pg = advantages * trainer_logprobs
+        pg_loss = torch.where(sft_mask, sft_pg, rl_pg)
+    else:
+        pg_loss = rl_pg
     kl_loss = loss_mask * log_importance_ratio**2
     loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
 
