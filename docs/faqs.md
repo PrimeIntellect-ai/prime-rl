@@ -83,7 +83,7 @@ See [Configuration § Environments](configuration.md#environments-orchestratortr
 
 ### What does `max_async_level` actually do?
 
-It caps how many steps inference can run ahead of training. `1` is pipelined (overlapped) but fully responsive; `2` (default) absorbs slower weight broadcasts. Higher values give more throughput at the cost of off-policy drift. Watch `mismatch_kl/all/mean` — if it grows, lower the value. See [Algorithms § Tuning `max_async_level`](algorithms.md#tuning-max_async_level).
+It caps how many steps inference can run ahead of training. `1` (default) is pipelined — inference for step n+1 runs concurrently with trainer step n; off-policy drift is minimal. `2` absorbs slower weight broadcasts (e.g. cross-WAN). Higher values give more throughput at the cost of more drift; watch `mismatch_kl/all/mean`. See [Algorithms § Tuning `max_async_level`](algorithms.md#tuning-max_async_level).
 
 ### Why are there two W&B runs per RL job?
 

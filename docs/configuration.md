@@ -22,11 +22,12 @@ Every `prime-rl` entrypoint — `rl`, `sft`, `trainer`, `orchestrator`, `inferen
 For a single field, sources are applied in this order — later sources win:
 
 1. **Defaults** — declared on the Pydantic model.
-2. **Environment variables** — prefixed with `PRIME_`, double underscore (`__`) for nesting (`PRIME_MODEL__NAME=...`).
-3. **TOML files** — passed with `@`, left to right (later files override earlier ones).
-4. **CLI flags** — dotted, kebab-case (`--model.name`).
+2. **TOML files** — passed with `@`, left to right (later files override earlier ones).
+3. **CLI flags** — dotted, kebab-case (`--model.name`).
 
-Recommendation: pin reproducible experiments in TOML, override one-off knobs (W&B name, output dir, max steps) on the CLI, and reserve env vars for things that vary by deployment (API keys, infra endpoints).
+There is no generic `PRIME_*` env-var override for arbitrary fields. A small number of specific fields (log levels, API keys, monitor URLs) read named env vars as their **default** — see [Environment variables](#environment-variables) below — but a field that has been set in a TOML or on the CLI is not overridden by an env var.
+
+Recommendation: pin reproducible experiments in TOML and override one-off knobs (W&B name, output dir, max steps) on the CLI.
 
 ## TOML files and composition
 
@@ -64,18 +65,14 @@ Three convenience flags every entrypoint accepts:
 
 ## Environment variables
 
-Env vars are read on top of defaults but below TOML and CLI. The convention is `PRIME_<UPPER_SNAKE>` with `__` as the dot separator:
+Only a fixed set of env vars are wired into individual config fields as their default. They're a convenience for things that legitimately vary per deployment (credentials, log levels) — they don't generalize to "set any field via env var."
 
-```bash
-export PRIME_MODEL__NAME=Qwen/Qwen3-0.6B
-export PRIME_TRAINER__OPTIM__LR=1e-5
-```
+- `PRIME_LOG_LEVEL` / `PRIME_VF_LOG_LEVEL` — defaults for `[log] level` and `[log] vf_level` (the prime-rl and verifiers loggers).
+- `WANDB_API_KEY` / `HF_TOKEN` — read directly by W&B and `huggingface_hub`, never by prime-rl itself.
+- `PRIME_API_KEY` — read by `[orchestrator.prime_monitor]` for [platform monitoring](training.md#platform-monitoring). The env var name is itself configurable via `prime_monitor.api_key_var`.
+- `INFERENCE_SERVER_API_KEY` (or whatever you set in `client.api_key_var`) — used by the orchestrator to authenticate to the inference server.
 
-In practice only a few env vars are used routinely:
-
-- `PRIME_LOG_LEVEL` / `PRIME_VF_LOG_LEVEL` — log levels for the prime-rl and verifiers loggers (the `[log]` defaults read these).
-- `WANDB_API_KEY` / `HF_TOKEN` — third-party credentials.
-- `PRIME_API_KEY` — for [Prime Intellect platform monitoring](training.md#platform-monitoring).
+Any other field needs to be set in TOML or on the CLI.
 
 ## Inspecting and validating
 

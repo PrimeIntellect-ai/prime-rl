@@ -36,7 +36,7 @@ This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster
 | You have… | Use this layout |
 |---|---|
 | 1 GPU | Single-GPU co-located RL (small model) or SFT-only |
-| 1 node, 2–8 GPUs | `uv run rl` with `--inference-gpu-ids` / `--trainer-gpu-ids` |
+| 1 node, 2–8 GPUs | `uv run rl` with `--deployment.num-infer-gpus N --deployment.num-train-gpus M` |
 | 1 node, 8 GPUs, large MoE | Custom impl + EP + activation checkpointing |
 | 2+ nodes, SLURM | `[slurm]` + `[deployment]` overlay (recommended) |
 | 2+ nodes, no SLURM | Manual `uv run inference` + `uv run orchestrator` + `uv run torchrun src/.../train.py` |
@@ -45,14 +45,14 @@ This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster
 
 ## Single GPU
 
-The trainer and inference server can share a GPU for small models or smoke tests. Pin both to GPU 0 and tighten the inference memory budget so the trainer has room:
+The trainer and inference server can share a GPU for small models or smoke tests. Pin everything to one physical GPU via `CUDA_VISIBLE_DEVICES`, set both deployment counts to 1, and tighten the inference memory budget so the trainer has room:
 
 ```bash
 bash scripts/tmux.sh
 
-uv run rl @ configs/<task>/rl.toml \
-  --trainer-gpu-ids 0 \
-  --inference-gpu-ids 0 \
+CUDA_VISIBLE_DEVICES=0 uv run rl @ configs/<task>/rl.toml \
+  --deployment.num-infer-gpus 1 \
+  --deployment.num-train-gpus 1 \
   --inference.gpu-memory-utilization 0.5
 ```
 
@@ -73,26 +73,27 @@ For SFT, single-GPU is the default — `uv run sft` runs without torchrun unless
 
 ### RL placement
 
-`rl` defaults to GPU 0 for inference and GPU 1 for the trainer. Override the placement for a typical 8-GPU node by giving inference 6 GPUs with data parallelism and the trainer the remaining 2:
+`rl` defaults to 1 trainer GPU and 1 inference GPU. To give inference 6 GPUs with data parallelism and the trainer the remaining 2 on an 8-GPU node:
 
 ```bash
 uv run rl @ rl.toml \
-  --inference-gpu-ids 0,1,2,3,4,5 \
-  --trainer-gpu-ids 6,7 \
+  --deployment.num-infer-gpus 6 \
+  --deployment.num-train-gpus 2 \
   --inference.parallel.dp 6
 ```
+
+The launcher allocates GPUs in order from `CUDA_VISIBLE_DEVICES` (or all visible GPUs): inference first, trainer next, teacher last. To target a specific physical subset, pin `CUDA_VISIBLE_DEVICES` before launching.
 
 For quick A/B ablations on the same node, run two RL instances side-by-side in separate tmux sessions, each pinned to half the GPUs and a separate inference port:
 
 ```bash
 # session 1, GPUs 0–1, default port 8000
 bash scripts/tmux.sh -s exp1 -o outputs/exp1
-uv run rl @ rl.toml --output-dir outputs/exp1
+CUDA_VISIBLE_DEVICES=0,1 uv run rl @ rl.toml --output-dir outputs/exp1
 
 # session 2, GPUs 2–3, port 8001
 bash scripts/tmux.sh -s exp2 -o outputs/exp2
-uv run rl @ rl.toml \
-  --inference-gpu-ids 2 --trainer-gpu-ids 3 \
+CUDA_VISIBLE_DEVICES=2,3 uv run rl @ rl.toml \
   --inference.server.port 8001 \
   --orchestrator.client.base-url http://localhost:8001/v1 \
   --output-dir outputs/exp2
@@ -180,7 +181,7 @@ type = "adamw"
 optim_cpu_offload = true
 ```
 
-Mutually exclusive with `fsdp_cpu_offload`. Not supported with the Muon optimizer.
+Mutually exclusive with `fsdp_cpu_offload`. Also incompatible with `trainer.max_concurrent_runs > 1` (the multi-run manager). Muon doesn't support `fsdp_cpu_offload` but does support `optim_cpu_offload`.
 
 ## Memory-tight recipe
 

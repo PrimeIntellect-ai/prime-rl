@@ -69,10 +69,11 @@ The built-in VLM registry covers:
 | Family | `model_type` | Vision attr | LM attr |
 |---|---|---|---|
 | Qwen3-VL | `qwen3_vl` | `model.visual` | `model.language_model` |
+| Qwen3-VL MoE | `qwen3_vl_moe` | `model.visual` | `model.language_model` |
 | Qwen3.5 | `qwen3_5` | `model.visual` | `model.language_model` |
 | Qwen3.5-MoE | `qwen3_5_moe` | `model.visual` | `model.language_model` |
 
-For a model not in the table, look up the attribute paths on the loaded HF model with `model.named_children()`.
+For a model not in the table, look up the attribute paths on the loaded HF model with `model.named_children()` and set them under `[model.vlm]` directly.
 
 ### Enabling VLM mode
 
@@ -307,7 +308,7 @@ Loss drops from ~12 to ~2.5. The output won't be coherent, but the model now has
 ### Step 3: RL on reverse-text
 
 ```bash
-uv run rl @ configs/ci/integration/rl/start.toml \
+uv run rl @ configs/ci/integration/reverse_text_moe/start.toml \
   --model.name samsja/mini-glm-moe \
   --trainer.model.impl custom \
   --inference.gpu-memory-utilization 0.7 \

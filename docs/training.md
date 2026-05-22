@@ -57,14 +57,16 @@ uv run rl @ configs/gsm8k/rl.toml \
   --ckpt
 ```
 
-GPU placement: by default `rl` puts inference on GPU 0 and the trainer on GPU 1. Override with `--inference-gpu-ids` / `--trainer-gpu-ids`:
+GPU placement: by default `rl` uses 1 trainer GPU and 1 inference GPU on the local node. To run on (say) 8 GPUs with 4 inference + 4 trainer, set the deployment counts:
 
 ```bash
 uv run rl @ rl.toml \
-  --inference-gpu-ids 0,1,2,3 \
-  --trainer-gpu-ids 4,5,6,7 \
+  --deployment.num-infer-gpus 4 \
+  --deployment.num-train-gpus 4 \
   --inference.parallel.dp 4
 ```
+
+The launcher assigns physical GPUs from `CUDA_VISIBLE_DEVICES` (or all visible GPUs if unset) — inference takes the first `num_infer_gpus`, the trainer takes the next `num_train_gpus`, and any teacher gets the remainder. To run on a specific subset of physical GPUs, pin `CUDA_VISIBLE_DEVICES` before launching.
 
 For multi-node and SLURM, see [Scaling § RL training](scaling.md#rl-training).
 
@@ -85,7 +87,7 @@ These are the knobs you'll touch most often. The full field reference for each l
 | `model.name` | top-level | HF model ID or local path. Auto-fans-out to trainer/orchestrator/inference. |
 | `max_steps` | top-level | Number of trainer steps before exit. |
 | `seq_len` | top-level | Max sequence length per training sample; also enforced by the orchestrator when packing. |
-| `max_async_level` | top-level | How many steps inference can run ahead of the trainer. 1 = fully overlapped; >1 = more off-policy, higher throughput. See [Algorithms § Async](algorithms.md#async--off-policy-training). |
+| `max_async_level` | top-level | How many steps inference can run ahead of the trainer. `1` (default) is fully overlapped; `>1` is more off-policy with potentially higher throughput. See [Algorithms § Async](algorithms.md#async--off-policy-training). |
 | `orchestrator.batch_size` | orchestrator | Prompts per trainer step. |
 | `orchestrator.rollouts_per_example` | orchestrator | Rollouts per prompt (the group size used for advantage normalization). |
 | `orchestrator.train.sampling.max_completion_tokens` | orchestrator | Max tokens per turn at sampling time. |
@@ -182,8 +184,8 @@ Checkpointing is split across processes because the orchestrator and trainer can
 
 | Process | What's saved | Where |
 |---|---|---|
-| Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<output_dir>/checkpoints/step_N/` |
-| Orchestrator | Step counter, total tokens / samples / problems | `<output_dir>/checkpoints/orchestrator/step_N/` |
+| Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<output_dir>/checkpoints/step_N/trainer/` |
+| Orchestrator | Step counter, total tokens / samples / problems | `<output_dir>/checkpoints/step_N/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
 | Trainer (HF weights) | HF-compatible weight snapshot for serving | `<output_dir>/weights/step_N/` |
 
@@ -336,7 +338,7 @@ curl -s http://localhost:8000/metrics | grep -E "num_requests|gpu_cache_usage"
 - **Start small.** Run `configs/gsm8k/rl.toml` end-to-end on 2 GPUs before scaling. If GSM8K runs cleanly, your install is good.
 - **Eyeball the reward distribution.** If `reward/all/std` collapses to ~0 within a few steps, the env is too easy or rewards are degenerate — increase difficulty or check the rubric.
 - **Match `inference.parallel.tp` to model layout.** TP > num attention heads / 2 starts losing efficiency. For dense models keep TP small and use DP for throughput. For MoE-heavy models prefer EP.
-- **Set `max_async_level` deliberately.** `1` = fully synced overlap (lowest off-policy drift). `2` = default, suited for cross-WAN weight broadcast. Higher values trade more drift for throughput; watch `mismatch_kl/all/mean`.
+- **Set `max_async_level` deliberately.** `1` (default) = pipelined overlap, lowest off-policy drift. `2` absorbs longer weight-broadcast latency (e.g. cross-WAN). Higher values trade more drift for throughput; watch `mismatch_kl/all/mean`.
 - **Pin `output_dir` per run.** Sharing a directory across runs will mix rollouts and break resumes. `--output-dir outputs/<unique-name>` is the simplest discipline.
 - **Use `--dry-run` before SLURM.** Validators (CP needs flash-attention, NCCL broadcast needs `max_async_level=1`, etc.) fail fast in dry-run and slow in queue.
 - **Don't change `optimization_dtype` / `reduce_dtype`.** These are load-bearing — flipping bfloat16/float32 silently changes training dynamics. Stick with defaults unless you know what you're doing.

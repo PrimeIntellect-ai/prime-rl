@@ -6,7 +6,7 @@ This page covers the math and the configurable algorithmic components: how off-p
 
 - [Async / off-policy training](#async--off-policy-training)
   - [Step semantics](#step-semantics)
-  - [The AIPO loss](#the-aipo-loss)
+  - [The default loss](#the-default-loss)
   - [Tuning `max_async_level`](#tuning-max_async_level)
 - [Loss](#loss)
   - [Default loss](#default-loss)
@@ -23,7 +23,7 @@ This page covers the math and the configurable algorithmic components: how off-p
 
 ## Async / off-policy training
 
-`prime-rl` is asynchronous by default. Inference is allowed to generate rollouts using a stale policy that is up to `k` steps behind the trainer, where `k = max_async_level`. Setting `k = 1` with matched trainer and inference step times produces fully-overlapped pipeline parallelism — neither side ever idles. The default is `k = 2`, chosen to absorb the latency of a cross-WAN weight broadcast for decentralized runs.
+`prime-rl` is asynchronous by default. Inference is allowed to generate rollouts using a stale policy that is up to `k` steps behind the trainer, where `k = max_async_level`. Setting `k = 1` (the default) with matched trainer and inference step times produces fully-overlapped pipeline parallelism — neither side ever idles. Bump `k` higher when the weight-broadcast latency exceeds a single trainer step (e.g. cross-WAN decentralized runs) and the extra off-policy drift is acceptable.
 
 ![Two-Step Off-Policy Training](assets/two-step-off-policy.png)
 
@@ -36,34 +36,47 @@ At step $n = 1, 2, 3, \dots$:
 
 So at step $n$ the gap between the policy being trained and the policy that generated the data is at most $k$ steps. Step indices are 0-indexed so the bound holds at startup.
 
-### The AIPO loss
+### The default loss
 
-The default loss is a token-level variant of [AIPO](https://arxiv.org/abs/2505.24034), without the entropy and KL terms used in the original paper. For each prompt $x_j$ we sample a group of $G$ rollouts $\{y_i\}_{i=1}^G$, score them with the rubric to get $s_i$, then optimize:
+The default RL loss combines a token-level [AIPO](https://arxiv.org/abs/2505.24034)-style policy-gradient term (importance-ratio clipped from above, plus DPPO token-level masking) with the Kimi-K2.5 KL regularizer. For each prompt $x_j$ we sample a group of $G$ rollouts $\{y_i\}_{i=1}^G$, score them to get $s_i$, then optimize:
 
 $$
-\mathcal{J}_{\text{AIPO}}(\theta)
-= \frac{1}{\sum_{j=1}^N \sum_{i=1}^G |y_i^{(j)}|}
-\sum_{j=1}^N \sum_{i=1}^G \sum_{t=1}^{|y_i^{(j)}|}
+\mathcal{L}(\theta) = -\,\mathcal{J}_{\text{PG}}(\theta) \;+\; \tau_{KL}\,\mathcal{L}_{KL}(\theta)
+$$
+
+where the policy-gradient term is
+
+$$
+\mathcal{J}_{\text{PG}}(\theta)
+= \frac{1}{\sum_{j,i} |y_i^{(j)}|}
+\sum_{j,i,t}
 \min\!\left(\frac{\pi(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}{\mu(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}, \delta\right) \hat{A}^{(j)}_{i,t}
 $$
 
-where $\mu$ is the policy that generated the rollout (inference), $\pi$ is the current policy (trainer), $\hat{A}_{i,t}$ is the token-level advantage, and $\delta$ is the importance-sampling clipping ratio. The `min` clamps the importance ratio from above, preventing a runaway gradient when a stale rollout assigns very low probability to a high-reward token.
+and the KL regularizer penalizes drift between trainer and inference policies via the squared log importance ratio:
 
-The relevant knobs (under `[trainer.loss]` with `type = "default"`):
+$$
+\mathcal{L}_{KL}(\theta) = \frac{1}{\sum_{j,i} |y_i^{(j)}|}
+\sum_{j,i,t} \log^2\!\left(\frac{\pi(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}{\mu(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}\right).
+$$
+
+$\mu$ is the policy that generated the rollout (inference), $\pi$ is the current policy (trainer), $\hat{A}_{i,t}$ is the token-level advantage, $\delta$ is the importance-sampling clipping ratio, and $\tau_{KL}$ is the KL temperature. The `min` clamps the importance ratio from above so a stale rollout assigning very low probability to a high-reward token doesn't produce a runaway gradient.
+
+The knobs (under `[trainer.loss]` with `type = "default"`):
 
 | Knob | Default | What it does |
 |---|---|---|
 | `dppo_mask_low` / `dppo_mask_high` | 0.2 / 0.2 | Lower / upper thresholds for DPPO-style token-level masking. |
 | `adv_tau` | 1.0 | Temperature on the advantage term. Set to 0 for pure distillation (no RL signal). |
-| `kl_tau` | 1e-3 | Temperature on the KL term. |
+| `kl_tau` | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
 
 ### Tuning `max_async_level`
 
 | `k` | Behavior |
 |---|---|
 | `0` | Fully synchronous — trainer and inference alternate. Lowest off-policy drift, lowest throughput. |
-| `1` | Pipelined — inference for step $n+1$ runs concurrently with trainer step $n$. Throughput-optimal when step times match. |
-| `2` (default) | Two-step async. Absorbs longer weight-broadcast latency, e.g. cross-WAN. |
+| `1` (default) | Pipelined — inference for step $n+1$ runs concurrently with trainer step $n$. Throughput-optimal when step times match. |
+| `2` | Two-step async. Absorbs longer weight-broadcast latency, e.g. cross-WAN decentralized runs. |
 | `≥ 3` | Increasing off-policy drift. Use only with confirmed throughput gain; watch `mismatch_kl/all/mean`. |
 
 NCCL weight broadcast (`weight_broadcast.type = "nccl"`) requires `max_async_level = 1` — the validator will refuse otherwise.
@@ -72,13 +85,13 @@ NCCL weight broadcast (`weight_broadcast.type = "nccl"`) requires `max_async_lev
 
 ### Default loss
 
-The default loss is the AIPO formulation above. It supports two modes for the SFT and OPD training modes, which the orchestrator dispatches to automatically based on `orchestrator.training_mode`:
+The default loss is the DPPO + KL formulation above. The trainer dispatches automatically based on the batch's training mode (set by the orchestrator via `orchestrator.training_mode`):
 
-- `rl` mode → AIPO with advantage signal.
+- `rl` mode → DPPO + KL with the advantage signal.
 - `opd` mode → KL distillation against the teacher's per-token logprobs. The teacher must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
 - `sft` mode → standard token-level NLL on teacher-generated rollouts.
 
-Set `[trainer.loss] type = "default"` and configure via the knobs above. SFT and OPD modes ignore the AIPO-specific fields.
+Set `[trainer.loss] type = "default"` and configure via the knobs above. SFT and OPD modes ignore the policy-gradient–specific fields.
 
 ### Custom loss
 
@@ -183,13 +196,13 @@ Filters drop rollouts between scoring and training. Built-ins (composable):
 | `repetition` | Drops rollouts with high n-gram repetition. |
 | `zero_advantage` | Drops rollouts whose advantage is zero, so the trainer doesn't waste tokens on them. |
 
-Enable via `[[orchestrator.filter]]`:
+The default `[orchestrator]` config already includes all three filters with their defaults. To override, set `filters` explicitly — the list replaces the defaults wholesale:
 
 ```toml
-[[orchestrator.filter]]
+[[orchestrator.filters]]
 type = "zero_advantage"
 
-[[orchestrator.filter]]
+[[orchestrator.filters]]
 type = "repetition"
 threshold = 0.4
 ```
