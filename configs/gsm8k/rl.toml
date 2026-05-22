@@ -10,7 +10,7 @@ name = "Qwen/Qwen3-0.6B"
 
 [orchestrator]
 batch_size = 512
-rollouts_per_example = 16
+group_size = 16
 
 [orchestrator.train.sampling]
 max_completion_tokens = 2048

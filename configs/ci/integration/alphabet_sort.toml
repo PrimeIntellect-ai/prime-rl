@@ -11,7 +11,7 @@ lr = 1e-5
 
 [orchestrator]
 batch_size = 128
-rollouts_per_example = 8
+group_size = 8
 
 [orchestrator.train.sampling]
 max_completion_tokens = 384

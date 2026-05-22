@@ -62,7 +62,7 @@ weight_decay = 0.1
 
 [orchestrator]
 batch_size = 4096
-rollouts_per_example = 16
+group_size = 16
 oversampling_factor = 3
 max_off_policy_steps = 16
 
