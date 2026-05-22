@@ -41,9 +41,9 @@ def build_log_entry(record) -> dict:
     }
     # When enqueue=True, loguru strips the traceback object before pickling
     # (loguru/_recattrs.py:68). The traceback string must therefore be
-    # pre-formatted by a patcher and stashed in extra["_traceback"].
-    if extra.get("_traceback"):
-        log_entry["exception"] = extra.pop("_traceback")
+    # pre-formatted by a patcher and stashed in extra["traceback"].
+    if extra.get("traceback"):
+        log_entry["exception"] = extra.pop("traceback")
     elif record["exception"] is not None:
         exc = record["exception"]
         log_entry["exception"] = "".join(traceback.format_exception(exc.type, exc.value, exc.traceback))
@@ -57,10 +57,10 @@ def build_log_entry(record) -> dict:
     return log_entry
 
 
-def _traceback_patcher(record) -> None:
+def traceback_patcher(record) -> None:
     exc = record["exception"]
     if exc is not None and exc.traceback is not None:
-        record["extra"]["_traceback"] = "".join(traceback.format_exception(exc.type, exc.value, exc.traceback))
+        record["extra"]["traceback"] = "".join(traceback.format_exception(exc.type, exc.value, exc.traceback))
 
 
 def json_sink(message) -> None:
@@ -129,11 +129,11 @@ def setup_logger(
     from loguru._logger import Core as _Core
     from loguru._logger import Logger as _Logger
 
-    # Pre-format the traceback into extra["_traceback"] before loguru enqueues
+    # Pre-format the traceback into extra["traceback"] before loguru enqueues
     # the record. With enqueue=True, loguru pickles records and unconditionally
     # drops the traceback object (loguru/_recattrs.py:68), so the formatted
     # string must be captured here, while the live traceback is still attached.
-    patchers = [_traceback_patcher] if json_logging else []
+    patchers = [traceback_patcher] if json_logging else []
 
     logger = _Logger(
         core=_Core(),
