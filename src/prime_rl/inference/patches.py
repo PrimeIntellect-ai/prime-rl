@@ -19,6 +19,7 @@ def transformers_v5_compat():
     monkey_patch_deep_gemm_silu_mul_quant_int64()
     monkey_patch_dp_engine_core_pause_resume_deadlock()
     monkey_patch_vllm_layerwise_reload_alias_buffers()
+    monkey_patch_olmo3_sliding_rope()
     monkey_patch_topk_topp_noncontiguous_logits()
 
 
@@ -108,6 +109,49 @@ def monkey_patch_topk_topp_noncontiguous_logits():
     sampler_mod.apply_top_k_top_p_triton = _layout_safe_apply_top_k_top_p_triton
     triton_mod._prime_ttp_contiguous_guard_installed = True
     logger.warning("Enabled vLLM top-k/top-p non-contiguous logits guard.")
+
+
+def monkey_patch_olmo3_sliding_rope():
+    """Make vLLM's OLMo3 path match Transformers/PrimeRL RoPE semantics.
+
+    vLLM 0.20.2 serves ``Olmo3ForCausalLM`` through its ``olmo2`` model class.
+    That class loads OLMo3 weights, but swaps sliding-window layers back to
+    unscaled default RoPE. Transformers OLMo3 and PrimeRL's trainer use the
+    configured OLMo3 RoPE parameters for all layers, while the attention mask
+    alone controls sliding vs full attention. The mismatch makes step-0
+    trainer-vs-inference logprobs disagree for identical weights/tokens.
+    """
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.rotary_embedding import get_rope
+    from vllm.model_executor.models import olmo2
+    from vllm.model_executor.models.utils import extract_layer_index
+
+    logger = init_logger(__name__)
+    if getattr(olmo2.Olmo2Attention, "_prime_olmo3_sliding_rope_patch_installed", False):
+        return
+
+    original_init = olmo2.Olmo2Attention.__init__
+
+    def _patched_init(self, *, vllm_config, prefix: str = ""):
+        original_init(self, vllm_config=vllm_config, prefix=prefix)
+        config = vllm_config.model_config.hf_config
+        if config.__class__.__name__ != "Olmo3Config":
+            return
+
+        layer_types = getattr(config, "layer_types", None)
+        layer_idx = extract_layer_index(prefix)
+        if layer_types is None or layer_types[layer_idx] != "sliding_attention":
+            return
+
+        self.rotary_emb = get_rope(
+            self.head_dim,
+            max_position=self.max_position_embeddings,
+            rope_parameters=config.rope_parameters,
+        )
+
+    olmo2.Olmo2Attention.__init__ = _patched_init
+    olmo2.Olmo2Attention._prime_olmo3_sliding_rope_patch_installed = True
+    logger.warning("Enabled vLLM OLMo3 sliding-layer RoPE compatibility patch.")
 
 
 @triton.jit
