@@ -3,8 +3,8 @@ into a vLLM-kernel-side destination tensor.
 
 * :class:`MaybeQuantize` — the *transformation* selector for one destination
   slot. Carries an opaque ``conversion_type`` string (or ``None`` to let
-  :func:`prime_rl.trainer.models.conversions.resolve` pick the default
-  based on the destination dtype). All conversion-specific data — block
+  :func:`prime_rl.trainer.models.conversions.resolve` pick the model's
+  default conversion). All conversion-specific data — block
   size, scale layout, kernel dispatch — lives in the conversion registry,
   not on the spec.
 * :class:`ConversionSpec` — the *routing* for one logical parameter:
