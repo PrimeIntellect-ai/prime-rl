@@ -125,10 +125,8 @@ def test_prepare_sample_sft_overlay_all_tokens(make_training_example):
     # Non-SFT positions keep the rollout's scalar advantage (1.0 from the fixture).
     assert micro_batch.advantages[2] == 1.0
     assert micro_batch.advantages[3] == 1.0
-    # SFT prompt positions are NOT flipped into loss_mask — the trainer's
-    # separate SFT compute_loss call applies the SFT contribution; loss_mask
-    # stays RL-only so loss_scale = N_rl_batch.
-    assert micro_batch.loss_mask == [False, False, True, True]
+    # SFT prompt positions are now loss-trainable; completion mask preserved.
+    assert micro_batch.loss_mask == [True, True, True, True]
     assert micro_batch.sft_mask == [True, True, False, False]
 
 
@@ -165,7 +163,7 @@ def test_prepare_sample_sft_overlay_sft_tokens(make_training_example):
     assert micro_batch.advantages[1] == 0.25
     assert micro_batch.advantages[2] == 1.0
     assert micro_batch.advantages[3] == 1.0
-    assert micro_batch.loss_mask == [False, False, True, True]
+    assert micro_batch.loss_mask == [True, True, True, True]
 
 
 def test_prepare_sample_sft_overlay_ratio(make_training_example):
@@ -221,11 +219,9 @@ def test_prepare_sample_sft_overlay_rejects_unknown_normalization(make_training_
 
 
 def test_prepare_sample_skips_sft_overlay_without_alpha(make_training_example):
-    """Carrying ``sft_mask`` without ``sft_alpha`` clears the mask
-    downstream. Without alpha there's no SFT weight to apply, so the
-    trainer would otherwise run ``sft_pg_loss_fn`` over the rollout's
-    raw RL advantage on tool tokens — reward-shaped, not SFT-direction.
-    The orchestrator can emit the mask conditionally without forcing α."""
+    """Carrying ``sft_mask`` without ``sft_alpha`` is a defensive
+    no-op — the overlay only fires when both are set. Lets the
+    orchestrator emit the mask conditionally without forcing alpha."""
     example = make_training_example()
     example.sft_mask = [True, True, False, False]
     example.sft_alpha = None
@@ -236,8 +232,6 @@ def test_prepare_sample_skips_sft_overlay_without_alpha(make_training_example):
     assert all(adv == 1.0 for adv in micro_batch.advantages)
     # No loss_mask flip on the SFT-mask positions either.
     assert micro_batch.loss_mask == [False, False, True, True]
-    # sft_mask is cleared downstream so the trainer skips the SFT path.
-    assert micro_batch.sft_mask is None
 
 
 def test_prepare_sample_truncates_sft_mask_with_other_per_token_lists(make_training_example):

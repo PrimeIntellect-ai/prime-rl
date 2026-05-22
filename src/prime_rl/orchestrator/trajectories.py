@@ -287,10 +287,6 @@ def _step_sft_mask(
     enabled = set(sft_config.tool_names) if sft_config.tool_names else None
     # prompt_attribution arrives as a dict through the verifiers env-server
     # JSON boundary even though the renderer emits a RenderedTokens object.
-    # The DefaultRenderer leaves these unpopulated; bail to all-False so
-    # callers don't have to special-case the no-attribution path.
-    if "message_indices" not in prompt_attribution or "is_content" not in prompt_attribution:
-        return out
     message_indices = prompt_attribution["message_indices"]
     is_content = prompt_attribution["is_content"]
     # Defensive: if the renderer didn't populate is_content (DefaultRenderer
