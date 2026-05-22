@@ -285,8 +285,15 @@ def _step_sft_mask(
         return out
 
     enabled = set(sft_config.tool_names) if sft_config.tool_names else None
-    message_indices = prompt_attribution.message_indices
-    is_content = prompt_attribution.is_content
+    # prompt_attribution arrives as a dict through the verifiers env-server
+    # JSON boundary even though the renderer emits a RenderedTokens object.
+    # Support both forms so callers don't have to reconstruct the object.
+    if isinstance(prompt_attribution, dict):
+        message_indices = prompt_attribution.get("message_indices") or []
+        is_content = prompt_attribution.get("is_content") or []
+    else:
+        message_indices = getattr(prompt_attribution, "message_indices", []) or []
+        is_content = getattr(prompt_attribution, "is_content", []) or []
     # Defensive: if the renderer didn't populate is_content (DefaultRenderer
     # leaves it empty), we can't tell body from scaffold — bail to all-False.
     if not is_content or len(is_content) != prompt_len:
