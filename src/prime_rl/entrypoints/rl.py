@@ -123,6 +123,7 @@ def _gpu_layout_template_vars(
         "trainer_gpu_ids": ",".join(map(str, trainer_gpu_ids)),
         "trainer_gpu_count": len(trainer_gpu_ids),
         "master_port": int(os.environ.get("MASTER_PORT", "29500")),
+        "use_nccl_broadcast": config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
         "wandb_shared": config.wandb is not None and config.wandb.shared,
         "ranks_filter": ",".join(map(str, config.trainer.log.ranks_filter)),
     }

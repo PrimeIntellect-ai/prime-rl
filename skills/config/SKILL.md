@@ -97,6 +97,11 @@ shared checkout:
 `/lus/lfs1aip2/projects/a6r/joanv.a6r/tmp/verifiers-hf-task-envs`,
 `/lus/lfs1aip2/projects/a6r/joanv.a6r/work/verifiers`, then
 `/lus/lfs1aip2/projects/a6r/joanv.a6r/work/prime-rl/environments/omni_math2_singleturn`.
+For `gpu_layout` launches, run from the intended checkout, not a stale review
+worktree. The launcher template now adds repo-local `environments/*` packages
+to `PYTHONPATH` after venv activation, so an import error for
+`omni_math2_singleturn` usually means the job was launched from the wrong
+checkout or from a wrapper that bypassed the generated gpu-layout script.
 
 For long-rollout Omni-MATH RLVR canaries using token-budget batching, size
 `max_off_policy_steps` to the in-flight queue geometry. If
@@ -143,6 +148,13 @@ runs.
 
 For Omni-MATH eval quality, do not interpret `100×8` online eval as a
 checkpoint-selection oracle. It is a heartbeat with high prompt-level variance.
+For saturation diagnostics, use a fixed train-set eval with enough examples and
+`rollouts_per_example`, then compare Pass@k before/after training. Active train
+reward is a hard-slice metric once online difficulty filtering evicts easy or
+zero-gradient examples, so it should not be expected to monotonically saturate.
+Also check the actual support shape: with `batch_size = 512` and
+`rollouts_per_example = 8`, each training batch should contain 64 unique prompt
+groups, not 512 prompts and not repeated groups sampled with replacement.
 Use it every 50 steps, add a cheap full-set `600×1` sentinel every ~250 steps
 for broad p@1 coverage, and run heavier `600×4/8` evals offline/posthoc when
 choosing checkpoints. Keep `cancel_inflight_rollouts_on_eval = false` unless
@@ -180,6 +192,16 @@ requires hub kernels. If the expected Transformers warning
 `kernels hub usage is disabled through the environment USE_HUB_KERNELS=...`
 gets noisy, suppress only that message via the PrimeRL logging filter rather
 than enabling hub kernels or lowering all Transformers logging.
+
+For OLMo3 RLVR, treat trainer step-0 `Mismatch KL` as a launch correctness
+check, not just a metric. A freshly synced trainer and vLLM inference server
+should have near-zero mismatch for identical tokens; values around `0.05+`
+usually mean the old-policy denominator is wrong. In vLLM 0.20.2,
+`Olmo3ForCausalLM` is served through vLLM's `olmo2` implementation, so PrimeRL
+installs an OLMo3 sliding-layer RoPE compatibility patch and defaults vLLM
+`logprobs_mode` to `processed_logprobs` so ratios use the actual top-p/top-k
+behavior-policy denominator. If this regresses, compare HF/PrimeRL
+logprobs against vLLM prefill logprobs before interpreting reward curves.
 
 For current OLMo3 Omni-MATH-2 RLVR full fine-tuning, use solved-only online
 filtering: `lr = 1e-6`, `[orchestrator.buffer].easy_threshold = 1.0`,

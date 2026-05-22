@@ -3,9 +3,15 @@ import asyncio
 from verifiers.utils.data_utils import extract_boxed_answer
 
 from environments.omni_math2_singleturn.omni_math2_singleturn import (
+    OMNI_MATH2_JUDGE_NEGATIVE_LABEL,
+    OMNI_MATH2_JUDGE_POSITIVE_LABEL,
+    OMNI_MATH2_JUDGE_PROMPT,
+    OMNI_MATH2_JUDGE_SYSTEM_PROMPT,
+    OMNI_MATH2_JUDGE_VARIANT_ID,
     PARSED_ANSWER_STATE_KEY,
     MathVerifyThenJudgeRubric,
     extract_omni_math2_answer,
+    load_environment,
 )
 from scripts.evals.make_omni_math2_tasks import (
     allocate_largest_remainder,
@@ -72,6 +78,10 @@ class _JudgeRubric:
 
     async def teardown(self):
         pass
+
+
+class _JudgeClient:
+    pass
 
 
 def test_allocate_largest_remainder_respects_capacity_and_total():
@@ -180,6 +190,34 @@ def test_hybrid_rubric_judge_fallback_calls_judge_directly():
         assert state["judge_response"] == {"fake": "CORRECT"}
 
     asyncio.run(run())
+
+
+def test_omni_math2_env_uses_task_aware_judge_prompt_by_default():
+    from datasets import Dataset
+
+    env = load_environment(
+        dataset=Dataset.from_list(
+            [
+                {
+                    "problem": "Which graph is horizontal? (A) Graph P (B) Graph Q",
+                    "answer": "Graph Q",
+                    "id": 1,
+                }
+            ]
+        ),
+        judge_client=_JudgeClient(),
+        judge_base_url=None,
+        prompts_ref="configs/baselines/omni_math2_prompt_pack.yaml",
+    )
+    rubric = next(rubric for rubric in env.rubric.rubrics if isinstance(rubric, MathVerifyThenJudgeRubric))
+
+    assert rubric.judge_rubric.judge_system_prompt == OMNI_MATH2_JUDGE_SYSTEM_PROMPT
+    assert rubric.judge_rubric.judge_prompt == OMNI_MATH2_JUDGE_PROMPT
+    assert rubric.judge_rubric.judge_positive_label == OMNI_MATH2_JUDGE_POSITIVE_LABEL
+    assert rubric.judge_rubric.judge_negative_label == OMNI_MATH2_JUDGE_NEGATIVE_LABEL
+    assert rubric.judge_rubric.judge_variant_id == OMNI_MATH2_JUDGE_VARIANT_ID
+    assert "Do not solve the problem yourself" in rubric.judge_rubric.judge_system_prompt
+    assert "map that letter to the option text" in rubric.judge_rubric.judge_system_prompt
 
 
 def test_hybrid_rubric_accepts_inline_choice_label_alias():

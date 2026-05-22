@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 
 POOLS = ["easy", "normal", "hard"]
+ExampleKey = tuple[str, int | str]
 
 
 class _EnvBuffer:
@@ -60,6 +61,15 @@ class _EnvBuffer:
     def sample_example(self) -> dict:
         key = random.choice(self._normal_example_ids)
         return self.examples[key]
+
+    def sample_example_excluding(self, excluded_ids: set[int | str]) -> dict:
+        candidates = [example_id for example_id in self._normal_example_ids if example_id not in excluded_ids]
+        if not candidates:
+            raise ValueError(f"No available examples left for {self.env_name}.")
+        return self.examples[random.choice(candidates)]
+
+    def has_available_example(self, excluded_ids: set[int | str]) -> bool:
+        return any(example_id not in excluded_ids for example_id in self._normal_example_ids)
 
     def _add_normal_example(self, example: dict) -> None:
         example_id = example["example_id"]
@@ -167,14 +177,38 @@ class Buffer:
 
         self.rollout_buffer: list[vf.RolloutOutput] = []
 
-    def sample_examples(self, n: int) -> list[dict]:
+    def sample_examples(self, n: int, exclude_keys: set[ExampleKey] | None = None) -> list[dict]:
         """Samples n examples across envs, respecting env ratios."""
-        non_empty = [name for name, eb in self.env_buffers.items() if eb.examples]
-        if not non_empty:
-            raise ValueError("No environments left with examples.")
+        if exclude_keys is None:
+            non_empty = [name for name, eb in self.env_buffers.items() if eb.examples]
+            if not non_empty:
+                raise ValueError("No environments left with examples.")
 
-        weights = [self.env_probs[name] for name in non_empty]
-        return [self.env_buffers[name].sample_example() for name in random.choices(non_empty, weights=weights, k=n)]
+            weights = [self.env_probs[name] for name in non_empty]
+            return [self.env_buffers[name].sample_example() for name in random.choices(non_empty, weights=weights, k=n)]
+
+        excluded = set(exclude_keys or ())
+        samples = []
+        for _ in range(n):
+            excluded_by_env: dict[str, set[int | str]] = defaultdict(set)
+            for env_name, example_id in excluded:
+                excluded_by_env[env_name].add(example_id)
+
+            non_empty = [
+                name
+                for name, eb in self.env_buffers.items()
+                if eb.has_available_example(excluded_by_env.get(name, set()))
+            ]
+            if not non_empty:
+                raise ValueError("No environments left with examples.")
+
+            weights = [self.env_probs[name] for name in non_empty]
+            env_name = random.choices(non_empty, weights=weights, k=1)[0]
+            example = self.env_buffers[env_name].sample_example_excluding(excluded_by_env.get(env_name, set()))
+            samples.append(example)
+            excluded.add((env_name, example["example_id"]))
+
+        return samples
 
     def update(self, rollouts: list[vf.RolloutOutput]):
         """Updates buffer state with completed rollouts."""

@@ -60,6 +60,11 @@ set -a
 [ -f .env ] && source .env
 set +a
 source .venv/bin/activate
+if [ -d "$PROJECT_DIR/environments" ]; then
+    while IFS= read -r env_dir; do
+        export PYTHONPATH="$env_dir${PYTHONPATH:+:$PYTHONPATH}"
+    done < <(find "$PROJECT_DIR/environments" -mindepth 1 -maxdepth 1 -type d | sort)
+fi
 
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTHONUNBUFFERED=1
@@ -186,7 +191,8 @@ if [ "$NODE_INDEX" -eq "$TRAINER_NODE_INDEX" ]; then
     ORCH_ARGS="$ORCH_ARGS --client.base-url $INFER_URLS"
     ORCH_ARGS="$ORCH_ARGS --client.admin-base-url $ADMIN_URLS"
     ORCH_ARGS="$ORCH_ARGS --client.dp-rank-count 1"
-    ORCH_ARGS="$ORCH_ARGS --weight_broadcast.host $MASTER_ADDR"
+    {% if use_nccl_broadcast %}ORCH_ARGS="$ORCH_ARGS --weight-broadcast.host $MASTER_ADDR"
+    {% endif %}
 
     export ORCH_ARGS  # TRAINING_COMPLETE_FLAG already exported on the common path
     # setsid → orchestrator is a session leader; $! == its SID (cleanup() reaps
@@ -210,19 +216,21 @@ if [ "$NODE_INDEX" -eq "$TRAINER_NODE_INDEX" ]; then
 
     # setsid → trainer (torchrun) is a session leader; $! == its SID (cleanup()
     # reaps the whole torchrun session subtree by SID).
-    setsid {% if wandb_shared %}env WANDB_SHARED_LABEL=trainer {% endif %}uv run --no-sync torchrun \
-        --role=trainer \
-        --nnodes=1 \
-        --nproc-per-node="$TRAINER_GPU_COUNT" \
-        --rdzv-endpoint="$MASTER_ADDR:$MASTER_PORT" \
-        --rdzv-id="gpu_layout_${SLURM_JOB_ID:-0}_$(basename "$OUTPUT_DIR")" \
-        --log-dir="$OUTPUT_DIR/logs/trainer/torchrun" \
-        --tee=3 \
-        --redirects=3 \
-        --local-ranks-filter={{ ranks_filter }} \
-        -m prime_rl.trainer.rl.train \
-        @ "$CONFIG_DIR/trainer.toml" \
-        --weight_broadcast.host 0.0.0.0 \
+    TRAINER_ARGS=(
+        --role=trainer
+        --nnodes=1
+        --nproc-per-node="$TRAINER_GPU_COUNT"
+        --rdzv-endpoint="$MASTER_ADDR:$MASTER_PORT"
+        --rdzv-id="gpu_layout_${SLURM_JOB_ID:-0}_$(basename "$OUTPUT_DIR")"
+        --log-dir="$OUTPUT_DIR/logs/trainer/torchrun"
+        --tee=3
+        --redirects=3
+        --local-ranks-filter={{ ranks_filter }}
+        -m prime_rl.trainer.rl.train
+        @ "$CONFIG_DIR/trainer.toml"
+    )
+    {% if use_nccl_broadcast %}TRAINER_ARGS+=(--weight-broadcast.host 0.0.0.0)
+    {% endif %}setsid {% if wandb_shared %}env WANDB_SHARED_LABEL=trainer {% endif %}uv run --no-sync torchrun "${TRAINER_ARGS[@]}" \
         >> "$OUTPUT_DIR/logs/trainer/node_${TRAINER_NODE_INDEX}.log" 2>&1 &
     CHILD_PIDS+=("$!")
 

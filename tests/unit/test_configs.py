@@ -174,6 +174,14 @@ def test_inference_fp32_lm_head_threads_through_vllm_additional_config():
     assert namespace.additional_config == {"fp32_lm_head": True}
 
 
+def test_inference_uses_processed_logprobs_for_behavior_policy_ratios():
+    config = InferenceConfig()
+
+    namespace = config.to_vllm()
+
+    assert namespace.logprobs_mode == "processed_logprobs"
+
+
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})

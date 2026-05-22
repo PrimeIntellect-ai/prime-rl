@@ -9,7 +9,7 @@ import verifiers as vf
 from aiolimiter import AsyncLimiter
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.buffer import Buffer
+from prime_rl.orchestrator.buffer import Buffer, ExampleKey
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.vf_utils import get_seq_len
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
@@ -304,7 +304,10 @@ class Scheduler:
         pending = sum(g.rollouts_to_schedule for g in self.groups.values())
         return self.inflight_rollout_count + pending
 
-    async def _schedule_next_request(self) -> bool:
+    def _active_example_keys(self) -> set[ExampleKey]:
+        return {(group.example["env_name"], group.example["example_id"]) for group in self.groups.values()}
+
+    async def _schedule_next_request(self, batch_example_keys: set[ExampleKey] | None = None) -> bool:
         remaining_capacity = self.max_inflight_rollouts - self.inflight_rollout_count
 
         if remaining_capacity <= 0:
@@ -322,15 +325,19 @@ class Scheduler:
         if remaining_capacity < self.rollouts_per_example:
             return False
 
-        example = self.buffer.sample_examples(n=1)[0]
+        if batch_example_keys is None:
+            batch_example_keys = self._active_example_keys()
+
+        example = self.buffer.sample_examples(n=1, exclude_keys=batch_example_keys)[0]
+        batch_example_keys.add((example["env_name"], example["example_id"]))
         group_id = self.next_group_id
         self.next_group_id += 1
         self.groups[group_id] = GroupState(example=example, rollouts_to_schedule=self.rollouts_per_example)
         await self.schedule_rollout(group_id=group_id)
         return True
 
-    async def _fill_inflight_requests(self) -> None:
-        while await self._schedule_next_request():
+    async def _fill_inflight_requests(self, batch_example_keys: set[ExampleKey] | None = None) -> None:
+        while await self._schedule_next_request(batch_example_keys=batch_example_keys):
             pass
 
     async def update_policy_loop(self):
@@ -445,13 +452,14 @@ class Scheduler:
 
         batch_target = self.batch_target
         batch_rollouts: list[vf.RolloutOutput] = []
+        batch_example_keys = self._active_example_keys()
         batch_progress = 0
         pbar = ProgressTracker(
             total=batch_target, desc="Generating rollouts (train)", json_logging=self.json_logging, step=step
         )
 
         while batch_progress < batch_target:
-            await self._fill_inflight_requests()
+            await self._fill_inflight_requests(batch_example_keys=batch_example_keys)
             inflight_tasks = list(self.inflight_requests.keys())
 
             finished_tasks, _ = await asyncio.wait(
@@ -570,7 +578,7 @@ class Scheduler:
                 batch_progress += progress_increment
                 pbar.update(progress_increment)
 
-        await self._fill_inflight_requests()
+        await self._fill_inflight_requests(batch_example_keys=self._active_example_keys())
 
         batch_rollouts = self.finalize_batch_rollouts(batch_rollouts)
         pbar.close()

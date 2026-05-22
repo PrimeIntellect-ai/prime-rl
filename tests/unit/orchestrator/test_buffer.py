@@ -122,6 +122,16 @@ def test_buffer_init_and_sample(dummy_envs):
     assert len(samples) == 2
 
 
+def test_buffer_sample_examples_respects_excluded_keys(dummy_envs):
+    buffer = Buffer(dummy_envs, BufferConfig(seed=0))
+    excluded = {("env_a", i) for i in range(5)}
+
+    samples = buffer.sample_examples(3, exclude_keys=excluded)
+
+    assert {sample["env_name"] for sample in samples} == {"env_b"}
+    assert len({sample["example_id"] for sample in samples}) == 3
+
+
 def test_buffer_problem_pool_assignment(dummy_envs, make_rollouts):
     """Problems are moved to easy/hard pools based on reward thresholds."""
     buffer = Buffer(dummy_envs, BufferConfig(easy_threshold=1.0, hard_threshold=0.0))

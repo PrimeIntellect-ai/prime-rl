@@ -17,8 +17,7 @@ WINDOW_SIZE = 20
 GAUGE_METRICS = {
     "vllm:num_requests_running",
     "vllm:num_requests_waiting",
-    "vllm:gpu_cache_usage_perc",
-    "vllm:gpu_prefix_cache_hit_rate",
+    "vllm:kv_cache_usage_perc",
 }
 
 # Counter metrics: converted to per-second rates via delta/dt
@@ -26,12 +25,18 @@ COUNTER_METRICS = {
     "vllm:prompt_tokens",
     "vllm:generation_tokens",
     "vllm:request_success",
+    "vllm:num_preemptions",
+    "vllm:prefix_cache_queries",
+    "vllm:prefix_cache_hits",
 }
 
 COUNTER_RATE_NAMES = {
     "vllm:prompt_tokens": "prefill_throughput_tps",
     "vllm:generation_tokens": "decode_throughput_tps",
     "vllm:request_success": "completed_requests_per_s",
+    "vllm:num_preemptions": "preemptions_per_s",
+    "vllm:prefix_cache_queries": "prefix_cache_queries_per_s",
+    "vllm:prefix_cache_hits": "prefix_cache_hits_per_s",
 }
 
 # Histogram metrics: converted to average latency per interval
@@ -42,7 +47,7 @@ HISTOGRAM_METRICS = {
 _COUNTER_TOTAL_TO_NAME = {f"{name}_total": name for name in COUNTER_METRICS}
 
 # Gauges where we log both max and mean across engines (to show imbalance)
-_DUAL_AGG_GAUGES = {"vllm:gpu_cache_usage_perc", "vllm:gpu_prefix_cache_hit_rate"}
+_DUAL_AGG_GAUGES = {"vllm:kv_cache_usage_perc"}
 
 
 def parse_prometheus_text(text: str) -> tuple[dict[str, float], dict[str, float], dict[str, tuple[float, float]]]:
@@ -101,7 +106,8 @@ class InferenceMetricsCollector:
         self._task: asyncio.Task | None = None
 
     async def start(self):
-        wandb.define_metric("inference/*", step_metric="_timestamp")
+        wandb.define_metric("_timestamp", hidden=True)
+        wandb.define_metric("inference/*", step_metric="_timestamp", step_sync=False)
 
         async def poll_loop():
             while True:

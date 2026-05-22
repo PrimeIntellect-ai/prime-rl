@@ -12,7 +12,6 @@ from verifiers.parsers.maybe_think_parser import MaybeThinkParser
 from verifiers.types import ClientConfig
 from verifiers.utils.data_utils import extract_boxed_answer
 from verifiers.utils.hf_tasks import (
-    DEFAULT_JUDGE_PROMPT_PACK,
     JudgePromptKind,
     load_hf_dataset,
     make_rubric,
@@ -34,6 +33,38 @@ NO_SOLUTION_RE = re.compile(
 MAX_FALLBACK_ANSWER_CHARS = 200
 PARSED_ANSWER_STATE_KEY = "omni_math2_parsed_answer"
 PARSE_CACHE_STATE: ContextVar[vf.State | None] = ContextVar("omni_math2_parse_cache_state", default=None)
+OMNI_MATH2_JUDGE_SYSTEM_PROMPT = """Grade whether the model final answer matches the gold answer.
+
+You are a verifier, not a solver. Do not solve the problem yourself. Do not use
+outside knowledge, visual inference, or assumptions about any referenced image.
+Use the question only to interpret answer-choice labels and formatting.
+
+Return CORRECT only when the model final answer is the same answer as the gold
+answer. Return INCORRECT for a different number, expression, graph, option,
+set, sign, or name. If the answer is ambiguous or the evidence is insufficient,
+return INCORRECT.
+
+For multiple-choice questions:
+- If the model gives a letter, map that letter to the option text in the
+  question before comparing it to the gold answer.
+- A letter is correct only if it maps to the gold answer.
+- Do not infer the correct option by solving the question.
+
+If the model says it cannot see an image, guesses, or gives instructions instead
+of a final answer, grade only the provided final answer string.
+
+Output exactly one token: CORRECT or INCORRECT."""
+OMNI_MATH2_JUDGE_PROMPT = """Question:
+{question}
+
+Gold answer:
+{answer}
+
+Model final answer:
+{response}"""
+OMNI_MATH2_JUDGE_POSITIVE_LABEL = "CORRECT"
+OMNI_MATH2_JUDGE_NEGATIVE_LABEL = "INCORRECT"
+OMNI_MATH2_JUDGE_VARIANT_ID = "omni_math2_task_aware_grader_v1"
 
 
 def _message_content(messages: vf.Messages) -> str:
@@ -347,7 +378,7 @@ def load_environment(
     judge_base_url: str | None = "https://api.openai.com/v1",
     judge_api_key_var: str = "OPENAI_API_KEY",
     judge_sampling_args: dict[str, Any] | None = None,
-    judge_prompt_pack: str | None = DEFAULT_JUDGE_PROMPT_PACK,
+    judge_prompt_pack: str | None = None,
     judge_prompt_kind: JudgePromptKind = "grader",
     judge_system_prompt: str | None = None,
     judge_prompt: str | None = None,
@@ -360,7 +391,7 @@ def load_environment(
     judge_persistent_cache_path: str | None = None,
     judge_persistent_cache_min_samples: int = 1,
     judge_rubric_family: str = "omni_math2_hybrid_math_v1",
-    judge_variant_id: str = "hybrid_math_reference_anchored_v1",
+    judge_variant_id: str = OMNI_MATH2_JUDGE_VARIANT_ID,
     math_verify_timeout_seconds: float = 5,
     math_verify_max_workers: int = 50,
     **extra: Any,
@@ -381,6 +412,12 @@ def load_environment(
     )
     judge_rubric = None
     if use_judge_fallback:
+        if judge_prompt_pack is None and judge_system_prompt is None and judge_prompt is None:
+            judge_system_prompt = OMNI_MATH2_JUDGE_SYSTEM_PROMPT
+            judge_prompt = OMNI_MATH2_JUDGE_PROMPT
+            judge_positive_label = judge_positive_label or OMNI_MATH2_JUDGE_POSITIVE_LABEL
+            judge_negative_label = judge_negative_label or OMNI_MATH2_JUDGE_NEGATIVE_LABEL
+
         judge_rubric = make_rubric(
             task_type="open_ended",
             judge_client=judge_client,

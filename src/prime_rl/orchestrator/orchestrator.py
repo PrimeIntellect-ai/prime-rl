@@ -934,7 +934,15 @@ async def orchestrate(config: OrchestratorConfig):
             for name in filter_df.columns:
                 to_log[f"filters/{env}/{name}"] = env_filter_df[name].astype(float).mean()
 
-        train_comparison_metrics = {key: value for key, value in to_log.items() if key.startswith("train_batch/")}
+        persisted_train_metric_prefixes = (
+            "train_batch/",
+            "filtered_rollouts/",
+            "evicted_examples/",
+            "pool/",
+        )
+        train_comparison_metrics = {
+            key: value for key, value in to_log.items() if key.startswith(persisted_train_metric_prefixes)
+        }
         train_comparison_metrics["step"] = progress.step
         await asyncio.to_thread(
             _write_scalar_metrics,
@@ -984,7 +992,17 @@ async def orchestrate(config: OrchestratorConfig):
             heart.beat()
 
     if config.eval and eval_envs is not None:
-        logger.info("Running final evals")
+        await scheduler.sync_policy_for_step(progress.step)
+        ckpt_step = scheduler.ckpt_step if enable_policy_updates else progress.step
+        logger.info(f"Running final evals at {ckpt_step=}")
+
+        # The last training step pre-fills rollout requests for the next batch.
+        # There is no next batch at final eval time, and leaving those requests
+        # alive competes with the fixed eval workload for vLLM/CPU memory.
+        await scheduler.pause_policy_updates()
+        scheduler.checkpoint_ready.clear()
+        await scheduler.cancel_inflight_rollouts()
+
         eval_results = await asyncio.gather(
             *[
                 eval_env.evaluate(

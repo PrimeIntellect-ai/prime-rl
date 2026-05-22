@@ -178,6 +178,49 @@ def test_client_identity_distinguishes_base_url_and_dp_rank():
     assert Scheduler._client_identity(client_a) != Scheduler._client_identity(client_b)
 
 
+def test_scheduler_excludes_examples_already_reserved_for_current_batch():
+    async def run() -> None:
+        scheduler = Scheduler.__new__(Scheduler)
+        scheduler.max_inflight_rollouts = 64
+        scheduler.rollouts_per_example = 8
+        scheduler.inflight_requests = {}
+        scheduler.groups = {}
+        scheduler.next_group_id = 0
+
+        examples = [{"env_name": "env", "example_id": i} for i in range(4)]
+        seen_exclusions = []
+
+        def sample_examples(n: int, exclude_keys=None):
+            assert n == 1
+            excluded = set(exclude_keys or ())
+            seen_exclusions.append(set(excluded))
+            for example in examples:
+                key = (example["env_name"], example["example_id"])
+                if key not in excluded:
+                    return [example]
+            raise AssertionError("test ran out of examples")
+
+        async def schedule_rollout(group_id: int) -> None:
+            scheduler.groups[group_id].rollouts_to_schedule = 0
+
+        scheduler.buffer = SimpleNamespace(sample_examples=sample_examples)
+        scheduler.schedule_rollout = schedule_rollout
+
+        batch_keys = set()
+        assert await scheduler._schedule_next_request(batch_keys)
+        assert await scheduler._schedule_next_request(batch_keys)
+        assert await scheduler._schedule_next_request(batch_keys)
+
+        assert [group.example["example_id"] for group in scheduler.groups.values()] == [0, 1, 2]
+        assert seen_exclusions == [
+            set(),
+            {("env", 0)},
+            {("env", 0), ("env", 1)},
+        ]
+
+    asyncio.run(run())
+
+
 def test_compile_generation_ignores_single_agent_env_with_global_config():
     scheduler = make_scheduler()
     scheduler.config.multi_agent = MultiAgentConfig(
@@ -335,8 +378,8 @@ def test_generate_batch_drops_timeout_error_and_continues():
         success_task = asyncio.create_task(return_rollout())
 
         scheduler.groups = {
-            1: GroupState(example={"env_name": "debate"}, rollouts_to_schedule=0),
-            2: GroupState(example={"env_name": "debate"}, rollouts_to_schedule=0),
+            1: GroupState(example={"env_name": "debate", "example_id": 1}, rollouts_to_schedule=0),
+            2: GroupState(example={"env_name": "debate", "example_id": 2}, rollouts_to_schedule=0),
         }
         scheduler.inflight_requests = {
             timeout_task: InflightRequest(off_policy_steps=0, client_config=client, env_name="debate", group_id=1),
