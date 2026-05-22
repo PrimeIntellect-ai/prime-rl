@@ -54,27 +54,15 @@ def apply_top_k_top_p(
     labels: Tensor | None = None,
 ) -> Tensor:
     """Mirror vLLM's top-k / top-p truncation so the trainer logits sum over
-    the same support as the inference-time sample. Tokens outside the kept set
-    are pushed to ``-inf`` so the downstream log-softmax matches vLLM's
-    processed_logprobs.
+    the same support as the inference-time sample. Bit-exact match against
+    vLLM's ``apply_top_k_top_p_pytorch``. Scalar k / p; ``k <= 0`` and
+    ``p >= 1.0`` are no-ops.
 
-    Scalar k / p — all rows in the batch use the same truncation. ``k <= 0``
-    and ``p >= 1.0`` are no-ops.
-
-    When ``labels`` is given, the label token's original logit is restored
-    after masking. Inference sampled the label from the truncated set, so it
-    *was* in top-k / top-p there — but the trainer runs the model
-    independently (different kernels, mixed precision) and at the boundary
-    the ranks can differ enough to mask the label. Restoring keeps that
-    token's logprob finite (and ≈ matches what vLLM saw) so the importance
-    ratio doesn't blow up. The cost is at most one extra token in the
-    renormalization, which is negligible when ranks agree.
-
-    With scalar top-k applied uniformly, prompt and padding positions also
-    get truncated. Their labels (the next prompt token, or the padding token)
-    are usually not in the model's top-k, which would otherwise push their
-    logprobs to ``-inf`` and NaN out the masked loss. The label safety guard
-    handles this — pass ``labels`` whenever truncation is active.
+    ``labels`` is the safety guard: restore the label's original logit after
+    masking so FP-precision boundary cases (the sampled token falling just
+    outside the trainer's top-k) don't push its logprob to ``-inf``. Also
+    keeps prompt / padding positions finite when the scalar truncation is
+    applied uniformly.
     """
     vocab_size = logits.shape[-1]
     do_top_k = top_k is not None and 0 < top_k < vocab_size
@@ -82,7 +70,6 @@ def apply_top_k_top_p(
     if not do_top_k and not do_top_p:
         return logits
 
-    # Save original label logits before any masking happens below.
     label_logits = logits.gather(-1, labels.unsqueeze(-1)) if labels is not None else None
 
     if do_top_k:
@@ -91,19 +78,16 @@ def apply_top_k_top_p(
         logits = logits.masked_fill(logits < threshold, float("-inf"))
 
     if do_top_p:
-        # Sort ascending so the low-probability tail sits at the front; mirrors
-        # vLLM's apply_top_k_top_p_pytorch implementation.
+        # Sort ascending so the low-probability tail is at the front (mirrors vLLM).
         sorted_logits, sorted_idx = logits.sort(dim=-1, descending=False)
         sorted_probs = sorted_logits.softmax(dim=-1)
         cumprobs = sorted_probs.cumsum(dim=-1)
         top_p_mask = cumprobs <= (1.0 - top_p)
-        # Always keep at least one token (the largest logit, at index -1).
-        top_p_mask[..., -1] = False
+        top_p_mask[..., -1] = False  # always keep the top token
         sorted_logits = sorted_logits.masked_fill(top_p_mask, float("-inf"))
         logits = torch.empty_like(logits).scatter_(-1, sorted_idx, sorted_logits)
 
     if label_logits is not None:
-        # Restore label logits last so they survive both top_k and top_p.
         logits = logits.scatter(-1, labels.unsqueeze(-1), label_logits)
 
     return logits

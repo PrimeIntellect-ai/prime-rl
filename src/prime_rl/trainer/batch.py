@@ -121,7 +121,6 @@ def packed_samples_into_micro_bs(
             # Don't pack into multimodal micro batches
             if _is_multimodal_sample(bin_content):
                 continue
-            # Check if sequence fits in this bin and shares scalar sampling args.
             if (
                 len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len
                 and bin_content.training_mode == sample.training_mode

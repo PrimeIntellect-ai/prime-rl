@@ -23,13 +23,9 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     completion_ids: list[int]
     completion_mask: list[bool]
     completion_logprobs: list[float]
-    # Sampling args used to generate this rollout. Scalar per rollout — the
-    # trainer broadcasts them across all positions when computing logprobs.
-    # `top_k = -1` and `top_p = 1.0` disable truncation. The trainer replays
-    # the same truncation so the importance ratio against the inference
-    # logprobs stays unbiased.
     temperature: float
     env_name: str
+    # ``top_k = -1`` and ``top_p = 1.0`` disable truncation.
     top_k: int = -1
     top_p: float = 1.0
     teacher_logprobs: list[float] | None = None
@@ -73,12 +69,9 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     advantages: list[float]
     inference_logprobs: list[float]
     position_ids: list[int]
-    # Sampling args used to generate the rollouts packed into this micro
-    # batch. Scalar — all samples in a micro batch must share these (the
-    # packer enforces it). The trainer broadcasts these across all positions
-    # to replay the same truncation when computing logprobs, so the
-    # importance ratio against ``inference_logprobs`` stays unbiased.
-    # ``top_k = -1`` and ``top_p = 1.0`` disable truncation.
+    # Scalar sampling args shared by every sample in the micro batch (the
+    # packer enforces uniformity). The trainer replays the same truncation
+    # when computing logprobs so the importance ratio stays unbiased.
     temperature: float
     env_names: list[str]
     top_k: int = -1

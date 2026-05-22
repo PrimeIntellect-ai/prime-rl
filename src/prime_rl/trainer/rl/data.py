@@ -24,14 +24,9 @@ class TensorMicroBatch(TypedDict):
     inference_logprobs: Float[Tensor, "batch seq"]
     teacher_logprobs: Float[Tensor, "batch seq"] | None
     loss_mask: Bool[Tensor, "batch seq"]
-    # Sampling args used to generate the rollouts packed into this batch.
-    # Scalars — all samples in a micro batch share the same values. The
-    # trainer broadcasts them across the sequence to replay the same
-    # truncation when computing logprobs. ``top_k = -1`` and ``top_p = 1.0``
-    # disable truncation.
     temperature: float
-    top_k: int
-    top_p: float
+    top_k: int  # -1 disables truncation
+    top_p: float  # 1.0 disables truncation
     env_names: list[str]
 
     # Batch level

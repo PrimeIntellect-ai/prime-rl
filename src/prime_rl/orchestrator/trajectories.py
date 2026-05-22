@@ -233,8 +233,7 @@ def interleave_rollout(
     # this field should be guaranteed because we set temperature in get_sampling_args
     sampling_args = output["sampling_args"]
     temperature = sampling_args["temperature"]
-    # top_p is a top-level OAI param; top_k is a vLLM extension and lives in
-    # ``extra_body``. Default to no truncation if absent.
+    # top_k lives in extra_body (vLLM extension), top_p is top-level OAI.
     top_p = sampling_args.get("top_p", 1.0)
     top_k = sampling_args.get("extra_body", {}).get("top_k", -1)
 

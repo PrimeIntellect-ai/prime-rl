@@ -425,9 +425,7 @@ def train(config: TrainerConfig):
             top_k = micro_batch["top_k"]
             top_p = micro_batch["top_p"]
             truncate_logits = (top_k > 0) or (top_p < 1.0)
-            # The fused LM head expects a per-token temperature tensor; build
-            # one by broadcasting the scalar across the (already CP-sharded if
-            # applicable) sequence dimension.
+            # Fused LM head wants a per-token tensor; CP-sharded input_ids gives the right shape.
             temperatures = torch.full(input_ids.shape, temperature, dtype=torch.float32, device="cuda")
 
             # Forward pass with per-token temperatures
@@ -449,20 +447,12 @@ def train(config: TrainerConfig):
                 logits = out["logits"]
                 # Per-token temperature scaling: temperatures is [batch, seq], logits is [batch, seq, vocab]
                 scaled_logits = logits / temperatures.unsqueeze(-1)
-                # Entropy is reported on the full (un-truncated) distribution so
-                # it stays comparable across runs that do/don't truncate.
+                # Entropy on the full distribution so it stays comparable across truncated / not.
                 out["entropy"] = compute_entropy(scaled_logits)
-                # Replay vLLM's top-k / top-p truncation so trainer logprobs
-                # are over the same support as the inference-time sample
-                # (otherwise the importance ratio is biased). Pass labels so
-                # FP-precision boundary cases (the sampled token falling just
-                # outside the trainer's top-k) don't blow up the loss.
                 scaled_logits = apply_top_k_top_p(scaled_logits, top_k, top_p, labels=labels)
                 out["logprobs"] = selective_log_softmax(scaled_logits, labels)
             else:
-                # FusedOutputLinear was used - logprobs already computed with per-token temperatures.
-                # The fused kernel streams over vocab chunks and can't apply a global top-k / top-p
-                # threshold without materializing the full logits, so reject the combination.
+                # FusedOutputLinear streams over vocab chunks and can't find a global top-k threshold.
                 if truncate_logits:
                     raise ValueError(
                         "top_k / top_p truncation requires the vanilla LM head - set "
