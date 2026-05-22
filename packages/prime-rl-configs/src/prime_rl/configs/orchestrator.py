@@ -337,6 +337,9 @@ class EnvConfig(BaseConfig):
         ),
     ] = None
 
+    state_columns: list[str] = []
+    """Extra ``State`` fields to persist into the saved rollout records (in addition to the always-saved ``trajectory`` and ``sampling_args``). Values must be JSON-serializable."""
+
     @property
     def stripped_id(self) -> str:
         """Environment ID without the @version suffix."""
