@@ -175,7 +175,6 @@ srun --kill-on-bad-exit=1 bash -c '
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
 {%- if use_deep_gemm %}
     export VLLM_USE_DEEP_GEMM=1
-    export VLLM_MOE_USE_DEEP_GEMM=1
 {%- endif %}
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
     export GLOO_SOCKET_IFNAME=bond0
