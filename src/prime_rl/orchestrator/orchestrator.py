@@ -429,10 +429,12 @@ async def orchestrate(config: OrchestratorConfig):
             # Compute advantages (in-place)
             num_rollouts = len(train_rollouts)
             num_unique_examples = len({(r["env_name"], r["example_id"]) for r in train_rollouts})
-            compute_advantages(train_rollouts, config.advantage)
+            # O3: pure-Python work over ~2k rollouts — release GIL via to_thread.
+            await asyncio.to_thread(compute_advantages, train_rollouts, config.advantage)
 
             # Apply rollout filters — sets rollout["filters"] and rollout["is_filtered"]
-            apply_filters(rollout_filters, train_rollouts)
+            # O4: same — many small filter checks across all rollouts.
+            await asyncio.to_thread(apply_filters, rollout_filters, train_rollouts)
 
             n_trainable = sum(1 for r in train_rollouts if not r["is_filtered"])
             if n_trainable > 0:
@@ -593,7 +595,10 @@ async def orchestrate(config: OrchestratorConfig):
             step=progress.step,
         )
 
-        training_batch_sender.send(training_batch)
+        # O1+O2+threaded-io: send is async; encodes per-sample with sleep(0)
+        # between, peels routed_experts bytes into a sidecar, all disk I/O
+        # off the event loop.
+        await training_batch_sender.send(training_batch)
 
         step_time = time.perf_counter() - step_start_time
 
@@ -892,6 +897,14 @@ async def orchestrate(config: OrchestratorConfig):
 def main():
     """Main entry-point for orchestrator. Run using `uv run orchestrator`"""
     set_proc_title("Orchestrator")
+    # O7: uvloop. Faster event loop + lower per-callback overhead. The orch
+    # juggles many concurrent rollouts + an HTTP client to inference; uvloop
+    # measurably reduces both event-loop tail latency and scheduler overhead.
+    try:
+        import uvloop  # type: ignore
+        uvloop.install()
+    except ImportError:
+        pass
     asyncio.run(orchestrate(cli(OrchestratorConfig)))
 
 
