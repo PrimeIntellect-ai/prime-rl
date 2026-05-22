@@ -67,7 +67,7 @@ def test_olmo3_custom_impl_registered() -> None:
     assert isinstance(AutoModelForCausalLMPrimeRL.from_config(config), PrimeRLOlmo3ForCausalLM)
 
 
-def test_olmo3_custom_impl_uses_yarn_rope_from_real_config_shape() -> None:
+def test_olmo3_custom_impl_uses_full_yarn_and_sliding_default_from_real_config_shape() -> None:
     config = _tiny_config()
     config.max_position_embeddings = 65536
     config.rope_parameters = None
@@ -84,10 +84,11 @@ def test_olmo3_custom_impl_uses_yarn_rope_from_real_config_shape() -> None:
     with default_dtype(torch.float32):
         model = PrimeRLOlmo3ForCausalLM._from_config(config)
 
-    assert model.model.rotary_emb.rope_type == "yarn"
+    assert model.model.rotary_embs["full_attention"].rope_type == "yarn"
+    assert model.model.rotary_embs["sliding_attention"].rope_type == "default"
 
 
-def test_olmo3_custom_impl_uses_yarn_rope_from_nested_layer_config_shape() -> None:
+def test_olmo3_custom_impl_uses_layer_specific_nested_rope_config_shape() -> None:
     config = _tiny_config()
     yarn_rope = {
         "rope_type": "yarn",
@@ -98,9 +99,10 @@ def test_olmo3_custom_impl_uses_yarn_rope_from_nested_layer_config_shape() -> No
         "original_max_position_embeddings": 8192,
         "rope_theta": 500000.0,
     }
+    default_rope = {"rope_type": "default", "rope_theta": 500000.0}
     config.rope_parameters = {
         "full_attention": dict(yarn_rope),
-        "sliding_attention": dict(yarn_rope),
+        "sliding_attention": dict(default_rope),
         "rope_type": "default",
         "rope_theta": 10000.0,
     }
@@ -109,17 +111,18 @@ def test_olmo3_custom_impl_uses_yarn_rope_from_nested_layer_config_shape() -> No
     with default_dtype(torch.float32):
         model = PrimeRLOlmo3ForCausalLM._from_config(config)
 
-    assert model.model.rotary_emb.rope_type == "yarn"
+    assert model.model.rotary_embs["full_attention"].rope_type == "yarn"
+    assert model.model.rotary_embs["sliding_attention"].rope_type == "default"
 
 
-def test_olmo3_custom_impl_rejects_mixed_nested_rope_types() -> None:
+def test_olmo3_custom_impl_rejects_scaled_sliding_rope() -> None:
     config = _tiny_config()
     config.rope_parameters = {
         "full_attention": {"rope_type": "yarn", "rope_theta": 500000.0},
-        "sliding_attention": {"rope_type": "default", "rope_theta": 10000.0},
+        "sliding_attention": {"rope_type": "yarn", "rope_theta": 500000.0},
     }
 
-    with pytest.raises(ValueError, match="single RoPE type"):
+    with pytest.raises(ValueError, match="RoPE scaling is not applied to sliding window attention"):
         with default_dtype(torch.float32):
             PrimeRLOlmo3ForCausalLM._from_config(config)
 

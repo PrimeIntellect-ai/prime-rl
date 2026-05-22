@@ -221,6 +221,51 @@ def test_scheduler_excludes_examples_already_reserved_for_current_batch():
     asyncio.run(run())
 
 
+def test_scheduler_releases_completed_batch_keys_after_unique_pool_exhausted():
+    async def run() -> None:
+        scheduler = Scheduler.__new__(Scheduler)
+        scheduler.max_inflight_rollouts = 16
+        scheduler.rollouts_per_example = 8
+        scheduler.inflight_requests = {}
+        scheduler.groups = {
+            0: GroupState(example={"env_name": "env", "example_id": 0}, rollouts_to_schedule=0),
+        }
+        scheduler.next_group_id = 1
+        scheduler.logger = MagicMock()
+
+        examples = [{"env_name": "env", "example_id": i} for i in range(2)]
+        seen_exclusions = []
+
+        def sample_examples(n: int, exclude_keys=None):
+            assert n == 1
+            excluded = set(exclude_keys or ())
+            seen_exclusions.append(set(excluded))
+            for example in examples:
+                key = (example["env_name"], example["example_id"])
+                if key not in excluded:
+                    return [example]
+            raise ValueError("No environments left with examples.")
+
+        async def schedule_rollout(group_id: int) -> None:
+            scheduler.groups[group_id].rollouts_to_schedule = 0
+
+        scheduler.buffer = SimpleNamespace(sample_examples=sample_examples)
+        scheduler.schedule_rollout = schedule_rollout
+
+        batch_keys = {("env", 0), ("env", 1)}
+        assert await scheduler._schedule_next_request(batch_keys)
+
+        assert scheduler.groups[1].example["example_id"] == 1
+        assert seen_exclusions == [
+            {("env", 0), ("env", 1)},
+            {("env", 0)},
+        ]
+        assert batch_keys == {("env", 0), ("env", 1)}
+        scheduler.logger.warning.assert_called_once()
+
+    asyncio.run(run())
+
+
 def test_compile_generation_ignores_single_agent_env_with_global_config():
     scheduler = make_scheduler()
     scheduler.config.multi_agent = MultiAgentConfig(

@@ -307,6 +307,28 @@ class Scheduler:
     def _active_example_keys(self) -> set[ExampleKey]:
         return {(group.example["env_name"], group.example["example_id"]) for group in self.groups.values()}
 
+    def _sample_batch_example(self, batch_example_keys: set[ExampleKey]) -> dict | None:
+        try:
+            return self.buffer.sample_examples(n=1, exclude_keys=batch_example_keys)[0]
+        except ValueError as exc:
+            if str(exc) != "No environments left with examples.":
+                raise
+
+        active_example_keys = self._active_example_keys()
+        if batch_example_keys <= active_example_keys:
+            return None
+
+        self.logger.warning(
+            "Exhausted unique examples while filling this batch; allowing repeats for completed examples."
+        )
+        batch_example_keys.intersection_update(active_example_keys)
+        try:
+            return self.buffer.sample_examples(n=1, exclude_keys=batch_example_keys)[0]
+        except ValueError as exc:
+            if str(exc) == "No environments left with examples.":
+                return None
+            raise
+
     async def _schedule_next_request(self, batch_example_keys: set[ExampleKey] | None = None) -> bool:
         remaining_capacity = self.max_inflight_rollouts - self.inflight_rollout_count
 
@@ -328,7 +350,9 @@ class Scheduler:
         if batch_example_keys is None:
             batch_example_keys = self._active_example_keys()
 
-        example = self.buffer.sample_examples(n=1, exclude_keys=batch_example_keys)[0]
+        example = self._sample_batch_example(batch_example_keys)
+        if example is None:
+            return False
         batch_example_keys.add((example["env_name"], example["example_id"]))
         group_id = self.next_group_id
         self.next_group_id += 1

@@ -27,46 +27,49 @@ def _prime_attn_impl(config: Olmo3Config) -> str:
     return "fa4" if attn_impl == "flash_attention_4" else attn_impl
 
 
-def _rope_type_from_mapping(rope_config: dict, layer_types: set[str]) -> tuple[str | None, dict | None]:
-    nested_rope_configs = {
-        layer_type: rope_config[layer_type]
-        for layer_type in layer_types
-        if isinstance(rope_config.get(layer_type), dict)
-    }
-    nested_rope_types = {
-        nested_rope_config.get("rope_type", nested_rope_config.get("type", "default"))
-        for nested_rope_config in nested_rope_configs.values()
-    }
-    if len(nested_rope_types) == 1:
-        rope_type = nested_rope_types.pop()
-        return rope_type, next(iter(nested_rope_configs.values()))
-    if len(nested_rope_types) > 1:
-        raise ValueError(
-            f"OLMo3 custom model expects a single RoPE type across layer types, got {sorted(nested_rope_types)}"
-        )
-    return rope_config.get("rope_type", rope_config.get("type")), None
+def _rope_type(rope_config: dict) -> str:
+    return rope_config.get("rope_type", rope_config.get("type", "default"))
 
 
-def _get_rope_type_and_config(config: Olmo3Config) -> tuple[str, Olmo3Config]:
-    layer_types = set(getattr(config, "layer_types", []) or [])
+def _flat_rope_config(config: Olmo3Config) -> dict:
     for attr in ("rope_parameters", "rope_scaling"):
         rope_config = getattr(config, attr, None)
-        if isinstance(rope_config, dict):
-            rope_type, effective_rope_config = _rope_type_from_mapping(rope_config, layer_types)
-            if rope_type is not None:
-                if effective_rope_config is not None:
-                    rotary_config = copy(config)
-                    rotary_config.rope_parameters = effective_rope_config
-                    rotary_config.rope_scaling = effective_rope_config
-                    return rope_type, rotary_config
-                return rope_type, config
-        if rope_config is not None:
-            return getattr(rope_config, "rope_type", getattr(rope_config, "type", "default")), config
-    return "default", config
+        if isinstance(rope_config, dict) and _rope_type(rope_config) is not None:
+            return rope_config
+    return {"rope_type": "default", "rope_theta": getattr(config, "rope_theta", 10000.0)}
 
 
-def _get_rope_type(config: Olmo3Config) -> str:
-    return _get_rope_type_and_config(config)[0]
+def _default_rope_config(config: Olmo3Config, rope_config: dict | None = None) -> dict:
+    rope_config = rope_config or _flat_rope_config(config)
+    rope_theta = rope_config.get("rope_theta", getattr(config, "rope_theta", 10000.0))
+    return {"rope_type": "default", "rope_theta": rope_theta}
+
+
+def _layer_rope_config(config: Olmo3Config, layer_type: str) -> dict:
+    for attr in ("rope_parameters", "rope_scaling"):
+        rope_config = getattr(config, attr, None)
+        if isinstance(rope_config, dict) and isinstance(rope_config.get(layer_type), dict):
+            layer_rope_config = rope_config[layer_type]
+            if layer_type == "sliding_attention" and _rope_type(layer_rope_config) != "default":
+                raise ValueError("RoPE scaling is not applied to sliding window attention layers in OLMo3")
+            return layer_rope_config
+
+    rope_config = _flat_rope_config(config)
+    if layer_type == "sliding_attention":
+        return _default_rope_config(config, rope_config)
+    return rope_config
+
+
+def _rotary_embedding_config(config: Olmo3Config, layer_type: str) -> RotaryEmbeddingConfig:
+    rope_config = _layer_rope_config(config, layer_type)
+    rotary_model_config = copy(config)
+    rotary_model_config.rope_parameters = rope_config
+    rotary_model_config.rope_scaling = rope_config
+    return RotaryEmbeddingConfig(
+        max_position_embeddings=config.max_position_embeddings,
+        rope_type=_rope_type(rope_config),
+        model_config=rotary_model_config,
+    )
 
 
 def _sliding_window_mask(q_len: int, k_len: int, window: int, device: torch.device) -> torch.Tensor:
@@ -257,13 +260,12 @@ class Olmo3Model(Olmo3PreTrainedModel):
         )
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
 
-        rope_type, rotary_model_config = _get_rope_type_and_config(config)
-        rotary_config = RotaryEmbeddingConfig(
-            max_position_embeddings=config.max_position_embeddings,
-            rope_type=rope_type,
-            model_config=rotary_model_config,
+        self.rotary_embs = nn.ModuleDict(
+            {
+                layer_type: RotaryEmbedding(_rotary_embedding_config(config, layer_type))
+                for layer_type in dict.fromkeys(config.layer_types)
+            }
         )
-        self.rotary_emb = RotaryEmbedding(rotary_config)
         self.gradient_checkpointing = False
 
         self.post_init()
@@ -291,12 +293,14 @@ class Olmo3Model(Olmo3PreTrainedModel):
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
 
         hidden_states = inputs_embeds
-        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+        position_embeddings_by_type = {
+            layer_type: rotary_emb(hidden_states, position_ids) for layer_type, rotary_emb in self.rotary_embs.items()
+        }
 
-        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+        for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             hidden_states = decoder_layer(
                 hidden_states,
-                position_embeddings=position_embeddings,
+                position_embeddings=position_embeddings_by_type[self.config.layer_types[layer_idx]],
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
             )
