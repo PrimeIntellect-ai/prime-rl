@@ -1,4 +1,6 @@
-import torch
+import math
+
+import pytest
 
 from prime_rl.configs.orchestrator import (
     CustomAdvantageConfig,
@@ -58,8 +60,8 @@ def test_default_advantage_fn_simple_mean():
     inputs = _make_group(rewards=[1.0, 0.5, 0.8], completion_lengths=[10, 12, 8])
     result = default_advantage_fn(inputs)
 
-    assert result.advantages.shape == (3,)
-    assert torch.allclose(result.advantages.mean(), torch.zeros(()), atol=1e-6)
+    assert len(result.advantages) == 3
+    assert sum(result.advantages) == pytest.approx(0.0, abs=1e-6)
 
 
 def test_efficiency_mixed_group():
@@ -72,16 +74,15 @@ def test_efficiency_mixed_group():
     # shaped_rewards = R * (1 + bonus * correct_mask) = [1.5, 1, 0, 1]
     # baseline = mean(shaped_rewards) = 0.875
     # A = shaped_rewards - baseline = [0.625, 0.125, -0.875, 0.125]
-    expected = torch.tensor([0.625, 0.125, -0.875, 0.125])
-    assert torch.allclose(result.advantages, expected, atol=1e-6)
+    assert result.advantages == pytest.approx([0.625, 0.125, -0.875, 0.125], abs=1e-6)
 
     # Zero-mean per group
-    assert torch.allclose(result.advantages.mean(), torch.zeros(()), atol=1e-6)
+    assert sum(result.advantages) == pytest.approx(0.0, abs=1e-6)
 
     # All correct rollouts have positive advantage
-    rewards = torch.tensor([r["reward"] for r in inputs.rollouts])
-    correct_mask = rewards >= 1.0
-    assert (result.advantages[correct_mask] > 0).all()
+    for rollout, adv in zip(inputs.rollouts, result.advantages):
+        if rollout["reward"] >= 1.0:
+            assert adv > 0
 
 
 def test_efficiency_all_correct_group():
@@ -92,12 +93,13 @@ def test_efficiency_all_correct_group():
     # mean_len = 70/3 ≈ 23.33
     # bonus = clamp(1 - [10, 20, 40] / (70/3), 0, 1) = [4/7, 1/7, 0]
     # shaped_rewards = [1+4/7, 1+1/7, 1] = [11/7, 8/7, 1]
-    shaped = torch.tensor([11.0 / 7, 8.0 / 7, 1.0])
-    expected = shaped - shaped.mean()
-    assert torch.allclose(result.advantages, expected, atol=1e-6)
+    shaped = [11.0 / 7, 8.0 / 7, 1.0]
+    mean_shaped = sum(shaped) / len(shaped)
+    expected = [s - mean_shaped for s in shaped]
+    assert result.advantages == pytest.approx(expected, abs=1e-6)
 
     # Zero-mean
-    assert torch.allclose(result.advantages.mean(), torch.zeros(()), atol=1e-6)
+    assert sum(result.advantages) == pytest.approx(0.0, abs=1e-6)
 
     # Shortest has highest advantage
     assert result.advantages[0] > result.advantages[1] > result.advantages[2]
@@ -109,7 +111,7 @@ def test_efficiency_all_zero_rewards():
     result_with = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
     result_without = default_advantage_fn(inputs)
 
-    assert torch.allclose(result_with.advantages, result_without.advantages, atol=1e-6)
+    assert result_with.advantages == pytest.approx(result_without.advantages, abs=1e-6)
 
 
 def test_efficiency_single_correct():
@@ -117,8 +119,7 @@ def test_efficiency_single_correct():
     inputs = _make_group(rewards=[1.0, 0.0, 0.0, 0.0], completion_lengths=[100, 50, 200, 150])
     result = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
 
-    expected = torch.tensor([0.75, -0.25, -0.25, -0.25])
-    assert torch.allclose(result.advantages, expected, atol=1e-6)
+    assert result.advantages == pytest.approx([0.75, -0.25, -0.25, -0.25], abs=1e-6)
 
 
 def test_efficiency_shorter_correct_higher_advantage():
@@ -128,8 +129,8 @@ def test_efficiency_shorter_correct_higher_advantage():
 
     advs = result.advantages
     assert advs[0] > advs[1] > advs[2]
-    assert (advs[:3] > 0).all()
-    assert (advs[3:] < 0).all()
+    assert all(a > 0 for a in advs[:3])
+    assert all(a < 0 for a in advs[3:])
 
 
 def test_efficiency_zero_mean_per_group():
@@ -143,8 +144,8 @@ def test_efficiency_zero_mean_per_group():
         length_penalty=_TOKENS_COMPLETION,
     )
 
-    assert torch.allclose(mixed.advantages.mean(), torch.zeros(()), atol=1e-6)
-    assert torch.allclose(all_correct.advantages.mean(), torch.zeros(()), atol=1e-6)
+    assert sum(mixed.advantages) == pytest.approx(0.0, abs=1e-6)
+    assert sum(all_correct.advantages) == pytest.approx(0.0, abs=1e-6)
 
 
 def test_efficiency_amplification_bounded():
@@ -181,7 +182,7 @@ def test_efficiency_tokens_with_tool_response_weight():
 
     # completion tokens identical (10 each) → completion-only shaping is a no-op
     result_completion_only = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
-    assert torch.allclose(result_completion_only.advantages, torch.zeros(3), atol=1e-6)
+    assert result_completion_only.advantages == pytest.approx([0.0, 0.0, 0.0], abs=1e-6)
 
     # tool-response only: costs are [200, 0, 100], mean=100, bonus is one-sided
     # so only the below-mean rollout (idx 1) gets amplified; the at/above-mean tie.
@@ -189,8 +190,8 @@ def test_efficiency_tokens_with_tool_response_weight():
     advs = result_tool_only.advantages
     assert advs[1] > advs[0]
     assert advs[1] > advs[2]
-    assert torch.allclose(advs[0], advs[2], atol=1e-6)
-    assert torch.allclose(advs.mean(), torch.zeros(()), atol=1e-6)
+    assert advs[0] == pytest.approx(advs[2], abs=1e-6)
+    assert sum(advs) == pytest.approx(0.0, abs=1e-6)
 
 
 def test_efficiency_fractional_weight_with_int_rewards():
@@ -205,7 +206,7 @@ def test_efficiency_fractional_weight_with_int_rewards():
     fractional = TokensLengthPenaltyConfig(completion_weight=0.3, tool_response_weight=0.0)
     int_result = default_advantage_fn(AdvantageInputs(rollouts=rollouts_int), length_penalty=fractional)
     float_result = default_advantage_fn(AdvantageInputs(rollouts=rollouts_float), length_penalty=fractional)
-    assert torch.allclose(int_result.advantages, float_result.advantages, atol=1e-6)
+    assert int_result.advantages == pytest.approx(float_result.advantages, abs=1e-6)
 
 
 def test_efficiency_zero_costs_falls_back_to_plain_grpo():
@@ -219,8 +220,8 @@ def test_efficiency_zero_costs_falls_back_to_plain_grpo():
     inputs = AdvantageInputs(rollouts=rollouts)
     result = default_advantage_fn(inputs, length_penalty=_TOKENS_TOOL_ONLY)
     expected = default_advantage_fn(inputs)  # plain GRPO
-    assert not torch.isnan(result.advantages).any()
-    assert torch.allclose(result.advantages, expected.advantages, atol=1e-6)
+    assert not any(math.isnan(a) for a in result.advantages)
+    assert result.advantages == pytest.approx(expected.advantages, abs=1e-6)
 
 
 def test_efficiency_tokens_default_weights_match_completion_when_no_metric():
@@ -228,7 +229,7 @@ def test_efficiency_tokens_default_weights_match_completion_when_no_metric():
     inputs = _make_group(rewards=[1.0, 1.0, 0.0, 1.0], completion_lengths=[10, 30, 20, 20])
     result_default = default_advantage_fn(inputs, length_penalty=TokensLengthPenaltyConfig())
     result_completion = default_advantage_fn(inputs, length_penalty=_TOKENS_COMPLETION)
-    assert torch.allclose(result_default.advantages, result_completion.advantages, atol=1e-6)
+    assert result_default.advantages == pytest.approx(result_completion.advantages, abs=1e-6)
 
 
 def test_efficiency_turns_penalty():
@@ -243,8 +244,7 @@ def test_efficiency_turns_penalty():
 
     # mean_correct_turns = (1+3+2)/3 = 2
     # bonus = clamp(1 - [1,3,2,2]/2, 0, 1) = [0.5, 0, 0, 0]
-    expected = torch.tensor([0.625, 0.125, -0.875, 0.125])
-    assert torch.allclose(result.advantages, expected, atol=1e-6)
+    assert result.advantages == pytest.approx([0.625, 0.125, -0.875, 0.125], abs=1e-6)
 
 
 def test_compute_advantages_with_config():
@@ -256,8 +256,8 @@ def test_compute_advantages_with_config():
 
     advantages = [r["advantage"] for r in rollouts]
     assert len(advantages) == 6
-    assert abs(sum(advantages[:3])) < 1e-5
-    assert abs(sum(advantages[3:])) < 1e-5
+    assert sum(advantages[:3]) == pytest.approx(0.0, abs=1e-5)
+    assert sum(advantages[3:]) == pytest.approx(0.0, abs=1e-5)
 
 
 def test_compute_advantages_no_cross_group_leakage():
@@ -273,9 +273,7 @@ def test_compute_advantages_no_cross_group_leakage():
     compute_advantages(rollouts, advantage_config=DefaultAdvantageConfig())
 
     advantages = [r["advantage"] for r in rollouts]
-    expected = [-10.0, 0.0, 10.0, -0.1, 0.0, 0.1]
-    for got, want in zip(advantages, expected):
-        assert abs(got - want) < 1e-5, (advantages, expected)
+    assert advantages == pytest.approx([-10.0, 0.0, 10.0, -0.1, 0.0, 0.1], abs=1e-5)
 
 
 def test_compute_advantages_without_config():
@@ -309,13 +307,9 @@ def test_compute_advantages_partial_groups():
 
     advantages = [r["advantage"] for r in rollouts]
     # Group A: mean=0.5, advantages=[0.5, -0.5, 0.5, -0.5]
-    expected_a = [0.5, -0.5, 0.5, -0.5]
+    assert advantages[:4] == pytest.approx([0.5, -0.5, 0.5, -0.5], abs=1e-5)
     # Group B: mean=0.5, advantages=[-0.2, 0.2]
-    expected_b = [-0.2, 0.2]
-    for got, want in zip(advantages[:4], expected_a):
-        assert abs(got - want) < 1e-5, (advantages[:4], expected_a)
-    for got, want in zip(advantages[4:], expected_b):
-        assert abs(got - want) < 1e-5, (advantages[4:], expected_b)
+    assert advantages[4:] == pytest.approx([-0.2, 0.2], abs=1e-5)
 
 
 def test_compute_advantages_singleton_group_gets_zero_advantage():
@@ -330,10 +324,9 @@ def test_compute_advantages_singleton_group_gets_zero_advantage():
 
     advantages = [r["advantage"] for r in rollouts]
     # Group 0: mean=0.65, advantages=[-0.15, 0.15]
-    assert abs(advantages[0] + 0.15) < 1e-5
-    assert abs(advantages[1] - 0.15) < 1e-5
+    assert advantages[:2] == pytest.approx([-0.15, 0.15], abs=1e-5)
     # Group 1 (singleton): advantage=0
-    assert abs(advantages[2]) < 1e-5
+    assert advantages[2] == pytest.approx(0.0, abs=1e-5)
 
 
 def test_compute_advantages_disambiguates_example_id_across_envs():
@@ -349,11 +342,9 @@ def test_compute_advantages_disambiguates_example_id_across_envs():
 
     advantages = [r["advantage"] for r in rollouts]
     # env_a group: mean=0.5, advantages=[0.5, -0.5]
-    assert abs(advantages[0] - 0.5) < 1e-5
-    assert abs(advantages[1] + 0.5) < 1e-5
+    assert advantages[:2] == pytest.approx([0.5, -0.5], abs=1e-5)
     # env_b group: mean=150, advantages=[-50, 50]
-    assert abs(advantages[2] + 50.0) < 1e-5
-    assert abs(advantages[3] - 50.0) < 1e-5
+    assert advantages[2:] == pytest.approx([-50.0, 50.0], abs=1e-5)
 
 
 def test_setup_advantage_fn_with_custom_config():
@@ -367,10 +358,9 @@ def test_setup_advantage_fn_with_custom_config():
 
     result = advantage_fn(inputs)
     assert isinstance(result, AdvantageOutputs)
-    assert torch.allclose(result.advantages, torch.tensor([2.0, 1.0, 1.6]))
+    assert result.advantages == pytest.approx([2.0, 1.0, 1.6], abs=1e-6)
 
 
 def _dummy_custom_advantage(inputs: AdvantageInputs, scale: float = 1.0) -> AdvantageOutputs:
     """A simple custom advantage for testing."""
-    rewards = torch.tensor([r["reward"] for r in inputs.rollouts])
-    return AdvantageOutputs(advantages=rewards * scale)
+    return AdvantageOutputs(advantages=[r["reward"] * scale for r in inputs.rollouts])

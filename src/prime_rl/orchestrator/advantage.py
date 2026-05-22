@@ -29,7 +29,7 @@ class AdvantageInputs:
 class AdvantageOutputs:
     """Outputs from advantage computation of a single group."""
 
-    advantages: Float[Tensor, "group_size"]
+    advantages: list[float]
 
 
 AdvantageFn = Callable[..., AdvantageOutputs]
@@ -39,8 +39,8 @@ Expected signature:
     def my_advantage(inputs: AdvantageInputs, **kwargs) -> AdvantageOutputs:
         ...
 
-The function receives a single group and returns a 1D advantage tensor of the
-same length. `compute_advantages` calls it once per group.
+The function receives a single group and returns a list of advantages with one
+entry per rollout. `compute_advantages` calls it once per group.
 """
 
 
@@ -62,12 +62,12 @@ def default_advantage_fn(
             [w_c * get_model_completion_len(r) + w_t * get_tool_response_len(r) for r in inputs.rollouts],
             dtype=rewards.dtype,
         )
-        return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs))
+        return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs).tolist())
     if isinstance(length_penalty, TurnsLengthPenaltyConfig):
         costs = torch.tensor([get_num_turns(r) for r in inputs.rollouts], dtype=rewards.dtype)
-        return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs))
+        return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs).tolist())
 
-    return AdvantageOutputs(advantages=rewards - rewards.mean())
+    return AdvantageOutputs(advantages=(rewards - rewards.mean()).tolist())
 
 
 def _efficiency_shaping(
@@ -147,5 +147,5 @@ def compute_advantages(
 
     for group in groups_by_example.values():
         result = advantage_fn(AdvantageInputs(rollouts=group))
-        for rollout, advantage in zip(group, result.advantages.tolist()):
+        for rollout, advantage in zip(group, result.advantages):
             rollout["advantage"] = advantage

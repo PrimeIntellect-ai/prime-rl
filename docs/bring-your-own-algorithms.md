@@ -97,20 +97,21 @@ Each `vf.RolloutOutput` carries the full rollout (`reward`, `trajectory`, etc.),
 ```python
 @dataclass
 class AdvantageOutputs:
-    advantages: Float[Tensor, "group_size"]
+    advantages: list[float]   # one entry per rollout in the input group
 ```
 
 ### Example: Normalized Advantage
 
 ```python
-import torch
+import statistics
 from prime_rl.orchestrator.advantage import AdvantageInputs, AdvantageOutputs
 
 def normalized_advantage(inputs: AdvantageInputs, eps: float = 1e-8) -> AdvantageOutputs:
     """Normalize advantages to zero mean and unit variance within the group."""
-    rewards = torch.tensor([r["reward"] for r in inputs.rollouts])
-    advantages = (rewards - rewards.mean()) / (rewards.std() + eps)
-    return AdvantageOutputs(advantages=advantages)
+    rewards = [r["reward"] for r in inputs.rollouts]
+    mean = statistics.fmean(rewards)
+    std = statistics.pstdev(rewards) if len(rewards) > 1 else 0.0
+    return AdvantageOutputs(advantages=[(r - mean) / (std + eps) for r in rewards])
 ```
 
 ### Configuration
