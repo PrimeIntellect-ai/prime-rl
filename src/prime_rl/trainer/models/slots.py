@@ -42,6 +42,20 @@ from prime_rl.transport.wire import LayoutEntry, PeerInfo, WriteEntry
 SMALL_NON_EXPERT_BYTES = 2 * 1024 * 1024
 
 
+def _maybe_cast_source_for_transfer(src: Tensor, conversion: ConversionEntry) -> Tensor:
+    if conversion.preserve_source_dtype or not src.is_floating_point():
+        return src
+    return src.to(torch.bfloat16)
+
+
+def _slot_dtype(conversion: ConversionEntry, base_dtype: torch.dtype) -> torch.dtype:
+    if conversion.dst_dtype is not None:
+        return conversion.dst_dtype
+    if conversion.requires_scale:
+        return torch.float8_e4m3fn
+    return base_dtype
+
+
 # --- Slot protocol --------------------------------------------------------- #
 
 
@@ -124,7 +138,7 @@ class ShardedSlot:
             my_rank, trainer_ws = 0, 1
         src_rows = src.shape[0]
         rows_per_shard = src_rows // fsdp_total
-        dst_dtype = torch.float8_e4m3fn if conversion.requires_scale else base_dtype
+        dst_dtype = _slot_dtype(conversion, base_dtype)
         weight = torch.empty(
             (rows_per_shard,) + tuple(src.shape[1:]),
             dtype=dst_dtype,
@@ -141,7 +155,7 @@ class ShardedSlot:
                 dtype=torch.float32,
                 device=weight.device,
             )
-            scale_key = ConversionSpec.scale_name(slot_key)
+            scale_key = ConversionSpec.scale_name(slot_key, allow_direct_parameter=True)
             inference_scale_name = ConversionSpec.scale_name(f"{prefix}.{spec.dst}" if prefix else spec.dst)
             scale_rows = ceil_div(src_rows, BLOCK_SIZE)
         return cls(
@@ -171,7 +185,7 @@ class ShardedSlot:
         return out
 
     def convert(self, state_dict: dict[str, Tensor]) -> None:
-        src = state_dict[self.source_name]
+        src = _maybe_cast_source_for_transfer(state_dict[self.source_name], self.conversion)
         if isinstance(src, DTensor):
             src = src.full_tensor() if self.weight.shape[0] == src.shape[0] else src.to_local()
         self.conversion.fn(src, self.weight, self.scale)
@@ -286,7 +300,7 @@ class GatheredSlot:
             my_rank, trainer_ws = mesh.get_local_rank(), mesh.size()
         else:
             my_rank, trainer_ws = 0, 1
-        dst_dtype = torch.float8_e4m3fn if conversion.requires_scale else base_dtype
+        dst_dtype = _slot_dtype(conversion, base_dtype)
         weight = torch.empty(tuple(src.shape), dtype=dst_dtype, device=src.device)
         slot_key = f"{prefix}.{src_name}" if prefix else src_name
         scale: Optional[Tensor] = None
@@ -300,7 +314,7 @@ class GatheredSlot:
                 dtype=torch.float32,
                 device=weight.device,
             )
-            scale_key = ConversionSpec.scale_name(slot_key)
+            scale_key = ConversionSpec.scale_name(slot_key, allow_direct_parameter=True)
             inference_scale_name = ConversionSpec.scale_name(f"{prefix}.{spec.dst}" if prefix else spec.dst)
             scale_rows = ceil_div(src_rows, BLOCK_SIZE)
         return cls(
@@ -330,7 +344,7 @@ class GatheredSlot:
         return out
 
     def convert(self, state_dict: dict[str, Tensor]) -> None:
-        src = state_dict[self.source_name]
+        src = _maybe_cast_source_for_transfer(state_dict[self.source_name], self.conversion)
         if isinstance(src, DTensor):
             src = src.full_tensor() if self.weight.shape[0] == src.shape[0] else src.to_local()
         self.conversion.fn(src, self.weight, self.scale)
@@ -467,7 +481,7 @@ class ExpertSlot:
         dst_shape = list(src_local_shapes[0])
         dst_shape[spec.cat_dim] = sum(sh[spec.cat_dim] for sh in src_local_shapes)
         device = local_sample.device
-        dst_dtype = torch.float8_e4m3fn if conversion.requires_scale else base_dtype
+        dst_dtype = _slot_dtype(conversion, base_dtype)
         weight = torch.empty(tuple(dst_shape), dtype=dst_dtype, device=device)
         slot_key = f"{prefix}.{spec.dst}" if prefix else spec.dst
         moe_prefix = slot_key.rsplit(".", 1)[0]
@@ -513,7 +527,7 @@ class ExpertSlot:
     def convert(self, state_dict: dict[str, Tensor]) -> None:
         srcs = []
         for name in self.source_names:
-            t = state_dict[name]
+            t = _maybe_cast_source_for_transfer(state_dict[name], self.conversion)
             srcs.append(t.to_local() if isinstance(t, DTensor) else t)
         tensor = srcs[0] if len(srcs) == 1 else torch.cat(srcs, dim=self.cat_dim)
         self.conversion.fn(tensor, self.weight, self.scale)

@@ -15,7 +15,7 @@ from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import (
 
 @pytest.fixture(
     params=[
-        pytest.param(("Qwen/Qwen3-235B-A22B-Thinking-2507", "passthrough"), id="bf16"),
+        pytest.param(("Qwen/Qwen3-235B-A22B-Thinking-2507", "bf16_cast"), id="bf16"),
         pytest.param(("Qwen/Qwen3-235B-A22B-Thinking-2507-FP8", "fp8_128x128"), id="fp8"),
     ]
 )

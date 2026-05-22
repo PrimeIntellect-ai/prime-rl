@@ -106,22 +106,22 @@ BASE_LAYER_CONVERSION_SPEC: tuple[ConversionSpec, ...] = (
     ConversionSpec(
         "input_layernorm.weight",
         ("input_layernorm.weight",),
-        conversion=MaybeQuantize("passthrough"),
+        conversion=MaybeQuantize("bf16_cast"),
     ),
     ConversionSpec(
         "post_attention_layernorm.weight",
         ("post_attention_layernorm.weight",),
-        conversion=MaybeQuantize("passthrough"),
+        conversion=MaybeQuantize("bf16_cast"),
     ),
     ConversionSpec(
         "self_attn.q_norm.weight",
         ("self_attn.q_norm.weight",),
-        conversion=MaybeQuantize("passthrough"),
+        conversion=MaybeQuantize("bf16_cast"),
     ),
     ConversionSpec(
         "self_attn.k_norm.weight",
         ("self_attn.k_norm.weight",),
-        conversion=MaybeQuantize("passthrough"),
+        conversion=MaybeQuantize("bf16_cast"),
     ),
     ConversionSpec(
         "self_attn.qkv_proj.weight",
@@ -141,7 +141,7 @@ SPARSE_LAYER_CONVERSION_SPEC: tuple[ConversionSpec, ...] = (
     ConversionSpec(
         "mlp.gate.weight",
         ("mlp.router.gate.weight",),
-        conversion=MaybeQuantize("passthrough"),
+        conversion=MaybeQuantize("bf16_cast"),
     ),
     ConversionSpec("mlp.experts.w13_weight", ("mlp.experts.w1", "mlp.experts.w3"), cat_dim=1),
     ConversionSpec("mlp.experts.w2_weight", ("mlp.experts.w2",)),
@@ -151,17 +151,17 @@ NON_LAYER_CONVERSION_SPEC: tuple[ConversionSpec, ...] = (
     ConversionSpec(
         "model.embed_tokens.weight",
         ("model.embed_tokens.weight",),
-        conversion=MaybeQuantize("passthrough"),
+        conversion=MaybeQuantize("bf16_cast"),
     ),
     ConversionSpec(
         "model.norm.weight",
         ("model.norm.weight",),
-        conversion=MaybeQuantize("passthrough"),
+        conversion=MaybeQuantize("bf16_cast"),
     ),
     ConversionSpec(
         "lm_head.weight",
         ("lm_head.weight",),
-        conversion=MaybeQuantize("passthrough"),
+        conversion=MaybeQuantize("bf16_cast"),
     ),
 )
 
