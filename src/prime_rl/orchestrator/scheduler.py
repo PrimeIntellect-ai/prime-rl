@@ -42,10 +42,6 @@ class GroupState:
     rollouts_to_schedule: int
     completed_rollouts: list[vf.RolloutOutput] = field(default_factory=list)
     pinned_client: vf.ClientConfig | None = None
-    # Count of dispatched rollouts that came back with an error or empty
-    # trajectory. Partial-group training drops these from the group instead of
-    # rescheduling, so the group finalizes once
-    # ``len(completed_rollouts) + failed_rollouts == rollouts_per_example``.
     failed_rollouts: int = 0
 
 
