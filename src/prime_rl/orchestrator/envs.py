@@ -110,6 +110,15 @@ class Env:
         sampling_args["extra_body"] = extra_body
         return sampling_args
 
+    @property
+    def state_columns(self) -> list[str]:
+        """Required columns plus any extras configured on the env, deduped (required first)."""
+        merged: list[str] = []
+        for col in (*REQUIRED_STATE_COLUMNS, *self.config.state_columns):
+            if col not in merged:
+                merged.append(col)
+        return merged
+
     async def run_rollout(
         self,
         client: vf.ClientConfig,
@@ -124,7 +133,7 @@ class Env:
             model=model_name,
             sampling_args=self._sampling_args_with_salt(cache_salt),
             max_retries=self.config.max_retries,
-            state_columns=REQUIRED_STATE_COLUMNS,
+            state_columns=self.state_columns,
             env_client=self.env_client,
         )
 
@@ -143,7 +152,7 @@ class Env:
             model=model_name,
             sampling_args=self._sampling_args_with_salt(cache_salt),
             max_retries=self.config.max_retries,
-            state_columns=REQUIRED_STATE_COLUMNS,
+            state_columns=self.state_columns,
             env_client=self.env_client,
         )
 
