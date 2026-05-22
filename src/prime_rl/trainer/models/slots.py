@@ -171,8 +171,6 @@ class ShardedSlot:
 
     def convert(self, state_dict: dict[str, Tensor]) -> None:
         src = state_dict[self.source_name]
-        if src.is_floating_point():
-            src = src.to(torch.bfloat16)
         if isinstance(src, DTensor):
             src = src.full_tensor() if self.weight.shape[0] == src.shape[0] else src.to_local()
         self.conversion.fn(src, self.weight, self.scale)
@@ -331,8 +329,6 @@ class GatheredSlot:
 
     def convert(self, state_dict: dict[str, Tensor]) -> None:
         src = state_dict[self.source_name]
-        if src.is_floating_point():
-            src = src.to(torch.bfloat16)
         if isinstance(src, DTensor):
             src = src.full_tensor() if self.weight.shape[0] == src.shape[0] else src.to_local()
         self.conversion.fn(src, self.weight, self.scale)
@@ -515,8 +511,6 @@ class ExpertSlot:
         srcs = []
         for name in self.source_names:
             t = state_dict[name]
-            if t.is_floating_point():
-                t = t.to(torch.bfloat16)
             srcs.append(t.to_local() if isinstance(t, DTensor) else t)
         tensor = srcs[0] if len(srcs) == 1 else torch.cat(srcs, dim=self.cat_dim)
         self.conversion.fn(tensor, self.weight, self.scale)
