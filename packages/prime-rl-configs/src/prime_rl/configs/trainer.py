@@ -493,6 +493,9 @@ class NIXLMxWeightBroadcastConfig(BaseWeightBroadcastConfig):
     inference_world_size: int = 1
     """Number of GPUs used for inference."""
 
+    inference_model_name: str = ""
+    """HF model name of the inference target."""
+
 
 WeightBroadcastConfig: TypeAlias = Annotated[
     FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLMxWeightBroadcastConfig,
