@@ -39,9 +39,8 @@ def build_log_entry(record) -> dict:
         "function": record["function"],
         "line": record["line"],
     }
-    # When enqueue=True, loguru strips the traceback object before pickling
-    # (loguru/_recattrs.py:68). The traceback string must therefore be
-    # pre-formatted by a patcher and stashed in extra["traceback"].
+    # extra["traceback"] is set by traceback_patcher when enqueue=True (loguru
+    # drops the traceback object during pickling, so it must be pre-formatted).
     if extra.get("traceback"):
         log_entry["exception"] = extra.pop("traceback")
     elif record["exception"] is not None:
@@ -129,10 +128,8 @@ def setup_logger(
     from loguru._logger import Core as _Core
     from loguru._logger import Logger as _Logger
 
-    # Pre-format the traceback into extra["traceback"] before loguru enqueues
-    # the record. With enqueue=True, loguru pickles records and unconditionally
-    # drops the traceback object (loguru/_recattrs.py:68), so the formatted
-    # string must be captured here, while the live traceback is still attached.
+    # enqueue=True drops the traceback during pickling, so pre-format it here
+    # while the live traceback is still attached.
     patchers = [traceback_patcher] if json_logging else []
 
     logger = _Logger(
