@@ -140,11 +140,18 @@ def test_default_loss_fn_sft_mask_gradient_flows():
     n_sft = 2
     per_token_sft_weight = sft_alpha / n_sft  # sft_tokens mode formula
 
-    trainer_logprobs = torch.tensor([-0.1, -0.2, -0.3, -0.4, -0.5], dtype=torch.float32, requires_grad=True).cuda()
-    inference_logprobs = torch.tensor([-0.05, 0.0, -0.4, 0.0, -0.6], dtype=torch.float32).cuda()
-    advantages = torch.tensor([1.0, per_token_sft_weight, 1.0, per_token_sft_weight, 1.0], dtype=torch.float32).cuda()
-    loss_mask = torch.ones(seq_len, dtype=torch.bool).cuda()
-    sft_mask = torch.tensor([False, True, False, True, False], dtype=torch.bool).cuda()
+    # Create requires_grad tensor directly on cuda so it's a leaf — .cuda()
+    # after requires_grad=True makes the device tensor a non-leaf and .grad
+    # would never populate.
+    trainer_logprobs = torch.tensor(
+        [-0.1, -0.2, -0.3, -0.4, -0.5], dtype=torch.float32, device="cuda", requires_grad=True
+    )
+    inference_logprobs = torch.tensor([-0.05, 0.0, -0.4, 0.0, -0.6], dtype=torch.float32, device="cuda")
+    advantages = torch.tensor(
+        [1.0, per_token_sft_weight, 1.0, per_token_sft_weight, 1.0], dtype=torch.float32, device="cuda"
+    )
+    loss_mask = torch.ones(seq_len, dtype=torch.bool, device="cuda")
+    sft_mask = torch.tensor([False, True, False, True, False], dtype=torch.bool, device="cuda")
 
     loss_fn = setup_loss_fn(DefaultLossConfig(dppo_mask_high=10.0, dppo_mask_low=10.0))
     loss, _ = compute_loss(
