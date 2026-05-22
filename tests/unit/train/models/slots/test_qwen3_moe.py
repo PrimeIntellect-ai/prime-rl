@@ -89,7 +89,7 @@ def tiny_state() -> tuple[Qwen3MoeConfig, dict[str, torch.Tensor]]:
 
 @pytest.fixture(
     params=[
-        pytest.param(("passthrough", torch.bfloat16), id="bf16"),
+        pytest.param(("bf16_cast", torch.bfloat16), id="bf16"),
         pytest.param(("fp8_128x128", torch.bfloat16), id="fp8"),
     ]
 )
@@ -177,7 +177,7 @@ def test_qkv_three_sources_yield_three_slots(tiny_state, inference_target):
 
 
 def test_fp8_only_quantized_slots_carry_scale(tiny_state):
-    """Pinned (passthrough) specs never get scale buffers under FP8 inference."""
+    """Pinned bf16 specs never get scale buffers under FP8 inference."""
     config, sd = tiny_state
     slots = _build(config, sd, "fp8_128x128", torch.bfloat16)
     by_key = {s.slot_key: s for s in slots}
@@ -243,7 +243,7 @@ def test_expert_slot_buffer_layout_and_writes(tiny_state):
 
 def test_sharded_slot_writes_target_my_rank_chunk_on_every_peer(tiny_state):
     config, sd = tiny_state
-    slots = _build(config, sd, "passthrough", torch.bfloat16)
+    slots = _build(config, sd, "bf16_cast", torch.bfloat16)
     q = next(s for s in slots if s.slot_key == "model.layers.0.self_attn.q_proj.weight")
     assert isinstance(q, ShardedSlot)
     peers = [
@@ -262,7 +262,7 @@ def test_sharded_slot_writes_target_my_rank_chunk_on_every_peer(tiny_state):
 def test_gathered_slot_round_robin_writes_when_single_rank(tiny_state):
     """With trainer_ws=1, a single trainer rank owns every gathered write."""
     config, sd = tiny_state
-    slots = _build(config, sd, "passthrough", torch.bfloat16)
+    slots = _build(config, sd, "bf16_cast", torch.bfloat16)
     norm = next(s for s in slots if s.slot_key == "model.layers.0.input_layernorm.weight")
     assert isinstance(norm, GatheredSlot)
     peers = [PeerInfo(agent_name=f"inf-r{r}", agent_metadata=b"", tensor_addrs={}, expert_map={}) for r in range(4)]
@@ -279,7 +279,7 @@ def test_materialize_roundtrip_on_sharded_slot(tiny_state):
     for k, v in sd.items():
         sd[k] = torch.randn(v.shape, generator=g, dtype=torch.float32, device="cuda")
 
-    slots = _build(config, sd, "passthrough", torch.bfloat16)
+    slots = _build(config, sd, "bf16_cast", torch.bfloat16)
     q = next(s for s in slots if s.slot_key == "model.layers.0.self_attn.q_proj.weight")
     q.convert(sd)
     # Single-rank: ShardedSlot's weight equals the source cast to bf16.

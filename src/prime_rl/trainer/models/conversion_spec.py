@@ -22,9 +22,7 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class MaybeQuantize:
-    """Selects a conversion. ``None`` lets the registry pick the default
-    based on the destination dtype.
-    """
+    """Selects a conversion. ``None`` lets the registry pick the model default."""
 
     conversion_type: str | None = None
 
@@ -40,7 +38,7 @@ class ConversionSpec:
             that fuse into ``dst``. Fused along ``cat_dim``.
         cat_dim: Axis along which multiple ``sources`` are concatenated.
         conversion: Conversion selector. Default leaves the choice to the
-            registry; override to pin e.g. ``MaybeQuantize("passthrough")``
+            registry; override to pin e.g. ``MaybeQuantize("bf16_cast")``
             for tensors that must never be quantized regardless of the
             inference variant.
     """
@@ -56,18 +54,19 @@ class ConversionSpec:
         return self.dst.startswith("mlp.experts.")
 
     @staticmethod
-    def scale_name(weight_name: str) -> str:
+    def scale_name(weight_name: str, *, allow_direct_parameter: bool = False) -> str:
         """Paired scale buffer name for a weight buffer.
 
         Mirrors vLLM's FP8 naming: ``.weight`` → ``.weight_scale_inv`` for
         2D linears, ``_weight`` → ``_weight_scale_inv`` for 3D stacked-expert
-        buffers. Caller picks the input — fused destination name (e.g.
-        ``self_attn.qkv_proj.weight``) for the inference-side scale, or a
-        per-source name (e.g. ``self_attn.q_proj.weight``) for the
-        trainer-side per-source scale buffer.
+        buffers. Trainer source tensors can also be direct ``nn.Parameter``
+        entries without a ``.weight`` suffix; callers must opt into that case
+        because inference destination names should stay strict.
         """
         if weight_name.endswith(".weight"):
             return weight_name.removesuffix(".weight") + ".weight_scale_inv"
         if weight_name.endswith("_weight"):
             return weight_name.removesuffix("_weight") + "_weight_scale_inv"
+        if allow_direct_parameter:
+            return f"{weight_name}.weight_scale_inv"
         raise ValueError(f"cannot derive scale name from {weight_name!r}")

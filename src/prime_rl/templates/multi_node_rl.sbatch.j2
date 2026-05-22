@@ -233,6 +233,10 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
     INFER_NODE_RANK=$SLURM_PROCID
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
+{%- if use_deep_gemm %}
+    export VLLM_USE_DEEP_GEMM=1
+    export VLLM_MOE_USE_DEEP_GEMM=1
+{%- endif %}
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
 
 {%- if kv_offload %}
@@ -248,11 +252,6 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 {% if is_disaggregated -%}
     # PD disaggregated: NIXL KV transfer + role-based inference
     read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
-{%- if use_deep_gemm %}
-    export VLLM_USE_DEEP_GEMM=1
-    export VLLM_MOE_USE_DEEP_GEMM=1
-{%- endif %}
-
     export GLOO_SOCKET_IFNAME=bond0
     export VLLM_ENGINE_READY_TIMEOUT_S=4200
     export UCX_TLS=all

@@ -13,8 +13,11 @@ from transformers.utils import TransformersKwargs, auto_docstring
 from transformers.utils.deprecation import deprecate_kwarg
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.conversion_spec import ConversionSpec
 from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig
 from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import (
+    CONVERSION_SPECS,
+    NON_LAYER_CONVERSION_SPEC,
     convert_hf_layer_to_tt,
     convert_hf_to_tt_moe,
     convert_tt_layer_to_hf,
@@ -166,6 +169,15 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
         cls, state_dict: dict[str, Tensor], layer_idx: int, quantize_fp8: bool = False
     ) -> dict[str, Tensor]:
         return convert_tt_layer_to_vllm_kernel(state_dict, layer_idx, quantize_fp8=quantize_fp8)
+
+    def get_conversion_specs_for_layer(self, layer_idx: int) -> list[ConversionSpec]:
+        is_dense = layer_idx < self.config.first_k_dense_replace
+        tail = CONVERSION_SPECS["dense_layer"] if is_dense else CONVERSION_SPECS["sparse_layer"]
+        return list(CONVERSION_SPECS["base_layer"] + tail)
+
+    @property
+    def non_layer_specs(self) -> tuple[ConversionSpec, ...]:
+        return NON_LAYER_CONVERSION_SPEC
 
 
 @auto_docstring
