@@ -968,7 +968,7 @@ wheels = [
 
 [[package]]
 name = "deepdive"
-version = "0.2.7"
+version = "0.2.9"
 source = { editable = "deps/research-environments/environments/deepdive" }
 dependencies = [
     { name = "aiohttp", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -1524,7 +1524,7 @@ http = [
 
 [[package]]
 name = "general-agent"
-version = "0.1.0"
+version = "0.1.4"
 source = { editable = "deps/research-environments/environments/general_agent" }
 dependencies = [
     { name = "mcp", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -3338,7 +3338,7 @@ requires-dist = [
 
 [[package]]
 name = "opencode-deepdive"
-version = "0.1.15"
+version = "0.1.16"
 source = { editable = "deps/research-environments/environments/opencode_deepdive" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },

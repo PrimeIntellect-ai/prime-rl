@@ -1,0 +1,47 @@
+max_steps = 1000
+seq_len = 32768
+
+[deployment]
+num_train_gpus = 4
+num_infer_gpus = 4
+
+[wandb]
+project = "general-agent"
+name = "qwen3-4b-rlm"
+
+[ckpt]
+interval = 100
+keep_last = 1
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[trainer]
+
+[trainer.model]
+cp = 2
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.compile]
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 8
+max_off_policy_steps = 32
+
+[[orchestrator.train.env]]
+id = "general-agent-solver-rlm"
+num_workers = 4
+max_retries = 3
+
+[inference]
+gpu_memory_utilization = 0.85
+
+[inference.model]
+max_model_len = 32768
+tool_call_parser = "hermes"
+
+[inference.parallel]
+dp = 4
