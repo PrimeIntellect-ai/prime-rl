@@ -21,10 +21,21 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     ``S`` = ``n_sft_tokens``, ``R`` = ``n_rl_tokens`` = ``sum(completion_mask)``.
 
     Normalization modes (default ``"all_tokens"``):
-    - ``"all_tokens"`` (ECHO): weight = ``α / T``.
+    - ``"all_tokens"``: weight = ``α / T`` (T = prompt + completion length).
     - ``"sft_tokens"``: weight = ``α / S``.
     - ``"ratio"``: weight = ``α × R / S``.
     - ``"none"``: weight = ``α``.
+
+    Relationship to ECHO (Stojkov et al. 2025): ECHO normalizes its
+    environment-prediction term by ``Z = |𝒪|``, the count of observation
+    (tool body) tokens in the rollout. ``"sft_tokens"`` matches this when
+    no ``tool_names`` filter is set (then ``S = |𝒪'| = |𝒪|``); under a
+    tool-names filter, ``S < |𝒪|`` so ``"sft_tokens"`` uses a smaller
+    denominator. ``"all_tokens"`` uses ``T``, which is strictly larger
+    than ``|𝒪|`` whenever the rollout has any prompt or completion
+    tokens — so ``"all_tokens"`` is NOT exactly ECHO; it's a stricter
+    normalization that scales SFT contribution down with the full
+    rollout length.
 
     All counts are taken pre-truncation so the weight reflects the actual
     rollout shape, not the artifact of ``seq_len`` truncation.
@@ -37,13 +48,19 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     mm_token_type_ids = training_example.mm_token_type_ids
     assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
     env_names = [training_example.env_name] * len(input_ids)
-    sft_mask = list(training_example.sft_mask) if training_example.sft_mask is not None else None
+    # SFT mask only flows downstream if ``sft_alpha`` is also set — otherwise
+    # the trainer would run ``sft_pg_loss_fn`` over the rollout's RL advantage
+    # on tool tokens, which is reward-shaped, not SFT-direction.
+    if training_example.sft_mask is not None and training_example.sft_alpha is not None:
+        sft_mask = list(training_example.sft_mask)
+    else:
+        sft_mask = None
 
     # SFT-on-tool-body overlay: rewrite the advantage on masked tool body
     # tokens to the per-rollout mode weight. Do NOT touch ``loss_mask`` —
     # SFT positions stay out of the RL loss path, and the trainer's separate
     # SFT compute_loss call uses ``sft_mask`` as its own loss mask.
-    if sft_mask is not None and training_example.sft_alpha is not None:
+    if sft_mask is not None:
         n_sft = sum(sft_mask)
         if n_sft > 0:
             normalization = training_example.sft_normalization or "all_tokens"
