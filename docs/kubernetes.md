@@ -258,8 +258,18 @@ torchrun \
   --node-rank=$RANK \
   --nproc-per-node=8 \
   --rdzv-endpoint=my-exp-trainer-0.$HEADLESS_SERVICE:29501 \
+  --log-dir=/data/outputs/logs/trainer/torchrun \
+  --local-ranks-filter=0 \
+  --redirect=3 \
+  --tee=3 \
   src/prime_rl/trainer/sft/train.py @ configs/train.toml
 ```
+
+`--local-ranks-filter=0 --tee=3` keeps only rank 0's stdout/stderr on the pod's
+console (so Loki/the dashboard see each log line once instead of N times for an
+N-GPU pod), while `--redirect=3 --log-dir=...` still writes every rank's
+stdout/stderr to per-rank files under the mounted PVC for debugging. This
+matches what the launcher does on single-node / SLURM deployments.
 
 ## Troubleshooting
 
