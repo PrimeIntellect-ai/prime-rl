@@ -8,7 +8,7 @@ from typing import Any
 import torch
 from torch import Tensor
 
-from prime_rl.configs.trainer import DefaultLossConfig, TokenExportConfig, TrainerConfig
+from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
 from prime_rl.trainer.rl.loss import compute_importance_ratio_and_mismatch_kl
 
 SCHEMA_VERSION = 1
@@ -25,15 +25,12 @@ class DisabledTokenExporter:
 class TokenExporter:
     def __init__(
         self,
-        config: TokenExportConfig,
         output_dir: Path,
         rank: int,
     ) -> None:
-        self.config = config
         self.rank = rank
-        self.path = self._resolve_path(config.path, output_dir, rank)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._file = self.path.open("a", encoding="utf-8")
+        self.output_dir = output_dir / "token_exports"
+        self._file: Any | None = None
         self._closed = False
         self._current_step: int | None = None
         self._sequences_this_step = 0
@@ -49,8 +46,7 @@ class TokenExporter:
         loss_config: Any,
     ) -> None:
         if self._current_step != step:
-            self._current_step = step
-            self._sequences_this_step = 0
+            self._start_step(step)
 
         columns = _export_columns(micro_batch, model_output, loss_config)
         _check_lengths(columns)
@@ -80,20 +76,27 @@ class TokenExporter:
         if self._closed:
             return
         self._closed = True
-        self._file.close()
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+
+    def _start_step(self, step: int) -> None:
+        if self._closed:
+            raise RuntimeError(f"Token exporter is closed for {self.output_dir}")
+        if self._file is not None:
+            self._file.close()
+        self._current_step = step
+        self._sequences_this_step = 0
+        step_dir = self.output_dir / f"step_{step}"
+        step_dir.mkdir(parents=True, exist_ok=True)
+        self._file = (step_dir / f"rank_{self.rank}.jsonl").open("w", encoding="utf-8")
 
     def _write(self, record: dict[str, Any]) -> None:
         if self._closed:
-            raise RuntimeError(f"Token exporter is closed for {self.path}")
+            raise RuntimeError(f"Token exporter is closed for {self.output_dir}")
+        if self._file is None:
+            raise RuntimeError("Token exporter has no active step file")
         self._file.write(json.dumps(record, separators=(",", ":"), allow_nan=False) + "\n")
-
-    @staticmethod
-    def _resolve_path(path: Path | None, output_dir: Path, rank: int) -> Path:
-        if path is None:
-            return output_dir / "token_exports" / f"rank_{rank}.jsonl"
-        if path.is_absolute():
-            return path
-        return output_dir / path
 
 
 def setup_token_exporter(
@@ -105,8 +108,8 @@ def setup_token_exporter(
     if parallel_dims.cp_enabled and parallel_dims.world_mesh["cp"].get_local_rank() != 0:
         return DisabledTokenExporter()
 
-    exporter = TokenExporter(token_export_config, config.output_dir, world.rank)
-    logger.info(f"Writing token exports to {exporter.path}")
+    exporter = TokenExporter(config.output_dir, world.rank)
+    logger.info(f"Writing token exports under {exporter.output_dir}")
     return exporter
 
 

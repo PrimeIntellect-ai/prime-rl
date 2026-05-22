@@ -159,12 +159,10 @@ For hosted multi-tenant runs where the trainer image's `trainer.loss.type` is fi
 
 ### RL trainer token exports
 
-For rollout debugging, enable trainer-side token export under `trainer.experimental.token_export` (or `experimental.token_export` when running the trainer entrypoint directly). It writes one JSONL record per exported sequence. Each record stores aligned per-token arrays for token ids, loss mask, advantage, reward, entropy, mismatch KL, inference/trainer logprobs, importance ratios, probability deltas, and masking diagnostics. It does not decode token text in the trainer.
+For rollout debugging, enable trainer-side token export under `trainer.experimental.token_export` (or `experimental.token_export` when running the trainer entrypoint directly). It writes one JSONL record per exported sequence under `output_dir/token_exports/step_<step>/rank_<rank>.jsonl`. Each record stores aligned per-token arrays for token ids, loss mask, advantage, reward, entropy, mismatch KL, inference/trainer logprobs, importance ratios, probability deltas, and masking diagnostics. It does not decode token text in the trainer.
 
 ```toml
 [trainer.experimental.token_export]
-# Optional. Relative paths resolve under trainer.output_dir.
-path = "token_exports/sample.jsonl"
 ```
 
 Leave it unset for normal training. When enabled, it exports every sequence from each exporting rank.
