@@ -4,18 +4,22 @@ This module hosts compaction-aligned TTT helpers, separate from the
 chunked TTT path so the two strategies can be developed and tested
 independently. See ``docs/ttt-implementation-plan.md`` for the design.
 
-Today the only piece that's self-contained — and therefore useful in
-isolation before the rest of the TTT machinery (learner service,
-transport types, trainer-side replay) lands — is the trajectory parser
-that detects compaction events on RLM-harness rollouts. The parser is
-pure (a function over a list of dicts), depends on nothing else in
-prime-rl, and is consumed by the (future) compaction-aligned update
-path.
+Two pieces today:
+
+- :func:`detect_compaction_events` — pure trajectory parser, no
+  dependencies on the rest of prime-rl. Consumed by the (future)
+  compaction-aligned update path and by the rollout augmenter below.
+- :func:`augment_rollouts_with_compaction_events` — orchestrator-side
+  hook that runs the parser over each rollout's trajectory and stuffs
+  the result back onto the rollout dict before ``save_rollouts``, so
+  the persisted JSONL carries per-rollout compaction traces for
+  post-hoc analysis (e.g., distribution of compactions per rollout,
+  diagnosing whether ``summarize_at_tokens`` triggers as expected).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Iterable
 
 
@@ -93,3 +97,25 @@ def detect_compaction_events(
         prev_len = prompt_len + len(step["completion"])
 
     return events
+
+
+def augment_rollouts_with_compaction_events(rollouts: Iterable[dict[str, Any]]) -> None:
+    """Inject ``compaction_events`` onto each rollout dict in place.
+
+    Walks each rollout's ``trajectory`` via :func:`detect_compaction_events`
+    and stashes the result (as plain dicts for clean JSON serialization)
+    under the ``compaction_events`` key. Called from the orchestrator
+    immediately before ``save_rollouts`` so the JSONL persists the
+    detection result and post-hoc analysis can read it without
+    re-walking trajectories — even after ``exclude_keys={"trajectory"}``
+    drops the trajectory from the saved record, the events ride along
+    as a separate top-level field.
+
+    Always runs, regardless of harness. For non-RLM rollouts whose
+    trajectories never compact, ``events`` is an empty list — the
+    explicit empty list still signals "no compaction here" for
+    post-hoc tooling, at negligible JSONL size cost.
+    """
+    for rollout in rollouts:
+        trajectory = rollout.get("trajectory") or []
+        rollout["compaction_events"] = [asdict(event) for event in detect_compaction_events(trajectory)]

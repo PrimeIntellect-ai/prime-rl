@@ -7,7 +7,11 @@ These tests pin the structural-signal contract so the parser stays
 faithful to the RLM harness's own compaction detection.
 """
 
-from prime_rl.orchestrator.ttt import CompactionEvent, detect_compaction_events
+from prime_rl.orchestrator.ttt import (
+    CompactionEvent,
+    augment_rollouts_with_compaction_events,
+    detect_compaction_events,
+)
 
 
 def _step(prompt: list[str], completion: list[str]) -> dict:
@@ -102,3 +106,57 @@ def test_accepts_arbitrary_iterables_not_just_lists():
 
     events = detect_compaction_events(gen())
     assert events == [CompactionEvent(step_index=1, pre_compaction_message_count=3)]
+
+
+def test_augmenter_injects_events_as_plain_dicts():
+    # save_rollouts uses json.dump; the augmenter has to emit plain dicts
+    # so the JSONL round-trips without needing a CompactionEvent encoder.
+    rollouts = [
+        {
+            "trajectory": [
+                _step(["sys", "u1"], ["a1"]),
+                _step(["sys", "u_summary"], ["a2"]),
+            ]
+        }
+    ]
+    augment_rollouts_with_compaction_events(rollouts)
+    assert rollouts[0]["compaction_events"] == [{"step_index": 1, "pre_compaction_message_count": 3}]
+
+
+def test_augmenter_emits_empty_list_for_non_compacting_rollouts():
+    # The augmenter always runs — non-RLM rollouts (no compaction) get an
+    # explicit empty list, signaling "no compaction here" to post-hoc
+    # tooling. The cost is ~22 JSONL bytes per rollout; the benefit is
+    # that downstream consumers don't have to special-case the missing
+    # key vs the empty-list case.
+    rollouts = [
+        {
+            "trajectory": [
+                _step(["sys", "u1"], ["a1"]),
+                _step(["sys", "u1", "a1", "u2"], ["a2"]),
+            ]
+        }
+    ]
+    augment_rollouts_with_compaction_events(rollouts)
+    assert rollouts[0]["compaction_events"] == []
+
+
+def test_augmenter_handles_rollout_without_trajectory_key():
+    # Defensive: if a rollout dict is malformed (no trajectory key), the
+    # augmenter falls back to an empty trajectory rather than raising —
+    # crashing the save path because one rollout is malformed would be
+    # worse than persisting an empty events list.
+    rollouts = [{}]
+    augment_rollouts_with_compaction_events(rollouts)
+    assert rollouts[0]["compaction_events"] == []
+
+
+def test_augmenter_mutates_in_place():
+    # Single source of truth — the orchestrator passes the same list
+    # straight to save_rollouts, no rebinding. Pins the in-place
+    # contract.
+    rollouts = [{"trajectory": [_step(["sys"], ["a1"])]}]
+    original_id = id(rollouts[0])
+    augment_rollouts_with_compaction_events(rollouts)
+    assert id(rollouts[0]) == original_id
+    assert "compaction_events" in rollouts[0]
