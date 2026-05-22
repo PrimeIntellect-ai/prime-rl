@@ -428,10 +428,10 @@ async def orchestrate(config: OrchestratorConfig):
             # Compute advantages (in-place)
             num_rollouts = len(train_rollouts)
             num_unique_examples = len({(r["env_name"], r["example_id"]) for r in train_rollouts})
-            compute_advantages(train_rollouts, config.advantage)
+            await asyncio.to_thread(compute_advantages, train_rollouts, config.advantage)
 
             # Apply rollout filters — sets rollout["filters"] and rollout["is_filtered"]
-            apply_filters(rollout_filters, train_rollouts)
+            await asyncio.to_thread(apply_filters, rollout_filters, train_rollouts)
 
             n_trainable = sum(1 for r in train_rollouts if not r["is_filtered"])
             if n_trainable > 0:
@@ -564,7 +564,7 @@ async def orchestrate(config: OrchestratorConfig):
             step=progress.step,
         )
 
-        training_batch_sender.send(training_batch)
+        await training_batch_sender.send(training_batch)
 
         step_time = time.perf_counter() - step_start_time
 
@@ -863,6 +863,9 @@ async def orchestrate(config: OrchestratorConfig):
 def main():
     """Main entry-point for orchestrator. Run using `uv run orchestrator`"""
     set_proc_title("Orchestrator")
+    import uvloop
+
+    uvloop.install()
     asyncio.run(orchestrate(cli(OrchestratorConfig)))
 
 
