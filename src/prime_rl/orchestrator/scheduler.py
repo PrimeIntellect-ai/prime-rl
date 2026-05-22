@@ -47,7 +47,6 @@ class GroupState:
     # rescheduling, so the group finalizes once
     # ``len(completed_rollouts) + failed_rollouts == rollouts_per_example``.
     failed_rollouts: int = 0
-    last_failure_reason: str | None = None
 
 
 class Scheduler:
@@ -450,10 +449,13 @@ class Scheduler:
                         if rollout["error"] is not None:
                             self.errored_rollouts_by_env[env_name] += 1
                             self.errors_by_type[rollout["error"]["error"]] += 1
-                            group.last_failure_reason = rollout["error"]["error_chain_repr"]
+                            self.logger.warning(
+                                f"Rollout failed in group {group_id} ({env_name}) - "
+                                f"{rollout['error']['error_chain_repr']}"
+                            )
                         elif len(rollout["trajectory"]) == 0:
                             self.empty_rollouts_by_env[env_name] += 1
-                            group.last_failure_reason = "empty trajectory"
+                            self.logger.warning(f"Empty trajectory in group {group_id} ({env_name})")
                         else:
                             rollout["env_name"] = env_name
                             valid_rollouts.append(rollout)
@@ -468,8 +470,7 @@ class Scheduler:
                     if num_failed > 0 and env.requires_group_scoring:
                         self.dropped_groups_by_env[env_name] += 1
                         self.logger.warning(
-                            f"Dropping group-scored group {group_id} ({env_name}) after rollout failure - "
-                            f"{group.last_failure_reason}"
+                            f"Dropping group-scored group {group_id} ({env_name}) after rollout failure"
                         )
                         await self.drop_group(group_id)
                         continue
@@ -487,9 +488,7 @@ class Scheduler:
                     if not group.completed_rollouts:
                         self.dropped_groups_by_env[env_name] += 1
                         self.logger.warning(
-                            f"Dropping group {group_id} ({env_name}) - all "
-                            f"{self.rollouts_per_example} rollouts failed - last failure: "
-                            f"{group.last_failure_reason}"
+                            f"Dropping group {group_id} ({env_name}) - all {self.rollouts_per_example} rollouts failed"
                         )
                         self.groups.pop(group_id, None)
                         continue
@@ -498,8 +497,7 @@ class Scheduler:
                         self.logger.warning(
                             f"Partial group {group_id} ({env_name}) - "
                             f"{len(group.completed_rollouts)}/{self.rollouts_per_example} valid "
-                            f"({group.failed_rollouts} failed) - last failure: "
-                            f"{group.last_failure_reason}"
+                            f"({group.failed_rollouts} failed)"
                         )
 
                     completed_rollouts = self.groups.pop(group_id).completed_rollouts
