@@ -1,4 +1,4 @@
-max_steps = 1000
+max_steps = 400
 seq_len = 32768
 
 [slurm]
@@ -37,8 +37,6 @@ max_off_policy_steps = 32
 
 [[orchestrator.train.env]]
 id = "general-agent-solver-rlm"
-num_workers = 8
-max_retries = 3
 
 [orchestrator.train.env.args]
 min_tier = 1
@@ -48,7 +46,6 @@ gpu_memory_utilization = 0.85
 
 [inference.model]
 max_model_len = 32768
-tool_call_parser = "hermes"
 
 [inference.parallel]
 dp = 2

@@ -17,8 +17,6 @@ max_completion_tokens = 4096
 
 [[orchestrator.train.env]]
 id = "general-agent-solver-rlm"
-num_workers = 2
-max_retries = 1
 
 [trainer]
 
@@ -26,7 +24,6 @@ max_retries = 1
 
 [inference.model]
 max_model_len = 8192
-tool_call_parser = "hermes"
 
 [inference.parallel]
 dp = 1
