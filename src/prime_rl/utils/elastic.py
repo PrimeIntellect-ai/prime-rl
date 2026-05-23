@@ -104,12 +104,14 @@ class ElasticInferencePool:
         self,
         client_config: ClientConfig,
         model_name: str,
-        train_client_type: str = "openai_chat_completions_token",
+        train_client_type: str = "openai_chat_completions",
         eval_client_type: str = "openai_chat_completions",
         renderer_name: str = "auto",
         tool_parser: str | None = None,
         reasoning_parser: str | None = None,
         renderer_pool_size: int | None = None,
+        preserve_all_thinking: bool = False,
+        preserve_thinking_between_tool_calls: bool = False,
     ):
         self.logger = get_logger()
         self.client_config = client_config
@@ -125,6 +127,8 @@ class ElasticInferencePool:
         self.tool_parser = tool_parser
         self.reasoning_parser = reasoning_parser
         self.renderer_pool_size = renderer_pool_size
+        self.preserve_all_thinking = preserve_all_thinking
+        self.preserve_thinking_between_tool_calls = preserve_thinking_between_tool_calls
         self.router_url = client_config.router_url
 
         self._servers: dict[str, ServerState] = {}
@@ -146,12 +150,14 @@ class ElasticInferencePool:
         cls,
         client_config: ClientConfig,
         model_name: str,
-        train_client_type: str = "openai_chat_completions_token",
+        train_client_type: str = "openai_chat_completions",
         eval_client_type: str = "openai_chat_completions",
         renderer_name: str = "auto",
         tool_parser: str | None = None,
         reasoning_parser: str | None = None,
         renderer_pool_size: int | None = None,
+        preserve_all_thinking: bool = False,
+        preserve_thinking_between_tool_calls: bool = False,
     ) -> ElasticInferencePool:
         if client_config.elastic is None:
             raise ValueError("Elastic inference pool requires elastic config")
@@ -164,6 +170,8 @@ class ElasticInferencePool:
             tool_parser=tool_parser,
             reasoning_parser=reasoning_parser,
             renderer_pool_size=renderer_pool_size,
+            preserve_all_thinking=preserve_all_thinking,
+            preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
         )
         await pool.start()
         return pool
@@ -202,6 +210,7 @@ class ElasticInferencePool:
                 base_url=urls,
                 api_key_var=self.client_config.api_key_var,
                 headers=self.client_config.headers,
+                headers_from_env=self.client_config.headers_from_env,
                 dp_rank_count=self.client_config.dp_rank_count,
                 extra_headers_from_state=self.client_config.extra_headers_from_state,
             )
@@ -214,6 +223,8 @@ class ElasticInferencePool:
                     tool_parser=self.tool_parser,
                     reasoning_parser=self.reasoning_parser,
                     renderer_pool_size=self.renderer_pool_size,
+                    preserve_all_thinking=self.preserve_all_thinking,
+                    preserve_thinking_between_tool_calls=self.preserve_thinking_between_tool_calls,
                 )
                 if urls
                 else []
@@ -257,6 +268,7 @@ class ElasticInferencePool:
             base_url=[f"{url}/v1"],
             api_key_var=self.client_config.api_key_var,
             headers=self.client_config.headers,
+            headers_from_env=self.client_config.headers_from_env,
         )
         return setup_admin_clients(config)[0]
 

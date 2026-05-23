@@ -10,7 +10,7 @@ name = "reverse-text"
 
 [orchestrator]
 batch_size = 128
-rollouts_per_example = 16
+group_size = 16
 
 [orchestrator.train.sampling]
 max_completion_tokens = 128
@@ -24,3 +24,7 @@ lr = 3e-6
 [ckpt] # Checkpoint at the end of training
 
 [inference]
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"

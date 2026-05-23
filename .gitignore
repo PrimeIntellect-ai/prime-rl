@@ -1,4 +1,5 @@
 .vscode/*
+.claude/scheduled_tasks.lock
 *.ipynb
 *.jsonl
 configs/endpoints.py
@@ -199,3 +200,5 @@ debug_I2_zero_band
 .idea
 
 outputs/
+
+third_party/

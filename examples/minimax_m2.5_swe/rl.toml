@@ -69,3 +69,7 @@ seed = 42
 
 [inference.parallel]
 tp = 8
+
+# PrimeIntellect/MiniMax-M2.5-bf16 — template-identical to MiniMaxAI/MiniMax-M2.5 (mapped).
+[orchestrator.renderer]
+name = "minimax-m2"
