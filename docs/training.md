@@ -7,6 +7,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 - [Entrypoints](#entrypoints)
 - [RL training](#rl-training)
   - [Launch](#launch)
+  - [Useful CLI flags](#useful-cli-flags)
   - [What each process does at runtime](#what-each-process-does-at-runtime)
   - [Key knobs](#key-knobs)
 - [SFT training](#sft-training)
@@ -23,11 +24,10 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Log files](#log-files)
   - [Console output and the tmux helper](#console-output-and-the-tmux-helper)
   - [Weights & Biases](#weights--biases)
-  - [Prometheus and BetterStack](#prometheus-and-betterstack)
   - [Platform monitoring](#platform-monitoring)
-- [Metrics that matter](#metrics-that-matter)
+  - [Prometheus and BetterStack](#prometheus-and-betterstack)
+- [Important metrics](#important-metrics)
 - [Rules of thumb](#rules-of-thumb)
-- [Common issues](#common-issues)
 
 ## Entrypoints
 
@@ -45,15 +45,12 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 
 ### Launch
 
-The minimal single-node RL run uses a shipped example config. From the project root:
+The minimal RL run trains an SFT-warmed `Qwen3-0.6B` on the `reverse-text` task — the env is bundled with the `verifiers` submodule, so nothing else needs to be installed. From the project root, on two GPUs (one for inference, one for the trainer):
 
 ```bash
-prime env install primeintellect/math-env   # install the env once
-bash scripts/tmux.sh                         # 4-pane tmux that tails the logs
-
-uv run rl @ configs/gsm8k/rl.toml \
+uv run rl @ examples/reverse_text/rl.toml \
   --wandb.project my-project \
-  --wandb.name gsm8k-smoke \
+  --wandb.name reverse-text-smoke \
   --ckpt
 ```
 
@@ -70,31 +67,37 @@ The launcher assigns physical GPUs from `CUDA_VISIBLE_DEVICES` (or all visible G
 
 For multi-node and SLURM, see [Scaling § RL training](scaling.md#rl-training).
 
+### Useful CLI flags
+
+Commonly-used flags every RL launch should know about:
+
+| Flag | What it does |
+|---|---|
+| `--ckpt` | Enable end-of-training checkpoint. See [Checkpointing](#checkpointing) for interval / keep-last / resume variants. |
+| `--wandb` | Enable Weights & Biases logging with defaults. Pair with `--wandb.project` / `--wandb.name`. |
+| `--orchestrator.prime-monitor` | Register the run on the Prime Intellect platform (Lab) and stream metrics there. See [Platform monitoring](#platform-monitoring). |
+| `--clean-output-dir` | Wipe `<output_dir>` before starting. Useful when re-running an experiment with the same name during iteration. |
+| `--output-dir outputs/<name>` | Per-run output directory. Always set this when running more than one experiment in parallel. |
+| `--max-steps N` | Stop after `N` trainer steps. Overrides whatever the config sets. |
+| `--dry-run` | Resolve + validate the full config, write per-process TOMLs to `<output_dir>/configs/`, and exit without launching. The fastest way to debug a misbehaving config. |
+
 ### What each process does at runtime
 
 - **Inference** (vLLM) holds the current policy and serves OpenAI-compatible completions. Receives a new HF checkpoint via `POST /update_weights` after each trainer step (or batched into one update per `max_async_level` steps).
-- **Orchestrator** samples a prompt batch from the configured `[[orchestrator.train.env]]` envs, drives them against the inference server (multi-turn, tool calls, etc.), packs the completed rollouts into a binary batch, writes it under `outputs/rollouts/step_N/`, and notifies the trainer.
+- **Orchestrator** samples a prompt batch from the configured `[[orchestrator.train.env]]` envs, drives them against the inference server (multi-turn, tool calls, etc.), packs the completed rollouts into a binary batch, writes it under `outputs/rollouts/step_N/`, and notifies the trainer. The orchestrator talks to one **env server** per train/eval env (sidecar `vf.EnvServer` subprocess by default), and each env server holds a pool of **env workers** that run user code concurrently — that's where most rollout-time CPU work lives.
 - **Trainer** waits for the binary batch, runs forward/backward/optimizer step under FSDP2, writes new weights to the broadcast transport, and signals the orchestrator that step `N+1` is in flight.
 
 The orchestrator is the only stateful CPU process; the trainer is GPU-bound; the inference server is stateless apart from KV cache. On restart the orchestrator pushes the latest checkpoint into inference automatically — you don't need to checkpoint inference state.
 
 ### Key knobs
 
-These are the knobs you'll touch most often. The full field reference for each lives in [Reference](reference.md).
+The orchestrator owns the data-side knobs that most directly shape what the trainer sees. For trainer-side parallelism, sampling, optimizer, and loss knobs see [Scaling](scaling.md) and [Algorithms](algorithms.md); for the full field reference see [Reference](reference.md).
 
-| Knob | Where | What it controls |
-|---|---|---|
-| `model.name` | top-level | HF model ID or local path. Auto-fans-out to trainer/orchestrator/inference. |
-| `max_steps` | top-level | Number of trainer steps before exit. |
-| `seq_len` | top-level | Max sequence length per training sample; also enforced by the orchestrator when packing. |
-| `max_async_level` | top-level | How many steps inference can run ahead of the trainer. `1` (default) is fully overlapped; `>1` is more off-policy with potentially higher throughput. See [Algorithms § Async](algorithms.md#async--off-policy-training). |
-| `orchestrator.batch_size` | orchestrator | Prompts per trainer step. |
-| `orchestrator.rollouts_per_example` | orchestrator | Rollouts per prompt (the group size used for advantage normalization). |
-| `orchestrator.train.sampling.max_completion_tokens` | orchestrator | Max tokens per turn at sampling time. |
-| `inference.parallel.tp` / `inference.parallel.dp` | inference | Tensor and data parallelism for the inference server. |
-| `inference.gpu_memory_utilization` | inference | Fraction of GPU memory vLLM may use. Tighten on co-located single-GPU runs. |
-| `trainer.optim.lr` | trainer | Learning rate. Default optimizer is AdamW. |
-| `trainer.loss.type` | trainer | Pick the loss variant (default AIPO vs custom). See [Algorithms § Loss](algorithms.md#loss). |
+| Knob | What it controls |
+|---|---|
+| `orchestrator.batch_size` | Prompts per trainer step. |
+| `orchestrator.rollouts_per_example` | Group size — rollouts generated per prompt. Used for advantage normalization and pass@k estimation. |
+| `orchestrator.training_mode` | Picks the training-mode dispatch: `rl` (default), `opd`, or `sft`. See [Training modes](#training-modes-rl--opd--sft-via-orchestrator). |
 
 ## SFT training
 
@@ -113,19 +116,13 @@ If both columns are present, `messages` takes precedence.
 
 ### Launch
 
-Single GPU:
+The minimal SFT run trains `Qwen3-0.6B` on the `reverse-text` SFT dataset:
 
 ```bash
-uv run sft @ configs/<your-sft-config>.toml --wandb
+uv run sft @ examples/reverse_text/sft.toml --wandb
 ```
 
 Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manages this for you — see [Scaling § SFT training](scaling.md#sft-training) for non-default layouts).
-
-A CPU-friendly smoke run with fake data:
-
-```bash
-uv run sft @ configs/debug/sft/train.toml
-```
 
 ### SFT-specific knobs
 
@@ -139,7 +136,7 @@ uv run sft @ configs/debug/sft/train.toml
 
 ## Training modes (RL / OPD / SFT-via-orchestrator)
 
-The RL entrypoint also supports two distillation modes, switched via `orchestrator.training_mode`:
+The RL entrypoint supports three training modes, switched via `orchestrator.training_mode`:
 
 | Mode | Student | Teacher | Use case |
 |---|---|---|---|
@@ -200,8 +197,6 @@ uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-last 3  # rolling window of 3
 uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-interval 100  # …plus permanent every 100
 ```
 
-Common combo for long runs: `--ckpt.interval 50 --ckpt.keep-last 3 --ckpt.keep-interval 500` — rolling 3-checkpoint window for fast recovery, plus a permanent snapshot every 500 steps.
-
 ### Resuming a run
 
 Re-run the same launch command and pass `--ckpt.resume-step <N>` (or `-1` for "latest"). Make sure `--max-steps` is at least the target final step, not the remaining delta:
@@ -213,8 +208,6 @@ uv run rl @ rl.toml --max-steps 10 --ckpt
 # Resume: continue to step 20
 uv run rl @ rl.toml --max-steps 20 --ckpt.resume-step 10
 ```
-
-Trainer + orchestrator step counters are kept in lockstep — both rewind to the same resume step. The inference server can stay running across restarts; the orchestrator pushes the resumed weights on reconnect.
 
 ### Saving HF weights for serving
 
@@ -280,6 +273,23 @@ uv run rl @ rl.toml --wandb \
   --no-trainer.wandb.log-extras.distributions
 ```
 
+### Platform monitoring
+
+Register a run on the Prime Intellect platform (Prime Lab) and stream training metrics, samples, and distributions to the platform dashboard. Bare flag uses defaults:
+
+```bash
+uv run rl @ rl.toml --orchestrator.prime-monitor
+```
+
+Or set it in TOML:
+
+```toml
+[orchestrator.prime_monitor]
+run_name = "my-experiment"
+```
+
+Requires `PRIME_API_KEY` (set via `prime login` or env var) and an allowlisted team. Currently internal-only.
+
 ### Prometheus and BetterStack
 
 For long-running production training:
@@ -287,18 +297,7 @@ For long-running production training:
 - **Prometheus**: set `trainer.metrics_server.port` to expose `/metrics` on each trainer process. vLLM also exposes `/metrics` natively — useful for KV-cache saturation and pending-request counts.
 - **BetterStack heartbeats**: set `trainer.heartbeat.url` (and the matching orchestrator field) to ping a heartbeat URL each step. Pair with a BetterStack monitor to page on stalls.
 
-### Platform monitoring
-
-Internal teams can register runs on the Prime Intellect platform:
-
-```toml
-[orchestrator.prime_monitor]
-run_name = "my-experiment"
-```
-
-This streams training metrics, samples, and distributions to the platform dashboard. Requires `PRIME_API_KEY` (set via `prime login` or env var) and an allowlisted team. Currently internal-only.
-
-## Metrics that matter
+## Important metrics
 
 Pulled from the three console logs (and mirrored to W&B):
 
@@ -327,39 +326,11 @@ Pulled from the three console logs (and mirrored to W&B):
 | orchestrator | `scheduler/async_level`, `scheduler/inflight_rollouts` | current async lag |
 | vLLM | `vllm:gpu_cache_usage_perc` | → 1.0 means KV cache saturated, slow generation |
 
-Live vLLM stats (Prometheus):
-
-```bash
-curl -s http://localhost:8000/metrics | grep -E "num_requests|gpu_cache_usage"
-```
-
 ## Rules of thumb
 
-- **Start small.** Run `configs/gsm8k/rl.toml` end-to-end on 2 GPUs before scaling. If GSM8K runs cleanly, your install is good.
-- **Eyeball the reward distribution.** If `reward/all/std` collapses to ~0 within a few steps, the env is too easy or rewards are degenerate — increase difficulty or check the rubric.
-- **Match `inference.parallel.tp` to model layout.** TP > num attention heads / 2 starts losing efficiency. For dense models keep TP small and use DP for throughput. For MoE-heavy models prefer EP.
-- **Set `max_async_level` deliberately.** `1` (default) = pipelined overlap, lowest off-policy drift. `2` absorbs longer weight-broadcast latency (e.g. cross-WAN). Higher values trade more drift for throughput; watch `mismatch_kl/all/mean`.
+- **Start small.** Run `examples/reverse_text/rl.toml` end-to-end on 2 GPUs before scaling. If the smoke run finishes cleanly, your install is good.
+- **Batch size ≥ 64.** Smaller batches give noisy gradient estimates and the trainer's overhead-per-step dominates throughput. 64 is the practical floor; 128–512 is typical for production RL.
+- **Group size ≥ 8.** Bigger groups (`orchestrator.rollouts_per_example`) make it more likely that a prompt produces a mix of high- and low-reward rollouts, which is what gives the trainer a usable signal — if all rollouts in a group succeed or all fail, the within-group advantage collapses to zero and the trainer learns nothing from that prompt. Bigger groups also tighten advantage normalization. 8 is the floor; 16–32 is common.
 - **Pin `output_dir` per run.** Sharing a directory across runs will mix rollouts and break resumes. `--output-dir outputs/<unique-name>` is the simplest discipline.
 - **Use `--dry-run` before SLURM.** Validators (CP needs flash-attention, NCCL broadcast needs `max_async_level=1`, etc.) fail fast in dry-run and slow in queue.
 - **Don't change `optimization_dtype` / `reduce_dtype`.** These are load-bearing — flipping bfloat16/float32 silently changes training dynamics. Stick with defaults unless you know what you're doing.
-
-## Common issues
-
-**`@ path/to/x.toml` fails to load.** Leave a space between `@` and the path — `@ rl.toml`, not `@rl.toml`. If the error mentions Pydantic, your TOML doesn't match the schema; `--dry-run` will pinpoint the offending field.
-
-**API timeouts under load.** Bump file descriptors: `ulimit -n 32000`. Our defaults are already generous, so a real timeout usually means inference is saturated — check `time/generate_completions` and vLLM's `gpu_cache_usage_perc`.
-
-**CUDA OOM in the trainer.** In order, try:
-
-1. Full activation checkpointing: `--model.ac` (the bare flag enables defaults).
-2. Lower `seq_len` or `data.micro_batch_size`.
-3. FSDP CPU offload: `--model.fsdp-cpu-offload` (or `--model.optim-cpu-offload` for optimizer states only).
-4. Context parallelism: `--model.cp 2` (requires flash-attention; see [Scaling § CP](scaling.md#context-parallelism)).
-
-**CUDA OOM in inference.** Tighten `inference.gpu_memory_utilization` (start around 0.85), reduce `inference.model.max_model_len`, or split inference across more GPUs via `inference.parallel.dp`.
-
-**Eval scores frozen but training reward rising.** Likely a chat-template prefix violation eating the model's outputs. Check `orchestrator.renderer` settings (`preserve_all_thinking`, etc.) and use the prime-rl–patched model checkpoint if available.
-
-**Trainer hangs on weight broadcast.** NCCL transport requires `max_async_level=1` and is incompatible with LoRA — the run will fail at config-validate time if either is set. Otherwise check that all trainer ranks survived the previous step (`grep ERROR logs/trainer/torchrun/`).
-
-**Run dies mid-step with no traceback.** Look in `<output_dir>/logs/envs/train/<env>/env_worker_*.log` first — most silent kills come from OOM-killed env workers running user code. Set `orchestrator.log.vf_level = "debug"` for more verbose env logging.
