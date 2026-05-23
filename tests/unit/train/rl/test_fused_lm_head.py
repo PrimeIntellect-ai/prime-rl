@@ -6,7 +6,13 @@ from transformers.models.llama.configuration_llama import LlamaConfig
 from prime_rl.trainer.models import cast_float_and_contiguous
 from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear, inject_prime_lm_head
 from prime_rl.trainer.models.llama import LlamaForCausalLM as PrimeRLLlamaForCausalLM
-from prime_rl.trainer.rl.loss import compute_entropy, selective_log_softmax, shift_tensor_left, shift_tensor_right
+from prime_rl.trainer.rl.loss import (
+    apply_top_k_top_p,
+    compute_entropy,
+    selective_log_softmax,
+    shift_tensor_left,
+    shift_tensor_right,
+)
 from prime_rl.utils.utils import default_dtype
 
 
@@ -50,6 +56,45 @@ def test_fused_lm_head_matches_full_logits_forward_and_backward_cpu():
     assert out.get("logprobs") is not None
     assert out.get("entropy") is not None
 
+    loss1 = out["logprobs"].sum()
+    loss1.backward()
+    grad_hidden1 = hidden1.grad.detach().clone()
+    grad_weight1 = lm.weight.grad.detach().clone()
+
+    torch.testing.assert_close(out["logprobs"], logp0, rtol=0, atol=1e-5)
+    torch.testing.assert_close(out["entropy"], ent0, rtol=0, atol=1e-5)
+    torch.testing.assert_close(grad_hidden1, grad_hidden0, rtol=0, atol=1e-5)
+    torch.testing.assert_close(grad_weight1, grad_weight0, rtol=0, atol=1e-5)
+
+
+def test_fused_lm_head_matches_full_logits_with_top_k_forward_and_backward_cpu():
+    torch.manual_seed(123)
+    b, s, h, v = 2, 4, 8, 37
+    temperature = torch.tensor([[1.0, 1.3, 0.8, 1.1], [1.6, 0.9, 1.2, 1.4]], dtype=torch.float32)
+    top_ks = torch.tensor([[3, -1, 5, v], [1, 7, 2, -1]], dtype=torch.long)
+    top_ps = torch.ones((b, s), dtype=torch.float32)
+    chunk_size = 3
+
+    hidden0 = torch.randn(b, s, h, dtype=torch.float32, requires_grad=True)
+    labels = torch.randint(0, v, (b, s), dtype=torch.long)
+    weight0 = torch.randn(v, h, dtype=torch.float32, requires_grad=True)
+
+    logits = hidden0 @ weight0.t()
+    scaled_logits = logits / temperature.unsqueeze(-1)
+    logp_logits = apply_top_k_top_p(scaled_logits, top_ks, top_ps, labels=labels)
+    logp0 = torch.log_softmax(logp_logits, dim=-1).gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
+    ent0 = compute_entropy(scaled_logits)
+    loss0 = logp0.sum()
+    loss0.backward()
+    grad_hidden0 = hidden0.grad.detach().clone()
+    grad_weight0 = weight0.grad.detach().clone()
+
+    hidden1 = hidden0.detach().clone().requires_grad_(True)
+    weight1 = weight0.detach().clone().requires_grad_(True)
+    lm = FusedOutputLinear(in_features=h, out_features=v, chunk_size=chunk_size)
+    lm.weight = torch.nn.Parameter(weight1)
+
+    out = lm(hidden1, labels, temperature=temperature, top_ks=top_ks)
     loss1 = out["logprobs"].sum()
     loss1.backward()
     grad_hidden1 = hidden1.grad.detach().clone()

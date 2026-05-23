@@ -49,13 +49,12 @@ def selective_log_softmax(
 
 def apply_top_k_top_p(
     logits: Tensor,
-    top_k: int | None,
-    top_p: float | None,
+    top_ks: Tensor | None,
+    top_ps: Tensor | None,
     labels: Tensor | None = None,
 ) -> Tensor:
     """Mirror vLLM's top-k / top-p truncation so the trainer logits sum over
-    the same support as the inference-time sample. Bit-exact match against
-    vLLM's ``apply_top_k_top_p_pytorch``. Scalar k / p; ``k <= 0`` and
+    the same support as the inference-time sample. Per-token ``k <= 0`` and
     ``p >= 1.0`` are no-ops.
 
     ``labels`` is the safety guard: restore the label's original logit after
@@ -65,32 +64,48 @@ def apply_top_k_top_p(
     applied uniformly.
     """
     vocab_size = logits.shape[-1]
-    do_top_k = top_k is not None and 0 < top_k < vocab_size
-    do_top_p = top_p is not None and top_p < 1.0
+    do_top_k = top_ks is not None and bool(((top_ks > 0) & (top_ks < vocab_size)).any().item())
+    do_top_p = top_ps is not None and bool((top_ps < 1.0).any().item())
     if not do_top_k and not do_top_p:
         return logits
 
-    label_logits = logits.gather(-1, labels.unsqueeze(-1)) if labels is not None else None
+    original_shape = logits.shape
+    flat_logits = logits.reshape(-1, vocab_size)
+    flat_top_ks = top_ks.reshape(-1) if top_ks is not None else None
+    flat_top_ps = top_ps.reshape(-1) if top_ps is not None else None
+    flat_labels = labels.reshape(-1) if labels is not None else None
+    label_logits = flat_logits.gather(-1, flat_labels.unsqueeze(-1)) if flat_labels is not None else None
 
-    if do_top_k:
-        top_values, _ = logits.topk(top_k, dim=-1)
-        threshold = top_values[..., -1:]
-        logits = logits.masked_fill(logits < threshold, float("-inf"))
+    if do_top_k and flat_top_ks is not None:
+        flat_logits = flat_logits.clone()
+        valid_ks = flat_top_ks[(flat_top_ks > 0) & (flat_top_ks < vocab_size)].unique()
+        for top_k in valid_ks.tolist():
+            row_mask = flat_top_ks == top_k
+            row_logits = flat_logits[row_mask]
+            top_values, _ = row_logits.topk(top_k, dim=-1)
+            threshold = top_values[..., -1:]
+            flat_logits[row_mask] = row_logits.masked_fill(row_logits < threshold, float("-inf"))
 
-    if do_top_p:
+    if do_top_p and flat_top_ps is not None:
+        row_mask = flat_top_ps < 1.0
+        row_logits = flat_logits[row_mask]
+        row_top_ps = flat_top_ps[row_mask].unsqueeze(-1)
         # Sort ascending so the low-probability tail is at the front (mirrors vLLM).
-        sorted_logits, sorted_idx = logits.sort(dim=-1, descending=False)
+        sorted_logits, sorted_idx = row_logits.sort(dim=-1, descending=False)
         sorted_probs = sorted_logits.softmax(dim=-1)
         cumprobs = sorted_probs.cumsum(dim=-1)
-        top_p_mask = cumprobs <= (1.0 - top_p)
+        top_p_mask = cumprobs <= (1.0 - row_top_ps)
         top_p_mask[..., -1] = False  # always keep the top token
         sorted_logits = sorted_logits.masked_fill(top_p_mask, float("-inf"))
-        logits = torch.empty_like(logits).scatter_(-1, sorted_idx, sorted_logits)
+        updated_logits = torch.empty_like(row_logits).scatter_(-1, sorted_idx, sorted_logits)
+        if not do_top_k:
+            flat_logits = flat_logits.clone()
+        flat_logits[row_mask] = updated_logits
 
     if label_logits is not None:
-        logits = logits.scatter(-1, labels.unsqueeze(-1), label_logits)
+        flat_logits = flat_logits.scatter(-1, flat_labels.unsqueeze(-1), label_logits)
 
-    return logits
+    return flat_logits.reshape(original_shape)
 
 
 @jaxtyped(typechecker=typechecker)
