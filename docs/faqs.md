@@ -159,7 +159,7 @@ NCCL broadcast is much faster than filesystem for local-cluster setups, at the c
 - **TP (inference)**: scale within a node, up to `num_attention_heads / 2`. Past that, returns diminish.
 - **DP (inference and trainer)**: scale throughput linearly across replicas. Default scaling lever.
 - **EP (trainer, MoE only)**: shards expert weights; the right knob for MoE memory and throughput together.
-- **CP (trainer)**: shards a sequence across GPUs along the token axis. Needed for sequences past ~32K tokens. Stick to CP ≤ 8.
+- **CP (trainer)**: shards a sequence across GPUs along the token axis. Needed for sequences past ~32K tokens.
 
 See [Scaling § Parallelism knobs](scaling.md#parallelism-knobs).
 
