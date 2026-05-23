@@ -347,6 +347,20 @@ def interleave_rollout(
             return None
         prepared_steps.append(prepared)
 
+    # Deferred routed_experts state per sample. The prior implementation
+    # unpacked the accumulated bytes blob → numpy concatenated the new step →
+    # repacked to bytes on every extension, which is O(N²) byte copies for an
+    # N-turn rollout. For a ~100-turn rollout that reaches 60k tokens the
+    # accumulated buffer grows to ~23 MB and we touch every byte of it ~N
+    # times — ~2.3 GB of memcpy *per rollout*, multiplied by ~256 rollouts
+    # per step is the dominant source of orch event-loop stalls.
+    #
+    # Defer the concat: keep per-sample `chunks` (slices of each step's
+    # routed_experts), record any boundary-token overwrites as small fixups,
+    # and do a single concat + align + pack when the sample is finalized.
+    # O(N) byte work, ~100× less per rollout in practice.
+    sample_routed_state: dict[int, dict[str, Any]] = {}
+
     def make_sample(tokens: dict[str, Any]) -> TrainingSample:
         """Create a new TrainingSample from a trajectory step."""
         if has_error:
@@ -355,10 +369,6 @@ def interleave_rollout(
             completion_mask = [bool(i) for i in tokens["completion_mask"]]
         completion_ids = list(tokens["completion_ids"])
 
-        routed_experts = _align_routed_experts(
-            tokens.get("routed_experts"),
-            len(tokens["prompt_ids"]) + len(tokens["completion_ids"]),
-        )
         prompt_ids = list(tokens["prompt_ids"])
         sample = TrainingSample(
             prompt_ids=prompt_ids,
@@ -370,9 +380,19 @@ def interleave_rollout(
             teacher_logprobs=None,
             advantage=None,
             env_name=output["env_name"],
-            routed_experts=_pack_routed_experts(routed_experts),
+            routed_experts=None,  # deferred — finalized at end of interleave_rollout
             mm_token_type_ids=None,
         )
+        # Initialize routed-experts state for this sample. First chunk is the
+        # raw step routed_experts (no pad, no copy). running_len is the
+        # cumulative count across chunks; tracked so the boundary fix-up at
+        # each extension is a no-op append rather than a destructive write.
+        step_routed = tokens.get("routed_experts")
+        if step_routed is not None:
+            sample_routed_state[id(sample)] = {
+                "chunks": [step_routed],  # list[np.ndarray]
+                "running_len": int(step_routed.shape[0]),
+            }
         return sample
 
     def extend_sample(sample: TrainingSample, prefix_len: int, step_idx: int) -> None:
@@ -396,19 +416,22 @@ def interleave_rollout(
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
         sample.completion_temperatures.extend([temperature] * len(completion_ids))
 
-        if tokens.get("routed_experts") is not None and sample.routed_experts is not None:
-            step_routed = tokens["routed_experts"]
-            sample_routed_experts = _unpack_routed_experts(sample.routed_experts)
-            # The previous step's last routing entry was zero-padded by _align_routed_experts
-            # (vLLM only captures num_tokens-1 routings per request). This step actually
-            # processed that boundary token as part of its prompt, so replace the zero-fill
-            # with the real routing decision before appending new entries.
+        step_routed = tokens.get("routed_experts")
+        state = sample_routed_state.get(id(sample))
+        if step_routed is not None and state is not None:
+            # vLLM doesn't capture a routing decision for the *last* token of any
+            # request, so the previous step left no entry for token at index
+            # (prefix_len - 1). The next step's forward pass *did* process that
+            # token (as part of its prompt) and produced step_routed[prefix_len-1].
+            # Append that single boundary entry as its own chunk, then append the
+            # genuinely new entries from this step. No prior bytes touched.
             if prefix_len > 0 and prefix_len <= step_routed.shape[0]:
-                sample_routed_experts[prefix_len - 1] = step_routed[prefix_len - 1]
-            sample_routed_experts = np.concatenate((sample_routed_experts, step_routed[prefix_len:]), axis=0)
-            expected_len = len(sample.prompt_ids) + len(sample.completion_ids)
-            sample_routed_experts = _align_routed_experts(sample_routed_experts, expected_len)
-            sample.routed_experts = _pack_routed_experts(sample_routed_experts)
+                boundary_chunk = step_routed[prefix_len - 1 : prefix_len]
+                state["chunks"].append(boundary_chunk)
+                state["running_len"] += 1
+            new_chunk = step_routed[prefix_len:]
+            state["chunks"].append(new_chunk)
+            state["running_len"] += int(new_chunk.shape[0])
 
     # Track [prefix_tokens, sample, last_step_idx] per active sample
     active_samples: list[tuple[list[int], TrainingSample, int]] = []
@@ -441,6 +464,22 @@ def interleave_rollout(
             )
             new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
             active_samples.append((new_prefix, make_sample(tokens), step_idx))
+
+    # Finalize routed_experts for each sample. One concat per sample (O(N) byte
+    # work) replaces the previous per-step unpack/concat/repack (O(N²)). The
+    # boundary entries between steps were already inserted as one-entry chunks
+    # during extend_sample, so a straight concat is correct.
+    for _, sample, _ in active_samples:
+        state = sample_routed_state.get(id(sample))
+        if state is None:
+            continue
+        chunks = state["chunks"]
+        if not chunks:
+            continue
+        combined = np.concatenate(chunks, axis=0) if len(chunks) > 1 else np.ascontiguousarray(chunks[0])
+        expected_len = len(sample.prompt_ids) + len(sample.completion_ids)
+        combined = _align_routed_experts(combined, expected_len)
+        sample.routed_experts = _pack_routed_experts(combined)
 
     # Attach images once per sample using only the last merged step. Prompt
     # tokens already contain fully expanded <|image_pad|> placeholders because
