@@ -174,6 +174,9 @@ def pretokenize_rollout_trajectory(
     When a renderer is provided, uses it for tokenization (faster, deterministic).
     Otherwise falls back to the tokenizer + apply_chat_template path.
     """
+    if all(step["tokens"] is not None for step in output["trajectory"]):
+        return True
+
     logger = get_logger()
     tools = _convert_tools_to_oai_format(output.get("tool_defs", []))
 
