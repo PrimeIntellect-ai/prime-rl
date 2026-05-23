@@ -1149,6 +1149,21 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = False
 
+    use_process_pool: Annotated[
+        bool,
+        Field(
+            description="Run process_rollout / interleave_rollout in a shared ProcessPoolExecutor instead of asyncio.to_thread. Targets the GIL-contention residual that keeps the orch event loop blocked for several seconds at each step boundary even after the encode-side fixes. Worth it when the per-rollout payload is small (no router replay or small routed_experts); for very large per-rollout payloads the pickle / IPC cost may dominate. Defaults to off so existing setups behave identically."
+        ),
+    ] = False
+
+    process_pool_max_workers: Annotated[
+        int,
+        Field(
+            description="Max worker processes in the shared process pool when use_process_pool=True. Only consumed on lazy first-use.",
+            ge=1,
+        ),
+    ] = 16
+
     experimental: Annotated[
         OrchestratorExperimentalConfig,
         Field(description="Experimental features for the orchestrator."),

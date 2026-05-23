@@ -44,6 +44,7 @@ from prime_rl.orchestrator.filters import apply_filters, setup_filters
 from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
+    get_process_pool,
     get_weight_dir,
     print_benchmark,
     set_default_executor,
@@ -525,18 +526,47 @@ async def orchestrate(config: OrchestratorConfig):
             vlm_cache = None
             mm_token_type_ids_mapping = None
 
-        # Process rollouts in parallel
-        def process_rollout(rollout: vf.RolloutOutput, rollout_idx: int) -> list[TrainingSample] | None:
-            return interleave_rollout(
-                rollout,
-                vlm_cache=vlm_cache,
-                cache_key=rollout_idx,
-                mm_token_type_ids_mapping=mm_token_type_ids_mapping,
+        # Process rollouts in parallel.
+        #
+        # The default path uses asyncio.to_thread — fine when the per-rollout
+        # work is short or releases the GIL, but interleave_rollout does a lot
+        # of Python-level work (turn iteration, list slicing, dict building)
+        # that holds the GIL. With 256 threaded calls all contending for the
+        # GIL alongside the main asyncio loop, the loop gets starved and we
+        # see multi-second event-loop lag spikes at step boundaries.
+        #
+        # use_process_pool=True routes process_rollout through a shared
+        # ProcessPoolExecutor so worker processes have their own GIL and the
+        # orch's loop stays responsive. Tradeoff is per-call pickle/IPC cost;
+        # see prime_rl.orchestrator.utils.get_process_pool docstring.
+        if config.use_process_pool:
+            pool = get_process_pool(max_workers=config.process_pool_max_workers)
+            loop = asyncio.get_running_loop()
+            results = await asyncio.gather(
+                *(
+                    loop.run_in_executor(
+                        pool,
+                        _process_rollout_worker,
+                        r,
+                        rollout_idx,
+                        vlm_cache,
+                        mm_token_type_ids_mapping,
+                    )
+                    for rollout_idx, r in enumerate(train_rollouts)
+                )
             )
+        else:
+            def process_rollout(rollout: vf.RolloutOutput, rollout_idx: int) -> list[TrainingSample] | None:
+                return interleave_rollout(
+                    rollout,
+                    vlm_cache=vlm_cache,
+                    cache_key=rollout_idx,
+                    mm_token_type_ids_mapping=mm_token_type_ids_mapping,
+                )
 
-        results = await asyncio.gather(
-            *(asyncio.to_thread(process_rollout, r, rollout_idx) for rollout_idx, r in enumerate(train_rollouts))
-        )
+            results = await asyncio.gather(
+                *(asyncio.to_thread(process_rollout, r, rollout_idx) for rollout_idx, r in enumerate(train_rollouts))
+            )
 
         # Collect results and assign advantages. Metrics are computed over all
         # rollouts; only non-filtered samples are sent to the trainer.
@@ -892,6 +922,27 @@ async def orchestrate(config: OrchestratorConfig):
     # Optionally, print benchmark table
     if config.bench:
         print_benchmark(to_col_format(monitor.history))
+
+
+def _process_rollout_worker(
+    rollout: vf.RolloutOutput,
+    rollout_idx: int,
+    vlm_cache,
+    mm_token_type_ids_mapping,
+):
+    """Module-level worker for the ProcessPoolExecutor path.
+
+    Must live at module scope (not as a nested function) so the picker can
+    locate it in the spawned worker. Takes all dependencies explicitly so we
+    don't rely on closure capture of vlm_cache / mm_token_type_ids_mapping —
+    those wouldn't survive cross-process pickling reliably.
+    """
+    return interleave_rollout(
+        rollout,
+        vlm_cache=vlm_cache,
+        cache_key=rollout_idx,
+        mm_token_type_ids_mapping=mm_token_type_ids_mapping,
+    )
 
 
 def main():

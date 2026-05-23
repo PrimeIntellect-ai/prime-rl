@@ -1,6 +1,8 @@
 import asyncio
+import atexit
+import multiprocessing as mp
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from itertools import cycle
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,57 @@ def set_default_executor(max_workers: int = 64) -> None:
     """Scale the default asyncio thread pool so asyncio.to_thread has enough capacity."""
     get_logger().info(f"Setting default executor to ThreadPoolExecutor(max_workers={max_workers})")
     asyncio.get_event_loop().set_default_executor(ThreadPoolExecutor(max_workers=max_workers))
+
+
+# ---------------------------------------------------------------------------
+# Shared ProcessPoolExecutor for CPU-bound rollout postprocessing.
+#
+# Rationale: process_rollout / interleave_rollout do mostly Python-level work
+# (turn iteration, list ops, dict construction). Even when wrapped in
+# asyncio.to_thread, the worker threads contend with the orch's asyncio loop
+# for the GIL — which is exactly what we observed as the residual 5-30s
+# event-loop spikes that remained after the encode-side fixes.
+#
+# A separate worker process has its own interpreter (and GIL), so the orch's
+# main loop is no longer starved during heavy rollout postprocessing.
+#
+# Tradeoff: per-call IPC cost. Submitting via run_in_executor pickles the
+# input and unpickles the result. For RouterReplay rollouts (~9-25 MB of
+# routed_experts per rollout) this is significant — 256 × ~10 MB = ~2.5 GB
+# per step of pickle work each direction. For non-router-replay rollouts the
+# payload is small (<100 KB) and IPC is essentially free, so this is a clear
+# win without the heavy routed-expert metadata.
+#
+# Default-off via OrchestratorConfig.use_process_pool so existing setups are
+# unchanged. When enabled, the pool is lazily started on first use and reused
+# for the lifetime of the orchestrator process. Spawn context avoids fork
+# issues with CUDA/FSDP state held in the parent.
+# ---------------------------------------------------------------------------
+
+_process_pool: ProcessPoolExecutor | None = None
+
+
+def get_process_pool(max_workers: int = 16) -> ProcessPoolExecutor:
+    """Return the shared ProcessPoolExecutor, creating it on first use.
+
+    spawn context so workers don't inherit any CUDA/FSDP/torch state from the
+    parent process. Workers persist for the lifetime of the orchestrator;
+    they're only paid for once.
+    """
+    global _process_pool
+    if _process_pool is None:
+        ctx = mp.get_context("spawn")
+        _process_pool = ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx)
+        atexit.register(_shutdown_process_pool)
+        get_logger().info(f"Created shared ProcessPoolExecutor(max_workers={max_workers}, ctx=spawn)")
+    return _process_pool
+
+
+def _shutdown_process_pool() -> None:
+    global _process_pool
+    if _process_pool is not None:
+        _process_pool.shutdown(wait=False, cancel_futures=True)
+        _process_pool = None
 
 
 def print_benchmark(history: dict[str, list[Any]]) -> None:
