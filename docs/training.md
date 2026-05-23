@@ -35,7 +35,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 |---|---|---|
 | `uv run rl` | Co-launches inference + orchestrator + trainer on one node | The default for any single-node RL run. Mirrors a `[trainer]` + `[orchestrator]` + `[inference]` TOML. |
 | `uv run sft` | Supervised fine-tuning on a HF dataset | Launches torchrun internally; never call torchrun directly. |
-| `uv run inference` | OpenAI-compatible vLLM server | Always use this entrypoint over `vllm serve` — it adds `/update_weights`, `/load_lora_adapter`, and `/init_broadcaster`. |
+| `uv run inference` | vLLM server | Always use this entrypoint over `vllm serve` — it adds `/update_weights`, `/load_lora_adapter`, and `/init_broadcaster`. |
 | `uv run trainer` | Standalone trainer process group | Use only when launching the trainer separately from the orchestrator (e.g. multi-node RL without the `rl` wrapper). |
 | `uv run orchestrator` | Standalone orchestrator process | Pair with a separately-launched trainer + inference. |
 
