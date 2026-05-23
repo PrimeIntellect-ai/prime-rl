@@ -23,11 +23,10 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     completion_ids: list[int]
     completion_mask: list[bool]
     completion_logprobs: list[float]
-    temperature: float
+    completion_temperatures: list[float]
+    completion_top_ks: list[int]
+    completion_top_ps: list[float]
     env_name: str
-    # ``top_k = -1`` and ``top_p = 1.0`` disable truncation.
-    top_k: int = -1
-    top_p: float = 1.0
     teacher_logprobs: list[float] | None = None
     advantage: float | None = None
     reward: float | None = None
@@ -69,13 +68,10 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     advantages: list[float]
     inference_logprobs: list[float]
     position_ids: list[int]
-    # Scalar sampling args shared by every sample in the micro batch (the
-    # packer enforces uniformity). The trainer replays the same truncation
-    # when computing logprobs so the importance ratio stays unbiased.
-    temperature: float
+    temperatures: list[float]
+    top_ks: list[int]
+    top_ps: list[float]
     env_names: list[str]
-    top_k: int = -1
-    top_p: float = 1.0
     teacher_logprobs: list[float] | None = None
     lora_num_tokens: list[int] | None = None
     routed_experts: list[list[list[int]]] | None = None
