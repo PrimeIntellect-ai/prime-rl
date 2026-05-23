@@ -264,11 +264,14 @@ def train(config: TrainerConfig):
             broadcast_weights_time = 0
         else:
             last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level
-            filesystem_weight_broadcast = config.weight_broadcast.type in ("filesystem", "filesystem_sparse")
+            filesystem_weight_broadcast = config.weight_broadcast.type == "filesystem"
             if progress.step > 0 and (not last_async_level_steps or filesystem_weight_broadcast):
                 broadcast_weights_start_time = time.perf_counter()
                 ckpt_interval = config.ckpt and config.ckpt.interval
-                force_full_broadcast = config.weight_broadcast.type == "filesystem_sparse" and (
+                sparse_filesystem_broadcast = (
+                    config.weight_broadcast.type == "filesystem" and config.weight_broadcast.sparse
+                )
+                force_full_broadcast = sparse_filesystem_broadcast and (
                     is_last_step or bool(ckpt_interval and progress.step % ckpt_interval == 0)
                 )
                 weight_broadcast.broadcast_weights(model, step=progress.step, force_full=force_full_broadcast)

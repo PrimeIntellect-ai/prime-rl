@@ -15,8 +15,8 @@ def setup_weight_broadcast(
     if config.type == "nccl":
         return NCCLWeightBroadcast(output_dir, config, torch.cuda.current_device())
     elif config.type == "filesystem":
+        if config.sparse:
+            return SparseFileSystemWeightBroadcast(output_dir, config, lora_config)
         return FileSystemWeightBroadcast(output_dir, config, lora_config)
-    elif config.type == "filesystem_sparse":
-        return SparseFileSystemWeightBroadcast(output_dir, config, lora_config)
     else:
         raise ValueError(f"Invalid weight broadcast type: {config.type}")

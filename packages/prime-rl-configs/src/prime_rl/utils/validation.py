@@ -316,9 +316,9 @@ def validate_shared_weight_broadcast(
     orchestrator: OrchestratorConfig,
     inference: Optional[InferenceConfig] = None,
 ) -> None:
-    if (
-        inference
-        and trainer.weight_broadcast.type != orchestrator.weight_broadcast.type != inference.weight_broadcast.type
+    if inference and (
+        trainer.weight_broadcast.type != orchestrator.weight_broadcast.type
+        or trainer.weight_broadcast.type != inference.weight_broadcast.type
     ):
         raise ValueError(
             f"Inference weight broadcast type ({inference.weight_broadcast.type}) and orchestrator weight broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for both."
@@ -327,3 +327,12 @@ def validate_shared_weight_broadcast(
         raise ValueError(
             f"Trainer weight broadcast type ({trainer.weight_broadcast.type}) and orchestrator weight broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for both."
         )
+
+    if trainer.weight_broadcast.type != "filesystem":
+        return
+
+    trainer_sparse = getattr(trainer.weight_broadcast, "sparse", False)
+    orchestrator_sparse = getattr(orchestrator.weight_broadcast, "sparse", False)
+    inference_sparse = getattr(inference.weight_broadcast, "sparse", False) if inference else trainer_sparse
+    if trainer_sparse != orchestrator_sparse or trainer_sparse != inference_sparse:
+        raise ValueError("Trainer, orchestrator, and inference filesystem weight broadcast sparse settings must match.")

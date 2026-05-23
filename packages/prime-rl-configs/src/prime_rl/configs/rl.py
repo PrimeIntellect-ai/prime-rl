@@ -15,9 +15,6 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.orchestrator import (
     OrchestratorConfig,
 )
-from prime_rl.configs.orchestrator import (
-    SparseFileSystemWeightBroadcastConfig as OrchestratorSparseFileSystemWeightBroadcastConfig,
-)
 from prime_rl.configs.shared import (
     SlurmConfig,
     VLMConfig,
@@ -33,9 +30,6 @@ from prime_rl.configs.trainer import (
 )
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
-)
-from prime_rl.configs.trainer import (
-    SparseFileSystemWeightBroadcastConfig as TrainerSparseFileSystemWeightBroadcastConfig,
 )
 from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
@@ -119,8 +113,11 @@ class SharedModelConfig(BaseConfig):
 
 
 class SharedWeightBroadcastConfig(BaseConfig):
-    type: Literal["nccl", "filesystem", "filesystem_sparse"] = "filesystem"
+    type: Literal["nccl", "filesystem"] = "filesystem"
     """Weight broadcast transport."""
+
+    sparse: bool = False
+    """Use sparse checkpoint-format filesystem broadcasts."""
 
     port: int = 29501
     """Port for NCCL weight broadcast."""
@@ -132,7 +129,15 @@ class SharedWeightBroadcastConfig(BaseConfig):
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
     full_sync_interval: int | None = Field(None, ge=1)
-    """Optional interval for forcing full filesystem_sparse broadcasts between sparse deltas."""
+    """Optional interval for forcing full filesystem broadcasts between sparse deltas."""
+
+    @model_validator(mode="after")
+    def validate_sparse_options(self):
+        if self.sparse and self.type != "filesystem":
+            raise ValueError("weight_broadcast.sparse requires weight_broadcast.type = 'filesystem'.")
+        if self.full_sync_interval is not None and not self.sparse:
+            raise ValueError("weight_broadcast.full_sync_interval requires weight_broadcast.sparse = true.")
+        return self
 
 
 class BaseDeploymentConfig(BaseConfig):
@@ -380,15 +385,18 @@ class RLConfig(BaseConfig):
                     quantize_in_weight_transfer=self.weight_broadcast.quantize_in_weight_transfer,
                 )
             elif self.weight_broadcast.type == "filesystem":
-                self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
-                self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
-            elif self.weight_broadcast.type == "filesystem_sparse":
-                self.trainer.weight_broadcast = TrainerSparseFileSystemWeightBroadcastConfig(
+                self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig(
+                    sparse=self.weight_broadcast.sparse,
                     full_sync_interval=self.weight_broadcast.full_sync_interval,
                 )
-                self.orchestrator.weight_broadcast = OrchestratorSparseFileSystemWeightBroadcastConfig()
+                self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig(
+                    sparse=self.weight_broadcast.sparse,
+                )
             if self.inference is not None:
-                self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
+                self.inference.weight_broadcast = InferenceWeightBroadcastConfig(
+                    type=self.weight_broadcast.type,
+                    sparse=self.weight_broadcast.sparse,
+                )
 
         validate_shared_weight_broadcast(self.trainer, self.orchestrator, self.inference)
 
@@ -430,8 +438,12 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_lora(self):
         if self.trainer.model.lora is not None:
-            if self.trainer.weight_broadcast.type in ("nccl", "filesystem_sparse"):
-                raise ValueError(f"{self.trainer.weight_broadcast.type} weight broadcast does not support LoRA yet.")
+            sparse_filesystem = (
+                self.trainer.weight_broadcast.type == "filesystem" and self.trainer.weight_broadcast.sparse
+            )
+            if self.trainer.weight_broadcast.type == "nccl" or sparse_filesystem:
+                broadcast_name = "sparse filesystem" if sparse_filesystem else self.trainer.weight_broadcast.type
+                raise ValueError(f"{broadcast_name} weight broadcast does not support LoRA yet.")
 
             if self.orchestrator.student.model.lora is None:
                 from prime_rl.configs.orchestrator import LoRAConfig

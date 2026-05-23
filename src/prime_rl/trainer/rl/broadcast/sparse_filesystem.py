@@ -14,7 +14,7 @@ from torch.distributed.checkpoint.state_dict import _get_fqns as get_fqns
 from torch.distributed.tensor import DTensor
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME
 
-from prime_rl.configs.trainer import LoRAConfig, SparseFileSystemWeightBroadcastConfig
+from prime_rl.configs.trainer import FileSystemWeightBroadcastConfig, LoRAConfig
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.runs import get_multi_run_manager
@@ -120,12 +120,12 @@ class SparseFileSystemWeightBroadcast(WeightBroadcast):
     def __init__(
         self,
         output_dir: Path,
-        config: SparseFileSystemWeightBroadcastConfig,
+        config: FileSystemWeightBroadcastConfig,
         lora_config: LoRAConfig | None = None,
         dtype: torch.dtype = torch.bfloat16,
     ):
         if lora_config is not None:
-            raise ValueError("filesystem_sparse weight broadcast does not support LoRA adapters yet.")
+            raise ValueError("Sparse filesystem weight broadcast does not support LoRA adapters yet.")
         super().__init__(output_dir, lora_config)
         self.world = get_world()
         self.multi_run_manager = get_multi_run_manager()

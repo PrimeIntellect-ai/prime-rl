@@ -15,7 +15,7 @@ from vllm.entrypoints.serve.lora.protocol import LoadLoRAAdapterRequest
 from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
-from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.inference import InferenceConfig, WeightBroadcastConfig
 from prime_rl.utils.logger import get_logger
 
 logger = get_logger()
@@ -56,8 +56,13 @@ def models(request: Request) -> OpenAIServingModels:
 WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
-    "filesystem_sparse": "prime_rl.inference.vllm.worker.sparse_filesystem.SparseFileSystemWeightUpdateWorker",
 }
+
+
+def get_worker_extension_cls(config: WeightBroadcastConfig) -> str:
+    if config.type == "filesystem" and config.sparse:
+        return "prime_rl.inference.vllm.worker.sparse_filesystem.SparseFileSystemWeightUpdateWorker"
+    return WORKER_EXTENSION_CLS[config.type]
 
 
 @router.post("/pause")
@@ -204,7 +209,7 @@ def server(config: InferenceConfig, vllm_extra: dict[str, Any] | None = None):
     validate_parsed_serve_args(args)
 
     # Set the worker extension class based on the broadcast backend
-    args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
+    args.worker_extension_cls = get_worker_extension_cls(config.weight_broadcast)
 
     if args.headless or args.api_server_count < 1:
         run_headless(args)

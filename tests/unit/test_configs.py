@@ -97,15 +97,18 @@ def test_rl_sparse_filesystem_weight_broadcast_auto_setup():
             "trainer": {},
             "orchestrator": {},
             "inference": {},
-            "weight_broadcast": {"type": "filesystem_sparse", "full_sync_interval": 10},
+            "weight_broadcast": {"type": "filesystem", "sparse": True, "full_sync_interval": 10},
         }
     )
 
-    assert config.trainer.weight_broadcast.type == "filesystem_sparse"
+    assert config.trainer.weight_broadcast.type == "filesystem"
+    assert config.trainer.weight_broadcast.sparse is True
     assert config.trainer.weight_broadcast.full_sync_interval == 10
-    assert config.orchestrator.weight_broadcast.type == "filesystem_sparse"
+    assert config.orchestrator.weight_broadcast.type == "filesystem"
+    assert config.orchestrator.weight_broadcast.sparse is True
     assert config.inference is not None
-    assert config.inference.weight_broadcast.type == "filesystem_sparse"
+    assert config.inference.weight_broadcast.type == "filesystem"
+    assert config.inference.weight_broadcast.sparse is True
 
 
 def test_toml_partial_nested_override(tmp_path):
