@@ -420,34 +420,25 @@ def train(config: TrainerConfig):
                     )
                 set_lora_num_tokens(lora_num_tokens)
 
-            temperatures = micro_batch["temperatures"].to("cuda")
-
-            # Shard temperatures for context parallelism if enabled
-            if cp_enabled:
-                temperatures = shard_for_cp(temperatures, cp_rank=cp_rank, cp_world_size=cp_size)
-
-            # Forward pass with per-token temperatures
+            # Forward pass with raw model logits/logprobs.
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                 out = forward(
                     model,
                     input_ids,
                     forward_position_ids,
                     labels=labels,
-                    temperature=temperatures,
                     mm_kwargs=mm_kwargs,
                     mm_token_type_ids=mm_token_type_ids,
                     routed_experts=routed_experts,
                 )
 
             if out.get("logprobs") is None:
-                # VanillaOutputLinear was used - need to compute logprobs externally with per-token temps
+                # VanillaOutputLinear was used - compute raw model logprobs externally.
                 assert out.get("logits") is not None, "Logits must be provided to compute logprobs"
                 logits = out["logits"]
-                # Per-token temperature scaling: temperatures is [batch, seq], logits is [batch, seq, vocab]
-                scaled_logits = logits / temperatures.unsqueeze(-1)
-                out["logprobs"] = selective_log_softmax(scaled_logits, labels)
-                out["entropy"] = compute_entropy(scaled_logits)
-            # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures
+                out["logprobs"] = selective_log_softmax(logits, labels)
+                out["entropy"] = compute_entropy(logits)
+            # else: FusedOutputLinear was used - logprobs already computed from raw model logits.
 
             if cp_enabled:
                 out["logprobs"] = gather_for_cp(out["logprobs"], cp_group)

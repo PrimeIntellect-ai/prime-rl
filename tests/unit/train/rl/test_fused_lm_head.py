@@ -11,12 +11,10 @@ from prime_rl.utils.utils import default_dtype
 
 
 def _baseline_logprobs_and_entropy(
-    hidden: torch.Tensor, weight: torch.Tensor, labels: torch.Tensor, *, temperature: torch.Tensor
+    hidden: torch.Tensor, weight: torch.Tensor, labels: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Baseline logprobs and entropy with per-token temperature tensor."""
+    """Baseline raw logprobs and entropy."""
     logits = hidden @ weight.t()
-    # temperature is [b, s], logits is [b, s, v]
-    logits = logits / temperature.unsqueeze(-1)
     logp = torch.log_softmax(logits, dim=-1).gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
     ent = compute_entropy(logits)
     return logp, ent
@@ -33,7 +31,7 @@ def test_fused_lm_head_matches_full_logits_forward_and_backward_cpu():
     weight0 = torch.randn(v, h, dtype=torch.float32, requires_grad=True)
 
     # Baseline
-    logp0, ent0 = _baseline_logprobs_and_entropy(hidden0, weight0, labels, temperature=temperature)
+    logp0, ent0 = _baseline_logprobs_and_entropy(hidden0, weight0, labels)
     loss0 = logp0.sum()
     loss0.backward()
     grad_hidden0 = hidden0.grad.detach().clone()
@@ -68,13 +66,12 @@ def test_fused_lm_head_requires_labels():
 
     hidden = torch.randn(b, s, h, dtype=torch.float32)
     weight = torch.randn(v, h, dtype=torch.float32)
-    temperature = torch.full((b, s), 1.0, dtype=torch.float32)
 
     lm = FusedOutputLinear(in_features=h, out_features=v, chunk_size=5)
     lm.weight = torch.nn.Parameter(weight)
 
     with pytest.raises(AssertionError, match="FusedOutputLinear requires labels"):
-        lm(hidden, labels=None, temperature=temperature)
+        lm(hidden, labels=None)
 
 
 def test_vanilla_lm_head_returns_logits():
@@ -102,8 +99,6 @@ def test_fused_vs_vanilla_integration():
     """Integration test comparing fused and vanilla outputs after postprocessing."""
     torch.manual_seed(42)
     b, s, h, v = 2, 4, 8, 37
-    temp_value = 1.7
-    temperature = torch.full((b, s), temp_value, dtype=torch.float32)
     chunk_size = 3
 
     hidden = torch.randn(b, s, h, dtype=torch.float16)
@@ -116,14 +111,14 @@ def test_fused_vs_vanilla_integration():
     vanilla_out = cast_float_and_contiguous(vanilla_lm(hidden, labels=None, temperature=None))
 
     assert vanilla_out.get("logits") is not None
-    logits = vanilla_out["logits"] / temp_value
+    logits = vanilla_out["logits"]
     vanilla_logprobs = torch.log_softmax(logits, dim=-1).gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
     vanilla_entropy = compute_entropy(logits)
 
     # Fused path: get logprobs and entropy directly
     fused_lm = FusedOutputLinear(in_features=h, out_features=v, chunk_size=chunk_size)
     fused_lm.weight = torch.nn.Parameter(weight.clone())
-    fused_out = cast_float_and_contiguous(fused_lm(hidden, labels=labels, temperature=temperature))
+    fused_out = cast_float_and_contiguous(fused_lm(hidden, labels=labels))
 
     assert fused_out.get("logprobs") is not None
     assert fused_out.get("entropy") is not None
@@ -172,23 +167,19 @@ def test_full_model_fused_vs_vanilla():
     # Run a few training steps
     num_steps = 3
     batch_size, seq_len = 2, 64
-    temp_value = 1.5
 
     for step in range(num_steps):
         # Generate random batch
         with torch.device("cuda"):
             labels = torch.randint(0, config.vocab_size, (batch_size, seq_len))
             position_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size, -1)
-            temperature = torch.full((batch_size, seq_len), temp_value, dtype=torch.float32, device="cuda")
 
         # Vanilla forward (returns logits, compute logprobs/entropy using RL train functions)
         optimizer_vanilla.zero_grad()
-        out_vanilla = cast_float_and_contiguous(
-            model_vanilla(labels, position_ids, labels=labels, temperature=temperature)
-        )
+        out_vanilla = cast_float_and_contiguous(model_vanilla(labels, position_ids, labels=labels))
         if out_vanilla.get("logprobs") is None:
             assert out_vanilla.get("logits") is not None
-            logits = out_vanilla["logits"] / temp_value
+            logits = out_vanilla["logits"]
             out_vanilla["logprobs"] = selective_log_softmax(logits, labels)
             out_vanilla["entropy"] = compute_entropy(logits)
         loss_vanilla = -out_vanilla["logprobs"].mean()
@@ -197,10 +188,10 @@ def test_full_model_fused_vs_vanilla():
 
         # Fused forward (returns logprobs and entropy directly)
         optimizer_fused.zero_grad()
-        out_fused = cast_float_and_contiguous(model_fused(labels, position_ids, labels=labels, temperature=temperature))
+        out_fused = cast_float_and_contiguous(model_fused(labels, position_ids, labels=labels))
         if out_fused.get("logprobs") is None:
             assert out_fused.get("logits") is not None
-            logits = out_fused["logits"] / temp_value
+            logits = out_fused["logits"]
             out_fused["logprobs"] = selective_log_softmax(logits, labels)
             out_fused["entropy"] = compute_entropy(logits)
         loss_fused = -out_fused["logprobs"].mean()
@@ -228,8 +219,6 @@ def test_fused_lm_head_correct_shift():
     """
     torch.manual_seed(999)
     b, s, h, v = 2, 16, 32, 50
-    temp_value = 1.5
-    temperature = torch.full((b, s), temp_value, dtype=torch.float32)
     chunk_size = 13
 
     hidden = torch.randn(b, s, h, dtype=torch.float32)
@@ -242,12 +231,11 @@ def test_fused_lm_head_correct_shift():
     # === Fused path (as in training) ===
     fused_lm = FusedOutputLinear(in_features=h, out_features=v, chunk_size=chunk_size)
     fused_lm.weight = torch.nn.Parameter(weight.clone())
-    fused_out = fused_lm(hidden, labels=labels, temperature=temperature)
+    fused_out = fused_lm(hidden, labels=labels)
     trainer_logprobs = shift_tensor_right(fused_out["logprobs"])
 
     # === Inference convention (baseline) ===
     logits = hidden @ weight.t()
-    logits = logits / temp_value
     # Shift logits right (prepend zeros, drop last) to get inference convention
     shifted_logits = torch.cat([torch.zeros(b, 1, v, dtype=logits.dtype), logits[:, :-1, :]], dim=1)
     inference_logprobs = (
@@ -294,17 +282,16 @@ def test_inject_prime_lm_head_vanilla():
 
     assert isinstance(model.lm_head, VanillaOutputLinear), "lm_head should be VanillaOutputLinear"
 
-    # Test forward with labels and temperature
+    # Test forward with labels
     batch_size, seq_len = 2, 64
 
     with torch.device("cuda"):
         input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
         position_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size, -1)
         labels = torch.randint(0, config.vocab_size, (batch_size, seq_len))
-        temperature = torch.full((batch_size, seq_len), 1.5, dtype=torch.float32)
 
     with torch.autocast("cuda", dtype=torch.bfloat16):
-        out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
+        out = model(input_ids=input_ids, position_ids=position_ids, labels=labels)
 
     # VanillaOutputLinear returns logits
     assert isinstance(out, dict), "Output should be PrimeLmOutput (dict)"
@@ -341,17 +328,16 @@ def test_inject_prime_lm_head_fused():
 
     assert isinstance(model.lm_head, FusedOutputLinear), "lm_head should be FusedOutputLinear"
 
-    # Test forward with labels and temperature
+    # Test forward with labels
     batch_size, seq_len = 2, 64
 
     with torch.device("cuda"):
         input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
         position_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size, -1)
         labels = torch.randint(0, config.vocab_size, (batch_size, seq_len))
-        temperature = torch.full((batch_size, seq_len), 1.5, dtype=torch.float32)
 
     with torch.autocast("cuda", dtype=torch.bfloat16):
-        out = model(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
+        out = model(input_ids=input_ids, position_ids=position_ids, labels=labels)
 
     # FusedOutputLinear returns logprobs and entropy
     assert isinstance(out, dict), "Output should be PrimeLmOutput (dict)"
@@ -394,28 +380,24 @@ def test_hf_model_fused_vs_vanilla_matches():
 
     # Test data
     batch_size, seq_len = 2, 64
-    temp_value = 1.5
 
     with torch.device("cuda"):
         input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
         position_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size, -1)
         labels = torch.randint(0, config.vocab_size, (batch_size, seq_len))
-        temperature = torch.full((batch_size, seq_len), temp_value, dtype=torch.float32)
 
     # Run vanilla model
     with torch.autocast("cuda", dtype=torch.bfloat16):
-        out_vanilla = model_vanilla(
-            input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature
-        )
+        out_vanilla = model_vanilla(input_ids=input_ids, position_ids=position_ids, labels=labels)
 
     # Compute logprobs and entropy from vanilla logits
-    logits = out_vanilla["logits"].float() / temp_value
+    logits = out_vanilla["logits"].float()
     vanilla_logprobs = selective_log_softmax(logits, labels)
     vanilla_entropy = compute_entropy(logits)
 
     # Run fused model
     with torch.autocast("cuda", dtype=torch.bfloat16):
-        out_fused = model_fused(input_ids=input_ids, position_ids=position_ids, labels=labels, temperature=temperature)
+        out_fused = model_fused(input_ids=input_ids, position_ids=position_ids, labels=labels)
 
     fused_logprobs = out_fused["logprobs"].float()
     fused_entropy = out_fused["entropy"].float()
