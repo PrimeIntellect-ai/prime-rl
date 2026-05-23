@@ -130,6 +130,35 @@ def test_maybe_update_policy_reuses_inflight_update_after_cancellation():
     asyncio.run(run())
 
 
+def test_policy_update_keeps_only_sparse_byte_ratio_metric():
+    async def run() -> None:
+        scheduler = make_scheduler()
+        scheduler.student_inference = SimpleNamespace(
+            update_weights=AsyncMock(),
+            update_model_name=MagicMock(),
+        )
+        scheduler.rollout_inference = scheduler.student_inference
+        scheduler._update_off_policy = AsyncMock()
+
+        with (
+            patch("prime_rl.orchestrator.scheduler.wait_for_path", new=AsyncMock()),
+            patch("prime_rl.orchestrator.scheduler.read_sparse_manifest", return_value={}),
+            patch(
+                "prime_rl.orchestrator.scheduler.get_sparse_manifest_metrics",
+                return_value={
+                    "weight_broadcast/sparse/byte_ratio": 0.25,
+                    "weight_broadcast/sparse/delta_bytes": 128,
+                    "weight_broadcast/sparse/dense_bytes": 512,
+                },
+            ),
+        ):
+            await scheduler._apply_policy_update(8)
+
+        assert scheduler.weight_broadcast_metrics == {"weight_broadcast/sparse/byte_ratio": 0.25}
+
+    asyncio.run(run())
+
+
 def test_stop_cancels_inflight_policy_update_task():
     async def run() -> None:
         scheduler = make_scheduler()

@@ -318,7 +318,11 @@ class Scheduler:
         weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
         await self.student_inference.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
         self.update_weights_time = time.perf_counter() - update_weights_start_time
-        self.weight_broadcast_metrics = get_sparse_manifest_metrics(read_sparse_manifest(weights_path))
+        sparse_metrics = get_sparse_manifest_metrics(read_sparse_manifest(weights_path))
+        byte_ratio = sparse_metrics.get("weight_broadcast/sparse/byte_ratio")
+        self.weight_broadcast_metrics = (
+            {"weight_broadcast/sparse/byte_ratio": byte_ratio} if byte_ratio is not None else {}
+        )
         self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
         self.ckpt_step = next_ckpt_step
