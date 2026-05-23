@@ -256,6 +256,14 @@ def pretokenize_rollout_trajectory(
     When a renderer is provided, uses it for tokenization (faster, deterministic).
     Otherwise falls back to the tokenizer + apply_chat_template path.
     """
+    # Fast path: when the inference client already populated `tokens` on every
+    # step (router-replay + most renderer paths) this function is a no-op, but
+    # the 256-way to_thread fanout still serialises through the GIL and starves
+    # the main event loop for ~2s. A single pass that returns immediately keeps
+    # per-thread work to microseconds, so the GIL stampede is much shorter.
+    if all(step["tokens"] is not None for step in output["trajectory"]):
+        return True
+
     logger = get_logger()
     tools = _convert_tools_to_oai_format(output.get("tool_defs", []))
 

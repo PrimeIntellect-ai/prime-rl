@@ -11,7 +11,7 @@ class EventLoopLagMonitor:
 
     def __init__(
         self,
-        interval: float = 1.0,
+        interval: float = 0.1,
         max_window_size: int = 10000,
         warn_med_lag_threshold: float = 0.5,
         warn_p90_lag_threshold: float = 1.0,

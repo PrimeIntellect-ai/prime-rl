@@ -522,7 +522,21 @@ async def orchestrate(config: OrchestratorConfig):
         # and awaiting a single gather lets whichever finishes first free
         # the event loop immediately and, with max_async_level >= 2, overlaps
         # this whole stage with inference for the next batch.
+        #
+        # Call-site short circuit: under router-replay every step already has
+        # `tokens`, so the to_thread fanout was firing 256 no-op threads each
+        # step and the GIL stampede was blocking the loop for ~2s per step
+        # (see offline replay attribution). Skip the fanout entirely when no
+        # rollout actually needs work.
+        needs_pretokenize = any(
+            step["tokens"] is None
+            for rollout in train_rollouts
+            for step in rollout["trajectory"]
+        )
+
         async def _pretokenize_all() -> None:
+            if not needs_pretokenize:
+                return
             await asyncio.gather(
                 *(
                     asyncio.to_thread(
