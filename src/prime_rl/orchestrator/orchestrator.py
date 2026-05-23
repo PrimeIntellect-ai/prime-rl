@@ -596,9 +596,33 @@ async def orchestrate(config: OrchestratorConfig):
                     mm_token_type_ids_mapping=mm_token_type_ids_mapping,
                 )
 
-            results = await asyncio.gather(
-                *(asyncio.to_thread(process_rollout, r, rollout_idx) for rollout_idx, r in enumerate(train_rollouts))
-            )
+            # Chunk the gather so the main loop gets guaranteed slices between
+            # to_thread waves. Offline bench against the 78-turn-outlier
+            # step_8.pkl with 200 background loop tasks showed: a single
+            # gather of all 256 rolled the lag monitor for 387 ms max; chunks
+            # of 128 with an await sleep(0) between brought it to 149 ms (2.6x)
+            # for only +11% wallclock. chunk<=64 brought lag no lower and
+            # cost much more wallclock.
+            chunk = config.gather_chunk_size
+            if chunk is None or chunk >= len(train_rollouts):
+                results = await asyncio.gather(
+                    *(
+                        asyncio.to_thread(process_rollout, r, rollout_idx)
+                        for rollout_idx, r in enumerate(train_rollouts)
+                    )
+                )
+            else:
+                results = []
+                for start in range(0, len(train_rollouts), chunk):
+                    batch = train_rollouts[start : start + chunk]
+                    batch_results = await asyncio.gather(
+                        *(
+                            asyncio.to_thread(process_rollout, r, start + i)
+                            for i, r in enumerate(batch)
+                        )
+                    )
+                    results.extend(batch_results)
+                    await asyncio.sleep(0)
         phase_times["process_rollout_gather"] = time.perf_counter() - _t0
 
         # Collect results and assign advantages. Metrics are computed over all

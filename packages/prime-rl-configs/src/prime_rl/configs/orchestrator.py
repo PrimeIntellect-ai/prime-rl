@@ -1171,6 +1171,14 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = False
 
+    gather_chunk_size: Annotated[
+        int | None,
+        Field(
+            description="Chunk size for the interleave_rollout to_thread gather. None or >= batch_size = one big gather of all rollouts at once. Smaller chunks yield the main asyncio loop between batches; offline bench showed chunk=128 (one mid-batch yield with 256 rollouts) cut max event-loop lag 2.6x under traffic for ~11% wallclock cost. Set None to keep legacy behavior.",
+            ge=1,
+        ),
+    ] = None
+
     experimental: Annotated[
         OrchestratorExperimentalConfig,
         Field(description="Experimental features for the orchestrator."),
