@@ -199,18 +199,6 @@ uv run rl @ rl.toml --orchestrator.log.vf-level debug
 
 Or set `PRIME_VF_LOG_LEVEL=debug` in the environment.
 
-### vLLM is logging too much. Can I quiet it?
-
-Set `inference.log.level = "warning"` (or pass `--inference.log.level warning`). Note that `inference.log` only controls the prime-rl logger; vLLM's own logging is controlled by `VLLM_LOGGING_LEVEL` env var.
-
-### What's the fastest way to see KV cache pressure?
-
-```bash
-curl -s http://localhost:8000/metrics | grep gpu_cache_usage_perc
-```
-
-Approaching 1.0 means KV cache is saturated and request latency will spike. Reduce `max_model_len` or split across more inference GPUs.
-
 ## Models and environments
 
 ### Which models have a custom optimized implementation?
