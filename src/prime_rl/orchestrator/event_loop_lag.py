@@ -13,22 +13,22 @@ class EventLoopLagMonitor:
         self,
         interval: float = 1.0,
         max_window_size: int = 10000,
-        warn_med_lag_threshold: float = 0.5,
         warn_p90_lag_threshold: float = 1.0,
-        warn_max_lag_threshold: float = 5.0,
+        warn_p99_lag_threshold: float = 5.0,
+        warn_max_lag_threshold: float = 30.0,
     ):
         assert (
             interval > 0
             and max_window_size > 0
-            and warn_max_lag_threshold > 0
-            and warn_med_lag_threshold > 0
             and warn_p90_lag_threshold > 0
+            and warn_p99_lag_threshold > 0
+            and warn_max_lag_threshold > 0
         )
         self.interval = interval
         self.max_window_size = max_window_size
-        self.warn_max_lag_threshold = warn_max_lag_threshold
-        self.warn_med_lag_threshold = warn_med_lag_threshold
         self.warn_p90_lag_threshold = warn_p90_lag_threshold
+        self.warn_p99_lag_threshold = warn_p99_lag_threshold
+        self.warn_max_lag_threshold = warn_max_lag_threshold
         self.logger = get_logger()
         self.lags = []
 
@@ -61,15 +61,16 @@ class EventLoopLagMonitor:
         mean_lag = float(np.mean(last_lags))
         med_lag = float(np.median(last_lags))
         p90_lag = float(np.percentile(last_lags, 90))
+        p99_lag = float(np.percentile(last_lags, 99))
         min_lag = float(np.min(last_lags))
         max_lag = float(np.max(last_lags))
         if (
-            med_lag > self.warn_med_lag_threshold
-            or p90_lag > self.warn_p90_lag_threshold
+            p90_lag > self.warn_p90_lag_threshold
+            or p99_lag > self.warn_p99_lag_threshold
             or max_lag > self.warn_max_lag_threshold
         ):
             self.logger.warning(
-                f"Detected busy event loop. Measured {mean_lag:.1f}s (min={min_lag:.1f}s, med={med_lag:.1f}s, p90={p90_lag:.1f}s, max={max_lag:.1f}s) event loop lag over the last {len(last_lags)} measurement(s)"
+                f"Detected busy event loop. Measured {mean_lag:.1f}s (min={min_lag:.1f}s, med={med_lag:.1f}s, p90={p90_lag:.1f}s, p99={p99_lag:.1f}s, max={max_lag:.1f}s) event loop lag over the last {len(last_lags)} measurement(s)"
             )
 
         return {
@@ -77,5 +78,6 @@ class EventLoopLagMonitor:
             "event_loop_lag/mean": mean_lag,
             "event_loop_lag/med": med_lag,
             "event_loop_lag/p90": p90_lag,
+            "event_loop_lag/p99": p99_lag,
             "event_loop_lag/max": max_lag,
         }
