@@ -211,15 +211,6 @@ Other HF causal LMs work via the HF path (`impl = "hf"` or `"auto"`) but without
 
 Yes — Qwen3-VL, Qwen3.5, Qwen3.5-MoE out of the box. Add `[model.vlm]` and use bfloat16 dtypes. See [Advanced § Vision-language models](advanced.md#vision-language-models).
 
-### How do I install an environment from the Environments Hub?
-
-```bash
-prime env install primeintellect/math-env
-uv run python -c "import math_env"   # verify
-```
-
-Then reference by ID in your config. See [Advanced § Environments](advanced.md#environments).
-
 ### Can I install an environment from outside the Hub?
 
 Yes — install with `uv pip install -e path/to/my-env` and reference it by its `id` (the env's package name). The orchestrator will discover it.
