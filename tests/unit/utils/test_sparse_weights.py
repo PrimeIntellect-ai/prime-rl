@@ -3,7 +3,13 @@ import json
 import torch
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME
 
-from prime_rl.utils.sparse_weights import apply_sparse_delta, load_safetensors, save_safetensors, write_sparse_manifest
+from prime_rl.utils.sparse_weights import (
+    apply_sparse_delta,
+    get_sparse_manifest_metrics,
+    load_safetensors,
+    save_safetensors,
+    write_sparse_manifest,
+)
 
 
 def test_apply_sparse_delta_updates_sharded_checkpoint(tmp_path):
@@ -78,3 +84,23 @@ def test_apply_sparse_delta_updates_sharded_checkpoint(tmp_path):
     assert first_shard["model.layers.0.weight"].tolist() == [1, 20, 3]
     assert first_shard["model.layers.0.bias"].tolist() == [4, 5]
     assert second_shard["model.layers.1.weight"].tolist() == [60, 7, 80]
+
+
+def test_get_sparse_manifest_metrics_reports_delta_density():
+    metrics = get_sparse_manifest_metrics(
+        {
+            "format": "prime_rl_sparse_filesystem_v1",
+            "type": "delta",
+            "delta_numel": 25,
+            "total_numel": 100,
+            "delta_size": 300,
+            "total_size": 1000,
+            "patch_files": [{"file": "delta.safetensors"}],
+        }
+    )
+
+    assert metrics["weight_broadcast/sparse/is_full"] == 0
+    assert metrics["weight_broadcast/sparse/is_delta"] == 1
+    assert metrics["weight_broadcast/sparse/density"] == 0.25
+    assert metrics["weight_broadcast/sparse/byte_ratio"] == 0.3
+    assert metrics["weight_broadcast/sparse/patch_files"] == 1

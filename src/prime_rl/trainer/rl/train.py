@@ -627,6 +627,12 @@ def train(config: TrainerConfig):
         }
         monitor.log(time_metrics, step=progress.step)
 
+        # Log weight broadcast metrics, if the selected backend exposes any.
+        if weight_broadcast is not None:
+            weight_broadcast_metrics = weight_broadcast.get_metrics()
+            if weight_broadcast_metrics:
+                monitor.log({**weight_broadcast_metrics, "step": progress.step}, step=progress.step)
+
         # Log disk metrics
         disk_metrics = get_ckpt_disk_metrics(config.output_dir)
         disk_metrics["step"] = progress.step

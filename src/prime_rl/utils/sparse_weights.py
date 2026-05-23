@@ -11,6 +11,57 @@ SPARSE_WEIGHTS_FORMAT = "prime_rl_sparse_filesystem_v1"
 SPARSE_WEIGHTS_MANIFEST = "sparse_manifest.json"
 
 
+def _safe_ratio(numerator: float, denominator: float) -> float:
+    if denominator == 0:
+        return 0.0
+    return numerator / denominator
+
+
+def get_sparse_manifest_metrics(
+    manifest: dict[str, Any] | None,
+    *,
+    prefix: str = "weight_broadcast/sparse",
+) -> dict[str, float | int]:
+    if manifest is None or manifest.get("format") != SPARSE_WEIGHTS_FORMAT:
+        return {}
+
+    manifest_type = manifest.get("type")
+    if manifest_type == "full":
+        total_numel = int(manifest.get("total_numel", 0))
+        total_size = int(manifest.get("total_size", 0))
+        return {
+            f"{prefix}/is_full": 1,
+            f"{prefix}/is_delta": 0,
+            f"{prefix}/changed_numel": total_numel,
+            f"{prefix}/eligible_numel": total_numel,
+            f"{prefix}/density": 1.0 if total_numel else 0.0,
+            f"{prefix}/dense_bytes": total_size,
+            f"{prefix}/delta_bytes": total_size,
+            f"{prefix}/byte_ratio": 1.0 if total_size else 0.0,
+            f"{prefix}/patch_files": 0,
+        }
+
+    if manifest_type != "delta":
+        return {}
+
+    delta_numel = int(manifest.get("delta_numel", 0))
+    total_numel = int(manifest.get("total_numel", 0))
+    delta_size = int(manifest.get("delta_size", 0))
+    total_size = int(manifest.get("total_size", 0))
+    patch_files = manifest.get("patch_files", [])
+    return {
+        f"{prefix}/is_full": 0,
+        f"{prefix}/is_delta": 1,
+        f"{prefix}/changed_numel": delta_numel,
+        f"{prefix}/eligible_numel": total_numel,
+        f"{prefix}/density": _safe_ratio(delta_numel, total_numel),
+        f"{prefix}/dense_bytes": total_size,
+        f"{prefix}/delta_bytes": delta_size,
+        f"{prefix}/byte_ratio": _safe_ratio(delta_size, total_size),
+        f"{prefix}/patch_files": len(patch_files),
+    }
+
+
 def read_sparse_manifest(weight_dir: Path) -> dict[str, Any] | None:
     manifest_path = weight_dir / SPARSE_WEIGHTS_MANIFEST
     if not manifest_path.exists():

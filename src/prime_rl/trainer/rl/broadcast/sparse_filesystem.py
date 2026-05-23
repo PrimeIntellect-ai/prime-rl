@@ -18,12 +18,15 @@ from prime_rl.configs.trainer import LoRAConfig, SparseFileSystemWeightBroadcast
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.runs import get_multi_run_manager
-from prime_rl.trainer.utils import maybe_clean
 from prime_rl.trainer.weights import get_max_layer_num
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.sparse_weights import (
+    SPARSE_WEIGHTS_FORMAT,
     SPARSE_WEIGHTS_MANIFEST,
+    get_sparse_manifest_metrics,
     load_safetensors,
+    parse_step_from_dir,
+    read_sparse_manifest,
     save_safetensors,
     write_sparse_manifest,
 )
@@ -43,6 +46,7 @@ class _RunBroadcast:
     patch_files: list[dict] = field(default_factory=list)
     delta_numel: int = 0
     total_numel: int = 0
+    delta_size: int = 0
 
 
 def _layer_filename(layer_position: int, total_groups: int) -> str:
@@ -130,11 +134,13 @@ class SparseFileSystemWeightBroadcast(WeightBroadcast):
         self.chunk_elems = 16_777_216
         self._materialized_dirs: dict[int, Path] = {}
         self._materialized_steps: dict[int, int] = {}
+        self._last_metrics: dict[str, float | int] = {}
         self.logger.debug(f"Sparse filesystem broadcast initialized (full_sync_interval={self.full_sync_interval})")
 
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int, force_full: bool = False) -> None:
         self.logger.debug("Starting sparse filesystem weight broadcast")
+        self._last_metrics = {}
         start_time = time.perf_counter()
         run_broadcasts = self._prepare_run_broadcasts(force_full)
         if not run_broadcasts:
@@ -171,8 +177,17 @@ class SparseFileSystemWeightBroadcast(WeightBroadcast):
             for run in run_broadcasts:
                 if run.full:
                     _save_index(run.save_dir, run.weight_map, run.total_size)
-                    write_sparse_manifest(run.save_dir, {"type": "full", "step": run.step})
+                    write_sparse_manifest(
+                        run.save_dir,
+                        {
+                            "type": "full",
+                            "step": run.step,
+                            "total_numel": run.total_numel,
+                            "total_size": run.total_size,
+                        },
+                    )
                     self._materialized_dirs[run.idx] = run.save_dir
+                    self._materialized_steps[run.idx] = run.step
                 else:
                     write_sparse_manifest(
                         run.save_dir,
@@ -183,6 +198,8 @@ class SparseFileSystemWeightBroadcast(WeightBroadcast):
                             "patch_files": run.patch_files,
                             "delta_numel": run.delta_numel,
                             "total_numel": run.total_numel,
+                            "delta_size": run.delta_size,
+                            "total_size": run.total_size,
                         },
                     )
                     self._materialized_steps[run.idx] = run.step
@@ -190,6 +207,7 @@ class SparseFileSystemWeightBroadcast(WeightBroadcast):
                 (run.save_dir / "STABLE").touch()
                 self.multi_run_manager.ready_to_update[run.idx] = False
 
+            self._last_metrics = self._compute_broadcast_metrics(run_broadcasts)
             self.logger.debug(f"Sparse filesystem weights broadcasted in {time.perf_counter() - start_time:.2f}s")
 
     def _prepare_run_broadcasts(self, force_full: bool) -> list[_RunBroadcast]:
@@ -253,6 +271,7 @@ class SparseFileSystemWeightBroadcast(WeightBroadcast):
         save_safetensors(state_dict, run.save_dir / filename)
         for name, tensor in state_dict.items():
             run.weight_map[name] = filename
+            run.total_numel += tensor.numel()
             run.total_size += tensor.numel() * tensor.element_size()
 
     def _write_delta_group(
@@ -274,6 +293,7 @@ class SparseFileSystemWeightBroadcast(WeightBroadcast):
             previous = previous_state[name]
             indices, values = _tensor_delta(current, previous, self.chunk_elems)
             run.total_numel += current.numel()
+            run.total_size += current.numel() * current.element_size()
             run.delta_numel += indices.numel()
             if indices.numel() == 0:
                 continue
@@ -296,15 +316,65 @@ class SparseFileSystemWeightBroadcast(WeightBroadcast):
 
         if patch_entries:
             save_file(patch_state, run.save_dir / patch_filename, metadata={"format": "pt"})
+            run.delta_size += (run.save_dir / patch_filename).stat().st_size
             run.patch_files.append({"file": patch_filename, "tensors": patch_entries})
 
         save_safetensors(current_state, materialized_dir / full_filename)
 
+    def _compute_broadcast_metrics(self, run_broadcasts: list[_RunBroadcast]) -> dict[str, float | int]:
+        num_full = sum(run.full for run in run_broadcasts)
+        num_delta = len(run_broadcasts) - num_full
+        total_numel = sum(run.total_numel for run in run_broadcasts)
+        total_size = sum(run.total_size for run in run_broadcasts)
+        delta_numel = sum(run.delta_numel if not run.full else run.total_numel for run in run_broadcasts)
+        delta_size = sum(run.delta_size if not run.full else run.total_size for run in run_broadcasts)
+        patch_files = sum(len(run.patch_files) for run in run_broadcasts)
+        manifest_metrics = get_sparse_manifest_metrics(
+            {
+                "format": SPARSE_WEIGHTS_FORMAT,
+                "type": "delta" if num_delta else "full",
+                "delta_numel": delta_numel,
+                "total_numel": total_numel,
+                "delta_size": delta_size,
+                "total_size": total_size,
+                "patch_files": [{}] * patch_files,
+            }
+        )
+        return {
+            **manifest_metrics,
+            "weight_broadcast/sparse/runs": len(run_broadcasts),
+            "weight_broadcast/sparse/full_syncs": num_full,
+            "weight_broadcast/sparse/delta_syncs": num_delta,
+        }
+
+    def get_metrics(self) -> dict[str, float | int]:
+        return self._last_metrics
+
+    def _protected_base_steps(self, broadcast_dir: Path) -> set[int]:
+        protected: set[int] = set()
+        for step_dir in broadcast_dir.glob("step_*"):
+            manifest = read_sparse_manifest(step_dir)
+            if manifest is None or manifest.get("type") != "delta":
+                continue
+            base_step = manifest.get("base_step")
+            if isinstance(base_step, int):
+                protected.add(base_step)
+        return protected
+
     def maybe_clean(self, max_async_level: int, interval_to_keep: int | None):
         for idx in self.multi_run_manager.used_idxs:
-            maybe_clean(
-                get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
-                self.multi_run_manager.progress[idx].step,
-                max_async_level,
-                interval_to_keep,
-            )
+            broadcast_dir = get_broadcast_dir(self.multi_run_manager.get_run_dir(idx))
+            oldest_candidate_step = max(self.multi_run_manager.progress[idx].step - (max_async_level + 1), 0)
+            protected_base_steps = self._protected_base_steps(broadcast_dir)
+
+            for step_dir in broadcast_dir.glob("step_*"):
+                step = parse_step_from_dir(step_dir)
+                if step > oldest_candidate_step:
+                    continue
+                if interval_to_keep and step % interval_to_keep == 0:
+                    continue
+                if step in protected_base_steps:
+                    continue
+
+                self.logger.debug(f"Removing sparse broadcast path {step_dir}")
+                shutil.rmtree(step_dir, ignore_errors=True)
