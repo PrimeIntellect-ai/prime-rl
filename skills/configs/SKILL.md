@@ -60,6 +60,19 @@ CLI: `--env.0.id reverse-text --env.1.id math-env`.
 
 In TOML, an empty section header (`[ckpt]`) does the same.
 
+## Renderer chat template kwargs
+
+For renderer-backed RL, configure instance-wide chat-template toggles under shared train sampling:
+
+```toml
+[orchestrator.train.sampling.extra_body.chat_template_kwargs]
+enable_thinking = false
+```
+
+This is the route the renderer rollout client consumes. Do not set different `chat_template_kwargs` per train env when `orchestrator.use_renderer=true`; one local renderer is shared for token reconstruction, so values must be shared across train envs.
+
+For SFT with `use_renderer=true`, per-example `chat_template_kwargs` are ignored by renderer-backed tokenization.
+
 ## RL trainer token exports
 
 For rollout debugging, enable trainer-side token export under `trainer.experimental.token_export` (or `experimental.token_export` when running the trainer entrypoint directly). It writes one JSONL record per exported sequence under `output_dir/token_exports/step_<step>/rank_<rank>.jsonl`. Each record stores aligned per-token arrays for token ids, loss mask, advantage, reward, entropy, mismatch KL, inference/trainer logprobs, importance ratios, probability deltas, and masking diagnostics. It does not decode token text in the trainer.

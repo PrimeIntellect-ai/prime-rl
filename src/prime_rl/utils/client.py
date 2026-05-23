@@ -185,9 +185,8 @@ def setup_clients(
 ) -> list[vf.ClientConfig]:
     clients = []
     client_idx = 0
-    # Only forward preserve flags when the client actually uses a renderer —
-    # MITO/TITO clients ignore them and the verifiers ClientConfig may reject
-    # unknown extras on older versions.
+    # Only forward preserve flags when the client actually uses a renderer.
+    # MITO clients ignore them.
     renderer_extra: dict = {}
     if client_type == "renderer":
         renderer_extra = {

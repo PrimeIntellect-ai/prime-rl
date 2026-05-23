@@ -887,11 +887,13 @@ async def setup_student_inference_pool(
     model_name = config.student.model.name
 
     if config.use_renderer:
+        chat_template_kwargs = dict(config.train.sampling.extra_body.get("chat_template_kwargs") or {})
         renderer = create_renderer(
             tokenizer,
             renderer=config.renderer.name,
             tool_parser=config.renderer.tool_parser,
             reasoning_parser=config.renderer.reasoning_parser,
+            chat_template_kwargs=chat_template_kwargs,
             preserve_all_thinking=config.renderer.preserve_all_thinking,
             preserve_thinking_between_tool_calls=config.renderer.preserve_thinking_between_tool_calls,
         )

@@ -1,5 +1,6 @@
 import math
 import warnings
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -99,6 +100,15 @@ class TrainSamplingConfig(BaseConfig):
                 stacklevel=2,
             )
         return data
+
+
+def _chat_template_kwargs_from_extra_body(extra_body: Mapping[str, Any], label: str) -> dict[str, Any]:
+    raw = extra_body.get("chat_template_kwargs", {})
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"{label}.extra_body.chat_template_kwargs must be a table.")
+    return dict(raw)
 
 
 class EvalSamplingConfig(BaseConfig):
@@ -957,4 +967,23 @@ class OrchestratorConfig(BaseConfig):
                 env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)
                 env.sampling.extra_body.setdefault("return_token_ids", True)
+        return self
+
+    @model_validator(mode="after")
+    def validate_renderer_chat_template_kwargs(self):
+        if not self.use_renderer:
+            return self
+
+        shared_kwargs = _chat_template_kwargs_from_extra_body(self.train.sampling.extra_body, "train.sampling")
+        for idx, env in enumerate(self.train.env):
+            env_kwargs = _chat_template_kwargs_from_extra_body(
+                env.sampling.extra_body,
+                f"train.env[{idx}].sampling",
+            )
+            if env_kwargs != shared_kwargs:
+                raise ValueError(
+                    "Renderer chat_template_kwargs must be shared across train envs. "
+                    "Set orchestrator.train.sampling.extra_body.chat_template_kwargs "
+                    "instead of per-env overrides."
+                )
         return self

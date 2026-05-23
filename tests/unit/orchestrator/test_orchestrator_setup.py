@@ -16,12 +16,15 @@ def test_setup_student_inference_pool_uses_renderer_when_enabled():
                 model=SimpleNamespace(name="student-model"),
             ),
             renderer=SimpleNamespace(
-                name="qwen3_vl",
+                name="qwen3",
                 tool_parser=None,
                 reasoning_parser=None,
                 pool_size=None,
                 preserve_all_thinking=False,
                 preserve_thinking_between_tool_calls=False,
+            ),
+            train=SimpleNamespace(
+                sampling=SimpleNamespace(extra_body={"chat_template_kwargs": {"enable_thinking": False}})
             ),
         )
         logger = MagicMock()
@@ -45,9 +48,10 @@ def test_setup_student_inference_pool_uses_renderer_when_enabled():
         assert returned_pool is inference_pool
         create_renderer_mock.assert_called_once_with(
             tokenizer,
-            renderer="qwen3_vl",
+            renderer="qwen3",
             tool_parser=None,
             reasoning_parser=None,
+            chat_template_kwargs={"enable_thinking": False},
             preserve_all_thinking=False,
             preserve_thinking_between_tool_calls=False,
         )
@@ -56,7 +60,7 @@ def test_setup_student_inference_pool_uses_renderer_when_enabled():
             model_name="student-model",
             train_client_type="renderer",
             eval_client_type="openai_chat_completions",
-            renderer_name="qwen3_vl",
+            renderer_name="qwen3",
             tool_parser=None,
             reasoning_parser=None,
             renderer_pool_size=None,

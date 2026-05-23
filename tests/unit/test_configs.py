@@ -469,6 +469,28 @@ def test_orchestrator_explicit_renderer_skips_unmapped_check():
     assert config.renderer.name == "qwen3"
 
 
+def test_orchestrator_accepts_sampling_chat_template_kwargs():
+    config = OrchestratorConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "train": {"sampling": {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}},
+        }
+    )
+
+    assert config.train.sampling.extra_body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert config.train.env[0].sampling.extra_body["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_orchestrator_rejects_per_env_chat_template_kwargs_override():
+    with pytest.raises(ValidationError, match="must be shared across train envs"):
+        OrchestratorConfig.model_validate(
+            {
+                "model": {"name": "Qwen/Qwen3-0.6B"},
+                "train": {"env": [{"sampling": {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}}]},
+            }
+        )
+
+
 def test_orchestrator_use_renderer_false_skips_unmapped_check():
     """use_renderer=False means the renderer client isn't used, so MODEL_RENDERER_MAP doesn't apply."""
     config = OrchestratorConfig.model_validate(
