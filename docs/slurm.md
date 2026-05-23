@@ -138,7 +138,7 @@ freq = 1
 
 [orchestrator]
 batch_size = 512
-rollouts_per_example = 16
+group_size = 16
 
 [orchestrator.sampling]
 max_tokens = 2048

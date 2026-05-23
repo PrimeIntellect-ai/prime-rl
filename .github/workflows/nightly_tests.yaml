@@ -25,7 +25,7 @@ jobs:
             - name: Checkout repository
               uses: actions/checkout@v4
               with:
-                  submodules: true
+                  submodules: false
 
             - name: Build matrix from nightly test files
               id: build-matrix
@@ -75,7 +75,11 @@ jobs:
             - name: Checkout repository
               uses: actions/checkout@v4
               with:
-                  submodules: true
+                  submodules: false
+            - name: Init public submodules
+              run: |
+                  git config --global url."https://github.com/".insteadOf "git@github.com:"
+                  git submodule update --init --recursive -- deps/verifiers deps/renderers deps/research-environments deps/pydantic-config
             - name: Install uv
               uses: astral-sh/setup-uv@v5
               with:

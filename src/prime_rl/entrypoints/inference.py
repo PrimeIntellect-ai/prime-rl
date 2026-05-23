@@ -45,6 +45,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
         num_nodes=getattr(config.deployment, "num_nodes", 1),
         port=config.server.port,
         disaggregated=is_disaggregated,
+        kv_offload=config.kv_cache_offload is not None,
     )
 
     is_multi_node = config.deployment.type == "multi_node"
@@ -63,10 +64,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
             use_deep_gemm=config.use_deep_gemm,
             prefill_env_overrides=config.deployment.prefill_env_overrides,
             decode_env_overrides=config.deployment.decode_env_overrides,
-            kv_offload=config.deployment.kv_cache_offload is not None,
-            kv_offload_cpu_bytes=int(config.deployment.kv_cache_offload.cpu_bytes)
-            if config.deployment.kv_cache_offload
-            else 0,
+            kv_offload_cpu_bytes=int(config.kv_cache_offload.cpu_bytes) if config.kv_cache_offload else 0,
         )
     elif is_multi_node:
         template_vars.update(

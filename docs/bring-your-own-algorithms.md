@@ -70,7 +70,7 @@ kwargs = { clip_eps = 0.2 }
 
 ## 2. Custom Advantage Functions
 
-Advantages are computed **per-example** (grouped by `rollouts_per_example`). You provide a function that computes advantages for a batch of examples.
+Advantages are computed **per-group** (one example × N rollouts). You provide a function that computes advantages for a single group; the framework calls it once per group and stitches the results back together. Groups may have fewer than `group_size` rollouts when some rollouts in the group errored (partial-group training).
 
 ### Interface
 
@@ -86,30 +86,32 @@ def my_custom_advantage(inputs: AdvantageInputs, **kwargs) -> AdvantageOutputs:
 ```python
 @dataclass
 class AdvantageInputs:
-    rewards: Float[Tensor, "num_examples rollouts_per_example"]
-    completion_lengths: Int[Tensor, "num_examples rollouts_per_example"]
+    # All rollouts for a single example (one group).
+    rollouts: list[vf.RolloutOutput]
 ```
+
+Each `vf.RolloutOutput` carries the full rollout (`reward`, `trajectory`, etc.), so custom advantages can read any metadata they need (e.g. completion-token counts, turn counts, tool calls).
 
 #### AdvantageOutputs
 
 ```python
 @dataclass
 class AdvantageOutputs:
-    advantages: Float[Tensor, "num_examples rollouts_per_example"]
+    advantages: list[float]   # one entry per rollout in the input group
 ```
 
 ### Example: Normalized Advantage
 
 ```python
-import torch
+import statistics
 from prime_rl.orchestrator.advantage import AdvantageInputs, AdvantageOutputs
 
 def normalized_advantage(inputs: AdvantageInputs, eps: float = 1e-8) -> AdvantageOutputs:
-    """Normalize advantages to zero mean and unit variance per example."""
-    mean = inputs.rewards.mean(dim=1, keepdim=True)
-    std = inputs.rewards.std(dim=1, keepdim=True)
-    advantages = (inputs.rewards - mean) / (std + eps)
-    return AdvantageOutputs(advantages=advantages)
+    """Normalize advantages to zero mean and unit variance within the group."""
+    rewards = [r["reward"] for r in inputs.rollouts]
+    mean = statistics.fmean(rewards)
+    std = statistics.pstdev(rewards) if len(rewards) > 1 else 0.0
+    return AdvantageOutputs(advantages=[(r - mean) / (std + eps) for r in rewards])
 ```
 
 ### Configuration

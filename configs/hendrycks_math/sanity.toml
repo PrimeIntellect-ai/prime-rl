@@ -10,7 +10,7 @@ name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 
 [orchestrator]
 batch_size = 512
-rollouts_per_example = 8
+group_size = 8
 
 [[orchestrator.train.env]]
 id = "math-env"
@@ -23,10 +23,7 @@ interval = 50
 [[orchestrator.eval.env]]
 id = "aime2024"
 name = "aime2024"
-rollouts_per_example = 16
-
-[trainer.model]
-name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+group_size = 16
 
 [trainer.model.ac]
 
@@ -37,3 +34,8 @@ max_model_len = 8192
 
 [log]
 level = "debug"
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"
+reasoning_parser = "think"
