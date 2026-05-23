@@ -97,6 +97,13 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info("Starting orchestrator")
     set_default_executor()
 
+    # Eagerly start the rollout-postprocess process pool so the spawn cost
+    # (creating workers + importing torch/numpy/verifiers in each) is paid
+    # once at startup, not on the first step-boundary gather. No-op if
+    # use_process_pool=False.
+    if config.use_process_pool:
+        get_process_pool(max_workers=config.process_pool_max_workers)
+
     event_loop_lag_monitor = EventLoopLagMonitor()
     event_loop_lag_monitor_task = asyncio.create_task(event_loop_lag_monitor.run())
 
