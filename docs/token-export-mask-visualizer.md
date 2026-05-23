@@ -6,16 +6,18 @@ The visualizer expects token export files with fields such as `token_ids`, `loss
 
 ## Quick start
 
+Run the script with `python` from the repository root. In a uv-managed environment, prefix the same commands with `uv run`.
+
 Render the latest step in a run's `token_exports` directory:
 
 ```bash
-uv run python scripts/token_export_mask_visualizer.py /path/to/output/token_exports
+python scripts/token_export_mask_visualizer.py /path/to/output/token_exports
 ```
 
 Render a specific step and rank without loading a tokenizer:
 
 ```bash
-uv run python scripts/token_export_mask_visualizer.py /path/to/output/token_exports \
+python scripts/token_export_mask_visualizer.py /path/to/output/token_exports \
   --step 8 \
   --rank 0 \
   --no-decode
@@ -24,7 +26,7 @@ uv run python scripts/token_export_mask_visualizer.py /path/to/output/token_expo
 Render every matched rollout instead of only the most disagreement-heavy records:
 
 ```bash
-uv run python scripts/token_export_mask_visualizer.py /path/to/output/token_exports \
+python scripts/token_export_mask_visualizer.py /path/to/output/token_exports \
   --step 8 \
   --all-records \
   --no-decode
@@ -58,7 +60,7 @@ DPPO defaults are read from `configs/trainer.toml` when that file is discoverabl
 Override thresholds from the CLI:
 
 ```bash
-uv run python scripts/token_export_mask_visualizer.py /path/to/output/token_exports \
+python scripts/token_export_mask_visualizer.py /path/to/output/token_exports \
   --dppo-mask-low 0.2 \
   --dppo-mask-high 0.2 \
   --icepop-ratio-low 0.2 \
