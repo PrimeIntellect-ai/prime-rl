@@ -320,9 +320,7 @@ class Scheduler:
         self.update_weights_time = time.perf_counter() - update_weights_start_time
         sparse_metrics = get_sparse_manifest_metrics(read_sparse_manifest(weights_path))
         byte_ratio = sparse_metrics.get("weight_broadcast/sparse/byte_ratio")
-        self.weight_broadcast_metrics = (
-            {"weight_broadcast/sparse/byte_ratio": byte_ratio} if byte_ratio is not None else {}
-        )
+        self.weight_broadcast_metrics = {"sparse_broadcast_ratio": byte_ratio} if byte_ratio is not None else {}
         self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
         self.ckpt_step = next_ckpt_step

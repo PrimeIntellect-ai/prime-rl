@@ -130,7 +130,7 @@ def test_maybe_update_policy_reuses_inflight_update_after_cancellation():
     asyncio.run(run())
 
 
-def test_policy_update_keeps_only_sparse_byte_ratio_metric():
+def test_policy_update_keeps_only_sparse_broadcast_ratio_metric():
     async def run() -> None:
         scheduler = make_scheduler()
         scheduler.student_inference = SimpleNamespace(
@@ -154,7 +154,7 @@ def test_policy_update_keeps_only_sparse_byte_ratio_metric():
         ):
             await scheduler._apply_policy_update(8)
 
-        assert scheduler.weight_broadcast_metrics == {"weight_broadcast/sparse/byte_ratio": 0.25}
+        assert scheduler.weight_broadcast_metrics == {"sparse_broadcast_ratio": 0.25}
 
     asyncio.run(run())
 
