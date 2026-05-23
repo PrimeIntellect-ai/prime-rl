@@ -20,6 +20,7 @@ This page covers the math and the configurable algorithmic components: how off-p
   - [Extension property](#extension-property)
   - [Best-effort interleaving](#best-effort-interleaving)
   - [Discontinuous trajectories](#discontinuous-trajectories)
+- [Renderers](#renderers)
 
 ## Async / off-policy training
 
@@ -260,10 +261,27 @@ tok.apply_chat_template(messages, tokenize=False)
 # (the <think>R1</think> from turn 2 is gone)
 ```
 
-Workarounds: use a chat template that preserves thinking (we ship patched versions for many models, e.g. `PrimeIntellect/Qwen3-0.6B`), or enable `orchestrator.renderer.preserve_all_thinking = true` so the renderer re-emits past thinking blocks itself.
+Workaround: use a chat template that preserves thinking — we ship patched versions for many models, e.g. `PrimeIntellect/Qwen3-0.6B`.
 
 ### Discontinuous trajectories
 
 Some envs are discontinuous by design — e.g. a main agent delegating to a sub-agent and getting back only a summarized result, not the sub-agent's whole conversation. Best-effort interleaving handles this naturally: each agent's contiguous turns merge, the handoff starts a new sample. The trainer never sees fabricated extension where there is none.
 
-For background on the design, see the verifiers [trajectories design note](https://github.com/PrimeIntellect-ai/verifiers/blob/main/notes/TRAJECTORIES.md). The `--trajectory-strategy branching` option is deprecated — best-effort interleaving covers all cases, falling back to separate samples (equivalent to old branching) when extension breaks.
+## Renderers
+
+Best-effort interleaving only works because the renderer guarantees the exact-prefix invariant *by construction* — it never re-renders prior turns, so it can't lose tokens to chat-template normalization, BPE retokenization drift, or thinking stripping. A renderer turns a model's chat template into a Python object that can:
+
+- `render_ids(messages)` — tokenize messages to ids the inference engine accepts.
+- `parse_response(completion_ids)` — recover structured `(content, reasoning_content, tool_calls)` from sampled ids.
+- `bridge_to_next_turn(prev_prompt_ids, prev_completion_ids, new_messages)` — extend the previous turn's tokens verbatim with the new environment turn, instead of re-rendering history.
+
+When `bridge_to_next_turn` succeeds, the trainer sees the exact token stream the sampler produced; when it can't be proven safe (e.g. the model's renderer is `DefaultRenderer` and the template's stop sequence is unknown), it returns `None` and the orchestrator falls back to a full re-render — which is what triggers the new-sample fallback documented above.
+
+Hand-coded renderers ship for `qwen3`, `qwen3-vl`, `qwen3.5`, `glm5`, `glm4.5`, `minimax-m2`, `deepseek-v3`, `kimi-k2`, `kimi-k2.5`, `nemotron-3`, `gpt-oss`; anything else falls back to `DefaultRenderer` (a generic `apply_chat_template` wrapper). Pick one via:
+
+```toml
+[orchestrator.renderer]
+name = "auto"   # detect from tokenizer; pass an explicit name for fine-tunes
+```
+
+For the full design rationale (failure modes ruled out, empirical token-identity comparison against `apply_chat_template`, when to write a hand-coded renderer), see **TODO(blog-post-url)** — our writeup on the PI site is the canonical reference.

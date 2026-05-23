@@ -122,7 +122,7 @@ This talks to any OpenAI-compatible endpoint, so it works against `uv run infere
 
 ### Why does Qwen3 fail multi-turn SFT silently?
 
-Qwen3's default chat template strips past `<think>` blocks when re-tokenizing, which violates the prefix property the SFT trainer depends on. Use a model with a patched chat template (e.g. `PrimeIntellect/Qwen3-0.6B`) or set `orchestrator.renderer.preserve_all_thinking = true`. See [Algorithms § Multi-turn trajectories](algorithms.md#multi-turn-trajectories).
+Qwen3's default chat template strips past `<think>` blocks when re-tokenizing, which violates the prefix property the SFT trainer depends on. Use a model with a patched chat template — we ship one at `PrimeIntellect/Qwen3-0.6B`. See [Algorithms § Multi-turn trajectories](algorithms.md#multi-turn-trajectories).
 
 ### Can I train on `prompt`/`completion` and `messages` mixed in one dataset?
 
