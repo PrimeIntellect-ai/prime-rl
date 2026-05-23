@@ -122,7 +122,7 @@ jobs:
         run: |
           if [ -f .gitmodules ]; then
             git config --global url."https://github.com/".insteadOf "git@github.com:"
-            git submodule update --init --recursive -- deps/verifiers deps/renderers deps/research-environments
+            git submodule update --init --recursive -- deps/pydantic-config deps/verifiers deps/renderers deps/research-environments
           fi
 
       - name: Log in to GitHub Container Registry
