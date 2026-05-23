@@ -100,7 +100,7 @@ jobs:
                 });
                 core.notice(`Dispatched build_image.yaml for ${tag}`);
               } catch (error) {
-                core.warning(`Failed to dispatch build_image.yaml: ${error.message}`);
+                core.setFailed(`Failed to dispatch build_image.yaml: ${error.message}`);
               }
               return;
             }
