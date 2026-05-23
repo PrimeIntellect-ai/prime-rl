@@ -7,7 +7,6 @@ Frequently-asked questions, grouped by topic. For full background see the linked
 - [Getting started](#getting-started)
 - [Configs](#configs)
 - [RL training](#rl-training)
-- [SFT training](#sft-training)
 - [Checkpoints and resume](#checkpoints-and-resume)
 - [Scaling](#scaling)
 - [Memory and OOM](#memory-and-oom)
@@ -60,10 +59,6 @@ uv run rl @ rl.toml --no-trainer.gc        # disable garbage collection config
 
 In TOML, comment out or remove the section.
 
-### How do I override an env var in TOML?
-
-You can't directly — env vars are a separate source. To force a fixed value, set it in TOML; the precedence order (CLI > TOML > env > defaults) means the TOML wins.
-
 ### How do I add a new environment to my training mix?
 
 Add another `[[orchestrator.train.env]]` table. Lists are replaced wholesale on overlay, so include the full list every time:
@@ -81,13 +76,9 @@ See [Configuration § Environments](configuration.md#environments-orchestratortr
 
 ## RL training
 
-### What does `max_async_level` actually do?
+### What should I tune for off-policy noise on long agentic rollouts?
 
-It caps how many steps inference can run ahead of training. `1` (default) is pipelined — inference for step n+1 runs concurrently with trainer step n; off-policy drift is minimal. `2` absorbs slower weight broadcasts (e.g. cross-WAN). Higher values give more throughput at the cost of more drift; watch `mismatch_kl/all/mean`. See [Algorithms § Tuning `max_async_level`](algorithms.md#tuning-max_async_level).
-
-### Why are there two W&B runs per RL job?
-
-The trainer and orchestrator log as separate runs so their step indices and timings stay independent. The names are `<your-name>-trainer` and `<your-name>-orchestrator`. Group them in W&B if you want a unified view.
+`orchestrator.max_off_policy_steps` (default 8). It caps how many distinct policies are allowed to have contributed to a single rollout — rollouts whose source policy fell more than that many steps behind the trainer get discarded. On long multi-turn rollouts (SWE, browsing, anything where one rollout spans many trainer steps), this is often the most important throughput-vs-noise knob: bump it for higher throughput and accept more off-policy noise; lower it to keep training tighter. Watch the `errored_rollouts` and `mismatch_kl/all/mean` metrics when changing it.
 
 ### My reward isn't improving. What should I check first?
 
@@ -101,36 +92,21 @@ In order:
 
 ### How do I evaluate without training?
 
-Use `vf-eval`:
+Use `prime eval` (from the [`prime` CLI](https://docs.primeintellect.ai/cli-reference/introduction)) — it defaults to Prime Inference but accepts any OpenAI-compatible endpoint via `--provider vllm --api-base-url ...`. Works against `uv run inference`, hosted endpoints, or a stale checkpoint mid-run.
 
 ```bash
-uv run vf-eval math-env \
-  -a '{"dataset_name": "openai/gsm8k", "dataset_subset": "main"}' \
-  -m PrimeIntellect/Qwen3-0.6B \
-  -b http://localhost:8000/v1 -n 50 -t 2048
+prime eval run math-env \
+  --env-args '{"dataset_name": "openai/gsm8k", "dataset_subset": "main"}' \
+  --model PrimeIntellect/Qwen3-0.6B \
+  --provider vllm --api-base-url http://localhost:8000/v1 \
+  --num-examples 50 --max-tokens 2048
 ```
-
-This talks to any OpenAI-compatible endpoint, so it works against `uv run inference`, hosted endpoints, or a stale checkpoint mid-run.
 
 ### What's the difference between `training_mode = "sft"` and the standalone `uv run sft`?
 
 `uv run sft` is the traditional path: load a HF dataset, train the model. No orchestrator, no teacher.
 
 `orchestrator.training_mode = "sft"` uses the RL pipeline to hard-distill from a teacher: the teacher (any OpenAI-compatible endpoint) generates the completions, and the student trains on them as they're produced. Use this when you want on-the-fly teacher supervision against a moving student. See [Training § Training modes](training.md#training-modes-rl--opd--sft-via-orchestrator).
-
-## SFT training
-
-### Why does Qwen3 fail multi-turn SFT silently?
-
-Qwen3's default chat template strips past `<think>` blocks when re-tokenizing, which violates the prefix property the SFT trainer depends on. Use a model with a patched chat template — we ship one at `PrimeIntellect/Qwen3-0.6B`. See [Algorithms § Multi-turn trajectories](algorithms.md#multi-turn-trajectories).
-
-### Can I train on `prompt`/`completion` and `messages` mixed in one dataset?
-
-Yes — if both columns are present in a row, `messages` takes precedence. The trainer will use `messages` for that row and ignore `prompt`/`completion`.
-
-### How do I do tool-calling SFT?
-
-Tool-calling SFT works out of the box if your dataset uses the `messages` format with tool messages embedded. The renderer handles tool turns the same as assistant turns. Make sure your model's chat template supports tool tokens.
 
 ## Checkpoints and resume
 

@@ -97,6 +97,7 @@ The orchestrator owns the data-side knobs that most directly shape what the trai
 |---|---|
 | `orchestrator.batch_size` | Prompts per trainer step. |
 | `orchestrator.rollouts_per_example` | Group size — rollouts generated per prompt. Used for advantage normalization and pass@k estimation. |
+| `orchestrator.max_off_policy_steps` | How many distinct policies may have contributed to one rollout before it gets discarded (default 8). The main throughput-vs-noise dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `errored_rollouts` and `mismatch_kl/all/mean` when tuning. |
 | `orchestrator.training_mode` | Picks the training-mode dispatch: `rl` (default), `opd`, or `sft`. See [Training modes](#training-modes-rl--opd--sft-via-orchestrator). |
 
 ## SFT training
@@ -163,17 +164,15 @@ name = "gsm8k-eval"
 args = { dataset_name = "openai/gsm8k", dataset_subset = "main", split = "test" }
 ```
 
-Eval scores land in the trainer logs as `eval/{env}/{avg@k,pass@k}` and in W&B under the same keys. For one-off evaluations outside of training, use `vf-eval`:
+Eval scores land in the trainer logs as `eval/{env}/{avg@k,pass@k}` and in W&B under the same keys. For one-off evaluations outside of training, use `prime eval` (from the [`prime` CLI](https://docs.primeintellect.ai/cli-reference/introduction)) — it defaults to Prime Inference but talks to any OpenAI-compatible endpoint via `--provider vllm --api-base-url ...`:
 
 ```bash
-uv run vf-eval math-env \
-  -a '{"dataset_name": "openai/gsm8k", "dataset_subset": "main"}' \
-  -m PrimeIntellect/Qwen3-0.6B \
-  -b http://localhost:8000/v1 \
-  -n 50 -t 2048
+prime eval run math-env \
+  --env-args '{"dataset_name": "openai/gsm8k", "dataset_subset": "main"}' \
+  --model PrimeIntellect/Qwen3-0.6B \
+  --provider vllm --api-base-url http://localhost:8000/v1 \
+  --num-examples 50 --max-tokens 2048
 ```
-
-`vf-eval` talks to any OpenAI-compatible endpoint, so it works against `uv run inference`, hosted endpoints, or a stale checkpoint mid-run.
 
 ## Checkpointing
 
@@ -272,7 +271,7 @@ uv run rl @ rl.toml --wandb                               # default project, ran
 uv run rl @ rl.toml --wandb.project my-proj --wandb.name run-42
 ```
 
-For RL runs the trainer and orchestrator log as **two separate runs** with the same name: `<name>-trainer` and `<name>-orchestrator`. You'll usually want both grouped in a W&B group.
+By default (`wandb.shared = true`) the trainer and orchestrator log into a **single shared W&B run**, so all metrics from both processes land in one place. Set `wandb.shared = false` (or pass `--no-wandb.shared`) to fall back to the legacy split — two runs suffixed `-trainer` and `-orchestrator`. Shared mode requires the W&B SDK ≥ 0.19.9 and is incompatible with `wandb.offline = true`.
 
 By default, every 10 steps each process also logs a sample of prompts/completions (with rewards and advantages) and reward/advantage/entropy distributions as W&B tables. Tune via `--wandb.log-extras.interval` and `--wandb.log-extras.sample-ratio`, or disable subsets:
 
