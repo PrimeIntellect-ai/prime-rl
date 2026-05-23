@@ -482,22 +482,23 @@ async def orchestrate(config: OrchestratorConfig):
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
 
-        # Pretokenize is a no-op when the renderer client already populated
-        # ``tokens`` on each trajectory step (renderer path); the fallback
-        # tokenizer-only branch handles text-only rollouts whose tokens
-        # were not pre-rendered. Run on threads so CPU work overlaps with
-        # inference for the next batch (via max_async_level >= 2).
-        await asyncio.gather(
-            *(
-                asyncio.to_thread(
-                    pretokenize_rollout_trajectory,
-                    rollout,
-                    tokenizer,
-                    renderer=renderer,
+        # Pretokenize on threads so CPU work overlaps with inference for the
+        # next batch. Skip the fanout entirely when every step already has
+        # ``tokens`` (renderer path) — otherwise the 256-way to_thread fires
+        # only to no-op and the GIL stampede blocks the loop.
+        needs_pretokenize = any(step["tokens"] is None for rollout in train_rollouts for step in rollout["trajectory"])
+        if needs_pretokenize:
+            await asyncio.gather(
+                *(
+                    asyncio.to_thread(
+                        pretokenize_rollout_trajectory,
+                        rollout,
+                        tokenizer,
+                        renderer=renderer,
+                    )
+                    for rollout in train_rollouts
                 )
-                for rollout in train_rollouts
             )
-        )
 
         # Process rollouts in parallel
         results = await asyncio.gather(
