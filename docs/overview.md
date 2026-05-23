@@ -1,13 +1,6 @@
 # Overview
 
-`prime-rl` is a framework for large-scale, asynchronous reinforcement learning of large language models. It is designed to be easy to use and hackable, yet capable of scaling to 1000+ GPU clusters. Models are trained with PyTorch FSDP2 (with optional expert and context parallelism), rollouts are generated with vLLM, and the two halves talk to each other through a thin orchestrator process that owns dataset sampling, advantage computation, and weight broadcasting.
-
-Use `prime-rl` when you want to:
-
-- Train an open-weights LLM with RL on one of the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars) tasks, or your own [verifiers](https://github.com/PrimeIntellect-ai/verifiers) environment.
-- Post-train with SFT, then continue with RL, using the same model loader, checkpoint format, and chat template plumbing for both phases.
-- Scale across multiple nodes — SLURM, Kubernetes, or hand-launched — without rewriting your config.
-- Run agentic multi-turn rollouts (tool use, browser environments, long horizons) without re-tokenizing across turns.
+`prime-rl` is a framework for large-scale, asynchronous reinforcement learning of large language models. It is designed to be easy to use and hackable, yet capable of training 1T+-parameter MoE models on 1000+ GPU clusters.
 
 ## Architecture
 
@@ -15,9 +8,9 @@ A `prime-rl` RL run is three cooperating processes:
 
 ![Architecture](assets/architecture.png)
 
-- **Inference** — A vLLM server (or fleet) that holds the current policy weights and serves OpenAI-compatible completions. Updated in place via a custom `update_weights` endpoint after each trainer step.
-- **Orchestrator** — A lightweight CPU process that samples prompts, drives `verifiers` environments to generate rollouts against the inference server, packs them into training batches, ships them to the trainer, and relays new weights back to inference.
-- **Trainer** — A torchrun-launched FSDP2 process group that consumes packed rollouts, computes the loss, steps the optimizer, and writes the new policy to the weight broadcast transport.
+- **Inference** — A vLLM-backed server (or fleet) that holds the current policy and serves OpenAI-compatible completions. Scales from a single co-located GPU to multi-node fleets with tensor + data parallelism, FP8 inference, and prefill/decode disaggregation for high-throughput long-context serving. Updated in place via a custom `update_weights` endpoint, with NCCL or filesystem transports.
+- **Orchestrator** — A lightweight CPU process that samples prompts from one or more [verifiers](https://github.com/PrimeIntellect-ai/verifiers) environments, drives multi-turn rollouts against the inference fleet (tool use, browsers, sandboxes, long horizons) without re-tokenizing across turns, computes advantages, packs the rollouts into training batches, and relays new weights back to inference.
+- **Trainer** — A torchrun-launched FSDP2 process group that consumes packed rollouts and steps the optimizer. For MoE families we ship optimized custom modeling code with expert parallelism (EP) — including DeepEP kernels — and context parallelism (CP) for long-sequence training. Plus selective activation checkpointing, FP8 training on Hopper+, LoRA, and a multi-run manager that hosts many concurrent adapters in one trainer process.
 
 The three processes communicate through configurable transports — by default the trainer↔orchestrator rollout link uses the local filesystem, and weight broadcast uses the filesystem (or NCCL for synchronous setups). Swap to ZMQ for multi-host setups without shared storage. See [Scaling](scaling.md) for the deployment options.
 
@@ -35,31 +28,16 @@ You need at least one NVIDIA GPU (RTX 3090/4090/5090, A100, H100, H200, or B200)
 
 ## Quick run
 
-Train `Qwen3-0.6B` on GSM8K with one trainer GPU and one inference GPU. This config ships in the repo:
+Train an SFT-warmed `Qwen3-0.6B` on the `reverse-text` task — the env is bundled with the `verifiers` submodule so no separate install is needed. This config ships in the repo and runs on two GPUs (one for inference, one for the trainer):
 
 ```bash
-# 1. Install the verifiers environment from the Environments Hub.
-prime env install primeintellect/math-env
-
-# 2. Set up a four-pane tmux session that tails each process's logs.
-bash scripts/tmux.sh
-
-# 3. From the `Trainer` pane, launch all three processes co-located on this node.
-uv run rl @ configs/gsm8k/rl.toml \
+uv run rl @ examples/reverse_text/rl.toml \
   --wandb.project your-project \
-  --wandb.name gsm8k-smoke \
+  --wandb.name reverse-text-smoke \
   --ckpt
 ```
 
-The `rl` entrypoint reads `configs/gsm8k/rl.toml`, splits it into per-process sub-configs, picks GPU 0 for inference and GPU 1 for the trainer, launches all three processes, and tees their stdout into `outputs/logs/{trainer,orchestrator,inference}.log`. Watch the tmux panes — within a minute the trainer should log `step 1` and a reward sample.
-
-After 100 steps the run completes. Final HF-compatible weights land at `outputs/weights/step_100`.
-
-For a CPU-only smoke check (no real training, no GPU), use the SFT fake-data config:
-
-```bash
-uv run sft @ configs/debug/sft/train.toml
-```
+The `rl` entrypoint reads `examples/reverse_text/rl.toml`, splits it into per-process sub-configs, picks GPU 0 for inference and GPU 1 for the trainer, launches all three processes, and tees their stdout into `outputs/logs/{trainer,orchestrator,inference}.log`. Within a minute the trainer should log `step 1` and a reward sample; after 20 steps the run completes and final HF-compatible weights land at `outputs/weights/step_20`.
 
 For multi-GPU, multi-node, SLURM, and Kubernetes layouts, see [Scaling](scaling.md).
 
