@@ -11,7 +11,6 @@ Frequently-asked questions, grouped by topic. For full background see the linked
 - [Scaling](#scaling)
 - [Memory and OOM](#memory-and-oom)
 - [Observability](#observability)
-- [Models and environments](#models-and-environments)
 
 ## Getting started
 
@@ -198,23 +197,3 @@ uv run rl @ rl.toml --orchestrator.log.vf-level debug
 ```
 
 Or set `PRIME_VF_LOG_LEVEL=debug` in the environment.
-
-## Models and environments
-
-### Which models have a custom optimized implementation?
-
-GLM-5, Qwen3 MoE, Qwen3.5 MoE, Qwen3 / Qwen3.5 VLMs, Poolside Laguna, MiniMax M2, Nemotron H, Trinity (AFMoE), GLM-4 / GLM-4.5 / INTELLECT-3, GPT-OSS (HF-MoE only). See the table in [Advanced § MoE models](advanced.md#moe-models).
-
-Other HF causal LMs work via the HF path (`impl = "hf"` or `"auto"`) but without EP, FP8, or the custom kernels.
-
-### Can I train a VLM?
-
-Yes — Qwen3-VL, Qwen3.5, Qwen3.5-MoE out of the box. Add `[model.vlm]` and use bfloat16 dtypes. See [Advanced § Vision-language models](advanced.md#vision-language-models).
-
-### Can I install an environment from outside the Hub?
-
-Yes — install with `uv pip install -e path/to/my-env` and reference it by its `id` (the env's package name). The orchestrator will discover it.
-
-### My environment hangs occasionally. What's happening?
-
-Most likely it's running user code that blocks on a network call or an external service (e.g. a math verifier, a sandbox). Check the env worker logs and the event-loop lag metrics on the env server. The orchestrator's `max_retries` and `errored_rollouts` metric should tell you how often rollouts fail vs hang.
