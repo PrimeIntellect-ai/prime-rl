@@ -1164,6 +1164,13 @@ class OrchestratorConfig(BaseConfig):
         ),
     ] = 16
 
+    dump_raw_rollouts: Annotated[
+        bool,
+        Field(
+            description="Pickle raw vf.RolloutOutput list to <output_dir>/raw_rollouts/step_N.pkl after each call to scheduler.generate_batch. Only meant for offline replay/profiling — produces multi-GB files per step under router replay so don't leave on in real training runs.",
+        ),
+    ] = False
+
     experimental: Annotated[
         OrchestratorExperimentalConfig,
         Field(description="Experimental features for the orchestrator."),

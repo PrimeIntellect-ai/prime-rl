@@ -425,6 +425,10 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Schedule generating the training batch. Retry on empty-after-filter
         # batches so the trainer never receives an empty batch.
+        # ── Per-phase wall-clock instrumentation. Each phase records seconds
+        # spent so we can attribute the orch step-boundary stall to individual
+        # ops in a single structured log line at the end of the step.
+        phase_times: dict[str, float] = {}
         generate_completions_time = 0.0
         train_rollouts: list[vf.RolloutOutput] = []
         num_rollouts = 0
@@ -434,15 +438,31 @@ async def orchestrate(config: OrchestratorConfig):
             train_rollouts = await scheduler.generate_batch(step=progress.step)
             generate_completions_time += scheduler.last_batch_generation_time
 
+            # Optional: dump raw rollouts for offline replay/profiling. Only
+            # enable in debug runs — files are multi-GB under router replay.
+            if config.dump_raw_rollouts:
+                _t0 = time.perf_counter()
+                dump_dir = config.output_dir / "raw_rollouts"
+                dump_dir.mkdir(parents=True, exist_ok=True)
+                dump_path = dump_dir / f"step_{progress.step}.pkl"
+                await asyncio.to_thread(_pickle_dump_to_disk, train_rollouts, dump_path)
+                logger.info(
+                    f"Dumped {len(train_rollouts)} raw rollouts to {dump_path} in {time.perf_counter()-_t0:.2f}s"
+                )
+
             # Compute advantages (in-place)
             num_rollouts = len(train_rollouts)
             num_unique_examples = len({(r["env_name"], r["example_id"]) for r in train_rollouts})
             # O3: pure-Python work over ~2k rollouts — release GIL via to_thread.
+            _t0 = time.perf_counter()
             await asyncio.to_thread(compute_advantages, train_rollouts, config.advantage)
+            phase_times["compute_advantages"] = time.perf_counter() - _t0
 
             # Apply rollout filters — sets rollout["filters"] and rollout["is_filtered"]
             # O4: same — many small filter checks across all rollouts.
+            _t0 = time.perf_counter()
             await asyncio.to_thread(apply_filters, rollout_filters, train_rollouts)
+            phase_times["apply_filters"] = time.perf_counter() - _t0
 
             n_trainable = sum(1 for r in train_rollouts if not r["is_filtered"])
             if n_trainable > 0:
@@ -476,10 +496,12 @@ async def orchestrate(config: OrchestratorConfig):
             )
 
         # Save train rollouts to disk (fire-and-forget background thread)
+        _t0 = time.perf_counter()
         step_path = get_step_path(get_rollout_dir(config.output_dir), progress.step)
         await asyncio.to_thread(
             save_rollouts, train_rollouts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
         )
+        phase_times["save_rollouts"] = time.perf_counter() - _t0
 
         # VLM: offload base64 images to disk immediately to free memory
         if is_vlm:
@@ -514,6 +536,7 @@ async def orchestrate(config: OrchestratorConfig):
                 )
             )
 
+        _t0 = time.perf_counter()
         if is_vlm:
             mm_token_type_ids_mapping = {}
             if hasattr(processor, "image_token_id") and processor.image_token_id is not None:
@@ -532,6 +555,7 @@ async def orchestrate(config: OrchestratorConfig):
             await _pretokenize_all()
             vlm_cache = None
             mm_token_type_ids_mapping = None
+        phase_times["pretokenize"] = time.perf_counter() - _t0
 
         # Process rollouts in parallel.
         #
@@ -546,6 +570,7 @@ async def orchestrate(config: OrchestratorConfig):
         # ProcessPoolExecutor so worker processes have their own GIL and the
         # orch's loop stays responsive. Tradeoff is per-call pickle/IPC cost;
         # see prime_rl.orchestrator.utils.get_process_pool docstring.
+        _t0 = time.perf_counter()
         if config.use_process_pool:
             pool = get_process_pool(max_workers=config.process_pool_max_workers)
             loop = asyncio.get_running_loop()
@@ -574,9 +599,11 @@ async def orchestrate(config: OrchestratorConfig):
             results = await asyncio.gather(
                 *(asyncio.to_thread(process_rollout, r, rollout_idx) for rollout_idx, r in enumerate(train_rollouts))
             )
+        phase_times["process_rollout_gather"] = time.perf_counter() - _t0
 
         # Collect results and assign advantages. Metrics are computed over all
         # rollouts; only non-filtered samples are sent to the trainer.
+        _t0 = time.perf_counter()
         train_examples: list[TrainingSample] = []
         rollout_prefill_lens: list[int] = []
         rollout_decode_lens: list[int] = []
@@ -605,6 +632,7 @@ async def orchestrate(config: OrchestratorConfig):
             rollout_decode_lens.append(rollout_decode_tokens)
             num_prefill_tokens += rollout_prefill_tokens
             num_decode_tokens += rollout_decode_tokens
+        phase_times["result_collection_loop"] = time.perf_counter() - _t0
 
         parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
         logger.debug(
@@ -635,11 +663,14 @@ async def orchestrate(config: OrchestratorConfig):
         # O1+O2+threaded-io: send is async; encodes per-sample with sleep(0)
         # between, peels routed_experts bytes into a sidecar, all disk I/O
         # off the event loop.
+        _t0 = time.perf_counter()
         await training_batch_sender.send(training_batch)
+        phase_times["training_batch_send"] = time.perf_counter() - _t0
 
         step_time = time.perf_counter() - step_start_time
 
         # Gather metrics in dataframes
+        _t_dfs = time.perf_counter()
         results_df = pd.DataFrame(
             {
                 "example_id": [rollout["example_id"] for rollout in train_rollouts],
@@ -675,7 +706,10 @@ async def orchestrate(config: OrchestratorConfig):
             ]
         )
 
+        phase_times["pandas_dataframes"] = time.perf_counter() - _t_dfs
+
         # Update progress metrics
+        _t_aggr = time.perf_counter()
         num_tokens = int(results_df.seq_len.sum())
         progress.total_tokens += num_tokens
         progress.total_samples += num_rollouts
@@ -807,7 +841,10 @@ async def orchestrate(config: OrchestratorConfig):
             for name in filter_df.columns:
                 to_log[f"filters/{env}/{name}"] = env_filter_df[name].astype(float).mean()
 
+        phase_times["metrics_aggregation"] = time.perf_counter() - _t_aggr
+
         # Log metrics to monitor(s)
+        _t_wandb = time.perf_counter()
         monitor.log(to_log, step=progress.step)
 
         # Log samples to monitor(s) if enabled.
@@ -829,9 +866,17 @@ async def orchestrate(config: OrchestratorConfig):
                 tokens=num_prefill_tokens + num_decode_tokens,
             )
 
+        phase_times["wandb_log"] = time.perf_counter() - _t_wandb
+
         reward_mean = by_example.reward.mean().mean()
         step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {reward_mean:.4f} | Seq. Length: {by_example.seq_len.mean().mean():.1f} tokens/sample | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
         logger.success(step_message)
+        # Per-phase wallclock breakdown of the step boundary. Sorted by cost so
+        # the biggest chunk is always first; expressed in seconds.
+        phase_breakdown = ", ".join(
+            f"{name}={dur:.2f}s" for name, dur in sorted(phase_times.items(), key=lambda kv: -kv[1])
+        )
+        logger.info(f"Step {progress.step} phase breakdown: {phase_breakdown}")
 
         # Increment step
         progress.step += 1
@@ -929,6 +974,21 @@ async def orchestrate(config: OrchestratorConfig):
     # Optionally, print benchmark table
     if config.bench:
         print_benchmark(to_col_format(monitor.history))
+
+
+def _pickle_dump_to_disk(obj, path) -> None:
+    """Pickle ``obj`` to ``path`` atomically. Runs in a worker thread so the
+    orch event loop isn't blocked by the disk write. Used when
+    ``OrchestratorConfig.dump_raw_rollouts`` is enabled — see the replay
+    harness at ``scripts/perf_r3/replay_orch_step.py``.
+    """
+    import pickle
+    from pathlib import Path
+    path = Path(path)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "wb") as f:
+        pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
+    tmp.rename(path)
 
 
 def _process_rollout_worker(
