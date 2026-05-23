@@ -223,22 +223,33 @@ For LoRA runs, set `ckpt.weights.save_adapter_separately = true` to also write t
 
 ### Log files
 
-The launcher tees every process's stdout/stderr into `<output_dir>/logs/`:
+The launcher tees every process's stdout/stderr into `<output_dir>/logs/`. The full layout (single-node runs skip the `node_*.log` and `router_*.log` files):
 
 ```
 <output_dir>/logs/
-├── trainer.log                  # rank 0 only
-├── orchestrator.log
-├── inference.log
-├── trainer/torchrun/<rdzv>/attempt_0/<rank>/{stdout,stderr}.log
+├── trainer.log                  # rank 0 only; symlink → trainer/node_0.log on multi-node
+├── orchestrator.log             # single instance, single file
+├── inference.log                # symlink → inference/node_0.log on multi-node
+├── trainer/
+│   ├── node_*.log               # per-node trainer stdout (multi-node only)
+│   └── torchrun/<rdzv>/attempt_0/<rank>/{stdout,stderr}.log   # per-rank
+├── inference/
+│   ├── node_*.log               # per-node inference stdout (multi-node only)
+│   └── router_*.log             # vllm-router per replica (multi-node only)
 └── envs/{train,eval}/<env_name>/
     ├── env_server.log
     └── env_worker_<id>.log
 ```
 
-Multi-node runs add `trainer/node_*.log` and `inference/node_*.log` — `trainer.log` and `inference.log` at the top level symlink to node 0 for convenience. See [Scaling § Multi-node logs](scaling.md#multi-node-logs).
+Env worker logs are the first place to look for env-side errors (most user code lives there). Verbosity is controlled by `orchestrator.log.vf_level`. For multi-rank trainer debugging, drop into `logs/trainer/torchrun/<rdzv>/attempt_0/<rank>/{stdout,stderr}.log` — verbose and per-rank.
 
-Env worker logs are the first place to look for env-side errors (most user code lives there). Verbosity is controlled by `orchestrator.log.vf_level`.
+Live tailing from a single point (works on the head node for multi-node runs over a shared filesystem):
+
+```bash
+tail -F <output_dir>/logs/{trainer,orchestrator,inference}.log
+tail -F <output_dir>/logs/trainer/node_*.log     # multi-node only
+tail -F <output_dir>/logs/inference/router_*.log # multi-node only
+```
 
 ### Console output and the tmux helper
 
@@ -250,9 +261,7 @@ bash scripts/tmux.sh
 uv run rl @ ... --output-dir outputs/my-run
 ```
 
-Pass `-s <session>` and `-o <output_dir>` to run multiple parallel experiments side-by-side in different sessions.
-
-For multi-node SLURM runs, follow the head-node logs via `tail -f` on the shared filesystem — see [Scaling § SLURM](scaling.md#slurm).
+Pass `-s <session>` and `-o <output_dir>` to run multiple parallel experiments side-by-side in different sessions. The helper also works on a SLURM head node — `bash scripts/tmux.sh my-rl-job /shared/outputs/my-rl-job`.
 
 ### Weights & Biases
 

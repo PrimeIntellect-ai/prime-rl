@@ -29,19 +29,16 @@ This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster
 - [Kubernetes](#kubernetes)
 - [Disaggregated prefill/decode inference](#disaggregated-prefilldecode-inference)
 - [Benchmarking](#benchmarking)
-- [Multi-node logs](#multi-node-logs)
 
 ## Choosing a layout
 
 | You have… | Use this layout |
 |---|---|
-| 1 GPU | Single-GPU co-located RL (small model) or SFT-only |
 | 1 node, 2–8 GPUs | `uv run rl` with `--deployment.num-infer-gpus N --deployment.num-train-gpus M` |
 | 1 node, 8 GPUs, large MoE | Custom impl + EP + activation checkpointing |
 | 2+ nodes, SLURM | `[slurm]` + `[deployment]` overlay (recommended) |
 | 2+ nodes, no SLURM | Manual `uv run inference` + `uv run orchestrator` + `uv run torchrun src/.../train.py` |
 | Kubernetes | The bundled Helm chart at `k8s/prime-rl` |
-| Production MoE with long contexts | Disaggregated prefill/decode inference |
 
 ## Single GPU
 
@@ -544,39 +541,3 @@ uv run rl @ rl.toml --bench
 ```
 
 Persist results with `--bench.output-json`. Use this to compare parallelism configs before committing a multi-day run.
-
-## Multi-node logs
-
-Log layout under `<output_dir>/logs/`:
-
-```
-trainer.log            # symlink → trainer/node_0.log
-inference.log          # symlink → inference/node_0.log
-orchestrator.log       # single instance, single file
-trainer/
-  node_*.log           # per-node trainer stdout (rank 0 only)
-  torchrun/            # per-rank stdout/stderr
-inference/
-  node_*.log           # per-node inference stdout
-  router_*.log         # vllm-router per replica
-envs/
-  {train,eval}/<env>/
-    env_server.log
-    env_worker_*.log
-```
-
-Live tailing from the head node:
-
-```bash
-tail -F <output_dir>/logs/{trainer,orchestrator,inference}.log
-tail -F <output_dir>/logs/trainer/node_*.log
-tail -F <output_dir>/logs/inference/router_*.log
-```
-
-The tmux helper also works on the head node:
-
-```bash
-bash scripts/tmux.sh my-rl-job /shared/outputs/my-rl-job
-```
-
-For multi-rank trainer debugging, drop into `logs/trainer/torchrun/<rdzv_id>/attempt_0/<rank>/{stdout,stderr}.log` — verbose and per-rank.
