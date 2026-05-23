@@ -275,6 +275,9 @@ known-first-party = ["prime_rl"]
 line-length = 120
 extend-exclude = ["deps"]
 
+[tool.ruff.format]
+exclude = ["scripts/token_export_mask_visualizer.py"]
+
 [tool.pytest.ini_options]
 addopts = "--strict-markers"
 markers = [
