@@ -249,9 +249,9 @@ def interleave_rollout(
 
             return {
                 "prompt_ids": list(tokens["prompt_ids"]),
-                "prompt_mask": [bool(i) for i in tokens["prompt_mask"]],
+                "prompt_mask": list(map(bool, tokens["prompt_mask"])),
                 "completion_ids": list(tokens["completion_ids"]),
-                "completion_mask": [bool(i) for i in tokens["completion_mask"]],
+                "completion_mask": list(map(bool, tokens["completion_mask"])),
                 "completion_logprobs": list(tokens["completion_logprobs"]),
                 "routed_experts": routed_experts,
                 # Renderer-emitted multimodal sidecar (placeholders + per-item
@@ -280,13 +280,13 @@ def interleave_rollout(
         if has_error:
             completion_mask = [False] * len(tokens["completion_mask"])
         else:
-            completion_mask = [bool(i) for i in tokens["completion_mask"]]
+            completion_mask = list(tokens["completion_mask"])
         completion_ids = list(tokens["completion_ids"])
 
         prompt_ids = list(tokens["prompt_ids"])
         sample = TrainingSample(
             prompt_ids=prompt_ids,
-            prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
+            prompt_mask=list(tokens["prompt_mask"]),
             completion_ids=completion_ids,
             completion_mask=completion_mask,
             completion_logprobs=list(tokens["completion_logprobs"]),
@@ -330,7 +330,7 @@ def interleave_rollout(
         if has_error:
             sample.completion_mask.extend([False] * len(tokens["completion_mask"]))
         else:
-            sample.completion_mask.extend(bool(i) for i in tokens["completion_mask"])
+            sample.completion_mask.extend(tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
         sample.completion_temperatures.extend([temperature] * len(completion_ids))
 
