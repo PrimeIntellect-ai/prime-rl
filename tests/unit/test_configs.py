@@ -91,6 +91,23 @@ def test_defaults():
     assert config.variant.alpha == 0.1
 
 
+def test_rl_sparse_filesystem_weight_broadcast_auto_setup():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {},
+            "weight_broadcast": {"type": "filesystem_sparse", "full_sync_interval": 10},
+        }
+    )
+
+    assert config.trainer.weight_broadcast.type == "filesystem_sparse"
+    assert config.trainer.weight_broadcast.full_sync_interval == 10
+    assert config.orchestrator.weight_broadcast.type == "filesystem_sparse"
+    assert config.inference is not None
+    assert config.inference.weight_broadcast.type == "filesystem_sparse"
+
+
 def test_toml_partial_nested_override(tmp_path):
     """Partially overriding a nested model preserves unset field defaults."""
     write_toml(tmp_path / "cfg.toml", {"nested": {"lr": 3e-4}})

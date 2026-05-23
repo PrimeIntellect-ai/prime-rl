@@ -82,7 +82,7 @@ class ModelConfig(BaseModelConfig):
 
 
 class WeightBroadcastConfig(BaseConfig):
-    type: Literal["nccl", "filesystem"] = "filesystem"
+    type: Literal["nccl", "filesystem", "filesystem_sparse"] = "filesystem"
     """Weight broadcast transport."""
 
 

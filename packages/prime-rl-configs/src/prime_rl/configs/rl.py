@@ -15,6 +15,9 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.orchestrator import (
     OrchestratorConfig,
 )
+from prime_rl.configs.orchestrator import (
+    SparseFileSystemWeightBroadcastConfig as OrchestratorSparseFileSystemWeightBroadcastConfig,
+)
 from prime_rl.configs.shared import (
     SlurmConfig,
     VLMConfig,
@@ -30,6 +33,9 @@ from prime_rl.configs.trainer import (
 )
 from prime_rl.configs.trainer import (
     NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
+)
+from prime_rl.configs.trainer import (
+    SparseFileSystemWeightBroadcastConfig as TrainerSparseFileSystemWeightBroadcastConfig,
 )
 from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
@@ -113,7 +119,7 @@ class SharedModelConfig(BaseConfig):
 
 
 class SharedWeightBroadcastConfig(BaseConfig):
-    type: Literal["nccl", "filesystem"] = "filesystem"
+    type: Literal["nccl", "filesystem", "filesystem_sparse"] = "filesystem"
     """Weight broadcast transport."""
 
     port: int = 29501
@@ -124,6 +130,9 @@ class SharedWeightBroadcastConfig(BaseConfig):
 
     quantize_in_weight_transfer: bool = False
     """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
+
+    full_sync_interval: int | None = Field(None, ge=1)
+    """Optional interval for forcing full filesystem_sparse broadcasts between sparse deltas."""
 
 
 class BaseDeploymentConfig(BaseConfig):
@@ -373,6 +382,11 @@ class RLConfig(BaseConfig):
             elif self.weight_broadcast.type == "filesystem":
                 self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig()
                 self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig()
+            elif self.weight_broadcast.type == "filesystem_sparse":
+                self.trainer.weight_broadcast = TrainerSparseFileSystemWeightBroadcastConfig(
+                    full_sync_interval=self.weight_broadcast.full_sync_interval,
+                )
+                self.orchestrator.weight_broadcast = OrchestratorSparseFileSystemWeightBroadcastConfig()
             if self.inference is not None:
                 self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
 
@@ -416,8 +430,8 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_lora(self):
         if self.trainer.model.lora is not None:
-            if self.trainer.weight_broadcast.type == "nccl":
-                raise ValueError("NCCL weight broadcast does not support LoRA yet.")
+            if self.trainer.weight_broadcast.type in ("nccl", "filesystem_sparse"):
+                raise ValueError(f"{self.trainer.weight_broadcast.type} weight broadcast does not support LoRA yet.")
 
             if self.orchestrator.student.model.lora is None:
                 from prime_rl.configs.orchestrator import LoRAConfig

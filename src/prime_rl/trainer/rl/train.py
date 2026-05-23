@@ -264,14 +264,18 @@ def train(config: TrainerConfig):
             broadcast_weights_time = 0
         else:
             last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level
-            if progress.step > 0 and (not last_async_level_steps or config.weight_broadcast.type == "filesystem"):
+            filesystem_weight_broadcast = config.weight_broadcast.type in ("filesystem", "filesystem_sparse")
+            if progress.step > 0 and (not last_async_level_steps or filesystem_weight_broadcast):
                 broadcast_weights_start_time = time.perf_counter()
-                weight_broadcast.broadcast_weights(model, step=progress.step)
+                ckpt_interval = config.ckpt and config.ckpt.interval
+                force_full_broadcast = config.weight_broadcast.type == "filesystem_sparse" and (
+                    is_last_step or bool(ckpt_interval and progress.step % ckpt_interval == 0)
+                )
+                weight_broadcast.broadcast_weights(model, step=progress.step, force_full=force_full_broadcast)
                 broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
                 # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
-                ckpt_interval = config.ckpt and config.ckpt.interval
-                interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
-                if config.weight_broadcast.type == "filesystem":
+                interval_to_keep = ckpt_interval if filesystem_weight_broadcast else None
+                if filesystem_weight_broadcast:
                     weight_broadcast.maybe_clean(config.max_async_level, interval_to_keep)
             else:
                 broadcast_weights_time = 0

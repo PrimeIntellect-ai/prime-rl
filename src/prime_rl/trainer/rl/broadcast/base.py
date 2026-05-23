@@ -14,5 +14,5 @@ class WeightBroadcast(ABC):
         self.lora_config = lora_config
 
     @abstractmethod
-    def broadcast_weights(self, model: nn.Module, step: int):
+    def broadcast_weights(self, model: nn.Module, step: int, force_full: bool = False):
         pass

@@ -56,6 +56,7 @@ def models(request: Request) -> OpenAIServingModels:
 WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
     "filesystem": "prime_rl.inference.vllm.worker.filesystem.FileSystemWeightUpdateWorker",
+    "filesystem_sparse": "prime_rl.inference.vllm.worker.sparse_filesystem.SparseFileSystemWeightUpdateWorker",
 }
 
 

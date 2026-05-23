@@ -522,6 +522,10 @@ class FileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
 
 
+class SparseFileSystemWeightBroadcastConfig(BaseConfig):
+    type: Literal["filesystem_sparse"] = "filesystem_sparse"
+
+
 class NCCLWeightBroadcastConfig(BaseConfig):
     type: Literal["nccl"] = "nccl"
 
@@ -542,7 +546,8 @@ class NCCLWeightBroadcastConfig(BaseConfig):
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | SparseFileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 

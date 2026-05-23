@@ -454,6 +454,13 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     """Weight checkpoint serialization format."""
 
 
+class SparseFileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
+    type: Literal["filesystem_sparse"] = "filesystem_sparse"
+
+    full_sync_interval: int | None = Field(None, ge=1)
+    """Optional interval for forcing a full checkpoint-format broadcast between sparse deltas."""
+
+
 class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["nccl"] = "nccl"
 
@@ -475,7 +482,8 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | SparseFileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 
@@ -638,9 +646,9 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
-        if self.model.lora is not None and self.weight_broadcast.type == "nccl":
+        if self.model.lora is not None and self.weight_broadcast.type in ("nccl", "filesystem_sparse"):
             # TODO: Support this
-            raise ValueError("NCCL weight broadcast does not support LoRA yet.")
+            raise ValueError(f"{self.weight_broadcast.type} weight broadcast does not support LoRA yet.")
         return self
 
     @model_validator(mode="after")

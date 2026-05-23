@@ -138,7 +138,7 @@ class NCCLWeightBroadcastSender:
             self.logger.debug("NCCL broadcast initialized on non-master rank (no communicator)")
 
     @torch.no_grad()
-    def broadcast_weights(self, model: nn.Module, step: int) -> None:
+    def broadcast_weights(self, model: nn.Module, step: int, force_full: bool = False) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
         state_dict = model.state_dict()
         layer_prefix = get_layer_prefix(model.config)
@@ -194,7 +194,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
         )
 
     @torch.no_grad()
-    def broadcast_weights(self, model: nn.Module, step: int) -> None:
+    def broadcast_weights(self, model: nn.Module, step: int, force_full: bool = False) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL and notifies the orchestrator."""
         self.logger.debug("Starting broadcasting weights to inference engine via NCCL")
         start_time = time.perf_counter()
