@@ -103,5 +103,4 @@ gpu_memory_utilization = 0.85
 tp = 8
 
 [inference.model]
-name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
 max_model_len = 65536
