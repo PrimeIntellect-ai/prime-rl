@@ -70,6 +70,10 @@ For rollout debugging, enable trainer-side token export under `trainer.experimen
 
 Leave it unset for normal training. When enabled, it exports every sequence from each exporting rank.
 
+## RLM SWE harness args
+
+For `rlm_swe` / `rlm-swe` configs using the composable RLM harness, use current harness kwargs such as `rlm_max_turns`, `rlm_exec_timeout`, `rlm_max_depth`, `summarize_at_tokens`, `rlm_ref`, `local_checkout`, `append_to_system_prompt`, and `rlm_tools`. Do not use the stale `rlm_max_turns_in_context` key with the composable harness; it is not accepted by `rlm_harness`.
+
 ## Key files
 
 - `packages/prime-rl-configs/src/prime_rl/` — config classes under `configs/`; `utils/config.py` re-exports `BaseConfig` and `cli`

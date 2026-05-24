@@ -1,0 +1,126 @@
+output_dir = "/beegfs/outputs/qwen3-30b-a3b-pd-rlm-swe-router-replay-r3-delta-5step"
+clean_output_dir = true
+max_steps = 5
+seq_len = 8192
+max_async_level = 1
+
+[log]
+level = "debug"
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 2
+gpus_per_node = 8
+
+[slurm]
+job_name = "qwen3-pd-rlm-swe-r3-delta-5"
+partition = "cluster"
+time = "08:00:00"
+exclude = "ltc-idc3-hgx8-h200-[53,88]"
+
+[wandb]
+project = "qwen3-router-replay-e2e"
+name = "qwen3-30b-a3b-pd-rlm-swe-r3-delta-5step"
+group = "router-replay-e2e"
+offline = true
+shared = false
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[trainer]
+enable_router_replay = true
+max_concurrent_runs = 1
+dist_timeout_seconds = 3600
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+optim_cpu_offload = true
+ep = 8
+
+[trainer.model.ac]
+mode = "full"
+freq = 1
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 5
+
+[trainer.model.compile]
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+
+[inference]
+gpu_memory_utilization = 0.9
+enable_return_routed_experts = true
+enable_eplb = false
+
+[inference.parallel]
+tp = 8
+
+[inference.model]
+max_model_len = 8192
+
+[inference.deployment]
+type = "disaggregated"
+num_prefill_nodes = 1
+num_decode_nodes = 1
+
+[orchestrator]
+filters = []
+batch_size = 2
+max_inflight_rollouts = 2
+rollouts_per_example = 1
+max_off_policy_steps = 1
+
+[orchestrator.train.sampling]
+temperature = 1.0
+repetition_penalty = 1.0
+max_completion_tokens = 256
+min_tokens = 0
+
+[orchestrator.client]
+extra_headers_from_state = { "X-Session-ID" = "example_id" }
+
+[[orchestrator.train.env]]
+id = "rlm_swe"
+name = "rlm-swe-low"
+num_workers = 1
+max_retries = 0
+max_total_completion_tokens = 1536
+
+[orchestrator.train.env.args]
+task_type = "swebench"
+dataset_name = "PrimeIntellect/SWE-Bench-Verified-Quick"
+max_turns = 6
+rlm_max_turns = 6
+timeout_seconds = 1800
+poll_interval = 5
+sandbox_cpu_cores = 2
+sandbox_memory_gb = 4
+sandbox_disk_size_gb = 4
+sandbox_client_max_workers = 16
+rlm_ref = "f466fccb6bc682092c88edf2b344951d7cbbd000"
+labels = ["rlm-r3-delta-swe"]
+
+[orchestrator.student.client]
+timeout = 1800
+wait_for_ready_timeout = 1800
+
+[orchestrator.renderer]
+name = "qwen3"
+preserve_all_thinking = true
+
+[orchestrator.eval]
+env = []
+
+[orchestrator.buffer]
+easy_threshold = 1.0
+hard_threshold = 0.0
