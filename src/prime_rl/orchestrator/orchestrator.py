@@ -58,11 +58,12 @@ from prime_rl.utils.client import (
 )
 from prime_rl.utils.config import cli
 from prime_rl.utils.heartbeat import Heartbeat
-from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import (
     clean_exit,
+    format_time,
     get_env_ids_to_install,
     install_env,
     resolve_latest_ckpt_step,
@@ -81,6 +82,10 @@ SHUTDOWN_TIMEOUT_S = 300
 # rather than silently skipping training steps.
 MAX_EMPTY_BATCH_ATTEMPTS = 3
 
+# Interval at which the heartbeat task logs scheduler + event-loop-lag status
+# so async components stay visible during long-running steps.
+HEARTBEAT_INTERVAL_S = 10
+
 
 @clean_exit
 async def orchestrate(config: OrchestratorConfig):
@@ -91,13 +96,12 @@ async def orchestrate(config: OrchestratorConfig):
     )
     intercept_vf_logging(logger="verifiers.serve", level="WARN")  # show logs from env clients
 
-    logger.info(f"Starting orchestrator ({config.training_mode})")
+    logger.info(f"Starting orchestrator in `{config.training_mode}` mode")
 
     set_default_executor()
     event_loop_lag_monitor = EventLoopLagMonitor()
     event_loop_lag_monitor_task = asyncio.create_task(event_loop_lag_monitor.run())
 
-    # Print warning if running in benchmark mode
     if config.bench:
         logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
 
@@ -116,13 +120,13 @@ async def orchestrate(config: OrchestratorConfig):
     for env_id in env_ids_to_install:
         install_env(env_id, prerelease=config.env_install_prerelease)
 
-    logger.info(f"Initializing tokenizer ({config.tokenizer})")
+    logger.info(f"Initializing tokenizer `{config.tokenizer.name}`")
     tokenizer = setup_tokenizer(config.tokenizer)
 
     # Set up student inference pool (required for all training modes).
     logger.info(
-        f"Initializing student inference pool (base_url={', '.join(config.student.client.base_url)}, "
-        f"model={config.student.model.name})"
+        f"Initializing student inference pool (base_url=`{', '.join(config.student.client.base_url)}`, "
+        f"model=`{config.student.model.name}`)"
     )
     renderer, student_inference = await setup_student_inference_pool(
         config=config,
@@ -148,8 +152,8 @@ async def orchestrate(config: OrchestratorConfig):
     teacher_inference = None
     if config.teacher is not None:
         logger.info(
-            f"Initializing teacher inference pool (base_url={', '.join(config.teacher.client.base_url)}, "
-            f"model={config.teacher.model.name})"
+            f"Initializing teacher inference pool (base_url=`{', '.join(config.teacher.client.base_url)}`, "
+            f"model=`{config.teacher.model.name}`)"
         )
         teacher_inference = await setup_inference_pool(
             config.teacher.client,
@@ -158,7 +162,9 @@ async def orchestrate(config: OrchestratorConfig):
         )
 
     # Setup monitor (may register the run and set RUN_ID in the environment)
-    logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
+    logger.info(
+        f"Initializing monitor (wandb={config.wandb is not None}, prime_monitor={config.prime_monitor is not None})"
+    )
     monitor = setup_monitor(
         wandb_config=config.wandb,
         prime_config=config.prime_monitor,
@@ -181,20 +187,20 @@ async def orchestrate(config: OrchestratorConfig):
         usage_reporter = UsageReporter()
     else:
         if usage_base_url and not usage_api_key:
-            logger.warning("PI_USAGE_BASE_URL is set but PI_USAGE_API_KEY is missing; usage reporting disabled.")
+            logger.warning("Disabling usage reporting (PI_USAGE_BASE_URL set but PI_USAGE_API_KEY missing)")
         usage_reporter = None
 
     # Setup heartbeat (only on rank 0, orchestrator is single process)
     heart = None
     if config.heartbeat is not None:
-        logger.info("Initializing heartbeat")
+        logger.info(f"Initializing heartbeat (url=`{config.heartbeat.url}`)")
         heart = Heartbeat(config.heartbeat.url)
 
     # Build rollout filters
     rollout_filters = setup_filters(config.filters, vocab_size=tokenizer.vocab_size)
 
     # Load environments
-    logger.info("Loading training environments")
+    logger.info(f"Loading {len(config.train.env)} train environment(s)")
     train_envs = TrainEnvs(config.train.env)
     if config.training_mode == "sft":
         # Teacher rollouts don't need inference-side logprobs (the trainer
@@ -202,33 +208,31 @@ async def orchestrate(config: OrchestratorConfig):
         # endpoints (e.g. openai/gpt-5*) reject the parameter.
         for env in train_envs:
             env.sampling_args.pop("logprobs", None)
-    logger.info(f"Loaded {len(train_envs)} training environment(s) ({', '.join(train_envs.names)})")
 
+    t0 = time.perf_counter()
     await train_envs.start(
         log_dir=get_log_dir(config.output_dir.parent) / "envs" / "train",
         log_level=config.log.vf_level,
         json_logging=config.log.json_logging,
     )
-    logger.success("Train environment(s) ready")
+    logger.debug(f"Started train environments in {format_time(time.perf_counter() - t0)}")
 
     eval_envs: EvalEnvs | None = None
     if config.eval:
-        logger.info("Loading eval environment(s)")
+        logger.info(f"Loading {len(config.eval.env)} eval environment(s)")
         eval_envs = EvalEnvs(config.eval.env)
-        logger.info(f"Loaded {len(eval_envs)} eval environment(s) ({', '.join(eval_envs.names)})")
 
+        t0 = time.perf_counter()
         await eval_envs.start(
             log_dir=get_log_dir(config.output_dir.parent) / "envs" / "eval",
             log_level=config.log.vf_level,
             json_logging=config.log.json_logging,
         )
-        logger.success("Eval environment(s) ready")
+        logger.debug(f"Started eval environments in {format_time(time.perf_counter() - t0)}")
 
-    # Setup buffer
     logger.info(f"Setting up buffer ({config.buffer})")
     buffer = Buffer(train_envs, config.buffer)
 
-    # Get checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
 
@@ -254,14 +258,16 @@ async def orchestrate(config: OrchestratorConfig):
     )
 
     # Wait for pools to be ready
-    logger.info("Waiting for student inference pool to be ready")
+    logger.info("Waiting for student inference pool")
+    t0 = time.perf_counter()
     await student_inference.wait_for_ready(config.student.model.name)
-    logger.success("Student inference pool ready")
+    logger.debug(f"Student inference pool ready in {format_time(time.perf_counter() - t0)}")
     if teacher_inference is not None:
         assert config.teacher is not None
-        logger.info("Waiting for teacher inference pool to be ready")
+        logger.info("Waiting for teacher inference pool")
+        t0 = time.perf_counter()
         await teacher_inference.wait_for_ready(config.teacher.model.name)
-        logger.success("Teacher inference pool ready")
+        logger.debug(f"Teacher inference pool ready in {format_time(time.perf_counter() - t0)}")
 
     # Start inference metrics collector (requires W&B)
     inference_metrics_collector = None
@@ -294,8 +300,8 @@ async def orchestrate(config: OrchestratorConfig):
     progress = Progress()
 
     if checkpoint_step is not None and ckpt_manager is not None:
-        ckpt_manager.load(progress, buffer, step=checkpoint_step)
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
+        ckpt_manager.load(progress, buffer, step=checkpoint_step)
         scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
         if config.eval and config.eval.skip_eval_on_resume:
             prev_ckpt_step = scheduler.ckpt_step
@@ -320,8 +326,15 @@ async def orchestrate(config: OrchestratorConfig):
     else:
         logger.info("Training from scratch")
 
-    # Iterate over dataset in batches
     logger.info(f"Starting orchestrator loop (max_steps={config.max_steps or 'infinite'})")
+
+    # Start heartbeat task: emits scheduler + event-loop-lag status every
+    # HEARTBEAT_INTERVAL_S so we have visibility into async components even
+    # when a step is blocked or slow.
+    heartbeat_task = asyncio.create_task(
+        _run_heartbeat(scheduler, event_loop_lag_monitor, interval_s=HEARTBEAT_INTERVAL_S)
+    )
+
     is_first_step = True
 
     while True:
@@ -348,12 +361,13 @@ async def orchestrate(config: OrchestratorConfig):
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress, buffer, step=progress.step)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
+            logger.debug(f"Saved checkpoint in {format_time(save_ckpt_time)}")
 
         # Break if we have reached the maximum number of steps
         if config.max_steps and progress.step >= config.max_steps:
             break
 
-        logger.info(f"Starting orchestrator step {progress.step}")
+        logger.info(f"Starting step {progress.step}")
         step_start_time = time.perf_counter()
 
         # Run evals BEFORE training (blocking). Weight updates are paused via
@@ -375,8 +389,9 @@ async def orchestrate(config: OrchestratorConfig):
                     envs_to_eval.append(eval_env)
 
         if envs_to_eval:
-            env_names = ", ".join(e.name for e in envs_to_eval)
-            logger.info(f"Running evals at {ckpt_step=} for {env_names}")
+            env_names = ", ".join(f"`{e.name}`" for e in envs_to_eval)
+            logger.info(f"Running evals at ckpt_step={ckpt_step} for {env_names}")
+            t0 = time.perf_counter()
 
             # Pause weight updates and re-scheduling of training rollouts during eval
             # to avoid evaluating across different checkpoints and avoid congestion
@@ -384,7 +399,7 @@ async def orchestrate(config: OrchestratorConfig):
 
             # For heavy eval workloads, it might be necessary additionally cancel in-flight training rollouts
             if config.eval.cancel_inflight_rollouts_on_eval:
-                logger.info("Cancelling in-flight training rollouts before starting evals to avoid congestion.")
+                logger.info("Cancelling in-flight training rollouts before evals")
                 await scheduler.cancel_inflight_rollouts()
 
             eval_results = await asyncio.gather(
@@ -410,6 +425,7 @@ async def orchestrate(config: OrchestratorConfig):
 
             # Resume weight updates
             scheduler.checkpoint_ready.set()
+            logger.debug(f"Ran evals in {format_time(time.perf_counter() - t0)}")
 
         # Update prev_ckpt_step for next iteration
         prev_ckpt_step = ckpt_step
@@ -422,16 +438,25 @@ async def orchestrate(config: OrchestratorConfig):
         num_unique_examples = 0
         n_trainable = 0
         for attempt in range(MAX_EMPTY_BATCH_ATTEMPTS):
+            logger.info(
+                f"Generating batch for step {progress.step}"
+                + (f" (attempt {attempt + 1}/{MAX_EMPTY_BATCH_ATTEMPTS})" if attempt > 0 else "")
+            )
             train_rollouts = await scheduler.generate_batch(step=progress.step)
             generate_completions_time += scheduler.last_batch_generation_time
+            logger.debug(f"Generated batch in {format_time(scheduler.last_batch_generation_time)}")
 
-            # Compute advantages (in-place)
             num_rollouts = len(train_rollouts)
             num_unique_examples = len({(r["env_name"], r["example_id"]) for r in train_rollouts})
+
+            t0 = time.perf_counter()
             await asyncio.to_thread(compute_advantages, train_rollouts, config.advantage)
+            logger.debug(f"Computed advantages in {format_time(time.perf_counter() - t0)}")
 
             # Apply rollout filters — sets rollout["filters"] and rollout["is_filtered"]
+            t0 = time.perf_counter()
             await asyncio.to_thread(apply_filters, rollout_filters, train_rollouts)
+            logger.debug(f"Applied filters in {format_time(time.perf_counter() - t0)}")
 
             n_trainable = sum(1 for r in train_rollouts if not r["is_filtered"])
             if n_trainable > 0:
@@ -439,8 +464,8 @@ async def orchestrate(config: OrchestratorConfig):
 
             if attempt == MAX_EMPTY_BATCH_ATTEMPTS - 1:
                 logger.error(
-                    f"Attempt {attempt + 1}/{MAX_EMPTY_BATCH_ATTEMPTS} at step {progress.step} "
-                    f"filtered out all {num_rollouts} rollouts - crashing orchestrator"
+                    f"Crash orchestrator: filtered out all {num_rollouts} rollouts "
+                    f"on {MAX_EMPTY_BATCH_ATTEMPTS} consecutive attempts at step {progress.step}"
                 )
                 reason = (
                     f"All {num_rollouts} rollouts were filtered out on "
@@ -452,32 +477,32 @@ async def orchestrate(config: OrchestratorConfig):
                 raise RuntimeError(reason)
 
             logger.warning(
-                f"Attempt {attempt + 1}/{MAX_EMPTY_BATCH_ATTEMPTS} at step {progress.step} "
-                f"filtered out all {num_rollouts} rollouts - retrying batch generation"
+                f"Retry batch generation: attempt {attempt + 1}/{MAX_EMPTY_BATCH_ATTEMPTS} at step {progress.step} "
+                f"filtered out all {num_rollouts} rollouts"
             )
 
         trainable_ratio = n_trainable / num_rollouts
         if trainable_ratio <= 0.1:
             logger.warning(
                 f"Only {n_trainable}/{num_rollouts} rollouts in the batch are trainable "
-                f"({trainable_ratio:.1%}) - this can mean the tasks are too easy or too hard for the "
-                "model, consider reviewing the task difficulty of your environment(s)"
+                f"({trainable_ratio:.1%}) - consider reviewing the task difficulty of your environment(s)"
             )
 
         # Save train rollouts to disk (fire-and-forget background thread)
+        logger.info("Saving train rollouts")
+        t0 = time.perf_counter()
         step_path = get_step_path(get_rollout_dir(config.output_dir), progress.step)
         await asyncio.to_thread(
             save_rollouts, train_rollouts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
         )
+        logger.debug(f"Saved train rollouts in {format_time(time.perf_counter() - t0)}")
 
         # Offload base64 images to disk to free memory. No-op for text-only
         # rollouts (no ``data:image`` URLs to find); cheap to call always.
-        offload_start = time.perf_counter()
+        t0 = time.perf_counter()
         num_offloaded = offload_images_to_disk(train_rollouts, config.output_dir)
         if num_offloaded:
-            logger.info(
-                f"Offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
-            )
+            logger.debug(f"Offloaded {num_offloaded} unique images in {format_time(time.perf_counter() - t0)}")
 
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
@@ -493,6 +518,7 @@ async def orchestrate(config: OrchestratorConfig):
             logger.info(
                 "Backfilling tokens for rollout trajectories (expected for training_mode=sft against an external teacher API)"
             )
+            t0 = time.perf_counter()
             await asyncio.gather(
                 *(
                     asyncio.to_thread(
@@ -504,14 +530,18 @@ async def orchestrate(config: OrchestratorConfig):
                     for rollout in train_rollouts
                 )
             )
+            logger.debug(f"Backfilled rollout tokens in {format_time(time.perf_counter() - t0)}")
 
         # Process rollouts in parallel
+        logger.info("Processing rollouts into training samples")
+        t0 = time.perf_counter()
         results = await asyncio.gather(
             *(
                 asyncio.to_thread(interleave_rollout, r, mm_token_type_ids_mapping=mm_token_type_ids_mapping)
                 for r in train_rollouts
             )
         )
+        logger.debug(f"Processed rollouts in {format_time(time.perf_counter() - t0)}")
 
         # Collect results and assign advantages. Metrics are computed over all
         # rollouts; only non-filtered samples are sent to the trainer.
@@ -546,7 +576,7 @@ async def orchestrate(config: OrchestratorConfig):
         parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
         logger.debug(
             f"Converted {len(train_rollouts)} rollouts ({num_unique_examples} unique examples) "
-            f"to {len(train_examples)} training examples"
+            f"to {len(train_examples)} training examples in {format_time(parallel_preprocess_time)}"
         )
 
         # Compute teacher logprobs (opd only - sft trains on teacher tokens directly)
@@ -563,18 +593,22 @@ async def orchestrate(config: OrchestratorConfig):
             for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):
                 train_example.teacher_logprobs = teacher_logprobs
             teacher_logprobs_time = time.perf_counter() - teacher_logprobs_start_time
-            logger.debug(f"Computed teacher logprobs in {teacher_logprobs_time:.2f}s")
+            logger.debug(f"Computed teacher logprobs in {format_time(teacher_logprobs_time)}")
 
         training_batch = TrainingBatch(
             examples=train_examples,
             step=progress.step,
         )
 
+        logger.info("Sending training batch")
+        t0 = time.perf_counter()
         await training_batch_sender.send(training_batch)
+        logger.debug(f"Sent training batch in {format_time(time.perf_counter() - t0)}")
 
         step_time = time.perf_counter() - step_start_time
 
         # Gather metrics in dataframes
+        aggr_t0 = time.perf_counter()
         results_df = pd.DataFrame(
             {
                 "example_id": [rollout["example_id"] for rollout in train_rollouts],
@@ -764,9 +798,29 @@ async def orchestrate(config: OrchestratorConfig):
                 tokens=num_prefill_tokens + num_decode_tokens,
             )
 
+        logger.debug(f"Aggregated metrics in {format_time(time.perf_counter() - aggr_t0)}")
+
         reward_mean = by_example.reward.mean().mean()
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {reward_mean:.4f} | Seq. Length: {by_example.seq_len.mean().mean():.1f} tokens/sample | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
-        logger.success(step_message)
+        seq_len_mean = by_example.seq_len.mean().mean()
+        logger.success(
+            f"Completed step {progress.step} | time={format_time(step_time)} | reward={reward_mean:.4f} | "
+            f"seq_len={seq_len_mean:.1f} tokens/sample | max_off_policy={scheduler.max_off_policy_level}"
+        )
+
+        # Per-env breakdown (only when training against more than one env). Mirrors
+        # the wandb dashboard view but in logs so agents can debug per-env state
+        # directly from stdout.
+        if len(train_envs) > 1:
+            for env_name, env_df in results_df.groupby("env_name"):
+                env_by_example = env_df.groupby("example_id")
+                env_reward = env_by_example.reward.mean().mean()
+                env_seq_len = env_by_example.seq_len.mean().mean()
+                env_n_total = len(env_df)
+                env_n_trainable = int((~env_df.is_filtered).sum())
+                logger.success(
+                    f"  env=`{env_name}` reward={env_reward:.4f} seq_len={env_seq_len:.1f} "
+                    f"trainable={env_n_trainable}/{env_n_total}"
+                )
 
         # Increment step
         progress.step += 1
@@ -782,7 +836,7 @@ async def orchestrate(config: OrchestratorConfig):
         try:
             ctypes.CDLL("libc.so.6").malloc_trim(0)
         except Exception as e:
-            logger.warning(f"malloc_trim(0) failed - RSS may grow unboundedly: {e}")
+            logger.warning(f"Failed malloc_trim(0): {e} (RSS may grow unboundedly)")
 
         event_loop_lag_monitor.reset()
 
@@ -817,7 +871,7 @@ async def orchestrate(config: OrchestratorConfig):
 
     # Write final checkpoint
     if ckpt_manager is not None:
-        logger.info("Writing final checkpoint")
+        logger.info("Saving final checkpoint")
         ckpt_manager.save(progress, buffer, step=progress.step)
 
     # Bounded best-effort cleanup. Each await below may block on a remote peer
@@ -836,6 +890,7 @@ async def orchestrate(config: OrchestratorConfig):
         if teacher_inference is not None:
             await teacher_inference.stop()
         event_loop_lag_monitor_task.cancel()
+        heartbeat_task.cancel()
         # Shutdown env processes (also registered as atexit handler for crash safety)
         train_envs.shutdown()
         if eval_envs is not None:
@@ -846,8 +901,8 @@ async def orchestrate(config: OrchestratorConfig):
 
     if pending:
         logger.warning(
-            f"Orchestrator shutdown did not complete within {SHUTDOWN_TIMEOUT_S}s; "
-            "forcing process exit. Training artifacts are already persisted."
+            f"Force exit: shutdown did not complete within {SHUTDOWN_TIMEOUT_S}s "
+            "(training artifacts are already persisted)"
         )
         os._exit(0)
 
@@ -859,11 +914,45 @@ async def orchestrate(config: OrchestratorConfig):
     if usage_reporter:
         usage_reporter.close()
 
-    logger.success("Orchestrator finished.")
+    logger.success("Stopped orchestrator")
 
     # Optionally, print benchmark table
     if config.bench:
         print_benchmark(to_col_format(monitor.history))
+
+
+async def _run_heartbeat(
+    scheduler: Scheduler,
+    lag_monitor: EventLoopLagMonitor,
+    interval_s: float,
+) -> None:
+    """Emit scheduler + event-loop-lag status every `interval_s` seconds.
+
+    Runs as a background task so async components stay visible even when the
+    main loop is stuck inside a long step (e.g. a slow weight broadcast or a
+    stuck inference pool).
+    """
+    logger = get_logger()
+    try:
+        while True:
+            await asyncio.sleep(interval_s)
+            in_flight = len(scheduler.inflight_requests)
+            groups = len(scheduler.groups)
+            logger.info(
+                f"Scheduler status: in_flight={in_flight} active_groups={groups} "
+                f"step={scheduler.step} ckpt_step={scheduler.ckpt_step} "
+                f"max_off_policy={scheduler.max_off_policy_level}"
+            )
+            lag_metrics = lag_monitor.get_metrics()
+            if lag_metrics:
+                logger.info(
+                    f"Event loop lag: mean={format_time(lag_metrics['event_loop_lag/mean'])} "
+                    f"p90={format_time(lag_metrics['event_loop_lag/p90'])} "
+                    f"p99={format_time(lag_metrics['event_loop_lag/p99'])} "
+                    f"max={format_time(lag_metrics['event_loop_lag/max'])}"
+                )
+    except asyncio.CancelledError:
+        pass
 
 
 def main():
@@ -904,7 +993,7 @@ async def setup_student_inference_pool(
             preserve_all_thinking=config.renderer.preserve_all_thinking,
             preserve_thinking_between_tool_calls=config.renderer.preserve_thinking_between_tool_calls,
         )
-        logger.info(f"Initialized {type(renderer).__name__} for {model_name}")
+        logger.info(f"Initializing `{type(renderer).__name__}` for `{model_name}`")
         inference_pool = await setup_inference_pool(
             client_config,
             model_name=model_name,
@@ -920,7 +1009,7 @@ async def setup_student_inference_pool(
         logger.info("Using direct renderer rollout client")
         return renderer, inference_pool
 
-    logger.info("Using MITO (openai_chat_completions) for rollouts")
+    logger.info("Using MITO (`openai_chat_completions`) for rollouts")
     inference_pool = await setup_inference_pool(
         client_config,
         model_name=model_name,

@@ -16,6 +16,7 @@ from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.utils import (
+    format_time,
     get_broadcast_dir,
     get_latest_ckpt_step,
     get_step_path,
@@ -297,26 +298,24 @@ class Scheduler:
         async_away_ckpt_step = max(self.step - self.max_async_level, 0)
         if next_ckpt_step == async_away_ckpt_step:
             self.logger.info(
-                f"Orchestrator paused: waiting for trainer process to complete checkpoint {next_ckpt_step} "
-                f"(>{self.max_async_level} step(s) ahead). Training is progressing normally."
+                f"Pausing orchestrator: waiting for trainer to complete checkpoint {next_ckpt_step} "
+                f"(>{self.max_async_level} step(s) ahead)"
             )
             self.checkpoint_ready.clear()
             wait_for_ckpt_start_time = time.perf_counter()
             await wait_for_path(get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step) / "STABLE")
             self.wait_for_ckpt_time = time.perf_counter() - wait_for_ckpt_start_time
             self.logger.info(
-                f"Orchestrator resumed: checkpoint {next_ckpt_step} ready (after {self.wait_for_ckpt_time:.2f}s)"
+                f"Resuming orchestrator: checkpoint {next_ckpt_step} ready after {format_time(self.wait_for_ckpt_time)}"
             )
 
-        self.logger.debug(
-            f"Got new policy with step {next_ckpt_step}. Updating weights and cancelling old rollout requests."
-        )
+        self.logger.debug(f"Updating weights to step {next_ckpt_step} and cancelling old rollout requests")
 
         update_weights_start_time = time.perf_counter()
         weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
         await self.student_inference.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
         self.update_weights_time = time.perf_counter() - update_weights_start_time
-        self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
+        self.logger.debug(f"Updated weights to step {next_ckpt_step} in {format_time(self.update_weights_time)}")
 
         self.ckpt_step = next_ckpt_step
         if self.lora_name is not None:
@@ -398,7 +397,7 @@ class Scheduler:
 
         batch_start_time = time.perf_counter()
 
-        self.logger.debug("Starting to generate batch rollouts")
+        self.logger.debug("Generating batch rollouts")
 
         batch_rollouts: list[vf.RolloutOutput] = []
         batch_progress = 0
