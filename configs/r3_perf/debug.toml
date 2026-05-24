@@ -1,0 +1,143 @@
+max_steps = 10000000
+seq_len = 65536
+max_async_level = 1
+output_dir = "/beegfs/outputs/qwen30b-rlm-router-replay-debug-perf-r3-v9"
+
+[log]
+level = "debug"
+
+[wandb]
+project = "RLM-Qwen30B-debug"
+name = "RLM-Qwen30B-router-replay-debug-perf-r3-v7"
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+
+[weight_broadcast]
+type = "nccl"
+port = 29502
+timeout = 12000
+quantize_in_weight_transfer = false
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 2
+num_infer_nodes = 1
+num_infer_replicas = 4
+gpus_per_node = 8
+
+[slurm]
+job_name = "qwen30b-rlm-debug"
+partition = "cluster"
+
+[ckpt]
+interval = 100
+keep_last = 1
+resume_step = -1
+
+[trainer]
+dist_timeout_seconds = 1800
+enable_router_replay = true
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+fused_lm_head_token_chunk_size = 1024
+ep = 8
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.compile]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.ckpt]
+skip_gather_master_weights = true
+skip_optimizer = true
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+weight_decay = 0.0
+
+[trainer.experimental.token_export]
+
+[orchestrator]
+batch_size = 256
+rollouts_per_example = 8
+max_inflight_rollouts = 1024
+max_off_policy_steps = 16
+use_token_client = false
+use_renderer = true
+# Round 4: O(N²)→O(N) routed_experts concat in interleave_rollout makes the
+# threaded path strictly better than the process pool (no IPC pickle cost,
+# orders of magnitude less memcpy per rollout). Keep process pool off.
+use_process_pool = false
+# Round 5: dump raw rollouts so the offline replay harness can attribute
+# the residual orch step-boundary stall to specific phases. Produces ~6 GB
+# per step under router replay; pair with per-phase timing logs.
+# v9: off — already have step_0-9 dumps from v5/v8 for offline iteration,
+# and the 30 GB/step writes were a strong suspect for the growing
+# max-lag spikes in v8 (10s -> 32s across steps 5-10).
+dump_raw_rollouts = false
+# Round 6: chunk the interleave_rollout gather to give the main asyncio loop
+# guaranteed slices between to_thread waves. Offline bench: chunk=128 cut max
+# loop lag 2.6x (387ms -> 149ms) under simulated prod traffic for ~11%
+# wallclock cost. Sweet spot — chunk<=64 didn't help lag further and cost
+# much more wall time.
+gather_chunk_size = 128
+
+[orchestrator.renderer]
+name = "qwen3"
+
+[orchestrator.train.sampling]
+temperature = 1.0
+
+[orchestrator.client]
+extra_headers_from_state = { "X-Session-ID" = "trajectory_id" }
+
+[orchestrator.wandb.log_extras]
+# R3: disable per-step sample logging — wandb.log({"samples": Table, ...}) is
+# not thread-safe (no internal locks, mutates singleton run state) and the
+# json_dump_safer pass for ~256 long completions blocks the orch loop for
+# 4-40s per step. Disabling so we get a clean lag profile of the rest of the
+# stack. Re-enable with `interval = 25` or larger if observability needed.
+samples = false
+interval = 25
+
+[orchestrator.prime_monitor]
+
+[[orchestrator.train.env]]
+id = "general-agent-solver-local"
+name = "general-agent-local-low"
+num_workers = 4
+ratio = 1.0
+
+[orchestrator.train.env.args]
+min_tier = 4
+max_turns = 100
+timeout_seconds = 3600.0
+
+[orchestrator.advantage]
+type = "default"
+
+[orchestrator.buffer]
+online_difficulty_filtering = false
+
+[orchestrator.eval]
+env = []
+
+[inference]
+enable_return_routed_experts = true
+enable_expert_parallel = true
+gpu_memory_utilization = 0.85
+
+[inference.parallel]
+tp = 8
+
+[inference.model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+max_model_len = 65536
+tool_call_parser = "hermes"
