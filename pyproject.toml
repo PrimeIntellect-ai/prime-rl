@@ -98,6 +98,9 @@ disagg = [
 gpt-oss = [
     "kernels",
 ]
+modelexpress = [
+    "modelexpress==0.3.0",
+]
 quack = [
     "quack-kernels>=0.4.1",
 ]
@@ -170,6 +173,7 @@ environments = [
 override-dependencies = [
     "nvidia-cudnn-cu12>=9.15",
     "nvidia-cutlass-dsl>=4.4.1",
+    "protobuf>=5.29.6,<6.0.0",
     "transformers>=5.1.0.dev0",
     "torch>=2.9.0",
     "openenv-core",
