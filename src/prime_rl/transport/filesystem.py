@@ -1,41 +1,155 @@
 import asyncio
+import io
 from pathlib import Path
 from time import time
 
+import msgspec
+
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender, TrainingBatchReceiver, TrainingBatchSender
-from prime_rl.transport.types import MicroBatch, TrainingBatch
+from prime_rl.transport.types import MicroBatch, RoutedExperts, TrainingBatch, TrainingSample
 from prime_rl.utils.pathing import get_rollout_dir, get_step_path, sync_wait_for_path
 
 BATCH_FILE_TMP_NAME = "train_rollouts.bin.tmp"
 BATCH_FILE_NAME = "train_rollouts.bin"
+SIDECAR_FILE_TMP_NAME = "train_rollouts.routed_experts.bin.tmp"
+SIDECAR_FILE_NAME = "train_rollouts.routed_experts.bin"
+FORMAT_VERSION = 2
 LOG_FREQ_SECONDS = 10
 
 
 class FileSystemTrainingBatchSender(TrainingBatchSender):
-    """Filesystem-based training batch sender that writes batches to disk."""
+    """Filesystem-based training batch sender.
+
+    Writes `train_rollouts.bin` and a `train_rollouts.routed_experts.bin` sidecar.
+    `routed_experts.data` (the bulk of the payload, ~85%) is peeled out of msgpack
+    encoding and written as a single concatenated raw-bytes blob via a threaded
+    write. Encoded TrainingSample frames are streamed one-at-a-time with
+    `await asyncio.sleep(0)` between samples so the event loop stays responsive
+    during step transitions.
+    """
 
     def __init__(self, output_dir: Path):
         super().__init__(output_dir)
         self.rollout_dir = get_rollout_dir(output_dir)
 
     async def send(self, batch: TrainingBatch) -> None:
-        """Send a batch by writing it to disk. Encode + write run in a worker
-        thread so the orch event loop stays responsive during step transitions."""
         step_path = get_step_path(self.rollout_dir, batch.step)
         step_path.mkdir(parents=True, exist_ok=True)
-        await asyncio.to_thread(self._encode_and_write, batch, step_path)
 
-    def _encode_and_write(self, batch: TrainingBatch, step_path: Path) -> None:
-        buffer = self.encoder.encode(batch)
-        tmp_path = step_path / BATCH_FILE_TMP_NAME
-        with open(tmp_path, "wb") as f:
-            f.write(buffer)
-        tmp_path.rename(step_path / BATCH_FILE_NAME)
+        offsets: list[int] = []
+        shapes: list[list[int] | None] = []
+        dtypes: list[str | None] = []
+        re_payloads: list[bytes] = []
+        running = 0
+
+        samples_buf = io.BytesIO()
+        for sample in batch.examples:
+            if sample.routed_experts is None:
+                offsets.append(-1)
+                shapes.append(None)
+                dtypes.append(None)
+                out_sample = sample
+            else:
+                re = sample.routed_experts
+                offsets.append(running)
+                shapes.append(re.shape)
+                dtypes.append(re.dtype)
+                re_payloads.append(re.data)
+                running += len(re.data)
+                out_sample = msgspec.structs.replace(
+                    sample,
+                    routed_experts=RoutedExperts(data=b"", shape=re.shape, dtype=re.dtype),
+                )
+            frame = self.encoder.encode(out_sample)
+            samples_buf.write(len(frame).to_bytes(4, "little"))
+            samples_buf.write(frame)
+            await asyncio.sleep(0)
+
+        manifest = self.encoder.encode(
+            {
+                "version": FORMAT_VERSION,
+                "format": "stream_sidecar",
+                "step": batch.step,
+                "run_idx": batch.run_idx,
+                "n_examples": len(batch.examples),
+                "offsets": offsets,
+                "shapes": shapes,
+                "dtypes": dtypes,
+                "sidecar_total_bytes": running,
+                "sidecar_filename": SIDECAR_FILE_NAME,
+            }
+        )
+
+        await asyncio.to_thread(self._write_files, step_path, manifest, samples_buf.getvalue(), re_payloads)
+
+    @staticmethod
+    def _write_files(step_path: Path, manifest: bytes, samples_buf: bytes, re_payloads: list[bytes]) -> None:
+        # Sidecar must be visible before the main file, since the receiver
+        # treats the main file's existence as the "batch is ready" signal.
+        tmp_sidecar = step_path / SIDECAR_FILE_TMP_NAME
+        with open(tmp_sidecar, "wb") as sf:
+            for p in re_payloads:
+                sf.write(p)
+        tmp_sidecar.rename(step_path / SIDECAR_FILE_NAME)
+
+        tmp_main = step_path / BATCH_FILE_TMP_NAME
+        with open(tmp_main, "wb") as mf:
+            mf.write(len(manifest).to_bytes(4, "little"))
+            mf.write(manifest)
+            mf.write(samples_buf)
+        tmp_main.rename(step_path / BATCH_FILE_NAME)
+
+
+def _decode_training_batch_from_disk(main_path: Path) -> TrainingBatch:
+    """Read a stream_sidecar v2 train_rollouts.bin + sidecar back into a TrainingBatch."""
+    with open(main_path, "rb") as f:
+        data = f.read()
+
+    cursor = 0
+    manifest_len = int.from_bytes(data[cursor : cursor + 4], "little")
+    cursor += 4
+    manifest = msgspec.msgpack.decode(data[cursor : cursor + manifest_len])
+    cursor += manifest_len
+
+    n = manifest["n_examples"]
+    samples: list[TrainingSample] = []
+    for _ in range(n):
+        frame_len = int.from_bytes(data[cursor : cursor + 4], "little")
+        cursor += 4
+        sample: TrainingSample = msgspec.msgpack.decode(data[cursor : cursor + frame_len], type=TrainingSample)
+        cursor += frame_len
+        samples.append(sample)
+
+    sidecar_path = main_path.parent / manifest["sidecar_filename"]
+    if manifest["sidecar_total_bytes"] > 0:
+        with open(sidecar_path, "rb") as sf:
+            sidecar = sf.read()
+        offsets = manifest["offsets"]
+        shapes = manifest["shapes"]
+        dtypes = manifest["dtypes"]
+        total = manifest["sidecar_total_bytes"]
+        # End of each present routed_experts payload = next present offset (or total).
+        next_present_offset = [total] * len(offsets)
+        last_end = total
+        for i in range(len(offsets) - 1, -1, -1):
+            if offsets[i] >= 0:
+                next_present_offset[i] = last_end
+                last_end = offsets[i]
+        for i, off in enumerate(offsets):
+            if off < 0:
+                continue
+            samples[i].routed_experts = RoutedExperts(
+                data=sidecar[off : next_present_offset[i]],
+                shape=shapes[i],
+                dtype=dtypes[i],
+            )
+
+    return TrainingBatch(examples=samples, step=manifest["step"], run_idx=manifest.get("run_idx"))
 
 
 class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
-    """Filesystem-based training batch receiver that reads batches from multiple run directories."""
+    """Filesystem-based training batch receiver supporting the v2 stream_sidecar format."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -98,8 +212,7 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
             batch_path = self._get_batch_path(idx)
             if batch_path.exists():
                 try:
-                    with open(batch_path, "rb") as f:
-                        batch: TrainingBatch = self.decoder.decode(f.read())
+                    batch = _decode_training_batch_from_disk(batch_path)
                     batch.run_idx = idx
                     batches.append(batch)
                     # Increment received step to avoid reading the same file again
