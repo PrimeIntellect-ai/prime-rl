@@ -8,7 +8,7 @@ level = "debug"
 
 [wandb]
 project = "RLM-Qwen30B-debug"
-name = "RLM-Qwen30B-router-replay-debug-perf-r3-v7"
+name = "r3-lag-repro"
 
 [model]
 name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
@@ -24,10 +24,9 @@ type = "multi_node"
 num_train_nodes = 2
 num_infer_nodes = 1
 num_infer_replicas = 4
-gpus_per_node = 8
 
 [slurm]
-job_name = "qwen30b-rlm-debug"
+job_name = "r3-lag-repro"
 partition = "cluster"
 
 [ckpt]
