@@ -1,0 +1,103 @@
+max_steps = 20
+seq_len = 65536
+output_dir = "/beegfs/mika/r3-lag-repro"
+
+[log]
+level = "debug"
+
+[wandb]
+project = "RLM-Qwen30B-debug"
+name = "r3-lag-repro"
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+
+[weight_broadcast]
+type = "nccl"
+port = 29502
+timeout = 12000
+quantize_in_weight_transfer = false
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 2
+num_infer_nodes = 1
+num_infer_replicas = 4
+
+[slurm]
+job_name = "r3-lag-repro"
+partition = "cluster"
+
+[ckpt]
+interval = 100
+keep_last = 1
+resume_step = -1
+
+[trainer]
+dist_timeout_seconds = 1800
+enable_router_replay = true
+
+[trainer.model]
+impl = "custom"
+attn = "flash_attention_3"
+fused_lm_head_token_chunk_size = 1024
+ep = 8
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.compile]
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.ckpt]
+skip_gather_master_weights = true
+skip_optimizer = true
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+weight_decay = 0.0
+
+[trainer.experimental.token_export]
+
+[orchestrator]
+batch_size = 256
+rollouts_per_example = 8
+max_inflight_rollouts = 1024
+max_off_policy_steps = 16
+
+[orchestrator.renderer]
+name = "qwen3"
+
+[orchestrator.train.sampling]
+temperature = 1.0
+
+[orchestrator.wandb.log_extras]
+samples = false
+interval = 25
+
+[orchestrator.prime_monitor]
+
+[[orchestrator.train.env]]
+id = "general-agent-solver-local"
+name = "general-agent-local-low"
+num_workers = 16
+ratio = 1.0
+
+[orchestrator.train.env.args]
+min_tier = 4
+max_turns = 100
+timeout_seconds = 3600.0
+
+[inference]
+enable_return_routed_experts = true
+enable_expert_parallel = true
+gpu_memory_utilization = 0.85
+
+[inference.parallel]
+tp = 8
+
+[inference.model]
+max_model_len = 65536
