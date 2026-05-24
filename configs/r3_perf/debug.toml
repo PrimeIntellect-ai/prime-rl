@@ -69,25 +69,7 @@ batch_size = 256
 rollouts_per_example = 8
 max_inflight_rollouts = 1024
 max_off_policy_steps = 16
-use_token_client = false
 use_renderer = true
-# Round 4: O(N²)→O(N) routed_experts concat in interleave_rollout makes the
-# threaded path strictly better than the process pool (no IPC pickle cost,
-# orders of magnitude less memcpy per rollout). Keep process pool off.
-use_process_pool = false
-# Round 5: dump raw rollouts so the offline replay harness can attribute
-# the residual orch step-boundary stall to specific phases. Produces ~6 GB
-# per step under router replay; pair with per-phase timing logs.
-# v9: off — already have step_0-9 dumps from v5/v8 for offline iteration,
-# and the 30 GB/step writes were a strong suspect for the growing
-# max-lag spikes in v8 (10s -> 32s across steps 5-10).
-dump_raw_rollouts = false
-# Round 6: chunk the interleave_rollout gather to give the main asyncio loop
-# guaranteed slices between to_thread waves. Offline bench: chunk=128 cut max
-# loop lag 2.6x (387ms -> 149ms) under simulated prod traffic for ~11%
-# wallclock cost. Sweet spot — chunk<=64 didn't help lag further and cost
-# much more wall time.
-gather_chunk_size = 128
 
 [orchestrator.renderer]
 name = "qwen3"
