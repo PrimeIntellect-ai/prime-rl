@@ -55,9 +55,7 @@ has_ssh_access() {
   # access after authenticating), so we capture stdout/stderr to a var
   # first and grep the var. Piping directly would trigger pipefail.
   set +e
-  out=$(timeout 5s ssh -o BatchMode=yes \
-    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -T git@github.com 2>&1)
+  out=$(timeout 5s ssh -o BatchMode=yes -T git@github.com 2>&1)
   echo "$out" | grep -q "successfully authenticated"
   rc=$?
   set -e
