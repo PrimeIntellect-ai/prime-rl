@@ -74,9 +74,6 @@ name = "qwen3"
 [orchestrator.train.sampling]
 temperature = 1.0
 
-[orchestrator.client]
-extra_headers_from_state = { "X-Session-ID" = "trajectory_id" }
-
 [orchestrator.wandb.log_extras]
 samples = false
 interval = 25
