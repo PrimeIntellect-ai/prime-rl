@@ -482,22 +482,22 @@ async def orchestrate(config: OrchestratorConfig):
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
 
-        # Pretokenize is a no-op when the renderer client already populated
-        # ``tokens`` on each trajectory step (renderer path); the fallback
-        # tokenizer-only branch handles text-only rollouts whose tokens
-        # were not pre-rendered. Run on threads so CPU work overlaps with
-        # inference for the next batch (via max_async_level >= 2).
-        await asyncio.gather(
-            *(
-                asyncio.to_thread(
-                    pretokenize_rollout_trajectory,
-                    rollout,
-                    tokenizer,
-                    renderer=renderer,
+        # SFT-only: external teacher APIs (OpenAI/etc.) return no token IDs,
+        # so step["tokens"] is None — reconstruct via tokenizer/renderer. The
+        # vLLM-served rollout paths (RL/OPD renderer + MITO) already populate
+        # tokens via prompt_token_ids/token_ids, so the call is a no-op there.
+        if config.training_mode == "sft":
+            await asyncio.gather(
+                *(
+                    asyncio.to_thread(
+                        pretokenize_rollout_trajectory,
+                        rollout,
+                        tokenizer,
+                        renderer=renderer,
+                    )
+                    for rollout in train_rollouts
                 )
-                for rollout in train_rollouts
             )
-        )
 
         # Process rollouts in parallel
         results = await asyncio.gather(
