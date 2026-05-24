@@ -76,6 +76,7 @@ RUN apt-get update && apt-get install -y \
     vim \
     libibverbs1 \
     ibverbs-providers \
+    libucx0 \
     && apt-get clean autoclean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
