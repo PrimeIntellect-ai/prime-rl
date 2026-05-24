@@ -79,11 +79,6 @@ temperature = 1.0
 extra_headers_from_state = { "X-Session-ID" = "trajectory_id" }
 
 [orchestrator.wandb.log_extras]
-# R3: disable per-step sample logging — wandb.log({"samples": Table, ...}) is
-# not thread-safe (no internal locks, mutates singleton run state) and the
-# json_dump_safer pass for ~256 long completions blocks the orch loop for
-# 4-40s per step. Disabling so we get a clean lag profile of the rest of the
-# stack. Re-enable with `interval = 25` or larger if observability needed.
 samples = false
 interval = 25
 
