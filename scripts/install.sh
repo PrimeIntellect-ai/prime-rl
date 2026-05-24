@@ -44,11 +44,15 @@ assert_supported_platform() {
 }
 
 has_ssh_access() {
-  # Probe SSH auth to GitHub without prompting; treat any nonzero as "no ssh"
-  # We try a quick ls-remote to avoid cloning on failure.
-  # Disable -e for the probe so the script doesn't exit on a failed test.
+  # Probe GitHub SSH auth directly. `ssh -T git@github.com` returns
+  # "successfully authenticated" only when the local key is registered
+  # with a GitHub user, which is the precondition for cloning private
+  # submodules over SSH. The previous `git ls-remote` probe could
+  # spuriously succeed (cached creds, public-repo edge cases) and
+  # leave submodule clones to fail later.
   set +e
-  timeout 5s git ls-remote --heads git@github.com:PrimeIntellect-ai/${REPO_ID}.git >/dev/null 2>&1
+  timeout 5s ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+    -T git@github.com 2>&1 | grep -q "successfully authenticated"
   rc=$?
   set -e
   return $rc
