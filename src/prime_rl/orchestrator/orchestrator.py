@@ -13,9 +13,9 @@ from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import (
+    backfill_rollout_tokens,
     interleave_rollout,
     offload_images_to_disk,
-    pretokenize_rollout_trajectory,
 )
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 from prime_rl.utils.pathing import get_log_dir, get_rollout_dir, get_step_path
@@ -482,16 +482,21 @@ async def orchestrate(config: OrchestratorConfig):
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
 
-        # Pretokenize on threads so CPU work overlaps with inference for the
-        # next batch. Skip the fanout entirely when every step already has
-        # ``tokens`` (renderer path) — otherwise the 256-way to_thread fires
-        # only to no-op and the GIL stampede blocks the loop.
-        needs_pretokenize = any(step["tokens"] is None for rollout in train_rollouts for step in rollout["trajectory"])
-        if needs_pretokenize:
+        # We only expect to backfill tokens for training_mode=sft against an
+        # external teacher API (OpenAI/etc.), which returns no token IDs —
+        # reconstruct via tokenizer/renderer. The vLLM-served paths (RL/OPD
+        # renderer + MITO, and training_mode=sft against a local vLLM teacher)
+        # already populate tokens via prompt_token_ids/token_ids, so we
+        # short-circuit the 256-way fanout.
+        needs_backfill = any(step["tokens"] is None for rollout in train_rollouts for step in rollout["trajectory"])
+        if needs_backfill:
+            logger.info(
+                "Backfilling tokens for rollout trajectories (expected for training_mode=sft against an external teacher API)"
+            )
             await asyncio.gather(
                 *(
                     asyncio.to_thread(
-                        pretokenize_rollout_trajectory,
+                        backfill_rollout_tokens,
                         rollout,
                         tokenizer,
                         renderer=renderer,
