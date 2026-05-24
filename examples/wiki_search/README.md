@@ -155,7 +155,7 @@ The wiki-search environment supports several configuration options:
 You can pass these via the `--env-args` flag in `vf-eval` or configure them in your `rl.toml`:
 
 ```toml
-[[orchestrator.env]]
+[[orchestrator.train.env]]
 id = "primeintellect/wiki-search"
 args = { max_turns = 5, judge_model = "gpt-4.1" }
 ```
