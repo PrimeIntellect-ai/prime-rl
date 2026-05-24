@@ -482,11 +482,14 @@ async def orchestrate(config: OrchestratorConfig):
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
 
-        # SFT-only: external teacher APIs (OpenAI/etc.) return no token IDs,
-        # so step["tokens"] is None — reconstruct via tokenizer/renderer. The
-        # vLLM-served rollout paths (RL/OPD renderer + MITO) already populate
-        # tokens via prompt_token_ids/token_ids, so the call is a no-op there.
-        if config.training_mode == "sft":
+        # We only expect to run pretokenize for SFT against an external teacher
+        # API (OpenAI/etc.), which returns no token IDs — reconstruct via
+        # tokenizer/renderer. The vLLM-served paths (RL/OPD renderer + MITO,
+        # and SFT against a local vLLM teacher) already populate tokens via
+        # prompt_token_ids/token_ids, so we short-circuit the 256-way fanout.
+        needs_pretokenize = any(step["tokens"] is None for rollout in train_rollouts for step in rollout["trajectory"])
+        if needs_pretokenize:
+            logger.info("Pretokenizing rollout trajectories (expected for SFT against an external teacher API)")
             await asyncio.gather(
                 *(
                     asyncio.to_thread(
