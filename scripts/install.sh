@@ -50,9 +50,14 @@ has_ssh_access() {
   # submodules over SSH. The previous `git ls-remote` probe could
   # spuriously succeed (cached creds, public-repo edge cases) and
   # leave submodule clones to fail later.
+  #
+  # Note: ssh -T git@github.com always exits 1 (GitHub denies shell
+  # access after authenticating), so we capture stdout/stderr to a var
+  # first and grep the var. Piping directly would trigger pipefail.
   set +e
-  timeout 5s ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
-    -T git@github.com 2>&1 | grep -q "successfully authenticated"
+  out=$(timeout 5s ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+    -T git@github.com 2>&1)
+  echo "$out" | grep -q "successfully authenticated"
   rc=$?
   set -e
   return $rc
