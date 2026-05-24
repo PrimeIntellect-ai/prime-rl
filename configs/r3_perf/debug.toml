@@ -87,22 +87,13 @@ interval = 25
 [[orchestrator.train.env]]
 id = "general-agent-solver-local"
 name = "general-agent-local-low"
-num_workers = 4
+num_workers = 16
 ratio = 1.0
 
 [orchestrator.train.env.args]
 min_tier = 4
 max_turns = 100
 timeout_seconds = 3600.0
-
-[orchestrator.advantage]
-type = "default"
-
-[orchestrator.buffer]
-online_difficulty_filtering = false
-
-[orchestrator.eval]
-env = []
 
 [inference]
 enable_return_routed_experts = true
