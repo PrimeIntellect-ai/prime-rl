@@ -164,7 +164,7 @@ def _tokenize_step_with_renderer(
     return build_trajectory_step(renderer, prompt, completion, tools=tools)
 
 
-def pretokenize_rollout_trajectory(
+def backfill_rollout_tokens(
     output: vf.RolloutOutput,
     tokenizer: PreTrainedTokenizer,
     renderer=None,
