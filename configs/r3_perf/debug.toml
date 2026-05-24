@@ -1,6 +1,6 @@
 max_steps = 20
 seq_len = 65536
-output_dir = "/beegfs/outputs/qwen30b-rlm-router-replay-debug-perf-r3-v9"
+output_dir = "/beegfs/mika/r3-lag-repro"
 
 [log]
 level = "debug"
