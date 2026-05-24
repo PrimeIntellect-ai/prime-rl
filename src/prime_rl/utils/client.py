@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Callable
 from itertools import cycle
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -47,7 +48,13 @@ class InferencePool(Protocol):
         """Wait for inference pool to be ready."""
         ...
 
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
+    async def update_weights(
+        self,
+        weight_dir: Path | None,
+        lora_name: str | None = None,
+        step: int = 0,
+        on_engines_paused: Callable[[], None] | None = None,
+    ) -> None:
         """Update weights on all inference servers."""
         ...
 
@@ -119,8 +126,16 @@ class StaticInferencePool:
         )
         await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
 
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
-        await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
+    async def update_weights(
+        self,
+        weight_dir: Path | None,
+        lora_name: str | None = None,
+        step: int = 0,
+        on_engines_paused: Callable[[], None] | None = None,
+    ) -> None:
+        await update_weights(
+            self._admin_clients, weight_dir, lora_name=lora_name, step=step, on_engines_paused=on_engines_paused
+        )
 
     def get_metrics(self) -> dict[str, float]:
         return {}
@@ -336,6 +351,7 @@ async def update_weights(
     weight_dir: Path | None,
     lora_name: str | None = None,
     step: int = 0,
+    on_engines_paused: Callable[[], None] | None = None,
 ) -> None:
     """Update weights on static inference servers.
 
@@ -343,8 +359,10 @@ async def update_weights(
     weight update, then resumes. This ensures all DP workers are idle and can
     participate in the collective weight transfer.
 
-    Note: The server-side /update_weights endpoint automatically resets the prefix cache
-    to invalidate any cached KV states computed with the old weights.
+    Args:
+        on_engines_paused: Optional callback invoked after all engines are
+            paused but before the weight transfer begins. Used by the NIXL+MX
+            path to signal the trainer that it's safe to start the RDMA push.
     """
     logger = get_logger()
 
@@ -358,11 +376,12 @@ async def update_weights(
             response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
             response.raise_for_status()
 
-        # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
         await _pause_engines(admin_clients)
 
         try:
-            # Create ready marker before servers enter receive path (used by NCCL broadcast)
+            if on_engines_paused is not None:
+                on_engines_paused()
+
             if weight_dir is not None:
                 nccl_ready_file = weight_dir / NCCL_READY_MARKER
                 nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
@@ -495,3 +514,28 @@ async def init_nccl_broadcast(
             for client_num, admin_client in enumerate(admin_clients)
         ]
     )
+
+
+async def init_nixl_mx_broadcast(
+    admin_clients: list[AsyncClient],
+    host: str,
+    port: int,
+    inference_world_size: int,
+) -> None:
+    """Initialize NIXL+MX receivers on all inference servers."""
+    logger = get_logger()
+    gpus_per_server = inference_world_size // len(admin_clients)
+
+    logger.info(
+        f"Initializing NIXL+MX broadcast: {len(admin_clients)} servers, "
+        f"inference_world_size={inference_world_size}, gpus_per_server={gpus_per_server}"
+    )
+
+    async def _init(admin_client: AsyncClient, rank_offset: int) -> None:
+        response = await admin_client.post(
+            "/init_nixl_mx",
+            json={"host": host, "port": port, "rank_offset": rank_offset},
+        )
+        response.raise_for_status()
+
+    await asyncio.gather(*[_init(admin_client, i * gpus_per_server) for i, admin_client in enumerate(admin_clients)])

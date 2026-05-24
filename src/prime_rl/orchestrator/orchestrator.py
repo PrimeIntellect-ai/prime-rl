@@ -32,6 +32,7 @@ monkey_patch_chat_completion_logprobs()
 
 import pandas as pd
 import verifiers as vf
+from modelexpress.client import MxClient
 from renderers.base import create_renderer
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
@@ -52,8 +53,10 @@ from prime_rl.orchestrator.vf_utils import (
     save_rollouts,
 )
 from prime_rl.trainer.model import setup_tokenizer
+from prime_rl.transport.mx_rendezvous import MxRendezvous
 from prime_rl.utils.client import (
     init_nccl_broadcast,
+    init_nixl_mx_broadcast,
     setup_inference_pool,
 )
 from prime_rl.utils.config import cli
@@ -280,6 +283,22 @@ async def orchestrate(config: OrchestratorConfig):
             inference_world_size=config.weight_broadcast.inference_world_size,
             quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
         )
+    elif config.weight_broadcast.type == "nixl_mx":
+        await init_nixl_mx_broadcast(
+            student_inference.admin_clients,
+            config.weight_broadcast.host,
+            config.weight_broadcast.port,
+            inference_world_size=config.weight_broadcast.inference_world_size,
+        )
+        mx_rendezvous = MxRendezvous(
+            client=MxClient(server_url=f"{config.weight_broadcast.host}:{config.weight_broadcast.port}"),
+            role="orchestrator",
+            rank=0,
+            peer_world_size=1,
+            model_name=config.student.model.name,
+        )
+        mx_rendezvous.publish()
+        scheduler.mx_rendezvous = mx_rendezvous
 
     # Setup training batch sender for sending training examples to trainer
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
@@ -305,8 +324,8 @@ async def orchestrate(config: OrchestratorConfig):
             # Allow eval at resumed step by setting prev_ckpt_step one behind
             prev_ckpt_step = scheduler.ckpt_step - 1
 
-        # In NCCL mode, skip existence check - weights are broadcasted, not stored on disk
-        check_exists = config.weight_broadcast.type != "nccl"
+        # In NCCL/NIXL modes, skip existence check - weights are pushed, not stored on disk
+        check_exists = config.weight_broadcast.type not in ("nccl", "nixl_mx")
         wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
         weights_path = get_weight_dir(
             config.output_dir, scheduler.ckpt_step, check_exists=check_exists, wait_timeout=wait_timeout

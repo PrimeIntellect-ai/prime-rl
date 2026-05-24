@@ -387,6 +387,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             config_path=config_dir / RL_TOML,
             output_dir=config.output_dir,
             gpus_per_node=config.deployment.gpus_per_node,
+            use_nixl_mx_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nixl_mx",
         )
     elif config.inference is not None and config.inference.deployment.type == "disaggregated":
         infer_deploy = config.inference.deployment
@@ -420,6 +421,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             if config.inference.kv_cache_offload
             else 0,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
+            use_nixl_mx_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nixl_mx",
             wandb_shared=config.wandb is not None and config.wandb.shared,
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
         )
@@ -441,9 +443,11 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             inference_tp=config.inference.parallel.tp if config.inference else 1,
             inference_enable_expert_parallel=config.inference.enable_expert_parallel if config.inference else False,
             inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port if config.inference else 29600,
+            use_deep_gemm=config.inference.use_deep_gemm if config.inference else False,
             dp_per_node=(config.deployment.gpus_per_node // config.inference.parallel.tp) if config.inference else 1,
             kv_offload=config.inference is not None and config.inference.kv_cache_offload is not None,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
+            use_nixl_mx_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nixl_mx",
             wandb_shared=config.wandb is not None and config.wandb.shared,
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
         )
