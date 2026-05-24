@@ -130,7 +130,13 @@ main() {
   fi
 
   if ! has_ssh_access; then
-    git config url."https://github.com/".insteadOf "git@github.com:"
+    # Propagate the rewrite via env vars so it reaches `git submodule--helper clone`,
+    # which spawns fresh `git clone` processes that do not read the parent repo's
+    # local `.git/config`. Local `git config url..insteadOf` is invisible to them.
+    log_info "Routing git@github.com: SSH URLs to HTTPS for this run."
+    export GIT_CONFIG_COUNT=1
+    export GIT_CONFIG_KEY_0="url.https://github.com/.insteadOf"
+    export GIT_CONFIG_VALUE_0="git@github.com:"
   fi
 
   log_info "Initializing submodules..."
