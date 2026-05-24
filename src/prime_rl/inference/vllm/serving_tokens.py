@@ -265,7 +265,7 @@ class PrimeRlServingTokens(ServingTokens):
         # the final response into our GenerateResponse subclass so the encoded
         # experts surface in the JSON.
         capture: _GenerateRoutedExpertsCapture | None = None
-        if self.model_config.enable_return_routed_experts:
+        if getattr(self.model_config, "enable_return_routed_experts", False):
             capture = _GenerateRoutedExpertsCapture(result_generator)
             result_generator = capture
 
