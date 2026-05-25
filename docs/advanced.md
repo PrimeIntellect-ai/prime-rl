@@ -1,6 +1,6 @@
 # Advanced
 
-This page covers the specialized features layered on top of the core training stack: our custom model implementations (with EP for MoE families and CP for long-context training), multimodal training, LoRA training and the multi-run manager, and the small-scale MoE testing workflow used during architecture work.
+This page covers the specialized features layered on top of the core training stack: our custom model implementations (with EP for MoE families and CP for long-context training), multimodal training, LoRA training, multi-tenant training, and the small-scale MoE testing workflow used during architecture work.
 
 ## Table of Contents
 
@@ -12,7 +12,7 @@ This page covers the specialized features layered on top of the core training st
   - [Enabling VLM mode](#enabling-vlm-mode)
   - [Limitations](#limitations)
 - [LoRA training](#lora-training)
-- [Multi-run manager](#multi-run-manager)
+- [Multi-tenant training](#multi-tenant-training)
   - [Run discovery](#run-discovery)
   - [Eviction](#eviction)
   - [Hooks](#hooks)
@@ -118,11 +118,11 @@ LoRA is supported across SFT and RL. For RL, `weight_broadcast.type = "nccl"` is
 save_adapter_separately = true
 ```
 
-LoRA pairs naturally with the multi-run manager — each run gets its own adapter, and many runs share the same backbone in trainer memory.
+LoRA pairs naturally with [multi-tenant training](#multi-tenant-training) — each tenant gets its own adapter and the backbone is shared across all of them in trainer memory.
 
-## Multi-run manager
+## Multi-tenant training
 
-`MultiRunManager` is a trainer-side singleton that lets one trainer process serve multiple concurrent orchestrator deployments, each with its own LoRA adapter, optimizer, scheduler, checkpoints, and progress tracking. Enable by setting `trainer.max_concurrent_runs > 1`.
+Multi-tenant training lets a single trainer + inference deployment serve many concurrent LoRA "tenants" — each a fully isolated run with its own orchestrator, LoRA adapter, optimizer, scheduler, checkpoints, and progress tracking — sharing the same backbone weights and the same vLLM server. This is the topology behind hosted training on the [Prime Intellect platform (Lab)](https://app.primeintellect.ai). The trainer-side implementation is the `MultiRunManager` singleton, enabled by setting `trainer.max_concurrent_runs > 1`.
 
 Per-run layout under `<output_dir>/`:
 
@@ -181,7 +181,7 @@ Five hook types fire at well-defined points:
 
 Deletion hooks always run before creation hooks. The creation/deletion hooks run on **all** ranks, so they're the right place for DTensor allocation and other collective work; `torch.dist.barrier()` is safe inside.
 
-For the full API surface, see [`src/prime_rl/trainer/runs/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/src/prime_rl/trainer/runs). The primary use case today is the LoRA-per-run training topology — many lightweight RL runs (e.g. one per environment) sharing a single trainer process group.
+For the full API surface, see [`src/prime_rl/trainer/runs/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/src/prime_rl/trainer/runs).
 
 ## Testing MoE at small scale
 

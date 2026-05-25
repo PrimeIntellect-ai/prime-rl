@@ -178,7 +178,7 @@ type = "adamw"
 optim_cpu_offload = true
 ```
 
-Mutually exclusive with `fsdp_cpu_offload`. Also incompatible with `trainer.max_concurrent_runs > 1` (the multi-run manager). Muon doesn't support `fsdp_cpu_offload` but does support `optim_cpu_offload`.
+Mutually exclusive with `fsdp_cpu_offload`. Also incompatible with `trainer.max_concurrent_runs > 1` (multi-tenant training). Muon doesn't support `fsdp_cpu_offload` but does support `optim_cpu_offload`.
 
 ## Memory-tight recipe
 
