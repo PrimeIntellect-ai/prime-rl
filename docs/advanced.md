@@ -1,6 +1,6 @@
 # Advanced
 
-This page covers the specialized features layered on top of the core training stack: our custom model implementations (with EP for MoE families and CP for long-context training), multimodal training, LoRA training, and multi-tenant training. For developer-side workflows (adding new model architectures, debugging modeling code at small scale), see [Development](development.md).
+This page covers the specialized features layered on top of the core training stack: our custom model implementations (with EP for MoE families and CP for long-context training), multimodal training, LoRA training, multi-tenant training, and disaggregated prefill/decode inference. For developer-side workflows (adding new model architectures, debugging modeling code at small scale), see [Development](development.md).
 
 ## Table of Contents
 
@@ -13,6 +13,7 @@ This page covers the specialized features layered on top of the core training st
   - [Limitations](#limitations)
 - [LoRA training](#lora-training)
 - [Multi-tenant training](#multi-tenant-training)
+- [Disaggregated prefill/decode inference](#disaggregated-prefilldecode-inference)
 
 ## Custom modeling
 
@@ -119,3 +120,31 @@ LoRA pairs naturally with [multi-tenant training](#multi-tenant-training) — ea
 ## Multi-tenant training
 
 Multi-tenant training lets a single trainer + inference deployment serve many concurrent LoRA "tenants" — each a fully isolated run with its own orchestrator, LoRA adapter, optimizer, scheduler, checkpoints, and progress tracking — sharing the same backbone weights and the same vLLM server. This is the topology behind hosted training on the [Prime Intellect platform (Lab)](https://app.primeintellect.ai). The trainer-side implementation is the `MultiRunManager` singleton, enabled by setting `trainer.max_concurrent_runs > 1`. For the full API surface, see [`src/prime_rl/trainer/runs/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/src/prime_rl/trainer/runs).
+
+## Disaggregated prefill/decode inference
+
+For large MoE serving, splitting prefill and decode onto separate vLLM groups can substantially improve throughput. Pick the prefill:decode ratio based on workload shape:
+
+| Workload | P:D ratio | Why |
+|---|---|---|
+| Agentic (SWE, Lean) | 3:1 | Long growing contexts → prefill-heavy |
+| Non-agentic (math, chat) | 1:2 | Short prompts, long generations → decode-heavy |
+
+Example config: [`examples/glm5_pd_disag/rl.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/glm5_pd_disag/rl.toml) — full RL run on `GLM-5` with P/D disaggregation behind a `vllm-router`, FP8 inference, and NCCL weight broadcast (see the [README](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/glm5_pd_disag) for the launch story).
+
+Monitor live queue depths to detect imbalance:
+
+```bash
+curl -s http://<prefill_node>:8100/metrics | grep num_requests_waiting
+curl -s http://<decode_node>:8200/metrics | grep num_requests_waiting
+```
+
+If prefill queues and decode is idle, add prefill nodes (and vice versa).
+
+**UCX 1.19 requirement.** NVSHMEM needs UCX ≥ 1.19 for multi-GPU CUDA. Most clusters ship UCX 1.17 via HPC-X, which manifests as `cuStreamCreate: invalid device context` errors during DeepEP internode dispatch. Check with `/opt/hpcx/ucx/bin/ucx_info -v` and, if needed, build from source:
+
+```bash
+salloc -N 1 --gres=gpu:1 bash -c 'bash scripts/install_nixl_from_source.sh'
+```
+
+The script writes UCX 1.19 to `third_party/ucx/`; the bundled sbatch templates prepend it to `LD_LIBRARY_PATH` so it overrides the system version.

@@ -1,6 +1,6 @@
 # Scaling
 
-This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster: single-node multi-GPU layouts, multi-node SLURM and Kubernetes deployments, FSDP / expert parallelism / context parallelism, disaggregated prefill/decode inference, and throughput benchmarking. For knobs that fit on one box, see [Training](training.md) first.
+This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster: single-node multi-GPU layouts, multi-node SLURM and Kubernetes deployments, FSDP / expert parallelism / context parallelism, and throughput benchmarking. For knobs that fit on one box, see [Training](training.md) first. For prefill/decode disaggregated inference, see [Advanced](advanced.md#disaggregated-prefilldecode-inference).
 
 ## Table of Contents
 
@@ -27,7 +27,6 @@ This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster
   - [SFT and inference examples](#sft-and-inference-examples)
   - [Custom templates](#custom-templates)
 - [Kubernetes](#kubernetes)
-- [Disaggregated prefill/decode inference](#disaggregated-prefilldecode-inference)
 - [Benchmarking](#benchmarking)
 
 ## Choosing a layout
@@ -486,34 +485,6 @@ torchrun \
 ```
 
 Common operations (logs, exec, scale, uninstall) are standard `kubectl`/`helm`. Auth (W&B, HF) is via K8s secrets — set `config.secrets.enabled=true` and `config.secrets.name=<your-secret>`.
-
-## Disaggregated prefill/decode inference
-
-For large MoE serving, splitting prefill and decode onto separate vLLM groups can substantially improve throughput. Pick the prefill:decode ratio based on workload shape:
-
-| Workload | P:D ratio | Why |
-|---|---|---|
-| Agentic (SWE, Lean) | 3:1 | Long growing contexts → prefill-heavy |
-| Non-agentic (math, chat) | 1:2 | Short prompts, long generations → decode-heavy |
-
-Example config: [`examples/glm5_pd_disag/rl.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/glm5_pd_disag/rl.toml) — full RL run on `GLM-5` with P/D disaggregation behind a `vllm-router`, FP8 inference, and NCCL weight broadcast (see the [README](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/glm5_pd_disag) for the launch story).
-
-Monitor live queue depths to detect imbalance:
-
-```bash
-curl -s http://<prefill_node>:8100/metrics | grep num_requests_waiting
-curl -s http://<decode_node>:8200/metrics | grep num_requests_waiting
-```
-
-If prefill queues and decode is idle, add prefill nodes (and vice versa).
-
-**UCX 1.19 requirement.** NVSHMEM needs UCX ≥ 1.19 for multi-GPU CUDA. Most clusters ship UCX 1.17 via HPC-X, which manifests as `cuStreamCreate: invalid device context` errors during DeepEP internode dispatch. Check with `/opt/hpcx/ucx/bin/ucx_info -v` and, if needed, build from source:
-
-```bash
-salloc -N 1 --gres=gpu:1 bash -c 'bash scripts/install_nixl_from_source.sh'
-```
-
-The script writes UCX 1.19 to `third_party/ucx/`; the bundled sbatch templates prepend it to `LD_LIBRARY_PATH` so it overrides the system version.
 
 ## Benchmarking
 
