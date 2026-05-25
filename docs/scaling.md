@@ -41,29 +41,24 @@ This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster
 
 ## Single GPU
 
-The trainer and inference server can share a GPU for small models or smoke tests. Pin everything to one physical GPU via `CUDA_VISIBLE_DEVICES`, set both deployment counts to 1, and tighten the inference memory budget so the trainer has room:
+For SFT, single-GPU is the default — `uv run sft` runs without torchrun unless you ask for multiple processes.
+
+For RL, the `uv run rl` launcher partitions visible GPUs strictly between inference and trainer (inference takes the first `num_infer_gpus`, trainer takes the next `num_train_gpus`), so it needs at least 2 visible GPUs. To smoke-test the full RL stack on a **single physical GPU**, launch the three processes manually in separate panes so they can each pin to the same GPU. Tighten the inference memory budget so the trainer has room:
 
 ```bash
 bash scripts/tmux.sh
 
-CUDA_VISIBLE_DEVICES=0 uv run rl @ configs/<task>/rl.toml \
-  --deployment.num-infer-gpus 1 \
-  --deployment.num-train-gpus 1 \
-  --inference.gpu-memory-utilization 0.5
-```
-
-Or launch the three processes manually if you want full control over each pane:
-
-```bash
 # inference pane
-uv run inference @ infer.toml --gpu-memory-utilization 0.5
+CUDA_VISIBLE_DEVICES=0 uv run inference @ infer.toml --gpu-memory-utilization 0.5
+
 # orchestrator pane
 uv run orchestrator @ orch.toml
+
 # trainer pane
-uv run trainer @ train.toml
+CUDA_VISIBLE_DEVICES=0 uv run trainer @ train.toml
 ```
 
-For SFT, single-GPU is the default — `uv run sft` runs without torchrun unless you ask for multiple processes.
+Single-GPU RL is for debugging only — production RL needs 2+ GPUs.
 
 ## Single-node multi-GPU
 
