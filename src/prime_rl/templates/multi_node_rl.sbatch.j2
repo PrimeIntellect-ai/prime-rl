@@ -21,6 +21,10 @@
 #SBATCH --output={{ output_dir }}/job_%j.log
 #SBATCH --error={{ output_dir }}/job_%j.log
 
+# Exit immediately on any failed command so a crash anywhere releases the
+# allocation instead of leaving zombie processes holding nodes.
+set -e
+
 # Configs
 export NUM_TRAIN_NODES={{ num_train_nodes }}
 export NUM_INFER_NODES={{ num_infer_nodes }}
@@ -156,7 +160,11 @@ uv sync --all-extras
 # processes and vLLM/torch IPC files under /dev/shm and /tmp can survive SLURM
 # termination and cause the next launch to hang (e.g. decode engines stuck at
 # "Waiting for READY message from DP Coordinator"). Harmless on clean nodes.
-srun bash -c '
+#
+# `bash -s` with a heredoc on stdin keeps the script body out of every bash
+# / srun argv — otherwise `pkill -f "[v]llm"` self-matches the cleanup procs
+# because the surviving literal `vllm` strings below appear in the cmdline.
+srun bash -s <<'CLEANUP_SH'
     pkill -9 -f "[p]ython.*prime_rl" 2>/dev/null
     pkill -9 -f "[t]orchrun" 2>/dev/null
     pkill -9 -f "[v]llm-router" 2>/dev/null
@@ -171,10 +179,18 @@ srun bash -c '
     procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::" | grep -v grep | wc -l)
     gpu=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk "{s+=\$1} END {print s}")
     echo "[node-cleanup] $(hostname) procs=$procs gpu_mem=${gpu}MiB"
-'
+CLEANUP_SH
 
 # Run RL
-srun bash -c '
+# --kill-on-bad-exit=1 propagates a non-zero exit on any node to all other
+# tasks so a crashed component terminates the SLURM job instead of leaving the
+# surviving ranks holding nodes.
+srun --kill-on-bad-exit=1 bash -c '
+    # pipefail ensures `cmd | tee log` propagates `cmd` failures, and the
+    # wait/cleanup block at the end of this script surfaces background
+    # process crashes (router, orchestrator) as task failures.
+    set -o pipefail
+
     # Source environment
     cd $PROJECT_DIR
     [ -f .env ] && source .env
@@ -212,6 +228,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
 {%- if use_deep_gemm %}
     export VLLM_USE_DEEP_GEMM=1
+    export VLLM_MOE_USE_DEEP_GEMM=1
 {%- endif %}
 
     export GLOO_SOCKET_IFNAME=bond0
@@ -313,7 +330,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         --parallel.dp $DP \
         --data-parallel-rpc-port $INFERENCE_DATA_PARALLEL_RPC_PORT \
         --vllm-extra "$VLLM_EXTRA" \
-        2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
+        2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log &
 {%- else -%}
     # Start vllm-router on the first node of each replica
     if [ "$RANK_IN_REPLICA" -eq 0 ]; then
@@ -349,13 +366,13 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             --server.port $BACKEND_PORT \
             --data-parallel-rpc-port $INFERENCE_DATA_PARALLEL_RPC_PORT \
             --vllm-extra "$VLLM_EXTRA" \
-            2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
+            2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log &
     else
         uv run inference \
             @ $CONFIG_DIR/inference.toml \
             --server.host 0.0.0.0 \
             --server.port $BACKEND_PORT \
-            2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
+            2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log &
     fi
 {%- endif %}
 
@@ -364,8 +381,8 @@ else
 
     if [ "$TRAIN_NODE_RANK" -eq 0 ]; then
         ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.toml"
-        ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --client.base-url $INFER_URLS"
-        ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --client.admin-base-url $ADMIN_URLS"
+        ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.base-url $INFER_URLS"
+        ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --student.client.admin-base-url $ADMIN_URLS"
         {% if use_nccl_broadcast %}ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --weight_broadcast.host $MASTER_ADDR"
         {% endif %}{% if wandb_shared %}WANDB_SHARED_LABEL=orchestrator {% endif %}uv run orchestrator $ORCHESTRATOR_ARGS \
             2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &
@@ -394,6 +411,18 @@ else
         --local-ranks-filter={{ ranks_filter }} \
         -m prime_rl.trainer.rl.train \
         @ $CONFIG_DIR/trainer.toml \
-        2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log
+        2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $OUTPUT_DIR/logs/trainer/node_${TRAIN_NODE_RANK}.log &
 {% if num_infer_nodes > 0 %}    fi{% endif %}
+
+# Wait for the first background job to exit and propagate its exit code. This
+# turns background process crashes (router, orchestrator) into task failures
+# that --kill-on-bad-exit=1 can broadcast to the other nodes so the whole job
+# tears down instead of leaving zombies holding the allocation.
+wait -n
+EXIT_CODE=$?
+echo "[$(hostname)] component exited with code $EXIT_CODE - terminating remaining processes"
+for pid in $(jobs -p); do
+    kill -TERM $pid 2>/dev/null || true
+done
+exit $EXIT_CODE
 '

@@ -1,0 +1,99 @@
+# 20-step Qwen3-VL-4B RL run on color-codeword using the renderer multimodal path.
+#
+# Pair with rl_color_codeword_main_mito.toml for an A/B comparison: same env,
+# same hyperparameters, same step count — only difference is the inference
+# client. The feat-branch run uses the new RendererClient + Qwen3VLRenderer
+# (renderers package with multimodal support); the main-branch baseline uses
+# the existing TITO chat-completions path through the inference server.
+#
+# Compare in W&B project ``multimodal-renderer``:
+#   - ``kl/sampler_vs_trainer`` should be ~0 on this branch (the renderer
+#     produces byte-identical tokens to what the trainer re-tokenizes) and
+#     can spike on main when BPE drifts mid-rollout.
+#   - ``reward`` and ``loss`` should track within noise — same model, same
+#     env, same hyperparameters.
+#   - ``bridge_break_rate`` is renderer-only; surfaces multi-turn extension
+#     failures.
+
+max_steps = 20
+seq_len = 4096
+output_dir = "outputs/rl_color_codeword_feat_renderer"
+clean_output_dir = true
+# Pure on-policy: inference can't run ahead of training, so every rollout
+# is generated from the latest policy weights. Removes async/off-policy
+# drift as a confound for the sampler-vs-trainer KL.
+max_async_level = 0
+
+[model]
+name = "Qwen/Qwen3-VL-4B-Instruct"
+
+[model.vlm]
+vision_encoder_attr = "model.visual"
+language_model_attr = "model.language_model"
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+gpus_per_node = 2
+
+[orchestrator]
+batch_size = 16
+group_size = 8
+use_renderer = true
+
+# Track zero-advantage groups but don't drop them — we're validating the
+# multimodal renderer path on 20 steps, not optimizing training efficiency.
+# Step 0 on Qwen3-VL-4B vs color-codeword is likely uniform (all-correct or
+# all-wrong) so enforce=True would crash before any training happens.
+[[orchestrator.filters]]
+type = "gibberish"
+
+[[orchestrator.filters]]
+type = "repetition"
+
+[[orchestrator.filters]]
+type = "zero_advantage"
+enforce = false
+
+[orchestrator.train.sampling]
+max_completion_tokens = 64
+
+[[orchestrator.train.env]]
+id = "color-codeword"
+args = { images_per_turn = 2, max_turns = 2, num_examples = 100, seed = 42 }
+
+[orchestrator.renderer]
+name = "auto"
+# 64 concurrent rollouts (batch_size=16 × group_size=4) want
+# more than one tokenizer slot to avoid serialization queueing. The
+# image processor (CPU-bound) dominates for VLMs so returns diminish
+# past 4; bump to 4 as the default for multimodal runs.
+pool_size = 4
+
+[trainer]
+
+[trainer.model]
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[trainer.optim]
+lr = 3e-6
+
+[inference]
+
+[inference.model]
+# Workaround for vLLM 0.20.1 Qwen3-VL deepstack buffer bug: when num_scheduled_tokens
+# (188) gets padded up to the next cudagraph_capture_size (192), the model's
+# _set_deepstack_input_embeds sizes the buffer to 188 but forward() runs with 192,
+# triggering "Requested more deepstack tokens than available in buffer". Eager mode
+# skips the padding so num_input_tokens == num_scheduled_tokens.
+enforce_eager = true
+
+[inference.parallel]
+dp = 1
+tp = 1
+
+[wandb]
+project = "multimodal-renderer"
+name = "feat-renderer-20step-r8-i2-t2-onpolicy"
+tags = ["qwen3vl-4b", "color-codeword", "renderer", "feat-branch", "mm-kwargs-generic", "on-policy"]

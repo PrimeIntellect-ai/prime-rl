@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import verifiers as vf
 
-from prime_rl.orchestrator.scheduler import InflightRequest, Scheduler
+from prime_rl.orchestrator.scheduler import GroupState, InflightRequest, Scheduler
 from prime_rl.utils.async_utils import safe_cancel
 
 
@@ -30,7 +30,7 @@ def make_scheduler() -> Scheduler:
     scheduler.policy_update_lock = asyncio.Lock()
     scheduler.inflight_policy_update_task = None
     scheduler.update_policy_task = None
-    scheduler.enable_policy_updates = True
+    scheduler.rate_limiter = None
     return scheduler
 
 
@@ -102,10 +102,11 @@ def test_maybe_update_policy_reuses_inflight_update_after_cancellation():
             started.set()
             await release.wait()
 
-        scheduler.inference_pool = SimpleNamespace(
+        scheduler.student_inference = SimpleNamespace(
             update_weights=update_weights,
             update_model_name=MagicMock(),
         )
+        scheduler.rollout_inference = scheduler.student_inference
         scheduler._update_off_policy = AsyncMock()
 
         with (
@@ -142,10 +143,11 @@ def test_stop_cancels_inflight_policy_update_task():
             finally:
                 cancelled.set()
 
-        scheduler.inference_pool = SimpleNamespace(
+        scheduler.student_inference = SimpleNamespace(
             update_weights=update_weights,
             update_model_name=MagicMock(),
         )
+        scheduler.rollout_inference = scheduler.student_inference
         scheduler._update_off_policy = AsyncMock()
 
         with (
@@ -174,3 +176,99 @@ def test_client_identity_distinguishes_base_url_and_dp_rank():
     )
 
     assert Scheduler._client_identity(client_a) != Scheduler._client_identity(client_b)
+
+
+def test_lora_policy_update_in_sft_keeps_teacher_model_name():
+    """In sft mode, train_pool is the teacher. LoRA updates the student inference
+    pool but must not change scheduler.model_name (which is what gets sent to the
+    teacher endpoint on each rollout request)."""
+
+    async def run() -> None:
+        scheduler = make_scheduler()
+        scheduler.model_name = "teacher-model"
+        scheduler.lora_name = "student-lora"
+
+        student_inference = SimpleNamespace(
+            update_weights=AsyncMock(),
+            update_model_name=MagicMock(),
+        )
+        teacher_inference = SimpleNamespace()
+        scheduler.student_inference = student_inference
+        scheduler.rollout_inference = teacher_inference  # sft: train_pool != student_inference
+        scheduler._update_off_policy = AsyncMock()
+
+        with (
+            patch("prime_rl.orchestrator.scheduler.get_latest_ckpt_step", return_value=8),
+            patch("prime_rl.orchestrator.scheduler.wait_for_path", new=AsyncMock()),
+        ):
+            await scheduler.maybe_update_policy()
+
+        student_inference.update_weights.assert_awaited_once()
+        student_inference.update_model_name.assert_called_once_with("student-lora")
+        assert scheduler.model_name == "teacher-model"
+
+    asyncio.run(run())
+
+
+def test_lora_policy_update_in_rl_updates_model_name():
+    """In rl/opd mode, train_pool is the student. LoRA updates redirect rollout
+    requests to the new LoRA name."""
+
+    async def run() -> None:
+        scheduler = make_scheduler()
+        scheduler.model_name = "student-model"
+        scheduler.lora_name = "student-lora"
+
+        student_inference = SimpleNamespace(
+            update_weights=AsyncMock(),
+            update_model_name=MagicMock(),
+        )
+        scheduler.student_inference = student_inference
+        scheduler.rollout_inference = student_inference  # rl/opd: same pool
+        scheduler._update_off_policy = AsyncMock()
+
+        with (
+            patch("prime_rl.orchestrator.scheduler.get_latest_ckpt_step", return_value=8),
+            patch("prime_rl.orchestrator.scheduler.wait_for_path", new=AsyncMock()),
+        ):
+            await scheduler.maybe_update_policy()
+
+        student_inference.update_weights.assert_awaited_once()
+        student_inference.update_model_name.assert_called_once_with("student-lora")
+        assert scheduler.model_name == "student-lora"
+
+    asyncio.run(run())
+
+
+def test_schedule_rollout_uses_train_pool():
+    """schedule_rollout dispatches to train_pool's clients with train_pool's model name."""
+
+    async def run() -> None:
+        scheduler = make_scheduler()
+        scheduler.model_name = "teacher-model"
+        teacher_client = vf.ClientConfig(api_base_url="http://teacher.example/v1")
+        env = SimpleNamespace(
+            requires_group_scoring=False,
+            run_rollout=AsyncMock(return_value=[]),
+        )
+        scheduler.rollout_inference = SimpleNamespace(train_clients=[teacher_client])
+        scheduler.train_envs = SimpleNamespace(get=MagicMock(return_value=env))
+        scheduler.groups = {
+            0: GroupState(
+                example={"env_name": "math", "example_id": "ex-1"},
+                rollouts_to_schedule=1,
+            )
+        }
+
+        await scheduler.schedule_rollout(group_id=0)
+        await asyncio.gather(*scheduler.inflight_requests)
+
+        env.run_rollout.assert_awaited_once_with(
+            client=teacher_client,
+            example={"env_name": "math", "example_id": "ex-1"},
+            model_name="teacher-model",
+            cache_salt="7",
+        )
+        assert scheduler.groups[0].pinned_client is teacher_client
+
+    asyncio.run(run())

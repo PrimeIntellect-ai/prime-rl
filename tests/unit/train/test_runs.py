@@ -40,7 +40,7 @@ def create_run_with_config(
         config = {
             "model": {"name": "test-model"},
             "batch_size": 32,
-            "rollouts_per_example": 4,
+            "group_size": 4,
             "env": [{"id": "test-env"}],
             # test-model isn't in MODEL_RENDERER_MAP; bypass the renderer-resolution validator.
             "use_renderer": False,
@@ -201,7 +201,7 @@ def test_config_loading(tmp_path: Path) -> None:
         "model": {"name": "test-model"},
         "batch_size": 32,
         "max_steps": 1000,
-        "rollouts_per_example": 4,
+        "group_size": 4,
         "env": [{"id": "test-env"}],
         "use_renderer": False,
     }
@@ -217,7 +217,7 @@ def test_config_loading(tmp_path: Path) -> None:
 
     # Access config as OrchestratorConfig object
     config = multi_run_manager.config[run_idx]
-    assert config.model.name == "test-model"
+    assert config.student.model.name == "test-model"
     assert config.batch_size == 32
     assert config.max_steps == 1000
 
@@ -246,7 +246,7 @@ def test_config_cleanup_on_deletion(tmp_path: Path) -> None:
     test_config = {
         "model": {"name": "test-model"},
         "batch_size": 16,
-        "rollouts_per_example": 4,
+        "group_size": 4,
         "env": [{"id": "test-env"}],
         "use_renderer": False,
     }
@@ -277,7 +277,7 @@ def test_config_invalid(tmp_path: Path) -> None:
     invalid_config = {
         "model": {"name": "test-model"},
         "batch_size": "not-a-number",  # Invalid type
-        "rollouts_per_example": 4,
+        "group_size": 4,
         "env": [{"id": "test-env"}],
     }
     run_dir = create_run_with_config(tmp_path, "run_invalid", config=invalid_config)

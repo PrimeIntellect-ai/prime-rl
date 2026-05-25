@@ -107,6 +107,21 @@ def check_loss_goes_down(lines: list[str]):
     return check_number_goes_up_or_down(lines, go_up=False, pattern=r"Loss:\s*(\d+\.\d{4})")
 
 
+def check_eval_avg_goes_up(lines: list[str], env_name: str):
+    """Assert that the last `Evaluated {env_name} ... Avg@K=X.XXXX` line reports a
+    higher score than the first one. Use for smoke tests with `interval = 1`
+    evals."""
+    pattern = rf"Evaluated {re.escape(env_name)} .*Avg@\d+=(\d+\.\d{{4}})"
+    eval_lines = [line for line in lines if "SUCCESS" in line and re.search(pattern, line)]
+    assert len(eval_lines) >= 2, f"Need at least 2 eval lines for {env_name!r}, found {len(eval_lines)}"
+    start = float(re.search(pattern, eval_lines[0]).group(1))
+    end = float(re.search(pattern, eval_lines[-1]).group(1))
+    assert end > start, (
+        f"Eval avg for {env_name!r} did not go up: first={start} last={end}\n"
+        f"first line: {eval_lines[0]}\nlast line: {eval_lines[-1]}"
+    )
+
+
 def check_reward_in_range(
     lines: list[str],
     step: int = -1,

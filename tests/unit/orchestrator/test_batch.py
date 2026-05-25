@@ -1,14 +1,24 @@
+import numpy as np
 import pytest
 
 from prime_rl.trainer.batch import prepare_batch, prepare_sample
-from prime_rl.transport.types import TrainingSample
+from prime_rl.transport.types import RoutedExperts, TrainingSample
+
+
+def _routed_experts(data, dtype=np.uint8):
+    routed_experts = np.asarray(data, dtype=dtype)
+    return RoutedExperts(
+        data=routed_experts.tobytes(),
+        shape=list(routed_experts.shape),
+        dtype=str(routed_experts.dtype),
+    )
 
 
 @pytest.fixture
 def make_training_example():
     def _make_training_example(
         temperature: float = 1.0,
-        sft_loss: bool = False,
+        training_mode: str = "rl",
         env_name: str = "test-env",
     ) -> TrainingSample:
         return TrainingSample(
@@ -21,7 +31,7 @@ def make_training_example():
             teacher_logprobs=[0.0, 0.0, 0.0, 0.0],
             advantage=1.0,
             env_name=env_name,
-            sft_loss=sft_loss,
+            training_mode=training_mode,
         )
 
     return _make_training_example
@@ -99,12 +109,12 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
     assert flat_batches[0].env_names == ["env-a"] * 4 + ["env-b"] * 4
 
 
-def test_prepare_sample_propagates_sft_loss(make_training_example):
-    example = make_training_example(sft_loss=True)
+def test_prepare_sample_propagates_training_mode(make_training_example):
+    example = make_training_example(training_mode="sft")
 
     micro_batch = prepare_sample(example, seq_len=16)
 
-    assert micro_batch.sft_loss is True
+    assert micro_batch.training_mode == "sft"
 
 
 def test_prepare_sample_sft_overlay(make_training_example):
@@ -161,9 +171,9 @@ def test_prepare_sample_truncates_sft_mask_with_other_per_token_lists(make_train
     assert len(micro_batch.loss_mask) == 2
 
 
-def test_prepare_batch_does_not_pack_mixed_sft_loss(make_training_example):
-    rl_example = make_training_example(sft_loss=False)
-    sft_example = make_training_example(sft_loss=True)
+def test_prepare_batch_does_not_pack_mixed_training_mode(make_training_example):
+    rl_example = make_training_example(training_mode="rl")
+    sft_example = make_training_example(training_mode="sft")
 
     batches_per_gpu = prepare_batch(
         rollouts=[rl_example, sft_example],
@@ -175,13 +185,14 @@ def test_prepare_batch_does_not_pack_mixed_sft_loss(make_training_example):
 
     flat_batches = [batch for worker_batches in batches_per_gpu for batch in worker_batches]
     assert len(flat_batches) == 2
-    assert {batch.sft_loss for batch in flat_batches} == {False, True}
+    assert {batch.training_mode for batch in flat_batches} == {"rl", "sft"}
 
 
 def test_prepare_sample_with_routed_experts():
     """Routed experts are passed through prepare_sample and match input_ids length."""
     # 2 prompt + 2 completion = 4 tokens, 2 layers, topk=2
     routed_experts = [[[0, 1], [2, 3]], [[4, 5], [6, 7]], [[0, 2], [1, 3]], [[1, 0], [3, 2]]]
+    routed_payload = _routed_experts(routed_experts)
     sample = TrainingSample(
         prompt_ids=[1, 2],
         prompt_mask=[False, False],
@@ -191,18 +202,19 @@ def test_prepare_sample_with_routed_experts():
         completion_temperatures=[1.0, 1.0],
         advantage=1.0,
         env_name="test-env",
-        routed_experts=routed_experts,
+        routed_experts=routed_payload,
     )
 
     micro_batch = prepare_sample(sample, seq_len=8)
     assert micro_batch.routed_experts is not None
-    assert len(micro_batch.routed_experts) == 4
-    assert micro_batch.routed_experts == routed_experts
+    assert micro_batch.routed_experts == routed_payload
 
 
 def test_prepare_sample_truncates_routed_experts():
     """Routed experts are truncated to seq_len when input exceeds it."""
     routed_experts = [[[0, 1]], [[2, 3]], [[4, 5]], [[6, 7]]]
+    routed_payload = _routed_experts(routed_experts)
+    expected_payload = _routed_experts(routed_experts[:3])
     sample = TrainingSample(
         prompt_ids=[1, 2],
         prompt_mask=[False, False],
@@ -212,13 +224,12 @@ def test_prepare_sample_truncates_routed_experts():
         completion_temperatures=[1.0, 1.0],
         advantage=1.0,
         env_name="test-env",
-        routed_experts=routed_experts,
+        routed_experts=routed_payload,
     )
 
     micro_batch = prepare_sample(sample, seq_len=3)
     assert micro_batch.routed_experts is not None
-    assert len(micro_batch.routed_experts) == 3
-    assert micro_batch.routed_experts == routed_experts[:3]
+    assert micro_batch.routed_experts == expected_payload
     assert micro_batch.env_names == ["test-env"] * 3
 
 

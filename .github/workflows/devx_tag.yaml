@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -81,7 +82,6 @@ jobs:
                   sha,
                 });
                 core.notice(`Created tag ${tag} at ${sha}`);
-                return;
               } catch (error) {
                 if (error.status === 422) {
                   core.warning(`Tag ${tag} already exists, retrying...`);
@@ -89,6 +89,20 @@ jobs:
                 }
                 throw error;
               }
+
+              try {
+                await github.rest.actions.createWorkflowDispatch({
+                  owner,
+                  repo,
+                  workflow_id: "build_image.yaml",
+                  ref: "main",
+                  inputs: { ref: tag, tag, platforms: "both" },
+                });
+                core.notice(`Dispatched build_image.yaml for ${tag}`);
+              } catch (error) {
+                core.setFailed(`Failed to dispatch build_image.yaml: ${error.message}`);
+              }
+              return;
             }
 
             core.setFailed("Could not create a unique .dev tag after retries.");

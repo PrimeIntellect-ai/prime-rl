@@ -11,8 +11,7 @@ language_model_attr = "model.language_model"
 
 [orchestrator]
 batch_size = 16
-rollouts_per_example = 2
-use_renderer = false
+group_size = 2
 
 [orchestrator.train.sampling]
 max_completion_tokens = 32
