@@ -11,7 +11,6 @@ from prime_rl.utils.async_utils import safe_cancel
 
 def make_scheduler() -> Scheduler:
     scheduler = Scheduler.__new__(Scheduler)
-    scheduler.strict_async_level = False
     scheduler.step = 9
     scheduler.ckpt_step = 7
     scheduler.config = SimpleNamespace(output_dir=Path("/tmp/prime-rl-test"))

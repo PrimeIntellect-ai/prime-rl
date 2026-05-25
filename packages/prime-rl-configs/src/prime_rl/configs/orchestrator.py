@@ -638,9 +638,6 @@ class OrchestratorConfig(BaseConfig):
     max_off_policy_steps: int = Field(8, ge=0)
     """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
 
-    strict_async_level: bool = False
-    """Strictly enforce the async barrier. When True, the rollout policy is always exactly one step behind training. When False, any policy within the async barrier is allowed (always uses the latest available policy)."""
-
     bench: bool = False
     """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""
 

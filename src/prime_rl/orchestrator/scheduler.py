@@ -65,7 +65,6 @@ class Scheduler:
         config: OrchestratorConfig,
         max_inflight_rollouts: int,
         max_off_policy_steps: int,
-        strict_async_level: bool,
         tasks_per_minute: int | None,
         lora_name: str | None = None,
     ):
@@ -82,7 +81,6 @@ class Scheduler:
         self.group_size = config.group_size
         self.max_inflight_rollouts = max_inflight_rollouts
         self.max_off_policy_steps = max_off_policy_steps
-        self.strict_async_level = strict_async_level
         self.lora_name = lora_name
         self.json_logging = config.log.json_logging
 
@@ -286,17 +284,14 @@ class Scheduler:
 
     def _compute_next_ckpt_step(self) -> int:
         # The orchestrator always runs one step ahead of the trainer, so we must advance to at
-        # least step - 1. In non-strict mode we additionally adopt anything fresher the trainer
-        # has already broadcast.
-        next_step = max(self.step - 1, 0)
-        if not self.strict_async_level:
-            latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
-            next_step = max(next_step, latest_ckpt_step)
-        return next_step
+        # least step - 1. We additionally adopt anything fresher the trainer has already
+        # broadcast (so a fast trainer briefly running on-policy is fine).
+        latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
+        return max(self.step - 1, 0, latest_ckpt_step)
 
     async def _apply_policy_update(self, next_ckpt_step: int) -> None:
         # If we're advancing to step - 1, the trainer hasn't broadcast it yet (otherwise
-        # non-strict mode would've picked something newer); block until the file lands.
+        # we would've picked something newer); block until the file lands.
         if next_ckpt_step == max(self.step - 1, 0):
             self.logger.info(
                 f"Orchestrator paused: waiting for trainer to broadcast checkpoint {next_ckpt_step} "

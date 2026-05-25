@@ -245,7 +245,6 @@ async def orchestrate(config: OrchestratorConfig):
         teacher_inference=teacher_inference,
         max_inflight_rollouts=config.max_inflight_rollouts,
         max_off_policy_steps=config.max_off_policy_steps,
-        strict_async_level=config.strict_async_level,
         tasks_per_minute=config.tasks_per_minute,
         lora_name=config.student.model.lora.name if config.student.model.lora else None,
         config=config,
