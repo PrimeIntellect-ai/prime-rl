@@ -54,7 +54,7 @@ The custom path enables EP, selective activation checkpointing, FP8 training (`m
 
 DeepEP intranode dispatch derives the RDMA channel count as `deepep_num_sms / 2`. Lower SM count leaves more for compute; higher speeds up dispatch. Useful starting points: 16–24 SMs on H100, 20–40 on B200.
 
-When you enable DeepEP, gradient clipping is auto-disabled (`optim.max_norm` set to `None`) because the kernels don't currently support it. This is a tradeoff — watch `grad_norm` in the trainer logs to make sure nothing diverges.
+When you enable DeepEP, gradient clipping is auto-disabled (`optim.max_norm` set to `None`) because the kernels don't currently support it.
 
 ## Multimodal training
 
