@@ -36,7 +36,7 @@ impl = "custom"        # or "hf" to force the HF path
 | Qwen3 MoE | `Qwen/Qwen3-30B-A3B`, … | ✅ | ✅ |
 | Qwen3.5 MoE | `Qwen/Qwen3.5-35B-A3B`, … | ✅ | ✅ |
 | Qwen3 / Qwen3.5 VLMs | see [Multimodal](#vision-language-models) | MoE only | ✅ |
-| Poolside Laguna | `poolside/Laguna-XS.2` | ✅ | ✅ |
+| Laguna | `poolside/Laguna-XS.2` | ✅ | ✅ |
 | MiniMax M2 | `MiniMax/MiniMax-M2` | ✅ | ✅ |
 | Nemotron H | `nvidia/Nemotron-3-Nano-30B-A3B`, … | ✅ | ❌ |
 | Trinity (AFMoE) | `arcee-ai/Trinity-Mini`, … | ✅ | ✅ |
