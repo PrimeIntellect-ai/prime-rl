@@ -16,7 +16,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 - [Checkpointing](#checkpointing)
   - [Enabling checkpoints](#enabling-checkpoints)
   - [Resuming a run](#resuming-a-run)
-  - [Saving HF weights for serving](#saving-hf-weights-for-serving)
+  - [Serving checkpoints](#serving-checkpoints)
 - [Observability](#observability)
   - [Log files](#log-files)
   - [Console output](#console-output)
@@ -171,7 +171,7 @@ uv run rl @ rl.toml --max-steps 10 --ckpt
 uv run rl @ rl.toml --max-steps 20 --ckpt.resume-step 10
 ```
 
-### Saving HF weights for serving
+### Serving checkpoints
 
 HF-compatible weight snapshots are written under `<output_dir>/weights/step_N/` whenever a full checkpoint runs (or you can write weights-only via `--ckpt.weights-only` for cheaper snapshots). Upload directly:
 
