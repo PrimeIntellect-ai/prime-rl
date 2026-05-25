@@ -11,7 +11,6 @@ This page covers the specialized features layered on top of the core training st
   - [Supported families](#supported-families)
   - [Enabling VLM mode](#enabling-vlm-mode)
   - [Limitations](#limitations)
-  - [Multi-turn training](#multi-turn-training)
 - [LoRA training](#lora-training)
 - [Multi-run manager](#multi-run-manager)
   - [Run discovery](#run-discovery)
@@ -98,18 +97,6 @@ To add a new model family permanently, append an entry to `VLM_REGISTRY` in `src
 - **bfloat16 mandatory.** The trainer config validator refuses any other `optimization_dtype` / `reduce_dtype` for VLMs — vLLM serves VLMs in bfloat16 and a mismatch breaks the importance ratio.
 - **Higher KL mismatch with multi-image inputs.** Expect noisier `mismatch_kl` than text-only; this is from minor numerical differences between the trainer's and vLLM's image processing.
 - **Images aren't logged to monitors.** Sample logging captures the prompt text but not the actual images.
-
-### Multi-turn training
-
-VLM rollouts go through the renderer-backed TITO client (`orchestrator.use_renderer = true`, required for VLMs). Per trajectory step:
-
-1. **Render** — the renderer tokenizes messages and emits per-image multimodal tensors (`pixel_values`, `image_grid_thw` for Qwen3-VL) as `multi_modal_data`.
-2. **Pack** — `interleave_rollout` concatenates per-image tensors across a sample's merged step range into a single `mm_kwargs` dict on the `TrainingSample`. Per-token `mm_token_type_ids` (0=text, 1=image, 2=video) come from `renderer.mm_token_type_id_map`.
-3. **Forward** — the trainer `**`-unpacks `mm_kwargs` into the model's `forward`. Any VLM whose HF processor and forward signature agree on kwarg names works without modifying the transport.
-
-Each multimodal sample becomes its own micro-batch (no packing) because image tensor sizes vary.
-
-`VLLM_WORKER_MULTIPROC_METHOD=spawn` is required for VLM inference — set automatically by `uv run rl`, but if you launch `uv run inference` separately for a VLM, export it yourself.
 
 ## LoRA training
 
