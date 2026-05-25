@@ -12,7 +12,7 @@ dependencies = [
     # light; its only weighty transitive (transformers) is lazy-imported
     # via the validator, so plain ``from prime_rl.configs.orchestrator import
     # OrchestratorConfig`` still doesn't pull it into sys.modules.
-    "renderers @ git+https://github.com/PrimeIntellect-ai/renderers@4c9099debbc9bc4fcc3eb6a118bbfa5c364ec395",
+    "renderers @ git+https://github.com/PrimeIntellect-ai/renderers@renderers-v0.1.8.dev27",
     "tomli>=2.2.1",
     "tomli-w>=1.2.0",
 ]
