@@ -285,9 +285,10 @@ class Scheduler:
     def _compute_next_ckpt_step(self) -> int:
         # The orchestrator always runs one step ahead of the trainer, so we must advance to at
         # least step - 1. We additionally adopt anything fresher the trainer has already
-        # broadcast (so a fast trainer briefly running on-policy is fine).
+        # broadcast (so a fast trainer briefly running on-policy is fine). ``latest_ckpt_step``
+        # is non-negative so it also clamps a self.step == 0 startup.
         latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
-        return max(self.step - 1, 0, latest_ckpt_step)
+        return max(self.step - 1, latest_ckpt_step)
 
     async def _apply_policy_update(self, next_ckpt_step: int) -> None:
         # If we're advancing to step - 1, the trainer hasn't broadcast it yet (otherwise
