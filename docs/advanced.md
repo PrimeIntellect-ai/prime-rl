@@ -1,17 +1,17 @@
 # Advanced
 
-This page covers the specialized features layered on top of the core training stack: our custom model implementations (with EP for MoE families and CP for long-context training), vision-language models, LoRA training and the multi-run manager, and the small-scale MoE testing workflow used during architecture work.
+This page covers the specialized features layered on top of the core training stack: our custom model implementations (with EP for MoE families and CP for long-context training), multimodal training, LoRA training and the multi-run manager, and the small-scale MoE testing workflow used during architecture work.
 
 ## Table of Contents
 
 - [Custom modeling](#custom-modeling)
   - [Custom vs HF implementations](#custom-vs-hf-implementations)
   - [Expert parallelism backends](#expert-parallelism-backends)
-- [Vision-language models](#vision-language-models)
+- [Multimodal training](#multimodal-training)
   - [Supported families](#supported-families)
   - [Enabling VLM mode](#enabling-vlm-mode)
   - [Limitations](#limitations)
-  - [Multi-turn VLM training](#multi-turn-vlm-training)
+  - [Multi-turn training](#multi-turn-training)
 - [LoRA training](#lora-training)
 - [Multi-run manager](#multi-run-manager)
   - [Run discovery](#run-discovery)
@@ -35,7 +35,7 @@ impl = "custom"        # or "hf" to force the HF path
 | GLM-5 (`glm_moe_dsa`) | `zai-org/GLM-5`, `zai-org/GLM-5-FP8` | ✅ | ✅ |
 | Qwen3 MoE | `Qwen/Qwen3-30B-A3B`, … | ✅ | ✅ |
 | Qwen3.5 MoE | `Qwen/Qwen3.5-35B-A3B`, … | ✅ | ✅ |
-| Qwen3 / Qwen3.5 VLMs | see [Multimodal](#vision-language-models) | MoE only | ✅ |
+| Qwen3 / Qwen3.5 VLMs | see [Multimodal training](#multimodal-training) | MoE only | ✅ |
 | Laguna | `poolside/Laguna-XS.2` | ✅ | ✅ |
 | MiniMax M2 | `MiniMax/MiniMax-M2` | ✅ | ✅ |
 | Nemotron H | `nvidia/Nemotron-3-Nano-30B-A3B`, … | ✅ | ❌ |
@@ -56,7 +56,7 @@ DeepEP intranode dispatch derives the RDMA channel count as `deepep_num_sms / 2`
 
 When you enable DeepEP, gradient clipping is auto-disabled (`optim.max_norm` set to `None`) because the kernels don't currently support it. This is a tradeoff — watch `grad_norm` in the trainer logs to make sure nothing diverges.
 
-## Vision-language models
+## Multimodal training
 
 ### Supported families
 
@@ -99,7 +99,7 @@ To add a new model family permanently, append an entry to `VLM_REGISTRY` in `src
 - **Higher KL mismatch with multi-image inputs.** Expect noisier `mismatch_kl` than text-only; this is from minor numerical differences between the trainer's and vLLM's image processing.
 - **Images aren't logged to monitors.** Sample logging captures the prompt text but not the actual images.
 
-### Multi-turn VLM training
+### Multi-turn training
 
 VLM rollouts go through the renderer-backed TITO client (`orchestrator.use_renderer = true`, required for VLMs). Per trajectory step:
 
