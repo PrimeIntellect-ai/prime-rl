@@ -63,6 +63,11 @@ OUTPUT_LOCAL="/local-ssd/prime-rl-output"
 CKPT_LOCAL="/local-ssd/checkpoints/${EXP_NAME}"
 CKPT_S3="${S3_EXP}/checkpoints"
 OUTPUT_S3="${S3_EXP}/output"
+
+# S3 API 路径（绕过 FUSE，用于写入）— FUSE 路径只用于读取/存在性检查
+S3_BUCKET="s3://arcwm-code-us-west-2/ericzyma"
+CKPT_S3_BUCKET="${S3_BUCKET}/experiments/${EXP_NAME}/checkpoints"
+OUTPUT_S3_BUCKET="${S3_BUCKET}/experiments/${EXP_NAME}/output"
 HF_CACHE_TAR="${S3_PREFIX}/tools/hf_cache_${HF_MODEL_SHORT}.tar"
 PROJECT_DIR="/data/work/prime-rl"
 
@@ -109,27 +114,29 @@ setup_s3_sync() {
         return
     fi
     echo "  Starting background S3 sync..."
-    mkdir -p "${CKPT_S3}" "${OUTPUT_S3}"
     sync_all() {
         local _sync_log="${OUTPUT_LOCAL}/logs/s3_sync.log"
-        # -rlt: recursive + symlinks + timestamps. 不用 -a（含 -o -g），S3 FUSE 不支持 chown。
-        # --inplace: S3 FUSE 不支持 rename()，跳过临时文件模式。
-        # --delete: 清理 checkpoint 残留文件。
-        [ -d "${CKPT_LOCAL}" ] && rsync -rlt --inplace --delete "${CKPT_LOCAL}/" "${CKPT_S3}/" >> "${_sync_log}" 2>&1 || true
+        mkdir -p "$(dirname "${_sync_log}")"
+        # 使用 aws s3 sync 直接走 S3 API，绕过 FUSE 所有限制：
+        #   - 不依赖 rename()、mtime、overwrite — 每次是 PUT 新对象
+        #   - --delete: 清理远端多余文件（如旧 checkpoint）
+        #   - --quiet: 不逐文件打印（减少日志噪音）
+        if [ -d "${CKPT_LOCAL}" ]; then
+            aws s3 sync "${CKPT_LOCAL}/" "${CKPT_S3_BUCKET}/" \
+                --delete --quiet >> "${_sync_log}" 2>&1 || true
+        fi
         if [ -d "${OUTPUT_LOCAL}" ]; then
-            # S3 FUSE 的 --inplace 无法覆盖已有文件（S3 对象不可变，truncate+write 静默失败）。
-            # 每次全量删除目标后重建，output 以小文件为主，代价可接受。
-            rm -rf "${OUTPUT_S3}" 2>/dev/null || true
-            mkdir -p "${OUTPUT_S3}"
-            rsync -rlt --inplace --copy-links --exclude broadcasts/ --exclude '*.bin' "${OUTPUT_LOCAL}/" "${OUTPUT_S3}/" >> "${_sync_log}" 2>&1 || true
+            aws s3 sync "${OUTPUT_LOCAL}/" "${OUTPUT_S3_BUCKET}/" \
+                --delete --exclude 'broadcasts/*' --exclude '*.bin' \
+                --quiet >> "${_sync_log}" 2>&1 || true
         fi
     }
     (while true; do sleep 300; sync_all; done) &
     SYNC_PID=$!
-    echo "    PID: ${SYNC_PID} (every 5 min)"
-    echo "    ${CKPT_LOCAL} -> ${CKPT_S3} (--delete)"
-    echo "    ${OUTPUT_LOCAL} -> ${OUTPUT_S3} (--copy-links, excl broadcasts/*.bin)"
-    trap "kill ${SYNC_PID} 2>/dev/null || true; [ -n \"\${OPTIX_PID:-}\" ] && kill \"\${OPTIX_PID}\" 2>/dev/null || true; sync_all" EXIT
+    echo "    PID: ${SYNC_PID} (every 5 min, via S3 API)"
+    echo "    ${CKPT_LOCAL} -> ${CKPT_S3_BUCKET} (--delete)"
+    echo "    ${OUTPUT_LOCAL} -> ${OUTPUT_S3_BUCKET} (excl broadcasts/*.bin)"
+    trap "kill ${SYNC_PID} 2>/dev/null || true; [ -n \"\${OPTIX_PID:-}\" ] && kill \"\${OPTIX_PID}\" 2>/dev/null || true; type _blendergym_cleanup &>/dev/null && _blendergym_cleanup; sync_all" EXIT
 }
 
 # ============================================================================
