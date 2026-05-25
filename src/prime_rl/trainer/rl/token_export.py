@@ -1,6 +1,7 @@
 import atexit
 import json
 import math
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,8 @@ from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
 from prime_rl.trainer.rl.loss import compute_importance_ratio_and_mismatch_kl
 
 SCHEMA_VERSION = 1
+MKDIR_RETRY_DELAY_SECONDS = 0.1
+MKDIR_MAX_ATTEMPTS = 5
 
 
 class DisabledTokenExporter:
@@ -88,7 +91,7 @@ class TokenExporter:
         self._current_step = step
         self._sequences_this_step = 0
         step_dir = self.output_dir / f"step_{step}"
-        step_dir.mkdir(parents=True, exist_ok=True)
+        _mkdir_existing_dir_ok(step_dir)
         self._file = (step_dir / f"rank_{self.rank}.jsonl").open("w", encoding="utf-8")
 
     def _write(self, record: dict[str, Any]) -> None:
@@ -111,6 +114,19 @@ def setup_token_exporter(
     exporter = TokenExporter(config.output_dir, world.rank)
     logger.info(f"Writing token exports under {exporter.output_dir}")
     return exporter
+
+
+def _mkdir_existing_dir_ok(path: Path) -> None:
+    for attempt in range(MKDIR_MAX_ATTEMPTS):
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            return
+        except FileExistsError:
+            if path.is_dir():
+                return
+            if attempt == MKDIR_MAX_ATTEMPTS - 1:
+                raise
+            time.sleep(MKDIR_RETRY_DELAY_SECONDS)
 
 
 def _export_columns(
