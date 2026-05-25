@@ -447,11 +447,23 @@ class BaseWeightBroadcastConfig(BaseConfig):
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
 
+    sparse: bool = False
+    """Use sparse checkpoint-format filesystem broadcasts."""
+
+    full_sync_interval: int | None = Field(None, ge=1)
+    """Optional interval for forcing a full filesystem broadcast between sparse deltas."""
+
     save_sharded: bool = True
     """Save the weight checkpoint in sharded format."""
 
     save_format: Literal["safetensors", "torch"] = "safetensors"
     """Weight checkpoint serialization format."""
+
+    @model_validator(mode="after")
+    def validate_sparse_options(self):
+        if self.full_sync_interval is not None and not self.sparse:
+            raise ValueError("filesystem full_sync_interval requires sparse=True")
+        return self
 
 
 class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
@@ -475,7 +487,8 @@ class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 
@@ -638,9 +651,11 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
-        if self.model.lora is not None and self.weight_broadcast.type == "nccl":
+        sparse_filesystem = self.weight_broadcast.type == "filesystem" and self.weight_broadcast.sparse
+        if self.model.lora is not None and (self.weight_broadcast.type == "nccl" or sparse_filesystem):
             # TODO: Support this
-            raise ValueError("NCCL weight broadcast does not support LoRA yet.")
+            broadcast_name = "sparse filesystem" if sparse_filesystem else self.weight_broadcast.type
+            raise ValueError(f"{broadcast_name} weight broadcast does not support LoRA yet.")
         return self
 
     @model_validator(mode="after")

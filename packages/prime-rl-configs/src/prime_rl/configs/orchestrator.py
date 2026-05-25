@@ -521,6 +521,9 @@ FilterConfig: TypeAlias = Annotated[
 class FileSystemWeightBroadcastConfig(BaseConfig):
     type: Literal["filesystem"] = "filesystem"
 
+    sparse: bool = False
+    """Use sparse checkpoint-format filesystem broadcasts."""
+
 
 class NCCLWeightBroadcastConfig(BaseConfig):
     type: Literal["nccl"] = "nccl"
@@ -542,7 +545,8 @@ class NCCLWeightBroadcastConfig(BaseConfig):
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig, Field(discriminator="type")
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig,
+    Field(discriminator="type"),
 ]
 
 

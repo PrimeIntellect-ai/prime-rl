@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Any
 
 import torch.nn as nn
 
@@ -14,5 +15,8 @@ class WeightBroadcast(ABC):
         self.lora_config = lora_config
 
     @abstractmethod
-    def broadcast_weights(self, model: nn.Module, step: int):
+    def broadcast_weights(self, model: nn.Module, step: int, force_full: bool = False):
         pass
+
+    def get_metrics(self) -> dict[str, Any]:
+        return {}

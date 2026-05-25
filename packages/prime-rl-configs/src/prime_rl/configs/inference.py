@@ -85,6 +85,15 @@ class WeightBroadcastConfig(BaseConfig):
     type: Literal["nccl", "filesystem"] = "filesystem"
     """Weight broadcast transport."""
 
+    sparse: bool = False
+    """Use sparse checkpoint-format filesystem weight updates."""
+
+    @model_validator(mode="after")
+    def validate_sparse_options(self):
+        if self.sparse and self.type != "filesystem":
+            raise ValueError("weight_broadcast.sparse requires weight_broadcast.type = 'filesystem'.")
+        return self
+
 
 class KVCacheOffloadConfig(BaseConfig):
     cpu_bytes: int = Field(1_000_000_000, gt=0)

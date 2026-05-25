@@ -15,6 +15,7 @@ from prime_rl.orchestrator.vf_utils import get_seq_len
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import ProgressTracker, get_logger
+from prime_rl.utils.sparse_weights import get_sparse_manifest_metrics, read_sparse_manifest
 from prime_rl.utils.utils import (
     get_broadcast_dir,
     get_latest_ckpt_step,
@@ -119,6 +120,7 @@ class Scheduler:
         self.update_policy_task: asyncio.Task | None = None
         self.inflight_policy_update_task: asyncio.Task | None = None
         self.policy_update_lock = asyncio.Lock()
+        self.weight_broadcast_metrics: dict[str, float | int] = {}
         self.cancelled_rollouts_count = 0
         self.empty_rollouts_by_env: dict[str, int] = defaultdict(int)
         self.errored_rollouts_by_env: dict[str, int] = defaultdict(int)
@@ -316,6 +318,9 @@ class Scheduler:
         weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
         await self.student_inference.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
         self.update_weights_time = time.perf_counter() - update_weights_start_time
+        sparse_metrics = get_sparse_manifest_metrics(read_sparse_manifest(weights_path))
+        byte_ratio = sparse_metrics.get("weight_broadcast/sparse/byte_ratio")
+        self.weight_broadcast_metrics = {"sparse_broadcast_ratio": byte_ratio} if byte_ratio is not None else {}
         self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
         self.ckpt_step = next_ckpt_step
@@ -588,5 +593,6 @@ class Scheduler:
 
         # Add train pool metrics (e.g. elastic pool server counts)
         metrics.update(self.rollout_inference.get_metrics())
+        metrics.update(self.weight_broadcast_metrics)
 
         return metrics

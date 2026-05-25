@@ -264,14 +264,21 @@ def train(config: TrainerConfig):
             broadcast_weights_time = 0
         else:
             last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level
-            if progress.step > 0 and (not last_async_level_steps or config.weight_broadcast.type == "filesystem"):
+            filesystem_weight_broadcast = config.weight_broadcast.type == "filesystem"
+            if progress.step > 0 and (not last_async_level_steps or filesystem_weight_broadcast):
                 broadcast_weights_start_time = time.perf_counter()
-                weight_broadcast.broadcast_weights(model, step=progress.step)
+                ckpt_interval = config.ckpt and config.ckpt.interval
+                sparse_filesystem_broadcast = (
+                    config.weight_broadcast.type == "filesystem" and config.weight_broadcast.sparse
+                )
+                force_full_broadcast = sparse_filesystem_broadcast and (
+                    is_last_step or bool(ckpt_interval and progress.step % ckpt_interval == 0)
+                )
+                weight_broadcast.broadcast_weights(model, step=progress.step, force_full=force_full_broadcast)
                 broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
                 # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
-                ckpt_interval = config.ckpt and config.ckpt.interval
-                interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
-                if config.weight_broadcast.type == "filesystem":
+                interval_to_keep = ckpt_interval if filesystem_weight_broadcast else None
+                if filesystem_weight_broadcast:
                     weight_broadcast.maybe_clean(config.max_async_level, interval_to_keep)
             else:
                 broadcast_weights_time = 0
@@ -622,6 +629,12 @@ def train(config: TrainerConfig):
             "step": progress.step,
         }
         monitor.log(time_metrics, step=progress.step)
+
+        # Log weight broadcast metrics, if the selected backend exposes any.
+        if weight_broadcast is not None:
+            weight_broadcast_metrics = weight_broadcast.get_metrics()
+            if weight_broadcast_metrics:
+                monitor.log({**weight_broadcast_metrics, "step": progress.step}, step=progress.step)
 
         # Log disk metrics
         disk_metrics = get_ckpt_disk_metrics(config.output_dir)
