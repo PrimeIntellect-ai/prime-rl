@@ -194,7 +194,6 @@ jobs:
     name: Create multi-arch manifest
     needs: [prepare, build]
     if: needs.prepare.outputs.platforms == 'both'
-    environment: ghcr-publish
     runs-on: ubuntu-latest
     permissions:
       packages: write
