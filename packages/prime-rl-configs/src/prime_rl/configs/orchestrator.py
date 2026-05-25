@@ -1,10 +1,9 @@
 import math
 import warnings
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeAlias
 
 from pydantic import AliasChoices, Field, model_validator
-from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -18,6 +17,15 @@ from prime_rl.configs.shared import (
 )
 from prime_rl.configs.trainer import TokenizerConfig
 from prime_rl.utils.config import BaseConfig
+
+if TYPE_CHECKING:
+    # ``renderers`` eagerly imports every concrete renderer module, each of
+    # which imports ``transformers.tokenization_utils``. Loading this
+    # module on the slim-install path (``prime-rl-configs`` only, no GPU
+    # deps) must not pull ``transformers`` into ``sys.modules``, so the
+    # ``renderers`` imports are deferred to the validators below; the
+    # ``renderer`` field's annotation is ``Any`` at runtime.
+    from renderers import RendererConfig  # noqa: F401
 
 
 class OptimizerConfig(BaseConfig):
@@ -570,7 +578,14 @@ class OrchestratorConfig(BaseConfig):
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
-    renderer: RendererConfig | None = Field(default_factory=AutoRendererConfig)
+    # Field annotation is ``Any`` at runtime so this module imports
+    # without pulling in ``renderers`` (which eagerly imports each
+    # concrete renderer module → transformers). The ``_resolve_renderer``
+    # model-validator below lazy-imports ``renderers`` and coerces dict
+    # / missing values into the typed ``renderers.RendererConfig``
+    # discriminated union. Static type checkers see ``RendererConfig |
+    # None`` via the ``TYPE_CHECKING`` import at the top.
+    renderer: Any = None
     """Typed renderer config (``renderers.RendererConfig`` discriminated
     union — one of ``AutoRendererConfig``, ``Qwen35RendererConfig``,
     ``GLM5RendererConfig``, …). The ``name`` discriminator picks the
@@ -667,6 +682,46 @@ class OrchestratorConfig(BaseConfig):
     """Allow pre-release versions when installing environments (e.g. ``verifiers>=0.1.12.dev5``). Passes ``--prerelease`` to ``prime env install``."""
 
     experimental: OrchestratorExperimentalConfig = OrchestratorExperimentalConfig()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_renderer(cls, data: Any) -> Any:
+        """Lazy-validate the ``renderer`` field.
+
+        ``renderer`` is annotated ``Any`` at runtime (see the field
+        definition above) so that this module imports without pulling in
+        ``renderers`` — which would eagerly import every concrete
+        renderer module, each of which imports
+        ``transformers.tokenization_utils``. The slim
+        ``prime-rl-configs`` install path must stay transformers-free.
+
+        Here we run the validation pydantic would otherwise do at class
+        construction: lazy-import ``renderers`` and coerce dict / absent
+        values into the typed ``RendererConfig`` discriminated union.
+
+        Semantics:
+          - key absent → ``AutoRendererConfig()`` (TITO with auto-resolve)
+          - explicit ``None`` → MITO opt-out (set by ``renderer = "None"``
+            in TOML, coerced by ``BaseConfig._none_str_to_none``)
+          - dict → parsed through the discriminated union
+          - already a ``RendererConfig`` instance → passthrough
+        """
+        if not isinstance(data, dict):
+            return data
+        if "renderer" not in data:
+            from renderers import AutoRendererConfig
+
+            data["renderer"] = AutoRendererConfig()
+            return data
+        value = data["renderer"]
+        if value is None:
+            return data
+        from pydantic import TypeAdapter
+        from renderers import RendererConfig as _RC
+
+        if isinstance(value, dict):
+            data["renderer"] = TypeAdapter(_RC).validate_python(value)
+        return data
 
     @model_validator(mode="before")
     @classmethod
