@@ -13,7 +13,6 @@ This page covers the math and the configurable algorithmic components: how off-p
 - [Advantage](#advantage)
   - [Default advantage](#default-advantage)
   - [Custom advantage](#custom-advantage)
-  - [Length penalties](#length-penalties)
 - [Filters](#filters)
 - [Multi-turn trajectories](#multi-turn-trajectories)
   - [Extension property](#extension-property)
@@ -139,7 +138,14 @@ Anything you put in `metrics` is averaged across sequences and logged with the o
 
 The default advantage is per-group reward minus per-group baseline (DR-GRPO without std normalization). For each prompt's group of `group_size` rollouts, every token in rollout $i$ receives advantage $s_i - \bar{s}$ where $\bar{s}$ is the group mean.
 
-This is intentionally simple — it does the right thing for most envs. Switch to a custom function when you need group-aware shaping (e.g. length penalties tied to turn count, sub-agent rollouts, or relative-rank shaping).
+This is intentionally simple — it does the right thing for most envs. Switch to a [custom advantage](#custom-advantage) when you need group-aware shaping that depends on trajectory metadata (sub-agent rollouts, relative-rank shaping, …).
+
+Two built-in **length penalties** can be layered on top of any advantage to discourage rambling:
+
+- `[orchestrator.length_penalty] type = "tokens"` — penalizes long completions in tokens, with configurable target and slope.
+- `[orchestrator.length_penalty] type = "turns"` — penalizes long multi-turn rollouts by turn count.
+
+See [Reference § orchestrator length penalties](reference.md#orchestrator) for the fields.
 
 ### Custom advantage
 
@@ -165,15 +171,6 @@ kwargs = { eps = 1e-8 }
 ```
 
 `AdvantageInputs.rollouts` is a list of `verifiers.RolloutOutput`, so you have access to the full rollout (turns, tool calls, custom metadata) — not just the reward. Use this for anything reward-shaping-like that needs trajectory context.
-
-### Length penalties
-
-Two built-in length penalties can be layered on top of any advantage:
-
-- `[orchestrator.length_penalty] type = "tokens"` — penalizes long completions in tokens, with configurable target and slope.
-- `[orchestrator.length_penalty] type = "turns"` — penalizes long multi-turn rollouts by turn count.
-
-See [Reference § orchestrator length penalties](reference.md#orchestrator) for the fields.
 
 ## Filters
 
