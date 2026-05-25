@@ -9,6 +9,8 @@ import logging
 
 import httpx
 
+from ..health import diagnose_service_down
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,6 +33,8 @@ class ScoreClient:
             )
             resp.raise_for_status()
             return resp.json()["similarity"]
+        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+            raise diagnose_service_down("score", e) from e
         except httpx.HTTPError as e:
             logger.error("Score service error: %s", e)
             return 0.0

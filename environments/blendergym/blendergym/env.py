@@ -42,6 +42,7 @@ from .prompts import REFINE_INSTRUCTION, SYSTEM_PROMPT, TASK_INSTRUCTION
 from .rubric import BlenderGymRubric
 from .schema import Rollout, Task, require_rollout
 from .services.render.client import RenderClient
+from .services.health import ensure_service_ready
 from .trajectory_writer import completion_to_text
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,8 @@ class BlenderGymEnv(vf.MultiTurnEnv):
         render_service_url: str = "http://localhost:8420",
         score_service_url: str = "http://localhost:8421",
         render_timeout_s: int = 600,
+        # -- reward weights (overridable from TOML) --
+        reward_weights: dict[str, float] | None = None,
         # -- artifact policy --
         save_blender_log: bool = True,
         save_response_txt: bool = True,
@@ -96,6 +99,7 @@ class BlenderGymEnv(vf.MultiTurnEnv):
         self.work_root.mkdir(parents=True, exist_ok=True)
 
         self.render_client = RenderClient(render_service_url, render_timeout_s)
+        ensure_service_ready(render_service_url, "render")
 
         policy = ArtifactPolicy(
             save_blender_log=save_blender_log,
@@ -119,6 +123,7 @@ class BlenderGymEnv(vf.MultiTurnEnv):
             score_service_url=score_service_url,
             parser=self.parser,
             artifact_manager=self.artifact_manager,
+            reward_weights=reward_weights,
         )
 
         def _train_dataset_builder():
@@ -300,6 +305,11 @@ class BlenderGymEnv(vf.MultiTurnEnv):
         if not state.get("trajectory"):
             return
         completion = state["trajectory"][-1]["completion"]
+
+        # Fix thinking-only responses (model exhausted tokens during <think>)
+        for msg in completion:
+            if msg.get("role") == "assistant" and msg.get("content") is None and not msg.get("tool_calls"):
+                msg["content"] = ""
 
         mgr = self.artifact_manager
         turn_idx = rollout.render_count

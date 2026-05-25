@@ -1,10 +1,11 @@
 """BlenderGym rubric.
 
-Reward: CLIP cosine similarity between the latest render and the goal
-reference image, computed via the Score Service.
+Primary reward: CLIP cosine similarity between the latest render and the
+goal reference image, computed via the Score Service.
 
-Three zero-weight metrics (xml_parse_success / render_success /
-code_non_empty) provide diagnostic signals in wandb when training stalls.
+Rule-based bonus rewards (xml_parse_success, render_success, not_truncated)
+provide shaped gradient signals that prevent policy collapse during early
+training. All weights are configurable via TOML reward_weights.
 """
 
 from __future__ import annotations
@@ -16,29 +17,41 @@ import verifiers as vf
 
 from .artifact_manager import ArtifactManager
 from .schema import require_rollout
+from .services.health import ensure_service_ready
 from .services.score.client import ScoreClient
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_REWARD_WEIGHTS: dict[str, float] = {
+    "clip_similarity": 1.0,
+    "xml_parse_success": 0.1,
+    "render_success": 0.1,
+    "not_truncated": 0.1,
+}
+
 
 class BlenderGymRubric(vf.Rubric):
-    """CLIP-similarity reward + format/render/code diagnostics."""
+    """CLIP-similarity reward + rule-based bonus rewards."""
 
     def __init__(
         self,
         score_service_url: str = "http://localhost:8421",
         parser: vf.Parser | None = None,
         artifact_manager: ArtifactManager | None = None,
+        reward_weights: dict[str, float] | None = None,
     ) -> None:
         if artifact_manager is None:
             raise TypeError("artifact_manager is required")
         super().__init__(parser=parser)
         self.score_client = ScoreClient(score_service_url)
+        ensure_service_ready(score_service_url, "score")
         self.artifact_manager = artifact_manager
 
-        self.add_reward_func(self.clip_similarity, weight=1.0)
-        self.add_metric(self.xml_parse_success)
-        self.add_metric(self.render_success)
+        w = {**DEFAULT_REWARD_WEIGHTS, **(reward_weights or {})}
+        self.add_reward_func(self.clip_similarity, weight=w["clip_similarity"])
+        self.add_reward_func(self.xml_parse_success, weight=w["xml_parse_success"])
+        self.add_reward_func(self.render_success, weight=w["render_success"])
+        self.add_reward_func(self.not_truncated, weight=w["not_truncated"])
         self.add_metric(self.code_non_empty)
 
     async def clip_similarity(
@@ -79,6 +92,10 @@ class BlenderGymRubric(vf.Rubric):
         except RuntimeError:
             return 0.0
         return float(rollout.render_success)
+
+    async def not_truncated(self, state: vf.State) -> float:
+        """0.0 if any turn was truncated, 1.0 otherwise."""
+        return 0.0 if state.get("is_truncated") else 1.0
 
     async def code_non_empty(self, completion, parser) -> float:  # type: ignore[override]
         if parser is None:

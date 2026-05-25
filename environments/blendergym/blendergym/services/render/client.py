@@ -12,6 +12,7 @@ from pathlib import Path
 import httpx
 
 from ...render import RenderResult
+from ..health import diagnose_service_down
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,8 @@ class RenderClient:
                 gpu_id=data.get("gpu_id"),
                 code_path=Path(data["code_path"]) if data.get("code_path") else None,
             )
+        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+            raise diagnose_service_down("render", e) from e
         except httpx.HTTPError as e:
             logger.error("Render service error: %s", e)
             return RenderResult(

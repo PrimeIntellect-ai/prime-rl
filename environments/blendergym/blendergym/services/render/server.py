@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import asyncio
 from pathlib import Path
 
 from ..base import BaseService
@@ -33,15 +34,13 @@ class RenderService(BaseService):
         pool_size: int,
         cycles_cfg: dict[str, str | int],
     ):
-        super().__init__("BlenderGym Render Service", gpu_pool)
+        super().__init__("BlenderGym Render Service", gpu_pool, service_id="render")
         self.blender_bin = blender_bin
         self.pool_size = pool_size
         self.cycles_cfg = cycles_cfg
         self.app.add_api_route("/render", self.render, methods=["POST"])
 
     async def on_startup(self) -> None:
-        import asyncio
-
         for k, v in self.cycles_cfg.items():
             os.environ[f"BLENDERGYM_{k.upper()}"] = str(v)
         self.router = SemaphoreRouter(self.gpu_pool, max_concurrent=self.pool_size)
@@ -76,6 +75,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--cycles-samples", type=int, default=8)
     parser.add_argument("--cycles-denoiser", default="OPENIMAGEDENOISE")
     parser.add_argument("--cycles-compute-device", default="OPTIX")
+    parser.add_argument("--log-config", default=None, help="Path to JSON log config")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=getattr(logging, args.log_level.upper()))
@@ -91,7 +91,7 @@ def main(argv: list[str] | None = None) -> None:
             "CYCLES_COMPUTE_DEVICE": args.cycles_compute_device,
         },
     )
-    svc.run(args.port)
+    svc.run(args.port, log_config=args.log_config)
 
 
 if __name__ == "__main__":

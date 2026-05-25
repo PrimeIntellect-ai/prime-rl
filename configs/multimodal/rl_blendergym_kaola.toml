@@ -43,6 +43,7 @@ name = "9b-dp6-bs64-kaola"
 [orchestrator]
 batch_size = 64
 rollouts_per_example = 8
+oversampling_factor = 1.5
 max_async_level = 1
 
 [orchestrator.eval]
@@ -74,6 +75,12 @@ eval_holdout = 5
 render_service_url = "http://localhost:8420"
 score_service_url = "http://localhost:8421"
 render_timeout_s = 600
+
+[orchestrator.train.env.args.reward_weights]
+clip_similarity = 1.0
+xml_parse_success = 0.1
+render_success = 0.1
+not_truncated = 0.1
 
 [[orchestrator.eval.env]]
 id = "blendergym"

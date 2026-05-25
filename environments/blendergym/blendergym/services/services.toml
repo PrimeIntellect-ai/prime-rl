@@ -1,0 +1,28 @@
+# Each [[services]] block defines a sidecar service.
+# launcher.py iterates this list, starts each, and runs a smoke check.
+# Adding a new service = append a [[services]] block here + write server.py.
+
+[[services]]
+name = "render"
+module = "blendergym.services.render.server"
+port = 8420
+health_endpoint = "/health"
+extra_args = [
+    "--blender-bin", "$BLENDER_BIN",
+    "--gpu-pool", "$GPU_POOL",
+    "--cycles-resolution", "256",
+    "--cycles-samples", "8",
+    "--cycles-denoiser", "OPENIMAGEDENOISE",
+    "--cycles-compute-device", "OPTIX",
+]
+
+[[services]]
+name = "score"
+module = "blendergym.services.score.server"
+port = 8421
+health_endpoint = "/health"
+extra_args = [
+    "--gpu-pool", "$GPU_POOL",
+    "--clip-model", "ViT-B-32",
+    "--clip-pretrained", "openai",
+]

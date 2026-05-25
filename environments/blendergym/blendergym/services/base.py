@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import traceback
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
+
+from .health import clear_sentinels, report_crash, report_ready
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +39,10 @@ class BaseGPURouter(ABC):
 class BaseService(ABC):
     """Common FastAPI service scaffolding for GPU-backed services."""
 
-    def __init__(self, name: str, gpu_pool: list[int]):
+    def __init__(self, name: str, gpu_pool: list[int], service_id: str | None = None):
         self.name = name
         self.gpu_pool = gpu_pool
+        self.service_id = service_id or name.lower().replace(" ", "_")
         self.app = FastAPI(title=name)
         self.app.add_api_route("/health", self.health, methods=["GET"])
         self.app.add_event_handler("startup", self._startup)
@@ -62,8 +67,16 @@ class BaseService(ABC):
         }
 
     async def _startup(self):
+        clear_sentinels(self.service_id)
         logger.info("%s starting on GPUs %s", self.name, self.gpu_pool)
-        await self.on_startup()
+        try:
+            await self.on_startup()
+        except Exception:
+            tb = traceback.format_exc()
+            logger.critical("%s startup FAILED:\n%s", self.name, tb)
+            report_crash(self.service_id, tb)
+            raise
+        report_ready(self.service_id, pid=os.getpid())
         logger.info("%s ready", self.name)
 
     async def _shutdown(self):
@@ -90,5 +103,5 @@ class BaseService(ABC):
     def parse_gpu_pool(s: str) -> list[int]:
         return [int(x) for x in s.split(",")]
 
-    def run(self, port: int):
-        uvicorn.run(self.app, host="0.0.0.0", port=port)
+    def run(self, port: int, log_config: str | dict | None = None):
+        uvicorn.run(self.app, host="0.0.0.0", port=port, log_config=log_config)

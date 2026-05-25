@@ -22,3 +22,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["blendergym"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"blendergym/services/services.toml" = "blendergym/services/services.toml"

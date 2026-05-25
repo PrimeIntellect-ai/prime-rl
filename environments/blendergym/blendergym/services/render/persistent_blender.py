@@ -50,12 +50,6 @@ class RenderResponse(BaseModel):
     code_path: str = ""
 
 
-def _blendergym_site_packages() -> str:
-    """Return a PYTHONPATH entry that lets Blender's Python import blendergym."""
-    pkg_root = Path(__file__).resolve().parent.parent.parent.parent
-    return str(pkg_root)
-
-
 def _send_json(sock: socket.socket, data: dict) -> None:
     payload = json.dumps(data).encode("utf-8")
     sock.sendall(struct.pack(_LENGTH_FMT, len(payload)) + payload)
@@ -105,7 +99,6 @@ class PersistentBlender:
             "CUDA_VISIBLE_DEVICES": str(self._gpu_id),
             "BLENDERGYM_WORKER_SOCKET": self._socket_path,
             "BLENDER_USER_RESOURCES": str(self._blender_user),
-            "PYTHONPATH": _blendergym_site_packages(),
             "PYTHONUNBUFFERED": "1",
         }
         return Popen(

@@ -16,6 +16,7 @@ import atexit
 import io
 import json
 import os
+import signal
 import socket
 import struct
 import sys
@@ -24,7 +25,12 @@ import traceback
 
 import bpy
 
-from blendergym.assets.pipeline_render_script import (
+# Make blendergym importable inside Blender's embedded Python, which has its
+# own isolated sys.path.  parents[3] is the package root that contains the
+# ``blendergym/`` directory.
+sys.path.insert(0, str(os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))))
+
+from blendergym.assets.pipeline_render_script import (  # noqa: E402
     _enable_gpu_cycles,
     _render_camera1,
 )
@@ -128,7 +134,11 @@ def _handle_request(msg: dict) -> dict:
 
 
 def main() -> None:
-    # Clean up any residual socket file
+    # Blender's embedded Python does not suppress SIGPIPE (unlike standalone
+    # CPython). Without this, writing to a socket whose peer has disconnected
+    # (e.g. during health-check probes) kills the process outright.
+    signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+
     _cleanup_socket()
     atexit.register(_cleanup_socket)
 
