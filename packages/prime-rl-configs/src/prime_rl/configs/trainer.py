@@ -108,6 +108,25 @@ class BenchConfig(BaseConfig):
     ] = None
 
 
+class IndexCacheConfig(BaseConfig):
+    """Configures the DSA IndexCache: sparse-attention top-k indices computed at one decoder layer are reused by subsequent layers instead of being recomputed."""
+
+    topk_freq: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Recompute DSA top-k indices every N layers; intervening layers reuse the cached indices. ``1`` recomputes every layer (effectively no reuse). Mirrors vLLM's ``index_topk_freq`` HF override.",
+        ),
+    ] = 1
+
+    topk_pattern: Annotated[
+        str | None,
+        Field(
+            description="Optional per-layer schedule that overrides ``topk_freq``. ``'F'`` computes fresh indices for that layer; ``'S'`` reuses the previously cached indices. Length should match the number of decoder layers.",
+        ),
+    ] = None
+
+
 class LoRAConfig(BaseConfig):
     """Configuration for LoRA (Low-Rank Adaptation)."""
 
@@ -345,24 +364,10 @@ class ModelConfig(BaseModelConfig):
         ),
     ] = True
 
-    use_index_cache: Annotated[
-        bool,
+    index_cache: Annotated[
+        IndexCacheConfig | None,
         Field(
-            description="Enable DSA IndexCache by reusing sparse attention top-k indices across layers. Matches vLLM's use_index_cache HF override.",
-        ),
-    ] = False
-
-    index_topk_freq: Annotated[
-        int,
-        Field(
-            description="DSA IndexCache frequency for recomputing top-k indices. 1 computes every layer; 4 computes on the vLLM PR's example schedule.",
-        ),
-    ] = 1
-
-    index_topk_pattern: Annotated[
-        str | None,
-        Field(
-            description="Optional DSA IndexCache per-layer pattern where 'F' computes fresh top-k indices and 'S' reuses the previous full layer.",
+            description="DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices.",
         ),
     ] = None
 
