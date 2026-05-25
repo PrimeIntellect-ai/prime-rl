@@ -87,8 +87,8 @@ jobs:
               ;;
           esac
 
-          if [ -n "$INPUT_TAG" ] && [ "$INPUT_REF" != "main" ]; then
-            echo "custom 'tag' input only allowed when ref=main; got ref='${INPUT_REF}'" >&2
+          if [ -n "$INPUT_TAG" ] && [ "$INPUT_TAG" != "$INPUT_REF" ] && [ "$INPUT_REF" != "main" ]; then
+            echo "custom 'tag' that differs from 'ref' is only allowed when ref=main; got ref='${INPUT_REF}' tag='${INPUT_TAG}'" >&2
             exit 1
           fi
 
