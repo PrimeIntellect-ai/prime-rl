@@ -26,7 +26,7 @@ This page covers the math and the configurable algorithmic components: how off-p
 
 `prime-rl` is asynchronous by default. The trainer and inference always run one step overlapped: while the trainer is producing $\pi_n$ from rollouts at step $n$, inference is already generating the rollouts for step $n+1$ using $\pi_{n-1}$. With matched trainer and inference step times this produces fully-overlapped pipeline parallelism — neither side ever idles.
 
-![Two-Step Off-Policy Training](assets/two-step-off-policy.png)
+![Async pipeline: trainer step n produces $\theta_n$, inference at step n samples with $\theta_{n-1}$](assets/async-pipeline.png)
 
 ### Step semantics
 
