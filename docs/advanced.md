@@ -1,6 +1,6 @@
 # Advanced
 
-This page covers the specialized features layered on top of the core training stack: MoE training and our custom model implementations, vision-language models, LoRA and the multi-run manager, environments installation and authoring, and the small-scale MoE testing workflow used during architecture work.
+This page covers the specialized features layered on top of the core training stack: MoE training and our custom model implementations, vision-language models, LoRA and the multi-run manager, and the small-scale MoE testing workflow used during architecture work.
 
 ## Table of Contents
 
@@ -17,10 +17,6 @@ This page covers the specialized features layered on top of the core training st
   - [Run discovery](#run-discovery)
   - [Eviction](#eviction)
   - [Hooks](#hooks)
-- [Environments](#environments)
-  - [Installing from the Hub](#installing-from-the-hub)
-  - [Authoring locally](#authoring-locally)
-  - [Multi-env training](#multi-env-training)
 - [Testing MoE at small scale](#testing-moe-at-small-scale)
 
 ## MoE models
@@ -199,79 +195,6 @@ Five hook types fire at well-defined points:
 Deletion hooks always run before creation hooks. The creation/deletion hooks run on **all** ranks, so they're the right place for DTensor allocation and other collective work; `torch.dist.barrier()` is safe inside.
 
 For the full API surface, see [`src/prime_rl/trainer/runs/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/src/prime_rl/trainer/runs). The primary use case today is the LoRA-per-run training topology — many lightweight RL runs (e.g. one per environment) sharing a single trainer process group.
-
-## Environments
-
-`prime-rl` trains in any [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) environment. The orchestrator hosts each declared environment as either a local subprocess (`vf.EnvServer` sidecar — default) or a standalone process you launched elsewhere.
-
-### Installing from the Hub
-
-Explore what's available:
-
-```bash
-prime env info <owner>/<name>
-```
-
-Install:
-
-```bash
-prime env install <owner>/<name>
-# or pin a version
-prime env install <owner>/<name>@1.2.3
-```
-
-Verify the import works:
-
-```bash
-uv run python -c "import <name>"
-```
-
-Then reference it in your config by ID:
-
-```toml
-[[orchestrator.train.env]]
-id = "primeintellect/math-env"
-name = "gsm8k"
-args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
-```
-
-### Authoring locally
-
-For local dev or pre-Hub work, install an environment in editable mode:
-
-```bash
-uv pip install -e path/to/my-env
-```
-
-The env exposes a `load_environment(**kwargs)` returning a `vf.Environment` (or v1 `vf.Env`). The `args` field in the orchestrator config is forwarded verbatim as `**kwargs`. See the [verifiers docs](https://docs.primeintellect.ai/verifiers) for environment authoring.
-
-To run an env in an isolated process (e.g. inside a container, with its own conda environment), launch the env server separately and pass its address:
-
-```toml
-[[orchestrator.train.env]]
-id = "my-env"
-address = "tcp://10.0.0.5:5000"
-```
-
-When `address` is set, the orchestrator connects to that ZMQ server rather than spawning a subprocess.
-
-### Multi-env training
-
-You can train on a mixture of environments by listing several `[[orchestrator.train.env]]` tables. Set `ratio` on each to weight sampling; omit `ratio` on all of them to sample uniformly across problems (not envs).
-
-```toml
-[[orchestrator.train.env]]
-id = "math-env"
-name = "gsm8k"
-args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
-ratio = 3
-
-[[orchestrator.train.env]]
-id = "reverse-text"
-ratio = 1
-```
-
-This batches roughly 75% from `gsm8k` and 25% from `reverse-text`. The same applies to `[[orchestrator.eval.env]]` for evaluation mixtures.
 
 ## Testing MoE at small scale
 
