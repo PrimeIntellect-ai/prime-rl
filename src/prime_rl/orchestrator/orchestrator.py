@@ -14,6 +14,7 @@ from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import (
     backfill_rollout_tokens,
+    clear_rollout_routed_experts,
     interleave_rollout,
     offload_images_to_disk,
 )
@@ -512,6 +513,7 @@ async def orchestrate(config: OrchestratorConfig):
                 for r in train_rollouts
             )
         )
+        clear_rollout_routed_experts(train_rollouts)
 
         # Collect results and assign advantages. Metrics are computed over all
         # rollouts; only non-filtered samples are sent to the trainer.
@@ -542,6 +544,7 @@ async def orchestrate(config: OrchestratorConfig):
             rollout_decode_lens.append(rollout_decode_tokens)
             num_prefill_tokens += rollout_prefill_tokens
             num_decode_tokens += rollout_decode_tokens
+        del results
 
         parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
         logger.debug(
@@ -774,7 +777,7 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Free large per-step objects to prevent memory accumulation
         del train_rollouts, train_examples, training_batch
-        del results_df, metrics_df
+        del results_df, metrics_df, filter_df, timing_df
         gc.collect()
         # Return free glibc heap pages to the OS. numpy/pandas allocate array data
         # via malloc (outside Python's allocator), so gc.collect() alone doesn't

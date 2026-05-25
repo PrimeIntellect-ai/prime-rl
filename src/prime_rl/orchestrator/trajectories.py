@@ -440,6 +440,15 @@ def interleave_rollout(
     return [sample for _, sample, _ in active_samples]
 
 
+def clear_rollout_routed_experts(rollouts: list[vf.RolloutOutput]) -> None:
+    """Drop routed-experts sidecars after they have been packed into samples."""
+    for rollout in rollouts:
+        for step in rollout.get("trajectory", []):
+            tokens = step.get("tokens")
+            if tokens is not None:
+                tokens["routed_experts"] = None
+
+
 def _union_step_mm_data(
     prepared_steps: list[dict[str, Any]],
     step_indices: list[int],
