@@ -12,9 +12,8 @@ This page covers workflows for developing on `prime-rl` itself — running the t
 - [Pre-commit hooks](#pre-commit-hooks)
 - [Adding a new architecture](#adding-a-new-architecture)
 - [Debugging MoE](#debugging-moe)
-  - [Build and verify a mini model](#build-and-verify-a-mini-model)
-  - [SFT warmup](#sft-warmup)
-  - [RL on reverse-text](#rl-on-reverse-text)
+  - [Create mini model](#create-mini-model)
+  - [Smoketest training](#smoketest-training)
 
 ## Test suite
 
@@ -93,7 +92,7 @@ ARCH_PRESETS = {
 
 When working on MoE architectures (GLM-4, Kimi, etc.), you can't iterate on a 100B+ model locally. The workflow below builds a ~0.5B model with the same architecture, warms it up with SFT, and runs RL — all on 1–2 GPUs. The goal is catching bugs in modeling code, state-dict conversions, and pipeline integration before scaling.
 
-### Build and verify a mini model
+### Create mini model
 
 ```bash
 uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe
@@ -105,9 +104,9 @@ This creates a ~543M parameter GLM-4 MoE (1024 hidden, 24 layers, 8 experts) wit
 uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe --verify-only
 ```
 
-### SFT warmup
+### Smoketest training
 
-Use the shipped debug MoE SFT config with reverse-text data:
+First warm up the random-weight mini model with SFT on reverse-text so KL divergence becomes meaningful in the RL phase:
 
 ```bash
 uv run sft @ configs/debug/moe/sft/train.toml \
@@ -119,9 +118,9 @@ uv run sft @ configs/debug/moe/sft/train.toml \
   --ckpt.weights
 ```
 
-Loss drops from ~12 to ~2.5. The output won't be coherent, but the model now has a non-trivial distribution so KL divergence becomes meaningful in RL. A pre-built SFT'd checkpoint lives at [samsja/mini-glm-moe](https://huggingface.co/samsja/mini-glm-moe).
+Loss drops from ~12 to ~2.5. The output won't be coherent, but the model now has a non-trivial distribution. A pre-built SFT'd checkpoint lives at [samsja/mini-glm-moe](https://huggingface.co/samsja/mini-glm-moe) if you want to skip this step.
 
-### RL on reverse-text
+Then run the full RL stack on reverse-text:
 
 ```bash
 uv run rl @ configs/ci/integration/reverse_text_moe/start.toml \
