@@ -7,7 +7,6 @@ This page covers the math and the configurable algorithmic components: how off-p
 - [Async / off-policy training](#async--off-policy-training)
   - [Step semantics](#step-semantics)
   - [The default loss](#the-default-loss)
-  - [Tuning `max_async_level`](#tuning-max_async_level)
 - [Loss](#loss)
   - [Default loss](#default-loss)
   - [Custom loss](#custom-loss)
@@ -24,7 +23,7 @@ This page covers the math and the configurable algorithmic components: how off-p
 
 ## Async / off-policy training
 
-`prime-rl` is asynchronous by default. Inference is allowed to generate rollouts using a stale policy that is up to `k` steps behind the trainer, where `k = max_async_level`. Setting `k = 1` (the default) with matched trainer and inference step times produces fully-overlapped pipeline parallelism — neither side ever idles. Bump `k` higher when the weight-broadcast latency exceeds a single trainer step (e.g. cross-WAN decentralized runs) and the extra off-policy drift is acceptable.
+`prime-rl` is asynchronous by default. The trainer and inference always run one step overlapped: while the trainer is producing $\pi_n$ from rollouts at step $n$, inference is already generating the rollouts for step $n+1$ using $\pi_{n-1}$. With matched trainer and inference step times this produces fully-overlapped pipeline parallelism — neither side ever idles.
 
 ![Two-Step Off-Policy Training](assets/two-step-off-policy.png)
 
@@ -33,9 +32,9 @@ This page covers the math and the configurable algorithmic components: how off-p
 At step $n = 1, 2, 3, \dots$:
 
 - **Trainer** produces policy $\pi_n$ with weights $\theta_n$ from rollouts $(x_n, y_n)$.
-- **Inference** produces rollouts $(x_n, y_n)$ from policy $\pi_{\max(0,\,n - k)}$.
+- **Inference** produces rollouts $(x_n, y_n)$ from policy $\pi_{\max(0,\,n-1)}$.
 
-So at step $n$ the gap between the policy being trained and the policy that generated the data is at most $k$ steps. Step indices are 0-indexed so the bound holds at startup.
+Step indices are 0-indexed so the gap holds at startup — inference is exactly one step behind the trainer.
 
 ### The default loss
 
@@ -70,17 +69,6 @@ The knobs (under `[trainer.loss]` with `type = "default"`):
 | `dppo_mask_low` / `dppo_mask_high` | 0.2 / 0.2 | Lower / upper thresholds for DPPO-style token-level masking. |
 | `adv_tau` | 1.0 | Temperature on the advantage term. Set to 0 for pure distillation (no RL signal). |
 | `kl_tau` | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
-
-### Tuning `max_async_level`
-
-| `k` | Behavior |
-|---|---|
-| `0` | Fully synchronous — trainer and inference alternate. Lowest off-policy drift, lowest throughput. |
-| `1` (default) | Pipelined — inference for step $n+1$ runs concurrently with trainer step $n$. Throughput-optimal when step times match. |
-| `2` | Two-step async. Absorbs longer weight-broadcast latency, e.g. cross-WAN decentralized runs. |
-| `≥ 3` | Increasing off-policy drift. Use only with confirmed throughput gain; watch `mismatch_kl/all/mean`. |
-
-NCCL weight broadcast (`weight_broadcast.type = "nccl"`) requires `max_async_level = 1` — the validator will refuse otherwise.
 
 ## Loss
 
