@@ -1,8 +1,9 @@
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
+from renderers import RendererConfig
 
 from prime_rl.configs.shared import (
     HeartbeatConfig,
@@ -22,10 +23,6 @@ from prime_rl.configs.trainer import (
     TokenizerConfig,
 )
 from prime_rl.utils.config import BaseConfig, find_package_resource
-
-if TYPE_CHECKING:
-    # See orchestrator.py for why ``renderers`` is lazy-imported here.
-    from renderers import RendererConfig  # noqa: F401
 
 
 class BaseDataConfig(BaseConfig):
@@ -178,13 +175,7 @@ class SFTConfig(BaseConfig):
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
-    # Field annotation is ``Any`` at runtime so this module imports
-    # without pulling in ``renderers`` (see ``OrchestratorConfig`` for
-    # the full rationale). ``_resolve_renderer`` below lazy-validates
-    # dict input through the typed ``RendererConfig`` discriminated
-    # union. Static type checkers see ``RendererConfig | None`` via the
-    # ``TYPE_CHECKING`` import at the top.
-    renderer: Any = None
+    renderer: RendererConfig | None = None
     """Typed renderer config (``renderers.RendererConfig`` discriminated
     union). When set, SFT tokenizes samples through the ``renderers``
     library (single ``render()`` + ``message_indices`` mask) instead of
@@ -327,26 +318,6 @@ class SFTConfig(BaseConfig):
                     "Tracing more than 10 steps is not recommended as your trace will be massive. Remove this line if you really want to trace more steps."
                 )
         return self
-
-    @model_validator(mode="before")
-    @classmethod
-    def _resolve_renderer(cls, data: Any) -> Any:
-        """Lazy-validate the ``renderer`` field.
-
-        Mirrors ``OrchestratorConfig._resolve_renderer`` (see there for
-        the slim-install rationale). SFT's default is ``None`` (legacy
-        tokenization path), so an absent key needs no fill-in — only
-        dict input must be coerced through the discriminated union.
-        """
-        if not isinstance(data, dict):
-            return data
-        value = data.get("renderer")
-        if isinstance(value, dict):
-            from pydantic import TypeAdapter
-            from renderers import RendererConfig as _RC
-
-            data["renderer"] = TypeAdapter(_RC).validate_python(value)
-        return data
 
     @model_validator(mode="after")
     def validate_renderer_vs_vlm(self):
