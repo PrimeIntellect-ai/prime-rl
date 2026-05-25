@@ -31,6 +31,10 @@ env:
   BUILD_TAG: ${{ github.event.release.tag_name || inputs.tag || '' }}
   BUILD_PLATFORMS: ${{ inputs.platforms || 'both' }}
 
+concurrency:
+  group: build-image-${{ github.event.release.tag_name || inputs.tag || inputs.ref || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   prepare:
     name: Prepare build
@@ -189,6 +193,7 @@ jobs:
   manifest:
     name: Create multi-arch manifest
     needs: [prepare, build]
+    if: needs.prepare.outputs.platforms == 'both'
     environment: ghcr-publish
     runs-on: ubuntu-latest
     permissions:
