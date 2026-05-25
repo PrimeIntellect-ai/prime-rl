@@ -79,6 +79,19 @@ jobs:
           INPUT_TAG: ${{ env.BUILD_TAG }}
           PLATFORMS: ${{ env.BUILD_PLATFORMS }}
         run: |
+          case "$INPUT_REF" in
+            main|v[0-9]*|*.dev[0-9]*) ;;
+            *)
+              echo "ref '${INPUT_REF}' not allowed for ghcr publish (must be main, v*, or *.dev*)" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ -n "$INPUT_TAG" ] && [ "$INPUT_REF" != "main" ]; then
+            echo "custom 'tag' input only allowed when ref=main; got ref='${INPUT_REF}'" >&2
+            exit 1
+          fi
+
           raw_tag="$INPUT_TAG"
           if [ -z "$raw_tag" ]; then
             raw_tag="$INPUT_REF"
@@ -99,6 +112,7 @@ jobs:
   build:
     name: Build and push (${{ matrix.suffix }})
     needs: prepare
+    environment: ghcr-publish
     strategy:
       fail-fast: true
       matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
@@ -175,6 +189,7 @@ jobs:
   manifest:
     name: Create multi-arch manifest
     needs: [prepare, build]
+    environment: ghcr-publish
     runs-on: ubuntu-latest
     permissions:
       packages: write
