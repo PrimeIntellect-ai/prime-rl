@@ -140,16 +140,13 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
     num_infer_gpus: int = 1
     """GPUs allocated to inference."""
 
-    num_teacher_gpus: int | None = None
-    """GPUs allocated to teacher inference (None disables the teacher server)."""
-
     @model_validator(mode="after")
     def validate_gpu_count(self):
-        total = self.num_train_gpus + self.num_infer_gpus + (self.num_teacher_gpus or 0)
+        total = self.num_train_gpus + self.num_infer_gpus
         if total > self.gpus_per_node:
             raise ValueError(
-                f"Total GPU count ({total} = {self.num_train_gpus} train + {self.num_infer_gpus} infer"
-                f" + {self.num_teacher_gpus or 0} teacher) exceeds gpus_per_node ({self.gpus_per_node})."
+                f"Total GPU count ({total} = {self.num_train_gpus} train + {self.num_infer_gpus} infer)"
+                f" exceeds gpus_per_node ({self.gpus_per_node})."
             )
         return self
 
@@ -166,21 +163,12 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     num_infer_replicas: int = Field(1, ge=1)
     """Independent inference replicas. Total inference nodes = ``num_infer_nodes * num_infer_replicas``."""
 
-    num_teacher_nodes: int | None = None
-    """Teacher inference nodes."""
-
     nodes_per_fsdp_group: int | None = None
     """Training nodes per FSDP island. Auto-sets ``trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
 
     @property
     def total_infer_nodes(self) -> int:
         return self.num_infer_nodes * self.num_infer_replicas
-
-    @model_validator(mode="after")
-    def teacher_inference_not_supported(self):
-        if self.num_teacher_nodes is not None:
-            raise ValueError("Teacher inference is not yet supported in multi node deployment.")
-        return self
 
 
 DeploymentConfig: TypeAlias = Annotated[
@@ -195,9 +183,6 @@ class RLConfig(BaseConfig):
 
     inference: InferenceConfig | None = None
     """Inference server configuration. If None, the rl entrypoint will not start an inference server (useful for elastic inference pools or manually started servers)."""
-
-    teacher_inference: InferenceConfig | None = None
-    """Teacher inference server configuration. If None, falls back to the same config as ``inference`` (or a default). Only used when teacher GPUs/nodes are set."""
 
     output_dir: Path = Path("outputs")
     """Output directory. Should be unique per experiment."""
@@ -248,27 +233,6 @@ class RLConfig(BaseConfig):
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
-    @model_validator(mode="before")
-    @classmethod
-    def _stub_orchestrator_teacher_for_auto_setup(cls, data):
-        """When `deployment.num_teacher_gpus > 0` and the user didn't write an
-        `[orchestrator.teacher]` block, inject an empty one so
-        `OrchestratorConfig.validate_training_mode` (which fires during nested
-        validation) doesn't reject `training_mode = "opd"` for "missing teacher".
-        `auto_setup_teacher_inference` (after) then fills in client.base_url and
-        model.name from the auto-launched teacher_inference server."""
-        if not isinstance(data, dict):
-            return data
-        deployment = data.get("deployment")
-        if not isinstance(deployment, dict):
-            return data
-        if not deployment.get("num_teacher_gpus"):
-            return data
-        orch = data.setdefault("orchestrator", {})
-        if isinstance(orch, dict) and "teacher" not in orch and "teacher_model" not in orch:
-            orch["teacher"] = {}
-        return data
-
     @model_validator(mode="after")
     def validate_deployment(self):
         if self.deployment.type == "multi_node":
@@ -286,16 +250,6 @@ class RLConfig(BaseConfig):
                     "Must use fake data (trainer.data.fake or bench = true) when num_infer_nodes = 0, "
                     "since no orchestrator or inference server will be running."
                 )
-        return self
-
-    # TODO: fix this
-    @model_validator(mode="after")
-    def validate_no_teacher_in_multinode(self):
-        if self.deployment.type == "multi_node" and self.teacher_inference is not None:
-            raise ValueError(
-                "Teacher inference is not supported in multi-node deployment. "
-                "The SLURM template only handles inference and training nodes."
-            )
         return self
 
     @model_validator(mode="after")
@@ -485,6 +439,19 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_router_replay_without_kv_offload(self):
+        if (
+            self.trainer.enable_router_replay
+            and self.inference is not None
+            and self.inference.kv_cache_offload is not None
+        ):
+            raise ValueError(
+                "Router replay with inference.kv_cache_offload is not supported. "
+                "External KV cache hits do not carry routed-expert decisions."
+            )
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_deployment(self):
         if self.deployment.type == "single_node":  # single-node
             # set num_train_workers to the number of data replicas
@@ -627,47 +594,6 @@ class RLConfig(BaseConfig):
             host = self.inference.server.host or "localhost"
             port = self.inference.server.port
             client.base_url = [f"http://{host}:{port}/v1"]
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_teacher_inference(self):
-        """Auto-configure teacher inference server and orchestrator teacher_model client."""
-        if self.deployment.type != "single_node":
-            return self
-        if self.deployment.num_teacher_gpus is None or self.deployment.num_teacher_gpus == 0:
-            return self
-
-        import copy
-
-        from prime_rl.configs.orchestrator import RolloutModelConfig
-
-        if self.teacher_inference is None:
-            if self.inference is None:
-                self.teacher_inference = InferenceConfig()
-            else:
-                self.teacher_inference = copy.deepcopy(self.inference)
-            self.teacher_inference.server.port = (self.inference.server.port if self.inference else 8000) + 1
-        elif self.inference is not None and self.teacher_inference.server.port == self.inference.server.port:
-            raise ValueError(
-                f"teacher_inference.server.port ({self.teacher_inference.server.port}) conflicts with "
-                f"inference.server.port ({self.inference.server.port}). "
-                "Either use different ports or let teacher_inference be auto-configured."
-            )
-
-        tp = self.teacher_inference.parallel.tp
-        num_teacher_gpus = self.deployment.num_teacher_gpus
-        if num_teacher_gpus != self.teacher_inference.parallel.dp * tp:
-            assert num_teacher_gpus % tp == 0, "Number of teacher GPUs must be divisible by tensor parallel size"
-            assert num_teacher_gpus > 0, "num_teacher_gpus cannot be zero"
-            self.teacher_inference.parallel.dp = num_teacher_gpus // tp
-
-        if self.orchestrator.teacher is None:
-            self.orchestrator.teacher = RolloutModelConfig()
-        host = self.teacher_inference.server.host or "localhost"
-        port = self.teacher_inference.server.port
-        self.orchestrator.teacher.client.base_url = [f"http://{host}:{port}/v1"]
-        self.orchestrator.teacher.model.name = self.teacher_inference.model.name
-
         return self
 
     @model_validator(mode="after")

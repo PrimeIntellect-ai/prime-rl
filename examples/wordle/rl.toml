@@ -16,7 +16,7 @@ name = "PrimeIntellect/Qwen3-1.7B-Wordle-SFT"
 
 [orchestrator]
 batch_size = 1024
-rollouts_per_example = 16
+group_size = 16
 
 [[orchestrator.train.env]]
 id = "primeintellect/wordle"

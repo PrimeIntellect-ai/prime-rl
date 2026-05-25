@@ -31,7 +31,6 @@ RL_SBATCH = "rl.sbatch"
 TRAINER_TOML = "trainer.toml"
 ORCHESTRATOR_TOML = "orchestrator.toml"
 INFERENCE_TOML = "inference.toml"
-TEACHER_INFERENCE_TOML = "teacher_inference.toml"
 
 
 def get_physical_gpu_ids() -> list[int]:
@@ -67,11 +66,6 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
         with open(output_dir / INFERENCE_TOML, "wb") as f:
             tomli_w.dump(config.inference.model_dump(exclude=exclude_inference, exclude_none=True, mode="json"), f)
 
-    teacher_inference = getattr(config, "teacher_inference", None)
-    if teacher_inference is not None:
-        with open(output_dir / TEACHER_INFERENCE_TOML, "wb") as f:
-            tomli_w.dump(teacher_inference.model_dump(exclude_none=True, mode="json"), f)
-
 
 def rl_local(config: RLConfig):
     assert config.deployment.type == "single_node"
@@ -95,11 +89,8 @@ def rl_local(config: RLConfig):
     infer_local_gpu_ids = list(range(gpu_offset, gpu_offset + num_infer_gpus))
     gpu_offset += num_infer_gpus
     trainer_local_gpu_ids = list(range(gpu_offset, gpu_offset + config.deployment.num_train_gpus))
-    gpu_offset += config.deployment.num_train_gpus
-    num_teacher_gpus = config.deployment.num_teacher_gpus or 0
-    teacher_local_gpu_ids = list(range(gpu_offset, gpu_offset + num_teacher_gpus)) if num_teacher_gpus > 0 else []
 
-    total_requested_gpus = num_infer_gpus + config.deployment.num_train_gpus + num_teacher_gpus
+    total_requested_gpus = num_infer_gpus + config.deployment.num_train_gpus
     physical_gpu_ids = get_physical_gpu_ids()
     if total_requested_gpus > len(physical_gpu_ids):
         raise ValueError(
@@ -111,7 +102,6 @@ def rl_local(config: RLConfig):
 
     infer_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in infer_local_gpu_ids]
     trainer_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in trainer_local_gpu_ids]
-    teacher_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in teacher_local_gpu_ids]
 
     start_command = sys.argv
     logger.info("Starting RL run")
@@ -194,44 +184,12 @@ def rl_local(config: RLConfig):
                 "will hang waiting for it."
             )
 
-        # Optionally, start teacher inference process
-        if config.teacher_inference:
-            if not teacher_gpu_ids:
-                raise ValueError(
-                    "teacher_inference is configured but deployment.num_teacher_gpus is not set. "
-                    "Either set deployment.num_teacher_gpus to start a teacher inference server, "
-                    "or omit teacher_inference and configure orchestrator.teacher to use an existing server."
-                )
-
-            teacher_inference_cmd = ["inference", "@", (config_dir / TEACHER_INFERENCE_TOML).as_posix()]
-            logger.info(f"Starting teacher inference process on GPU(s) {' '.join(map(str, teacher_gpu_ids))}")
-            logger.debug(f"Teacher inference start command: {' '.join(teacher_inference_cmd)}")
-            with open(log_dir / "teacher_inference.log", "w") as log_file:
-                teacher_inference_process = Popen(
-                    teacher_inference_cmd,
-                    env={
-                        **os.environ,
-                        "CUDA_VISIBLE_DEVICES": ",".join(map(str, teacher_gpu_ids)),
-                    },
-                    stdout=log_file,
-                    stderr=log_file,
-                )
-            processes.append(teacher_inference_process)
-
-            # Start monitoring thread
-            stop_event = Event()
-            stop_events["teacher_inference"] = stop_event
-            monitor_thread = Thread(
-                target=monitor_process,
-                args=(teacher_inference_process, stop_event, error_queue, "teacher_inference"),
-                daemon=True,
-            )
-            monitor_thread.start()
-            monitor_threads.append(monitor_thread)
-        elif config.orchestrator.teacher:
-            logger.warning(
-                "No teacher_inference config specified, skipping starting teacher inference server. "
-                "Is your teacher inference server running? Make sure orchestrator.teacher is configured."
+        if config.orchestrator.teacher:
+            logger.info(
+                "orchestrator.teacher is configured - the rl entrypoint does not start teacher inference "
+                "servers. Make sure your teacher endpoint at "
+                f"{', '.join(config.orchestrator.teacher.client.base_url)} is running before the "
+                "orchestrator starts, otherwise rollouts will hang."
             )
 
         # Start orchestrator process
@@ -434,7 +392,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             num_infer_nodes=config.deployment.total_infer_nodes,
             nodes_per_infer_replica=config.deployment.num_infer_nodes,
             num_infer_replicas=config.deployment.num_infer_replicas,
-            num_teacher_nodes=config.deployment.num_teacher_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
             router_port=getattr(config.inference.deployment, "router_port", 8000) if config.inference else 8000,
             backend_port=getattr(config.inference.deployment, "backend_port", 8100) if config.inference else 8100,

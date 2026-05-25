@@ -9,7 +9,7 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [orchestrator]
 batch_size = 256
-rollouts_per_example = 8
+group_size = 8
 
 [[orchestrator.train.env]]
 id = "math-env"
@@ -34,7 +34,7 @@ interval = 50
 id = "aime2024"
 name = "aime2024"
 num_examples = 30
-rollouts_per_example = 4
+group_size = 4
 
 [trainer.model]
 seq_len = 4096

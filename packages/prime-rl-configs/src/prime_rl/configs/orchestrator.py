@@ -197,7 +197,7 @@ class EnvConfig(BaseConfig):
     ratio: float | None = Field(None, gt=0)
     """Sampling weight for this environment in the buffer. When None for all envs, samples uniformly across all available problems. When set, must be set on all envs — values are relative weights normalized to probabilities (e.g. [1, 1] and [0.5, 0.5] are equivalent)."""
 
-    max_retries: int = Field(0, ge=0)
+    max_retries: int = Field(3, ge=0)
     """Times the env server retries a failed rollout before returning an error."""
 
     max_total_completion_tokens: int = -1
@@ -205,6 +205,9 @@ class EnvConfig(BaseConfig):
 
     timeout: float | None = Field(None, validation_alias=AliasChoices("timeout", "timeout_seconds"))
     """Per-rollout wall-clock timeout in seconds. None disables."""
+
+    state_columns: list[str] = []
+    """Extra ``State`` fields to persist into the saved rollout records (in addition to the always-saved ``trajectory`` and ``sampling_args``). Values must be JSON-serializable."""
 
     @property
     def stripped_id(self) -> str:
@@ -247,8 +250,8 @@ class EvalEnvConfig(EnvConfig):
     num_examples: int = -1
     """Eval examples to sample from the dataset. ``-1`` uses all available examples."""
 
-    rollouts_per_example: int = Field(1, ge=1)
-    """Rollouts generated per example. Used for pass@k estimation (e.g. ``rollouts_per_example=8`` enables pass@1 through pass@8)."""
+    group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
+    """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8)."""
 
     interval: int = Field(100, ge=1)
     """Per-env eval interval. If unset, inherits from the group-level eval interval."""
@@ -264,7 +267,7 @@ class TrainConfig(BaseConfig):
     num_workers: int | Literal["auto"] = "auto"
     """Default worker processes for env servers. Can be overridden per env."""
 
-    max_retries: int = Field(0, ge=0)
+    max_retries: int = Field(3, ge=0)
     """Default retries for failed rollouts. Can be overridden per env."""
 
     @model_validator(mode="after")
@@ -313,13 +316,13 @@ class EvalConfig(BaseConfig):
     num_examples: int = -1
     """Default eval examples per environment. ``-1`` uses all. Can be overridden per env."""
 
-    rollouts_per_example: int = Field(1, ge=1)
+    group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Default rollouts per example. Can be overridden per env."""
 
     num_workers: int | Literal["auto"] = "auto"
     """Default worker processes for env servers. Can be overridden per env."""
 
-    max_retries: int = Field(0, ge=0)
+    max_retries: int = Field(3, ge=0)
     """Default retries for failed rollouts. Can be overridden per env."""
 
     interval: int = Field(100, ge=1)
@@ -327,7 +330,7 @@ class EvalConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling, num_workers, max_retries, num_examples, rollouts_per_example, and interval. Then resolve auto num_workers."""
+        """Resolve per-env overrides: inherit group-level sampling, num_workers, max_retries, num_examples, group_size, and interval. Then resolve auto num_workers."""
         group_sampling = self.sampling.model_dump()
         for env in self.env:
             if "sampling" not in env.model_fields_set:
@@ -337,20 +340,20 @@ class EvalConfig(BaseConfig):
                 env.sampling = EvalSamplingConfig(**merged)
             if "num_examples" not in env.model_fields_set:
                 env.num_examples = self.num_examples
-            if "rollouts_per_example" not in env.model_fields_set:
-                env.rollouts_per_example = self.rollouts_per_example
+            if "group_size" not in env.model_fields_set:
+                env.group_size = self.group_size
             if "interval" not in env.model_fields_set:
                 env.interval = self.interval
             if "num_workers" not in env.model_fields_set:
                 env.num_workers = self.num_workers
             if "max_retries" not in env.model_fields_set:
                 env.max_retries = self.max_retries
-            # Resolve auto num_workers now that num_examples and rollouts_per_example are set
+            # Resolve auto num_workers now that num_examples and group_size are set
             if env.num_workers == "auto":
                 if env.num_examples == -1:
                     env.num_workers = 4
                 else:
-                    max_concurrent = env.num_examples * env.rollouts_per_example
+                    max_concurrent = env.num_examples * env.group_size
                     env.num_workers = max(1, math.ceil(max_concurrent / 256))
         return self
 
@@ -619,7 +622,7 @@ class OrchestratorConfig(BaseConfig):
     max_inflight_rollouts: int | None = Field(None, ge=1)
     """Maximum number of rollouts kept in-flight. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset)."""
 
-    rollouts_per_example: int = Field(1, ge=1)
+    group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Output sequences returned per example during training."""
 
     seq_len: int = 2048
@@ -634,9 +637,6 @@ class OrchestratorConfig(BaseConfig):
 
     max_off_policy_steps: int = Field(8, ge=0)
     """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
-
-    max_error_reschedule_attempts: int | None = Field(3, ge=1)
-    """The group is dropped from the current step's batch once this many of its dispatch rounds have returned errored or empty rollouts (the trainer proceeds with the rollouts from other groups). Counts rounds, not individual rollouts: a non-group-scoring env that dispatches ``rollouts_per_example`` rollouts at once still only counts one round per failed batch. None retries indefinitely. Useful for unblocking single-example hangs in agent envs."""
 
     max_async_level: int = Field(1, ge=0)
     """Maximum steps inference can be ahead of training. ``0`` degenerates to synchronous on-policy RL; ``≥1`` overlaps training and inference."""
@@ -680,22 +680,34 @@ class OrchestratorConfig(BaseConfig):
         if not isinstance(data, dict):
             return data
 
+        def deep_merge(dst: dict, src: dict) -> None:
+            """In-place recursive merge of ``src`` into ``dst``. ``src`` wins at the leaf."""
+            for k, v in src.items():
+                if isinstance(v, dict) and isinstance(dst.get(k), dict):
+                    deep_merge(dst[k], v)
+                else:
+                    dst[k] = v
+
         # 1. Re-nest top-level [orchestrator.client] under student.client.
-        if "client" in data:
+        legacy_client = data.pop("client", None)
+        if isinstance(legacy_client, dict):
             student = data.setdefault("student", {})
-            if isinstance(student, dict) and "client" not in student:
-                student["client"] = data.pop("client")
+            if isinstance(student, dict):
+                deep_merge(student.setdefault("client", {}), legacy_client)
+            else:
+                # Mismatched types - put it back and let pydantic surface the error.
+                data["client"] = legacy_client
 
         # 2. Consolidate the legacy `model` alias into `student` so the
-        # flat-layout fix-up below sees a single target.
+        # flat-layout fix-up below sees a single target. Deep-merge with the
+        # legacy keys winning so a CLI `--model.<k>` overrides TOML `student.model.<k>`.
         legacy_model = data.pop("model", None)
         if legacy_model is not None:
             existing = data.get("student")
             if existing is None:
                 data["student"] = legacy_model
             elif isinstance(existing, dict) and isinstance(legacy_model, dict):
-                for k, v in legacy_model.items():
-                    existing.setdefault(k, v)
+                deep_merge(existing, legacy_model)
             else:
                 # Mismatched types - put it back and let pydantic surface the error.
                 data["model"] = legacy_model
@@ -748,7 +760,7 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_session_headers(self):
         """Ensure X-Session-ID header is always set for sticky DP-aware routing at the inference router."""
-        self.student.client.extra_headers_from_state.setdefault("X-Session-ID", "example_id")
+        self.student.client.extra_headers_from_state.setdefault("X-Session-ID", "trajectory_id")
         return self
 
     @model_validator(mode="after")
@@ -895,11 +907,11 @@ class OrchestratorConfig(BaseConfig):
                 raise ValueError("max_inflight_rollouts must be set when token_batch_size is set")
         else:
             assert self.batch_size is not None
-            if self.batch_size % self.rollouts_per_example != 0:
+            if self.batch_size % self.group_size != 0:
                 raise ValueError("Batch size must be divisible by the number of samples per problem")
             oversampling_factor = self.oversampling_factor if self.oversampling_factor is not None else 1.0
             resolved_max_inflight_rollouts = max(
-                self.rollouts_per_example,
+                self.group_size,
                 int(self.batch_size * oversampling_factor),
             )
             if self.max_inflight_rollouts is not None and self.oversampling_factor is not None:
@@ -909,7 +921,7 @@ class OrchestratorConfig(BaseConfig):
             if self.max_inflight_rollouts is None:
                 self.max_inflight_rollouts = resolved_max_inflight_rollouts
 
-        if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.rollouts_per_example:
+        if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.group_size:
             raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")
 
         # Resolve train env num_workers from max_inflight_rollouts

@@ -35,6 +35,7 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_left,
     shift_tensor_right,
 )
+from prime_rl.trainer.rl.token_export import setup_token_exporter
 from prime_rl.trainer.model import (
     forward,
     setup_tokenizer,
@@ -238,6 +239,8 @@ def train(config: TrainerConfig):
             tokenizer,
             config.rollout_transport,
         )
+
+    token_exporter = setup_token_exporter(config, parallel_dims, world, logger)
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
@@ -500,6 +503,8 @@ def train(config: TrainerConfig):
                 for env_name, indices in env_to_indices.items():
                     tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
+            token_exporter.export(progress.step, micro_step, micro_batch, out, response_lengths, config.loss)
+
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)
                 for k, v in load_balance_stats.items():
@@ -516,6 +521,8 @@ def train(config: TrainerConfig):
                 micro_step_message += f" | Mismatch KL: {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
+            if "routing_confidence" in tensors:
+                micro_step_message += f" | Routing Conf.: {tensors['routing_confidence'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
@@ -575,6 +582,8 @@ def train(config: TrainerConfig):
         step_message += f" | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
         if "max_vio/mean" in tensor_stats:
             step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
+        if "routing_confidence/mean" in tensor_stats:
+            step_message += f" | Routing Conf.: {tensor_stats['routing_confidence/mean']:.4f}"
         logger.success(step_message)
 
         # Log performance metrics
@@ -677,6 +686,8 @@ def train(config: TrainerConfig):
         logger.info(f"Saving trace to {trace_file}")
         prof.export_chrome_trace(trace_file)
         logger.info(f"Saved trace to {trace_file}")
+
+    token_exporter.close()
 
     # Write final checkpoint (only for single-run mode; multi-run checkpoints are managed by MultiCheckpointManager)
     if config.max_concurrent_runs == 1 and ckpt_manager is not None:

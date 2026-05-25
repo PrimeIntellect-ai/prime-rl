@@ -1,7 +1,7 @@
-import json
 import logging
 from pathlib import Path
 
+import orjson
 import verifiers as vf
 from verifiers.utils.save_utils import make_serializable
 
@@ -82,11 +82,11 @@ def get_tool_response_len(output: vf.RolloutOutput) -> int:
 def save_rollouts(rollouts: list[vf.RolloutOutput], path: Path, exclude_keys: set[str] | None = None) -> None:
     """Save rollouts to a JSONL file using verifiers serialization."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
+    opts = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
+    with open(path, "wb") as f:
         for rollout in rollouts:
             row = {k: v for k, v in rollout.items() if k not in exclude_keys} if exclude_keys else rollout
-            json.dump(row, f, default=make_serializable)
-            f.write("\n")
+            f.write(orjson.dumps(row, default=make_serializable, option=opts))
 
 
 def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):
