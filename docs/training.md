@@ -143,7 +143,12 @@ If both columns are present, `messages` takes precedence.
 
 **Tool definitions.** For tool-use SFT, add a `tools` column (OpenAI function-calling format) or `tool_defs` (verifiers rollout format). Each row's value can be either a list of dicts or a JSON-encoded string of a list — both are accepted, and `tool_defs` rows are auto-converted to OAI shape before being passed into the chat template's `tools=...` argument. The `chat_template_kwargs` column, if present, is forwarded verbatim into `apply_chat_template`.
 
-**Chat-template prefix property.** Multi-turn SFT requires that tokenizing the first _k_ turns of a conversation be a strict prefix of tokenizing all _n ≥ k_ turns. Qwen3's default template _violates_ this (it strips past `<think>` blocks), so use either the prime-rl–patched checkpoints (e.g. `PrimeIntellect/Qwen3-0.6B`) or a custom chat template that preserves thinking. See [Algorithms § Multi-turn trajectories](algorithms.md#multi-turn-trajectories).
+**Position-dependent chat templates.** Multi-turn SFT under the default tokenization path (`build_incremental_token_mask`) requires that tokenizing the first _k_ turns of a conversation be a strict prefix of tokenizing all _n ≥ k_ turns. Qwen3's upstream template _violates_ this — it strips past `<think>` blocks across user turns, silently corrupting the loss mask. Two fixes:
+
+- **Enable the renderer** (`use_renderer = true`, recommended). The [`renderers`](algorithms.md#renderers) package owns tokenization end-to-end and is robust to position-dependent templates. Hand-coded renderers ship for Qwen3, Qwen3.5, GLM-5, GLM-4.5, Kimi K2/K2.5, MiniMax M2, DeepSeek V3, Nemotron 3, GPT-OSS. Not supported for VLMs.
+- **Patched chat template** — the prime-rl–patched checkpoints (e.g. `PrimeIntellect/Qwen3-0.6B`, used in `examples/reverse_text/sft.toml`) ship a chat template that preserves thinking. Or supply your own.
+
+See [Algorithms § Multi-turn trajectories](algorithms.md#multi-turn-trajectories) for the full picture.
 
 ### Launch
 
