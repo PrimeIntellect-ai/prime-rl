@@ -66,6 +66,8 @@ envs = [
     "code-env",
     "color-codeword",
     "deepdive",
+    "forth-lang",
+    "general-agent",
     "gpqa",
     "hle",
     "ifeval",
@@ -87,6 +89,7 @@ envs = [
     "simpleqa-verified",
     "tau2-bench",
     "wiki-search",
+    "wordle",
 ]
 disagg = [
     "deep-ep ; platform_machine == 'x86_64'",
@@ -132,11 +135,13 @@ members = [
     "deps/verifiers/environments/math_python",
     "deps/verifiers/environments/reverse_text",
     "deps/verifiers/environments/wiki_search",
+    "deps/verifiers/environments/wordle",
     "deps/research-environments/environments/aime2024",
     "deps/research-environments/environments/aime2025",
     "deps/research-environments/environments/code_env",
     "deps/research-environments/environments/color_codeword",
     "deps/research-environments/environments/deepdive",
+    "deps/research-environments/environments/general_agent",
     "deps/research-environments/environments/gpqa",
     "deps/research-environments/environments/hle",
     "deps/research-environments/environments/ifeval",
@@ -183,6 +188,11 @@ fastokens = false
 flash_attn_3 = false
 # PrimeIntellect-published on PyPI (trusted publisher)
 prime = false
+# renderers (workspace member) requires fastokens>=0.2.0 (published
+# 2026-05-17, inside the rolling 7-day exclude-newer window). Renderers
+# overrides this locally but the override doesn't propagate to the
+# workspace; mirror it here.
+fastokens = false
 prime-sandboxes = false
 prime-tunnel = false
 prime-evals = false
@@ -203,6 +213,7 @@ alphabet-sort = { workspace = true }
 code-env = { workspace = true }
 color-codeword = { workspace = true }
 deepdive = { workspace = true }
+general-agent = { workspace = true }
 gpqa = { workspace = true }
 hle = { workspace = true }
 ifeval = { workspace = true }
@@ -224,6 +235,10 @@ science-env = { workspace = true }
 simpleqa-verified = { workspace = true }
 tau2-bench = { workspace = true }
 wiki-search = { workspace = true }
+wordle = { workspace = true }
+# forth-lang lives outside the prime-rl repo (in research-prod), so it
+# can't be a workspace member. Path-source keeps it editable + locked.
+forth-lang = { path = "/home/sebastian/research-prod/research-environments/environments/forth_lang", editable = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
