@@ -446,7 +446,7 @@ def test_shared_output_dir_propagates_through_cli(tmp_path):
 
 
 def test_orchestrator_renderer_auto_rejects_unmapped_model():
-    """use_renderer=True with renderer.name='auto' must reject models not in MODEL_RENDERER_MAP."""
+    """use_renderer=True with renderer.settings.name='auto' must reject models not in MODEL_RENDERER_MAP."""
     with pytest.raises(ValidationError, match="silently fall back to DefaultRenderer"):
         OrchestratorConfig.model_validate({"model": {"name": "not-a-real-org/not-a-real-model"}})
 
@@ -455,18 +455,18 @@ def test_orchestrator_renderer_auto_accepts_mapped_model():
     """The default Qwen model is in MODEL_RENDERER_MAP and should validate cleanly."""
     config = OrchestratorConfig.model_validate({"model": {"name": "Qwen/Qwen3-0.6B"}})
     assert config.use_renderer is True
-    assert config.renderer.name == "auto"
+    assert config.renderer.settings.name == "auto"
 
 
 def test_orchestrator_explicit_renderer_skips_unmapped_check():
-    """Explicit renderer.name bypasses the auto-resolution check — user opted in."""
+    """Explicit renderer.settings.name bypasses the auto-resolution check — user opted in."""
     config = OrchestratorConfig.model_validate(
         {
             "model": {"name": "not-a-real-org/not-a-real-model"},
-            "renderer": {"name": "qwen3"},
+            "renderer": {"settings": {"name": "qwen3"}},
         }
     )
-    assert config.renderer.name == "qwen3"
+    assert config.renderer.settings.name == "qwen3"
 
 
 def test_orchestrator_use_renderer_false_skips_unmapped_check():
@@ -481,15 +481,15 @@ def test_orchestrator_use_renderer_false_skips_unmapped_check():
 
 
 def test_orchestrator_explicit_default_renderer_with_unmapped_model():
-    """renderer.name='default' is an explicit opt-in to DefaultRenderer and must pass."""
+    """renderer.settings.name='default' is an explicit opt-in to DefaultRenderer and must pass."""
     config = OrchestratorConfig.model_validate(
         {
             "model": {"name": "not-a-real-org/not-a-real-model"},
-            "renderer": {"name": "default", "tool_parser": "qwen3"},
+            "renderer": {"settings": {"name": "default", "tool_parser": "qwen3"}},
         }
     )
-    assert config.renderer.name == "default"
-    assert config.renderer.tool_parser == "qwen3"
+    assert config.renderer.settings.name == "default"
+    assert config.renderer.settings.tool_parser == "qwen3"
 
 
 def test_shared_model_name_resolves_inference_parsers():

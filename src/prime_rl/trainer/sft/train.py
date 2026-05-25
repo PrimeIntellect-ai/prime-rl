@@ -161,14 +161,7 @@ def train(config: SFTConfig):
 
     renderer = None
     if config.use_renderer:
-        renderer = create_renderer(
-            tokenizer,
-            renderer=config.renderer.name,
-            tool_parser=config.renderer.tool_parser,
-            reasoning_parser=config.renderer.reasoning_parser,
-            preserve_all_thinking=config.renderer.preserve_all_thinking,
-            preserve_thinking_between_tool_calls=config.renderer.preserve_thinking_between_tool_calls,
-        )
+        renderer = create_renderer(tokenizer, config.renderer.settings)
         if isinstance(renderer, DefaultRenderer):
             raise ValueError(
                 f"use_renderer=True for {config.tokenizer.name!r} resolved to DefaultRenderer. "

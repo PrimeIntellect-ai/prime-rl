@@ -50,6 +50,8 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
 
 
 def test_setup_clients_assigns_renderer_and_dp_rank_headers():
+    from renderers import Qwen3VLRendererConfig
+
     client_config = ClientConfig(
         base_url=["http://worker-a:8000/v1"],
         api_key_var="PRIME_API_KEY",
@@ -58,14 +60,15 @@ def test_setup_clients_assigns_renderer_and_dp_rank_headers():
         extra_headers_from_state={"X-Session-ID": "session_id"},
     )
 
+    renderer_settings = Qwen3VLRendererConfig()
     clients = setup_clients(
         client_config,
         client_type="renderer",
-        renderer_name="qwen3_vl",
+        renderer_config=renderer_settings,
     )
 
     assert [client.client_type for client in clients] == ["renderer", "renderer"]
-    assert [client.renderer for client in clients] == ["qwen3_vl", "qwen3_vl"]
+    assert [client.renderer_config for client in clients] == [renderer_settings, renderer_settings]
     assert [client.renderer_model_name for client in clients] == [None, None]
     assert [client.api_base_url for client in clients] == ["http://worker-a:8000/v1"] * 2
     assert [client.extra_headers["X-data-parallel-rank"] for client in clients] == ["0", "1"]
@@ -74,6 +77,8 @@ def test_setup_clients_assigns_renderer_and_dp_rank_headers():
 
 
 def test_setup_clients_assigns_renderer_model_name():
+    from renderers import Qwen3VLRendererConfig
+
     client_config = ClientConfig(
         base_url=["http://worker-a:8000/v1"],
         api_key_var="PRIME_API_KEY",
@@ -82,7 +87,7 @@ def test_setup_clients_assigns_renderer_model_name():
     clients = setup_clients(
         client_config,
         client_type="renderer",
-        renderer_name="qwen3_vl",
+        renderer_config=Qwen3VLRendererConfig(),
         renderer_model_name="Qwen/Qwen3-VL-4B-Instruct",
     )
 
@@ -101,8 +106,6 @@ def test_setup_clients_preserves_chat_client_defaults():
         vf.ClientConfig(
             client_idx=0,
             client_type="openai_chat_completions",
-            renderer="auto",
-            renderer_model_name=None,
             api_key_var="PRIME_API_KEY",
             api_base_url="http://worker-a:8000/v1",
             timeout=client_config.timeout,

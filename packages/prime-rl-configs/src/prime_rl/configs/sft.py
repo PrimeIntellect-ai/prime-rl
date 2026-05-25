@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
+from renderers import AutoRendererConfig
 
 from prime_rl.configs.shared import (
     HeartbeatConfig,
@@ -351,24 +352,15 @@ class SFTConfig(BaseConfig):
         if self.use_renderer:
             return self
 
-        renderer_args_set = []
-        if self.renderer.name != "auto":
-            renderer_args_set.append(f"renderer.name={self.renderer.name!r}")
-        if self.renderer.tool_parser is not None:
-            renderer_args_set.append(f"renderer.tool_parser={self.renderer.tool_parser!r}")
-        if self.renderer.reasoning_parser is not None:
-            renderer_args_set.append(f"renderer.reasoning_parser={self.renderer.reasoning_parser!r}")
-        if self.renderer.preserve_all_thinking:
-            renderer_args_set.append(f"renderer.preserve_all_thinking={self.renderer.preserve_all_thinking!r}")
-        if self.renderer.preserve_thinking_between_tool_calls:
-            renderer_args_set.append(
-                f"renderer.preserve_thinking_between_tool_calls={self.renderer.preserve_thinking_between_tool_calls!r}"
-            )
-
-        if renderer_args_set:
+        # Detect "user customized the renderer config" by comparing the
+        # serialized settings to the default ``AutoRendererConfig()``. The
+        # discriminated union flattens to one of many concrete variants
+        # so direct ``isinstance`` checks would need to enumerate them.
+        default_settings = AutoRendererConfig().model_dump()
+        if self.renderer.settings.model_dump() != default_settings:
             raise ValueError(
-                "Renderer-specific args set without use_renderer=True: "
-                f"{', '.join(renderer_args_set)}. Either enable the renderer or remove these knobs."
+                f"renderer.settings is customized ({self.renderer.settings.model_dump_json()}) "
+                "without use_renderer=True. Either enable the renderer or remove the customization."
             )
         return self
 

@@ -3,6 +3,8 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
+from renderers import AutoRendererConfig
+from renderers import RendererConfig as RendererSettings
 
 from prime_rl.utils.config import BaseConfig
 
@@ -85,23 +87,17 @@ class BaseModelConfig(BaseConfig):
 
 
 class RendererConfig(BaseConfig):
-    name: str = "auto"
-    """Renderer used for chat-template tokenization. One of: ``auto`` (detect from tokenizer), ``qwen3``, ``qwen3_vl``, ``qwen3.5``, ``glm5``, ``glm4.5``, ``minimax-m2``, ``deepseek_v3``, ``kimi_k2``, ``kimi_k25``, ``nemotron3``, ``gpt_oss``, ``default``."""
-
-    tool_parser: str | None = None
-    """Tool parser from ``renderers.parsers``. Only consumed by DefaultRenderer; model-specific renderers bake their own parsing in. Options: ``qwen3``, ``qwen3.5``, ``glm``, ``deepseek_v3``."""
-
-    reasoning_parser: str | None = None
-    """Reasoning parser from ``renderers.parsers``. Only consumed by DefaultRenderer. Options: ``think``."""
+    settings: RendererSettings = Field(default_factory=AutoRendererConfig)
+    """Typed renderer config (``renderers.RendererConfig`` discriminated
+    union — one of ``AutoRendererConfig``, ``Qwen35RendererConfig``,
+    ``GLM5RendererConfig``, …). The ``name`` discriminator picks the
+    variant; the rest of the fields are that variant's chat-template
+    kwargs plus the shared ``preserve_*`` flags. Defaults to ``"auto"``,
+    which resolves the renderer from ``tokenizer.name_or_path`` against
+    ``renderers.MODEL_RENDERER_MAP``."""
 
     pool_size: int | None = Field(None, ge=1)
     """Number of renderer slots shared across concurrent rollouts. Bump for long multi-turn prompts where client-side jinja tokenization serializes."""
-
-    preserve_all_thinking: bool = False
-    """Re-emit every past-assistant turn's ``reasoning_content`` between ``<think>``/``</think>`` (or the model's equivalent), even when the chat template would drop it. Strict superset of preserve_thinking_between_tool_calls."""
-
-    preserve_thinking_between_tool_calls: bool = False
-    """Preserve past-assistant ``reasoning_content`` only inside the current tool cycle — the contiguous assistant→tool→…→assistant block after the most recent user message, when that block contains at least one tool response. A new user turn closes the block."""
 
 
 class ElasticConfig(BaseConfig):

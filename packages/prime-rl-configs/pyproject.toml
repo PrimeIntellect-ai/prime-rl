@@ -7,12 +7,12 @@ requires-python = "~=3.12.0"
 dependencies = [
     "pydantic>=1.10.13",
     "prime-pydantic-config>=0.3.0.dev82",
-    # OrchestratorConfig validates renderer.name='auto' against
-    # renderers.base.MODEL_RENDERER_MAP. Renderers itself is light; its only
-    # weighty transitive (transformers) is lazy-imported via the validator,
-    # so plain `from prime_rl.configs.orchestrator import OrchestratorConfig`
-    # still doesn't pull it into sys.modules.
-    "renderers>=0.1.8.dev4",
+    # ``RendererConfig`` composes ``renderers.RendererConfig`` (the typed
+    # discriminated union) as its ``settings`` field. Renderers itself is
+    # light; its only weighty transitive (transformers) is lazy-imported
+    # via the validator, so plain ``from prime_rl.configs.orchestrator import
+    # OrchestratorConfig`` still doesn't pull it into sys.modules.
+    "renderers @ git+https://github.com/PrimeIntellect-ai/renderers@4c9099debbc9bc4fcc3eb6a118bbfa5c364ec395",
     "tomli>=2.2.1",
     "tomli-w>=1.2.0",
 ]

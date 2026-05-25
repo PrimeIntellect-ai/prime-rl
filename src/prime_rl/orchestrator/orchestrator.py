@@ -874,26 +874,15 @@ async def setup_student_inference_pool(
     model_name = config.student.model.name
 
     if config.use_renderer:
-        renderer = create_renderer(
-            tokenizer,
-            renderer=config.renderer.name,
-            tool_parser=config.renderer.tool_parser,
-            reasoning_parser=config.renderer.reasoning_parser,
-            preserve_all_thinking=config.renderer.preserve_all_thinking,
-            preserve_thinking_between_tool_calls=config.renderer.preserve_thinking_between_tool_calls,
-        )
+        renderer = create_renderer(tokenizer, config.renderer.settings)
         logger.info(f"Initialized {type(renderer).__name__} for {model_name}")
         inference_pool = await setup_inference_pool(
             client_config,
             model_name=model_name,
             train_client_type="renderer",
             eval_client_type="openai_chat_completions",
-            renderer_name=config.renderer.name,
-            tool_parser=config.renderer.tool_parser,
-            reasoning_parser=config.renderer.reasoning_parser,
+            renderer_config=config.renderer.settings,
             renderer_pool_size=config.renderer.pool_size,
-            preserve_all_thinking=config.renderer.preserve_all_thinking,
-            preserve_thinking_between_tool_calls=config.renderer.preserve_thinking_between_tool_calls,
         )
         logger.info("Using direct renderer rollout client")
         return renderer, inference_pool
