@@ -46,7 +46,7 @@ max_inflight_activations = 5
 
 [orchestrator]
 batch_size = 128
-rollouts_per_example = 8
+group_size = 8
 
 [orchestrator.train.sampling]
 max_completion_tokens = 2048
@@ -69,7 +69,7 @@ max_completion_tokens = 2048
 [[orchestrator.eval.env]]
 id = "math500"
 num_examples = 30
-rollouts_per_example = 4
+group_size = 4
 
 [inference.parallel]
 tp = 8

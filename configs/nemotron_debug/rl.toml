@@ -45,7 +45,7 @@ freq = 1
 
 [orchestrator]
 batch_size = 512
-rollouts_per_example = 16
+group_size = 16
 
 [orchestrator.train.sampling]
 max_completion_tokens = 4096
@@ -68,7 +68,7 @@ max_completion_tokens = 4096
 [[orchestrator.eval.env]]
 id = "math500"
 num_examples = 30
-rollouts_per_example = 4
+group_size = 4
 
 [inference.parallel]
 tp = 4

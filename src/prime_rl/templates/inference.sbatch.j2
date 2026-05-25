@@ -21,6 +21,10 @@
 #SBATCH --output={{ output_dir }}/job_%j.log
 #SBATCH --error={{ output_dir }}/job_%j.log
 
+# Exit immediately on any failed command so a crash anywhere releases the
+# allocation instead of leaving zombie processes holding nodes.
+set -e
+
 # Configs
 export NUM_NODES={{ num_nodes }}
 export GPUS_PER_NODE={{ gpus_per_node }}
@@ -112,7 +116,11 @@ echo "INFER_URLS=${INFER_URLS}"
 # processes and vLLM/torch IPC files under /dev/shm and /tmp can survive SLURM
 # termination and cause the next launch to hang (e.g. decode engines stuck at
 # "Waiting for READY message from DP Coordinator"). Harmless on clean nodes.
-srun bash -c '
+#
+# `bash -s` with a heredoc on stdin keeps the script body out of every bash
+# / srun argv — otherwise `pkill -f "[v]llm"` self-matches the cleanup procs
+# because the surviving literal `vllm` strings below appear in the cmdline.
+srun bash -s <<'CLEANUP_SH'
     pkill -9 -f "[p]ython.*prime_rl" 2>/dev/null
     pkill -9 -f "[t]orchrun" 2>/dev/null
     pkill -9 -f "[v]llm-router" 2>/dev/null
@@ -127,10 +135,18 @@ srun bash -c '
     procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::" | grep -v grep | wc -l)
     gpu=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk "{s+=\$1} END {print s}")
     echo "[node-cleanup] $(hostname) procs=$procs gpu_mem=${gpu}MiB"
-'
+CLEANUP_SH
 
 # Run inference
-srun bash -c '
+# --kill-on-bad-exit=1 propagates a non-zero exit on any node to all other
+# tasks so a crashed router/engine terminates the SLURM job instead of leaving
+# the surviving ranks holding nodes.
+srun --kill-on-bad-exit=1 bash -c '
+    # pipefail ensures `cmd | tee log` propagates `cmd` failures, and the
+    # wait/cleanup block at the end of this script surfaces background
+    # process crashes (router) as task failures.
+    set -o pipefail
+
     cd $PROJECT_DIR
     [ -f .env ] && source .env
     source .venv/bin/activate
@@ -159,6 +175,7 @@ srun bash -c '
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
 {%- if use_deep_gemm %}
     export VLLM_USE_DEEP_GEMM=1
+    export VLLM_MOE_USE_DEEP_GEMM=1
 {%- endif %}
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
     export GLOO_SOCKET_IFNAME=bond0
@@ -262,7 +279,7 @@ srun bash -c '
         --parallel.dp $EP \
         --data-parallel-rpc-port $RPC_PORT \
         --vllm-extra "$VLLM_EXTRA" \
-        2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
+        2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log &
 {%- elif num_nodes > 1 %}
     echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" \
         | tee $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
@@ -289,7 +306,7 @@ srun bash -c '
         @ $CONFIG_PATH \
         --server.host 0.0.0.0 \
         --server.port $BACKEND_PORT \
-        2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
+        2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log &
 {%- else %}
     echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" | tee $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
     # Required for graph compilation to work
@@ -297,6 +314,18 @@ srun bash -c '
 
     uv run inference \
         @ $CONFIG_PATH \
-        2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
+        2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log &
 {%- endif %}
+
+# Wait for the first background job to exit and propagate its exit code. This
+# turns background process crashes (router) into task failures that
+# --kill-on-bad-exit=1 can broadcast to the other nodes so the whole job tears
+# down instead of leaving zombies holding the allocation.
+wait -n
+EXIT_CODE=$?
+echo "[$(hostname)] component exited with code $EXIT_CODE - terminating remaining processes"
+for pid in $(jobs -p); do
+    kill -TERM $pid 2>/dev/null || true
+done
+exit $EXIT_CODE
 '

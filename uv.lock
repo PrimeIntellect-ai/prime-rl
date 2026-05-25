@@ -15,22 +15,23 @@ conflicts = [[
 ]]
 
 [options]
-exclude-newer = "2026-05-08T23:46:46.215125045Z"
+exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
 vllm = false
 vllm-router = false
 dion = false
+tokenspeed-mla = false
+prime = false
 nixl-cu12 = false
 deep-ep = false
 flash-attn-3 = false
 prime-sandboxes = false
 prime-tunnel = false
-pydantic-config = false
 deep-gemm = false
 prime-evals = false
-prime = false
+fastokens = false
 
 [manifest]
 members = [
@@ -56,6 +57,7 @@ members = [
     "opencode-math",
     "opencode-science",
     "opencode-swe",
+    "prime-pydantic-config",
     "prime-rl",
     "prime-rl-configs",
     "renderers",
@@ -1308,14 +1310,14 @@ wheels = [
 
 [[package]]
 name = "fastokens"
-version = "0.1.2"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/f2/bd/e65b2989eb045863e1d4b1d161d122f69c8d3b8e23fa287e2a8f1eb4c8ab/fastokens-0.1.2.tar.gz", hash = "sha256:71da0dd9b198d3a00c1cdfae06aff7a616513bced4ba6b2ab0da63b688302c0d", size = 675220, upload-time = "2026-05-07T14:34:31.372Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/14/8e/7e88ec1d48db5a6e8d8d44318ce285e38c04b81508bdc2a60e17045a116f/fastokens-0.2.0.tar.gz", hash = "sha256:ef0e175de5c8cb1b616b3210d75dce1fab78e35fc02f77f03f7847d4678be686", size = 675822, upload-time = "2026-05-17T10:32:55.642Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c7/79/fd6f087929423289df4cf11c5c05d0c13f5274b6f1ff187d322b15ee35bc/fastokens-0.1.2-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:07737f126ea0c6b92123f13c6aef9fada45923d37efdcf3d6bb23e677ec782a6", size = 3304086, upload-time = "2026-05-07T14:34:13.13Z" },
-    { url = "https://files.pythonhosted.org/packages/3c/9d/393fa72d1d9a4e251221e077e42bdccce736f86636563b785d8460d655d1/fastokens-0.1.2-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:cd5c630f190a29492d86da7fcc53dd642f59dec4bf3eb204a378a32131003970", size = 3252648, upload-time = "2026-05-07T14:34:01.934Z" },
-    { url = "https://files.pythonhosted.org/packages/70/8e/728c46b32fd6c10088a6a1b268732f50c03b0efb035bbea7d3f22b8de47e/fastokens-0.1.2-cp39-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:62b3bbbeb4e0ec72ff895b15e4b0ad04a791c87caa0edb1f63bd9d7c9896c86e", size = 3335929, upload-time = "2026-05-07T14:34:21.548Z" },
-    { url = "https://files.pythonhosted.org/packages/04/3d/4ccb53de21bfb87ec13f1dfddc7567cb01732f5c755a083a7cc9e6eebfec/fastokens-0.1.2-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:8e1cb2331e4ac377a636411d722e7a0a2a12c00a46c2d64ab6522004a38c8918", size = 3598235, upload-time = "2026-05-07T14:34:30.102Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/54/e0e4318ee1ad0b5196df72cf93615bba0b81f7869d659a44ccc475969151/fastokens-0.2.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:160253f8d30747cf66e7ed895c513e16f7b173dd9e644fa641e2eecbd43a616a", size = 3303534, upload-time = "2026-05-17T10:32:37.462Z" },
+    { url = "https://files.pythonhosted.org/packages/64/44/bfff90e4b1a43c17edf7305dafbd56dc992bbe832cc08da78f1f50104c2d/fastokens-0.2.0-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:b61b9fe5b41e0bb36ad86e7551dc53293c9833909ef07b1cdbaa2055b06c3b3e", size = 3254096, upload-time = "2026-05-17T10:32:28.489Z" },
+    { url = "https://files.pythonhosted.org/packages/05/bf/1cad7f0e8d03f5f5b2b417cda8859e4d968d2eebdca0cd336b23d7dbbdbb/fastokens-0.2.0-cp39-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:01b9bdba818d7b2c67d57d9917faf7a1dad32ece0734440130de94ad768b819f", size = 3336689, upload-time = "2026-05-17T10:32:46.21Z" },
+    { url = "https://files.pythonhosted.org/packages/97/d7/f5fb2564e16b1f5733e05c41b090f95a3fe767f6b888ba7d864193bc5447/fastokens-0.2.0-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:d068bc50082ad67d5d542847075f1f7b8d10f703274e56e241312f18b4d9e772", size = 3598064, upload-time = "2026-05-17T10:32:54.109Z" },
 ]
 
 [[package]]
@@ -3838,8 +3840,54 @@ wheels = [
 ]
 
 [[package]]
+name = "prime-pydantic-config"
+version = "0.3.0"
+source = { editable = "deps/pydantic-config" }
+dependencies = [
+    { name = "pydantic", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "pyyaml", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "tomli", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+]
+toml = [
+    { name = "tomli", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+]
+yaml = [
+    { name = "pyyaml", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pre-commit", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "pytest", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "rich", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "ruff", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.0.0" },
+    { name = "pyyaml", marker = "extra == 'all'" },
+    { name = "pyyaml", marker = "extra == 'yaml'" },
+    { name = "tomli", marker = "extra == 'all'" },
+    { name = "tomli", marker = "extra == 'toml'" },
+]
+provides-extras = ["yaml", "toml", "all"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pre-commit", specifier = ">=3.0.0" },
+    { name = "pytest", specifier = ">=9.0.3" },
+    { name = "rich", specifier = ">=15.0.0" },
+    { name = "ruff", specifier = ">=0.12.1" },
+]
+
+[[package]]
 name = "prime-rl"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiolimiter", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -3856,6 +3904,7 @@ dependencies = [
     { name = "prime", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "prime-rl-configs", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "pyarrow", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "pybase64", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "pyzmq", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "renderers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "rich", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -3871,8 +3920,8 @@ dependencies = [
     { name = "transformers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "uvloop", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "verifiers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "vllm", version = "0.20.2+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl" }, marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine != 'aarch64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "vllm", version = "0.20.2+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_x86_64.whl" }, marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "vllm", version = "0.21.0+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.21.0/vllm-0.21.0+cu129-cp38-abi3-manylinux_2_34_aarch64.whl" }, marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine != 'aarch64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "vllm", version = "0.21.0+cu129.r42434.pr39568.a106aa6", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.21.0+cu129.r42434.pr39568.a106aa6-cp38-abi3-manylinux_2_34_x86_64.whl" }, marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "wandb", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
 ]
 
@@ -4003,8 +4052,9 @@ requires-dist = [
     { name = "prime-rl", extras = ["quack"], marker = "extra == 'all'" },
     { name = "prime-rl-configs", editable = "packages/prime-rl-configs" },
     { name = "pyarrow", specifier = ">=21.0.0" },
+    { name = "pybase64", specifier = ">=1.4.2" },
     { name = "pyzmq", specifier = ">=27.1.0" },
-    { name = "quack-kernels", marker = "extra == 'quack'", specifier = ">=0.3.3" },
+    { name = "quack-kernels", marker = "extra == 'quack'", specifier = ">=0.4.1" },
     { name = "renderers", editable = "deps/renderers" },
     { name = "reverse-text", marker = "extra == 'envs'", editable = "deps/verifiers/environments/reverse_text" },
     { name = "rich", specifier = ">=14.0.0" },
@@ -4023,10 +4073,10 @@ requires-dist = [
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
     { name = "uvloop", specifier = ">=0.21.0" },
     { name = "verifiers", editable = "deps/verifiers" },
-    { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'", specifier = ">=0.20.2" },
-    { name = "vllm", marker = "platform_machine == 'aarch64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl" },
-    { name = "vllm", marker = "platform_machine == 'x86_64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_x86_64.whl" },
-    { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl" },
+    { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'", specifier = ">=0.21.0" },
+    { name = "vllm", marker = "platform_machine == 'aarch64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.21.0/vllm-0.21.0+cu129-cp38-abi3-manylinux_2_34_aarch64.whl" },
+    { name = "vllm", marker = "platform_machine == 'x86_64'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.21.0+cu129.r42434.pr39568.a106aa6-cp38-abi3-manylinux_2_34_x86_64.whl" },
+    { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.25/vllm_router-0.1.25-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wiki-search", marker = "extra == 'envs'", editable = "deps/verifiers/environments/wiki_search" },
 ]
@@ -4047,16 +4097,18 @@ name = "prime-rl-configs"
 version = "0.4.0"
 source = { editable = "packages/prime-rl-configs" }
 dependencies = [
+    { name = "prime-pydantic-config", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "pydantic", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "pydantic-config", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "renderers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "tomli", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "tomli-w", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "prime-pydantic-config", editable = "deps/pydantic-config" },
     { name = "pydantic", specifier = ">=1.10.13" },
-    { name = "pydantic-config", git = "https://github.com/samsja/pydantic_config.git?branch=main" },
+    { name = "renderers", editable = "deps/renderers" },
     { name = "tomli", specifier = ">=2.2.1" },
     { name = "tomli-w", specifier = ">=1.2.0" },
 ]
@@ -4310,15 +4362,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/94/ea/e63d587294c20d3b83e9c312b5d577c9ec28962ee8490839ca9996672849/pydantic_argparse-0.10.0.tar.gz", hash = "sha256:d57eb0a84c8f0af6605376157d3f445cfd786700f2e596ba9d48d15d557185eb", size = 15928, upload-time = "2025-02-09T08:18:30.425Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/be/14/9ee71e3a183f76ff93e46b36157d6ddbf29ec2547b7d2c57931cd5d3aecc/pydantic_argparse-0.10.0-py3-none-any.whl", hash = "sha256:e317f001208d77a5600ece6f7ac78d768d8221a7d64a958980705e9630c2e299", size = 25265, upload-time = "2025-02-09T08:18:27.671Z" },
-]
-
-[[package]]
-name = "pydantic-config"
-version = "0.3.0"
-source = { git = "https://github.com/samsja/pydantic_config.git?branch=main#73c1d84f7c359fa5fa3b7cfb946272352866efb7" }
-dependencies = [
-    { name = "pydantic", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "tyro", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
 ]
 
 [[package]]
@@ -4716,7 +4759,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastokens", specifier = ">=0.1.1" },
+    { name = "fastokens", specifier = ">=0.2.0" },
     { name = "jinja2" },
     { name = "numpy" },
     { name = "openai", specifier = ">=1.108.1" },
@@ -5455,6 +5498,30 @@ wheels = [
 ]
 
 [[package]]
+name = "tokenspeed-mla"
+version = "0.1.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "apache-tvm-ffi", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "nvidia-cutlass-dsl", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "tokenspeed-triton", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "torch", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/42/20/4110d624d81d63f0bee2f19dba7ea0e1d8a31ea50147e6c1db82223c88a4/tokenspeed_mla-0.1.2-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:592590f36d85e624ecdc5e357ff35e29e761e6d879900dce8b67a6785c8ce75c", size = 743769, upload-time = "2026-05-13T03:30:54.486Z" },
+    { url = "https://files.pythonhosted.org/packages/84/01/4bf8b74ead3e8e7c1c809435396254c067a33fde48acc20f602aae622d97/tokenspeed_mla-0.1.2-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:c9466a351fe039792e56cf49f3e79744c1dc28c7af10306a02e62b8e92fa5985", size = 748681, upload-time = "2026-05-13T03:30:56.718Z" },
+]
+
+[[package]]
+name = "tokenspeed-triton"
+version = "3.7.10.post20260505"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/71/22/5d882546d461728d2dff369af5185ff1ded7f15c83e013fa6b2a56a86058/tokenspeed_triton-3.7.10.post20260505-cp312-abi3-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:06bad3e25ccaba22bb43eb8499f01008f9aaa0bfb3fbfb0cef1b37d2c006c6f0", size = 82059541, upload-time = "2026-05-05T07:48:59.923Z" },
+    { url = "https://files.pythonhosted.org/packages/af/c3/4808d86016368fed9495c3a3408cc7f912e7863ff3432937404bd0a551a6/tokenspeed_triton-3.7.10.post20260505-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:19618c7db01a9bd33885f7acbf8945adb2f5534668aa97629b56d481753cbcad", size = 89127692, upload-time = "2026-05-05T07:49:04.22Z" },
+]
+
+[[package]]
 name = "toml"
 version = "0.10.2"
 source = { registry = "https://pypi.org/simple" }
@@ -5829,6 +5896,7 @@ dependencies = [
     { name = "numpy", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "openai", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "openai-agents", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "prime-pydantic-config", extra = ["toml"], marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "prime-sandboxes", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "prime-tunnel", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "pydantic", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -5839,6 +5907,7 @@ dependencies = [
     { name = "setproctitle", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "tenacity", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "textual", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "uvloop", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and platform_python_implementation != 'PyPy' and sys_platform == 'linux') or (platform_machine == 'x86_64' and platform_python_implementation != 'PyPy' and sys_platform == 'linux') or (platform_machine == 'aarch64' and platform_python_implementation == 'PyPy' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'x86_64' and platform_python_implementation == 'PyPy' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
 ]
 
 [package.optional-dependencies]
@@ -5866,8 +5935,8 @@ rl = [
     { name = "requests", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "torch", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "transformers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "vllm", version = "0.20.2+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl" }, marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine != 'aarch64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "vllm", version = "0.20.2+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_x86_64.whl" }, marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "vllm", version = "0.21.0+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.21.0/vllm-0.21.0+cu129-cp38-abi3-manylinux_2_34_aarch64.whl" }, marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine != 'aarch64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "vllm", version = "0.21.0+cu129.r42434.pr39568.a106aa6", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.21.0+cu129.r42434.pr39568.a106aa6-cp38-abi3-manylinux_2_34_x86_64.whl" }, marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "wandb", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
 ]
 ta = [
@@ -5921,6 +5990,7 @@ requires-dist = [
     { name = "openai-agents", specifier = ">=0.0.7" },
     { name = "openenv-core", marker = "extra == 'openenv'", specifier = ">=0.3.0" },
     { name = "peft", marker = "extra == 'rl'" },
+    { name = "prime-pydantic-config", extras = ["toml"], editable = "deps/pydantic-config" },
     { name = "prime-sandboxes", specifier = ">=0.2.25" },
     { name = "prime-tunnel", specifier = ">=0.1.6" },
     { name = "pydantic", specifier = ">=2.11.9" },
@@ -5941,9 +6011,10 @@ requires-dist = [
     { name = "torch", marker = "extra == 'rl'", specifier = ">=2.8.0,<2.9.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", marker = "extra == 'rl'", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
     { name = "typing-extensions", marker = "python_full_version < '3.12'" },
-    { name = "vllm", marker = "platform_machine == 'aarch64' and extra == 'rl'", url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl" },
+    { name = "uvloop", marker = "platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'", specifier = ">=0.21.0" },
+    { name = "vllm", marker = "platform_machine == 'aarch64' and extra == 'rl'", url = "https://github.com/vllm-project/vllm/releases/download/v0.21.0/vllm-0.21.0+cu129-cp38-abi3-manylinux_2_34_aarch64.whl" },
     { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'rl'", specifier = ">=0.10.0,<0.11.0" },
-    { name = "vllm", marker = "platform_machine == 'x86_64' and extra == 'rl'", url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_x86_64.whl" },
+    { name = "vllm", marker = "platform_machine == 'x86_64' and extra == 'rl'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.21.0+cu129.r42434.pr39568.a106aa6-cp38-abi3-manylinux_2_34_x86_64.whl" },
     { name = "wandb", marker = "extra == 'rl'" },
 ]
 provides-extras = ["browser", "openenv", "renderers", "rg", "rl", "ta"]
@@ -5986,8 +6057,8 @@ wheels = [
 
 [[package]]
 name = "vllm"
-version = "0.20.2+cu129"
-source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl" }
+version = "0.21.0+cu129"
+source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.21.0/vllm-0.21.0+cu129-cp38-abi3-manylinux_2_34_aarch64.whl" }
 resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
@@ -6052,6 +6123,7 @@ dependencies = [
     { name = "tiktoken", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine != 'aarch64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "tilelang", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine != 'aarch64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "tokenizers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine != 'aarch64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "tokenspeed-mla", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine != 'aarch64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "torch", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine != 'aarch64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "torchaudio", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine != 'aarch64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "torchvision", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine != 'aarch64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -6062,7 +6134,7 @@ dependencies = [
     { name = "xgrammar", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine != 'aarch64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
 ]
 wheels = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_aarch64.whl", hash = "sha256:8a58a086c5c4ed2883eee36aaaf6b79c83463d02da3015454acf92afcc8e150e" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.21.0/vllm-0.21.0+cu129-cp38-abi3-manylinux_2_34_aarch64.whl", hash = "sha256:de0af3ab4c0cc86e98712bbe89bb30eae967b5bf87873920b7cf13bbfd096aaa" },
 ]
 
 [package.metadata]
@@ -6096,14 +6168,14 @@ requires-dist = [
     { name = "matplotlib", marker = "extra == 'bench'" },
     { name = "mcp" },
     { name = "mistral-common", extras = ["audio"], marker = "extra == 'audio'" },
-    { name = "mistral-common", extras = ["image"], specifier = ">=1.11.0" },
-    { name = "model-hosting-container-standards", specifier = ">=0.1.13,<1.0.0" },
+    { name = "mistral-common", extras = ["image"], specifier = ">=1.11.2" },
+    { name = "model-hosting-container-standards", specifier = ">=0.1.14,<1.0.0" },
     { name = "msgspec" },
     { name = "ninja" },
     { name = "numba", specifier = "==0.65.0" },
     { name = "numpy" },
     { name = "nvidia-cudnn-frontend", specifier = ">=1.13.0,<1.19.0" },
-    { name = "nvidia-cutlass-dsl", specifier = ">=4.4.2" },
+    { name = "nvidia-cutlass-dsl", specifier = "==4.4.2" },
     { name = "openai", specifier = ">=2.0.0" },
     { name = "openai-harmony", specifier = ">=0.0.3" },
     { name = "opencv-python-headless", specifier = ">=4.13.0" },
@@ -6147,6 +6219,7 @@ requires-dist = [
     { name = "tiktoken", specifier = ">=0.6.0" },
     { name = "tilelang", specifier = "==0.1.9" },
     { name = "tokenizers", specifier = ">=0.21.1" },
+    { name = "tokenspeed-mla", specifier = "==0.1.2" },
     { name = "torch", specifier = "==2.11.0" },
     { name = "torchaudio", specifier = "==2.11.0" },
     { name = "torchvision", specifier = "==0.26.0" },
@@ -6154,15 +6227,15 @@ requires-dist = [
     { name = "transformers", specifier = ">=4.56.0,!=5.0.*,!=5.1.*,!=5.2.*,!=5.3.*,!=5.4.*,!=5.5.0" },
     { name = "typing-extensions", specifier = ">=4.10" },
     { name = "watchfiles" },
-    { name = "xgrammar", marker = "platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'ppc64le' or platform_machine == 's390x' or platform_machine == 'x86_64'", specifier = ">=0.1.32,<1.0.0" },
+    { name = "xgrammar", marker = "platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'ppc64le' or platform_machine == 's390x' or platform_machine == 'x86_64'", specifier = ">=0.2.0,<1.0.0" },
     { name = "zentorch-weekly", marker = "extra == 'zen'", specifier = "==5.2.1.dev20260408" },
 ]
 provides-extras = ["zen", "bench", "tensorizer", "fastsafetensors", "instanttensor", "runai", "audio", "video", "flashinfer", "helion", "grpc", "otel"]
 
 [[package]]
 name = "vllm"
-version = "0.20.2+cu129"
-source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_x86_64.whl" }
+version = "0.21.0+cu129.r42434.pr39568.a106aa6"
+source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.21.0+cu129.r42434.pr39568.a106aa6-cp38-abi3-manylinux_2_34_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
@@ -6227,6 +6300,7 @@ dependencies = [
     { name = "tiktoken", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "tilelang", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "tokenizers", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "tokenspeed-mla", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "torch", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "torchaudio", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "torchvision", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -6237,7 +6311,7 @@ dependencies = [
     { name = "xgrammar", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
 ]
 wheels = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2+cu129-cp38-abi3-manylinux_2_31_x86_64.whl", hash = "sha256:2f8c2bf2ac6d3d16f930535e66822abd71065468521884eb5b910225b2abef4b" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.21.0+cu129.r42434.pr39568.a106aa6-cp38-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:0f0533a9122dfa738fc0f5532cb6795556f072b133f0058a22ff4be2d2f165f0" },
 ]
 
 [package.metadata]
@@ -6271,14 +6345,14 @@ requires-dist = [
     { name = "matplotlib", marker = "extra == 'bench'" },
     { name = "mcp" },
     { name = "mistral-common", extras = ["audio"], marker = "extra == 'audio'" },
-    { name = "mistral-common", extras = ["image"], specifier = ">=1.11.0" },
-    { name = "model-hosting-container-standards", specifier = ">=0.1.13,<1.0.0" },
+    { name = "mistral-common", extras = ["image"], specifier = ">=1.11.2" },
+    { name = "model-hosting-container-standards", specifier = ">=0.1.14,<1.0.0" },
     { name = "msgspec" },
     { name = "ninja" },
     { name = "numba", specifier = "==0.65.0" },
     { name = "numpy" },
     { name = "nvidia-cudnn-frontend", specifier = ">=1.13.0,<1.19.0" },
-    { name = "nvidia-cutlass-dsl", specifier = ">=4.4.2" },
+    { name = "nvidia-cutlass-dsl", specifier = "==4.4.2" },
     { name = "openai", specifier = ">=2.0.0" },
     { name = "openai-harmony", specifier = ">=0.0.3" },
     { name = "opencv-python-headless", specifier = ">=4.13.0" },
@@ -6322,6 +6396,7 @@ requires-dist = [
     { name = "tiktoken", specifier = ">=0.6.0" },
     { name = "tilelang", specifier = "==0.1.9" },
     { name = "tokenizers", specifier = ">=0.21.1" },
+    { name = "tokenspeed-mla", specifier = "==0.1.2" },
     { name = "torch", specifier = "==2.11.0" },
     { name = "torchaudio", specifier = "==2.11.0" },
     { name = "torchvision", specifier = "==0.26.0" },
@@ -6329,15 +6404,15 @@ requires-dist = [
     { name = "transformers", specifier = ">=4.56.0,!=5.0.*,!=5.1.*,!=5.2.*,!=5.3.*,!=5.4.*,!=5.5.0" },
     { name = "typing-extensions", specifier = ">=4.10" },
     { name = "watchfiles" },
-    { name = "xgrammar", marker = "platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'ppc64le' or platform_machine == 's390x' or platform_machine == 'x86_64'", specifier = ">=0.1.32,<1.0.0" },
+    { name = "xgrammar", marker = "platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'ppc64le' or platform_machine == 's390x' or platform_machine == 'x86_64'", specifier = ">=0.2.0,<1.0.0" },
     { name = "zentorch-weekly", marker = "extra == 'zen'", specifier = "==5.2.1.dev20260408" },
 ]
 provides-extras = ["zen", "bench", "tensorizer", "fastsafetensors", "instanttensor", "runai", "audio", "video", "flashinfer", "helion", "grpc", "otel"]
 
 [[package]]
 name = "vllm-router"
-version = "0.1.22"
-source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl" }
+version = "0.1.25"
+source = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.25/vllm_router-0.1.25-cp38-abi3-manylinux_2_28_x86_64.whl" }
 dependencies = [
     { name = "aiohttp", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "fastapi", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -6347,7 +6422,7 @@ dependencies = [
     { name = "uvicorn", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:6361a0387241e56932f3ba2e51af27f58d11a462e3187e58286b2f96056e4d15" },
+    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.25/vllm_router-0.1.25-cp38-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:e84e731a0779f820bfe3cf4ce78cea2d09993c0a6501c63bcda93826bcd21fd0" },
 ]
 
 [package.metadata]

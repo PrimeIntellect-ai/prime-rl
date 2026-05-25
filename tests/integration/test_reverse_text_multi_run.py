@@ -212,7 +212,7 @@ def start_orchestrator(
         "--wandb.name",
         f"{wandb_name}-{proc_name}",
     ]
-    cmd.append("--client.base-url")
+    cmd.append("--model.client.base-url")
     cmd.extend(INFERENCE_BASE_URLS)
 
     with open(orch_log_dir / "orchestrator.log", "w") as f:

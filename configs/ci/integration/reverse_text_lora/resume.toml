@@ -18,7 +18,7 @@ save_adapter_separately = true
 
 [orchestrator]
 batch_size = 128
-rollouts_per_example = 16
+group_size = 16
 
 [orchestrator.model.lora]
 name = "r8-1e-4"
@@ -32,3 +32,7 @@ id = "reverse-text"
 [inference]
 enable_lora = true
 gpu_memory_utilization = 0.7
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"

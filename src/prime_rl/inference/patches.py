@@ -1,6 +1,8 @@
 import torch
 from vllm.triton_utils import tl, triton
 
+from prime_rl.inference.vllm.padded_input_scrub import monkey_patch_vllm_padded_input_scrub
+
 
 def transformers_v5_compat():
     """vLLM general plugin: patch transformers v5 config attrs that vLLM still expects.
@@ -15,10 +17,55 @@ def transformers_v5_compat():
 
     _patch_qwen35_lora()
     _patch_lora_key_prefix()
-    monkey_patch_deep_gemm_ep_scatter()
     monkey_patch_deep_gemm_silu_mul_quant_int64()
     monkey_patch_dp_engine_core_pause_resume_deadlock()
     monkey_patch_vllm_layerwise_reload_alias_buffers()
+    monkey_patch_vllm_padded_input_scrub()
+    monkey_patch_return_routed_experts_with_nixl_connector()
+
+
+def monkey_patch_return_routed_experts_with_nixl_connector():
+    from vllm import envs
+    from vllm.config.vllm import VllmConfig
+    from vllm.logger import init_logger
+
+    logger = init_logger(__name__)
+    original_post_init = VllmConfig.__post_init__
+
+    if getattr(original_post_init, "_prime_rl_allows_nixl_routed_experts", False):
+        return
+
+    def _is_nixl_routed_experts_pd_config(config: VllmConfig) -> bool:
+        kv_transfer_config = config.kv_transfer_config
+        return (
+            config.model_config is not None
+            and config.model_config.enable_return_routed_experts
+            and kv_transfer_config is not None
+            and kv_transfer_config.kv_connector == "NixlConnector"
+            and kv_transfer_config.is_kv_transfer_instance
+        )
+
+    def _post_init(config: VllmConfig):
+        if not _is_nixl_routed_experts_pd_config(config):
+            return original_post_init(config)
+
+        if config.parallel_config.pipeline_parallel_size > 1:
+            raise ValueError("--enable-return-routed-experts is incompatible with pipeline parallelism (PP > 1).")
+        if envs.VLLM_USE_V2_MODEL_RUNNER:
+            raise ValueError("VLLM_USE_V2_MODEL_RUNNER does not yet support: routed experts capture")
+
+        # vLLM rejects every KV connector, but our P/D path uses NIXL and
+        # stitches prefill/decode routed experts in the router. CPU KV offload
+        # remains rejected by prime-rl config validation.
+        config.model_config.enable_return_routed_experts = False
+        try:
+            return original_post_init(config)
+        finally:
+            config.model_config.enable_return_routed_experts = True
+
+    _post_init._prime_rl_allows_nixl_routed_experts = True
+    VllmConfig.__post_init__ = _post_init
+    logger.warning("Enabled vLLM routed-experts capture with NIXL connector patch.")
 
 
 def monkey_patch_vllm_layerwise_reload_alias_buffers():
@@ -29,6 +76,8 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
     # storage *after* the parameter has been correctly reloaded. Skip the copy
     # for any buffer that shares storage with a parameter; _place_kernel_tensors
     # re-registers the original view, which trivially reflects the parameter.
+    # Remove this patch once https://github.com/vllm-project/vllm/pull/42481 is
+    # included in the vLLM release we pin/use.
     from vllm.logger import init_logger
     from vllm.model_executor.model_loader.reload import layerwise as reload_layerwise
 
@@ -52,160 +101,6 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
 
 
 @triton.jit
-def _apply_expert_map_triton(expert_id, expert_map):
-    if expert_id != -1:
-        expert_id = tl.load(expert_map + expert_id).to(expert_id.dtype)
-    return expert_id
-
-
-@triton.jit
-def _fwd_kernel_ep_scatter_2_int64(
-    total_token_num,
-    expert_start_loc,
-    recv_x,
-    recv_x_stride0,
-    recv_x_stride1,
-    recv_x_scale,
-    recv_x_scale_stride0,
-    recv_x_scale_stride1,
-    recv_topk,
-    recv_topk_stride0,
-    recv_topk_stride1,
-    output_tensor,
-    output_tensor_stride0,
-    output_tensor_stride1,
-    output_tensor_scale,
-    output_tensor_scale_stride0,
-    output_tensor_scale_stride1,
-    output_index,
-    output_index_stride0,
-    output_index_stride1,
-    topk_num: tl.constexpr,
-    expert_map,
-    HAS_EXPERT_MAP: tl.constexpr,
-    HIDDEN_SIZE: tl.constexpr,
-    HIDDEN_SIZE_PAD: tl.constexpr,
-    SCALE_HIDDEN_SIZE: tl.constexpr,
-    SCALE_HIDDEN_SIZE_PAD: tl.constexpr,
-):
-    start_token_id = tl.program_id(0)
-    grid_num = tl.num_programs(0)
-
-    offset_in = tl.arange(0, HIDDEN_SIZE_PAD)
-    mask = offset_in < HIDDEN_SIZE
-
-    offset_in_s = tl.arange(0, SCALE_HIDDEN_SIZE_PAD)
-    mask_s = offset_in_s < SCALE_HIDDEN_SIZE
-
-    output_tensor_stride0 = output_tensor_stride0.to(tl.int64)
-
-    for token_id in range(start_token_id, total_token_num, grid_num):
-        to_copy = tl.load(recv_x + token_id * recv_x_stride0 + offset_in, mask=mask)
-        to_copy_s = tl.load(
-            recv_x_scale + token_id * recv_x_scale_stride0 + offset_in_s,
-            mask=mask_s,
-        )
-
-        for topk_index in tl.range(0, topk_num, 1, num_stages=4):
-            expert_id = tl.load(recv_topk + token_id * recv_topk_stride0 + topk_index)
-
-            if HAS_EXPERT_MAP:
-                expert_id = _apply_expert_map_triton(expert_id, expert_map)
-
-            if expert_id >= 0:
-                dest_token_index = tl.atomic_add(expert_start_loc + expert_id, 1)
-                dest_token_index_i64 = dest_token_index.to(tl.int64)
-
-                tl.store(
-                    output_index + token_id * output_index_stride0 + topk_index,
-                    dest_token_index,
-                )
-
-                output_tensor_ptr = output_tensor + dest_token_index_i64 * output_tensor_stride0
-                output_tensor_scale_ptr = output_tensor_scale + dest_token_index * output_tensor_scale_stride0
-                tl.store(output_tensor_ptr + offset_in, to_copy, mask=mask)
-                tl.store(output_tensor_scale_ptr + offset_in_s, to_copy_s, mask=mask_s)
-
-
-def _triton_ep_scatter_int64(
-    recv_x: torch.Tensor,
-    recv_x_scale: torch.Tensor,
-    recv_topk: torch.Tensor,
-    num_recv_tokens_per_expert: torch.Tensor,
-    expert_map: torch.Tensor | None,
-    expert_start_loc: torch.Tensor,
-    output_tensor: torch.Tensor,
-    output_tensor_scale: torch.Tensor,
-    m_indices: torch.Tensor,
-    output_index: torch.Tensor,
-) -> None:
-    from vllm.model_executor.layers.fused_moe import deep_gemm_utils
-
-    block_e = 128
-    num_warps = 8
-    num_experts = num_recv_tokens_per_expert.shape[0]
-    hidden_size = recv_x.shape[1]
-
-    assert m_indices.shape[0] % block_e == 0
-    assert expert_start_loc.shape[0] == num_experts
-
-    deep_gemm_utils._fwd_kernel_ep_scatter_1[(num_experts,)](
-        num_recv_tokens_per_expert,
-        expert_start_loc,
-        m_indices,
-        num_experts=num_experts,
-        num_warps=num_warps,
-        BLOCK_E=block_e,
-        BLOCK_EXPERT_NUM=triton.next_power_of_2(num_experts),
-    )
-
-    grid = min(recv_topk.shape[0], 1024 * 8)
-    _fwd_kernel_ep_scatter_2_int64[(grid,)](
-        recv_topk.shape[0],
-        expert_start_loc,
-        recv_x,
-        recv_x.stride(0),
-        recv_x.stride(1),
-        recv_x_scale,
-        recv_x_scale.stride(0),
-        recv_x_scale.stride(1),
-        recv_topk,
-        recv_topk.stride(0),
-        recv_topk.stride(1),
-        output_tensor,
-        output_tensor.stride(0),
-        output_tensor.stride(1),
-        output_tensor_scale,
-        output_tensor_scale.stride(0),
-        output_tensor_scale.stride(1),
-        output_index,
-        output_index.stride(0),
-        output_index.stride(1),
-        topk_num=recv_topk.shape[1],
-        expert_map=expert_map,
-        HAS_EXPERT_MAP=expert_map is not None,
-        num_warps=num_warps,
-        HIDDEN_SIZE=hidden_size,
-        HIDDEN_SIZE_PAD=triton.next_power_of_2(hidden_size),
-        SCALE_HIDDEN_SIZE=recv_x_scale.shape[1],
-        SCALE_HIDDEN_SIZE_PAD=triton.next_power_of_2(recv_x_scale.shape[1]),
-    )
-
-
-def monkey_patch_deep_gemm_ep_scatter():
-    # Temporary local carry of the upstream fix while it is under review:
-    # issue: https://github.com/vllm-project/vllm/issues/39211
-    # PR:    https://github.com/vllm-project/vllm/pull/39213
-    from vllm.logger import init_logger
-    from vllm.model_executor.layers.fused_moe import deep_gemm_utils
-
-    logger = init_logger(__name__)
-
-    deep_gemm_utils.ep_scatter = torch.no_grad()(_triton_ep_scatter_int64)
-    logger.warning("Enabled int64-addressing Triton patch for vLLM DeepGEMM ep_scatter.")
-
-
-@triton.jit
 def _silu_mul_per_token_group_quant_fp8_colmajor_int64_kernel(
     y_ptr,
     y_q_ptr,
@@ -214,9 +109,11 @@ def _silu_mul_per_token_group_quant_fp8_colmajor_int64_kernel(
     N: tl.int64,
     y_s_col_stride: tl.int64,
     eps,
+    clamp_limit,
     fp8_min: tl.constexpr,
     fp8_max: tl.constexpr,
     use_ue8m0: tl.constexpr,
+    HAS_CLAMP: tl.constexpr,
     GROUP_SIZE: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
@@ -239,6 +136,9 @@ def _silu_mul_per_token_group_quant_fp8_colmajor_int64_kernel(
     act_in = tl.load(act_in_ptrs)
     mul_in = tl.load(act_in_ptrs + N_2)
 
+    if HAS_CLAMP:
+        act_in = tl.minimum(act_in.to(tl.float32), clamp_limit).to(y_ptr.dtype.element_ty)
+        mul_in = tl.clamp(mul_in.to(tl.float32), -clamp_limit, clamp_limit).to(y_ptr.dtype.element_ty)
     act_in = act_in.to(tl.float32)
     one_f32 = tl.cast(1, tl.float32)
     silu_out = (act_in / (one_f32 + tl.exp(-act_in))).to(y_ptr.dtype.element_ty)
@@ -266,6 +166,7 @@ def _silu_mul_per_token_group_quant_fp8_colmajor_int64(
     output: torch.Tensor | None = None,
     use_ue8m0: bool | None = None,
     eps: float = 1e-10,
+    clamp_limit: float | None = None,
 ):
     from vllm.platforms import current_platform
     from vllm.utils.deep_gemm import is_deep_gemm_e8m0_used
@@ -298,6 +199,7 @@ def _silu_mul_per_token_group_quant_fp8_colmajor_int64(
     fp8_min = -224.0 if current_platform.is_fp8_fnuz() else finfo.min
     fp8_max = 224.0 if current_platform.is_fp8_fnuz() else finfo.max
 
+    has_clamp = clamp_limit is not None
     grid = (M // block_m, N_2 // block_n)
     _silu_mul_per_token_group_quant_fp8_colmajor_int64_kernel[grid](
         input,
@@ -307,9 +209,11 @@ def _silu_mul_per_token_group_quant_fp8_colmajor_int64(
         N,
         output_scales.stride(-1),
         eps,
+        clamp_limit if has_clamp else 0.0,
         fp8_min,
         fp8_max,
         use_ue8m0,
+        has_clamp,
         group_size,
         block_m,
         block_n,
@@ -319,8 +223,6 @@ def _silu_mul_per_token_group_quant_fp8_colmajor_int64(
 
 
 def monkey_patch_deep_gemm_silu_mul_quant_int64():
-    # Temporary local carry for large DeepGEMM profile shapes whose row offsets
-    # exceed signed int32 address arithmetic in vLLM's Triton kernel.
     import sys
 
     from vllm.logger import init_logger
@@ -897,9 +799,9 @@ def monkey_patch_dp_engine_core_pause_resume_deadlock():
     - on resume, wake every DP rank and force an immediate global unfinished
       sync instead of waiting for the normal 32-step cadence
 
-    This keeps the upstream pause-side fix from
-    https://github.com/vllm-project/vllm/pull/37024 and extends it with the
-    resume-side wave-state fix.
+    This also bypasses vLLM's two-phase DP pause implementation
+    (https://github.com/vllm-project/vllm/pull/39366), which makes resume
+    reject states that our weight-update flow can validly hit.
     """
     from vllm.config import ParallelConfig
     from vllm.v1.core.sched.interface import PauseState
@@ -909,7 +811,8 @@ def monkey_patch_dp_engine_core_pause_resume_deadlock():
 
     _base_add_request = EngineCore.add_request
     _base_handle_client_request = EngineCoreProc._handle_client_request
-    _base_resume_scheduler = DPEngineCoreProc.resume_scheduler
+    _base_pause_complete = EngineCoreProc._pause_complete
+    _base_resume_scheduler = EngineCoreProc.resume_scheduler
 
     def _patched_add_request(self, request: Request, request_wave: int = 0):
         _base_add_request(self, request, request_wave)
@@ -930,8 +833,15 @@ def monkey_patch_dp_engine_core_pause_resume_deadlock():
         else:
             _base_handle_client_request(self, request_type, request)
 
+    def _patched_pause_complete(self) -> bool:
+        self.pending_pause = False
+        self.ignore_start_dp_wave = False
+        return _base_pause_complete(self)
+
     def _patched_resume_scheduler(self):
         was_paused = self.scheduler.pause_state != PauseState.UNPAUSED
+        self.pending_pause = False
+        self.ignore_start_dp_wave = False
         _base_resume_scheduler(self)
         if was_paused:
             self.engines_running = True
@@ -948,6 +858,7 @@ def monkey_patch_dp_engine_core_pause_resume_deadlock():
 
     DPEngineCoreProc.add_request = _patched_add_request
     DPEngineCoreProc._handle_client_request = _patched_handle_client_request
+    DPEngineCoreProc._pause_complete = _patched_pause_complete
     DPEngineCoreProc.resume_scheduler = _patched_resume_scheduler
     DPEngineCoreProc._has_global_unfinished_reqs = _patched_has_global_unfinished_reqs
 

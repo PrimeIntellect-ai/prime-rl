@@ -2,132 +2,93 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
 from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
 from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
+from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
 
 # TODO: Set thinking/ solution budget
 
 
 class ServerConfig(BaseConfig):
-    """Configures the inference server."""
+    host: str | None = None
+    """Host to bind to."""
 
-    host: Annotated[str | None, Field(description="The host to bind to.")] = None
-    port: Annotated[int, Field(description="The port to bind to.")] = 8000
-    liveness_timeout_seconds: Annotated[
-        float,
-        Field(
-            gt=0,
-            description=(
-                "Timeout in seconds for the /liveness endpoint's internal vLLM worker RPC. "
-                "If Kubernetes liveness probes are enabled, keep the probe timeoutSeconds at least this high."
-            ),
-        ),
-    ] = 30.0
+    port: int = 8000
+    """Port to bind to."""
+
+    liveness_timeout_seconds: float = Field(30.0, gt=0)
+    """Timeout in seconds for the ``/liveness`` endpoint's internal vLLM worker RPC. With Kubernetes liveness probes, keep the probe ``timeoutSeconds`` at least this high."""
 
 
 class ParallelConfig(BaseConfig):
-    """Configures multi-node and multi-GPU setups through different types of parallelism (TP, DP, PP)."""
+    tp: int = 1
+    """Tensor parallel size. Forwarded to vLLM as ``--tensor-parallel-size``."""
 
-    tp: Annotated[
-        int,
-        Field(
-            description="The tensor parallel size. It is passed to vLLM as `--tensor-parallel-size`",
-        ),
-    ] = 1
-
-    dp: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="The data parallel size. It is passed to vLLM as `--data-parallel-size`",
-        ),
-    ] = 1
+    dp: int = Field(1, ge=1)
+    """Data parallel size. Forwarded to vLLM as ``--data-parallel-size``."""
 
     def __str__(self) -> str:
         return f"tp={self.tp} dp={self.dp}"
 
 
 class ModelConfig(BaseModelConfig):
-    """Configures the inference model. Most arguments are passed directly to the vLLM LLM class (https://docs.vllm.ai/en/latest/api/vllm.LLM.html)."""
+    """Configures the inference model. Most arguments are passed directly to the vLLM LLM class (https://docs.vllm.ai/en/latest/api/vllm.LLM.html).
 
-    dtype: Annotated[
-        Literal["auto", "float16", "bfloat16", "float32"],
-        Field(
-            description="Data type for model weights and activations. If 'auto' will use FP16 precision for FP32 and FP16 models, and BF16 precision for BF16 models. Passed to vLLM as `--dtype`",
-        ),
-    ] = "auto"
+    Parser fields (``tool_call_parser``, ``reasoning_parser``) default to ``"auto"``,
+    which resolves to a concrete parser name at validation time from the model name.
+    Set to ``None`` to disable.
+    """
 
-    max_model_len: Annotated[
-        int | None,
-        Field(
-            description="Maximum model context length. If None, will use the maximum context length from model config. Passed to vLLM as `--max-model-len`",
-        ),
-    ] = None
+    dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
+    """dtype for model weights and activations. ``auto`` uses FP16 for FP32/FP16 models and BF16 for BF16 models. Forwarded as ``--dtype``."""
 
-    enforce_eager: Annotated[
-        bool,
-        Field(
-            description="Whether to enforce eager mode. If False, will use PyTorch eager and cuda graphs in hybrid for maximal performance. Passed to vLLM as `--enforce-eager`",
-        ),
-    ] = False
+    max_model_len: int | None = None
+    """Maximum model context length. If None, uses the model config's value. Forwarded as ``--max-model-len``."""
 
-    trust_remote_code: Annotated[
-        bool,
-        Field(
-            description="Whether to trust remote code. Passed to vLLM engine init",
-        ),
-    ] = False
+    enforce_eager: bool = False
+    """Enforce eager mode. When False, PyTorch eager and cuda graphs run hybrid for maximum performance. Forwarded as ``--enforce-eager``."""
 
-    chat_template: Annotated[
-        str | None,
-        Field(
-            description="Chat template to use. Can be a Jinja2 template string or a path to a template file. "
-            "Passed to vLLM as `--chat-template`. If None, uses the model's default.",
-        ),
-    ] = None
+    trust_remote_code: bool = False
+    """Trust remote code. Forwarded to vLLM engine init."""
 
-    tool_call_parser: Annotated[
-        str | None,
-        Field(
-            description="The tool call parser to use. Passed to vLLM as `--tool-call-parser`. "
-            'Set to "auto" to infer from the model name.',
-        ),
-    ] = "auto"
+    chat_template: str | None = None
+    """Chat template — a Jinja2 template string or path to a template file. Forwarded as ``--chat-template``. If None, uses the model's default."""
 
-    reasoning_parser: Annotated[
-        str | None,
-        Field(
-            description="Parser for extracting reasoning content from model outputs. Passed to vLLM as `--reasoning-parser`. Setting this enables reasoning mode.",
-        ),
-    ] = None
+    tool_call_parser: str | None = "auto"
+    """Tool-call parser. Forwarded as ``--tool-call-parser``. Set to ``"auto"`` (default) to detect from the model name, or ``None`` to disable."""
 
-    rope_scaling: Annotated[
-        dict[str, Any] | str | None,
-        Field(
-            description='RoPE scaling configuration as a dict. For YaRN, use: {rope_type="yarn", factor=4.0, original_max_position_embeddings=32768} or. Passed to vLLM as `--rope-scaling`.',
-        ),
-    ] = None
+    reasoning_parser: str | None = "auto"
+    """Parser for extracting reasoning content from model outputs. Forwarded as ``--reasoning-parser``. Set to ``"auto"`` (default) to detect from the model name, or ``None`` to disable."""
+
+    rope_scaling: dict[str, Any] | str | None = None
+    """RoPE scaling configuration as a dict (e.g. ``{rope_type="yarn", factor=4.0, original_max_position_embeddings=32768}``). Forwarded as ``--rope-scaling``."""
+
+    @model_validator(mode="after")
+    def auto_resolve_parsers(self):
+        """Resolve ``"auto"`` parser values to concrete parser names from the model name.
+
+        Runs after ``RLConfig.auto_setup_shared_configs`` (mode=before) has
+        propagated the shared ``[model] name`` into ``inference.model``, so the
+        name is set even when only the shared block specifies it.
+        """
+        if self.tool_call_parser == "auto":
+            self.tool_call_parser = resolve_tool_call_parser(self.name)
+        if self.reasoning_parser == "auto":
+            self.reasoning_parser = resolve_reasoning_parser(self.name)
+        return self
 
 
 class WeightBroadcastConfig(BaseConfig):
-    """Configures weight broadcast settings."""
-
-    type: Annotated[Literal["nccl", "filesystem"], Field(description="The type of weight broadcast to use.")] = (
-        "filesystem"
-    )
+    type: Literal["nccl", "filesystem"] = "filesystem"
+    """Weight broadcast transport."""
 
 
-class KVCacheOffloadConfig(BaseModel):
-    """CPU KV cache offloading for vLLM inference workers."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    cpu_bytes: Annotated[int, Field(gt=0, description="CPU bytes available for KV cache offloading per worker.")] = (
-        1_000_000_000
-    )
+class KVCacheOffloadConfig(BaseConfig):
+    cpu_bytes: int = Field(1_000_000_000, gt=0)
+    """CPU bytes available for KV cache offloading per worker."""
 
 
 # Valid vLLM max_lora_rank values (from vllm/config/lora.py)
@@ -144,81 +105,70 @@ All2AllBackend = Literal[
 ]
 
 
-class BaseInferenceDeploymentConfig(BaseModel):
-    """Base deployment config for inference."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    gpus_per_node: Annotated[int, Field(description="Number of GPUs per node.")] = 8
+class BaseInferenceDeploymentConfig(BaseConfig):
+    gpus_per_node: int = 8
+    """GPUs per node."""
 
 
 class SingleNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
-    """Configures a single-node inference deployment."""
-
     type: Literal["single_node"] = "single_node"
 
 
+# Multi-node inference: each node runs an independent vLLM replica.
 class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
-    """Configures a multi-node inference deployment. Each node runs an independent vLLM replica."""
-
     type: Literal["multi_node"] = "multi_node"
 
-    num_nodes: Annotated[int, Field(ge=1, description="Number of inference nodes.")] = 2
+    num_nodes: int = Field(2, ge=1)
+    """Inference nodes."""
 
-    router_port: Annotated[int, Field(description="Port for the vllm-router.")] = 8000
-    backend_port: Annotated[int, Field(description="Port for vLLM backend instances.")] = 8100
-    router_policy: Annotated[
-        str, Field(description="Routing policy for the vllm-router (e.g. 'consistent_hash', 'round_robin').")
-    ] = "consistent_hash"
+    router_port: int = 8000
+    """Port for the vllm-router."""
+
+    backend_port: int = 8100
+    """Port for vLLM backend instances."""
+
+    router_policy: str = "consistent_hash"
+    """vllm-router routing policy (e.g. ``consistent_hash``, ``round_robin``)."""
 
 
+# Disaggregated prefill/decode inference. Each replica is split into separate
+# prefill and decode node groups. Requires NIXL for KV transfer and a vllm-router
+# for request routing. Multi-replica: set ``num_prefill_replicas`` /
+# ``num_decode_replicas`` to run multiple independent vLLM instances within the
+# prefill / decode node groups. E.g. ``num_prefill_nodes=4, num_prefill_replicas=2``
+# creates two prefill vLLM instances each spanning 2 nodes (EP16 with 8 GPUs/node).
 class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
-    """Configures a disaggregated prefill/decode inference deployment.
-
-    Each inference replica is split into separate prefill and decode node groups.
-    Requires NIXL for KV transfer and a vllm-router for request routing.
-
-    Multi-replica support: set ``num_prefill_replicas`` / ``num_decode_replicas``
-    to run multiple independent vLLM instances within the prefill / decode node
-    groups.  For example, ``num_prefill_nodes=4, num_prefill_replicas=2`` creates
-    two prefill vLLM instances each spanning 2 nodes (EP16 with 8 GPUs/node).
-    """
-
     type: Literal["disaggregated"] = "disaggregated"
 
-    num_prefill_nodes: Annotated[int, Field(ge=1, description="Total number of prefill nodes.")] = 1
-    num_decode_nodes: Annotated[int, Field(ge=1, description="Total number of decode nodes.")] = 1
+    num_prefill_nodes: int = Field(1, ge=1)
+    """Total prefill nodes."""
 
-    num_prefill_replicas: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Number of independent prefill vLLM instances. Must evenly divide num_prefill_nodes.",
-        ),
-    ] = 1
-    num_decode_replicas: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Number of independent decode vLLM instances. Must evenly divide num_decode_nodes.",
-        ),
-    ] = 1
+    num_decode_nodes: int = Field(1, ge=1)
+    """Total decode nodes."""
 
-    router_port: Annotated[int, Field(description="Port for the vllm-router on each replica.")] = 8000
-    prefill_port: Annotated[int, Field(description="Port for prefill vLLM instances.")] = 8100
-    decode_port: Annotated[int, Field(description="Port for decode vLLM instances.")] = 8200
-    router_policy: Annotated[
-        str, Field(description="Routing policy for the vllm-router (e.g. 'consistent_hash', 'round_robin').")
-    ] = "consistent_hash"
+    num_prefill_replicas: int = Field(1, ge=1)
+    """Independent prefill vLLM instances. Must evenly divide ``num_prefill_nodes``."""
 
-    prefill_env_overrides: Annotated[
-        dict[str, str],
-        Field(description="Extra environment variables exported only on prefill nodes."),
-    ] = {}
-    decode_env_overrides: Annotated[
-        dict[str, str],
-        Field(description="Extra environment variables exported only on decode nodes."),
-    ] = {}
+    num_decode_replicas: int = Field(1, ge=1)
+    """Independent decode vLLM instances. Must evenly divide ``num_decode_nodes``."""
+
+    router_port: int = 8000
+    """Port for the vllm-router on each replica."""
+
+    prefill_port: int = 8100
+    """Port for prefill vLLM instances."""
+
+    decode_port: int = 8200
+    """Port for decode vLLM instances."""
+
+    router_policy: str = "consistent_hash"
+    """vllm-router routing policy (e.g. ``consistent_hash``, ``round_robin``)."""
+
+    prefill_env_overrides: dict[str, str] = {}
+    """Extra environment variables exported only on prefill nodes."""
+
+    decode_env_overrides: dict[str, str] = {}
+    """Extra environment variables exported only on decode nodes."""
 
     @property
     def num_nodes(self) -> int:
@@ -246,200 +196,96 @@ InferenceDeploymentConfig: TypeAlias = Annotated[
 
 
 class InferenceExperimentalConfig(BaseConfig):
-    """Experimental features for inference."""
+    pass
 
 
 class InferenceConfig(BaseConfig):
-    """Configures inference."""
-
-    # The server configuration
     server: ServerConfig = ServerConfig()
 
-    # The model configuration
     model: ModelConfig = Field(default_factory=ModelConfig)
 
-    # The parallel configuration
     parallel: ParallelConfig = ParallelConfig()
+    """Multi-node and multi-GPU parallelism (TP, DP, PP)."""
 
-    enable_lora: Annotated[
-        bool,
-        Field(
-            description="Whether to enable LORA. Passed to vLLM as `--enable-lora`",
-        ),
-    ] = False
+    enable_lora: bool = False
+    """Enable LoRA. Forwarded as ``--enable-lora``."""
 
-    max_loras: Annotated[
-        int,
-        Field(
-            description="The maximum number of LoRAs to use. Passed to vLLM as `--max-loras`",
-        ),
-    ] = 8
+    max_loras: int = 8
+    """Maximum number of LoRAs. Forwarded as ``--max-loras``."""
 
     # TODO: The default value is very high because our areal impl for lora isn't ideal
     # We add a lora with the same name instead of changing weights inplace
     # Because we dont cancel requests that are past max_async, these requests could be using a LoRA that gets unloaded which will crash the inference server
-    max_cpu_loras: Annotated[
-        int,
-        Field(
-            description="The maximum number of LoRAs to use on CPU. Passed to vLLM as `--max-cpu-loras`",
-        ),
-    ] = 100
+    max_cpu_loras: int = 100
+    """Maximum number of LoRAs on CPU. Forwarded as ``--max-cpu-loras``."""
 
-    max_lora_rank: Annotated[
-        int | None,
-        Field(
-            description="The maximum LoRA rank to use. Passed to vLLM as `--max-lora-rank`",
-        ),
-    ] = None
+    max_lora_rank: int | None = None
+    """Maximum LoRA rank. Forwarded as ``--max-lora-rank``."""
 
-    lora_target_modules: Annotated[
-        list[str] | None,
-        Field(
-            description="The target modules for LoRA. Passed to vLLM as `--lora-target-modules`.",
-        ),
-    ] = None
+    lora_target_modules: list[str] | None = None
+    """LoRA target modules. Forwarded as ``--lora-target-modules``."""
 
-    enable_prefix_caching: Annotated[
-        bool | None,
-        Field(
-            description="Whether to enable prefix caching. Passed to vLLM as `--enable-prefix-caching`",
-        ),
-    ] = None
+    enable_prefix_caching: bool | None = None
+    """Enable prefix caching. Forwarded as ``--enable-prefix-caching``."""
 
-    gpu_memory_utilization: Annotated[
-        float,
-        Field(
-            description="The GPU memory utilization to use. Passed to vLLM as `--gpu-memory-utilization`",
-        ),
-    ] = 0.9
+    gpu_memory_utilization: float = 0.9
+    """GPU memory utilization. Forwarded as ``--gpu-memory-utilization``."""
 
-    api_server_count: Annotated[
-        int,
-        Field(
-            ge=0,
-            description="The number of API servers to use. Passed to vLLM as `--api-server-count`. Set to 0 for headless mode.",
-        ),
-    ] = 1
+    api_server_count: int = Field(1, ge=0)
+    """API servers to run. Forwarded as ``--api-server-count``. Set to 0 for headless mode."""
 
-    data_parallel_size_local: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description="Number of data parallel replicas to run on this node. Passed to vLLM as `--data-parallel-size-local`.",
-        ),
-    ] = None
+    data_parallel_size_local: int | None = Field(None, ge=1)
+    """Data parallel replicas to run on this node. Forwarded as ``--data-parallel-size-local``."""
 
-    data_parallel_rpc_port: Annotated[
-        int,
-        Field(
-            ge=1,
-            le=65535,
-            description="RPC port for data parallel communication. Passed to vLLM as `--data-parallel-rpc-port`.",
-        ),
-    ] = 13345
+    data_parallel_rpc_port: int = Field(13345, ge=1, le=65535)
+    """RPC port for data parallel communication. Forwarded as ``--data-parallel-rpc-port``."""
 
-    seed: Annotated[
-        int,
-        Field(
-            description="Seed the inference components. Passed to vLLM as `--seed`",
-        ),
-    ] = 0
+    seed: int = 0
+    """Seed the inference components. Forwarded as ``--seed``."""
 
-    enable_expert_parallel: Annotated[
-        bool,
-        Field(
-            description="Enable expert parallelism for MoE models. Passed to vLLM as `--enable-expert-parallel`.",
-        ),
-    ] = False
+    enable_expert_parallel: bool = False
+    """Enable expert parallelism for MoE models. Forwarded as ``--enable-expert-parallel``."""
 
-    all2all_backend: Annotated[
-        All2AllBackend,
-        Field(
-            description="All-to-all backend for expert parallel communication. Passed to vLLM as `--all2all-backend`.",
-        ),
-    ] = "allgather_reducescatter"
+    all2all_backend: All2AllBackend = "allgather_reducescatter"
+    """All-to-all backend for expert-parallel communication. Forwarded as ``--all2all-backend``."""
 
-    enable_eplb: Annotated[
-        bool,
-        Field(
-            description="Enable expert parallel load balancer (EPLB). Passed to vLLM as `--enable-eplb`.",
-        ),
-    ] = False
+    enable_eplb: bool = False
+    """Enable expert parallel load balancer (EPLB). Forwarded as ``--enable-eplb``."""
 
-    enable_dbo: Annotated[
-        bool,
-        Field(
-            description="Enable dual batch overlap (DBO). Passed to vLLM as `--enable-dbo`.",
-        ),
-    ] = False
+    enable_dbo: bool = False
+    """Enable dual batch overlap (DBO). Forwarded as ``--enable-dbo``."""
 
-    use_deep_gemm: Annotated[
-        bool,
-        Field(
-            description="Force DeepGEMM FP8 kernels via VLLM_USE_DEEP_GEMM=1. Only works with per-tensor FP8 quantization (e.g. GLM-5-FP8).",
-        ),
-    ] = False
+    use_deep_gemm: bool = False
+    """Force DeepGEMM FP8 kernels via ``VLLM_USE_DEEP_GEMM=1``. Only works with per-tensor FP8 quantization (e.g. GLM-5-FP8)."""
 
-    weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
-        WeightBroadcastConfig()
-    )
+    weight_broadcast: WeightBroadcastConfig = WeightBroadcastConfig()
 
-    kv_cache_offload: Annotated[
-        KVCacheOffloadConfig | None,
-        Field(
-            description=(
-                "CPU KV cache offload config for inference workers. Standard inference uses vLLM's "
-                "OffloadingConnector. Disaggregated P/D deployments combine it with NIXL through "
-                "MultiConnector in the SLURM launcher."
-            ),
-        ),
-    ] = None
+    kv_cache_offload: KVCacheOffloadConfig | None = None
+    """CPU KV cache offload for inference workers. Standard inference uses vLLM's ``OffloadingConnector``. Disaggregated P/D deployments combine it with NIXL through ``MultiConnector`` in the SLURM launcher."""
 
-    enable_return_routed_experts: Annotated[
-        bool,
-        Field(
-            description="Whether to enable return routed experts. Passed to vLLM as `--enable-return-routed-experts`",
-        ),
-    ] = False
+    enable_return_routed_experts: bool = False
+    """Return routed experts in responses. Forwarded as ``--enable-return-routed-experts``."""
 
-    enable_fp32_lm_head: Annotated[
-        bool,
-        Field(
-            description="Run the lm_head projection in fp32 via a native bf16xbf16 -> fp32 GEMM (`torch.mm` with `out_dtype=torch.float32`). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's `--enable-fp32-lm-head`. Implemented as a monkey-patch over vLLM's LogitsProcessor, activated by setting `additional_config[\"fp32_lm_head\"] = True` on the vLLM config.",
-        ),
-    ] = False
+    enable_fp32_lm_head: bool = False
+    """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented as a monkey-patch over vLLM's LogitsProcessor, activated by setting ``additional_config["fp32_lm_head"] = True`` on the vLLM config."""
 
-    vllm_extra: Annotated[
-        dict[str, Any],
-        Field(
-            description="Extra arguments to pass to vLLM. These are applied as attributes on the vLLM namespace after config translation.",
-        ),
-    ] = {}
+    vllm_extra: dict[str, Any] = {}
+    """Extra arguments forwarded to vLLM. Applied as attributes on the vLLM namespace after config translation."""
 
     # Launcher-only fields
 
-    deployment: Annotated[
-        InferenceDeploymentConfig,
-        Field(
-            description="Deployment configuration for inference.",
-        ),
-    ] = SingleNodeInferenceDeploymentConfig()
+    deployment: InferenceDeploymentConfig = SingleNodeInferenceDeploymentConfig()
 
-    slurm: Annotated[
-        SlurmConfig | None,
-        Field(
-            description="SLURM configuration. If set, the run will be submitted as a SLURM job instead of running locally.",
-        ),
-    ] = None
+    slurm: SlurmConfig | None = None
+    """SLURM configuration. When set, the run is submitted as a SLURM job instead of running locally."""
 
-    output_dir: Annotated[Path, Field(description="Directory for SLURM logs and generated scripts.")] = Path("outputs")
+    output_dir: Path = Path("outputs")
+    """Directory for SLURM logs and generated scripts."""
 
-    dry_run: Annotated[bool, Field(description="Only validate and dump resolved configs and exit early.")] = False
+    dry_run: bool = False
+    """Only validate and dump resolved configs, then exit early."""
 
-    experimental: Annotated[
-        InferenceExperimentalConfig,
-        Field(description="Experimental features for inference."),
-    ] = InferenceExperimentalConfig()
+    experimental: InferenceExperimentalConfig = InferenceExperimentalConfig()
 
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):
@@ -588,6 +434,12 @@ class InferenceConfig(BaseConfig):
         # Remove chat_template if not set (vLLM doesn't accept None)
         if namespace.chat_template is None:
             delattr(namespace, "chat_template")
+
+        # Remove tool_call_parser if not set (vLLM doesn't accept None) and gate
+        # `enable_auto_tool_choice` on its presence.
+        if namespace.tool_call_parser is None:
+            delattr(namespace, "tool_call_parser")
+        namespace.enable_auto_tool_choice = hasattr(namespace, "tool_call_parser")
 
         # Remove reasoning_parser if not set (vLLM doesn't accept None)
         if namespace.reasoning_parser is None:

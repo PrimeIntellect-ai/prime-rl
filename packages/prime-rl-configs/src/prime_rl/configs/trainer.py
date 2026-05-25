@@ -2,7 +2,7 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -28,45 +28,19 @@ _ATTN_ALIASES = {"flash_attention_4": "fa4"}
 
 
 class GCConfig(BaseConfig):
-    """Configures deterministic garbage collection to avoid stragglers in distributed training.
-
-    Disables Python's automatic GC and runs manual collections every `freq` steps so all
-    ranks collect simultaneously, preventing one rank from stalling others.
-    """
-
-    interval: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Run garbage collection every `interval` training steps.",
-        ),
-    ] = 50
+    interval: int = Field(50, ge=1)
+    """Run garbage collection every N training steps. Disables Python's automatic GC so every rank collects together and one slow rank can't stall the others."""
 
 
 class ActivationCheckpointConfig(BaseConfig):
-    """Configures activation checkpointing."""
+    mode: Literal["full", "selective"] = "full"
+    """``full`` checkpoints whole transformer blocks; ``selective`` checkpoints only the subcomponents listed in ``targets`` inside supported custom decoder layers."""
 
-    mode: Annotated[
-        Literal["full", "selective"],
-        Field(
-            description="Whether to checkpoint whole transformer blocks (`full`) or selected subcomponents inside supported custom decoder layers (`selective`).",
-        ),
-    ] = "full"
+    freq: int = Field(1, ge=1)
+    """Apply activation checkpointing to every N layers."""
 
-    freq: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Applies activation checkpointing to every `freq` layers. Defaults to 1.",
-        ),
-    ] = 1
-
-    targets: Annotated[
-        list[str],
-        Field(
-            description="Selective checkpoint targets. `norm` checkpoints every norm module inside selected layers (decoder, attention, MLA, etc.). `attn_proj` checkpoints projection-side attention work outside the kernel, including input/output projections, attention-local norms, RoPE, gating, and model-specific MLA projection helpers where exposed. `mlp` checkpoints the entire dense MLP forward (not applicable to MoE layers). `mla_up_proj` checkpoints MLA Q/KV up-projection work where supported. `routed_experts` checkpoints routed expert compute in MoE layers (including LatentMoE). `linear_attn` checkpoints supported token mixers outside the standard softmax-attention path, including NemotronH Mamba layers, Qwen3.5-MoE GatedDeltaNet layers, and AFMoE sliding-window attention layers.",
-        ),
-    ] = ["norm"]
+    targets: list[str] = ["norm"]
+    """Selective checkpoint targets. ``norm`` checkpoints every norm module inside selected layers. ``attn_proj`` checkpoints projection-side attention work outside the kernel (input/output projections, attention-local norms, RoPE, gating, model-specific MLA projection helpers). ``mlp`` checkpoints the entire dense MLP forward (not for MoE). ``mla_up_proj`` checkpoints MLA Q/KV up-projection where supported. ``routed_experts`` checkpoints routed expert compute in MoE layers (including LatentMoE). ``linear_attn`` checkpoints non-softmax token mixers (NemotronH Mamba, Qwen3.5-MoE GatedDeltaNet, AFMoE sliding-window attention)."""
 
     @model_validator(mode="after")
     def validate_selective_targets(self):
@@ -77,96 +51,42 @@ class ActivationCheckpointConfig(BaseConfig):
 
 
 class ActivationOffloadingConfig(BaseConfig):
-    """Configures the activation offloading."""
+    pin_memory: bool = True
+    """Pin offloaded activations to CPU memory."""
 
-    pin_memory: Annotated[bool, Field(description="Whether to pin the offloaded activations to CPU memory.")] = True
-
-    max_inflight_activations: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="The maximum number of activations to keep in while offloading further. (More activations means smoother overlap, but more gpu memory usage)",
-        ),
-    ] = 5
+    max_inflight_activations: int = Field(5, ge=1)
+    """Max activations kept in flight while offloading. More activations smooth overlap at the cost of GPU memory."""
 
 
 class CompileConfig(BaseConfig):
-    """Configures model compilation."""
-
-    fullgraph: Annotated[
-        bool,
-        Field(description="Whether to compile the transformer blocks with fullgraph."),
-    ] = False
+    fullgraph: bool = False
+    """Compile transformer blocks with ``fullgraph=True``."""
 
 
 class BenchConfig(BaseConfig):
-    """Configures benchmark mode."""
-
-    output_json: Annotated[
-        Path | None,
-        Field(description="Path to write benchmark results as JSON. If not set, only prints to console."),
-    ] = None
+    output_json: Path | None = None
+    """Path to write benchmark results as JSON. If unset, results are only printed to the console."""
 
 
 class IndexCacheConfig(BaseConfig):
-    """Configures the DSA IndexCache: sparse-attention top-k indices computed at one decoder layer are reused by subsequent layers instead of being recomputed."""
+    topk_freq: int = Field(1, ge=1)
+    """Recompute DSA top-k indices every N layers; intervening layers reuse the cached indices. ``1`` recomputes every layer (effectively no reuse). Mirrors vLLM's ``index_topk_freq`` HF override."""
 
-    topk_freq: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Recompute DSA top-k indices every N layers; intervening layers reuse the cached indices. ``1`` recomputes every layer (effectively no reuse). Mirrors vLLM's ``index_topk_freq`` HF override.",
-        ),
-    ] = 1
-
-    topk_pattern: Annotated[
-        str | None,
-        Field(
-            description="Optional per-layer schedule that overrides ``topk_freq``. ``'F'`` computes fresh indices for that layer; ``'S'`` reuses the previously cached indices. Length should match the number of decoder layers.",
-        ),
-    ] = None
+    topk_pattern: str | None = None
+    """Optional per-layer schedule that overrides ``topk_freq``. ``'F'`` computes fresh indices for that layer; ``'S'`` reuses the previously cached indices. Length should match the number of decoder layers."""
 
 
 class LoRAConfig(BaseConfig):
-    """Configuration for LoRA (Low-Rank Adaptation)."""
+    rank: int = Field(16, ge=1)
+    """Rank of the low-rank decomposition matrices."""
 
-    rank: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="Rank of the low-rank decomposition matrices.",
-        ),
-    ] = 16
+    alpha: float = Field(32.0, ge=0)
+    """LoRA scaling parameter."""
 
-    alpha: Annotated[
-        float,
-        Field(
-            ge=0,
-            description="LoRA scaling parameter.",
-        ),
-    ] = 32.0
+    dropout: float = Field(0.0, ge=0, le=1)
+    """LoRA dropout rate."""
 
-    dropout: Annotated[
-        float,
-        Field(
-            ge=0,
-            le=1,
-            description="LoRA dropout rate.",
-        ),
-    ] = 0.0
-
-    target_modules: Annotated[
-        list[str],
-        Field(
-            description=(
-                "Module names or regex patterns for modules to apply LoRA to. Simple names (e.g., 'q_proj') "
-                "match any component in the module path. Regex patterns match anywhere in the name. "
-                "Names unknown to the current model are silently ignored, so defaults cover multiple architectures. "
-                "NemotronH note: 'experts' matches NonGatedGroupedExperts inside LatentMoE; 'fc1_latent_proj' and "
-                "'fc2_latent_proj' adapt the latent up/down projections. Add 'in_proj'/'out_proj' to also LoRA Mamba."
-            ),
-        ),
-    ] = [
+    target_modules: list[str] = [
         "q_proj",
         "k_proj",
         "v_proj",
@@ -178,241 +98,98 @@ class LoRAConfig(BaseConfig):
         "fc1_latent_proj",
         "fc2_latent_proj",
     ]
+    """Module names or regex patterns to apply LoRA to. Simple names (e.g. ``q_proj``) match any component in the module path; regex patterns match anywhere in the name. Names unknown to the current model are silently ignored, so defaults cover multiple architectures. NemotronH note: ``experts`` matches NonGatedGroupedExperts inside LatentMoE; ``fc1_latent_proj``/``fc2_latent_proj`` adapt the latent up/down projections. Add ``in_proj``/``out_proj`` to also LoRA Mamba."""
 
-    modules_to_save: Annotated[
-        list[str],
-        Field(
-            description="Module names or regex patterns for modules to keep fully trainable (not freeze). Simple names match any component in the module path. Regex patterns match anywhere in the name.",
-        ),
-    ] = []
+    modules_to_save: list[str] = []
+    """Module names or regex patterns to keep fully trainable (not freeze). Same matching rules as ``target_modules``."""
 
 
 class DebugModelConfig(BaseConfig):
-    """Debugging feature around model and distributed training."""
+    num_layers: int | None = None
+    """Override the number of transformer layers (truncates the model)."""
 
-    num_layers: Annotated[
-        int | None,
-        Field(description="The number of layers in the model."),
-    ] = None
+    random_init: bool = False
+    """Randomly initialize the model instead of loading weights."""
 
-    random_init: Annotated[
-        bool,
-        Field(
-            description="Whether to random initialize the model.",
-        ),
-    ] = False
-
-    force_balanced_routing: Annotated[
-        bool,
-        Field(
-            description="If True, override MoE token-choice routing with a round-robin assignment so every expert receives an equal share of tokens. Intended for fake-data smoke tests where untrained routing would otherwise produce severe expert imbalance and OOM. Gating scores are still gathered from the override indices so the forward pass stays consistent.",
-        ),
-    ] = False
+    force_balanced_routing: bool = False
+    """Replace MoE token-choice routing with a round-robin assignment so every expert sees an equal share. Intended for fake-data smoke tests where untrained routing would otherwise OOM under severe imbalance. Gating scores are still gathered from the override indices so the forward pass stays consistent."""
 
 
 class ModelConfig(BaseModelConfig):
-    """Configures the model for training."""
+    seq_len: int = 2048
+    """Sequence length the model is trained on."""
 
-    seq_len: Annotated[int, Field(description="The sequence length to use for the model.")] = 2048
+    attn: AttnImplementation = "flash_attention_2"
+    """Attention implementation. With CP enabled, ring attention uses the matching kernel family (FA2/FA3/FA4)."""
 
-    attn: Annotated[
-        AttnImplementation,
-        Field(
-            description="The attention implementation to use. When CP is enabled, ring attention uses the matching kernel family (FA2 for flash_attention_2, FA3 for flash_attention_3, FA4 for fa4).",
-        ),
-    ] = "flash_attention_2"
+    compile: CompileConfig | None = None
+    """Compile the model with ``torch.compile``."""
 
-    compile: Annotated[
-        CompileConfig | None,
-        Field(
-            description="Whether to compile the model using `torch.compile`.",
-        ),
-    ] = None
+    ac: ActivationCheckpointConfig | None = None
+    """Activation checkpointing configuration. If None, activation checkpointing is disabled."""
 
-    ac: Annotated[
-        ActivationCheckpointConfig | None,
-        Field(
-            description="Whether to apply activation checkpointing to the model. If None, will not apply activation checkpointing.",
-        ),
-    ] = None
+    ac_offloading: ActivationOffloadingConfig | None = None
+    """Activation offloading configuration. If None, activation offloading is disabled."""
 
-    ac_offloading: Annotated[
-        ActivationOffloadingConfig | None,
-        Field(
-            description="Whether to apply activation offloading to the model. If None, will not apply activation offloading.",
-        ),
-    ] = None
+    fsdp_cpu_offload: bool = False
+    """Enable FSDP CPU offloading for parameters, gradients, and optimizer states. Uses pinned memory for efficient CPU↔GPU transfers."""
 
-    fsdp_cpu_offload: Annotated[
-        bool,
-        Field(
-            description="Whether to enable FSDP CPU offloading for parameters, gradients, and optimizer states. When enabled, uses pinned memory for efficient CPU-GPU transfers.",
-        ),
-    ] = False
+    optim_cpu_offload: bool = False
+    """Offload only optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory."""
 
-    optim_cpu_offload: Annotated[
-        bool,
-        Field(
-            description="Whether to enable optimizer state CPU offloading. Unlike fsdp_cpu_offload, this only moves optimizer states (momentum, variance) to CPU, keeping weights on GPU. This avoids the H2D all-gather overhead while still saving GPU memory.",
-        ),
-    ] = False
+    reshard_after_forward: bool = True
+    """Reshard the model after each forward pass."""
 
-    reshard_after_forward: Annotated[
-        bool, Field(description="Whether to reshard the model after each forward pass.")
-    ] = True
+    dp_replicate: int = 1
+    """Data parallel dim where model weights are replicated."""
 
-    dp_replicate: Annotated[
-        int,
-        Field(
-            description="The data parallel dim where model weights are replicated.",
-        ),
-    ] = 1
+    ep: int = 1
+    """Expert parallelism degree for MoE layers. 1 disables EP."""
 
-    ep: Annotated[
-        int,
-        Field(
-            description="The expert parallelism to use if the model has MoE layers. If 1, then no EP will be used.",
-        ),
-    ] = 1
+    ep_comm_backend: EPCommBackend = "torch"
+    """Communication backend for expert parallelism. ``torch`` uses TorchTitan all-to-all collectives; ``deepep`` uses DeepEP custom kernels."""
 
-    ep_comm_backend: Annotated[
-        EPCommBackend,
-        Field(
-            description=(
-                "Communication backend for expert parallelism. "
-                "`torch` uses TorchTitan all-to-all collectives and `deepep` uses DeepEP custom kernels."
-            ),
-        ),
-    ] = "torch"
+    deepep_num_sms: int = Field(20, ge=1)
+    """SMs allocated for DeepEP intranode dispatch/combine kernels. Also determines internode RDMA channel count (``num_channels = num_sms / 2``). Lower values leave more SMs for compute; higher values speed up dispatch/combine. The optimal value depends on EP degree and hardware. Only used when ``ep_comm_backend='deepep'``."""
 
-    deepep_num_sms: Annotated[
-        int,
-        Field(
-            ge=1,
-            description=(
-                "Number of SMs to allocate for DeepEP intranode dispatch/combine kernels. "
-                "Also determines internode RDMA channel count (num_channels = num_sms / 2). "
-                "Lower values leave more SMs for compute; higher values speed up dispatch/combine. "
-                "The optimal value depends on the EP degree and hardware."
-                "Only used when ep_comm_backend='deepep'."
-            ),
-        ),
-    ] = 20
+    deepep_token_chunk_size: int | None = Field(None, ge=1)
+    """Token chunk size for DeepEP MoE pipelining. When set, DeepEP dispatch for chunk i+1 is launched while experts compute chunk i. Only used when ``ep_comm_backend='deepep'``."""
 
-    deepep_token_chunk_size: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description=(
-                "Optional token chunk size for DeepEP MoE pipelining. "
-                "When set, DeepEP dispatch for chunk i+1 is launched while experts compute chunk i. "
-                "Only used when ep_comm_backend='deepep'."
-            ),
-        ),
-    ] = None
+    cp: int = 1
+    """Context parallelism degree. 1 disables CP."""
 
-    cp: Annotated[
-        int,
-        Field(
-            description="The context parallelism size to use. If 1, then no CP will be used.",
-        ),
-    ] = 1
+    cp_style: Literal["ring", "ulysses"] = "ring"
+    """CP communication style. ``ring`` uses ring-attention all-gather/reduce-scatter (requires custom kernels per attention type). ``ulysses`` uses all-to-all to redistribute Q/K/V from sequence-sharded to head-sharded, runs vanilla attention locally on the full sequence, then all-to-all back — works out-of-the-box with any attention kernel (softmax FA, linear attention, mamba, etc.)."""
 
-    cp_style: Annotated[
-        Literal["ring", "ulysses"],
-        Field(
-            description=(
-                "Context parallelism communication style. "
-                "'ring' uses ring-attention all-gather/reduce-scatter (current default, "
-                "requires custom kernels per attention type). "
-                "'ulysses' uses all-to-all to redistribute Q/K/V from sequence-sharded "
-                "to head-sharded, runs vanilla attention locally on the full sequence, "
-                "then all-to-all back. Works out-of-the-box with any attention kernel "
-                "(softmax FA, linear attention, mamba, etc.)."
-            ),
-        ),
-    ] = "ring"
+    impl: Literal["hf", "custom", "auto"] = "auto"
+    """Model implementation. ``auto`` selects ``custom`` if supported by the model, otherwise ``hf``."""
 
-    impl: Annotated[
-        Literal["hf", "custom", "auto"],
-        Field(
-            description=(
-                "Model implementation to use. 'auto' (default) selects 'custom' if supported by the model, "
-                "otherwise 'hf'."
-            ),
-        ),
-    ] = "auto"
+    optimization_dtype: Literal["bfloat16", "float32"] = "float32"
+    """dtype for model optimization."""
 
-    optimization_dtype: Annotated[
-        Literal["bfloat16", "float32"],
-        Field(
-            description="The dtype to use for the model optimization.",
-        ),
-    ] = "float32"
+    reduce_dtype: Literal["bfloat16", "float32"] = "float32"
+    """dtype for gradient/parameter reductions."""
 
-    reduce_dtype: Annotated[
-        Literal["bfloat16", "float32"],
-        Field(
-            description="The dtype to use for the model reduce.",
-        ),
-    ] = "float32"
+    moe_use_grouped_mm: bool = True
+    """Use grouped mm for MoE layers. Requires compute capability ≥ 9.0."""
 
-    moe_use_grouped_mm: Annotated[
-        bool,
-        Field(
-            description="Whether to use grouped mm for the MoE layers. Require compute capability >= 9.0",
-        ),
-    ] = True
+    fp8: bool = False
+    """FP8 training via DeepGEMM. Replaces ``nn.Linear`` with FP8 blockwise linear and uses FP8 grouped GEMM for MoE experts. Requires SM90 (Hopper) GPUs and ``model.impl='custom'``."""
 
-    index_cache: Annotated[
-        IndexCacheConfig | None,
-        Field(
-            description="DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices.",
-        ),
-    ] = None
+    index_cache: IndexCacheConfig | None = None
+    """DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices."""
 
-    fp8: Annotated[
-        bool,
-        Field(
-            description="Whether to use FP8 training via DeepGEMM. Replaces nn.Linear layers with FP8 blockwise linear "
-            "and uses FP8 grouped GEMM for MoE experts. Requires SM90 (Hopper) GPUs and model.impl='custom'.",
-        ),
-    ] = False
+    freeze_moe_router: bool = False
+    """Freeze MoE router parameters during training."""
 
-    freeze_moe_router: Annotated[
-        bool,
-        Field(
-            description="Whether to freeze the MoE router parameters during training.",
-        ),
-    ] = False
+    lora: LoRAConfig | None = None
+    """LoRA configuration. If None, LoRA is disabled."""
 
-    lora: Annotated[
-        LoRAConfig | None,
-        Field(
-            description="Whether to apply LoRA to the model. If None, will not apply LoRA.",
-        ),
-    ] = None
+    debug: DebugModelConfig = DebugModelConfig()
+    """Debugging knobs for the model and distributed training."""
 
-    debug: Annotated[
-        DebugModelConfig,
-        Field(
-            description="Debugging feature around model and distributed training.",
-        ),
-    ] = DebugModelConfig()
-
-    fused_lm_head_token_chunk_size: Annotated[
-        int | Literal["auto", "disabled"],
-        Field(
-            description=(
-                "The flattened token chunk size to use for the fused LM head. "
-                "Three behaviors: "
-                "(1) int >= 1: explicitly set the number of tokens per LM-head chunk; "
-                "(2) 'auto': auto-enable (RL training auto-sets to 8192); "
-                "(3) 'disabled': explicitly disable fused LM head (use vanilla). "
-                "Explicitly setting an integer value for this feature isn't supported for SFT training."
-            ),
-        ),
-    ] = "disabled"
+    fused_lm_head_token_chunk_size: int | Literal["auto", "disabled"] = "disabled"
+    """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``auto`` auto-enables (RL training picks 8192); ``disabled`` uses the vanilla LM head. Integer values aren't supported for SFT training."""
 
     @model_validator(mode="before")
     @classmethod
@@ -488,64 +265,41 @@ class ModelConfig(BaseModelConfig):
 
 
 class TokenizerConfig(BaseConfig):
-    """Configuration for the tokenizer."""
+    name: str | None = None
+    """Tokenizer name or path. If None, the model's default tokenizer is used."""
 
-    name: Annotated[
-        str | None,
-        Field(description="The name or path of the tokenizer to use. If None, will use the model's default tokenizer."),
-    ] = None
+    trust_remote_code: bool | None = None
+    """Trust remote code when initializing the tokenizer. If None, inherits the model's ``trust_remote_code`` setting."""
 
-    trust_remote_code: Annotated[
-        bool | None,
-        Field(
-            description="Whether to trust remote code for tokenizer initialization. If None, will use the model's default trust remote code setting.",
-        ),
-    ] = None
-
-    chat_template: Annotated[
-        str | None,
-        Field(
-            description="The chat template to use for the tokenizer. Can be a Jinja2 template string or a path to a template file. If None, will use the tokenizer's default chat template."
-        ),
-    ] = None
+    chat_template: str | None = None
+    """Chat template for the tokenizer. Either a Jinja2 template string or a path to a template file. If None, the tokenizer's default chat template is used."""
 
 
-class ConstantSchedulerConfig(BaseModel):
-    """Configuration for constant learning rate scheduler."""
-
+class ConstantSchedulerConfig(BaseConfig):
     type: Literal["constant"] = "constant"
 
 
-class LinearSchedulerConfig(BaseModel):
-    """Configuration for linear learning rate scheduler."""
-
+class LinearSchedulerConfig(BaseConfig):
     type: Literal["linear"] = "linear"
 
-    warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = (
-        10
-    )
+    warmup_steps: int = Field(10, ge=0)
+    """Warmup steps for the learning rate scheduler."""
 
-    decay_steps: Annotated[
-        int,
-        Field(
-            ge=0,
-            description="Number of steps to decay the learning rate during the final portion of training.",
-        ),
-    ] = 10
+    decay_steps: int = Field(10, ge=0)
+    """Steps to decay the learning rate during the final portion of training."""
 
-    min_lr: Annotated[float, Field(ge=0, description="Minimum learning rate to converge to.")] = 0.0
+    min_lr: float = Field(0.0, ge=0)
+    """Minimum learning rate to converge to."""
 
 
-class CosineSchedulerConfig(BaseModel):
-    """Configuration for cosine learning rate scheduler."""
-
+class CosineSchedulerConfig(BaseConfig):
     type: Literal["cosine"] = "cosine"
 
-    warmup_steps: Annotated[int, Field(ge=0, description="Number of warmup steps for the learning rate scheduler.")] = (
-        10
-    )
+    warmup_steps: int = Field(10, ge=0)
+    """Warmup steps for the learning rate scheduler."""
 
-    min_lr: Annotated[float, Field(ge=0, description="Minimum learning rate to converge to.")] = 0.0
+    min_lr: float = Field(0.0, ge=0)
+    """Minimum learning rate to converge to."""
 
 
 SchedulerConfig: TypeAlias = Annotated[
@@ -553,37 +307,48 @@ SchedulerConfig: TypeAlias = Annotated[
 ]
 
 
-class BaseOptimizerConfig(BaseModel):
-    lr: Annotated[float, Field(ge=0)] = 1e-6
-    weight_decay: Annotated[float, Field(ge=0)] = 0.01
-    max_norm: Annotated[
-        float | None, Field(ge=0, description="Maximum gradient norm to clip. If None, gradient clipping is disabled.")
-    ] = 1.0
+class BaseOptimizerConfig(BaseConfig):
+    lr: float = Field(1e-6, ge=0)
+    """Peak learning rate."""
+
+    weight_decay: float = Field(0.01, ge=0)
+    """L2 weight-decay coefficient."""
+
+    max_norm: float | None = Field(1.0, ge=0)
+    """Maximum gradient norm to clip to. If None, gradient clipping is disabled."""
 
 
 class SGDConfig(BaseOptimizerConfig):
     type: Literal["sgd"] = "sgd"
+
     nesterov: bool = True
+    """Use Nesterov momentum."""
+
     momentum: float = 0.9
+    """SGD momentum factor."""
 
 
 class AdamWConfig(BaseOptimizerConfig):
     type: Literal["adamw"] = "adamw"
 
-    betas1: Annotated[float, Field(ge=0)] = 0.9
-    betas2: Annotated[float, Field(ge=0)] = 0.999
+    betas1: float = Field(0.9, ge=0)
+    """Adam first-moment (β1) decay."""
+
+    betas2: float = Field(0.999, ge=0)
+    """Adam second-moment (β2) decay."""
 
 
 class MuonConfig(BaseOptimizerConfig):
     type: Literal["muon"] = "muon"
 
-    mu: Annotated[float, Field(ge=0, description="Momentum factor for the Muon algorithm.")] = 0.95
-    betas1: Annotated[
-        float, Field(ge=0, description="Beta1 for the AdamW/Lion sub-optimizer used on non-Muon params.")
-    ] = 0.9
-    betas2: Annotated[
-        float, Field(ge=0, description="Beta2 for the AdamW/Lion sub-optimizer used on non-Muon params.")
-    ] = 0.95
+    mu: float = Field(0.95, ge=0)
+    """Momentum factor for the Muon algorithm."""
+
+    betas1: float = Field(0.9, ge=0)
+    """β1 for the AdamW/Lion sub-optimizer used on non-Muon params."""
+
+    betas2: float = Field(0.95, ge=0)
+    """β2 for the AdamW/Lion sub-optimizer used on non-Muon params."""
 
 
 class SignSGDConfig(BaseOptimizerConfig):
@@ -596,196 +361,128 @@ OptimizerConfig: TypeAlias = Annotated[
 
 
 class WeightCheckpointConfig(BaseConfig):
-    """Configures saving HF-compatible weight checkpoints."""
+    save_sharded: bool = True
+    """Save the weight checkpoint in sharded format."""
 
-    save_sharded: Annotated[
-        bool,
-        Field(
-            description="Whether to save the weight checkpoint in sharded format.",
-        ),
-    ] = True
+    save_format: Literal["safetensors", "torch"] = "safetensors"
+    """Weight checkpoint serialization format."""
 
-    save_format: Annotated[
-        Literal["safetensors", "torch"],
-        Field(
-            description="The format to save the weight checkpoint in.",
-        ),
-    ] = "safetensors"
-
-    save_adapter_separately: Annotated[
-        bool,
-        Field(
-            description="Whether to save LoRA adapters separately before merging into full model weights.",
-        ),
-    ] = False
+    save_adapter_separately: bool = False
+    """Save LoRA adapters separately before merging into full model weights."""
 
 
 class CheckpointConfig(BaseConfig):
-    """Configures checkpointing the full model, optimizer and training state for resuming training."""
+    output_dir: Path | None = None
+    """Override directory for checkpoints and weights. If set, checkpoints and weight snapshots are written here instead of under the trainer ``output_dir`` — useful for writing large checkpoints to a separate storage volume."""
 
-    output_dir: Annotated[
-        Path | None,
-        Field(
-            description="Override directory for checkpoints and weights. When set, checkpoints and weight snapshots are written here instead of under the trainer output_dir. Useful for writing large checkpoints to a separate storage volume.",
-        ),
-    ] = None
-
-    interval: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description="Interval at which to save the training checkpoint. If None, will only checkpoint at the end of training.",
-        ),
-    ] = None
+    interval: int | None = Field(None, ge=1)
+    """Interval at which to save the training checkpoint. If None, only checkpoints at the end of training."""
 
     weights: WeightCheckpointConfig | None = WeightCheckpointConfig()
+    """Weight-checkpoint sub-configuration. If None, no HF-compatible weight checkpoints are written."""
 
-    skip_gather_master_weights: Annotated[
-        bool,
-        Field(
-            description="When true, skip gathering and saving HF-compatible weight checkpoints. Useful for large models where the gather is expensive and only DCP checkpoints are needed.",
-        ),
-    ] = False
+    skip_gather_master_weights: bool = False
+    """Skip gathering and saving HF-compatible weight checkpoints. Useful for large models where the gather is expensive and only DCP checkpoints are needed."""
 
-    weights_only: Annotated[
-        bool,
-        Field(
-            description="When true, only save weight checkpoints (no optimizer/scheduler state). Much faster and smaller than full checkpoints, but cannot resume training.",
-        ),
-    ] = False
+    weights_only: bool = False
+    """Save only weight checkpoints (no optimizer/scheduler state). Much faster and smaller than full checkpoints, but cannot resume training."""
 
-    resume_step: Annotated[
-        int | None,
-        Field(
-            ge=-1,
-            description="Step to resume training from. If None, will start from scratch. If -1, will restart from latest checkpoint available.",
-        ),
-    ] = None
+    resume_step: int | None = Field(None, ge=-1)
+    """Step to resume training from. None starts from scratch; ``-1`` restarts from the latest checkpoint available."""
 
-    keep_last: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency.",
-        ),
-    ] = None
+    keep_last: int | None = Field(None, ge=1)
+    """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""
 
-    keep_interval: Annotated[
-        int | None,
-        Field(
-            ge=1,
-            description="Keep checkpoints at every N steps permanently (e.g., keep_interval=100 keeps step 100, 200, ...). If None, no interval-based keeping.",
-        ),
-    ] = None
+    keep_interval: int | None = Field(None, ge=1)
+    """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
-    skip_progress: Annotated[
-        bool,
-        Field(
-            description="Whether to skip loading the progress from checkpoint.",
-        ),
-    ] = False
+    skip_progress: bool = False
+    """Skip loading the progress from checkpoint."""
 
-    skip_scheduler: Annotated[
-        bool,
-        Field(
-            description="Whether to skip loading the scheduler from checkpoint.",
-        ),
-    ] = False
+    skip_scheduler: bool = False
+    """Skip loading the scheduler from checkpoint."""
 
-    skip_dataloader: Annotated[
-        bool,
-        Field(
-            description="Whether to skip loading the dataloader from checkpoint.",
-        ),
-    ] = False
+    skip_dataloader: bool = False
+    """Skip loading the dataloader from checkpoint."""
 
-    skip_optimizer: Annotated[
-        bool,
-        Field(
-            description="Whether to skip loading the optimizer state from checkpoint.",
-        ),
-    ] = False
+    skip_optimizer: bool = False
+    """Skip loading the optimizer state from checkpoint."""
 
 
-class DefaultLossConfig(BaseModel):
-    """Config for the default loss."""
-
+class DefaultLossConfig(BaseConfig):
     type: Literal["default"] = "default"
 
-    dppo_mask_low: Annotated[float, Field(ge=0, description="The low threshold for masking tokens.")] = 0.2
-    dppo_mask_high: Annotated[float, Field(ge=0, description="The high threshold for masking tokens.")] = 0.2
-    adv_tau: Annotated[float, Field(ge=0, description="The tau for advantages.")] = 1.0
-    teacher_tau: Annotated[float, Field(ge=0, description="The tau for teacher logprobs.")] = 0.0
-    kl_tau: Annotated[float, Field(ge=0, description="The tau for KL divergence.")] = 1e-3
+    dppo_mask_low: float = Field(0.2, ge=0)
+    """Lower DPPO masking threshold."""
+
+    dppo_mask_high: float = Field(0.2, ge=0)
+    """Upper DPPO masking threshold."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+    kl_tau: float = Field(1e-3, ge=0)
+    """Temperature for the KL term."""
 
 
-class SFTLossConfig(BaseModel):
-    """Config for SFT-style masked negative log-likelihood loss."""
-
-    type: Literal["sft"] = "sft"
-
-
-class CustomLossConfig(BaseModel):
-    """Config for a custom external loss function."""
-
+class CustomLossConfig(BaseConfig):
     type: Literal["custom"] = "custom"
 
-    import_path: Annotated[str, Field(description="Import path to the loss function (e.g., 'my_module.my_loss')")]
-    kwargs: Annotated[dict[str, Any], Field(default_factory=dict, description="Kwargs to pass to the loss function")]
+    import_path: str
+    """Import path to the loss function (e.g. ``my_module.my_loss``)."""
+
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    """Kwargs forwarded to the loss function."""
 
 
-LossConfig: TypeAlias = Annotated[DefaultLossConfig | SFTLossConfig | CustomLossConfig, Field(discriminator="type")]
+LossConfig: TypeAlias = Annotated[DefaultLossConfig | CustomLossConfig, Field(discriminator="type")]
 
 
 class FakeDataLoaderConfig(BaseConfig):
-    """Configures a fake data loader sampling random micro batches for debugging."""
+    batch_size: int = Field(2, ge=1)
+    """Batch size of the fake data loader."""
 
-    batch_size: Annotated[int, Field(ge=1)] = 2
-    generate_samples: Annotated[
-        bool, Field(description="Whether to generate separate samples and pack them into a single micro batch.")
-    ] = False
+    generate_samples: bool = False
+    """Generate separate samples and pack them into a single micro-batch instead of using random tensors."""
 
 
 class DataLoaderConfig(BaseConfig):
-    """Configures the data loader used for training."""
+    fake: FakeDataLoaderConfig | None = None
+    """Use a fake data loader sampling random micro-batches (for debugging)."""
 
-    fake: Annotated[FakeDataLoaderConfig | None, Field(description="Whether to use a fake data loader.")] = None
 
-
-class BaseWeightBroadcastConfig(BaseModel):
-    """Configures the base weight broadcast."""
-
+class BaseWeightBroadcastConfig(BaseConfig):
     pass
 
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
-    """Configures the weight broadcast."""
-
     type: Literal["filesystem"] = "filesystem"
-    save_sharded: Annotated[bool, Field(description="Whether to save the weight checkpoint in sharded format.")] = True
-    save_format: Annotated[
-        Literal["safetensors", "torch"], Field(description="The format to save the weight checkpoint in.")
-    ] = "safetensors"
+
+    save_sharded: bool = True
+    """Save the weight checkpoint in sharded format."""
+
+    save_format: Literal["safetensors", "torch"] = "safetensors"
+    """Weight checkpoint serialization format."""
 
 
 class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
-    """Configures the NCCL broadcast."""
-
     type: Literal["nccl"] = "nccl"
-    host: Annotated[str, Field(description="The host to use for the NCCL broadcast.")] = "localhost"
-    port: Annotated[int, Field(description="The port to use for the NCCL broadcast.")] = 29501
-    timeout: Annotated[int, Field(description="The timeout in seconds to use for the NCCL broadcast.")] = 1200
+
+    host: str = "localhost"
+    """Host for the NCCL broadcast rendezvous."""
+
+    port: int = 29501
+    """Port for the NCCL broadcast rendezvous."""
+
+    timeout: int = 1200
+    """Timeout in seconds for the NCCL broadcast."""
+
     # TODO: Should not be configurable, but auto-inferred
-    inference_world_size: Annotated[int, Field(description="The number of GPUs used for inference.")] = 1
-    quantize_in_weight_transfer: Annotated[
-        bool,
-        Field(
-            description=(
-                "Use kernel-format FP8 quantized NCCL transfer for weight updates. "
-                "When disabled, uses default HF checkpoint-format transfer."
-            ),
-        ),
-    ] = False
+    inference_world_size: int = 1
+    """Number of GPUs used for inference."""
+
+    quantize_in_weight_transfer: bool = False
+    """Use kernel-format FP8 quantized NCCL transfer for weight updates. When disabled, uses default HF checkpoint-format transfer."""
 
 
 WeightBroadcastConfig: TypeAlias = Annotated[
@@ -793,132 +490,82 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
+class TokenExportConfig(BaseConfig):
+    """Configures per-token rollout exports from the RL trainer."""
+
+
 class TrainerExperimentalConfig(BaseConfig):
-    """Experimental features for the trainer."""
+    token_export: TokenExportConfig | None = None
+    """Opt-in per-token JSONL export for rollout debugging. When enabled, writes token ids and aligned trainer metrics after each forward pass."""
 
 
 class TrainerConfig(BaseConfig):
-    """Configures the RL trainer"""
-
-    # The model configuration
     model: ModelConfig = ModelConfig()
 
-    # The tokenizer configuration
     tokenizer: TokenizerConfig = TokenizerConfig()
 
-    # The data configuration
     data: DataLoaderConfig = DataLoaderConfig()
 
-    # The loss configuration
     loss: LossConfig = DefaultLossConfig()
+    """Loss config for rl-mode batches. opd and sft batches dispatch to their own loss fns unconditionally and do not read this."""
 
-    # The optimizer configuration
     optim: OptimizerConfig = AdamWConfig()
 
-    # The learning rate scheduler configuration
     scheduler: SchedulerConfig = ConstantSchedulerConfig()
 
-    # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
+    """Full training-state checkpoint configuration (model + optimizer + scheduler). If None, no resume-capable checkpoints are written."""
 
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
+    """Transport used to broadcast updated weights from trainer to inference."""
 
     rollout_transport: TransportConfig = FileSystemTransportConfig()
+    """Transport used to ship rollouts from orchestrator to trainer."""
 
-    # The logging configuration
     log: TrainerLogConfig = TrainerLogConfig()
 
-    # The wandb configuration
     wandb: WandbConfig | None = None
 
-    output_dir: Annotated[
-        Path,
-        Field(
-            description="Directory to write outputs to. Will be populated with checkpoints, weights, rollouts and logs as subdirectories. Should be set to a persistent directory with enough disk space. This value should be distinct across experiments running on a single node. See the README for more details."
-        ),
-    ] = Path("outputs")
+    output_dir: Path = Path("outputs")
+    """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
 
-    matmul_precision: Annotated[
-        Literal["highest", "high", "medium"],
-        Field(
-            description=(
-                "Precision for float32 matrix multiplications. "
-                "Use 'highest' for full FP32 (required on ROCm/AMD GPUs to avoid "
-                "catastrophic precision loss in softmax over large vocabularies). "
-                "Use 'high' to enable TF32 on NVIDIA GPUs for a speedup with minor "
-                "precision tradeoff. See torch.set_float32_matmul_precision docs."
-            ),
-        ),
-    ] = "high"
+    matmul_precision: Literal["highest", "high", "medium"] = "high"
+    """Precision for float32 matrix multiplications. ``highest`` is full FP32 (required on ROCm/AMD GPUs to avoid catastrophic precision loss in softmax over large vocabularies). ``high`` enables TF32 on NVIDIA GPUs for a speedup with minor precision tradeoff. See ``torch.set_float32_matmul_precision``."""
 
-    max_steps: Annotated[
-        int | None,
-        Field(
-            description="Maximum number of steps to run training for. If None, will run indefinitely.",
-        ),
-    ] = None
+    max_steps: int | None = None
+    """Maximum number of training steps. If None, runs indefinitely."""
 
-    max_async_level: Annotated[
-        int,
-        Field(
-            ge=0,
-            description="Maximum number of steps that inference can be ahead of training. Determines how 'off-policy' the inference engines can be. Higher values yield better throughput through async execution, but may yield lower performance. If 0, will be fully synchronous.",
-        ),
-    ] = 1
+    max_async_level: int = Field(1, ge=0)
+    """Maximum steps inference can be ahead of training (how off-policy inference can be). Higher values yield better throughput via async execution at the cost of policy lag; ``0`` is fully synchronous."""
 
-    enable_router_replay: Annotated[
-        bool,
-        Field(
-            description="Whether to enable router replay. If True, will return routed experts in the batch. This is only supported if `enable_return_routed_experts=True` in the inference config or pass `--enable-return-routed-experts` to vLLM server. This is only supported for custom models.",
-        ),
-    ] = False
+    enable_router_replay: bool = False
+    """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
 
-    memory_profiler_path: Annotated[Path | None, Field(description="Path to write memory profile to.")] = None
+    memory_profiler_path: Path | None = None
+    """Path to write the memory profile to."""
 
-    bench: Annotated[
-        BenchConfig | None,
-        Field(
-            description="Whether to run in benchmark mode. It will automatically set the maximum number of steps to run to 4 and use fake data.",
-        ),
-    ] = None
+    bench: BenchConfig | None = None
+    """Benchmark-mode configuration. When set, ``max_steps`` is forced to 4 and fake data is used."""
 
-    gc: Annotated[
-        GCConfig | None,
-        Field(
-            description="Garbage collection config. Disables automatic GC and runs deterministic collections every N steps to avoid stragglers. Set to null to use Python's default GC behavior.",
-        ),
-    ] = GCConfig()
+    gc: GCConfig | None = GCConfig()
+    """Garbage collection config. Disables automatic GC and runs deterministic collections every N steps to avoid stragglers. Set to null to use Python's default GC behavior."""
 
-    trace_path: Annotated[Path | None, Field(description="Path to write pytorch profiler trace to.")] = None
+    trace_path: Path | None = None
+    """Path to write the PyTorch profiler trace to."""
 
-    dist_timeout_seconds: Annotated[
-        int,
-        Field(
-            description="Timeout in seconds for torch distributed ops. Defaults to 600 seconds.",
-        ),
-    ] = 600
+    dist_timeout_seconds: int = 600
+    """Timeout in seconds for torch distributed ops."""
 
-    heartbeat: Annotated[
-        HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
-    ] = None
+    heartbeat: HeartbeatConfig | None = None
+    """BetterStack heartbeat configuration for monitoring training progress."""
 
-    metrics_server: Annotated[
-        MetricsServerConfig | None,
-        Field(description="Prometheus metrics server config. If set, exposes /metrics endpoint for scraping."),
-    ] = None
+    metrics_server: MetricsServerConfig | None = None
+    """Prometheus metrics server configuration. If set, exposes a ``/metrics`` endpoint for scraping."""
 
-    max_concurrent_runs: Annotated[
-        int,
-        Field(
-            ge=1,
-            description="The maximum number of concurrent runs to allow. If 1, then only one run will be allowed at a time.",
-        ),
-    ] = 1
+    max_concurrent_runs: int = Field(1, ge=1)
+    """Maximum number of concurrent runs to allow. If 1, only one run may run at a time."""
 
-    experimental: Annotated[
-        TrainerExperimentalConfig,
-        Field(description="Experimental features for the trainer."),
-    ] = TrainerExperimentalConfig()
+    experimental: TrainerExperimentalConfig = TrainerExperimentalConfig()
 
     @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):

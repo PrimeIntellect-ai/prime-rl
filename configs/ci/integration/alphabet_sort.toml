@@ -4,14 +4,14 @@ seq_len = 2048
 [ckpt]
 
 [model]
-name = "PrimeIntellect/Qwen3-0.6B"
+name = "Qwen/Qwen3-0.6B"
 
 [trainer.optim]
 lr = 1e-5
 
 [orchestrator]
 batch_size = 128
-rollouts_per_example = 8
+group_size = 8
 
 [orchestrator.train.sampling]
 max_completion_tokens = 384
@@ -22,3 +22,8 @@ name = "alphabet-sort"
 args = { min_turns = 2, max_turns = 2, min_names_per_turn = 1, max_names_per_turn = 3, similarity_power = 4, power_per_turn = false }
 
 [inference]
+
+# Mirror of Qwen/Qwen3-0.6B; PI's template patch always re-emits prior
+# <think> blocks. Match that with the qwen3 renderer's preserve_all_thinking.
+[orchestrator.renderer]
+preserve_all_thinking = true
