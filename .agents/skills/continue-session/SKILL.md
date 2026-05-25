@@ -13,7 +13,7 @@ Produce a single markdown file that gives the next session enough context to pic
 2. **Ask the user for the next task** (if not already stated): "下一步大概要做什么？"
 3. **Draft a rough plan** for that next task based on what you now know of the codebase.
 4. **Write the handoff file** using the template below.
-5. Save to `.agents/sessions/<YYYY-MM-DD>-<slug>.md` where slug is 2–4 words describing the session.
+5. Save to `.agents/session/<YYYY-MM-DD>-<slug>.md` where slug is 2–4 words describing the session.
 
 ## Template
 

@@ -1,6 +1,6 @@
 # KAOLA 部署指南 — prime-rl BlenderGym
 
-> 平台通用知识（提交命令格式、S3 目录规范、容器存储速查）见 `kaola/.agent/`。
+> 平台通用知识（提交命令格式、S3 目录规范、容器存储速查、通用 Gotchas）见 `/Users/zhiyuanma/Desktop/codes/.agents/KOALA.md`。
 > 本目录只记录 prime-rl 项目在 KAOLA 上的特有配置和经验。
 
 ## 核心文件
@@ -13,7 +13,8 @@
 | `.agents/kaola/paths.md` | 路径映射和存储决策 |
 | `.agents/kaola/workflow.md` | 操作流程 |
 | `.agents/kaola/api.md` | API keys 和环境变量（HF_TOKEN、EXP_NAME 等） |
-| `.agents/kaola/troubleshooting.md` | 踩坑记录 |
+| `.agents/kaola/troubleshooting.md` | 踩坑记录（具体的坑和修复） |
+| `.agents/kaola/debugging.md` | Debug 方法论（系统化排查方法） |
 
 ## 快速命令
 

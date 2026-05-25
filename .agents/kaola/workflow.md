@@ -6,12 +6,20 @@
 Mac (代码修改) ──rsync──> Pod (运行/测试) ──查看输出──> 重复
 ```
 
-### 1. 提交 debug pod（一次）
+### 1. 上传代码并提交 debug pod（一次）
 
 ```bash
 cd ~/Desktop/codes/prime-rl
-koala submit --sync-code .:/data/work/prime-rl
-ssh <pod名>
+
+# 先增量同步代码到 S3
+S3=s3://arcwm-code-us-west-2/$USER/prime-rl
+aws s3 sync . "$S3/" --exclude '.git/*' --exclude '.venv/*' --exclude '*/__pycache__/*' --quiet
+
+# 提交 debug pod（1 GPU，可 SSH，12h 自动退出）
+koala submit --code "$S3:/data/work/prime-rl"
+
+# SSH 进入（v1.1.0 自动配置 Host koala）
+ssh koala
 ```
 
 ### 2. 容器内首次 setup（一次，~1 min）
@@ -27,9 +35,9 @@ export EXP_NAME=blendergym-9b-dp6
 ### 3. 代码迭代（每次修改后）
 
 ```bash
-# Mac 上推送变更
+# Mac 上推送变更（直接 rsync 到 pod，比重走 S3 快）
 rsync -avz --exclude '.git' --exclude '.venv' --exclude '__pycache__' \
-    ./ <pod>:/data/work/prime-rl/
+    ./ koala:/data/work/prime-rl/
 
 # Pod 上直接运行
 cd /data/work/prime-rl
@@ -46,19 +54,26 @@ uv sync --locked --extra flash-attn
 
 ## 正式训练（8 GPU）
 
-一条命令提交，无需人工干预：
+两步走：先上传代码到 S3，再提交训练任务。
 
 ```bash
 cd ~/Desktop/codes/prime-rl
-koala submit -m normal -g 8 --sync-code .:/data/work/prime-rl \
+
+# 1. 增量同步代码到 S3
+S3=s3://arcwm-code-us-west-2/$USER/prime-rl
+aws s3 sync . "$S3/" --exclude '.git/*' --exclude '.venv/*' --exclude '*/__pycache__/*' --quiet
+
+# 2. 提交训练（单机 8 卡）
+LC_ALL=en_US.UTF-8 PYTHONIOENCODING=utf-8 \
+koala submit -m normal -g 8 --code "$S3:/data/work/prime-rl" \
     -c "export HF_TOKEN=$HF_TOKEN && export WANDB_API_KEY=$WANDB_API_KEY && export EXP_NAME=blendergym-9b-dp6 && cd /data/work/prime-rl && . scripts/setup_kaola.sh --env blendergym && uv run rl @ configs/multimodal/rl_blendergym_kaola.toml --ckpt.output_dir /local-ssd/checkpoints/\${EXP_NAME}"
 ```
 
 Resume 训练（从已有 checkpoint 继续）：
 
 ```bash
-cd ~/Desktop/codes/prime-rl
-koala submit -m normal -g 8 --sync-code .:/data/work/prime-rl \
+LC_ALL=en_US.UTF-8 PYTHONIOENCODING=utf-8 \
+koala submit -m normal -g 8 --code "$S3:/data/work/prime-rl" \
     -c "export HF_TOKEN=$HF_TOKEN && export WANDB_API_KEY=$WANDB_API_KEY && export EXP_NAME=blendergym-9b-dp6 && cd /data/work/prime-rl && . scripts/setup_kaola.sh --env blendergym --resume && uv run rl @ configs/multimodal/rl_blendergym_kaola.toml --ckpt.output_dir /local-ssd/checkpoints/\${EXP_NAME}"
 ```
 
@@ -66,12 +81,14 @@ koala submit -m normal -g 8 --sync-code .:/data/work/prime-rl \
 
 | 必须 | 说明 | 漏了会怎样 |
 |------|------|-----------|
-| `--sync-code .:/data/work/prime-rl` | 同步本地代码到 pod | pod 里跑镜像内置旧代码，本地改动不生效 |
-| **不要**指定 `--image` | 使用 KAOLA 默认 ECR 镜像 | 自定义 Docker Hub 镜像会导致 PodInitializing 卡住 |
-| `$HF_TOKEN` 用**双引号** | 在本地 shell 展开为实际值 | 单引号不展开，pod 里 token 为空，报 `HF_TOKEN not set` |
+| `aws s3 sync` 先上传代码 | 增量同步本地 → S3 | pod 拉到旧代码或空目录 |
+| `--code "$S3:/data/work/prime-rl"` | 告诉容器从 S3 拉代码 | pod 跑镜像内置旧代码 |
+| **不要**指定 `--image` | 使用 KAOLA 默认 ECR 镜像 | 自定义 Docker Hub 镜像导致 PodInitializing 卡住 |
+| `$HF_TOKEN` 用**双引号** | 在本地 shell 展开为实际值 | 单引号不展开，pod 里 token 为空 |
 | `. scripts/setup_kaola.sh` | source 执行 | `bash` 子 shell 中 export 不传递给后续命令 |
-| `export EXP_NAME=...` | 显式设置实验名 | 无默认值，脚本会报错退出 |
-| S3 上**无**同名实验数据 | 或加 `--resume` | guard check 报错退出，防止误覆盖 |
+| `export EXP_NAME=...` | 显式设置实验名 | 无默认值，脚本报错退出 |
+| S3 上**无**同名实验数据 | 或加 `--resume` | guard check 报错，防止误覆盖 |
+| `LC_ALL=en_US.UTF-8 PYTHONIOENCODING=utf-8` | 含中文/Unicode 文件时 | UnicodeEncodeError |
 
 其他注意：
 - `--ckpt.output_dir` 让 checkpoint 路径自动跟随 `EXP_NAME`，与 S3 sync 路径一致
