@@ -177,7 +177,6 @@ Pulled from the console log and mirrored to W&B.
 **Progress and loss:**
 
 - `loss/mean` — main signal. Should decrease through the run.
-- `loss/nan_count` — non-zero is a red flag; check LR and dtype.
 - `val/loss` — validation loss when `[val]` is set, logged every `val.interval` steps.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
