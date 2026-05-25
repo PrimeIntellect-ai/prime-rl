@@ -13,9 +13,9 @@ from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import (
+    backfill_rollout_tokens,
     interleave_rollout,
     offload_images_to_disk,
-    pretokenize_rollout_trajectory,
 )
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 from prime_rl.utils.pathing import get_log_dir, get_rollout_dir, get_step_path
@@ -428,10 +428,10 @@ async def orchestrate(config: OrchestratorConfig):
             # Compute advantages (in-place)
             num_rollouts = len(train_rollouts)
             num_unique_examples = len({(r["env_name"], r["example_id"]) for r in train_rollouts})
-            compute_advantages(train_rollouts, config.advantage)
+            await asyncio.to_thread(compute_advantages, train_rollouts, config.advantage)
 
             # Apply rollout filters — sets rollout["filters"] and rollout["is_filtered"]
-            apply_filters(rollout_filters, train_rollouts)
+            await asyncio.to_thread(apply_filters, rollout_filters, train_rollouts)
 
             n_trainable = sum(1 for r in train_rollouts if not r["is_filtered"])
             if n_trainable > 0:
@@ -482,22 +482,28 @@ async def orchestrate(config: OrchestratorConfig):
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
 
-        # Pretokenize is a no-op when the renderer client already populated
-        # ``tokens`` on each trajectory step (renderer path); the fallback
-        # tokenizer-only branch handles text-only rollouts whose tokens
-        # were not pre-rendered. Run on threads so CPU work overlaps with
-        # inference for the next batch (via max_async_level >= 2).
-        await asyncio.gather(
-            *(
-                asyncio.to_thread(
-                    pretokenize_rollout_trajectory,
-                    rollout,
-                    tokenizer,
-                    renderer=renderer,
-                )
-                for rollout in train_rollouts
+        # We only expect to backfill tokens for training_mode=sft against an
+        # external teacher API (OpenAI/etc.), which returns no token IDs —
+        # reconstruct via tokenizer/renderer. The vLLM-served paths (RL/OPD
+        # renderer + MITO, and training_mode=sft against a local vLLM teacher)
+        # already populate tokens via prompt_token_ids/token_ids, so we
+        # short-circuit the 256-way fanout.
+        needs_backfill = any(step["tokens"] is None for rollout in train_rollouts for step in rollout["trajectory"])
+        if needs_backfill:
+            logger.info(
+                "Backfilling tokens for rollout trajectories (expected for training_mode=sft against an external teacher API)"
             )
-        )
+            await asyncio.gather(
+                *(
+                    asyncio.to_thread(
+                        backfill_rollout_tokens,
+                        rollout,
+                        tokenizer,
+                        renderer=renderer,
+                    )
+                    for rollout in train_rollouts
+                )
+            )
 
         # Process rollouts in parallel
         results = await asyncio.gather(
@@ -564,7 +570,7 @@ async def orchestrate(config: OrchestratorConfig):
             step=progress.step,
         )
 
-        training_batch_sender.send(training_batch)
+        await training_batch_sender.send(training_batch)
 
         step_time = time.perf_counter() - step_start_time
 
@@ -863,6 +869,9 @@ async def orchestrate(config: OrchestratorConfig):
 def main():
     """Main entry-point for orchestrator. Run using `uv run orchestrator`"""
     set_proc_title("Orchestrator")
+    import uvloop
+
+    uvloop.install()
     asyncio.run(orchestrate(cli(OrchestratorConfig)))
 
 
