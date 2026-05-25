@@ -11,6 +11,9 @@ on:
       - "docs/reference.md"
       - ".github/workflows/docs-reference.yaml"
 
+permissions:
+  contents: read
+
 jobs:
   reference-in-sync:
     name: docs/reference.md in sync with configs
