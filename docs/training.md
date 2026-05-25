@@ -26,7 +26,6 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Console output](#console-output)
   - [Weights & Biases](#weights--biases)
   - [Platform monitoring](#platform-monitoring)
-  - [Prometheus and BetterStack](#prometheus-and-betterstack)
 - [Rules of thumb](#rules-of-thumb)
 
 ## Entrypoints
@@ -319,13 +318,6 @@ run_name = "my-experiment"
 ```
 
 Requires `PRIME_API_KEY` (set via `prime login` or env var) and an allowlisted team. Currently internal-only.
-
-### Prometheus and BetterStack
-
-For long-running production training:
-
-- **Prometheus**: set `trainer.metrics_server.port` to expose `/metrics` on each trainer process. vLLM also exposes `/metrics` natively — useful for KV-cache saturation and pending-request counts.
-- **BetterStack heartbeats**: set `trainer.heartbeat.url` (and the matching orchestrator field) to ping a heartbeat URL each step. Pair with a BetterStack monitor to page on stalls.
 
 ## Rules of thumb
 
