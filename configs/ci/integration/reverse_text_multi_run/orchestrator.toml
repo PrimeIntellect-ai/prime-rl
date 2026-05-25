@@ -22,5 +22,5 @@ interval = 10
 resume_step = -1
 
 # Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
-[renderer]
+[renderer.settings]
 name = "default"

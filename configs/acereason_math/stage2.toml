@@ -49,6 +49,6 @@ group_size = 32
 dp = 6
 
 # Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
-[orchestrator.renderer]
+[orchestrator.renderer.settings]
 name = "default"
 reasoning_parser = "think"

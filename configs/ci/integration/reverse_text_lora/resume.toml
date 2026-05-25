@@ -34,5 +34,5 @@ enable_lora = true
 gpu_memory_utilization = 0.7
 
 # Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
-[orchestrator.renderer]
+[orchestrator.renderer.settings]
 name = "default"

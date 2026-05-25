@@ -63,12 +63,14 @@ id = "color-codeword"
 args = { images_per_turn = 2, max_turns = 2, num_examples = 100, seed = 42 }
 
 [orchestrator.renderer]
-name = "auto"
 # 64 concurrent rollouts (batch_size=16 × group_size=4) want
 # more than one tokenizer slot to avoid serialization queueing. The
 # image processor (CPU-bound) dominates for VLMs so returns diminish
 # past 4; bump to 4 as the default for multimodal runs.
 pool_size = 4
+
+[orchestrator.renderer.settings]
+name = "auto"
 
 [trainer]
 

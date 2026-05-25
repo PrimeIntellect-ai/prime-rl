@@ -26,5 +26,5 @@ lr = 3e-6
 [inference]
 
 # Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
-[orchestrator.renderer]
+[orchestrator.renderer.settings]
 name = "default"
