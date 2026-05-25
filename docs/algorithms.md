@@ -14,6 +14,8 @@ This page covers the math and the configurable algorithmic components: how off-p
   - [Default advantage](#default-advantage)
   - [Custom advantage](#custom-advantage)
 - [Filters](#filters)
+- [Difficulty pools](#difficulty-pools)
+- [Online difficulty filtering](#online-difficulty-filtering)
 - [Multi-turn trajectories](#multi-turn-trajectories)
   - [Extension property](#extension-property)
   - [Best-effort interleaving](#best-effort-interleaving)
@@ -194,6 +196,45 @@ threshold = 0.4
 ```
 
 Filtered rollouts still appear in W&B distributions, just not in the trainer batch — useful for spotting whether filtering is doing its job.
+
+## Difficulty pools
+
+Difficulty pools gradually retire problems the model has solved or never solves. After each rollout, the average reward across a problem's group is compared to two thresholds:
+
+- `buffer.easy_threshold` — at or above this, the problem moves into the `easy` pool and is no longer sampled.
+- `buffer.hard_threshold` — at or below this, the problem moves into the `hard` pool and is no longer sampled.
+- Otherwise the problem stays in `normal` and remains in the sampling rotation.
+
+Pool assignments persist across checkpoints (`easy_examples.jsonl` / `hard_examples.jsonl` under each step's orchestrator checkpoint). When you resume — or want to broaden the curriculum mid-run — `buffer.easy_fraction` / `buffer.hard_fraction` randomly lift that fraction of pooled problems back into `normal` so they re-enter sampling.
+
+```toml
+[orchestrator.buffer]
+easy_threshold = 0.95
+hard_threshold = 0.05
+easy_fraction = 0.0   # default; bump on resume to bring some easy problems back
+hard_fraction = 0.0   # default; bump on resume to bring some hard problems back
+```
+
+Watch `pool/{env}/{easy,normal,hard}` (current pool ratios) and `evicted_examples/{env}/{easy,hard}` (per-step eviction rate).
+
+## Online difficulty filtering
+
+Online difficulty filtering (ODF) drops collapsed-advantage groups on the way *into* the buffer. Set `buffer.online_difficulty_filtering = true` (default `false`) to enable:
+
+- Average reward across the group is **0.0** (every rollout failed) → drop the group, count under `filtered_rollouts/{env}/hard`.
+- Average reward **1.0** (every rollout succeeded) → drop, count under `filtered_rollouts/{env}/easy`.
+- Otherwise → into the buffer.
+
+These are exactly the groups whose within-group advantage collapses to zero — DR-GRPO produces no gradient signal for them, so the trainer would burn step time on tokens it can't learn from.
+
+```toml
+[orchestrator.buffer]
+online_difficulty_filtering = true
+```
+
+**Tradeoff: trainer stability vs. inference speed.** With ODF on, every rollout that reaches the trainer carries non-zero advantage — each trainer step's effective batch is predictable and the gradient signal is denser. The cost is paid on the inference side: rollouts get produced and then thrown away, so the orchestrator has to oversample to keep the trainer fed. If the orchestrator is your bottleneck (`time/wait_for_batch` high on the trainer), ODF can starve the loop. Bump `orchestrator.oversampling_factor` so inference produces enough groups per step to absorb the drops.
+
+ODF is orthogonal to the [pools](#difficulty-pools): ODF reacts to the *current* group's reward distribution, the pools track the *running* per-problem average. Many configs use both — ODF for per-step density, pools for long-horizon curriculum cleanup.
 
 ## Multi-turn trajectories
 
