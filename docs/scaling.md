@@ -23,7 +23,6 @@ This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster
   - [RL example](#rl-example)
   - [SFT and inference examples](#sft-and-inference-examples)
   - [Custom templates](#custom-templates)
-- [Kubernetes](#kubernetes)
 - [Benchmarking](#benchmarking)
 
 ## Single-node vs. multi-node deployment
@@ -362,40 +361,6 @@ uv run rl @ my_config.toml --slurm.template-path path/to/my_template.sbatch.j2
 ```
 
 The default templates live under [`src/prime_rl/templates/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/src/prime_rl/templates) — copy one as a starting point.
-
-## Kubernetes
-
-For Kubernetes-managed clusters, `prime-rl` ships a Helm chart at [`k8s/prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/k8s/prime-rl). It deploys three StatefulSets (orchestrator, trainer, inference) sharing a single `ReadWriteMany` PVC mounted at `/data`.
-
-```bash
-# Deploy with an example values file
-helm install my-exp ./k8s/prime-rl -f ./k8s/prime-rl/examples/reverse-text.yaml
-
-# Or with custom overrides
-helm install my-exp ./k8s/prime-rl --set trainer.replicas=3 --set inference.replicas=2
-```
-
-After deployment, `kubectl exec` into `<release>-trainer-0` and launch with `uv run trainer @ <config>` (or `uv run rl @ <config>`). All three pod groups discover each other via stable DNS hostnames (`<release>-{trainer,orchestrator,inference}-<idx>.<release>-{...}-headless.<ns>.svc.cluster.local`).
-
-Environment variables provided to every pod:
-
-- `$POD_NAME`, `$POD_IP` — standard K8s
-- `$STATEFUL_REPLICAS` — total replicas for this component
-- `$HEADLESS_SERVICE` — DNS suffix for peer discovery
-- `$INFERENCE_URL` — first inference pod's URL (set in orchestrator and trainer pods)
-
-For distributed trainer launches inside K8s, extract the rank from the pod name and feed it to torchrun:
-
-```bash
-RANK=$(echo $POD_NAME | grep -o '[0-9]*$')
-torchrun \
-  --nnodes=$STATEFUL_REPLICAS --node-rank=$RANK \
-  --nproc-per-node=8 \
-  --rdzv-endpoint=my-exp-trainer-0.$HEADLESS_SERVICE:29501 \
-  src/prime_rl/trainer/rl/train.py @ /data/configs/train.toml
-```
-
-Common operations (logs, exec, scale, uninstall) are standard `kubectl`/`helm`. Auth (W&B, HF) is via K8s secrets — set `config.secrets.enabled=true` and `config.secrets.name=<your-secret>`.
 
 ## Benchmarking
 
