@@ -31,7 +31,7 @@ export PROJECT_DIR={{ project_dir }}
 cd $PROJECT_DIR
 [ -f .env ] && source .env
 source .venv/bin/activate
-uv sync --all-extras
+uv sync --all-extras --inexact
 
 {% if pre_run_command %}
 # Pre-run command
