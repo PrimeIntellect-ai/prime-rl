@@ -284,18 +284,20 @@ class Scheduler:
             await self.maybe_update_policy()
             await asyncio.sleep(1)
 
-    def _async_away_ckpt_step(self) -> int:
-        """Lowest ckpt step the orchestrator can advance to; the trainer always lags by exactly one step."""
-        return max(self.step - 1, 0)
-
     def _compute_next_ckpt_step(self) -> int:
-        if self.strict_async_level:
-            return self._async_away_ckpt_step()
-        latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
-        return max(self._async_away_ckpt_step(), latest_ckpt_step)
+        # The orchestrator always runs one step ahead of the trainer, so we must advance to at
+        # least step - 1. In non-strict mode we additionally adopt anything fresher the trainer
+        # has already broadcast.
+        next_step = max(self.step - 1, 0)
+        if not self.strict_async_level:
+            latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
+            next_step = max(next_step, latest_ckpt_step)
+        return next_step
 
     async def _apply_policy_update(self, next_ckpt_step: int) -> None:
-        if next_ckpt_step == self._async_away_ckpt_step():
+        # If we're advancing to step - 1, the trainer hasn't broadcast it yet (otherwise
+        # non-strict mode would've picked something newer); block until the file lands.
+        if next_ckpt_step == max(self.step - 1, 0):
             self.logger.info(
                 f"Orchestrator paused: waiting for trainer to broadcast checkpoint {next_ckpt_step} "
                 f"(orchestrator is one step ahead). Training is progressing normally."
