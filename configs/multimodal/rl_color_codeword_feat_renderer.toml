@@ -39,7 +39,11 @@ gpus_per_node = 2
 [orchestrator]
 batch_size = 16
 group_size = 8
-use_renderer = true
+# 64 concurrent rollouts (batch_size=16 × group_size=4) want
+# more than one tokenizer slot to avoid serialization queueing. The
+# image processor (CPU-bound) dominates for VLMs so returns diminish
+# past 4; bump to 4 as the default for multimodal runs.
+renderer_pool_size = 4
 
 # Track zero-advantage groups but don't drop them — we're validating the
 # multimodal renderer path on 20 steps, not optimizing training efficiency.
@@ -62,15 +66,8 @@ max_completion_tokens = 64
 id = "color-codeword"
 args = { images_per_turn = 2, max_turns = 2, num_examples = 100, seed = 42 }
 
-[orchestrator.renderer]
-# 64 concurrent rollouts (batch_size=16 × group_size=4) want
-# more than one tokenizer slot to avoid serialization queueing. The
-# image processor (CPU-bound) dominates for VLMs so returns diminish
-# past 4; bump to 4 as the default for multimodal runs.
-pool_size = 4
-
-[orchestrator.renderer.settings]
-name = "auto"
+# Default renderer (AutoRendererConfig) resolves Qwen3-VL-4B-Instruct from
+# MODEL_RENDERER_MAP to Qwen3VLRenderer at runtime; no explicit name needed.
 
 [trainer]
 

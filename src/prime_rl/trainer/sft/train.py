@@ -160,15 +160,15 @@ def train(config: SFTConfig):
     tokenizer = setup_tokenizer(config.tokenizer)
 
     renderer = None
-    if config.use_renderer:
-        renderer = create_renderer(tokenizer, config.renderer.settings)
+    if config.renderer is not None:
+        renderer = create_renderer(tokenizer, config.renderer)
         if isinstance(renderer, DefaultRenderer):
             raise ValueError(
-                f"use_renderer=True for {config.tokenizer.name!r} resolved to DefaultRenderer. "
+                f"renderer set for {config.tokenizer.name!r} resolved to DefaultRenderer. "
                 "DefaultRenderer falls back to incremental apply_chat_template and does NOT "
-                "fix position-dependent chat templates — the bug use_renderer is meant to solve. "
+                "fix position-dependent chat templates — the bug the renderer client is meant to solve. "
                 "Either use a model with a hand-coded renderer (see renderers.base.MODEL_RENDERER_MAP), "
-                "set [renderer] name=<hand-coded renderer> explicitly, or set use_renderer=false."
+                "set [renderer] name=<hand-coded renderer> explicitly, or remove the [renderer] block."
             )
         logger.info(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
 

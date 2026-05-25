@@ -861,28 +861,28 @@ async def setup_student_inference_pool(
 ):
     """Set up the student inference pool (rollouts when rl/opd, evals + weight sync always).
 
-    Routing policy is driven by ``config.use_renderer``:
+    Routing policy is driven by ``config.renderer``:
 
-      - ``use_renderer=True``  → renderer-backed TITO client (``/v1/generate``).
+      - ``renderer is not None`` → renderer-backed TITO client (``/v1/generate``).
         Default for both text-only and VLM rollouts; required for VLMs.
-      - ``use_renderer=False`` → MITO (``openai_chat_completions``).
+      - ``renderer is None``     → MITO (``openai_chat_completions``).
 
-    Eval clients always use MITO. In sft mode ``use_renderer`` is forced off
+    Eval clients always use MITO. In sft mode ``renderer`` is forced to ``None``
     by a config validator, so the student pool is plain MITO end-to-end.
     """
     client_config = config.student.client
     model_name = config.student.model.name
 
-    if config.use_renderer:
-        renderer = create_renderer(tokenizer, config.renderer.settings)
+    if config.renderer is not None:
+        renderer = create_renderer(tokenizer, config.renderer)
         logger.info(f"Initialized {type(renderer).__name__} for {model_name}")
         inference_pool = await setup_inference_pool(
             client_config,
             model_name=model_name,
             train_client_type="renderer",
             eval_client_type="openai_chat_completions",
-            renderer_config=config.renderer.settings,
-            renderer_pool_size=config.renderer.pool_size,
+            renderer_config=config.renderer,
+            renderer_pool_size=config.renderer_pool_size,
         )
         logger.info("Using direct renderer rollout client")
         return renderer, inference_pool

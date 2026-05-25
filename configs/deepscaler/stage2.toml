@@ -35,6 +35,6 @@ args = { dataset_name= "agentica-org/DeepScaleR-Preview-Dataset", dataset_subset
 dp = 6
 
 # Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
-[orchestrator.renderer.settings]
+[orchestrator.renderer]
 name = "default"
 reasoning_parser = "think"

@@ -13,15 +13,12 @@ def test_setup_student_inference_pool_uses_renderer_when_enabled():
         renderer_settings = Qwen3VLRendererConfig()
         config = SimpleNamespace(
             training_mode="rl",
-            use_renderer=True,
             student=SimpleNamespace(
                 client=SimpleNamespace(base_url=["http://localhost:8000/v1"]),
                 model=SimpleNamespace(name="student-model"),
             ),
-            renderer=SimpleNamespace(
-                settings=renderer_settings,
-                pool_size=None,
-            ),
+            renderer=renderer_settings,
+            renderer_pool_size=None,
         )
         logger = MagicMock()
         renderer = object()
@@ -62,7 +59,8 @@ def test_setup_student_inference_pool_defaults_to_mito():
         tokenizer = object()
         config = SimpleNamespace(
             training_mode="rl",
-            use_renderer=False,
+            renderer=None,
+            renderer_pool_size=None,
             student=SimpleNamespace(
                 client=SimpleNamespace(base_url=["http://localhost:8000/v1"]),
                 model=SimpleNamespace(name="student-model"),

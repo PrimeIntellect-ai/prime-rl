@@ -13,7 +13,7 @@ training_mode = "rl"
 batch_size = 128
 group_size = 16
 
-[orchestrator.renderer.settings]
+[orchestrator.renderer]
 name = "qwen3"
 
 [orchestrator.train.sampling]

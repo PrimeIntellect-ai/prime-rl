@@ -25,6 +25,6 @@ args = { min_turns = 2, max_turns = 2, min_names_per_turn = 1, max_names_per_tur
 
 # Mirror of Qwen/Qwen3-0.6B; PI's template patch always re-emits prior
 # <think> blocks. Match that with the qwen3 renderer's preserve_all_thinking.
-[orchestrator.renderer.settings]
+[orchestrator.renderer]
 name = "auto"
 preserve_all_thinking = true

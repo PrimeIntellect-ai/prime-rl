@@ -36,6 +36,6 @@ max_model_len = 8192
 level = "debug"
 
 # Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
-[orchestrator.renderer.settings]
+[orchestrator.renderer]
 name = "default"
 reasoning_parser = "think"

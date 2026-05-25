@@ -7,8 +7,8 @@ requires-python = "~=3.12.0"
 dependencies = [
     "pydantic>=1.10.13",
     "prime-pydantic-config>=0.3.0.dev82",
-    # ``RendererConfig`` composes ``renderers.RendererConfig`` (the typed
-    # discriminated union) as its ``settings`` field. Renderers itself is
+    # OrchestratorConfig.renderer and SFTConfig.renderer use renderers'
+    # typed RendererConfig discriminated union directly. Renderers is
     # light; its only weighty transitive (transformers) is lazy-imported
     # via the validator, so plain ``from prime_rl.configs.orchestrator import
     # OrchestratorConfig`` still doesn't pull it into sys.modules.

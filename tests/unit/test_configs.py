@@ -158,7 +158,7 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
 
 
 def test_orchestrator_vlm_requires_renderer():
-    with pytest.raises(ValidationError, match="orchestrator.use_renderer must be true when model.vlm is set"):
+    with pytest.raises(ValidationError, match="orchestrator.renderer must be set when model.vlm is set"):
         OrchestratorConfig.model_validate(
             {
                 "student": {
@@ -170,7 +170,7 @@ def test_orchestrator_vlm_requires_renderer():
                         },
                     }
                 },
-                "use_renderer": False,
+                "renderer": None,
             }
         )
 
@@ -188,7 +188,7 @@ def test_orchestrator_vlm_requires_renderer():
         }
     )
 
-    assert config.use_renderer is True
+    assert config.renderer is not None
 
 
 def test_selective_activation_checkpointing_requires_custom_impl():
@@ -202,7 +202,7 @@ def test_shared_model_name_propagates_to_subconfigs():
         {
             "model": {"name": model_name},
             "trainer": {},
-            "orchestrator": {"use_renderer": False},
+            "orchestrator": {"renderer": None},
             "inference": {},
         }
     )
@@ -219,7 +219,7 @@ def test_shared_tokenizer_propagates_when_subconfigs_unset():
             "model": {"name": "my-model"},
             "tokenizer": {"name": "my-tokenizer"},
             "trainer": {},
-            "orchestrator": {"use_renderer": False},
+            "orchestrator": {"renderer": None},
         }
     )
     assert config.trainer.tokenizer.name == "my-tokenizer"
@@ -236,7 +236,7 @@ def test_shared_and_sub_tokenizer_name_conflict_raises():
                 "model": {"name": "my-model"},
                 "tokenizer": {"name": "shared-tok"},
                 "trainer": {"tokenizer": {"name": "trainer-tok"}},
-                "orchestrator": {"use_renderer": False},
+                "orchestrator": {"renderer": None},
             }
         )
 
@@ -247,7 +247,7 @@ def test_tokenizer_name_falls_back_to_model_name_when_unset():
             "model": {"name": "my-model"},
             "tokenizer": {"trust_remote_code": True},
             "trainer": {},
-            "orchestrator": {"use_renderer": False},
+            "orchestrator": {"renderer": None},
         }
     )
     assert config.trainer.tokenizer.name == "my-model"
@@ -275,7 +275,7 @@ def test_explicit_subconfig_tokenizer_name_survives_shared_model_propagation():
             "model": {"name": "M"},
             "trainer": {},
             "orchestrator": {
-                "use_renderer": False,
+                "renderer": None,
                 "tokenizer": {"name": "explicit-orch-tok"},
             },
         }
@@ -294,7 +294,7 @@ def test_tokenizer_chat_template_mismatch_raises():
         RLConfig.model_validate(
             {
                 "trainer": {"tokenizer": {"chat_template": "A"}},
-                "orchestrator": {"use_renderer": False, "tokenizer": {"chat_template": "B"}},
+                "orchestrator": {"renderer": None, "tokenizer": {"chat_template": "B"}},
             }
         )
 
@@ -304,7 +304,7 @@ def test_shared_seq_len_propagates_to_subconfigs():
         {
             "seq_len": 4096,
             "trainer": {},
-            "orchestrator": {"use_renderer": False},
+            "orchestrator": {"renderer": None},
         }
     )
     assert config.trainer.model.seq_len == 4096
@@ -320,7 +320,7 @@ def test_shared_and_sub_seq_len_conflict_raises():
             {
                 "seq_len": 4096,
                 "trainer": {"model": {"seq_len": 8192}},
-                "orchestrator": {"use_renderer": False},
+                "orchestrator": {"renderer": None},
             }
         )
 
@@ -332,7 +332,7 @@ def test_shared_and_sub_model_name_conflict_raises():
             {
                 "model": {"name": "X"},
                 "trainer": {"model": {"name": "Y"}},
-                "orchestrator": {"use_renderer": False},
+                "orchestrator": {"renderer": None},
             }
         )
 
@@ -344,7 +344,7 @@ def test_shared_and_sub_max_steps_conflict_raises():
             {
                 "max_steps": 100,
                 "trainer": {},
-                "orchestrator": {"use_renderer": False, "max_steps": 200},
+                "orchestrator": {"renderer": None, "max_steps": 200},
             }
         )
 
@@ -359,7 +359,7 @@ def test_trainer_chat_template_cascades_to_inference():
         {
             "model": {"name": "Qwen/Qwen3-0.6B"},
             "trainer": {"tokenizer": {"chat_template": "TPL"}},
-            "orchestrator": {"use_renderer": False, "tokenizer": {"chat_template": "TPL"}},
+            "orchestrator": {"renderer": None, "tokenizer": {"chat_template": "TPL"}},
             "inference": {},
         }
     )
@@ -385,7 +385,7 @@ def test_shared_wandb_fields_propagate_to_subconfigs():
                 "offline": True,
             },
             "trainer": {},
-            "orchestrator": {"use_renderer": False},
+            "orchestrator": {"renderer": None},
         }
     )
     for component in (config.trainer.wandb, config.orchestrator.wandb):
@@ -404,7 +404,7 @@ def test_empty_shared_ckpt_block_does_not_conflict_with_subconfig_ckpt():
         {
             "ckpt": {},  # empty block, no field set
             "trainer": {"ckpt": {"interval": 50}},
-            "orchestrator": {"use_renderer": False, "ckpt": {"interval": 50}},
+            "orchestrator": {"renderer": None, "ckpt": {"interval": 50}},
         }
     )
     assert config.trainer.ckpt is not None
@@ -418,7 +418,7 @@ def test_shared_and_subconfig_disjoint_fields_coexist():
         {
             "model": {"name": "Qwen/Qwen3-0.6B"},
             "trainer": {"model": {"impl": "custom"}},
-            "orchestrator": {"use_renderer": False},
+            "orchestrator": {"renderer": None},
         }
     )
     assert config.trainer.model.name == "Qwen/Qwen3-0.6B"
@@ -446,7 +446,7 @@ def test_shared_output_dir_propagates_through_cli(tmp_path):
 
 
 def test_orchestrator_renderer_auto_rejects_unmapped_model():
-    """use_renderer=True with renderer.settings.name='auto' must reject models not in MODEL_RENDERER_MAP."""
+    """Default ``renderer`` (AutoRendererConfig) must reject models not in MODEL_RENDERER_MAP."""
     with pytest.raises(ValidationError, match="silently fall back to DefaultRenderer"):
         OrchestratorConfig.model_validate({"model": {"name": "not-a-real-org/not-a-real-model"}})
 
@@ -454,42 +454,44 @@ def test_orchestrator_renderer_auto_rejects_unmapped_model():
 def test_orchestrator_renderer_auto_accepts_mapped_model():
     """The default Qwen model is in MODEL_RENDERER_MAP and should validate cleanly."""
     config = OrchestratorConfig.model_validate({"model": {"name": "Qwen/Qwen3-0.6B"}})
-    assert config.use_renderer is True
-    assert config.renderer.settings.name == "auto"
+    assert config.renderer is not None
+    assert config.renderer.name == "auto"
 
 
 def test_orchestrator_explicit_renderer_skips_unmapped_check():
-    """Explicit renderer.settings.name bypasses the auto-resolution check — user opted in."""
+    """Explicit renderer.name bypasses the auto-resolution check — user opted in."""
     config = OrchestratorConfig.model_validate(
         {
             "model": {"name": "not-a-real-org/not-a-real-model"},
-            "renderer": {"settings": {"name": "qwen3"}},
+            "renderer": {"name": "qwen3"},
         }
     )
-    assert config.renderer.settings.name == "qwen3"
+    assert config.renderer is not None
+    assert config.renderer.name == "qwen3"
 
 
-def test_orchestrator_use_renderer_false_skips_unmapped_check():
-    """use_renderer=False means the renderer client isn't used, so MODEL_RENDERER_MAP doesn't apply."""
+def test_orchestrator_renderer_none_skips_unmapped_check():
+    """renderer=None (MITO mode) means the renderer client isn't used, so MODEL_RENDERER_MAP doesn't apply."""
     config = OrchestratorConfig.model_validate(
         {
             "model": {"name": "not-a-real-org/not-a-real-model"},
-            "use_renderer": False,
+            "renderer": None,
         }
     )
-    assert config.use_renderer is False
+    assert config.renderer is None
 
 
 def test_orchestrator_explicit_default_renderer_with_unmapped_model():
-    """renderer.settings.name='default' is an explicit opt-in to DefaultRenderer and must pass."""
+    """renderer.name='default' is an explicit opt-in to DefaultRenderer and must pass."""
     config = OrchestratorConfig.model_validate(
         {
             "model": {"name": "not-a-real-org/not-a-real-model"},
-            "renderer": {"settings": {"name": "default", "tool_parser": "qwen3"}},
+            "renderer": {"name": "default", "tool_parser": "qwen3"},
         }
     )
-    assert config.renderer.settings.name == "default"
-    assert config.renderer.settings.tool_parser == "qwen3"
+    assert config.renderer is not None
+    assert config.renderer.name == "default"
+    assert config.renderer.tool_parser == "qwen3"
 
 
 def test_shared_model_name_resolves_inference_parsers():
@@ -501,7 +503,7 @@ def test_shared_model_name_resolves_inference_parsers():
         {
             "model": {"name": "Qwen/Qwen3-Coder-30B-A3B-Instruct"},
             "trainer": {},
-            "orchestrator": {"use_renderer": False},
+            "orchestrator": {"renderer": None},
             "inference": {},
         }
     )
@@ -517,7 +519,7 @@ def test_explicit_inference_parser_wins_over_auto():
         {
             "model": {"name": "Qwen/Qwen3-Coder-30B-A3B-Instruct"},
             "trainer": {},
-            "orchestrator": {"use_renderer": False},
+            "orchestrator": {"renderer": None},
             "inference": {"model": {"tool_call_parser": "hermes"}},
         }
     )

@@ -3,8 +3,6 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
-from renderers import AutoRendererConfig
-from renderers import RendererConfig as RendererSettings
 
 from prime_rl.utils.config import BaseConfig
 
@@ -84,20 +82,6 @@ class BaseModelConfig(BaseConfig):
     @property
     def is_vlm(self) -> bool:
         return self.vlm is not None
-
-
-class RendererConfig(BaseConfig):
-    settings: RendererSettings = Field(default_factory=AutoRendererConfig)
-    """Typed renderer config (``renderers.RendererConfig`` discriminated
-    union — one of ``AutoRendererConfig``, ``Qwen35RendererConfig``,
-    ``GLM5RendererConfig``, …). The ``name`` discriminator picks the
-    variant; the rest of the fields are that variant's chat-template
-    kwargs plus the shared ``preserve_*`` flags. Defaults to ``"auto"``,
-    which resolves the renderer from ``tokenizer.name_or_path`` against
-    ``renderers.MODEL_RENDERER_MAP``."""
-
-    pool_size: int | None = Field(None, ge=1)
-    """Number of renderer slots shared across concurrent rollouts. Bump for long multi-turn prompts where client-side jinja tokenization serializes."""
 
 
 class ElasticConfig(BaseConfig):

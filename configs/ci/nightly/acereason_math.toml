@@ -31,6 +31,6 @@ args = { dataset_name = "nvidia/AceReason-Math", dataset_subset = "default", que
 [inference]
 
 # Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
-[orchestrator.renderer.settings]
+[orchestrator.renderer]
 name = "default"
 reasoning_parser = "think"
