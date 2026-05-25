@@ -105,7 +105,7 @@ prime eval run math-env \
 
 `uv run sft` is the traditional path: load a HF dataset, train the model. No orchestrator, no teacher.
 
-`orchestrator.training_mode = "sft"` uses the RL pipeline to hard-distill from a teacher: the teacher (any OpenAI-compatible endpoint) generates the completions, and the student trains on them as they're produced. Use this when you want on-the-fly teacher supervision against a moving student. See [Training § Training modes](training.md#training-modes-rl--opd--sft-via-orchestrator).
+`orchestrator.training_mode = "sft"` uses the RL pipeline to hard-distill from a teacher: the teacher (any OpenAI-compatible endpoint) generates the completions, and the student trains on them as they're produced. Use this when you want on-the-fly teacher supervision against a moving student. See [Training § Training modes](training.md#training-modes-rl--opd--sft).
 
 ## Checkpoints and resume
 

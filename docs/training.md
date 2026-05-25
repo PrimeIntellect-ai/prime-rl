@@ -8,7 +8,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 - [RL trainer](#rl-trainer)
   - [Launch](#launch)
   - [Useful knobs](#useful-knobs)
-  - [Training modes (RL / OPD / SFT-via-orchestrator)](#training-modes-rl--opd--sft-via-orchestrator)
+  - [Training modes (RL / OPD / SFT)](#training-modes-rl--opd--sft)
 - [SFT trainer](#sft-trainer)
   - [Dataset format](#dataset-format)
   - [Launch](#launch-1)
@@ -19,7 +19,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Saving HF weights for serving](#saving-hf-weights-for-serving)
 - [Observability](#observability)
   - [Log files](#log-files)
-  - [Console output and the tmux helper](#console-output-and-the-tmux-helper)
+  - [Console output](#console-output)
   - [Weights & Biases](#weights--biases)
   - [Platform monitoring](#platform-monitoring)
   - [Prometheus and BetterStack](#prometheus-and-betterstack)
@@ -57,7 +57,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `orchestrator.batch_size` | Prompts per trainer step. |
 | `orchestrator.group_size` | Rollouts generated per prompt. Used for advantage normalization and pass@k estimation. |
 | `orchestrator.max_off_policy_steps` | How many distinct policies may have contributed to one rollout before it's discarded (default 8). The main throughput-vs-noise dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `errored_rollouts` and `mismatch_kl/all/mean` when tuning. |
-| `orchestrator.training_mode` | `rl` (default), `opd`, or `sft`. See [Training modes](#training-modes-rl--opd--sft-via-orchestrator). |
+| `orchestrator.training_mode` | `rl` (default), `opd`, or `sft`. See [Training modes](#training-modes-rl--opd--sft). |
 | `[[orchestrator.train.env]]` | Training environments. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Environments](configuration.md#environments-orchestratortrainenv). |
 | `[[orchestrator.eval.env]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). Scores land in trainer logs and W&B as `eval/{env}/{avg@k,pass@k}`. For one-off evaluations outside training, use [`prime eval`](https://docs.primeintellect.ai/cli-reference/introduction). |
 
@@ -79,7 +79,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `--max-steps N` | Stop after `N` trainer steps. Overrides the config value. |
 | `--dry-run` | Resolve + validate the full config, write per-process TOMLs to `<output_dir>/configs/`, and exit without launching. The fastest way to debug a misbehaving config. |
 
-### Training modes (RL / OPD / SFT-via-orchestrator)
+### Training modes (RL / OPD / SFT)
 
 The RL entrypoint supports three training modes, switched via `orchestrator.training_mode`:
 
@@ -112,6 +112,8 @@ Two accepted layouts:
 - **Messages**: a HF dataset with a single `messages` column containing a list of chat turns. The trainer interprets the whole conversation as one sample, applies role-based loss masking, and trains over all assistant turns.
 
 If both columns are present, `messages` takes precedence.
+
+**Tool definitions.** For tool-use SFT, add a `tools` column (OpenAI function-calling format) or `tool_defs` (verifiers rollout format). Each row's value can be either a list of dicts or a JSON-encoded string of a list — both are accepted, and `tool_defs` rows are auto-converted to OAI shape before being passed into the chat template's `tools=...` argument. The `chat_template_kwargs` column, if present, is forwarded verbatim into `apply_chat_template`.
 
 **Chat-template prefix property.** Multi-turn SFT requires that tokenizing the first _k_ turns of a conversation be a strict prefix of tokenizing all _n ≥ k_ turns. Qwen3's default template _violates_ this (it strips past `<think>` blocks), so use either the prime-rl–patched checkpoints (e.g. `PrimeIntellect/Qwen3-0.6B`) or a custom chat template that preserves thinking. See [Algorithms § Multi-turn trajectories](algorithms.md#multi-turn-trajectories).
 
@@ -211,7 +213,7 @@ tail -F <output_dir>/logs/trainer/node_*.log     # multi-node only
 tail -F <output_dir>/logs/inference/router_*.log # multi-node only
 ```
 
-### Console output and the tmux helper
+### Console output
 
 `scripts/tmux.sh` opens a 4-pane tmux session that follows `trainer.log`, `orchestrator.log`, `inference.log`, and the union of env worker logs. Start it before launching:
 
@@ -268,7 +270,9 @@ For long-running production training:
 
 ## Important metrics
 
-Pulled from the three console logs (and mirrored to W&B):
+Pulled from the console logs and mirrored to W&B.
+
+### RL trainer
 
 **Progress** (orchestrator):
 
@@ -294,6 +298,31 @@ Pulled from the three console logs (and mirrored to W&B):
 | trainer | `perf/throughput`, `perf/mfu` | tokens/s and MFU |
 | orchestrator | `scheduler/async_level`, `scheduler/inflight_rollouts` | current async lag |
 | vLLM | `vllm:gpu_cache_usage_perc` | → 1.0 means KV cache saturated, slow generation |
+
+### SFT trainer
+
+**Progress and loss:**
+
+- `loss/mean` — main signal. Should decrease through the run.
+- `loss/nan_count` — non-zero is a red flag; check LR and dtype.
+- `val/loss` — validation loss when `[val]` is set, logged every `val.interval` steps.
+- `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
+- `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
+
+**Stability and optimization:**
+
+- `optim/grad_norm` — spikes precede divergence.
+- `optim/lr`, `optim/zero_grad_ratio` — LR schedule and the fraction of params that received zero gradients (high → dead path or wrong loss masking).
+- For MoE: `max_vio/mean` (load-balancing violation), `routing_confidence/mean` — both are logged when non-zero.
+
+**Performance:**
+
+| Metric | Reading |
+|---|---|
+| `perf/throughput`, `perf/throughput_per_gpu` | tokens/s overall and per GPU |
+| `perf/mfu` | MFU |
+| `perf/peak_memory` | peak GPU memory (GiB) |
+| `time/step`, `time/forward_backward`, `time/save_ckpt` | step breakdown |
 
 ## Rules of thumb
 
