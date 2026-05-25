@@ -663,14 +663,8 @@ class OrchestratorConfig(BaseConfig):
     max_off_policy_steps: int = Field(8, ge=0)
     """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
 
-    max_async_level: int = Field(1, ge=0)
-    """Maximum steps inference can be ahead of training. ``0`` degenerates to synchronous on-policy RL; ``≥1`` overlaps training and inference."""
-
-    strict_async_level: bool = False
-    """Strictly enforce ``max_async_level``. When True, the rollout policy is always exactly ``max_async_level`` steps ahead of training. When False, any policy within ``max_async_level`` steps is allowed (always uses the latest available policy)."""
-
     bench: bool = False
-    """Benchmark mode. Sets ``max_steps`` to 5, ``max_async_level`` to ~∞, and disables W&B."""
+    """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""
 
     seed: int | None = 42
     """Random seed for the orchestrator."""
@@ -927,13 +921,6 @@ class OrchestratorConfig(BaseConfig):
         )
 
     @model_validator(mode="after")
-    def nccl_max_async_level(self):
-        if self.weight_broadcast.type == "nccl":
-            if not self.max_async_level == 1:
-                raise ValueError("max_async_level must be 1 for NCCL broadcast")
-        return self
-
-    @model_validator(mode="after")
     def resolve_batching(self):
         has_rollout_batch = self.batch_size is not None
         has_token_batch = self.token_batch_size is not None
@@ -980,7 +967,6 @@ class OrchestratorConfig(BaseConfig):
     def auto_setup_bench(self):
         if self.bench:
             self.max_steps = 4  # Run for 1 warmup step + 3 evaluation steps
-            self.max_async_level = int(1e9)  # Never wait for RL weight checkpoints
 
             # Disable evaluation
             self.eval = None

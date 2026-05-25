@@ -128,7 +128,6 @@ def propagate_shared_fields(data: Any) -> Any:
 
     # Top-level scalars.
     propagate("max_steps", "trainer.max_steps", "orchestrator.max_steps")
-    propagate("max_async_level", "trainer.max_async_level", "orchestrator.max_async_level")
     propagate("seq_len", "trainer.model.seq_len", "orchestrator.seq_len")
 
     # output_dir: orchestrator gets a ``/run_default`` subdir so trainer +
@@ -263,16 +262,6 @@ def validate_shared_max_steps(
     if trainer.max_steps != orchestrator.max_steps:
         raise ValueError(
             f"Trainer max steps ({trainer.max_steps}) and orchestrator max steps ({orchestrator.max_steps}) are not the same. Please specify the same max steps for both."
-        )
-
-
-def validate_shared_max_async_level(
-    trainer: TrainerConfig,
-    orchestrator: OrchestratorConfig,
-) -> None:
-    if trainer.max_async_level != orchestrator.max_async_level:
-        raise ValueError(
-            f"Trainer max async level ({trainer.max_async_level}) and orchestrator max async level ({orchestrator.max_async_level}) are not the same. Please specify the same max async level for both."
         )
 
 
