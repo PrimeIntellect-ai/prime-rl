@@ -146,7 +146,7 @@ Yes. The orchestrator pushes the resumed checkpoint into inference automatically
 
 ### Multi-node without SLURM or K8s?
 
-Yes, see [Scaling § Multi-node (manual)](scaling.md#multi-node-manual). You need a shared filesystem and a reachable inference IP. Set the three `OUTPUT_DIR` / `INFERENCE_SERVER_IP` / `INFERENCE_SERVER_API_KEY` env vars on every node and launch each process by hand.
+Not currently documented. Multi-node deployments go through [SLURM](scaling.md#slurm) — the launcher writes the sbatch script that wires inference, the orchestrator, and the trainer across nodes. Manual launches are technically possible (run `uv run inference` / `uv run orchestrator` / `uv run torchrun src/prime_rl/trainer/rl/train.py` on different nodes with shared filesystem + reachable inference IP), but you'd be re-implementing what the SLURM launcher already does.
 
 ### How big a difference does NCCL weight broadcast make?
 

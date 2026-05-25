@@ -156,7 +156,7 @@ The minimal SFT run trains `Qwen3-0.6B` on the `reverse-text` SFT dataset:
 uv run sft @ examples/reverse_text/sft.toml --wandb
 ```
 
-Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manages this for you — see [Scaling § SFT training](scaling.md#sft-training) for non-default layouts).
+Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manages this for you — see [Scaling § SFT and torchrun](scaling.md#sft-and-torchrun) for non-default layouts; multi-node SFT goes through [SLURM](scaling.md#slurm)).
 
 ### SFT-specific knobs
 

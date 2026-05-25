@@ -1,14 +1,15 @@
 # Scaling
 
-This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster: single-node multi-GPU layouts, multi-node SLURM and Kubernetes deployments, FSDP / expert parallelism / context parallelism, and throughput benchmarking. For knobs that fit on one box, see [Training](training.md) first. For prefill/decode disaggregated inference, see [Advanced](advanced.md#disaggregated-prefilldecode-inference).
+This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster: single-node and multi-node deployments, FSDP / expert parallelism / context parallelism, and throughput benchmarking. For knobs that fit on one box, see [Training](training.md) first. For prefill/decode disaggregated inference, see [Advanced](advanced.md#disaggregated-prefilldecode-inference).
 
 ## Table of Contents
 
-- [Choosing a layout](#choosing-a-layout)
-- [Single GPU](#single-gpu)
-- [Single-node multi-GPU](#single-node-multi-gpu)
-  - [RL placement](#rl-placement)
-  - [SFT and torchrun](#sft-and-torchrun)
+- [Single-node vs. multi-node deployment](#single-node-vs-multi-node-deployment)
+  - [Single GPU](#single-gpu)
+  - [Single-node multi-GPU](#single-node-multi-gpu)
+    - [RL placement](#rl-placement)
+    - [SFT and torchrun](#sft-and-torchrun)
+  - [Multi-node](#multi-node)
 - [Parallelism knobs](#parallelism-knobs)
   - [FSDP](#fsdp)
   - [Expert parallelism](#expert-parallelism)
@@ -16,10 +17,6 @@ This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster
   - [Activation checkpointing and offloading](#activation-checkpointing-and-offloading)
   - [CPU optimizer offload](#cpu-optimizer-offload)
 - [Memory-tight recipe](#memory-tight-recipe)
-- [Multi-node (manual)](#multi-node-manual)
-  - [RL training](#rl-training)
-  - [SFT training](#sft-training)
-  - [Multi-node inference](#multi-node-inference)
 - [SLURM](#slurm)
   - [Activation](#activation)
   - [`[slurm]` and `[deployment]` reference](#slurm-and-deployment-reference)
@@ -29,17 +26,13 @@ This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster
 - [Kubernetes](#kubernetes)
 - [Benchmarking](#benchmarking)
 
-## Choosing a layout
+## Single-node vs. multi-node deployment
 
-| You have… | Use this layout |
-|---|---|
-| 1 node, 2–8 GPUs | `uv run rl` with `--deployment.num-infer-gpus N --deployment.num-train-gpus M` |
-| 1 node, 8 GPUs, large MoE | Custom impl + EP + activation checkpointing |
-| 2+ nodes, SLURM | `[slurm]` + `[deployment]` overlay (recommended) |
-| 2+ nodes, no SLURM | Manual `uv run inference` + `uv run orchestrator` + `uv run torchrun src/.../train.py` |
-| Kubernetes | The bundled Helm chart at `k8s/prime-rl` |
+The `rl`, `sft`, and `inference` entrypoints all accept a `[deployment]` block (`type = "single_node"` or `"multi_node"`) that picks how the trainer / orchestrator / inference processes are placed across hardware. **Single-node** runs locally; **multi-node** currently goes through [SLURM](#slurm) — the launcher writes an sbatch script that places inference replicas, the orchestrator, and the trainer with the right rendezvous endpoints, IPs, ports, and shared-filesystem paths wired in.
 
-## Single GPU
+> Manual multi-node launches (`uv run inference` on one set of nodes, `uv run orchestrator` on another, `uv run torchrun src/prime_rl/trainer/rl/train.py` on the trainer nodes) are technically possible — that's what the SLURM launcher does for you under the hood — but you'd be wiring rendezvous endpoints, inference IPs and API keys, the rollout/weight-broadcast paths, and the shared filesystem mounts by hand. We don't currently document that path.
+
+### Single GPU
 
 For SFT, single-GPU is the default — `uv run sft` runs without torchrun unless you ask for multiple processes.
 
@@ -60,9 +53,9 @@ CUDA_VISIBLE_DEVICES=0 uv run trainer @ train.toml
 
 Single-GPU RL is for debugging only — production RL needs 2+ GPUs.
 
-## Single-node multi-GPU
+### Single-node multi-GPU
 
-### RL placement
+#### RL placement
 
 `rl` defaults to 1 trainer GPU and 1 inference GPU. To give inference 6 GPUs with data parallelism and the trainer the remaining 2 on an 8-GPU node:
 
@@ -90,7 +83,7 @@ CUDA_VISIBLE_DEVICES=2,3 uv run rl @ rl.toml \
   --output-dir outputs/exp2
 ```
 
-### SFT and torchrun
+#### SFT and torchrun
 
 `uv run sft` manages torchrun internally — you don't need to call torchrun yourself. To scale from 1 to N GPUs, set the deployment GPU count (or just let it pick up `WORLD_SIZE`). For non-default layouts, the manual equivalent is:
 
@@ -102,6 +95,10 @@ uv run torchrun \
 ```
 
 `--local-ranks-filter 0` keeps console output to rank 0 only; per-rank stdout/stderr is still captured in `<output_dir>/logs/trainer/torchrun/`.
+
+### Multi-node
+
+Multi-node deployments (RL or SFT) are launched via [SLURM](#slurm) — set `[deployment] type = "multi_node"` plus the matching `[slurm]` block, and the launcher writes the sbatch script that places inference, orchestrator, and trainer across the requested nodes with the inter-process wiring set up correctly. See [SLURM § RL example](#rl-example) and [SLURM § SFT and inference examples](#sft-and-inference-examples) for full configs.
 
 ## Parallelism knobs
 
@@ -197,87 +194,6 @@ max_inflight_activations = 1
 ```
 
 Walks through every memory lever in order: FSDP+EP shard the weights, CP shards the activations along the token dim, AC + AC offloading shrink the activation footprint, fused LM head chunks the loss, `torch.compile` reduces fragmentation, optim offload moves Adam state off GPU. Apply selectively — each knob has a throughput cost.
-
-## Multi-node (manual)
-
-When you don't have SLURM (or want fine-grained control), launch each process by hand. Multi-node RL currently requires a **shared filesystem** for the rollout transport and the weight broadcast.
-
-### RL training
-
-```bash
-# On all nodes
-export OUTPUT_DIR=/shared/outputs/my-run
-export INFERENCE_SERVER_IP=10.0.0.1
-export INFERENCE_SERVER_API_KEY=...
-```
-
-```bash
-# Inference node
-uv run inference @ infer.toml \
-  --api-key $INFERENCE_SERVER_API_KEY \
-  --parallel.tp 4 --parallel.dp 2
-
-# Orchestrator (either node)
-uv run orchestrator @ orch.toml \
-  --client.base-url http://$INFERENCE_SERVER_IP:8000/v1 \
-  --client.api-key-var INFERENCE_SERVER_API_KEY \
-  --output-dir $OUTPUT_DIR
-
-# Trainer node
-uv run torchrun \
-  --nproc-per-node 8 \
-  --local-ranks-filter 0 \
-  src/prime_rl/trainer/rl/train.py @ train.toml \
-  --output-dir $OUTPUT_DIR
-```
-
-You can scale inference and trainer independently — multiple inference nodes (each running its own vLLM replica), one orchestrator, one or more trainer nodes. The orchestrator must be a single instance.
-
-### SFT training
-
-For multi-node SFT, point torchrun at a rendezvous endpoint:
-
-```bash
-# On all nodes
-export MASTER_ADDR=10.0.0.1
-export MASTER_PORT=29500
-export GLOO_SOCKET_IFNAME=...   # only if default isn't routable
-export NCCL_SOCKET_IFNAME=...
-
-# Node 0
-uv run torchrun \
-  --nnodes 2 --node-rank 0 \
-  --rdzv-endpoint=$MASTER_ADDR:$MASTER_PORT \
-  --local-ranks-filter 0 \
-  --nproc-per-node 8 \
-  src/prime_rl/trainer/sft/train.py @ sft.toml
-
-# Node 1 — same but --node-rank 1
-```
-
-If your nodes aren't colocated, set up a VPN (e.g. Tailscale) and use the VPN-resolvable IP for `MASTER_ADDR`.
-
-### Multi-node inference
-
-Multi-node vLLM uses native data parallelism — see the [vLLM docs](https://docs.vllm.ai/en/v0.10.0/serving/data_parallel_deployment.html). For TP=4, DP=4, two nodes:
-
-```bash
-# Node 0 — DP ranks 0,1
-uv run inference \
-  --parallel.tp 4 --parallel.dp 4 \
-  --data-parallel-size-local 2 \
-  --data-parallel-address $DATA_PARALLEL_ADDRESS \
-  --data-parallel-rpc-port $DATA_PARALLEL_RPC_PORT
-
-# Node 1 — DP ranks 2,3 (headless)
-uv run inference \
-  --parallel.tp 4 --parallel.dp 4 \
-  --data-parallel-size-local 2 \
-  --data-parallel-address $DATA_PARALLEL_ADDRESS \
-  --data-parallel-rpc-port $DATA_PARALLEL_RPC_PORT \
-  --data-parallel-start-rank 2 \
-  --headless
-```
 
 ## SLURM
 
