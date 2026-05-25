@@ -16,7 +16,6 @@ from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.utils import (
-    MAX_ASYNC_LEVEL,
     get_broadcast_dir,
     get_latest_ckpt_step,
     get_step_path,
@@ -285,19 +284,21 @@ class Scheduler:
             await self.maybe_update_policy()
             await asyncio.sleep(1)
 
+    def _async_away_ckpt_step(self) -> int:
+        """Lowest ckpt step the orchestrator can advance to; the trainer always lags by exactly one step."""
+        return max(self.step - 1, 0)
+
     def _compute_next_ckpt_step(self) -> int:
-        latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
-        async_away_ckpt_step = max(self.step - MAX_ASYNC_LEVEL, 0)
         if self.strict_async_level:
-            return async_away_ckpt_step
-        return max(async_away_ckpt_step, latest_ckpt_step)
+            return self._async_away_ckpt_step()
+        latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
+        return max(self._async_away_ckpt_step(), latest_ckpt_step)
 
     async def _apply_policy_update(self, next_ckpt_step: int) -> None:
-        async_away_ckpt_step = max(self.step - MAX_ASYNC_LEVEL, 0)
-        if next_ckpt_step == async_away_ckpt_step:
+        if next_ckpt_step == self._async_away_ckpt_step():
             self.logger.info(
-                f"Orchestrator paused: waiting for trainer process to complete checkpoint {next_ckpt_step} "
-                f"(>{MAX_ASYNC_LEVEL} step(s) ahead). Training is progressing normally."
+                f"Orchestrator paused: waiting for trainer to broadcast checkpoint {next_ckpt_step} "
+                f"(orchestrator is one step ahead). Training is progressing normally."
             )
             self.checkpoint_ready.clear()
             wait_for_ckpt_start_time = time.perf_counter()
@@ -391,7 +392,8 @@ class Scheduler:
             await safe_cancel(self.update_policy_task)
 
         # Manually check the async barrier before starting the step, then re-create the update policy loop
-        # This ensures that we respect MAX_ASYNC_LEVEL, while still listening for policy updates mid-step
+        # This ensures the orchestrator stays at most one step ahead of the trainer, while still
+        # listening for policy updates mid-step.
         await self.maybe_update_policy()
         self.update_policy_task = asyncio.create_task(self.update_policy_loop())
 

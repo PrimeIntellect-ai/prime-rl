@@ -17,7 +17,7 @@ from prime_rl.trainer.weights import (
     save_state_dict,
 )
 from prime_rl.trainer.world import get_world
-from prime_rl.utils.utils import MAX_ASYNC_LEVEL, get_broadcast_dir, get_step_path
+from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 
 
 class FileSystemWeightBroadcast(WeightBroadcast):
@@ -114,6 +114,5 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             maybe_clean(
                 get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
                 self.multi_run_manager.progress[idx].step,
-                MAX_ASYNC_LEVEL,
                 interval_to_keep,
             )

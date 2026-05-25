@@ -65,7 +65,7 @@ from prime_rl.utils.metrics_server import HealthServer, MetricsServer, RunStats
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.utils import MAX_ASYNC_LEVEL, clean_exit, resolve_latest_ckpt_step, to_col_format
+from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
 from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
 
@@ -258,20 +258,27 @@ def train(config: TrainerConfig):
             gc_handler.run(progress.step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
 
-        # Broadcast weights at every step, (except step 0, because no need to broadcast the base model)
-        # Also, with NCCL broadcast, we do not broadcast weights the last async level step as the orchestrator is already finished and will not initialize the receive on the inference; for filesystem broadcast, we do "broadcast" until the final step to allow to resume from the broadcast directory
+        # Broadcast weights every step except:
+        #   - step 0: nothing has changed yet, the orchestrator has the base model.
+        #   - the final NCCL broadcast: with a 1-step async barrier the orchestrator's last step
+        #     uses the trainer's penultimate ckpt, so the trainer's last broadcast has no receiver
+        #     (the inference NCCL group has been torn down). Filesystem broadcast still writes the
+        #     final step so we can resume from the broadcast directory.
         if weight_broadcast is None:
             broadcast_weights_time = 0
         else:
-            last_async_level_steps = config.max_steps and progress.step >= config.max_steps - MAX_ASYNC_LEVEL
-            if progress.step > 0 and (not last_async_level_steps or config.weight_broadcast.type == "filesystem"):
+            nccl_broadcast_unused = (
+                config.weight_broadcast.type == "nccl"
+                and config.max_steps is not None
+                and progress.step >= config.max_steps - 1
+            )
+            if progress.step > 0 and not nccl_broadcast_unused:
                 broadcast_weights_start_time = time.perf_counter()
                 weight_broadcast.broadcast_weights(model, step=progress.step)
                 broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
                 # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
-                ckpt_interval = config.ckpt and config.ckpt.interval
-                interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
                 if config.weight_broadcast.type == "filesystem":
+                    interval_to_keep = config.ckpt and config.ckpt.interval
                     weight_broadcast.maybe_clean(interval_to_keep)
             else:
                 broadcast_weights_time = 0
