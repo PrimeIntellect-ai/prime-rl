@@ -184,7 +184,6 @@ override-dependencies = [
 # we want latest vllm, remove next patch
 vllm = false
 tokenspeed-mla = false
-fastokens = false
 flash_attn_3 = false
 # PrimeIntellect-published on PyPI (trusted publisher)
 prime = false
