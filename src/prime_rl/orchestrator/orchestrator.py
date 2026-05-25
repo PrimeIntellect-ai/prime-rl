@@ -284,8 +284,6 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
     training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
-    skip_eval_step: int | None = None
-
     # Reset weights to base model if starting from scratch
     progress = Progress()
 
@@ -294,7 +292,6 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
         scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
         if config.eval and config.eval.skip_eval_on_resume:
-            skip_eval_step = progress.step
             logger.info(f"Skipping online eval on resume (step={progress.step})")
 
         # In NCCL mode, skip existence check - weights are broadcasted, not stored on disk
@@ -356,7 +353,7 @@ async def orchestrate(config: OrchestratorConfig):
             assert eval_envs is not None
             for eval_env in eval_envs:
                 if (
-                    progress.step != skip_eval_step
+                    not (is_first_step and checkpoint_step is not None and config.eval.skip_eval_on_resume)
                     and progress.step % eval_env.config.interval == 0
                     and (progress.step > 0 or config.eval.eval_base_model)
                 ):
