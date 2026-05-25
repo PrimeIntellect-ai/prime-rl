@@ -68,25 +68,26 @@ The configured hooks:
 
 ## Adding a new architecture
 
-To add (e.g.) Kimi 2.5:
+Bringing up a new model family is two steps: implement the modeling code, then register a small-scale preset so you can smoke-test the new architecture end-to-end without paying the cost of the full-size model.
 
-1. Add the modeling code under `src/prime_rl/trainer/models/<arch>/`.
-2. Add a preset to `scripts/mini_moe.py` with the config class, small dimensions, HF + PrimeRL model classes, and tokenizer source:
+1. **Implement the modeling code** under `src/prime_rl/trainer/models/<arch>/` (HF-compatible config, modeling, and weight conversion). Mirror the layout of an existing family — `glm4_moe/` or `qwen3_moe/` are good starting points.
 
-```python
-ARCH_PRESETS = {
-    "glm4_moe": {
-        "config_class": Glm4MoeConfig,
-        "config_kwargs": dict(hidden_size=1024, num_hidden_layers=24, n_routed_experts=8, ...),
-        "hf_model_class": HFGlm4MoeForCausalLM,
-        "prime_model_class": PrimeRLGlm4MoeForCausalLM,
-        "tokenizer_source": "THUDM/GLM-4-9B-0414",
-    },
-    # add your arch here
-}
-```
+2. **Register a mini preset** in [`scripts/mini_moe.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/scripts/mini_moe.py) so the [Debugging MoE](#debugging-moe) workflow can build a ~0.5B test model in your architecture. The preset names the config class, picks small dimensions, and wires up the HF + PrimeRL model classes plus a tokenizer source:
 
-3. Run the [Debugging MoE](#debugging-moe) workflow with `--arch <your_arch>` to smoke-test the new modeling code end-to-end.
+   ```python
+   ARCH_PRESETS = {
+       "glm4_moe": {
+           "config_class": Glm4MoeConfig,
+           "config_kwargs": dict(hidden_size=1024, num_hidden_layers=24, n_routed_experts=8, ...),
+           "hf_model_class": HFGlm4MoeForCausalLM,
+           "prime_model_class": PrimeRLGlm4MoeForCausalLM,
+           "tokenizer_source": "THUDM/GLM-4-9B-0414",
+       },
+       # add your arch here
+   }
+   ```
+
+3. **Smoke-test** with the [Debugging MoE](#debugging-moe) workflow using `--arch <your_arch>`. That runs the HF↔PrimeRL roundtrip, the SFT warmup, and the full RL stack end-to-end on the mini model.
 
 ## Debugging MoE
 
