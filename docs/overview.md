@@ -42,6 +42,7 @@ The `rl` entrypoint reads `examples/reverse_text/rl.toml`, splits it into per-pr
 - **[Training](training.md)** — End-to-end recipes for RL, SFT, and evals; checkpointing and resume; observability (logs, W&B, Prometheus, platform monitoring); rules of thumb and common issues.
 - **[Scaling](scaling.md)** — Single-GPU through 1000+ GPU; FSDP / EP / CP knobs; SLURM and Kubernetes guides; disaggregated prefill/decode inference; benchmarking.
 - **[Algorithms](algorithms.md)** — Async / off-policy semantics; the default loss; built-in and custom losses, advantages, and filters; multi-turn trajectory merging.
-- **[Advanced](advanced.md)** — Custom modeling (EP backends, custom impls); multimodal training; LoRA + multi-tenant training; small-scale MoE testing.
+- **[Advanced](advanced.md)** — Custom modeling (EP backends, custom impls); multimodal training; LoRA + multi-tenant training.
+- **[Development](development.md)** — Adding a new model architecture, debugging modeling code at small scale.
 - **[Reference](reference.md)** — Auto-generated field-by-field reference for every entrypoint config.
 - **[FAQs](faqs.md)** — Quick answers to recurring questions.

@@ -222,7 +222,8 @@ Check out the [docs](docs) directory for in-depth guides on how to use PRIME-RL.
 - [**Training**](docs/training.md) - RL, SFT, evals, checkpointing, observability, rules of thumb
 - [**Scaling**](docs/scaling.md) - Single-GPU through multi-node, FSDP/EP/CP, SLURM, Kubernetes, disaggregated inference, benchmarking
 - [**Algorithms**](docs/algorithms.md) - Async/off-policy training, the AIPO loss, advantage and filter plugins, trajectory merging
-- [**Advanced**](docs/advanced.md) - MoE, VLMs, LoRA, multi-run manager, environments, small-scale MoE testing
+- [**Advanced**](docs/advanced.md) - Custom modeling, multimodal training, LoRA, multi-tenant training
+- [**Development**](docs/development.md) - Adding a new model architecture, small-scale MoE testing
 - [**FAQs**](docs/faqs.md) - Frequently-asked questions
 - [**Reference**](docs/reference.md) - Auto-generated field-by-field reference for every entrypoint config
 
