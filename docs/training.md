@@ -164,7 +164,7 @@ Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manag
 
 | Knob | What it controls |
 |---|---|
-| `data.type = "sft"` and `data.path` | HF dataset name or local path |
+| `data.name` | HF dataset name or local path |
 | `data.batch_size` | Tokens per trainer step (packed) |
 | `data.seq_len` | Per-sample sequence length |
 | `loss_mask.*` | Which roles contribute to loss; see [Reference § `sft.data.loss_mask`](reference.md#sft-data) |
