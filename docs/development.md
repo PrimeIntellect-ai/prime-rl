@@ -10,11 +10,11 @@ This page covers workflows for developing on `prime-rl` itself — running the t
   - [CI workflows](#ci-workflows)
   - [Markers](#markers)
 - [Pre-commit hooks](#pre-commit-hooks)
-- [Testing MoE at small scale](#testing-moe-at-small-scale)
-  - [Step 1: build and verify a mini model](#step-1-build-and-verify-a-mini-model)
-  - [Step 2: SFT warmup](#step-2-sft-warmup)
-  - [Step 3: RL on reverse-text](#step-3-rl-on-reverse-text)
-  - [Adding a new architecture](#adding-a-new-architecture)
+- [Adding a new architecture](#adding-a-new-architecture)
+- [Debugging MoE](#debugging-moe)
+  - [Build and verify a mini model](#build-and-verify-a-mini-model)
+  - [SFT warmup](#sft-warmup)
+  - [RL on reverse-text](#rl-on-reverse-text)
 
 ## Test suite
 
@@ -67,57 +67,7 @@ The configured hooks:
 - **`ruff` check + format** on staged Python files.
 - **`docs-reference`** — re-runs [`scripts/generate_docs_reference.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/scripts/generate_docs_reference.py) whenever a config class or the generator itself is staged. If `docs/reference.md` would change, the commit fails so you can re-stage the regenerated file.
 
-## Testing MoE at small scale
-
-When working on MoE architectures (GLM-4, Kimi, etc.), you can't iterate on a 100B+ model locally. The workflow below builds a ~0.5B model with the same architecture, warms it up with SFT, and runs RL — all on 1–2 GPUs. The goal is catching bugs in modeling code, state-dict conversions, and pipeline integration before scaling.
-
-### Step 1: build and verify a mini model
-
-```bash
-uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe
-```
-
-This creates a ~543M parameter GLM-4 MoE (1024 hidden, 24 layers, 8 experts) with random weights, copies the tokenizer from the original GLM-4 model, and verifies the HF↔PrimeRL roundtrip is lossless. To re-verify after a modeling-code change without re-creating the model:
-
-```bash
-uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe --verify-only
-```
-
-### Step 2: SFT warmup
-
-Use the shipped debug MoE SFT config with reverse-text data:
-
-```bash
-uv run sft @ configs/debug/moe/sft/train.toml \
-  --model.name ./mini-glm-moe \
-  --data.name PrimeIntellect/Reverse-Text-SFT \
-  --data.type null \
-  --max_steps 200 \
-  --optim.lr 1e-4 \
-  --ckpt.weights
-```
-
-Loss drops from ~12 to ~2.5. The output won't be coherent, but the model now has a non-trivial distribution so KL divergence becomes meaningful in RL. A pre-built SFT'd checkpoint lives at [samsja/mini-glm-moe](https://huggingface.co/samsja/mini-glm-moe).
-
-### Step 3: RL on reverse-text
-
-```bash
-uv run rl @ configs/ci/integration/reverse_text_moe/start.toml \
-  --model.name samsja/mini-glm-moe \
-  --trainer.model.impl custom \
-  --inference.gpu-memory-utilization 0.7 \
-  --inference.model.max-model-len 2048
-```
-
-What to look for:
-
-- **No crashes.** Validates the full inference + orchestrator + trainer pipeline end-to-end.
-- **Finite, non-zero KL.** Confirms the reference distribution is meaningful.
-- **Loss reasonable.** Not NaN, not stuck.
-
-Don't expect reward to climb meaningfully in 20 steps on a random model.
-
-### Adding a new architecture
+## Adding a new architecture
 
 To add (e.g.) Kimi 2.5:
 
@@ -137,4 +87,54 @@ ARCH_PRESETS = {
 }
 ```
 
-3. Run the three steps above with `--arch <your_arch>`.
+3. Run the [Debugging MoE](#debugging-moe) workflow with `--arch <your_arch>` to smoke-test the new modeling code end-to-end.
+
+## Debugging MoE
+
+When working on MoE architectures (GLM-4, Kimi, etc.), you can't iterate on a 100B+ model locally. The workflow below builds a ~0.5B model with the same architecture, warms it up with SFT, and runs RL — all on 1–2 GPUs. The goal is catching bugs in modeling code, state-dict conversions, and pipeline integration before scaling.
+
+### Build and verify a mini model
+
+```bash
+uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe
+```
+
+This creates a ~543M parameter GLM-4 MoE (1024 hidden, 24 layers, 8 experts) with random weights, copies the tokenizer from the original GLM-4 model, and verifies the HF↔PrimeRL roundtrip is lossless. To re-verify after a modeling-code change without re-creating the model:
+
+```bash
+uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe --verify-only
+```
+
+### SFT warmup
+
+Use the shipped debug MoE SFT config with reverse-text data:
+
+```bash
+uv run sft @ configs/debug/moe/sft/train.toml \
+  --model.name ./mini-glm-moe \
+  --data.name PrimeIntellect/Reverse-Text-SFT \
+  --data.type null \
+  --max_steps 200 \
+  --optim.lr 1e-4 \
+  --ckpt.weights
+```
+
+Loss drops from ~12 to ~2.5. The output won't be coherent, but the model now has a non-trivial distribution so KL divergence becomes meaningful in RL. A pre-built SFT'd checkpoint lives at [samsja/mini-glm-moe](https://huggingface.co/samsja/mini-glm-moe).
+
+### RL on reverse-text
+
+```bash
+uv run rl @ configs/ci/integration/reverse_text_moe/start.toml \
+  --model.name samsja/mini-glm-moe \
+  --trainer.model.impl custom \
+  --inference.gpu-memory-utilization 0.7 \
+  --inference.model.max-model-len 2048
+```
+
+What to look for:
+
+- **No crashes.** Validates the full inference + orchestrator + trainer pipeline end-to-end.
+- **Finite, non-zero KL.** Confirms the reference distribution is meaningful.
+- **Loss reasonable.** Not NaN, not stuck.
+
+Don't expect reward to climb meaningfully in 20 steps on a random model.
