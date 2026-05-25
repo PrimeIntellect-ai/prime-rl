@@ -8,7 +8,7 @@ import tomli_w
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
 from prime_rl.orchestrator.advantage import compute_advantages
-from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step
+from prime_rl.orchestrator.eval_utils import compute_eval_step
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
@@ -285,10 +285,10 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
     training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
-    # Track last online eval checkpoint step per eval env
+    # Track last online eval orchestrator step per eval env
     last_eval_steps: dict[str, int] = {env.name: -1 for env in eval_envs} if eval_envs else {}
-    # Track previous ckpt_step to detect when ckpt_step jumps over eval interval boundaries
-    prev_ckpt_step = -1
+    # Track previous orchestrator step to detect when resume jumps over eval interval boundaries
+    prev_eval_step = -1
 
     # Reset weights to base model if starting from scratch
     progress = Progress()
@@ -298,12 +298,12 @@ async def orchestrate(config: OrchestratorConfig):
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
         scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
         if config.eval and config.eval.skip_eval_on_resume:
-            prev_ckpt_step = scheduler.ckpt_step
-            last_eval_steps = {name: scheduler.ckpt_step for name in last_eval_steps}
-            logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
+            prev_eval_step = progress.step
+            last_eval_steps = {name: progress.step for name in last_eval_steps}
+            logger.info(f"Skipping online eval on resume (step={progress.step}, ckpt_step={scheduler.ckpt_step})")
         else:
-            # Allow eval at resumed step by setting prev_ckpt_step one behind
-            prev_ckpt_step = scheduler.ckpt_step - 1
+            # Allow eval at resumed step by setting the previous step one behind.
+            prev_eval_step = progress.step - 1
 
         # In NCCL mode, skip existence check - weights are broadcasted, not stored on disk
         check_exists = config.weight_broadcast.type != "nccl"
@@ -363,20 +363,20 @@ async def orchestrate(config: OrchestratorConfig):
         if config.eval:
             assert eval_envs is not None
             for eval_env in eval_envs:
-                eval_ckpt_step = compute_eval_ckpt_step(
-                    ckpt_step=ckpt_step,
-                    prev_ckpt_step=prev_ckpt_step,
+                eval_step = compute_eval_step(
+                    step=progress.step,
+                    prev_step=prev_eval_step,
                     last_eval_step=last_eval_steps[eval_env.name],
                     interval=eval_env.config.interval,
                     eval_base_model=config.eval.eval_base_model,
                 )
-                if eval_ckpt_step is not None:
-                    last_eval_steps[eval_env.name] = ckpt_step
+                if eval_step is not None:
+                    last_eval_steps[eval_env.name] = eval_step
                     envs_to_eval.append(eval_env)
 
         if envs_to_eval:
             env_names = ", ".join(e.name for e in envs_to_eval)
-            logger.info(f"Running evals at {ckpt_step=} for {env_names}")
+            logger.info(f"Running evals at step={progress.step}, ckpt_step={ckpt_step} for {env_names}")
 
             # Pause weight updates and re-scheduling of training rollouts during eval
             # to avoid evaluating across different checkpoints and avoid congestion
@@ -411,8 +411,8 @@ async def orchestrate(config: OrchestratorConfig):
             # Resume weight updates
             scheduler.checkpoint_ready.set()
 
-        # Update prev_ckpt_step for next iteration
-        prev_ckpt_step = ckpt_step
+        # Update prev_eval_step for next iteration
+        prev_eval_step = progress.step
 
         # Schedule generating the training batch. Retry on empty-after-filter
         # batches so the trainer never receives an empty batch.
