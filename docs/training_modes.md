@@ -33,7 +33,8 @@ See [`configs/debug/training_modes/README.md`](../configs/debug/training_modes/R
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `training_mode` | `"rl"` | One of `rl`, `opd`, `sft`. Propagates to `orchestrator.training_mode` and (for sft) `trainer.loss.type`. |
-| `deployment.num_teacher_gpus` | `None` | Number of GPUs for the teacher vLLM server. Auto-starts when set. OPD only. |
 | `trainer.loss.teacher_tau` | `0.0` | Distillation strength. Must be `> 0` in OPD. |
 | `trainer.loss.adv_tau` | `1.0` | Weight for the RL advantage signal. Set `0` for pure distillation. |
 | `orchestrator.verification.enabled` | `true` | Enable/disable verification. Set to `false` for pure distillation with `adv_tau = 0`. |
+
+> Note: the `rl` entrypoint only manages student-policy inference. For OPD and (local) SFT, start the teacher inference server manually (e.g. `CUDA_VISIBLE_DEVICES=1 uv run inference --model.name <teacher> --server.port 8001`) and point `[orchestrator.teacher.client]` at it. See [`configs/debug/training_modes/README.md`](../configs/debug/training_modes/README.md) for a full example.
