@@ -114,14 +114,15 @@ def _union_models(t: object) -> list[type[BaseModel]] | None:
 
 
 def fmt_type(annotation: object) -> str:
-    """Render a type annotation as compact Markdown-safe text."""
+    """Render a type annotation as compact text. Caller is responsible for wrapping
+    in a code span; in GFM, code spans inside table cells can contain literal `|`."""
     annotation = unwrap_annotated(annotation)
     origin = typing.get_origin(annotation)
     if origin in (typing.Union, types.UnionType):
         args = typing.get_args(annotation)
-        return " \\| ".join(fmt_type(a) for a in args)
+        return " | ".join(fmt_type(a) for a in args)
     if origin is typing.Literal:
-        return " \\| ".join(repr(a) for a in typing.get_args(annotation))
+        return " | ".join(repr(a) for a in typing.get_args(annotation))
     if origin is list:
         return f"list[{fmt_type(typing.get_args(annotation)[0])}]"
     if origin is dict:
@@ -203,13 +204,33 @@ def render_field_row(
     docstring: str,
 ) -> None:
     name = f"`{path}`"
-    type_str = fmt_type(field.annotation)
+    type_str = f"`{fmt_type(field.annotation)}`"
     default = fmt_default(field)
     constraints = fmt_constraints(field)
     desc = (field.description or docstring or "").strip().replace("\n", " ")
     if constraints:
         desc = f"_{constraints}._ {desc}" if desc else f"_{constraints}._"
     writer.raw(f"| {name} | {type_str} | {default} | {desc} |\n")
+
+
+def _list_inner_models(annotation: object) -> list[type[BaseModel]] | None:
+    """If `annotation` is `list[X]` where X is a `BaseModel` (possibly through
+    `Annotated[...]`) or a discriminated `Union[A | B | ...]` of `BaseModel`s,
+    return the list of model classes; otherwise return None.
+    """
+    annotation = unwrap_annotated(annotation)
+    if typing.get_origin(annotation) is not list:
+        return None
+    args = typing.get_args(annotation)
+    if not args:
+        return None
+    inner = unwrap_annotated(args[0])
+    if is_pydantic_model(inner):
+        return [inner]
+    union = _union_models(inner)
+    if union:
+        return union
+    return None
 
 
 def render_model(
@@ -223,6 +244,7 @@ def render_model(
     """Render the fields of `model_cls` and recurse into nested BaseConfig sub-fields."""
     docstrings = _extract_field_docstrings(model_cls)
     nested: list[tuple[str, type[BaseModel], FieldInfo, str]] = []
+    list_nested: list[tuple[str, list[type[BaseModel]], FieldInfo, str]] = []
     union_fields: list[tuple[str, list[type[BaseModel]], FieldInfo, str]] = []
     flat_fields: list[tuple[str, FieldInfo, str]] = []
 
@@ -245,6 +267,11 @@ def render_model(
             if len(args) == 1 and is_pydantic_model(args[0]):
                 nested.append((full, args[0], field, ds))
                 continue
+        # list[BaseConfig] or list[Annotated[Union[...], discriminator]] case
+        list_models = _list_inner_models(unwrapped)
+        if list_models is not None:
+            list_nested.append((full, list_models, field, ds))
+            continue
         flat_fields.append((full, field, ds))
 
     if flat_fields:
@@ -265,6 +292,39 @@ def render_model(
             writer.p(f"_Recursive reference to_ `{child_cls.__name__}` _omitted._")
             continue
         render_model(writer, child_cls, full, sub_anchor, depth + 1, seen | {child_cls})
+
+    for full, item_models, field, ds in list_nested:
+        sub_anchor = anchor_prefix + [full.split(".")[-1]]
+        # Index placeholder matches the CLI / TOML form: --orchestrator.train.env.0.id
+        item_path = f"{full}.<n>"
+        heading = f"`{item_path}` (list item)"
+        writer.h(min(depth + 1, 6), heading, anchor=slug(sub_anchor))
+        blurb = (field.description or ds or "").strip()
+        if blurb:
+            writer.p(blurb)
+        if len(item_models) == 1:
+            child_cls = item_models[0]
+            if child_cls in seen:
+                writer.p(f"_Recursive reference to_ `{child_cls.__name__}` _omitted._")
+                continue
+            render_model(writer, child_cls, item_path, sub_anchor, depth + 1, seen | {child_cls})
+        else:
+            # Discriminated union of list items (e.g. `filters: list[FilterConfig]`)
+            type_field = field.discriminator or "type"
+            writer.p(
+                f"Discriminated list-item union — set `{item_path}.{type_field}` to one of "
+                + ", ".join(f"`{_type_literal(v, type_field)}`" for v in item_models)
+                + " and provide the matching sub-fields."
+            )
+            for variant in item_models:
+                type_literal = _type_literal(variant, type_field)
+                var_anchor = sub_anchor + [type_literal or variant.__name__.lower()]
+                writer.h(
+                    min(depth + 2, 6),
+                    f'`{item_path}.{type_field} = "{type_literal}"` ({variant.__name__})',
+                    anchor=slug(var_anchor),
+                )
+                render_model(writer, variant, item_path, var_anchor, depth + 2, seen | {variant})
 
     for full, variants, field, ds in union_fields:
         sub_anchor = anchor_prefix + [full.split(".")[-1]]
@@ -322,7 +382,21 @@ def render_toc(writer: Writer) -> str:
 HEADER = """# Reference
 
 This page documents every field accepted by every prime-rl entrypoint. It is
-auto-generated from the Pydantic config models; do not edit by hand.
+auto-generated; do not edit by hand.
+
+"""
+
+
+FOOTER = """\
+## About this page
+
+Each entrypoint section walks its config tree top-down. Nested sub-configs
+appear under headings named after their dotted path (e.g. `trainer.model.ac`).
+List-typed sub-configs (e.g. `[[orchestrator.train.env]]`) appear under
+headings with a `<n>` index placeholder — that's the CLI form too
+(`--orchestrator.train.env.0.id ...`). Discriminated unions (loss, advantage,
+scheduler, optimizer, …) document each variant in turn — set the `type` field
+to pick one.
 
 To regenerate, run from the project root:
 
@@ -330,15 +404,9 @@ To regenerate, run from the project root:
 uv run python scripts/generate_docs_reference.py
 ```
 
-Each entrypoint section walks its config tree top-down. Nested sub-configs
-appear under headings named after their dotted path (e.g. `trainer.model.ac`).
-Discriminated unions (loss, advantage, scheduler, optimizer, …) document each
-variant in turn — set the `type` field to pick one.
-
 For conceptual context behind these knobs, see
 [Configuration](configuration.md), [Training](training.md),
 [Scaling](scaling.md), [Algorithms](algorithms.md), and [Advanced](advanced.md).
-
 """
 
 
@@ -350,10 +418,11 @@ def main() -> int:
     body = Writer()
     for ep in ENTRYPOINTS:
         render_entrypoint(body, ep)
-    # Stitch: header + TOC built from body's headings + body content.
+    # Stitch: header + TOC built from body's headings + body content + footer.
     writer.raw(render_toc(body))
     writer.raw("---\n\n")
     writer.raw(body.buf.getvalue())
+    writer.raw(FOOTER)
 
     OUT_PATH.write_text(writer.buf.getvalue())
     print(f"Wrote {OUT_PATH} ({writer.buf.tell()} chars)")

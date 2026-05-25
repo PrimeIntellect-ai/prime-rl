@@ -16,18 +16,17 @@ Frequently-asked questions, grouped by topic. For full background see the linked
 
 ### What's the fastest way to verify my install works?
 
-The SFT debug config runs end-to-end on CPU or any single GPU with fake data:
+The minimal SFT run uses the shipped reverse-text example:
 
 ```bash
-uv run sft @ configs/debug/sft/train.toml
+uv run sft @ examples/reverse_text/sft.toml
 ```
 
-For the full RL stack on 2 GPUs, the GSM8K example is the smallest realistic run:
+For the full RL stack on 2 GPUs, the same example covers it:
 
 ```bash
-prime env install primeintellect/math-env
 bash scripts/tmux.sh
-uv run rl @ configs/gsm8k/rl.toml --wandb.name smoke-test --ckpt
+uv run rl @ examples/reverse_text/rl.toml --wandb.name smoke-test --ckpt
 ```
 
 See [Overview § Quick run](overview.md#quick-run).

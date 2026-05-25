@@ -18,7 +18,7 @@ Every `prime-rl` entrypoint uses [`pydantic-config`](https://github.com/PrimeInt
   - [None](#none)
   - [Discriminated unions](#discriminated-unions)
   - [Environments (`[[orchestrator.train.env]]`)](#environments-orchestratortrainenv)
-- [Worked example](#worked-example)
+- [Examples](#examples)
 
 ## Sources and precedence
 
@@ -33,7 +33,7 @@ Field values come from three sources — Pydantic defaults, TOML files (passed w
 The `@` token introduces a TOML file. Multiple `@` arguments compose left-to-right, deep-merged — unset fields in an overlay keep the base value:
 
 ```bash
-uv run rl @ configs/gsm8k/rl.toml                              # one file
+uv run rl @ examples/reverse_text/rl.toml                      # one file
 uv run rl @ base.toml @ overlay.toml                           # left to right
 uv run rl --trainer @ trainer.toml --orchestrator @ orch.toml  # per-section
 uv run rl @ base.toml --trainer @ trainer.toml                 # mixed
@@ -163,25 +163,45 @@ args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
 
 `args` is forwarded verbatim to the environment's `load_environment(**args)`. See each environment's README on the [Hub](https://app.primeintellect.ai/dashboard/environments) for accepted args.
 
-## Worked example
+## Examples
+
+The shipped end-to-end examples in [`examples/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples) are the canonical, kept-up-to-date references — the rest of the repo's TOMLs (under `configs/`) are CI- and debug-internal and may drift. Each example directory has its own README with the full launch story.
+
+**Basic** (1–8 GPUs):
+
+- [**Reverse Text**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/reverse_text) — `Qwen3-0.6B` reversing a chunk of text. Tiny single-turn SFT + RL; runs on a single consumer GPU in minutes.
+- [**Wordle**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/wordle) — `Qwen3-1.7B` playing Wordle. Multi-turn SFT + RL; 2–4 H100s.
+- [**Alphabet Sort**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/alphabet_sort) — `Qwen3-4B-Instruct-2507` sorting names alphabetically. Multi-turn LoRA RL without SFT warmup; one H100.
+- [**Wiki Search**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/wiki_search) — `Qwen3-4B-Instruct-2507` answering trivia by web-searching Wikipedia. Multi-turn with tool use.
+- [**Hendrycks Sanity**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/hendrycks_sanity) — `DeepSeek-R1-Distill-Qwen-1.5B` on a filtered MATH subset. Useful for algorithm ablations.
+
+**Advanced** (32–2048 GPUs, SLURM):
+
+- [**Qwen 3 30B – A3B Math**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/qwen30b_math) — `Qwen3-30B-A3B` on hard math.
+- [**Qwen 3 30B – A3B SWE**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/qwen30b_swe) — `Qwen3-30B-A3B` on hard SWE.
+- [**INTELLECT-3.1**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/Intellect-3.1) — reproduces our INTELLECT-3.1 training run.
+- [**MiniMax-M2.5 SWE**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/minimax_m2.5_swe) — `MiniMax-M2.5` on agentic SWE.
+- [**High-throughput GLM-5**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/glm5_pd_disag) — `GLM-5` with P/D disaggregation and FP8 inference.
+
+### Worked example: compose, override, dry-run
 
 Start from a shipped base config, override two fields on the CLI, and dry-run:
 
 ```bash
-uv run rl @ configs/gsm8k/rl.toml \
+uv run rl @ examples/reverse_text/rl.toml \
   --wandb.name my-experiment \
   --trainer.optim.lr 5e-6 \
-  --output-dir /tmp/gsm8k-dry \
+  --output-dir /tmp/reverse-dry \
   --dry-run
 ```
 
 Then inspect the resolved config:
 
 ```bash
-ls /tmp/gsm8k-dry/configs/
+ls /tmp/reverse-dry/configs/
 # rl.toml  trainer.toml  orchestrator.toml  inference.toml
 ```
 
-Each per-process TOML reflects the final, validated configuration that the actual run would consume — exactly what each process sees when started standalone (`uv run trainer @ /tmp/gsm8k-dry/configs/trainer.toml`, etc.). This is the easiest way to bisect a misbehaving config: dry-run a known-good base, dry-run your overlay, diff the two.
+Each per-process TOML reflects the final, validated configuration that the actual run would consume — exactly what each process sees when started standalone (`uv run trainer @ /tmp/reverse-dry/configs/trainer.toml`, etc.). This is the easiest way to bisect a misbehaving config: dry-run a known-good base, dry-run your overlay, diff the two.
 
 For the full set of fields, defaults, types, and constraints accepted by each entrypoint, jump to [Reference](reference.md).

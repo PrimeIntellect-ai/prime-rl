@@ -98,8 +98,6 @@ CUDA_VISIBLE_DEVICES=1 uv run inference \
   --model.name <teacher> --server.port 8001
 ```
 
-Debug configs for all variants ship under [`configs/debug/training_modes/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/configs/debug/training_modes).
-
 The standalone `uv run sft` entrypoint is the more traditional SFT path — pure dataset-based, no teacher, no orchestrator. Use `orchestrator.training_mode = "sft"` only when you want a teacher to generate the supervision on the fly.
 
 ### Important metrics
