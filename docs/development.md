@@ -22,8 +22,8 @@ The test suite is split into three tiers, each with its own CI workflow.
 ### Layout
 
 - **`tests/unit/`** — fast-running, hermetic tests for isolated logic: config parsing and validation, advantage / loss / scheduler / packer math, individual dataset paths, model-conversion roundtrips, etc. Tests that need a GPU are tagged with the `gpu` marker.
-- **`tests/integration/`** — full-stack RL/SFT runs on a tiny model end-to-end through inference + orchestrator + trainer (e.g. `test_reverse_text.py`, `test_reverse_text_lora.py`, `test_reverse_text_moe.py`, `test_reverse_text_multi_run.py`, `test_alphabet_sort.py`).
-- **`tests/nightly/`** — long-running training runs against shipped configs and real environments (`hendrycks_sanity`, `acereason_math`, `multimodal_color_codeword`, `wiki_search`, `wordle`, …). Each runs to completion on the research cluster with a 24h timeout.
+- **`tests/integration/`** — full-stack RL/SFT runs on a tiny model end-to-end through inference + orchestrator + trainer.
+- **`tests/nightly/`** — runs the configs in [`examples/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples) on the research cluster every night to catch regressions in the shipped examples. 24h timeout per run.
 
 ### Running tests locally
 
