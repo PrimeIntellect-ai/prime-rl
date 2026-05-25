@@ -56,17 +56,18 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 
 | Knob | What it does |
 |---|---|
-| `orchestrator.batch_size` | Prompts per trainer step. |
-| `orchestrator.group_size` | Rollouts generated per prompt. Used for advantage normalization and pass@k estimation. |
-| `orchestrator.max_off_policy_steps` | How many distinct policies may have contributed to one rollout before it's discarded (default 8). The main throughput-vs-noise dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `errored_rollouts` and `mismatch_kl/all/mean` when tuning. |
+| `orchestrator.batch_size` | Tasks per trainer step. |
+| `orchestrator.group_size` | Rollouts generated per task. |
+| `orchestrator.max_off_policy_steps` | How many distinct policies may have contributed to one rollout before it's discarded (default 8). The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `errored_rollouts` and `mismatch_kl/all/mean` when tuning. |
 | `orchestrator.training_mode` | `rl` (default), `opd`, or `sft`. See [Training modes](#training-modes-rl--opd--sft). |
 | `[[orchestrator.train.env]]` | Training environments. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Environments](configuration.md#environments-orchestratortrainenv). |
-| `[[orchestrator.eval.env]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). Scores land in trainer logs and W&B as `eval/{env}/{avg@k,pass@k}`. For one-off evaluations outside training, use [`prime eval`](https://docs.primeintellect.ai/cli-reference/introduction). |
+| `[[orchestrator.eval.env]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
 
 **Monitoring:**
 
 | Knob | What it does |
 |---|---|
+| `log.level` | Process log level for trainer + orchestrator (`info` default; falls back to `$PRIME_LOG_LEVEL`). Set per-process via `trainer.log.level` / `orchestrator.log.level`, or globally on the `rl` entrypoint to propagate to both. |
 | `orchestrator.log.vf_level` | Env-worker / verifiers log level (`info` default; `debug` is noisy but useful for env debugging). |
 | `--wandb` (+ `--wandb.project`, `--wandb.name`) | Enable Weights & Biases logging. See [Weights & Biases](#weights--biases). |
 | `--orchestrator.prime-monitor` | Stream metrics to the Prime Intellect platform (Prime Lab). See [Platform monitoring](#platform-monitoring). |
@@ -75,7 +76,6 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 
 | Knob | What it does |
 |---|---|
-| `--ckpt` | Enable end-of-training checkpoint. See [Checkpointing](#checkpointing) for interval / keep-last / resume variants. |
 | `--clean-output-dir` | Wipe `<output_dir>` before starting. Useful when re-running an experiment with the same name during iteration. |
 | `--output-dir outputs/<name>` | Per-run output directory. Always set this when running more than one experiment in parallel. |
 | `--max-steps N` | Stop after `N` trainer steps. Overrides the config value. |
@@ -323,6 +323,6 @@ Requires `PRIME_API_KEY` (set via `prime login` or env var) and an allowlisted t
 
 - **Start small.** Run `examples/reverse_text/rl.toml` end-to-end on 2 GPUs before scaling. If the smoke run finishes cleanly, your install is good.
 - **Batch size ≥ 64.** Smaller batches give noisy gradient estimates and the trainer's overhead-per-step dominates throughput. 64 is the practical floor; 128–512 is typical for production RL.
-- **Group size ≥ 8.** Bigger groups (`orchestrator.group_size`) make it more likely that a prompt produces a mix of high- and low-reward rollouts, which is what gives the trainer a usable signal — if all rollouts in a group succeed or all fail, the within-group advantage collapses to zero and the trainer learns nothing from that prompt. Bigger groups also tighten advantage normalization. 8 is the floor; 16–32 is common.
+- **Group size ≥ 8.** Bigger groups (`orchestrator.group_size`) make it more likely that a task produces a mix of high- and low-reward rollouts, which is what gives the trainer a usable signal — if all rollouts in a group succeed or all fail, the within-group advantage collapses to zero and the trainer learns nothing from that task. Bigger groups also tighten advantage normalization. 8 is the floor; 16–32 is common.
 - **Pin `output_dir` per run.** Sharing a directory across runs will mix rollouts and break resumes. `--output-dir outputs/<unique-name>` is the simplest discipline.
 - **Use `--dry-run` before SLURM.** Validators (CP needs flash-attention, NCCL broadcast needs `max_async_level=1`, etc.) fail fast in dry-run and slow in queue.
