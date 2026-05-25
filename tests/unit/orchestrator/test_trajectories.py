@@ -749,6 +749,140 @@ def test_interleave_rollout_interleaved_agents(interleaved_agents_trajectory):
     assert agent2_sample.completion_logprobs == [-0.5, -0.6]
 
 
+@pytest.fixture
+def prefix_of_prefix_trajectory():
+    """
+    Trajectory where one active sample's prefix is a strict prefix of another's.
+
+    Construction:
+    - step 0: prompt=[1,2], completion=[3,4]                  -> sample A, P_A=[1,2,3,4]
+    - step 1: extends A. prompt=[1,2,3,4,5], completion=[6]   -> P_A=[1,2,3,4,5,6]
+    - step 2: rollback/regenerate. prompt=[1,2] (shorter than P_A so no match),
+              completion=[3,4,5,6,7]                          -> sample B, P_B=[1,2,3,4,5,6,7]
+              P_B starts with P_A.
+    - step 3: extends B. prompt=[1,2,3,4,5,6,7,8], completion=[9]
+              Both P_A and P_B are token-prefixes of the step's prompt.
+
+    The correct match is the longer P_B. First-match-wins picks P_A and silently
+    folds B's generated tokens into A as user-input tokens (mask=False).
+    """
+    output = vf.RolloutOutput(
+        example_id=2,
+        task="test",
+        trajectory=[
+            vf.TrajectoryStep(
+                prompt="step 0",
+                completion="completion 0",
+                response=None,
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2],
+                    prompt_mask=[0, 0],
+                    completion_ids=[3, 4],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.1, -0.2],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="traj_A",
+                extras={},
+            ),
+            vf.TrajectoryStep(
+                prompt="step 1",
+                completion="completion 1",
+                response=None,
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2, 3, 4, 5],
+                    prompt_mask=[0, 0, 0, 0, 0],
+                    completion_ids=[6],
+                    completion_mask=[1],
+                    completion_logprobs=[-0.3],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="traj_A",
+                extras={},
+            ),
+            vf.TrajectoryStep(
+                prompt="step 2 (rollback)",
+                completion="completion 2",
+                response=None,
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2],
+                    prompt_mask=[0, 0],
+                    completion_ids=[3, 4, 5, 6, 7],
+                    completion_mask=[1, 1, 1, 1, 1],
+                    completion_logprobs=[-0.4, -0.5, -0.6, -0.7, -0.8],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="traj_B",
+                extras={},
+            ),
+            vf.TrajectoryStep(
+                prompt="step 3 (extends B)",
+                completion="completion 3",
+                response=None,
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2, 3, 4, 5, 6, 7, 8],
+                    prompt_mask=[0, 0, 0, 0, 0, 0, 0, 0],
+                    completion_ids=[9],
+                    completion_mask=[1],
+                    completion_logprobs=[-0.9],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="traj_B",
+                extras={},
+            ),
+        ],
+        sampling_args={"temperature": 1.0},
+        error=None,
+    )
+    return output
+
+
+def test_interleave_rollout_picks_longest_matching_prefix(prefix_of_prefix_trajectory):
+    """
+    When two active samples both match (one's prefix is a strict prefix of the
+    other's), the longer prefix is the correct extension. Previously the first-
+    match-wins loop folded the longer sample's generated tokens into the shorter
+    sample as user input (mask=False) and left the longer sample stale.
+    """
+    rollouts = interleave_rollout(prefix_of_prefix_trajectory)
+
+    assert rollouts is not None
+    assert len(rollouts) == 2
+
+    # Sample A: steps 0 and 1 only. Step 3 must NOT have been folded in here.
+    sample_a = rollouts[0]
+    assert sample_a.prompt_ids == [1, 2]
+    # step 0 completion [3,4] + step 1 new prompt [5] + step 1 completion [6]
+    assert sample_a.completion_ids == [3, 4, 5, 6]
+    assert sample_a.completion_mask == [True, True, False, True]
+    assert sample_a.completion_logprobs == [-0.1, -0.2, 0.0, -0.3]
+
+    # Sample B: steps 2 and 3 merged. The token 7 (from step 2's completion)
+    # must remain masked as a generated token, not silently re-classified.
+    sample_b = rollouts[1]
+    assert sample_b.prompt_ids == [1, 2]
+    # step 2 completion [3,4,5,6,7] + step 3 new prompt [8] + step 3 completion [9]
+    assert sample_b.completion_ids == [3, 4, 5, 6, 7, 8, 9]
+    assert sample_b.completion_mask == [True, True, True, True, True, False, True]
+    assert sample_b.completion_logprobs == [-0.4, -0.5, -0.6, -0.7, -0.8, 0.0, -0.9]
+
+
 def test_interleave_rollout_empty_trajectory():
     """Empty trajectory returns None."""
     output = vf.RolloutOutput(

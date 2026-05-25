@@ -406,12 +406,18 @@ def interleave_rollout(
         tokens = prepared_steps[step_idx]
         step_prompt_ids = tokens["prompt_ids"]
 
-        # Check if this step extends ANY active prefix
+        # Pick the *longest* matching active prefix. With compaction/rollback,
+        # one active sample's prefix can be a strict prefix of another (e.g. a
+        # later sample re-generated tokens that overlap an earlier sample's
+        # prefix). Both would satisfy the slice check; the shorter would
+        # silently absorb the longer sample's generated tokens as user input.
         matched_idx = None
+        matched_len = -1
         for idx, (prefix_tokens, _, _) in enumerate(active_samples):
-            if step_prompt_ids[: len(prefix_tokens)] == prefix_tokens:
+            pl = len(prefix_tokens)
+            if pl > matched_len and step_prompt_ids[:pl] == prefix_tokens:
                 matched_idx = idx
-                break
+                matched_len = pl
 
         if matched_idx is not None:
             # Extension holds - merge into matched sample
