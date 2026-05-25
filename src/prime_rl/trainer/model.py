@@ -12,9 +12,8 @@ os.environ.setdefault("USE_HUB_KERNELS", "NO")
 import torch
 import torch._dynamo
 import torch.nn as nn
-from beartype import beartype as typechecker
 from huggingface_hub import snapshot_download
-from jaxtyping import Float, Int, jaxtyped
+from jaxtyping import Int
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
@@ -43,6 +42,7 @@ from prime_rl.trainer.models.layers.checkpointing import (
     set_selective_activation_checkpointing,
     supports_selective_activation_checkpointing,
 )
+from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import LatentMoE, MoE
 from prime_rl.trainer.parallel_dims import ParallelDims
@@ -53,6 +53,7 @@ from prime_rl.trainer.weights import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 from prime_rl.utils.utils import format_time
 from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
 
@@ -275,9 +276,7 @@ def _patch_qwen3_5_linear_attn_varlen():
             pids = position_ids
             if pids.ndim == 3:
                 pids = pids[0]
-            flat = pids.view(-1)
-            seqlens = torch.cat([flat[0:1], flat[:-1][(flat == 0)[1:]] + 1, flat[-1:] + 1])
-            cu_seqlens = seqlens.cumsum(dim=0, dtype=torch.int32)
+            cu_seqlens, _ = get_cu_seqlens_from_position_ids(pids)
         kwargs["cu_seqlens"] = cu_seqlens
         return _text_orig(
             self,
@@ -471,6 +470,7 @@ def get_model(
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
+    model_config.fp8 = config.fp8
 
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
     # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
@@ -1041,6 +1041,9 @@ def setup_model(
 
     inject_prime_lm_head(model, chunk_size=lm_head_chunk_size, fused_cross_entropy=fused_cross_entropy)
 
+    if config.fp8:
+        replace_linear_with_fp8_blockwise_linear(model)
+
     # Apply LoRA before FSDP setup
     if config.lora is not None:
         apply_lora_to_model(model, config.lora)
@@ -1096,7 +1099,6 @@ def setup_model(
     return model
 
 
-@jaxtyped(typechecker=typechecker)
 def forward(
     model: nn.Module,
     input_ids: Int[Tensor, "batch seq"],
@@ -1104,9 +1106,13 @@ def forward(
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
-    # Multimodal fields (Qwen3-VL)
-    pixel_values: Float[Tensor, "num_patches patch_dim"] | None = None,
-    image_grid_thw: Int[Tensor, "num_images 3"] | None = None,
+    # Generic multimodal kwargs (e.g. {"pixel_values": ...,
+    # "image_grid_thw": ...} for Qwen3-VL; just {"pixel_values": ...}
+    # for Gemma3). Passed straight through to ``model(**kwargs)`` so
+    # the model's HF forward signature is the schema. ``mm_token_type_ids``
+    # is split out because it's prime-rl-computed (from token ids),
+    # not a renderer/processor output.
+    mm_kwargs: dict[str, Tensor] | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
 ) -> PrimeLmOutput:
     # Build kwargs for model forward
@@ -1116,13 +1122,19 @@ def forward(
         "temperature": temperature,
     }
 
-    # For multimodal (VLM), don't pass position_ids - let the model compute MRoPE internally
-    # using image_grid_thw. Qwen3-VL only computes proper MRoPE when position_ids is None.
-    if pixel_values is not None:
-        assert image_grid_thw is not None, "pixel_values requires image_grid_thw for MRoPE computation"
-        kwargs["pixel_values"] = pixel_values
-        kwargs["image_grid_thw"] = image_grid_thw
-        kwargs["mm_token_type_ids"] = mm_token_type_ids
+    if mm_kwargs:
+        # Forward the per-model multimodal tensors verbatim, plus the
+        # renderer-supplied ``mm_token_type_ids`` (renderer owns the
+        # token→modality mapping via ``mm_token_type_id_map``).
+        kwargs.update(mm_kwargs)
+        if mm_token_type_ids is not None:
+            kwargs["mm_token_type_ids"] = mm_token_type_ids
+        # ``position_ids`` for MRoPE families: Qwen3-VL's HF forward
+        # recomputes 3D positions from ``image_grid_thw`` and breaks if
+        # given the trainer's pre-computed 1D ``position_ids``. Detect
+        # via the mm_kwargs shape so we don't enumerate model_types.
+        if "image_grid_thw" not in mm_kwargs:
+            kwargs["position_ids"] = position_ids
     else:
         kwargs["position_ids"] = position_ids
 

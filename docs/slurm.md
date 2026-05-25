@@ -8,16 +8,14 @@ The `rl`, `sft`, and `inference` entrypoints all have built-in SLURM support. Ad
 # Local run
 uv run rl @ examples/reverse_text/rl.toml
 
-# SLURM run (same entrypoint, just add [slurm] to the config)
-uv run rl @ examples/reverse_text/slurm_rl.toml
+# SLURM run — overlay slurm_rl.toml on top of the base config
+uv run rl @ examples/reverse_text/rl.toml @ examples/reverse_text/slurm_rl.toml
 ```
 
-The SLURM config is a thin overlay that inherits from a base config and adds `[slurm]` + `[deployment]` sections:
+The SLURM config is a thin overlay that adds `[slurm]` (and optionally `[deployment]`) on top of a base config. Configs are composed left-to-right via the `@` CLI syntax — see [`configs.md`](configs.md) for details.
 
 ```toml
 # examples/reverse_text/slurm_rl.toml
-toml_files = ["rl.toml"]
-
 output_dir = "outputs/reverse-text-rl"
 
 [slurm]
@@ -138,12 +136,12 @@ freq = 1
 
 [orchestrator]
 batch_size = 512
-rollouts_per_example = 16
+group_size = 16
 
-[orchestrator.sampling]
-max_tokens = 2048
+[orchestrator.train.sampling]
+max_completion_tokens = 2048
 
-[[orchestrator.env]]
+[[orchestrator.train.env]]
 id = "math-env"
 name = "hendrycks-math"
 args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default" }
@@ -153,7 +151,7 @@ tp = 4
 dp = 2
 ```
 
-See [`examples/hendrycks_math/rl.toml`](../examples/hendrycks_math/rl.toml) for the full example.
+See [`examples/multinode/rl.toml`](../examples/multinode/rl.toml) for the full example.
 
 ---
 
@@ -202,7 +200,7 @@ batch_size = 128
 seq_len = 8192
 ```
 
-See [`examples/hendrycks_math/sft.toml`](../examples/hendrycks_math/sft.toml) for the full example.
+See [`examples/multinode/sft.toml`](../examples/multinode/sft.toml) for the full example.
 
 ---
 
@@ -213,6 +211,7 @@ See [`examples/hendrycks_math/sft.toml`](../examples/hendrycks_math/sft.toml) fo
 Run a vLLM server on a single allocated node:
 
 ```toml
+# my_inference.toml
 output_dir = "/shared/outputs/my-inference"
 
 [model]
@@ -226,7 +225,7 @@ job_name = "my-inference"
 ```
 
 ```bash
-uv run inference @ inference_slurm.toml
+uv run inference @ my_inference.toml
 ```
 
 ### Multi-node SLURM
@@ -255,10 +254,10 @@ After submission, the SLURM template prints the inference URLs for all nodes (on
 
 ### Dry run
 
-Use `dry_run = true` to generate the sbatch script without submitting:
+Use `--dry-run` (or `dry_run = true` in TOML) to generate the sbatch script without submitting:
 
 ```bash
-uv run inference @ config.toml --dry-run true
+uv run inference @ config.toml --dry-run
 ```
 
 ---
