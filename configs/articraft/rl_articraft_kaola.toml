@@ -1,0 +1,116 @@
+# Articraft RL training config — KAOLA platform.
+#
+# Phase 1: in-process compile-only reward, Qwen3.5-9B, dp=6 + train=2.
+# All training outputs write to /local-ssd/ (fast NVMe), background rsync to S3.
+#
+# Key differences from BlenderGym:
+#   - No external render/score services (compile is in-process)
+#   - tool_call_parser for native tool calling (not XML parser)
+#   - Higher max_turns (50 vs 3) and seq_len (32768 vs 16384)
+#   - URDF_COMPILE_TIMEOUT_SECONDS=30 set in articraft.sh
+#
+# Setup: . scripts/setup_kaola.sh  (must use source, not bash)
+# Train: uv run rl @ configs/articraft/rl_articraft_kaola.toml
+
+output_dir = "/local-ssd/prime-rl-output"
+seq_len = 32768
+max_steps = 20000
+
+[deployment]
+type = "single_node"
+num_infer_gpus = 6
+num_train_gpus = 2
+
+[ckpt]
+interval = 25
+keep_last = 2
+output_dir = "/local-ssd/checkpoints/articraft-9b-dp6"
+
+[model]
+name = "Qwen/Qwen3.5-9B"
+
+[weight_broadcast]
+type = "nccl"
+
+[wandb]
+project = "articraft-rl"
+name = "9b-dp6-bs64-kaola"
+
+[orchestrator]
+batch_size = 64
+rollouts_per_example = 8
+oversampling_factor = 1.5
+max_async_level = 1
+
+[orchestrator.eval]
+interval = 10
+
+[orchestrator.train.sampling]
+max_completion_tokens = 16384
+
+[[orchestrator.filters]]
+type = "zero_advantage"
+enforce = false
+
+[[orchestrator.train.env]]
+id = "articraft_env"
+num_workers = 6
+max_total_completion_tokens = 24576
+
+[orchestrator.train.env.args]
+articraft_root = "/data/work/articraft"
+max_turns = 50
+work_root = "/local-ssd/prime-rl-output/articraft-work"
+keep_failed_only = true
+env_name = "articraft"
+split = "train"
+eval_split = "eval"
+eval_holdout = 50
+sdk_package = "sdk"
+provider = "openrouter"
+
+[orchestrator.train.env.args.reward_weights]
+check_fraction = 0.7
+build_success = 0.2
+compile_attempted = 0.1
+
+[[orchestrator.eval.env]]
+id = "articraft_env"
+name = "articraft-eval"
+num_workers = 1
+num_examples = 10
+rollouts_per_example = 1
+
+[orchestrator.eval.env.args]
+articraft_root = "/data/work/articraft"
+max_turns = 50
+work_root = "/local-ssd/prime-rl-output/articraft-work"
+keep_failed_only = false
+env_name = "articraft-eval"
+split = "eval"
+eval_split = "eval"
+eval_holdout = 50
+sdk_package = "sdk"
+provider = "openrouter"
+
+[trainer]
+max_async_level = 1
+
+[trainer.model]
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+[trainer.model.ac]
+
+[trainer.optim]
+lr = 3e-6
+
+[inference]
+gpu_memory_utilization = 0.75
+enable_prefix_caching = true
+
+[inference.model]
+max_model_len = 65536
+enforce_eager = true
+trust_remote_code = true
+tool_call_parser = "qwen3_coder"
