@@ -393,6 +393,7 @@ def get_load_balance_stats(
     model: nn.Module, reset_stats: bool = True, try_to_avoid_padding_experts: bool = True
 ) -> dict[str, Tensor | None]:
     per_layer_max_vio = []
+    per_layer_routing_confidence = []
     language_model = get_language_model(model)
     for transformer_block in language_model.layers:
         # This is necessary for models that have mixed dense layers
@@ -400,16 +401,25 @@ def get_load_balance_stats(
         if block_mlp is None or not hasattr(block_mlp, "tokens_per_expert"):
             continue
         tokens_per_expert: torch.Tensor = block_mlp.tokens_per_expert
+        num_routed_tokens = tokens_per_expert.sum() / block_mlp.router.top_k
         if try_to_avoid_padding_experts:
             tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[block_mlp.router.top_k :]
         balanced_load = tokens_per_expert.mean()
         max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
-        per_layer_max_vio.append(max_vio.item())
+        per_layer_max_vio.append(max_vio.detach())
+
+        routing_confidence = block_mlp.routing_confidence_sum / num_routed_tokens
+        per_layer_routing_confidence.append(routing_confidence.detach())
+
         if reset_stats:
             block_mlp.tokens_per_expert.zero_()
+            block_mlp.routing_confidence_sum.zero_()
     if len(per_layer_max_vio) == 0:
-        return {"max_vio": None}
-    return {"max_vio": torch.tensor(per_layer_max_vio, device=torch.device("cuda"))}
+        return {"max_vio": None, "routing_confidence": None}
+    return {
+        "max_vio": torch.stack(per_layer_max_vio),
+        "routing_confidence": torch.stack(per_layer_routing_confidence),
+    }
 
 
 def get_model(
