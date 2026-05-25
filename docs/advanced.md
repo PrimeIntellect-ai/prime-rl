@@ -1,6 +1,6 @@
 # Advanced
 
-This page covers the specialized features layered on top of the core training stack: our custom model implementations (with EP for MoE families and CP for long-context training), multimodal training, LoRA training, and multi-tenant training. For developer-side workflows (adding new model architectures, debugging modeling code at small scale), see [Development](development.md).
+This page covers the specialized features layered on top of the core training stack: our custom model implementations (with EP for MoE families and CP for long-context training), multimodal training, LoRA training, multi-tenant training, and the buffer-side difficulty controls. For developer-side workflows (adding new model architectures, debugging modeling code at small scale), see [Development](development.md).
 
 ## Table of Contents
 
@@ -13,6 +13,9 @@ This page covers the specialized features layered on top of the core training st
   - [Limitations](#limitations)
 - [LoRA training](#lora-training)
 - [Multi-tenant training](#multi-tenant-training)
+- [Difficulty pools and online filtering](#difficulty-pools-and-online-filtering)
+  - [Difficulty pools](#difficulty-pools)
+  - [Online difficulty filtering (ODF)](#online-difficulty-filtering-odf)
 
 ## Custom modeling
 
@@ -119,3 +122,46 @@ LoRA pairs naturally with [multi-tenant training](#multi-tenant-training) — ea
 ## Multi-tenant training
 
 Multi-tenant training lets a single trainer + inference deployment serve many concurrent LoRA "tenants" — each a fully isolated run with its own orchestrator, LoRA adapter, optimizer, scheduler, checkpoints, and progress tracking — sharing the same backbone weights and the same vLLM server. This is the topology behind hosted training on the [Prime Intellect platform (Lab)](https://app.primeintellect.ai). The trainer-side implementation is the `MultiRunManager` singleton, enabled by setting `trainer.max_concurrent_runs > 1`. For the full API surface, see [`src/prime_rl/trainer/runs/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/src/prime_rl/trainer/runs).
+
+## Difficulty pools and online filtering
+
+Two complementary mechanisms keep the trainer batch high-signal: **difficulty pools** that gradually retire problems the model has solved or never solves, and **online difficulty filtering (ODF)** that drops collapsed-advantage groups from the current batch.
+
+### Difficulty pools
+
+After each rollout, the average reward across a problem's group is compared to two thresholds:
+
+- `buffer.easy_threshold` — at or above this, the problem moves into the `easy` pool and is no longer sampled.
+- `buffer.hard_threshold` — at or below this, the problem moves into the `hard` pool and is no longer sampled.
+- Otherwise the problem stays in `normal` and remains in the sampling rotation.
+
+Pool assignments persist across checkpoints (`easy_examples.jsonl` / `hard_examples.jsonl` under each step's orchestrator checkpoint). When you resume — or want to broaden the curriculum mid-run — `buffer.easy_fraction` / `buffer.hard_fraction` randomly lift that fraction of pooled problems back into `normal` so they re-enter sampling.
+
+```toml
+[orchestrator.buffer]
+easy_threshold = 0.95
+hard_threshold = 0.05
+easy_fraction = 0.0   # default; bump on resume to bring some easy problems back
+hard_fraction = 0.0   # default; bump on resume to bring some hard problems back
+```
+
+Watch `pool/{env}/{easy,normal,hard}` (current pool ratios) and `evicted_examples/{env}/{easy,hard}` (per-step eviction rate).
+
+### Online difficulty filtering (ODF)
+
+`buffer.online_difficulty_filtering = true` is a per-rollout filter on the way *into* the buffer:
+
+- Average reward across the group is **0.0** (every rollout failed) → drop the group, count under `filtered_rollouts/{env}/hard`.
+- Average reward **1.0** (every rollout succeeded) → drop, count under `filtered_rollouts/{env}/easy`.
+- Otherwise → into the buffer.
+
+These are exactly the groups whose within-group advantage collapses to zero — DR-GRPO produces no gradient signal for them, so the trainer would burn step time on tokens it can't learn from.
+
+```toml
+[orchestrator.buffer]
+online_difficulty_filtering = true
+```
+
+**Tradeoff: trainer stability vs. inference speed.** With ODF on, every rollout that reaches the trainer carries non-zero advantage — each trainer step's effective batch is predictable and the gradient signal is denser. The cost is paid on the inference side: rollouts get produced and then thrown away, so the orchestrator has to oversample to keep the trainer fed. If the orchestrator is your bottleneck (`time/wait_for_batch` high on the trainer), ODF can starve the loop. Bump `orchestrator.oversampling_factor` so inference produces enough groups per step to absorb the drops.
+
+ODF is orthogonal to the pools: ODF reacts to the *current* group's reward distribution, the pools track the *running* per-problem average. Many configs use both — ODF for per-step density, pools for long-horizon curriculum cleanup.
