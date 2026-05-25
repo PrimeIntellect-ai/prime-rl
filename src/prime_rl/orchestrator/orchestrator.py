@@ -244,7 +244,6 @@ async def orchestrate(config: OrchestratorConfig):
         student_inference=student_inference,
         teacher_inference=teacher_inference,
         max_inflight_rollouts=config.max_inflight_rollouts,
-        max_async_level=config.max_async_level,
         max_off_policy_steps=config.max_off_policy_steps,
         strict_async_level=config.strict_async_level,
         tasks_per_minute=config.tasks_per_minute,

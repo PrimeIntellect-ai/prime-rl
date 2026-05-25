@@ -16,6 +16,7 @@ from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.utils import (
+    MAX_ASYNC_LEVEL,
     get_broadcast_dir,
     get_latest_ckpt_step,
     get_step_path,
@@ -64,7 +65,6 @@ class Scheduler:
         buffer: Buffer,
         config: OrchestratorConfig,
         max_inflight_rollouts: int,
-        max_async_level: int,
         max_off_policy_steps: int,
         strict_async_level: bool,
         tasks_per_minute: int | None,
@@ -82,7 +82,6 @@ class Scheduler:
         self.token_batch_size = config.token_batch_size
         self.group_size = config.group_size
         self.max_inflight_rollouts = max_inflight_rollouts
-        self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
         self.strict_async_level = strict_async_level
         self.lora_name = lora_name
@@ -288,17 +287,17 @@ class Scheduler:
 
     def _compute_next_ckpt_step(self) -> int:
         latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
-        async_away_ckpt_step = max(self.step - self.max_async_level, 0)
+        async_away_ckpt_step = max(self.step - MAX_ASYNC_LEVEL, 0)
         if self.strict_async_level:
             return async_away_ckpt_step
         return max(async_away_ckpt_step, latest_ckpt_step)
 
     async def _apply_policy_update(self, next_ckpt_step: int) -> None:
-        async_away_ckpt_step = max(self.step - self.max_async_level, 0)
+        async_away_ckpt_step = max(self.step - MAX_ASYNC_LEVEL, 0)
         if next_ckpt_step == async_away_ckpt_step:
             self.logger.info(
                 f"Orchestrator paused: waiting for trainer process to complete checkpoint {next_ckpt_step} "
-                f"(>{self.max_async_level} step(s) ahead). Training is progressing normally."
+                f"(>{MAX_ASYNC_LEVEL} step(s) ahead). Training is progressing normally."
             )
             self.checkpoint_ready.clear()
             wait_for_ckpt_start_time = time.perf_counter()
@@ -392,7 +391,7 @@ class Scheduler:
             await safe_cancel(self.update_policy_task)
 
         # Manually check the async barrier before starting the step, then re-create the update policy loop
-        # This ensures that we respect max_async_level, while still listening for policy updates mid-step
+        # This ensures that we respect MAX_ASYNC_LEVEL, while still listening for policy updates mid-step
         await self.maybe_update_policy()
         self.update_policy_task = asyncio.create_task(self.update_policy_loop())
 

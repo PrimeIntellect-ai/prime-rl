@@ -65,7 +65,7 @@ from prime_rl.utils.metrics_server import HealthServer, MetricsServer, RunStats
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
+from prime_rl.utils.utils import MAX_ASYNC_LEVEL, clean_exit, resolve_latest_ckpt_step, to_col_format
 from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
 
@@ -263,7 +263,7 @@ def train(config: TrainerConfig):
         if weight_broadcast is None:
             broadcast_weights_time = 0
         else:
-            last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level
+            last_async_level_steps = config.max_steps and progress.step >= config.max_steps - MAX_ASYNC_LEVEL
             if progress.step > 0 and (not last_async_level_steps or config.weight_broadcast.type == "filesystem"):
                 broadcast_weights_start_time = time.perf_counter()
                 weight_broadcast.broadcast_weights(model, step=progress.step)
@@ -272,7 +272,7 @@ def train(config: TrainerConfig):
                 ckpt_interval = config.ckpt and config.ckpt.interval
                 interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
                 if config.weight_broadcast.type == "filesystem":
-                    weight_broadcast.maybe_clean(config.max_async_level, interval_to_keep)
+                    weight_broadcast.maybe_clean(interval_to_keep)
             else:
                 broadcast_weights_time = 0
                 # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.

@@ -33,6 +33,11 @@ from prime_rl.utils.pathing import (
     wait_for_path,
 )
 
+# Maximum number of training steps inference is allowed to lag behind the
+# trainer. Fixed at 1 because that's the only value compatible with NCCL weight
+# broadcast and is the right default for filesystem broadcast too. See #2630.
+MAX_ASYNC_LEVEL = 1
+
 
 def import_object(dotted_path: str) -> Any:
     """Import an object from a dotted path like 'my_module.submodule.MyClass'."""
