@@ -127,9 +127,6 @@ Pulled from the console logs and mirrored to W&B.
 |---|---|---|
 | trainer | `time/wait_for_batch` | **high → orchestrator bottleneck** |
 | orchestrator | `time/wait_for_ckpt` | **high → trainer bottleneck** |
-| trainer | `perf/throughput`, `perf/mfu` | tokens/s and MFU |
-| orchestrator | `scheduler/async_level`, `scheduler/inflight_rollouts` | current async lag |
-| vLLM | `vllm:gpu_cache_usage_perc` | → 1.0 means KV cache saturated, slow generation |
 
 ## SFT trainer
 
