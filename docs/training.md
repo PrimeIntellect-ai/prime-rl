@@ -11,10 +11,12 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Launch](#launch)
   - [Useful knobs](#useful-knobs)
   - [Training modes (RL / OPD / SFT)](#training-modes-rl--opd--sft)
+  - [Important metrics](#important-metrics)
 - [SFT trainer](#sft-trainer)
   - [Dataset format](#dataset-format)
   - [Launch](#launch-1)
   - [SFT-specific knobs](#sft-specific-knobs)
+  - [Important metrics](#important-metrics-1)
 - [Checkpointing](#checkpointing)
   - [Enabling checkpoints](#enabling-checkpoints)
   - [Resuming a run](#resuming-a-run)
@@ -25,7 +27,6 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Weights & Biases](#weights--biases)
   - [Platform monitoring](#platform-monitoring)
   - [Prometheus and BetterStack](#prometheus-and-betterstack)
-- [Important metrics](#important-metrics)
 - [Rules of thumb](#rules-of-thumb)
 
 ## Entrypoints
@@ -102,6 +103,35 @@ Debug configs for all variants ship under [`configs/debug/training_modes/`](http
 
 The standalone `uv run sft` entrypoint is the more traditional SFT path — pure dataset-based, no teacher, no orchestrator. Use `orchestrator.training_mode = "sft"` only when you want a teacher to generate the supervision on the fly.
 
+### Important metrics
+
+Pulled from the console logs and mirrored to W&B.
+
+**Progress** (orchestrator):
+
+- `reward/{all,env}/mean` — main signal. Should trend upward over hundreds of steps.
+- `seq_len/{all,env}/mean` and `is_truncated/{all,env}/mean` — rollout length and truncation rate.
+- `num_turns/{all,env}/mean` — for multi-turn envs.
+- `empty_rollouts/{all,env}`, `errored_rollouts/{all,env}` — non-zero is fine in small numbers; sustained > 5% is a smell.
+- `eval/{env}/{avg@k,pass@k}` — eval scores when `[orchestrator.eval]` is set.
+
+**Stability** (trainer):
+
+- `mismatch_kl/{all,env}/{mean,std,max}` — KL between trainer's current policy and the (older) inference policy that generated the rollouts. A sustained, growing mean is the early-warning sign for off-policy collapse.
+- `entropy/{all,env}/mean` — too low means mode-collapse; too high means the model isn't committing.
+- `masked_advantage_{positive,negative}/mean` — fraction of DPPO-masked tokens, split by sign.
+- `optim/grad_norm` — spikes precede divergence; check the loss config or lower the LR.
+
+**Performance** (trainer + orchestrator step independently):
+
+| Source | Metric | Reading |
+|---|---|---|
+| trainer | `time/wait_for_batch` | **high → orchestrator bottleneck** |
+| orchestrator | `time/wait_for_ckpt` | **high → trainer bottleneck** |
+| trainer | `perf/throughput`, `perf/mfu` | tokens/s and MFU |
+| orchestrator | `scheduler/async_level`, `scheduler/inflight_rollouts` | current async lag |
+| vLLM | `vllm:gpu_cache_usage_perc` | → 1.0 means KV cache saturated, slow generation |
+
 ## SFT trainer
 
 `uv run sft` runs supervised fine-tuning from a HF dataset. It shares model loaders, FSDP setup, checkpointing, and the chat-template plumbing with the RL trainer, so a typical workflow is _SFT → RL → SFT → …_ without any reformatting.
@@ -138,6 +168,33 @@ Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manag
 | `data.seq_len` | Per-sample sequence length |
 | `loss_mask.*` | Which roles contribute to loss; see [Reference § `sft.data.loss_mask`](reference.md#sft-data) |
 | `val.interval` | Run validation every N steps; `val.data` mirrors `data` |
+
+### Important metrics
+
+Pulled from the console log and mirrored to W&B.
+
+**Progress and loss:**
+
+- `loss/mean` — main signal. Should decrease through the run.
+- `loss/nan_count` — non-zero is a red flag; check LR and dtype.
+- `val/loss` — validation loss when `[val]` is set, logged every `val.interval` steps.
+- `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
+- `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
+
+**Stability and optimization:**
+
+- `optim/grad_norm` — spikes precede divergence.
+- `optim/lr`, `optim/zero_grad_ratio` — LR schedule and the fraction of params that received zero gradients (high → dead path or wrong loss masking).
+- For MoE: `max_vio/mean` (load-balancing violation), `routing_confidence/mean` — both are logged when non-zero.
+
+**Performance:**
+
+| Metric | Reading |
+|---|---|
+| `perf/throughput`, `perf/throughput_per_gpu` | tokens/s overall and per GPU |
+| `perf/mfu` | MFU |
+| `perf/peak_memory` | peak GPU memory (GiB) |
+| `time/step`, `time/forward_backward`, `time/save_ckpt` | step breakdown |
 
 ## Checkpointing
 
@@ -269,62 +326,6 @@ For long-running production training:
 
 - **Prometheus**: set `trainer.metrics_server.port` to expose `/metrics` on each trainer process. vLLM also exposes `/metrics` natively — useful for KV-cache saturation and pending-request counts.
 - **BetterStack heartbeats**: set `trainer.heartbeat.url` (and the matching orchestrator field) to ping a heartbeat URL each step. Pair with a BetterStack monitor to page on stalls.
-
-## Important metrics
-
-Pulled from the console logs and mirrored to W&B.
-
-### RL trainer
-
-**Progress** (orchestrator):
-
-- `reward/{all,env}/mean` — main signal. Should trend upward over hundreds of steps.
-- `seq_len/{all,env}/mean` and `is_truncated/{all,env}/mean` — rollout length and truncation rate.
-- `num_turns/{all,env}/mean` — for multi-turn envs.
-- `empty_rollouts/{all,env}`, `errored_rollouts/{all,env}` — non-zero is fine in small numbers; sustained > 5% is a smell.
-- `eval/{env}/{avg@k,pass@k}` — eval scores when `[orchestrator.eval]` is set.
-
-**Stability** (trainer):
-
-- `mismatch_kl/{all,env}/{mean,std,max}` — KL between trainer's current policy and the (older) inference policy that generated the rollouts. A sustained, growing mean is the early-warning sign for off-policy collapse.
-- `entropy/{all,env}/mean` — too low means mode-collapse; too high means the model isn't committing.
-- `masked_advantage_{positive,negative}/mean` — fraction of DPPO-masked tokens, split by sign.
-- `optim/grad_norm` — spikes precede divergence; check the loss config or lower the LR.
-
-**Performance** (trainer + orchestrator step independently):
-
-| Source | Metric | Reading |
-|---|---|---|
-| trainer | `time/wait_for_batch` | **high → orchestrator bottleneck** |
-| orchestrator | `time/wait_for_ckpt` | **high → trainer bottleneck** |
-| trainer | `perf/throughput`, `perf/mfu` | tokens/s and MFU |
-| orchestrator | `scheduler/async_level`, `scheduler/inflight_rollouts` | current async lag |
-| vLLM | `vllm:gpu_cache_usage_perc` | → 1.0 means KV cache saturated, slow generation |
-
-### SFT trainer
-
-**Progress and loss:**
-
-- `loss/mean` — main signal. Should decrease through the run.
-- `loss/nan_count` — non-zero is a red flag; check LR and dtype.
-- `val/loss` — validation loss when `[val]` is set, logged every `val.interval` steps.
-- `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
-- `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
-
-**Stability and optimization:**
-
-- `optim/grad_norm` — spikes precede divergence.
-- `optim/lr`, `optim/zero_grad_ratio` — LR schedule and the fraction of params that received zero gradients (high → dead path or wrong loss masking).
-- For MoE: `max_vio/mean` (load-balancing violation), `routing_confidence/mean` — both are logged when non-zero.
-
-**Performance:**
-
-| Metric | Reading |
-|---|---|
-| `perf/throughput`, `perf/throughput_per_gpu` | tokens/s overall and per GPU |
-| `perf/mfu` | MFU |
-| `perf/peak_memory` | peak GPU memory (GiB) |
-| `time/step`, `time/forward_backward`, `time/save_ckpt` | step breakdown |
 
 ## Rules of thumb
 
