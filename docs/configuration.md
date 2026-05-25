@@ -1,33 +1,32 @@
 # Configuration
 
-Every `prime-rl` entrypoint is configured by the same system: TOML files for reproducible base configs and CLI flags for one-off overrides. Under the hood it is [`pydantic-config`](https://github.com/PrimeIntellect-ai/pydantic-config) wrapping our Pydantic config models.
+Every `prime-rl` entrypoint uses [`pydantic-config`](https://github.com/PrimeIntellect-ai/pydantic-config): TOML files for reproducible base configs, CLI flags for one-off overrides.
 
 ## Table of Contents
 
 - [Sources and precedence](#sources-and-precedence)
-- [TOML files and composition](#toml-files-and-composition)
+- [TOML composition](#toml-composition)
 - [CLI overrides](#cli-overrides)
 - [Inspecting and validating](#inspecting-and-validating)
-- [Special syntax](#special-syntax)
+- [Syntax](#syntax)
   - [Booleans](#booleans)
-  - [None](#none)
   - [Lists](#lists)
   - [Dicts](#dicts)
   - [Optional sub-configs](#optional-sub-configs)
+  - [None](#none)
   - [Discriminated unions](#discriminated-unions)
   - [Environments (`[[orchestrator.train.env]]`)](#environments-orchestratortrainenv)
 - [Worked example](#worked-example)
-- [Conventions](#conventions)
 
 ## Sources and precedence
 
-For a single field, sources are applied in this order — later sources win:
+Field values come from three sources — Pydantic defaults, TOML files (passed with `@`), and CLI flags. They're layered in this order, with later sources winning:
 
-1. **Defaults** — declared on the Pydantic model.
-2. **TOML files** — passed with `@`, left to right (later files override earlier ones).
-3. **CLI flags** — dotted, kebab-case (`--model.name`).
+1. **Defaults** declared on the Pydantic model.
+2. **TOML files** passed with `@`, left to right — later files override earlier ones.
+3. **CLI flags** in dotted, kebab-case form (`--model.name`).
 
-## TOML files and composition
+## TOML composition
 
 The `@` token introduces a TOML file. Multiple `@` arguments compose left-to-right, deep-merged — unset fields in an overlay keep the base value:
 
@@ -40,11 +39,9 @@ uv run rl @ base.toml --trainer @ trainer.toml                 # mixed
 
 > Mind the space: `@ path/to/x.toml`, not `@path/to/x.toml`.
 
-The composed `rl` entrypoint splits its config across three processes — `[trainer]`, `[orchestrator]`, and `[inference]` tables become the sub-configs for each. Shared knobs (`model.name`, `output_dir`, `wandb.*`, …) live at the top level and are fanned out automatically. Stand-alone entrypoints (`uv run trainer`, `uv run orchestrator`, …) skip this lifting — their TOMLs have no `[trainer]` table because the whole file _is_ the trainer.
-
 ## CLI overrides
 
-CLI flags mirror the TOML tree using dots, with kebab-case for field names (the leading `--` is a kebab-case marker; TOML stays snake_case):
+CLI flags mirror the TOML tree using dots:
 
 ```bash
 --max-steps 50                              # top-level
@@ -53,12 +50,9 @@ CLI flags mirror the TOML tree using dots, with kebab-case for field names (the 
 --inference.parallel.tp 4
 ```
 
-Field names in TOML use snake_case (`max_model_len`); the same field on the CLI is kebab-case (`--max-model-len`).
+> Field names are snake_case in TOML (`max_model_len`) and kebab-case on the CLI (`--max-model-len`).
 
-Two convenience flags every entrypoint accepts:
-
-- `--help` — prints the full schema (all fields, defaults, types, descriptions).
-- `--dry-run` — resolves the full config, writes it to `<output_dir>/configs/`, and exits without launching anything. Use to debug composition. _Available on `rl`, `sft`, and `inference`; not on the standalone `trainer` or `orchestrator` entrypoints._
+> Renamed fields keep their old name as a validation alias — e.g. `rollouts_per_example` is still accepted in TOML and CLI after being renamed to `group_size`. Mixing the two names across sources is safe.
 
 ## Inspecting and validating
 
@@ -67,19 +61,59 @@ uv run rl --help                                       # full schema
 uv run rl @ rl.toml --dry-run --output-dir /tmp/check  # write resolved configs
 ```
 
-`--dry-run` is the single most useful debugging tool: it runs every Pydantic validator (catching incompatibilities like CP requiring flash-attention, or NCCL weight broadcast requiring `max_async_level=1`) and dumps the fully merged config to disk. If a run misbehaves in mysterious ways, dry-run it first and inspect `<output_dir>/configs/`.
-
-When a validator fails, the error names the conflicting fields — fix one and re-run dry-run until clean.
-
-## Special syntax
+## Syntax
 
 ### Booleans
 
-CLI uses paired flags: `--ckpt` enables, `--no-ckpt` disables. TOML must be explicit:
+CLI uses paired flags: bare `--flag` sets `True`, `--no-flag` sets `False`. TOML must be explicit:
+
+```bash
+uv run rl @ rl.toml --clean-output-dir       # True
+uv run rl @ rl.toml --no-clean-output-dir    # False
+```
 
 ```toml
-ckpt = true
+clean_output_dir = true
 ```
+
+### Lists
+
+CLI accepts space-separated values or a JSON literal. TOML uses an array literal. Both forms target the same field:
+
+```bash
+uv run rl @ rl.toml --trainer.model.lora.target-modules q_proj k_proj v_proj
+uv run rl @ rl.toml --trainer.model.lora.target-modules '["q_proj", "k_proj", "v_proj"]'
+```
+
+```toml
+[trainer.model.lora]
+target_modules = ["q_proj", "k_proj", "v_proj"]
+```
+
+Overlay TOMLs **replace** lists wholesale — an overlay that wants to add one item must still spell out the full list. For arrays of tables (e.g. environments), see [Environments](#environments-orchestratortrainenv).
+
+### Dicts
+
+CLI takes a JSON literal. TOML uses a table or inline-table. CLI dicts deep-merge with TOML dicts — CLI keys win on conflict but don't wipe the file's keys:
+
+```bash
+uv run rl @ rl.toml --orchestrator.train.env.0.args \
+  '{"dataset_name": "openai/gsm8k", "dataset_subset": "main"}'
+```
+
+```toml
+[[orchestrator.train.env]]
+args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
+```
+
+### Optional sub-configs
+
+Many sub-configs are typed `SomeConfig | None`. Two patterns enable them:
+
+- **Bare flag with defaults**: `--model.compile` or, in TOML, an empty section `[model.compile]`. The sub-config materializes with all-default values.
+- **Enable and set fields together**: `--model.compile.fullgraph` (CLI) or any populated `[model.compile]` table (TOML).
+
+To **disable** a sub-config that's on by default, use `--no-<name>` on the CLI or assign the string `"None"` in TOML (see [None](#none)). This is how `[ckpt]`, `[model.lora]`, `[model.compile]`, `[trainer.wandb]`, etc. are turned on and off.
 
 ### None
 
@@ -91,31 +125,6 @@ max_model_len = "None"
 ```
 
 On the CLI: `--inference.model.max-model-len None`.
-
-### Lists
-
-TOML uses arrays of tables (see [Environments](#environments-orchestratortrainenv) below for the canonical example). Overlays **replace** lists wholesale, so an overlay that only wants to add an env still has to include the full list. On the CLI, index by position:
-
-```bash
---orchestrator.train.env.0.id math-env --orchestrator.train.env.1.id reverse-text
-```
-
-### Dicts
-
-Use a TOML table or inline-table syntax. On the CLI, pass a JSON literal:
-
-```bash
---orchestrator.train.env.0.args '{"dataset_name": "openai/gsm8k", "dataset_subset": "main"}'
-```
-
-### Optional sub-configs
-
-Many sub-configs are typed `SomeConfig | None`. Two patterns enable them:
-
-- **Bare flag with defaults**: `--model.compile` or, in TOML, an empty section `[model.compile]`. The sub-config materializes with all-default values.
-- **Enable and set fields together**: `--model.compile.fullgraph` (CLI) or any populated `[model.compile]` table (TOML).
-
-This is how `[ckpt]`, `[model.lora]`, `[model.compile]`, `[trainer.wandb]`, etc. are turned on.
 
 ### Discriminated unions
 
@@ -160,8 +169,8 @@ Start from a shipped base config, override two fields on the CLI, and dry-run:
 uv run rl @ configs/gsm8k/rl.toml \
   --wandb.name my-experiment \
   --trainer.optim.lr 5e-6 \
-  --dry-run \
-  --output-dir /tmp/gsm8k-dry
+  --output-dir /tmp/gsm8k-dry \
+  --dry-run
 ```
 
 Then inspect the resolved config:
@@ -172,12 +181,5 @@ ls /tmp/gsm8k-dry/configs/
 ```
 
 Each per-process TOML reflects the final, validated configuration that the actual run would consume — exactly what each process sees when started standalone (`uv run trainer @ /tmp/gsm8k-dry/configs/trainer.toml`, etc.). This is the easiest way to bisect a misbehaving config: dry-run a known-good base, dry-run your overlay, diff the two.
-
-## Conventions
-
-- **Reproducible base, mutable overlays.** Commit base TOMLs alongside example dirs (`configs/<task>/rl.toml`). Override on the CLI for one-shot experiments; promote overrides to a new TOML when they stabilize.
-- **One W&B name per run.** Pass `--wandb.name <unique>` on every launch. The orchestrator and trainer share the W&B run, so the same name surfaces all metrics together.
-- **Always pin `output_dir`.** Per-run output directories prevent rollout files from one run leaking into another's training step. Use `--output-dir outputs/<run-name>` or pin in TOML.
-- **Dry-run before scaling.** A multi-node SLURM job that crashes on a config validator wastes a queue slot. Always `--dry-run` first.
 
 For the full set of fields, defaults, types, and constraints accepted by each entrypoint, jump to [Reference](reference.md).
