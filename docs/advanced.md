@@ -1,10 +1,10 @@
 # Advanced
 
-This page covers the specialized features layered on top of the core training stack: MoE training and our custom model implementations, vision-language models, LoRA and the multi-run manager, and the small-scale MoE testing workflow used during architecture work.
+This page covers the specialized features layered on top of the core training stack: our custom model implementations (with EP for MoE families and CP for long-context training), vision-language models, LoRA training and the multi-run manager, and the small-scale MoE testing workflow used during architecture work.
 
 ## Table of Contents
 
-- [MoE models](#moe-models)
+- [Custom modeling](#custom-modeling)
   - [Custom vs HF implementations](#custom-vs-hf-implementations)
   - [Expert parallelism backends](#expert-parallelism-backends)
 - [Vision-language models](#vision-language-models)
@@ -12,14 +12,14 @@ This page covers the specialized features layered on top of the core training st
   - [Enabling VLM mode](#enabling-vlm-mode)
   - [Limitations](#limitations)
   - [Multi-turn VLM training](#multi-turn-vlm-training)
-- [LoRA](#lora)
+- [LoRA training](#lora-training)
 - [Multi-run manager](#multi-run-manager)
   - [Run discovery](#run-discovery)
   - [Eviction](#eviction)
   - [Hooks](#hooks)
 - [Testing MoE at small scale](#testing-moe-at-small-scale)
 
-## MoE models
+## Custom modeling
 
 ### Custom vs HF implementations
 
@@ -111,7 +111,7 @@ Each multimodal sample becomes its own micro-batch (no packing) because image te
 
 `VLLM_WORKER_MULTIPROC_METHOD=spawn` is required for VLM inference — set automatically by `uv run rl`, but if you launch `uv run inference` separately for a VLM, export it yourself.
 
-## LoRA
+## LoRA training
 
 LoRA is enabled by adding `[model.lora]`:
 
