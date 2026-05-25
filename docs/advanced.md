@@ -13,9 +13,6 @@ This page covers the specialized features layered on top of the core training st
   - [Limitations](#limitations)
 - [LoRA training](#lora-training)
 - [Multi-tenant training](#multi-tenant-training)
-  - [Run discovery](#run-discovery)
-  - [Eviction](#eviction)
-  - [Hooks](#hooks)
 - [Testing MoE at small scale](#testing-moe-at-small-scale)
 
 ## Custom modeling
@@ -122,66 +119,7 @@ LoRA pairs naturally with [multi-tenant training](#multi-tenant-training) — ea
 
 ## Multi-tenant training
 
-Multi-tenant training lets a single trainer + inference deployment serve many concurrent LoRA "tenants" — each a fully isolated run with its own orchestrator, LoRA adapter, optimizer, scheduler, checkpoints, and progress tracking — sharing the same backbone weights and the same vLLM server. This is the topology behind hosted training on the [Prime Intellect platform (Lab)](https://app.primeintellect.ai). The trainer-side implementation is the `MultiRunManager` singleton, enabled by setting `trainer.max_concurrent_runs > 1`.
-
-Per-run layout under `<output_dir>/`:
-
-```
-run_abc123/
-├── control/
-│   ├── orch.toml                    # orchestrator config for this run
-│   ├── config_validation_error.txt  # populated if validation failed
-│   └── evicted.txt                  # populated if the run was evicted
-├── checkpoints/
-│   └── step_<N>/                    # orchestrator checkpoints
-├── rollouts/
-│   └── step_<N>/                    # rollouts
-└── broadcast/
-    └── step_<N>/                    # weight snapshots for inference
-```
-
-### Run discovery
-
-Runs are added by dropping a `run_*` directory into `<output_dir>` with a valid `control/orch.toml`. The trainer scans periodically:
-
-```python
-multi_run_manager.discover_runs()       # master rank only
-multi_run_manager.synchronize_state()   # all ranks
-```
-
-- `discover_runs()` (master): scans, filters evicted runs, detects new/deleted, validates configs, fires `discovered_hook` / `forgotten_hook`.
-- `synchronize_state()` (all ranks): master broadcasts run state over the distributed store; all ranks run `deletion_hook` then `creation_hook` so DTensor allocations and other collective ops happen in lock-step.
-
-Once `max_concurrent_runs` is reached, new `run_*` directories are ignored until existing runs are evicted or deleted.
-
-### Eviction
-
-The master can evict a run with `evict_run(idx, reason)`:
-
-```python
-multi_run_manager.evict_run(idx=0, reason="exceeded memory limits")
-```
-
-The eviction writes `<run_dir>/control/evicted.txt`. Effect:
-
-- **Trainer side**: next `discover_runs()` treats the run as deleted, hooks fire, the index returns to the unused pool.
-- **Orchestrator side**: checks for `evicted.txt` at the top of each iteration. If found, it raises a `RuntimeError` with the reason. The orchestrator also self-evicts after `MAX_EMPTY_BATCH_ATTEMPTS` (3) consecutive empty-batch failures, so a run with degenerate rewards doesn't sit consuming a slot forever.
-
-### Hooks
-
-Five hook types fire at well-defined points:
-
-| Hook | Where | When |
-|---|---|---|
-| `discovered_hook` | master | new run detected and config validated |
-| `forgotten_hook` | master | run deleted from the output dir |
-| `config_validation_hook` | master | validate the orchestrator config when a new run is discovered |
-| `creation_hook` | all ranks | after `synchronize_state` for a newly created run (use for optimizer/scheduler init, LoRA param reset) |
-| `deletion_hook` | all ranks | after `synchronize_state` for a deleted run (use for releasing per-run resources) |
-
-Deletion hooks always run before creation hooks. The creation/deletion hooks run on **all** ranks, so they're the right place for DTensor allocation and other collective work; `torch.dist.barrier()` is safe inside.
-
-For the full API surface, see [`src/prime_rl/trainer/runs/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/src/prime_rl/trainer/runs).
+Multi-tenant training lets a single trainer + inference deployment serve many concurrent LoRA "tenants" — each a fully isolated run with its own orchestrator, LoRA adapter, optimizer, scheduler, checkpoints, and progress tracking — sharing the same backbone weights and the same vLLM server. This is the topology behind hosted training on the [Prime Intellect platform (Lab)](https://app.primeintellect.ai). The trainer-side implementation is the `MultiRunManager` singleton, enabled by setting `trainer.max_concurrent_runs > 1`. For the full API surface, see [`src/prime_rl/trainer/runs/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/src/prime_rl/trainer/runs).
 
 ## Testing MoE at small scale
 
