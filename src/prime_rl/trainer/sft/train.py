@@ -292,12 +292,11 @@ def train(config: SFTConfig):
         # otherwise the first rank to exit deadlocks the rest in the next all-gather.
         # Sync per batch and exit together as soon as any rank exhausts its iterator.
         data_iter = iter(data_iter)
-        has_data = torch.ones((), dtype=torch.int32, device="cuda")
 
         with torch.no_grad():
             while True:
                 micro_batch = next(data_iter, None)
-                has_data.fill_(micro_batch is not None)
+                has_data = torch.tensor(micro_batch is not None, dtype=torch.int32, device="cuda")
                 dist.all_reduce(has_data, op=dist.ReduceOp.MIN)
                 if has_data.item() == 0:
                     break
