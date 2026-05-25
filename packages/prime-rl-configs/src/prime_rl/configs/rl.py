@@ -35,7 +35,6 @@ from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
     propagate_shared_fields,
     validate_shared_ckpt_config,
-    validate_shared_max_async_level,
     validate_shared_max_steps,
     validate_shared_model_name,
     validate_shared_output_dir,
@@ -213,9 +212,6 @@ class RLConfig(BaseConfig):
     seq_len: int | None = None
     """Shared sequence length. Propagates to ``trainer.model.seq_len`` and ``orchestrator.seq_len`` only when those values were not explicitly set; explicit per-component values always win."""
 
-    max_async_level: int | None = None
-    """Shared async level. If None, falls back to the sub-config ``max_async_level``."""
-
     weight_broadcast: SharedWeightBroadcastConfig | None = None
 
     bench: bool = False
@@ -298,7 +294,6 @@ class RLConfig(BaseConfig):
         validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
         validate_shared_tokenizer(self.trainer, self.orchestrator, self.inference)
         validate_shared_max_steps(self.trainer, self.orchestrator)
-        validate_shared_max_async_level(self.trainer, self.orchestrator)
         validate_shared_seq_len(self.trainer, self.orchestrator)
         validate_shared_ckpt_config(self.trainer, self.orchestrator)
         validate_shared_wandb_config(self.trainer, self.orchestrator)
