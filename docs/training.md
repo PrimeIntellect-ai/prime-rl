@@ -96,7 +96,7 @@ The orchestrator owns the data-side knobs that most directly shape what the trai
 | Knob | What it controls |
 |---|---|
 | `orchestrator.batch_size` | Prompts per trainer step. |
-| `orchestrator.rollouts_per_example` | Group size — rollouts generated per prompt. Used for advantage normalization and pass@k estimation. |
+| `orchestrator.group_size` | Rollouts generated per prompt. Used for advantage normalization and pass@k estimation. |
 | `orchestrator.max_off_policy_steps` | How many distinct policies may have contributed to one rollout before it gets discarded (default 8). The main throughput-vs-noise dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `errored_rollouts` and `mismatch_kl/all/mean` when tuning. |
 | `orchestrator.training_mode` | Picks the training-mode dispatch: `rl` (default), `opd`, or `sft`. See [Training modes](#training-modes-rl--opd--sft-via-orchestrator). |
 
@@ -145,7 +145,14 @@ The RL entrypoint supports three training modes, switched via `orchestrator.trai
 | `opd` | Required | Required, must be vLLM (needs `prompt_logprobs`) | [On-policy distillation](https://thinkingmachines.ai/blog/on-policy-distillation/): student generates rollouts, trainer minimizes KL to teacher logprobs |
 | `sft` | Required | Required, any OpenAI-compatible endpoint | Hard-distill: teacher generates rollouts, student trains on them |
 
-For OPD and SFT-via-orchestrator, set `deployment.num_teacher_gpus` to auto-launch a teacher vLLM server, or hand-launch one and pass its URL via `orchestrator.client.base_url`. Debug configs for all variants ship under [`configs/debug/training_modes/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/configs/debug/training_modes).
+The `rl` entrypoint only manages student-policy inference. For OPD and (local-vLLM) SFT, start the teacher inference server manually and point `[orchestrator.teacher.client]` at it:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 uv run inference \
+  --model.name <teacher> --server.port 8001
+```
+
+Debug configs for all variants ship under [`configs/debug/training_modes/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/configs/debug/training_modes).
 
 The standalone `uv run sft` entrypoint is the more traditional SFT path — pure dataset-based, no teacher, no orchestrator. Use `orchestrator.training_mode = "sft"` only when you want a teacher to generate the supervision on the fly.
 
@@ -156,7 +163,7 @@ Evals run inside the orchestrator on a separate set of envs declared under `[[or
 ```toml
 [orchestrator.eval]
 interval = 25            # evaluate every 25 trainer steps
-rollouts_per_example = 4
+group_size = 4
 
 [[orchestrator.eval.env]]
 id = "math-env"
@@ -338,7 +345,7 @@ Pulled from the three console logs (and mirrored to W&B):
 
 - **Start small.** Run `examples/reverse_text/rl.toml` end-to-end on 2 GPUs before scaling. If the smoke run finishes cleanly, your install is good.
 - **Batch size ≥ 64.** Smaller batches give noisy gradient estimates and the trainer's overhead-per-step dominates throughput. 64 is the practical floor; 128–512 is typical for production RL.
-- **Group size ≥ 8.** Bigger groups (`orchestrator.rollouts_per_example`) make it more likely that a prompt produces a mix of high- and low-reward rollouts, which is what gives the trainer a usable signal — if all rollouts in a group succeed or all fail, the within-group advantage collapses to zero and the trainer learns nothing from that prompt. Bigger groups also tighten advantage normalization. 8 is the floor; 16–32 is common.
+- **Group size ≥ 8.** Bigger groups (`orchestrator.group_size`) make it more likely that a prompt produces a mix of high- and low-reward rollouts, which is what gives the trainer a usable signal — if all rollouts in a group succeed or all fail, the within-group advantage collapses to zero and the trainer learns nothing from that prompt. Bigger groups also tighten advantage normalization. 8 is the floor; 16–32 is common.
 - **Pin `output_dir` per run.** Sharing a directory across runs will mix rollouts and break resumes. `--output-dir outputs/<unique-name>` is the simplest discipline.
 - **Use `--dry-run` before SLURM.** Validators (CP needs flash-attention, NCCL broadcast needs `max_async_level=1`, etc.) fail fast in dry-run and slow in queue.
 - **Don't change `optimization_dtype` / `reduce_dtype`.** These are load-bearing — flipping bfloat16/float32 silently changes training dynamics. Stick with defaults unless you know what you're doing.

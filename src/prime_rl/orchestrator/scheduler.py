@@ -80,7 +80,7 @@ class Scheduler:
         self.config = config
         self.batch_size = config.batch_size
         self.token_batch_size = config.token_batch_size
-        self.rollouts_per_example = config.rollouts_per_example
+        self.group_size = config.group_size
         self.max_inflight_rollouts = max_inflight_rollouts
         self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
@@ -219,7 +219,7 @@ class Scheduler:
                     client=client_config,
                     example=group.example,
                     model_name=self.model_name,
-                    rollouts_per_example=rollout_count,
+                    group_size=rollout_count,
                     cache_salt=cache_salt,
                 )
             )
@@ -266,13 +266,13 @@ class Scheduler:
                 await self.schedule_rollout(group_id=group_id)
                 return True
 
-        if remaining_capacity < self.rollouts_per_example:
+        if remaining_capacity < self.group_size:
             return False
 
         example = self.buffer.sample_examples(n=1)[0]
         group_id = self.next_group_id
         self.next_group_id += 1
-        self.groups[group_id] = GroupState(example=example, rollouts_to_schedule=self.rollouts_per_example)
+        self.groups[group_id] = GroupState(example=example, rollouts_to_schedule=self.group_size)
         await self.schedule_rollout(group_id=group_id)
         return True
 
@@ -475,16 +475,16 @@ class Scheduler:
 
                     # Wait until every dispatched rollout has come back (succeeded
                     # or failed) before finalizing. The group may finalize as a
-                    # partial group (< rollouts_per_example) when some rollouts
+                    # partial group (< group_size) when some rollouts
                     # errored - downstream advantage computation groups by
                     # (env_name, example_id), so variable-size groups are fine.
-                    if len(group.completed_rollouts) + group.failed_rollouts < self.rollouts_per_example:
+                    if len(group.completed_rollouts) + group.failed_rollouts < self.group_size:
                         continue
 
                     if not group.completed_rollouts:
                         self.dropped_groups_by_env[env_name] += 1
                         self.logger.warning(
-                            f"Dropping group {group_id} ({env_name}) - all {self.rollouts_per_example} rollouts failed"
+                            f"Dropping group {group_id} ({env_name}) - all {self.group_size} rollouts failed"
                         )
                         self.groups.pop(group_id, None)
                         continue
@@ -492,7 +492,7 @@ class Scheduler:
                     if group.failed_rollouts > 0:
                         self.logger.warning(
                             f"Partial group {group_id} ({env_name}) - "
-                            f"{len(group.completed_rollouts)}/{self.rollouts_per_example} valid "
+                            f"{len(group.completed_rollouts)}/{self.group_size} valid "
                             f"({group.failed_rollouts} failed)"
                         )
 

@@ -291,11 +291,10 @@ The `rl`, `sft`, and `inference` entrypoints all submit to SLURM when a `[slurm]
 
 ### Activation
 
-A SLURM config is usually a thin overlay that inherits a base config and adds `[slurm]` (and `[deployment]` for multi-node):
+A SLURM config is usually a thin overlay that adds `[slurm]` (and `[deployment]` for multi-node) on top of a base config. Configs are composed left-to-right via the `@` CLI syntax — see [Configuration § TOML files and composition](configuration.md#toml-files-and-composition):
 
 ```toml
 # my_slurm.toml
-toml_files = ["base_rl.toml"]
 output_dir = "/shared/outputs/my-rl"
 
 [slurm]
@@ -305,8 +304,8 @@ job_name = "my-rl-run"
 Launch:
 
 ```bash
-uv run rl @ my_slurm.toml             # submits via sbatch
-uv run rl @ my_slurm.toml --dry-run   # writes the sbatch script + resolved config, exits
+uv run rl @ base_rl.toml @ my_slurm.toml             # submits via sbatch
+uv run rl @ base_rl.toml @ my_slurm.toml --dry-run   # writes the sbatch script + resolved config, exits
 ```
 
 The dry-run mode is invaluable — inspect `<output_dir>/job.sbatch` and the per-process TOMLs before burning a queue slot.
@@ -346,10 +345,10 @@ gpus_per_node = 8
 
 ### RL example
 
-A two-node RL run with NCCL weight broadcast and a 30B MoE student:
+A two-node RL run with NCCL weight broadcast and a 30B MoE student. Compose with the base config at launch time (`uv run rl @ base.toml @ my_slurm.toml`):
 
 ```toml
-toml_files = ["base.toml"]
+# my_slurm.toml
 output_dir = "/shared/outputs/rl-math-moe"
 max_steps = 500
 seq_len = 2048
@@ -381,7 +380,7 @@ max_inflight_activations = 5
 
 [orchestrator]
 batch_size = 512
-rollouts_per_example = 16
+group_size = 16
 
 [[orchestrator.train.env]]
 id = "math-env"
@@ -393,14 +392,14 @@ tp = 4
 dp = 2
 ```
 
-See [`examples/hendrycks_math/rl.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/hendrycks_math/rl.toml) for a complete worked example.
+See [`examples/multinode/rl.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/multinode/rl.toml) for a complete worked example.
 
 ### SFT and inference examples
 
-SFT multi-node MoE:
+SFT multi-node MoE (compose with `uv run sft @ base_sft.toml @ my_slurm.toml`):
 
 ```toml
-toml_files = ["base_sft.toml"]
+# my_slurm.toml
 output_dir = "/shared/outputs/sft-moe-math"
 max_steps = 500
 

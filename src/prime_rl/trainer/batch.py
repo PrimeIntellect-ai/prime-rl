@@ -1,6 +1,52 @@
 import copy
 
-from prime_rl.transport.types import MicroBatch, TrainingSample
+from prime_rl.transport.types import MicroBatch, RoutedExperts, TrainingSample
+
+ROUTED_EXPERTS_DTYPE_ITEMSIZE = {
+    "uint8": 1,
+    "int16": 2,
+    "int32": 4,
+}
+
+
+def _copy_routed_experts(routed_experts: RoutedExperts) -> RoutedExperts:
+    return RoutedExperts(
+        data=routed_experts.data,
+        shape=list(routed_experts.shape),
+        dtype=routed_experts.dtype,
+    )
+
+
+def _routed_experts_row_size(routed_experts: RoutedExperts) -> int:
+    return routed_experts.shape[1] * routed_experts.shape[2] * ROUTED_EXPERTS_DTYPE_ITEMSIZE[routed_experts.dtype]
+
+
+def _slice_routed_experts(routed_experts: RoutedExperts, seq_len: int) -> RoutedExperts:
+    row_size = _routed_experts_row_size(routed_experts)
+    return RoutedExperts(
+        data=routed_experts.data[: seq_len * row_size],
+        shape=[seq_len, routed_experts.shape[1], routed_experts.shape[2]],
+        dtype=routed_experts.dtype,
+    )
+
+
+def _append_routed_experts(dst: MicroBatch, src: MicroBatch) -> None:
+    dst_routed = dst.routed_experts
+    src_routed = src.routed_experts
+    assert dst_routed is not None
+    assert src_routed is not None
+    assert dst_routed.dtype == src_routed.dtype
+    assert dst_routed.shape[1:] == src_routed.shape[1:]
+    dst_routed.data += src_routed.data
+    dst_routed.shape[0] += src_routed.shape[0]
+
+
+def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
+    routed_experts = micro_batch.routed_experts
+    assert routed_experts is not None
+    row_size = _routed_experts_row_size(routed_experts)
+    routed_experts.data += b"\0" * (padding_size * row_size)
+    routed_experts.shape[0] += padding_size
 
 
 def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch:
@@ -27,7 +73,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     # Teacher logprobs already cover the full sequence (prompt + completion),
     # computed via prefill in the orchestrator when a teacher model is configured
     teacher_logprobs = training_example.teacher_logprobs
-    routed_experts = training_example.routed_experts
+    routed_experts = (
+        _copy_routed_experts(training_example.routed_experts) if training_example.routed_experts is not None else None
+    )
 
     if len(input_ids) > seq_len:
         input_ids = input_ids[:seq_len]
@@ -40,7 +88,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         if teacher_logprobs is not None:
             teacher_logprobs = teacher_logprobs[:seq_len]
         if routed_experts is not None:
-            routed_experts = routed_experts[:seq_len]
+            routed_experts = _slice_routed_experts(routed_experts, seq_len)
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:seq_len]
         env_names = env_names[:seq_len]
@@ -60,9 +108,10 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         assert len(teacher_logprobs) == len(input_ids), f"teacher_logprobs: {len(teacher_logprobs)}"
 
     if routed_experts is not None:
-        assert len(routed_experts) == len(input_ids), (
-            f"routed_experts: {len(routed_experts)}, input_ids: {len(input_ids)}"
+        assert routed_experts.shape[0] == len(input_ids), (
+            f"routed_experts: {routed_experts.shape}, input_ids: {len(input_ids)}"
         )
+        assert len(routed_experts.data) == len(input_ids) * _routed_experts_row_size(routed_experts)
 
     if mm_token_type_ids is not None:
         assert len(mm_token_type_ids) == len(input_ids), (
@@ -143,10 +192,12 @@ def packed_samples_into_micro_bs(
                     if bin_content.teacher_logprobs is None:
                         bin_content.teacher_logprobs = []
                     bin_content.teacher_logprobs.extend(sample.teacher_logprobs)
+                assert (bin_content.routed_experts is None) == (sample.routed_experts is None)
                 if sample.routed_experts is not None:
                     if bin_content.routed_experts is None:
-                        bin_content.routed_experts = []
-                    bin_content.routed_experts.extend(sample.routed_experts)
+                        bin_content.routed_experts = _copy_routed_experts(sample.routed_experts)
+                    else:
+                        _append_routed_experts(bin_content, sample)
                 if sample.mm_token_type_ids is not None:
                     if bin_content.mm_token_type_ids is None:
                         bin_content.mm_token_type_ids = []
@@ -201,6 +252,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     )
     if micro_batch.mm_token_type_ids is not None:
         micro_batch.mm_token_type_ids.extend([0] * padding_size)
+    if micro_batch.routed_experts is not None:
+        _pad_routed_experts(micro_batch, padding_size)
     micro_batch.env_names.extend([""] * padding_size)
 
     return micro_batch

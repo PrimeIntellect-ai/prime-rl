@@ -142,12 +142,12 @@ class Env:
         client: vf.ClientConfig,
         example: dict,
         model_name: str,
-        rollouts_per_example: int,
+        group_size: int,
         cache_salt: str,
     ) -> list[vf.RolloutOutput]:
         """Run a group of rollouts for an example. Required for group-scoring envs."""
         return await self.env.run_group(
-            [vf.RolloutInput(**example) for _ in range(rollouts_per_example)],
+            [vf.RolloutInput(**example) for _ in range(group_size)],
             client=client,
             model=model_name,
             sampling_args=self._sampling_args_with_salt(cache_salt),
@@ -186,35 +186,34 @@ class EvalEnv(Env):
         self,
         model_name: str,
         get_client: Callable[[], Awaitable[vf.ClientConfig]],
-        ckpt_step: int,
         step: int,
         cache_salt: str,
     ) -> list[vf.RolloutOutput]:
         num_examples = len(self.examples)
-        rollouts_per_example = self.config.rollouts_per_example
-        get_logger().info(f"Evaluating {self.name} ({num_examples=}, {rollouts_per_example=})")
-        total_rollouts = num_examples * rollouts_per_example
+        group_size = self.config.group_size
+        get_logger().info(f"Evaluating {self.name} ({num_examples=}, {group_size=})")
+        total_rollouts = num_examples * group_size
         pbar = ProgressTracker(total=total_rollouts, desc=f"Evaluating {self.name}")
         eval_start = time.perf_counter()
 
         if self.requires_group_scoring:
 
             async def run_with_progress(example: dict) -> list[vf.RolloutOutput] | None:
-                """Run rollouts_per_example rollouts as a scored group for one example."""
+                """Run group_size rollouts as a scored group for one example."""
                 try:
                     client = await get_client()
                     outputs = await self.run_group(
                         client=client,
                         example=example,
                         model_name=model_name,
-                        rollouts_per_example=rollouts_per_example,
+                        group_size=group_size,
                         cache_salt=cache_salt,
                     )
-                    pbar.update(rollouts_per_example)
+                    pbar.update(group_size)
                     return outputs
                 except Exception as e:
                     get_logger().warning(f"Group failed: {e}")
-                    pbar.update(rollouts_per_example)
+                    pbar.update(group_size)
                     return None
 
             coros = [run_with_progress(example) for example in self.examples]
@@ -235,7 +234,7 @@ class EvalEnv(Env):
                     pbar.update(1)
                     return None
 
-            coros = [run_with_progress(example) for example in self.examples for _ in range(rollouts_per_example)]
+            coros = [run_with_progress(example) for example in self.examples for _ in range(group_size)]
 
         try:
             results = await asyncio.gather(*coros)
@@ -256,7 +255,6 @@ class EvalEnv(Env):
             get_monitor().log(
                 {
                     f"eval/{self.name}/failed_rollouts": failed_count / total_rollouts,
-                    "progress/ckpt_step": ckpt_step,
                     "step": step,
                 },
                 step=step,
@@ -291,9 +289,7 @@ class EvalEnv(Env):
             pass_at_k = None
             get_logger().warning("Skipping computing pass@k rates because the task rewards appear to be non-binary")
 
-        message = (
-            f"Evaluated {self.name} in {eval_time:.2f}s (Avg@{rollouts_per_example}={results_df.reward.mean():.4f}"
-        )
+        message = f"Evaluated {self.name} in {eval_time:.2f}s (Avg@{group_size}={results_df.reward.mean():.4f}"
         if could_be_binary:
             assert pass_at_k is not None
             for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
@@ -307,7 +303,7 @@ class EvalEnv(Env):
         get_logger().success(message)
 
         eval_metrics = {
-            f"avg@{rollouts_per_example}": float(results_df.reward.mean()),
+            f"avg@{group_size}": float(results_df.reward.mean()),
             "no_response/mean": float(results_df.no_response.mean()),
             "no_response/count": int(results_df.no_response.sum()),
             "completion_len/mean": results_df.completion_len.mean().item(),
@@ -321,7 +317,7 @@ class EvalEnv(Env):
             assert pass_at_k is not None
             eval_metrics.update(pd.Series(pass_at_k.mean()).to_dict())
         eval_metrics = {f"eval/{self.name}/{key}": v for key, v in eval_metrics.items()}
-        eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step})
+        eval_metrics["step"] = step
         monitor.log(eval_metrics, step=step)
         monitor.log_eval_samples(successful_outputs, env_name=self.name, step=step)
 

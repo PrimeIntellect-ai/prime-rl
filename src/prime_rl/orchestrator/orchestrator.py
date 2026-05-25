@@ -8,14 +8,13 @@ import tomli_w
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
 from prime_rl.orchestrator.advantage import compute_advantages
-from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import (
+    backfill_rollout_tokens,
     interleave_rollout,
     offload_images_to_disk,
-    pretokenize_rollout_trajectory,
 )
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 from prime_rl.utils.pathing import get_log_dir, get_rollout_dir, get_step_path
@@ -285,11 +284,6 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
     training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
-    # Track last online eval checkpoint step per eval env
-    last_eval_steps: dict[str, int] = {env.name: -1 for env in eval_envs} if eval_envs else {}
-    # Track previous ckpt_step to detect when ckpt_step jumps over eval interval boundaries
-    prev_ckpt_step = -1
-
     # Reset weights to base model if starting from scratch
     progress = Progress()
 
@@ -297,13 +291,6 @@ async def orchestrate(config: OrchestratorConfig):
         ckpt_manager.load(progress, buffer, step=checkpoint_step)
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
         scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
-        if config.eval and config.eval.skip_eval_on_resume:
-            prev_ckpt_step = scheduler.ckpt_step
-            last_eval_steps = {name: scheduler.ckpt_step for name in last_eval_steps}
-            logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
-        else:
-            # Allow eval at resumed step by setting prev_ckpt_step one behind
-            prev_ckpt_step = scheduler.ckpt_step - 1
 
         # In NCCL mode, skip existence check - weights are broadcasted, not stored on disk
         check_exists = config.weight_broadcast.type != "nccl"
@@ -362,21 +349,18 @@ async def orchestrate(config: OrchestratorConfig):
         envs_to_eval: list[EvalEnv] = []
         if config.eval:
             assert eval_envs is not None
-            for eval_env in eval_envs:
-                eval_ckpt_step = compute_eval_ckpt_step(
-                    ckpt_step=ckpt_step,
-                    prev_ckpt_step=prev_ckpt_step,
-                    last_eval_step=last_eval_steps[eval_env.name],
-                    interval=eval_env.config.interval,
-                    eval_base_model=config.eval.eval_base_model,
-                )
-                if eval_ckpt_step is not None:
-                    last_eval_steps[eval_env.name] = ckpt_step
-                    envs_to_eval.append(eval_env)
+            if is_first_step and checkpoint_step is not None and config.eval.skip_eval_on_resume:
+                logger.info(f"Skipping online eval on resume (step={progress.step})")
+            else:
+                for eval_env in eval_envs:
+                    if progress.step % eval_env.config.interval == 0 and (
+                        progress.step > 0 or config.eval.eval_base_model
+                    ):
+                        envs_to_eval.append(eval_env)
 
         if envs_to_eval:
             env_names = ", ".join(e.name for e in envs_to_eval)
-            logger.info(f"Running evals at {ckpt_step=} for {env_names}")
+            logger.info(f"Running evals at step={progress.step} for {env_names}")
 
             # Pause weight updates and re-scheduling of training rollouts during eval
             # to avoid evaluating across different checkpoints and avoid congestion
@@ -392,7 +376,6 @@ async def orchestrate(config: OrchestratorConfig):
                     eval_env.evaluate(
                         model_name=student_inference.model_name,
                         get_client=student_inference.get_eval_client,
-                        ckpt_step=ckpt_step,
                         step=progress.step,
                         cache_salt=str(ckpt_step),
                     )
@@ -411,9 +394,6 @@ async def orchestrate(config: OrchestratorConfig):
             # Resume weight updates
             scheduler.checkpoint_ready.set()
 
-        # Update prev_ckpt_step for next iteration
-        prev_ckpt_step = ckpt_step
-
         # Schedule generating the training batch. Retry on empty-after-filter
         # batches so the trainer never receives an empty batch.
         generate_completions_time = 0.0
@@ -428,10 +408,10 @@ async def orchestrate(config: OrchestratorConfig):
             # Compute advantages (in-place)
             num_rollouts = len(train_rollouts)
             num_unique_examples = len({(r["env_name"], r["example_id"]) for r in train_rollouts})
-            compute_advantages(train_rollouts, config.advantage)
+            await asyncio.to_thread(compute_advantages, train_rollouts, config.advantage)
 
             # Apply rollout filters — sets rollout["filters"] and rollout["is_filtered"]
-            apply_filters(rollout_filters, train_rollouts)
+            await asyncio.to_thread(apply_filters, rollout_filters, train_rollouts)
 
             n_trainable = sum(1 for r in train_rollouts if not r["is_filtered"])
             if n_trainable > 0:
@@ -482,22 +462,28 @@ async def orchestrate(config: OrchestratorConfig):
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
 
-        # Pretokenize is a no-op when the renderer client already populated
-        # ``tokens`` on each trajectory step (renderer path); the fallback
-        # tokenizer-only branch handles text-only rollouts whose tokens
-        # were not pre-rendered. Run on threads so CPU work overlaps with
-        # inference for the next batch (via max_async_level >= 2).
-        await asyncio.gather(
-            *(
-                asyncio.to_thread(
-                    pretokenize_rollout_trajectory,
-                    rollout,
-                    tokenizer,
-                    renderer=renderer,
-                )
-                for rollout in train_rollouts
+        # We only expect to backfill tokens for training_mode=sft against an
+        # external teacher API (OpenAI/etc.), which returns no token IDs —
+        # reconstruct via tokenizer/renderer. The vLLM-served paths (RL/OPD
+        # renderer + MITO, and training_mode=sft against a local vLLM teacher)
+        # already populate tokens via prompt_token_ids/token_ids, so we
+        # short-circuit the 256-way fanout.
+        needs_backfill = any(step["tokens"] is None for rollout in train_rollouts for step in rollout["trajectory"])
+        if needs_backfill:
+            logger.info(
+                "Backfilling tokens for rollout trajectories (expected for training_mode=sft against an external teacher API)"
             )
-        )
+            await asyncio.gather(
+                *(
+                    asyncio.to_thread(
+                        backfill_rollout_tokens,
+                        rollout,
+                        tokenizer,
+                        renderer=renderer,
+                    )
+                    for rollout in train_rollouts
+                )
+            )
 
         # Process rollouts in parallel
         results = await asyncio.gather(
@@ -564,7 +550,7 @@ async def orchestrate(config: OrchestratorConfig):
             step=progress.step,
         )
 
-        training_batch_sender.send(training_batch)
+        await training_batch_sender.send(training_batch)
 
         step_time = time.perf_counter() - step_start_time
 
@@ -614,7 +600,7 @@ async def orchestrate(config: OrchestratorConfig):
             """Compute solve_none, solve_all, effective_batch_size for a set of rollouts."""
             reward_per_problem = df.groupby(["env_name", "example_id"]).reward.sum()
             solve_none = (reward_per_problem == 0).mean()
-            solve_all = (reward_per_problem == config.rollouts_per_example).mean()
+            solve_all = (reward_per_problem == config.group_size).mean()
             return solve_none, solve_all, 1 - solve_none - solve_all
 
         # Group by (env_name, example_id) to average across rollouts within each problem
@@ -631,7 +617,6 @@ async def orchestrate(config: OrchestratorConfig):
             "progress/total_tokens": progress.total_tokens,
             "progress/total_samples": progress.total_samples,
             "progress/total_problems": progress.total_problems,
-            "progress/ckpt_step": ckpt_step,  # Shared W&B axis
             # Sequence length metrics
             "seq_len/all/mean": by_example.seq_len.mean().mean(),
             "seq_len/all/max": by_example.seq_len.mean().max(),
@@ -791,7 +776,6 @@ async def orchestrate(config: OrchestratorConfig):
                 eval_env.evaluate(
                     model_name=student_inference.model_name,
                     get_client=student_inference.get_eval_client,
-                    ckpt_step=ckpt_step,
                     step=progress.step,
                     cache_salt=str(ckpt_step),
                 )
@@ -863,6 +847,9 @@ async def orchestrate(config: OrchestratorConfig):
 def main():
     """Main entry-point for orchestrator. Run using `uv run orchestrator`"""
     set_proc_title("Orchestrator")
+    import uvloop
+
+    uvloop.install()
     asyncio.run(orchestrate(cli(OrchestratorConfig)))
 
 

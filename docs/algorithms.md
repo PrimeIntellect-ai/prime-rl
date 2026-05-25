@@ -149,7 +149,7 @@ Anything you put in `metrics` is averaged across sequences and logged with the o
 
 ### Default advantage
 
-The default advantage is per-group reward minus per-group baseline (DR-GRPO without std normalization). For each prompt's group of `rollouts_per_example` rollouts, every token in rollout $i$ receives advantage $s_i - \bar{s}$ where $\bar{s}$ is the group mean.
+The default advantage is per-group reward minus per-group baseline (DR-GRPO without std normalization). For each prompt's group of `group_size` rollouts, every token in rollout $i$ receives advantage $s_i - \bar{s}$ where $\bar{s}$ is the group mean.
 
 This is intentionally simple — it does the right thing for most envs. Switch to a custom function when you need group-aware shaping (e.g. length penalties tied to turn count, sub-agent rollouts, or relative-rank shaping).
 
@@ -284,4 +284,4 @@ Hand-coded renderers ship for `qwen3`, `qwen3-vl`, `qwen3.5`, `glm5`, `glm4.5`, 
 name = "auto"   # detect from tokenizer; pass an explicit name for fine-tunes
 ```
 
-For the full design rationale (failure modes ruled out, empirical token-identity comparison against `apply_chat_template`, when to write a hand-coded renderer), see **TODO(blog-post-url)** — our writeup on the PI site is the canonical reference.
+For the full design rationale (failure modes ruled out, empirical token-identity comparison against `apply_chat_template`, when to write a hand-coded renderer), see [the renderers writeup on the Prime Intellect blog](https://www.primeintellect.ai/blog/renderers) — the canonical reference.

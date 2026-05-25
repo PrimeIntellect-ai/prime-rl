@@ -521,6 +521,8 @@ def train(config: TrainerConfig):
                 micro_step_message += f" | Mismatch KL: {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
+            if "routing_confidence" in tensors:
+                micro_step_message += f" | Routing Conf.: {tensors['routing_confidence'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
@@ -580,6 +582,8 @@ def train(config: TrainerConfig):
         step_message += f" | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
         if "max_vio/mean" in tensor_stats:
             step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
+        if "routing_confidence/mean" in tensor_stats:
+            step_message += f" | Routing Conf.: {tensor_stats['routing_confidence/mean']:.4f}"
         logger.success(step_message)
 
         # Log performance metrics

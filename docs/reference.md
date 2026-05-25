@@ -24,7 +24,6 @@ For conceptual context behind these knobs, see
   - [`trainer`](#rl-trainer)
   - [`orchestrator`](#rl-orchestrator)
   - [`inference`](#rl-inference)
-  - [`teacher_inference`](#rl-teacher-inference)
   - [`log`](#rl-log)
   - [`ckpt`](#rl-ckpt)
   - [`wandb`](#rl-wandb)
@@ -196,6 +195,16 @@ Activation offloading configuration. If None, activation offloading is disabled.
 |---|---|---|---|
 | `trainer.model.ac_offloading.pin_memory` | bool | `True` | Pin offloaded activations to CPU memory. |
 | `trainer.model.ac_offloading.max_inflight_activations` | int | `5` | _≥1._ Max activations kept in flight while offloading. More activations smooth overlap at the cost of GPU memory. |
+
+<a id="rl-trainer-model-index-cache"></a>
+##### `trainer.model.index_cache`
+
+DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `trainer.model.index_cache.topk_freq` | int | `1` | _≥1._ Recompute DSA top-k indices every N layers; intervening layers reuse the cached indices. ``1`` recomputes every layer (effectively no reuse). Mirrors vLLM's ``index_topk_freq`` HF override. |
+| `trainer.model.index_cache.topk_pattern` | str \| None | `None` | Optional per-layer schedule that overrides ``topk_freq``. ``'F'`` computes fresh indices for that layer; ``'S'`` reuses the previously cached indices. Length should match the number of decoder layers. |
 
 <a id="rl-trainer-model-lora"></a>
 ##### `trainer.model.lora`
@@ -518,7 +527,7 @@ Discriminated union — set `trainer.rollout_transport.type` to one of `filesyst
 | `orchestrator.token_batch_size` | int \| None | `None` | _≥1._ Tokens to train on per step (token-based batching). Set this OR ``batch_size``. |
 | `orchestrator.oversampling_factor` | float \| None | `None` | _>0._ Rollout-mode batching only. Multiplier used to derive ``max_inflight_rollouts`` from ``batch_size`` when ``max_inflight_rollouts`` is unset. Values below 1.0 intentionally cap in-flight rollout capacity below ``batch_size``. |
 | `orchestrator.max_inflight_rollouts` | int \| None | `None` | _≥1._ Maximum number of rollouts kept in-flight. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset). |
-| `orchestrator.rollouts_per_example` | int | `1` | _≥1._ Output sequences returned per example during training. |
+| `orchestrator.group_size` | int | `1` | _≥1._ Output sequences returned per example during training. |
 | `orchestrator.seq_len` | int | `2048` | Training sequence length. Shorter samples are padded; longer samples are truncated. |
 | `orchestrator.num_train_workers` | int | `1` | _≥1._ Training workers to use. |
 | `orchestrator.max_steps` | int \| None | `None` | Maximum training steps. If None, runs indefinitely. |
@@ -577,7 +586,7 @@ Per-run LoRA configuration. If None, LoRA is disabled.
 | `orchestrator.student.client.api_key_var` | str | `'VLLM_API_KEY'` | Environment variable name containing the API key, resolved via ``os.getenv``. Can be any string when the server is not protected by an API key; the same key is used for every URL. |
 | `orchestrator.student.client.headers` | dict[str, str] | `{}` | Static headers sent with every request. |
 | `orchestrator.student.client.headers_from_env` | dict[str, str] | `{}` | Maps HTTP header names to environment variable names; each entry is resolved via ``os.getenv`` and merged into request headers. e.g. ``{"X-Prime-Team-ID": "PRIME_TEAM_ID"}``. |
-| `orchestrator.student.client.extra_headers_from_state` | dict[str, str] | `{}` | Maps HTTP header names to rollout-state field names. The header value is read from the rollout state dict on every request. e.g. ``{"X-Session-ID": "example_id"}`` enables sticky routing at the inference router. |
+| `orchestrator.student.client.extra_headers_from_state` | dict[str, str] | `{}` | Maps HTTP header names to rollout-state field names. The header value is read from the rollout state dict on every request. e.g. ``{"X-Session-ID": "trajectory_id"}`` enables sticky routing at the inference router. |
 | `orchestrator.student.client.skip_model_check` | bool | `False` | Skip checking that the model is available in the inference pool. Useful for external APIs or keys that do not expose ``/models``. |
 | `orchestrator.student.client.dp_rank_count` | int | `1` | _≥1._ Number of data-parallel ranks behind each base URL. When > 1, each URL is expanded into ``dp_rank_count`` logical clients pinned via the ``X-data-parallel-rank`` header, so every request within a rollout hits the same DP engine and reuses KV cache. Auto-set from the inference config when using the RL entrypoint. |
 | `orchestrator.student.client.admin_base_url` | list[str] \| None | `None` | Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in disaggregated P/D deployments where the router must not handle admin traffic. |
@@ -641,7 +650,7 @@ Per-run LoRA configuration. If None, LoRA is disabled.
 | `orchestrator.teacher.client.api_key_var` | str | `'VLLM_API_KEY'` | Environment variable name containing the API key, resolved via ``os.getenv``. Can be any string when the server is not protected by an API key; the same key is used for every URL. |
 | `orchestrator.teacher.client.headers` | dict[str, str] | `{}` | Static headers sent with every request. |
 | `orchestrator.teacher.client.headers_from_env` | dict[str, str] | `{}` | Maps HTTP header names to environment variable names; each entry is resolved via ``os.getenv`` and merged into request headers. e.g. ``{"X-Prime-Team-ID": "PRIME_TEAM_ID"}``. |
-| `orchestrator.teacher.client.extra_headers_from_state` | dict[str, str] | `{}` | Maps HTTP header names to rollout-state field names. The header value is read from the rollout state dict on every request. e.g. ``{"X-Session-ID": "example_id"}`` enables sticky routing at the inference router. |
+| `orchestrator.teacher.client.extra_headers_from_state` | dict[str, str] | `{}` | Maps HTTP header names to rollout-state field names. The header value is read from the rollout state dict on every request. e.g. ``{"X-Session-ID": "trajectory_id"}`` enables sticky routing at the inference router. |
 | `orchestrator.teacher.client.skip_model_check` | bool | `False` | Skip checking that the model is available in the inference pool. Useful for external APIs or keys that do not expose ``/models``. |
 | `orchestrator.teacher.client.dp_rank_count` | int | `1` | _≥1._ Number of data-parallel ranks behind each base URL. When > 1, each URL is expanded into ``dp_rank_count`` logical clients pinned via the ``X-data-parallel-rank`` header, so every request within a rollout hits the same DP engine and reuses KV cache. Auto-set from the inference config when using the RL entrypoint. |
 | `orchestrator.teacher.client.admin_base_url` | list[str] \| None | `None` | Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in disaggregated P/D deployments where the router must not handle admin traffic. |
@@ -720,9 +729,9 @@ Evaluation configuration.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `orchestrator.eval.env` | list[EvalEnvConfig] | `[EvalEnvConfig(id='reverse-text', name=None, args={}, extra_env_kwargs={'max_total_completion_tokens': -1}, address=None, num_workers='auto', ratio=None, max_retries=3, max_total_completion_tokens=-1, timeout=None, state_columns=[], sampling=EvalSamplingConfig(temperature=None, repetition_penalty=None, top_p=None, top_k=None, min_p=None, max_completion_tokens=None, min_tokens=None, reasoning_effort=None, seed=None, extra_body={}), num_examples=-1, rollouts_per_example=1, interval=100)]` | Evaluation environments. |
+| `orchestrator.eval.env` | list[EvalEnvConfig] | `[EvalEnvConfig(id='reverse-text', name=None, args={}, extra_env_kwargs={'max_total_completion_tokens': -1}, address=None, num_workers='auto', ratio=None, max_retries=3, max_total_completion_tokens=-1, timeout=None, state_columns=[], sampling=EvalSamplingConfig(temperature=None, repetition_penalty=None, top_p=None, top_k=None, min_p=None, max_completion_tokens=None, min_tokens=None, reasoning_effort=None, seed=None, extra_body={}), num_examples=-1, group_size=1, interval=100)]` | Evaluation environments. |
 | `orchestrator.eval.num_examples` | int | `-1` | Default eval examples per environment. ``-1`` uses all. Can be overridden per env. |
-| `orchestrator.eval.rollouts_per_example` | int | `1` | _≥1._ Default rollouts per example. Can be overridden per env. |
+| `orchestrator.eval.group_size` | int | `1` | _≥1._ Default rollouts per example. Can be overridden per env. |
 | `orchestrator.eval.num_workers` | int \| 'auto' | `'auto'` | Default worker processes for env servers. Can be overridden per env. |
 | `orchestrator.eval.max_retries` | int | `3` | _≥0._ Default retries for failed rollouts. Can be overridden per env. |
 | `orchestrator.eval.interval` | int | `100` | _≥1._ Step interval at which to evaluate the model. |
@@ -1048,159 +1057,6 @@ Discriminated union — set `inference.deployment.type` to one of `single_node`,
 | `inference.deployment.prefill_env_overrides` | dict[str, str] | `{}` | Extra environment variables exported only on prefill nodes. |
 | `inference.deployment.decode_env_overrides` | dict[str, str] | `{}` | Extra environment variables exported only on decode nodes. |
 
-<a id="rl-teacher-inference"></a>
-### `teacher_inference`
-
-Teacher inference server configuration. If None, falls back to the same config as ``inference`` (or a default). Only used when teacher GPUs/nodes are set.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `teacher_inference.enable_lora` | bool | `False` | Enable LoRA. Forwarded as ``--enable-lora``. |
-| `teacher_inference.max_loras` | int | `8` | Maximum number of LoRAs. Forwarded as ``--max-loras``. |
-| `teacher_inference.max_cpu_loras` | int | `100` | Maximum number of LoRAs on CPU. Forwarded as ``--max-cpu-loras``. |
-| `teacher_inference.max_lora_rank` | int \| None | `None` | Maximum LoRA rank. Forwarded as ``--max-lora-rank``. |
-| `teacher_inference.lora_target_modules` | list[str] \| None | `None` | LoRA target modules. Forwarded as ``--lora-target-modules``. |
-| `teacher_inference.enable_prefix_caching` | bool \| None | `None` | Enable prefix caching. Forwarded as ``--enable-prefix-caching``. |
-| `teacher_inference.gpu_memory_utilization` | float | `0.9` | GPU memory utilization. Forwarded as ``--gpu-memory-utilization``. |
-| `teacher_inference.api_server_count` | int | `1` | _≥0._ API servers to run. Forwarded as ``--api-server-count``. Set to 0 for headless mode. |
-| `teacher_inference.data_parallel_size_local` | int \| None | `None` | _≥1._ Data parallel replicas to run on this node. Forwarded as ``--data-parallel-size-local``. |
-| `teacher_inference.data_parallel_rpc_port` | int | `13345` | _≥1, ≤65535._ RPC port for data parallel communication. Forwarded as ``--data-parallel-rpc-port``. |
-| `teacher_inference.seed` | int | `0` | Seed the inference components. Forwarded as ``--seed``. |
-| `teacher_inference.enable_expert_parallel` | bool | `False` | Enable expert parallelism for MoE models. Forwarded as ``--enable-expert-parallel``. |
-| `teacher_inference.all2all_backend` | 'allgather_reducescatter' \| 'deepep_high_throughput' \| 'deepep_low_latency' \| 'flashinfer_nvlink_one_sided' \| 'flashinfer_nvlink_two_sided' | `'allgather_reducescatter'` | All-to-all backend for expert-parallel communication. Forwarded as ``--all2all-backend``. |
-| `teacher_inference.enable_eplb` | bool | `False` | Enable expert parallel load balancer (EPLB). Forwarded as ``--enable-eplb``. |
-| `teacher_inference.enable_dbo` | bool | `False` | Enable dual batch overlap (DBO). Forwarded as ``--enable-dbo``. |
-| `teacher_inference.use_deep_gemm` | bool | `False` | Force DeepGEMM FP8 kernels via ``VLLM_USE_DEEP_GEMM=1``. Only works with per-tensor FP8 quantization (e.g. GLM-5-FP8). |
-| `teacher_inference.enable_return_routed_experts` | bool | `False` | Return routed experts in responses. Forwarded as ``--enable-return-routed-experts``. |
-| `teacher_inference.enable_fp32_lm_head` | bool | `False` | Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented as a monkey-patch over vLLM's LogitsProcessor, activated by setting ``additional_config["fp32_lm_head"] = True`` on the vLLM config. |
-| `teacher_inference.vllm_extra` | dict[str, Any] | `{}` | Extra arguments forwarded to vLLM. Applied as attributes on the vLLM namespace after config translation. |
-| `teacher_inference.output_dir` | Path | `'outputs'` | Directory for SLURM logs and generated scripts. |
-| `teacher_inference.dry_run` | bool | `False` | Only validate and dump resolved configs, then exit early. |
-
-<a id="rl-teacher-inference-server"></a>
-#### `teacher_inference.server`
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `teacher_inference.server.host` | str \| None | `None` | Host to bind to. |
-| `teacher_inference.server.port` | int | `8000` | Port to bind to. |
-| `teacher_inference.server.liveness_timeout_seconds` | float | `30.0` | _>0._ Timeout in seconds for the ``/liveness`` endpoint's internal vLLM worker RPC. With Kubernetes liveness probes, keep the probe ``timeoutSeconds`` at least this high. |
-
-<a id="rl-teacher-inference-model"></a>
-#### `teacher_inference.model`
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `teacher_inference.model.name` | str | `'Qwen/Qwen3-0.6B'` | HF model name or local path. |
-| `teacher_inference.model.trust_remote_code` | bool | `False` | Trust remote code. Forwarded to vLLM engine init. |
-| `teacher_inference.model.dtype` | 'auto' \| 'float16' \| 'bfloat16' \| 'float32' | `'auto'` | dtype for model weights and activations. ``auto`` uses FP16 for FP32/FP16 models and BF16 for BF16 models. Forwarded as ``--dtype``. |
-| `teacher_inference.model.max_model_len` | int \| None | `None` | Maximum model context length. If None, uses the model config's value. Forwarded as ``--max-model-len``. |
-| `teacher_inference.model.enforce_eager` | bool | `False` | Enforce eager mode. When False, PyTorch eager and cuda graphs run hybrid for maximum performance. Forwarded as ``--enforce-eager``. |
-| `teacher_inference.model.chat_template` | str \| None | `None` | Chat template — a Jinja2 template string or path to a template file. Forwarded as ``--chat-template``. If None, uses the model's default. |
-| `teacher_inference.model.tool_call_parser` | str \| None | `'auto'` | Tool-call parser. Forwarded as ``--tool-call-parser``. Set to ``"auto"`` (default) to detect from the model name, or ``None`` to disable. |
-| `teacher_inference.model.reasoning_parser` | str \| None | `'auto'` | Parser for extracting reasoning content from model outputs. Forwarded as ``--reasoning-parser``. Set to ``"auto"`` (default) to detect from the model name, or ``None`` to disable. |
-| `teacher_inference.model.rope_scaling` | dict[str, Any] \| str \| None | `None` | RoPE scaling configuration as a dict (e.g. ``{rope_type="yarn", factor=4.0, original_max_position_embeddings=32768}``). Forwarded as ``--rope-scaling``. |
-
-<a id="rl-teacher-inference-model-vlm"></a>
-##### `teacher_inference.model.vlm`
-
-VLM configuration. Setting this enables vision-language model support.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `teacher_inference.model.vlm.vision_encoder_attr` | str | *required* | Dotted attribute path to the vision encoder module (e.g. ``model.visual``). |
-| `teacher_inference.model.vlm.language_model_attr` | str | *required* | Dotted attribute path to the language model module (e.g. ``model.language_model``). |
-| `teacher_inference.model.vlm.freeze_vision_encoder` | bool | `True` | Freeze the vision encoder. When False, it is trainable and FSDP-sharded per-block. No effect with LoRA (LoRA freezes all non-adapter parameters). |
-
-<a id="rl-teacher-inference-parallel"></a>
-#### `teacher_inference.parallel`
-
-Multi-node and multi-GPU parallelism (TP, DP, PP).
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `teacher_inference.parallel.tp` | int | `1` | Tensor parallel size. Forwarded to vLLM as ``--tensor-parallel-size``. |
-| `teacher_inference.parallel.dp` | int | `1` | _≥1._ Data parallel size. Forwarded to vLLM as ``--data-parallel-size``. |
-
-<a id="rl-teacher-inference-weight-broadcast"></a>
-#### `teacher_inference.weight_broadcast`
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `teacher_inference.weight_broadcast.type` | 'nccl' \| 'filesystem' | `'filesystem'` | Weight broadcast transport. |
-
-<a id="rl-teacher-inference-kv-cache-offload"></a>
-#### `teacher_inference.kv_cache_offload`
-
-CPU KV cache offload for inference workers. Standard inference uses vLLM's ``OffloadingConnector``. Disaggregated P/D deployments combine it with NIXL through ``MultiConnector`` in the SLURM launcher.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `teacher_inference.kv_cache_offload.cpu_bytes` | int | `1000000000` | _>0._ CPU bytes available for KV cache offloading per worker. |
-
-<a id="rl-teacher-inference-slurm"></a>
-#### `teacher_inference.slurm`
-
-SLURM configuration. When set, the run is submitted as a SLURM job instead of running locally.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `teacher_inference.slurm.job_name` | str | `'prime-rl'` | SLURM job name. |
-| `teacher_inference.slurm.project_dir` | Path | `'.'` | Path to the project root, used to source .env, activate .venv, and run uv sync. |
-| `teacher_inference.slurm.template_path` | Path \| None | `None` | SLURM template file. If None, uses the bundled single-node or multi-node template. |
-| `teacher_inference.slurm.partition` | str | `'cluster'` | SLURM partition (#SBATCH --partition). |
-| `teacher_inference.slurm.nodelist` | str \| None | `None` | Comma-separated list of specific nodes to run on (#SBATCH --nodelist). |
-| `teacher_inference.slurm.exclude` | str \| None | `None` | Comma-separated list of nodes to exclude (#SBATCH --exclude). |
-| `teacher_inference.slurm.account` | str \| None | `None` | SLURM account to charge (#SBATCH --account). |
-| `teacher_inference.slurm.time` | str \| None | `None` | Maximum wall time, e.g. '24:00:00' or '7-00:00:00' (#SBATCH --time). |
-| `teacher_inference.slurm.pre_run_command` | str \| None | `None` | Shell command to run on the head node after cd, .env sourcing, and venv activation. Useful for cleanup like ``sudo pkill -f vllm``; wrap with ``srun bash -c '...'`` to fan out to all nodes. |
-
-<a id="rl-teacher-inference-experimental"></a>
-#### `teacher_inference.experimental`
-
-<a id="rl-teacher-inference-deployment"></a>
-#### `teacher_inference.deployment`
-
-Discriminated union — set `teacher_inference.deployment.type` to one of `single_node`, `multi_node`, `disaggregated` and provide the matching sub-fields.
-
-<a id="rl-teacher-inference-deployment-single-node"></a>
-##### `teacher_inference.deployment.type = "single_node"` (SingleNodeInferenceDeploymentConfig)
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `teacher_inference.deployment.gpus_per_node` | int | `8` | GPUs per node. |
-| `teacher_inference.deployment.type` | 'single_node' | `'single_node'` |  |
-
-<a id="rl-teacher-inference-deployment-multi-node"></a>
-##### `teacher_inference.deployment.type = "multi_node"` (MultiNodeInferenceDeploymentConfig)
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `teacher_inference.deployment.gpus_per_node` | int | `8` | GPUs per node. |
-| `teacher_inference.deployment.type` | 'multi_node' | `'multi_node'` |  |
-| `teacher_inference.deployment.num_nodes` | int | `2` | _≥1._ Inference nodes. |
-| `teacher_inference.deployment.router_port` | int | `8000` | Port for the vllm-router. |
-| `teacher_inference.deployment.backend_port` | int | `8100` | Port for vLLM backend instances. |
-| `teacher_inference.deployment.router_policy` | str | `'consistent_hash'` | vllm-router routing policy (e.g. ``consistent_hash``, ``round_robin``). |
-
-<a id="rl-teacher-inference-deployment-disaggregated"></a>
-##### `teacher_inference.deployment.type = "disaggregated"` (DisaggregatedInferenceDeploymentConfig)
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `teacher_inference.deployment.gpus_per_node` | int | `8` | GPUs per node. |
-| `teacher_inference.deployment.type` | 'disaggregated' | `'disaggregated'` |  |
-| `teacher_inference.deployment.num_prefill_nodes` | int | `1` | _≥1._ Total prefill nodes. |
-| `teacher_inference.deployment.num_decode_nodes` | int | `1` | _≥1._ Total decode nodes. |
-| `teacher_inference.deployment.num_prefill_replicas` | int | `1` | _≥1._ Independent prefill vLLM instances. Must evenly divide ``num_prefill_nodes``. |
-| `teacher_inference.deployment.num_decode_replicas` | int | `1` | _≥1._ Independent decode vLLM instances. Must evenly divide ``num_decode_nodes``. |
-| `teacher_inference.deployment.router_port` | int | `8000` | Port for the vllm-router on each replica. |
-| `teacher_inference.deployment.prefill_port` | int | `8100` | Port for prefill vLLM instances. |
-| `teacher_inference.deployment.decode_port` | int | `8200` | Port for decode vLLM instances. |
-| `teacher_inference.deployment.router_policy` | str | `'consistent_hash'` | vllm-router routing policy (e.g. ``consistent_hash``, ``round_robin``). |
-| `teacher_inference.deployment.prefill_env_overrides` | dict[str, str] | `{}` | Extra environment variables exported only on prefill nodes. |
-| `teacher_inference.deployment.decode_env_overrides` | dict[str, str] | `{}` | Extra environment variables exported only on decode nodes. |
-
 <a id="rl-log"></a>
 ### `log`
 
@@ -1314,7 +1170,6 @@ Discriminated union — set `deployment.type` to one of `single_node`, `multi_no
 | `deployment.type` | 'single_node' | `'single_node'` |  |
 | `deployment.num_train_gpus` | int | `1` | GPUs allocated to the trainer. |
 | `deployment.num_infer_gpus` | int | `1` | GPUs allocated to inference. |
-| `deployment.num_teacher_gpus` | int \| None | `None` | GPUs allocated to teacher inference (None disables the teacher server). |
 
 <a id="rl-deployment-multi-node"></a>
 #### `deployment.type = "multi_node"` (MultiNodeDeploymentConfig)
@@ -1326,7 +1181,6 @@ Discriminated union — set `deployment.type` to one of `single_node`, `multi_no
 | `deployment.num_train_nodes` | int | *required* | Training nodes. |
 | `deployment.num_infer_nodes` | int | *required* | _≥0._ Inference nodes per replica. Set to 0 to skip inference and orchestrator (requires fake data). |
 | `deployment.num_infer_replicas` | int | `1` | _≥1._ Independent inference replicas. Total inference nodes = ``num_infer_nodes * num_infer_replicas``. |
-| `deployment.num_teacher_nodes` | int \| None | `None` | Teacher inference nodes. |
 | `deployment.nodes_per_fsdp_group` | int \| None | `None` | Training nodes per FSDP island. Auto-sets ``trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group``. |
 
 <a id="sft"></a>
@@ -1416,6 +1270,16 @@ Activation offloading configuration. If None, activation offloading is disabled.
 |---|---|---|---|
 | `model.ac_offloading.pin_memory` | bool | `True` | Pin offloaded activations to CPU memory. |
 | `model.ac_offloading.max_inflight_activations` | int | `5` | _≥1._ Max activations kept in flight while offloading. More activations smooth overlap at the cost of GPU memory. |
+
+<a id="sft-model-index-cache"></a>
+#### `model.index_cache`
+
+DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `model.index_cache.topk_freq` | int | `1` | _≥1._ Recompute DSA top-k indices every N layers; intervening layers reuse the cached indices. ``1`` recomputes every layer (effectively no reuse). Mirrors vLLM's ``index_topk_freq`` HF override. |
+| `model.index_cache.topk_pattern` | str \| None | `None` | Optional per-layer schedule that overrides ``topk_freq``. ``'F'`` computes fresh indices for that layer; ``'S'`` reuses the previously cached indices. Length should match the number of decoder layers. |
 
 <a id="sft-model-lora"></a>
 #### `model.lora`
@@ -1844,6 +1708,16 @@ Activation offloading configuration. If None, activation offloading is disabled.
 | `model.ac_offloading.pin_memory` | bool | `True` | Pin offloaded activations to CPU memory. |
 | `model.ac_offloading.max_inflight_activations` | int | `5` | _≥1._ Max activations kept in flight while offloading. More activations smooth overlap at the cost of GPU memory. |
 
+<a id="trainer-model-index-cache"></a>
+#### `model.index_cache`
+
+DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `model.index_cache.topk_freq` | int | `1` | _≥1._ Recompute DSA top-k indices every N layers; intervening layers reuse the cached indices. ``1`` recomputes every layer (effectively no reuse). Mirrors vLLM's ``index_topk_freq`` HF override. |
+| `model.index_cache.topk_pattern` | str \| None | `None` | Optional per-layer schedule that overrides ``topk_freq``. ``'F'`` computes fresh indices for that layer; ``'S'`` reuses the previously cached indices. Length should match the number of decoder layers. |
+
 <a id="trainer-model-lora"></a>
 #### `model.lora`
 
@@ -2169,7 +2043,7 @@ _Defined in_ `prime_rl.configs.orchestrator.OrchestratorConfig`.
 | `token_batch_size` | int \| None | `None` | _≥1._ Tokens to train on per step (token-based batching). Set this OR ``batch_size``. |
 | `oversampling_factor` | float \| None | `None` | _>0._ Rollout-mode batching only. Multiplier used to derive ``max_inflight_rollouts`` from ``batch_size`` when ``max_inflight_rollouts`` is unset. Values below 1.0 intentionally cap in-flight rollout capacity below ``batch_size``. |
 | `max_inflight_rollouts` | int \| None | `None` | _≥1._ Maximum number of rollouts kept in-flight. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset). |
-| `rollouts_per_example` | int | `1` | _≥1._ Output sequences returned per example during training. |
+| `group_size` | int | `1` | _≥1._ Output sequences returned per example during training. |
 | `seq_len` | int | `2048` | Training sequence length. Shorter samples are padded; longer samples are truncated. |
 | `num_train_workers` | int | `1` | _≥1._ Training workers to use. |
 | `max_steps` | int \| None | `None` | Maximum training steps. If None, runs indefinitely. |
@@ -2228,7 +2102,7 @@ Per-run LoRA configuration. If None, LoRA is disabled.
 | `student.client.api_key_var` | str | `'VLLM_API_KEY'` | Environment variable name containing the API key, resolved via ``os.getenv``. Can be any string when the server is not protected by an API key; the same key is used for every URL. |
 | `student.client.headers` | dict[str, str] | `{}` | Static headers sent with every request. |
 | `student.client.headers_from_env` | dict[str, str] | `{}` | Maps HTTP header names to environment variable names; each entry is resolved via ``os.getenv`` and merged into request headers. e.g. ``{"X-Prime-Team-ID": "PRIME_TEAM_ID"}``. |
-| `student.client.extra_headers_from_state` | dict[str, str] | `{}` | Maps HTTP header names to rollout-state field names. The header value is read from the rollout state dict on every request. e.g. ``{"X-Session-ID": "example_id"}`` enables sticky routing at the inference router. |
+| `student.client.extra_headers_from_state` | dict[str, str] | `{}` | Maps HTTP header names to rollout-state field names. The header value is read from the rollout state dict on every request. e.g. ``{"X-Session-ID": "trajectory_id"}`` enables sticky routing at the inference router. |
 | `student.client.skip_model_check` | bool | `False` | Skip checking that the model is available in the inference pool. Useful for external APIs or keys that do not expose ``/models``. |
 | `student.client.dp_rank_count` | int | `1` | _≥1._ Number of data-parallel ranks behind each base URL. When > 1, each URL is expanded into ``dp_rank_count`` logical clients pinned via the ``X-data-parallel-rank`` header, so every request within a rollout hits the same DP engine and reuses KV cache. Auto-set from the inference config when using the RL entrypoint. |
 | `student.client.admin_base_url` | list[str] \| None | `None` | Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in disaggregated P/D deployments where the router must not handle admin traffic. |
@@ -2292,7 +2166,7 @@ Per-run LoRA configuration. If None, LoRA is disabled.
 | `teacher.client.api_key_var` | str | `'VLLM_API_KEY'` | Environment variable name containing the API key, resolved via ``os.getenv``. Can be any string when the server is not protected by an API key; the same key is used for every URL. |
 | `teacher.client.headers` | dict[str, str] | `{}` | Static headers sent with every request. |
 | `teacher.client.headers_from_env` | dict[str, str] | `{}` | Maps HTTP header names to environment variable names; each entry is resolved via ``os.getenv`` and merged into request headers. e.g. ``{"X-Prime-Team-ID": "PRIME_TEAM_ID"}``. |
-| `teacher.client.extra_headers_from_state` | dict[str, str] | `{}` | Maps HTTP header names to rollout-state field names. The header value is read from the rollout state dict on every request. e.g. ``{"X-Session-ID": "example_id"}`` enables sticky routing at the inference router. |
+| `teacher.client.extra_headers_from_state` | dict[str, str] | `{}` | Maps HTTP header names to rollout-state field names. The header value is read from the rollout state dict on every request. e.g. ``{"X-Session-ID": "trajectory_id"}`` enables sticky routing at the inference router. |
 | `teacher.client.skip_model_check` | bool | `False` | Skip checking that the model is available in the inference pool. Useful for external APIs or keys that do not expose ``/models``. |
 | `teacher.client.dp_rank_count` | int | `1` | _≥1._ Number of data-parallel ranks behind each base URL. When > 1, each URL is expanded into ``dp_rank_count`` logical clients pinned via the ``X-data-parallel-rank`` header, so every request within a rollout hits the same DP engine and reuses KV cache. Auto-set from the inference config when using the RL entrypoint. |
 | `teacher.client.admin_base_url` | list[str] \| None | `None` | Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in disaggregated P/D deployments where the router must not handle admin traffic. |
@@ -2371,9 +2245,9 @@ Evaluation configuration.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `eval.env` | list[EvalEnvConfig] | `[EvalEnvConfig(id='reverse-text', name=None, args={}, extra_env_kwargs={'max_total_completion_tokens': -1}, address=None, num_workers='auto', ratio=None, max_retries=3, max_total_completion_tokens=-1, timeout=None, state_columns=[], sampling=EvalSamplingConfig(temperature=None, repetition_penalty=None, top_p=None, top_k=None, min_p=None, max_completion_tokens=None, min_tokens=None, reasoning_effort=None, seed=None, extra_body={}), num_examples=-1, rollouts_per_example=1, interval=100)]` | Evaluation environments. |
+| `eval.env` | list[EvalEnvConfig] | `[EvalEnvConfig(id='reverse-text', name=None, args={}, extra_env_kwargs={'max_total_completion_tokens': -1}, address=None, num_workers='auto', ratio=None, max_retries=3, max_total_completion_tokens=-1, timeout=None, state_columns=[], sampling=EvalSamplingConfig(temperature=None, repetition_penalty=None, top_p=None, top_k=None, min_p=None, max_completion_tokens=None, min_tokens=None, reasoning_effort=None, seed=None, extra_body={}), num_examples=-1, group_size=1, interval=100)]` | Evaluation environments. |
 | `eval.num_examples` | int | `-1` | Default eval examples per environment. ``-1`` uses all. Can be overridden per env. |
-| `eval.rollouts_per_example` | int | `1` | _≥1._ Default rollouts per example. Can be overridden per env. |
+| `eval.group_size` | int | `1` | _≥1._ Default rollouts per example. Can be overridden per env. |
 | `eval.num_workers` | int \| 'auto' | `'auto'` | Default worker processes for env servers. Can be overridden per env. |
 | `eval.max_retries` | int | `3` | _≥0._ Default retries for failed rollouts. Can be overridden per env. |
 | `eval.interval` | int | `100` | _≥1._ Step interval at which to evaluate the model. |
