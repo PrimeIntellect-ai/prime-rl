@@ -71,6 +71,7 @@ curl http://localhost:8000/v1/chat/completions \
 - Config: `InferenceConfig` (`packages/prime-rl-configs/src/prime_rl/configs/inference.py`)
 - Entrypoint: `src/prime_rl/entrypoints/inference.py`
 - SLURM: single-node, multi-node, and disaggregated deployments
+- Router for multi-node/disaggregated: defaults to `vllm-router`. Opt into upstream llm-d with `deployment.router_backend = "llm-d"` (requires `bash scripts/install_llmd.sh` once; see [`docs/slurm.md`](../../../docs/slurm.md#router-backend)).
 
 ## Summary
 

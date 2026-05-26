@@ -288,7 +288,49 @@ tail -F {output_dir}/logs/inference/node_*.log
 
 # Multi-node inference: per-replica router logs
 tail -F {output_dir}/logs/inference/router_*.log
+
+# With router_backend = "llm-d": EPP + Envoy share the router log above.
+# Generated configs (endpoints.yaml, epp.yaml, envoy.yaml) live alongside:
+ls {output_dir}/logs/inference/llmd*/
 ```
+
+## Router backend
+
+Multi-node and disaggregated deployments expose a `router_backend` field on
+`deployment` (default `"vllm-router"`, the PrimeIntellect fork). Set it to
+`"llm-d"` to launch the upstream llm-d EPP + Envoy sidecar instead:
+
+```toml
+[deployment]
+type = "multi_node"  # or "disaggregated"
+router_backend = "llm-d"
+```
+
+This requires `epp` and `envoy` binaries on `third_party/llmd/bin/`. Install once with:
+
+```bash
+bash scripts/install_llmd.sh
+```
+
+The SLURM template prepends `$PROJECT_DIR/third_party/llmd/bin` to `PATH`
+automatically. The orchestrator-facing port (`router_port`, default 8000) and
+all admin endpoints (`admin_base_url`) keep their existing semantics — admin
+traffic still bypasses the router. The `router_policy` field is unused with
+`llm-d`; routing is governed by the EPP scoring profile (optimized-baseline
+for `multi_node`, pd-disaggregation for `disaggregated`).
+
+### Known limitation: renderer client unsupported
+
+The llm-d EPP's `openai-parser` only understands OpenAI-format requests
+(`POST /v1/chat/completions`, `POST /v1/completions`). prime-rl's
+**renderer/TITO** client posts to `/inference/v1/generate` with a raw-tokens
+schema (`prompt_token_ids`), which the EPP rejects with
+`BadRequest - invalid completions request: must have prompt field`.
+
+`router_backend = "llm-d"` is therefore restricted to MITO rollouts
+(`orchestrator.use_renderer = false`); the config validator raises a clear
+error otherwise. For renderer/VLM workloads, stay on `vllm-router` until
+upstream llm-d adds raw-tokens parsing support.
 
 For convenience, a tmux launcher sets up a session with all log streams:
 
