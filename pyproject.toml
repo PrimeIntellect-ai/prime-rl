@@ -176,7 +176,7 @@ environments = [
 override-dependencies = [
     "nvidia-cudnn-cu12>=9.15",
     "nvidia-cutlass-dsl>=4.4.1",
-    "protobuf>=5.29.6,<6.0.0",
+    "protobuf==6.33.6",
     "transformers>=5.1.0.dev0",
     "torch>=2.9.0",
     "openenv-core",
