@@ -179,7 +179,7 @@ class SFTConfig(BaseConfig):
     """Client-side renderer configuration. Only consumed when ``use_renderer=true``."""
 
     use_renderer: bool = False
-    """Tokenize SFT samples through the [`renderers`](https://github.com/PrimeIntellect-ai/renderers) library (single ``render()`` + ``message_indices`` mask) instead of the default ``build_incremental_token_mask`` path. Required for chat templates that render position-dependently (e.g. Qwen3, Qwen3.5)."""
+    """Tokenize SFT samples through the ``renderers`` library (single ``render()`` + ``message_indices`` mask) instead of the default ``build_incremental_token_mask`` path. Required for chat templates that render position-dependently (e.g. Qwen3, Qwen3.5)."""
 
     data: DataConfig = SFTDataConfig()
 

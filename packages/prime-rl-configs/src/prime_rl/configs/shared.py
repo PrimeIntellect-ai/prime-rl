@@ -89,10 +89,10 @@ class RendererConfig(BaseConfig):
     """Renderer used for chat-template tokenization. One of: ``auto`` (detect from tokenizer), ``qwen3``, ``qwen3_vl``, ``qwen3.5``, ``glm5``, ``glm4.5``, ``minimax-m2``, ``deepseek_v3``, ``kimi_k2``, ``kimi_k25``, ``nemotron3``, ``gpt_oss``, ``default``."""
 
     tool_parser: str | None = None
-    """Tool parser from [`renderers.parsers`](https://github.com/PrimeIntellect-ai/renderers). Only consumed by DefaultRenderer; model-specific renderers bake their own parsing in. Options: ``qwen3``, ``qwen3.5``, ``glm``, ``deepseek_v3``."""
+    """Tool parser from ``renderers.parsers``. Only consumed by DefaultRenderer; model-specific renderers bake their own parsing in. Options: ``qwen3``, ``qwen3.5``, ``glm``, ``deepseek_v3``."""
 
     reasoning_parser: str | None = None
-    """Reasoning parser from [`renderers.parsers`](https://github.com/PrimeIntellect-ai/renderers). Only consumed by DefaultRenderer. Options: ``think``."""
+    """Reasoning parser from ``renderers.parsers``. Only consumed by DefaultRenderer. Options: ``think``."""
 
     pool_size: int | None = Field(None, ge=1)
     """Number of renderer slots shared across concurrent rollouts. Bump for long multi-turn prompts where client-side jinja tokenization serializes."""
@@ -166,7 +166,7 @@ class LogConfig(BaseConfig):
     """Log level for the process. Defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``."""
 
     vf_level: str = Field(default_factory=lambda: os.environ.get("PRIME_VF_LOG_LEVEL", "info"))
-    """Log level for the [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) package. Defaults to ``$PRIME_VF_LOG_LEVEL`` if set, else ``info``."""
+    """Log level for the verifiers package. Defaults to ``$PRIME_VF_LOG_LEVEL`` if set, else ``info``."""
 
     json_logging: bool = False
     """Emit newline-delimited JSON logs for aggregation (Loki, Grafana, etc.)."""
