@@ -10,7 +10,12 @@ from prime_rl.configs.trainer import FakeDataLoaderConfig
 from prime_rl.trainer.rl.packer import BasePacker, setup_packer
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
-from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfig, setup_micro_batch_receiver
+from prime_rl.transport import (
+    MicroBatch,
+    MicroBatchReceiver,
+    TransportConfig,
+    setup_micro_batch_receiver,
+)
 
 
 class TensorMicroBatch(TypedDict):
@@ -45,6 +50,10 @@ class TensorMicroBatch(TypedDict):
     # Selects loss dispatch (rl/opd → default loss with mode-specific taus,
     # sft → sft loss). All samples in a micro batch share the same mode.
     training_mode: str
+
+    # Packer-derived metadata used for run-local debug exports.
+    run_id: str | None
+    run_step: int | None
 
 
 class FakeDataLoader:
@@ -120,6 +129,8 @@ class FakeDataLoader:
             "mm_kwargs": None,
             "mm_token_type_ids": None,
             "training_mode": "rl",
+            "run_id": None,
+            "run_step": None,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -148,6 +159,8 @@ class FakeDataLoader:
             "mm_kwargs": None,
             "mm_token_type_ids": None,
             "training_mode": "rl",
+            "run_id": None,
+            "run_step": None,
         }
 
 
@@ -243,6 +256,8 @@ class DataLoader:
             else None,
             routed_experts=routed_experts,
             training_mode=micro_batch.training_mode,
+            run_id=micro_batch.run_id,
+            run_step=micro_batch.run_step,
         )
 
 

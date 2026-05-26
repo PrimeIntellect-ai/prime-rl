@@ -89,3 +89,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # sft → sft loss). All samples packed into a micro batch share the same mode.
     training_mode: TrainingMode = "rl"
     rewards: list[float] | None = None
+
+    # Packer-derived metadata used for run-local token exports.
+    run_id: str | None = None
+    run_step: int | None = None

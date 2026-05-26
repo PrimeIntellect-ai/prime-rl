@@ -110,3 +110,6 @@ def test_packer_progress_updates_once_per_run(tmp_path: Path, monkeypatch: pytes
     sender = sender_holder["sender"]
     assert len(sender.sent) == 1
     assert len(sender.sent[0][0]) == 1
+    micro_batch = sender.sent[0][0][0]
+    assert micro_batch.run_id == "run_test123"
+    assert micro_batch.run_step == 0

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import torch.distributed as dist
 from torch import Tensor
 
 from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
@@ -15,8 +16,15 @@ SCHEMA_VERSION = 1
 
 
 class DisabledTokenExporter:
+    def __init__(self, participate_in_stable_marking: bool = False) -> None:
+        self.participate_in_stable_marking = participate_in_stable_marking
+
     def export(self, *args: Any, **kwargs: Any) -> None:
         return
+
+    def mark_stable(self) -> None:
+        if self.participate_in_stable_marking:
+            _mark_stable_dirs(set())
 
     def close(self) -> None:
         return
@@ -29,11 +37,12 @@ class TokenExporter:
         rank: int,
     ) -> None:
         self.rank = rank
+        self.root_output_dir = output_dir
         self.output_dir = output_dir / "token_exports"
-        self._file: Any | None = None
         self._closed = False
-        self._current_step: int | None = None
-        self._sequences_this_step = 0
+        self._initialized_files: set[tuple[str | None, int, int]] = set()
+        self._sequences_by_file: dict[tuple[str | None, int, int], int] = {}
+        self._pending_stable_dirs: set[Path] = set()
         atexit.register(self.close)
 
     def export(
@@ -45,11 +54,11 @@ class TokenExporter:
         response_lengths: list[int],
         loss_config: Any,
     ) -> None:
-        if self._current_step != step:
-            self._start_step(step)
-
         columns = _export_columns(micro_batch, model_output, loss_config)
         _check_lengths(columns)
+        run_id = micro_batch.get("run_id")
+        export_step = micro_batch.get("run_step") if micro_batch.get("run_step") is not None else step
+        file_key = (run_id, export_step, self.rank)
 
         start = 0
         for micro_sequence_idx, length in enumerate(response_lengths):
@@ -60,43 +69,55 @@ class TokenExporter:
                     {
                         "schema_version": SCHEMA_VERSION,
                         "step": step,
+                        "export_step": export_step,
                         "rank": self.rank,
                         "micro_step": micro_step,
                         "micro_sequence_idx": micro_sequence_idx,
-                        "export_sequence_idx": self._sequences_this_step,
+                        "export_sequence_idx": self._sequences_by_file.get(file_key, 0),
+                        "run_id": run_id,
                         "env_name": _first_non_empty(columns["env_names"][start:end]),
                         "training_mode": str(micro_batch["training_mode"]),
                         **_slice_columns(columns, start, end),
-                    }
+                    },
+                    run_id,
+                    export_step,
                 )
-                self._sequences_this_step += 1
+                self._sequences_by_file[file_key] = self._sequences_by_file.get(file_key, 0) + 1
             start = raw_end
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        if self._file is not None:
-            self._file.close()
-            self._file = None
 
-    def _start_step(self, step: int) -> None:
+    def mark_stable(self) -> None:
+        _mark_stable_dirs(self._pending_stable_dirs)
+        self._pending_stable_dirs.clear()
+
+    def _export_dir(self, export_step: int, run_id: str | None) -> Path:
+        if run_id is not None:
+            return self.root_output_dir / run_id / "token_exports" / f"step_{export_step}"
+        return self.output_dir / f"step_{export_step}"
+
+    def _export_file(self, export_step: int, run_id: str | None) -> Path:
         if self._closed:
             raise RuntimeError(f"Token exporter is closed for {self.output_dir}")
-        if self._file is not None:
-            self._file.close()
-        self._current_step = step
-        self._sequences_this_step = 0
-        step_dir = self.output_dir / f"step_{step}"
+
+        step_dir = self._export_dir(export_step, run_id)
         step_dir.mkdir(parents=True, exist_ok=True)
-        self._file = (step_dir / f"rank_{self.rank}.jsonl").open("w", encoding="utf-8")
+        return step_dir / f"rank_{self.rank}.jsonl"
 
-    def _write(self, record: dict[str, Any]) -> None:
+    def _write(self, record: dict[str, Any], run_id: str | None, export_step: int) -> None:
         if self._closed:
             raise RuntimeError(f"Token exporter is closed for {self.output_dir}")
-        if self._file is None:
-            raise RuntimeError("Token exporter has no active step file")
-        self._file.write(json.dumps(record, separators=(",", ":"), allow_nan=False) + "\n")
+
+        file_key = (run_id, export_step, self.rank)
+        mode = "a" if file_key in self._initialized_files else "w"
+        export_file = self._export_file(export_step, run_id)
+        with export_file.open(mode, encoding="utf-8") as file:
+            file.write(json.dumps(record, separators=(",", ":"), allow_nan=False) + "\n")
+        self._initialized_files.add(file_key)
+        self._pending_stable_dirs.add(export_file.parent)
 
 
 def setup_token_exporter(
@@ -106,11 +127,29 @@ def setup_token_exporter(
     if token_export_config is None:
         return DisabledTokenExporter()
     if parallel_dims.cp_enabled and parallel_dims.world_mesh["cp"].get_local_rank() != 0:
-        return DisabledTokenExporter()
+        return DisabledTokenExporter(participate_in_stable_marking=True)
 
     exporter = TokenExporter(config.output_dir, world.rank)
     logger.info(f"Writing token exports under {exporter.output_dir}")
     return exporter
+
+
+def _mark_stable_dirs(local_dirs: set[Path]) -> None:
+    local_dir_names = [str(path) for path in local_dirs]
+    if dist.is_available() and dist.is_initialized():
+        gathered_dir_names: list[list[str] | None] = [None] * dist.get_world_size()
+        dist.all_gather_object(gathered_dir_names, local_dir_names)
+        if dist.get_rank() != 0:
+            return
+        stable_dirs = {
+            Path(path) for rank_dir_names in gathered_dir_names if rank_dir_names is not None for path in rank_dir_names
+        }
+    else:
+        stable_dirs = set(local_dirs)
+
+    for stable_dir in sorted(stable_dirs):
+        stable_dir.mkdir(parents=True, exist_ok=True)
+        (stable_dir / "STABLE").touch()
 
 
 def _export_columns(

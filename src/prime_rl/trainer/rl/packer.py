@@ -111,6 +111,12 @@ class SinglePacker(BasePacker):
             idxs=[0] * len(batch.examples),
             num_loras=self.multi_run_manager.max_runs,
         )
+        if batch.run_idx is not None and batch.run_idx in self.multi_run_manager.idx_2_id:
+            run_id = self.multi_run_manager.idx_2_id[batch.run_idx]
+            for worker_batches in micro_batch_grid:
+                for micro_batch in worker_batches:
+                    micro_batch.run_id = run_id
+                    micro_batch.run_step = batch.step
 
         self.sender.send(micro_batch_grid)
 
@@ -300,10 +306,14 @@ class MultiPacker(BasePacker):
         # Group samples by run_idx - each microbatch must contain samples from only ONE run
         # because MultiLoRAGroupedExperts (MoE) only supports one adapter per microbatch
         samples_by_run: dict[int, list[TrainingSample]] = {}
+        steps_by_run: dict[int, int] = {}
         per_run_stats: dict[int, tuple[int, int]] = {}
         for run_idx, sample, step in selected_samples:
             if run_idx not in samples_by_run:
                 samples_by_run[run_idx] = []
+                steps_by_run[run_idx] = step
+            else:
+                assert steps_by_run[run_idx] == step, "Micro batches for a run must come from a single run step"
             samples_by_run[run_idx].append(sample)
 
             num_tokens = len(sample.prompt_ids) + len(sample.completion_ids)
@@ -328,8 +338,13 @@ class MultiPacker(BasePacker):
                 idxs=[run_idx] * len(run_samples),
                 num_loras=self.multi_run_manager.max_runs,
             )
+            run_id = self.multi_run_manager.idx_2_id[run_idx]
+            run_step = steps_by_run[run_idx]
             # Merge into combined grid
             for worker_idx, worker_batches in enumerate(run_micro_batch_grid):
+                for micro_batch in worker_batches:
+                    micro_batch.run_id = run_id
+                    micro_batch.run_step = run_step
                 all_micro_batches[worker_idx].extend(worker_batches)
 
         self.sender.send(all_micro_batches)
