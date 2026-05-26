@@ -8,7 +8,14 @@ from prime_rl.transport.filesystem import (
     FileSystemTrainingBatchReceiver,
     FileSystemTrainingBatchSender,
 )
-from prime_rl.transport.types import MicroBatch, RoutedExperts, TrainingBatch, TrainingSample
+from prime_rl.transport.types import (
+    MicroBatch,
+    MicroBatchMetadata,
+    MicroBatchPayload,
+    RoutedExperts,
+    TrainingBatch,
+    TrainingSample,
+)
 from prime_rl.transport.zmq import (
     ZMQMicroBatchReceiver,
     ZMQMicroBatchSender,
@@ -67,6 +74,8 @@ __all__ = [
     "TrainingSample",
     "TrainingBatch",
     "MicroBatch",
+    "MicroBatchMetadata",
+    "MicroBatchPayload",
     "RoutedExperts",
     "setup_training_batch_sender",
     "setup_training_batch_receiver",

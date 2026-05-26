@@ -11,6 +11,7 @@ from prime_rl.trainer.batch import prepare_batch
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.transport import (
     MicroBatch,
+    MicroBatchMetadata,
     MicroBatchSender,
     TrainingSample,
     TransportConfig,
@@ -111,8 +112,16 @@ class SinglePacker(BasePacker):
             idxs=[0] * len(batch.examples),
             num_loras=self.multi_run_manager.max_runs,
         )
+        metadata_grid = None
+        if batch.run_idx is not None and batch.run_idx in self.multi_run_manager.idx_2_id:
+            metadata = MicroBatchMetadata(
+                run_idx=batch.run_idx,
+                run_id=self.multi_run_manager.idx_2_id[batch.run_idx],
+                run_step=batch.step,
+            )
+            metadata_grid = [[metadata for _ in worker_batches] for worker_batches in micro_batch_grid]
 
-        self.sender.send(micro_batch_grid)
+        self.sender.send(micro_batch_grid, metadata_grid)
 
 
 class MultiPacker(BasePacker):
@@ -300,10 +309,14 @@ class MultiPacker(BasePacker):
         # Group samples by run_idx - each microbatch must contain samples from only ONE run
         # because MultiLoRAGroupedExperts (MoE) only supports one adapter per microbatch
         samples_by_run: dict[int, list[TrainingSample]] = {}
+        steps_by_run: dict[int, int] = {}
         per_run_stats: dict[int, tuple[int, int]] = {}
         for run_idx, sample, step in selected_samples:
             if run_idx not in samples_by_run:
                 samples_by_run[run_idx] = []
+                steps_by_run[run_idx] = step
+            else:
+                assert steps_by_run[run_idx] == step, "Micro batches for a run must come from a single run step"
             samples_by_run[run_idx].append(sample)
 
             num_tokens = len(sample.prompt_ids) + len(sample.completion_ids)
@@ -318,6 +331,7 @@ class MultiPacker(BasePacker):
 
         # Pack each run separately to ensure no mixing of runs in microbatches
         all_micro_batches: list[list[MicroBatch]] = [[] for _ in range(self.dp_world_size)]
+        all_metadata: list[list[MicroBatchMetadata]] = [[] for _ in range(self.dp_world_size)]
         for run_idx in sorted(samples_by_run.keys()):
             run_samples = samples_by_run[run_idx]
             run_micro_batch_grid = prepare_batch(
@@ -328,11 +342,17 @@ class MultiPacker(BasePacker):
                 idxs=[run_idx] * len(run_samples),
                 num_loras=self.multi_run_manager.max_runs,
             )
+            metadata = MicroBatchMetadata(
+                run_idx=run_idx,
+                run_id=self.multi_run_manager.idx_2_id[run_idx],
+                run_step=steps_by_run[run_idx],
+            )
             # Merge into combined grid
             for worker_idx, worker_batches in enumerate(run_micro_batch_grid):
                 all_micro_batches[worker_idx].extend(worker_batches)
+                all_metadata[worker_idx].extend([metadata] * len(worker_batches))
 
-        self.sender.send(all_micro_batches)
+        self.sender.send(all_micro_batches, all_metadata)
 
 
 def setup_packer(

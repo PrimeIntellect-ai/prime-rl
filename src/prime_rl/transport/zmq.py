@@ -6,7 +6,7 @@ import zmq
 from prime_rl.configs.shared import ZMQTransportConfig
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender, TrainingBatchReceiver, TrainingBatchSender
-from prime_rl.transport.types import MicroBatch, TrainingBatch
+from prime_rl.transport.types import MicroBatch, MicroBatchMetadata, MicroBatchPayload, TrainingBatch
 
 LOG_FREQ_SECONDS = 10
 
@@ -216,18 +216,32 @@ class ZMQMicroBatchSender(MicroBatchSender):
         self.logger.debug(f"All {self.data_world_size} ranks READY, starting PUB")
         self._ready = True
 
-    def send(self, micro_batch_grid: list[list[MicroBatch]]) -> None:
+    def send(
+        self,
+        micro_batch_grid: list[list[MicroBatch]],
+        metadata_grid: list[list[MicroBatchMetadata | None]] | None = None,
+    ) -> None:
         """Send grid of micro batches to the trainers."""
         assert len(micro_batch_grid) == self.data_world_size, "Number of micro batch lists must match data world size"
         for micro_batch_list in micro_batch_grid:
             assert len(micro_batch_list) == len(micro_batch_grid[0]), "All micro batch lists must have the same length"
+        if metadata_grid is not None:
+            assert len(metadata_grid) == self.data_world_size, "Number of metadata lists must match data world size"
+            for micro_batch_list, metadata_list in zip(micro_batch_grid, metadata_grid):
+                assert len(metadata_list) == len(micro_batch_list), (
+                    "Metadata list length must match micro batch list length"
+                )
 
         # Ensure no slow-joiner drops for step 0 (and generally at startup)
         self._wait_for_ready()
 
         self.logger.debug(f"Sending micro batch grid for step {self._current_step}")
         for data_rank in range(self.data_world_size):
-            buffer = self.encoder.encode(micro_batch_grid[data_rank])
+            payload = MicroBatchPayload(
+                micro_batches=micro_batch_grid[data_rank],
+                metadata=metadata_grid[data_rank] if metadata_grid is not None else None,
+            )
+            buffer = self.encoder.encode(payload)
             topic = self._topic_prefix + str(data_rank).encode("utf-8") + b"|"
             self.socket.send_multipart([topic, buffer], copy=False)
         self._current_step += 1
@@ -278,13 +292,15 @@ class ZMQMicroBatchReceiver(MicroBatchReceiver):
         events = dict(self.poller.poll(timeout=0))
         return self.socket in events
 
-    def receive(self) -> list[MicroBatch]:
+    def receive(self) -> MicroBatchPayload:
         """Receive a micro batch from the trainer."""
         _, payload = self.socket.recv_multipart(copy=False)
-        micro_batches: list[MicroBatch] = self.decoder.decode(payload)
-        self.logger.debug(f"Received {len(micro_batches)} micro batches for step {self._current_step}")
+        micro_batch_payload: MicroBatchPayload = self.decoder.decode(payload)
+        self.logger.debug(
+            f"Received {len(micro_batch_payload.micro_batches)} micro batches for step {self._current_step}"
+        )
         self._current_step += 1
-        return micro_batches
+        return micro_batch_payload
 
     def close(self) -> None:
         try:

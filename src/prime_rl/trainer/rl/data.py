@@ -10,7 +10,13 @@ from prime_rl.configs.trainer import FakeDataLoaderConfig
 from prime_rl.trainer.rl.packer import BasePacker, setup_packer
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
-from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfig, setup_micro_batch_receiver
+from prime_rl.transport import (
+    MicroBatch,
+    MicroBatchMetadata,
+    MicroBatchReceiver,
+    TransportConfig,
+    setup_micro_batch_receiver,
+)
 
 
 class TensorMicroBatch(TypedDict):
@@ -45,6 +51,9 @@ class TensorMicroBatch(TypedDict):
     # Selects loss dispatch (rl/opd → default loss with mode-specific taus,
     # sft → sft loss). All samples in a micro batch share the same mode.
     training_mode: str
+
+    # Packer-derived metadata used for run-local debug exports.
+    metadata: MicroBatchMetadata | None
 
 
 class FakeDataLoader:
@@ -120,6 +129,7 @@ class FakeDataLoader:
             "mm_kwargs": None,
             "mm_token_type_ids": None,
             "training_mode": "rl",
+            "metadata": None,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -148,6 +158,7 @@ class FakeDataLoader:
             "mm_kwargs": None,
             "mm_token_type_ids": None,
             "training_mode": "rl",
+            "metadata": None,
         }
 
 
@@ -193,10 +204,18 @@ class DataLoader:
         self.multi_run_manager.synchronize_state()
 
     def get_batch(self) -> list[TensorMicroBatch]:
-        micro_batches = self.receiver.receive()
-        return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+        payload = self.receiver.receive()
+        metadata = payload.metadata or [None] * len(payload.micro_batches)
+        if len(metadata) != len(payload.micro_batches):
+            raise ValueError(
+                f"Micro batch metadata length must match micro batch length "
+                f"({len(metadata)} != {len(payload.micro_batches)})"
+            )
+        return [self._micro_batch_to_tensor(mb, meta) for mb, meta in zip(payload.micro_batches, metadata)]
 
-    def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
+    def _micro_batch_to_tensor(
+        self, micro_batch: MicroBatch, metadata: MicroBatchMetadata | None = None
+    ) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
         if micro_batch.lora_num_tokens is None:
             micro_batch.lora_num_tokens = [0] * self.multi_run_manager.max_runs
@@ -243,6 +262,7 @@ class DataLoader:
             else None,
             routed_experts=routed_experts,
             training_mode=micro_batch.training_mode,
+            metadata=metadata,
         )
 
 

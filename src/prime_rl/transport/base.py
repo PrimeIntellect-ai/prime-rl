@@ -3,7 +3,7 @@ from pathlib import Path
 
 import msgspec
 
-from prime_rl.transport.types import MicroBatch, TrainingBatch
+from prime_rl.transport.types import MicroBatch, MicroBatchMetadata, MicroBatchPayload, TrainingBatch
 from prime_rl.utils.logger import get_logger
 
 
@@ -72,7 +72,11 @@ class MicroBatchSender(ABC):
         self.data_world_size = data_world_size
 
     @abstractmethod
-    def send(self, micro_batch_grid: list[list[MicroBatch]]) -> None:
+    def send(
+        self,
+        micro_batch_grid: list[list[MicroBatch]],
+        metadata_grid: list[list[MicroBatchMetadata | None]] | None = None,
+    ) -> None:
         """Send grid of micro batches to the trainers."""
         pass
 
@@ -86,7 +90,7 @@ class MicroBatchReceiver(ABC):
 
     def __init__(self, output_dir: Path, data_rank: int):
         self.logger = get_logger()
-        self.decoder = msgspec.msgpack.Decoder(type=list[MicroBatch])
+        self.decoder = msgspec.msgpack.Decoder(type=MicroBatchPayload)
         self.output_dir = output_dir
         self.data_rank = data_rank
 
@@ -101,7 +105,7 @@ class MicroBatchReceiver(ABC):
         pass
 
     @abstractmethod
-    def receive(self) -> list[MicroBatch]:
+    def receive(self) -> MicroBatchPayload:
         """Receive a micro batch from the trainer."""
         pass
 

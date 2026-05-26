@@ -4,7 +4,7 @@ from time import time
 
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender, TrainingBatchReceiver, TrainingBatchSender
-from prime_rl.transport.types import MicroBatch, TrainingBatch
+from prime_rl.transport.types import MicroBatch, MicroBatchMetadata, MicroBatchPayload, TrainingBatch
 from prime_rl.utils.pathing import get_rollout_dir, get_step_path, sync_wait_for_path
 
 BATCH_FILE_TMP_NAME = "train_rollouts.bin.tmp"
@@ -125,18 +125,32 @@ class FileSystemMicroBatchSender(MicroBatchSender):
         self.rollout_dir = get_rollout_dir(output_dir)
         self.current_step = current_step
 
-    def send(self, micro_batch_grid: list[list[MicroBatch]]) -> None:
+    def send(
+        self,
+        micro_batch_grid: list[list[MicroBatch]],
+        metadata_grid: list[list[MicroBatchMetadata | None]] | None = None,
+    ) -> None:
         """Send grid of micro batches to the trainers."""
         # Validation
         assert len(micro_batch_grid) == self.data_world_size, "Number of micro batch lists must match data world size"
         for micro_batch_list in micro_batch_grid:
             assert len(micro_batch_list) == len(micro_batch_grid[0]), "All micro batch lists must have the same length"
+        if metadata_grid is not None:
+            assert len(metadata_grid) == self.data_world_size, "Number of metadata lists must match data world size"
+            for micro_batch_list, metadata_list in zip(micro_batch_grid, metadata_grid):
+                assert len(metadata_list) == len(micro_batch_list), (
+                    "Metadata list length must match micro batch list length"
+                )
 
         step_path = get_step_path(self.rollout_dir, self.current_step)
         step_path.mkdir(parents=True, exist_ok=True)
 
         for data_rank in range(self.data_world_size):
-            buffer = self.encoder.encode(micro_batch_grid[data_rank])
+            payload = MicroBatchPayload(
+                micro_batches=micro_batch_grid[data_rank],
+                metadata=metadata_grid[data_rank] if metadata_grid is not None else None,
+            )
+            buffer = self.encoder.encode(payload)
             tmp_path = step_path / f"rank_{data_rank}.bin.tmp"
             with open(tmp_path, "wb") as f:
                 f.write(buffer)
@@ -163,9 +177,9 @@ class FileSystemMicroBatchReceiver(MicroBatchReceiver):
         """Check if the micro batch file exists."""
         return self._get_micro_batch_path().exists()
 
-    def receive(self) -> list[MicroBatch]:
+    def receive(self) -> MicroBatchPayload:
         """Read and return the micro batches from disk."""
         with open(self._get_micro_batch_path(), "rb") as f:
-            micro_batches: list[MicroBatch] = self.decoder.decode(f.read())
+            payload: MicroBatchPayload = self.decoder.decode(f.read())
         self.current_step += 1
-        return micro_batches
+        return payload
