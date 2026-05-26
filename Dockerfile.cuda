@@ -143,7 +143,7 @@ RUN rm /app/.venv/bin/python3.12 && ln -s /usr/local/bin/python /app/.venv/bin/p
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"
 ENV UCX_HOME=/opt/ucx
-ENV LD_LIBRARY_PATH="/opt/ucx/lib:/opt/ucx/lib/ucx:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="/opt/ucx/lib:/opt/ucx/lib/ucx${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
 # HuggingFace Hub timeouts (defaults are 10s which causes issues on slow networks)
 ENV HF_HUB_ETAG_TIMEOUT=500
