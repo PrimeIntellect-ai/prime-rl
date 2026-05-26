@@ -563,6 +563,9 @@ class RLConfig(BaseConfig):
             )
 
         total_infer_gpus = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
+        if "inference_metrics_roles" not in self.orchestrator.model_fields_set:
+            role_order = ["prefill"] * infer_deploy.num_prefill_nodes + ["decode"] * infer_deploy.num_decode_nodes
+            self.orchestrator.inference_metrics_roles = role_order * self.deployment.num_infer_replicas
         if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
             assert self.trainer.weight_broadcast.type == "nccl"
             self.trainer.weight_broadcast.inference_world_size = total_infer_gpus

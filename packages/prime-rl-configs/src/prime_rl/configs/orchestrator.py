@@ -618,6 +618,9 @@ class OrchestratorConfig(BaseConfig):
     collect_inference_metrics: bool = True
     """Collect inference-server metrics (requires wandb)."""
 
+    inference_metrics_roles: list[Literal["prefill", "decode"]] | None = None
+    """Role for each student admin client when collecting P/D inference metrics."""
+
     ckpt: CheckpointConfig | None = None
     """Checkpoint configuration."""
 
