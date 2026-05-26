@@ -614,12 +614,26 @@ class RLConfig(BaseConfig):
         also sets base_url - rl/opd rely on the ClientConfig default
         (``["http://localhost:8000/v1"]``) which already matches the auto-launched
         student vLLM at inference.server.port = 8000.
+
+        Exception: router_backend = 'llm-d' uses vLLM external load balancing
+        — one process per DP rank, each at its own port. The orchestrator
+        must NOT pin requests via the ``X-data-parallel-rank`` header (Envoy
+        load-balances freely across the per-rank endpoints; if the header
+        forced a specific rank, requests would hit the wrong vLLM and fail
+        the rank-range check). Force ``dp_rank_count = 1`` so the header is
+        omitted; the EPP's scoring + per-rank endpoints handle distribution.
         """
         if self.inference is None:
             return self
         client = self.orchestrator.student.client
+        rl_backend = getattr(self.deployment, "router_backend", "vllm-router")
+        inf_backend = getattr(self.inference.deployment, "router_backend", "vllm-router")
+        llmd_mode = "llm-d" in (rl_backend, inf_backend)
         if "dp_rank_count" not in client.model_fields_set:
-            client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
+            if llmd_mode:
+                client.dp_rank_count = 1
+            else:
+                client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
         if self.orchestrator.training_mode == "sft" and "base_url" not in client.model_fields_set:
             host = self.inference.server.host or "localhost"
             port = self.inference.server.port

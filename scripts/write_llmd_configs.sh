@@ -5,7 +5,7 @@
 # catches a router crash and tears the job down).
 #
 # Usage:
-#   scripts/write_llmd_configs.sh <mode> <router_port> <llmd_dir> [--decode-sidecar-port N] <backend_args…>
+#   scripts/write_llmd_configs.sh <mode> <router_port> <llmd_dir> [opts] <backend_args…>
 #     mode          : "multi_node" or "disaggregated"
 #     router_port   : Envoy listener port (the orchestrator's INFER_URL port)
 #     llmd_dir      : directory to write endpoints.yaml, epp.yaml, envoy.yaml
@@ -13,6 +13,13 @@
 #       on. EPP/Envoy route decode requests here; the sidecar then orchestrates
 #       remote prefill (via x-prefiller-host-port) and forwards decode to vLLM
 #       on the original port. Required for canonical llm-d P/D.
+#     --dp-size N : intra-node DP size. Mirrors vllm-router's
+#       --intra-node-data-parallel-size: we inject an Envoy Lua filter that
+#       consistent-hashes ``X-Session-ID`` to a rank in [0, N) and sets
+#       ``X-data-parallel-rank: <rank>`` on the upstream request. vLLM honors
+#       this header to dispatch to a specific DP rank (no per-rank ports
+#       needed — vLLM uses SO_REUSEPORT on the API server). Defaults to 1
+#       (no header mutation, all requests go to vLLM's default rank pool).
 #     backend_args… : the same args we'd pass to vllm-router:
 #       multi_node:     http://host1:port http://host2:port …
 #       disaggregated:  --prefill http://h:p … --decode http://h:p …
@@ -30,9 +37,11 @@ router_port=$2
 llmd_dir=$3
 shift 3
 decode_sidecar_port=""
+dp_size=1
 while [[ $# -gt 0 ]]; do
     case $1 in
         --decode-sidecar-port) decode_sidecar_port=$2; shift 2 ;;
+        --dp-size)             dp_size=$2;             shift 2 ;;
         *) break ;;
     esac
 done
@@ -52,25 +61,28 @@ mkdir -p "$llmd_dir"
             http://*)
                 hp=${tok#http://}
                 ip=$(getent hosts "${hp%%:*}" | awk '{print $1; exit}')
-                port=${hp##*:}
-                if [ "$mode" = "disaggregated" ]; then
-                    name="${role}-${i}"
-                    # Decode requests go via pd-sidecar; rewrite to sidecar port.
-                    if [ "$role" = "decode" ] && [ -n "$decode_sidecar_port" ]; then
-                        port=$decode_sidecar_port
+                base_port=${hp##*:}
+                if [ "$mode" = "disaggregated" ] && [ "$role" = "decode" ] && [ -n "$decode_sidecar_port" ]; then
+                    base_port=$decode_sidecar_port
+                fi
+                # External DP LB: one endpoint per local rank, consecutive ports.
+                for r in $(seq 0 $((dp_size - 1))); do
+                    port=$((base_port + r))
+                    if [ "$mode" = "disaggregated" ]; then
+                        name="${role}-${i}-rank-${r}"
+                    else
+                        name="backend-${i}-rank-${r}"
                     fi
-                else
-                    name="backend-${i}"
-                fi
-                echo "  - name: ${name}"
-                echo "    address: ${ip}"
-                echo "    port: \"${port}\""
-                echo "    namespace: default"
-                echo "    labels:"
-                echo "      llm-d.ai/pool: prime-rl"
-                if [ "$mode" = "disaggregated" ]; then
-                    echo "      llm-d.ai/role: ${role}"
-                fi
+                    echo "  - name: ${name}"
+                    echo "    address: ${ip}"
+                    echo "    port: \"${port}\""
+                    echo "    namespace: default"
+                    echo "    labels:"
+                    echo "      llm-d.ai/pool: prime-rl"
+                    if [ "$mode" = "disaggregated" ]; then
+                        echo "      llm-d.ai/role: ${role}"
+                    fi
+                done
                 i=$((i+1))
                 ;;
         esac

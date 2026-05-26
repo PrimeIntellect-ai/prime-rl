@@ -93,6 +93,16 @@ INFER_HOSTS=( ${HOSTNAMES[@]:0:$NUM_INFER_NODES} )
 INFER_URLS=""
 ADMIN_URLS=""
 ALL_ROUTER_ARGS=""
+{%- if router_backend == "llm-d" %}
+# llm-d uses vLLM external load balancing: one vLLM process per DP rank,
+# each on a consecutive port. ADMIN_URLS fans out per rank so the
+# orchestrator's NCCL broadcast init / pause / update_weights hit every rank.
+# Rank order: matches the global NCCL rank assignment used by init_broadcaster
+# (rank_offset = client_index, gpus_per_server = 1).
+export DP_PORT_STRIDE=$INFERENCE_DP_LOCAL
+{%- else %}
+export DP_PORT_STRIDE=1
+{%- endif %}
 {% if is_disaggregated -%}
 for ((r=0; r<NUM_INFER_REPLICAS; r++)); do
     replica_base=$((r * NODES_PER_INFER_REPLICA))
@@ -103,13 +113,17 @@ for ((r=0; r<NUM_INFER_REPLICAS; r++)); do
     for ((p=0; p<NUM_PREFILL_NODES; p++)); do
         node_idx=$((replica_base + p))
         host="${INFER_HOSTS[$node_idx]}"
-        ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:${PREFILL_PORT}/v1"
+        for ((k=0; k<DP_PORT_STRIDE; k++)); do
+            ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((PREFILL_PORT + k))/v1"
+        done
         REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS --prefill http://${host}:${PREFILL_PORT}"
     done
     for ((d=0; d<NUM_DECODE_NODES; d++)); do
         node_idx=$((replica_base + NUM_PREFILL_NODES + d))
         host="${INFER_HOSTS[$node_idx]}"
-        ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:${DECODE_PORT}/v1"
+        for ((k=0; k<DP_PORT_STRIDE; k++)); do
+            ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((DECODE_PORT + k))/v1"
+        done
         REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS --decode http://${host}:${DECODE_PORT}"
     done
     ALL_ROUTER_ARGS="${ALL_ROUTER_ARGS:+$ALL_ROUTER_ARGS|}$REPLICA_ROUTER_ARGS"
@@ -124,7 +138,9 @@ for ((r=0; r<NUM_INFER_REPLICAS; r++)); do
     for ((n=0; n<NODES_PER_INFER_REPLICA; n++)); do
         node_idx=$((head_idx + n))
         host="${INFER_HOSTS[$node_idx]}"
-        ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:${BACKEND_PORT}/v1"
+        for ((k=0; k<DP_PORT_STRIDE; k++)); do
+            ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((BACKEND_PORT + k))/v1"
+        done
         REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS http://${host}:${BACKEND_PORT}"
     done
     ALL_ROUTER_ARGS="${ALL_ROUTER_ARGS:+$ALL_ROUTER_ARGS|}$REPLICA_ROUTER_ARGS"
@@ -322,7 +338,8 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         export PATH="$PROJECT_DIR/third_party/llmd/bin:$PATH"
         LLMD_DIR="$OUTPUT_DIR/logs/inference/llmd_${REPLICA_IDX}"
         bash $PROJECT_DIR/scripts/write_llmd_configs.sh disaggregated $ROUTER_PORT "$LLMD_DIR" \
-            --decode-sidecar-port $DECODE_SIDECAR_PORT $REPLICA_ROUTER_ARGS
+            --decode-sidecar-port $DECODE_SIDECAR_PORT --dp-size $INFERENCE_DP_LOCAL \
+            $REPLICA_ROUTER_ARGS
 
         epp --pool-name prime-rl --pool-namespace slurm \
             --config-file "$LLMD_DIR/epp.yaml" \
@@ -367,6 +384,37 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     fi
 {%- endif %}
 
+{%- if router_backend == "llm-d" %}
+    # External DP load balancing (https://docs.vllm.ai/en/latest/serving/data_parallel_deployment/#external-load-balancing):
+    # one vLLM process per local DP rank, consecutive ports (PORT + k),
+    # one GPU each, unique NIXL side-channel port. Each rank uses its own
+    # global data_parallel_rank; data_parallel_hybrid_lb is intentionally
+    # omitted (it is the internal-LB knob and is incompatible with external).
+    # Override api-server-count + data-parallel-size-local to 1 per process —
+    # auto_setup_disaggregated would otherwise bump them.
+    if [ "$ROLE_RANK" -eq 0 ]; then
+        DP_ADDR=$LOCAL_IP
+    else
+        DP_ADDR=$HEAD_HOST
+    fi
+    for k in $(seq 0 $((INFERENCE_DP_LOCAL - 1))); do
+        RANK_PORT=$((PORT + k))
+        GLOBAL_RANK=$((START_RANK + k))
+        RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK, \"kv_transfer_config\": $KV_CFG_TO_USE, $ROLE_EXTRA}"
+        CUDA_VISIBLE_DEVICES=$k \
+        VLLM_NIXL_SIDE_CHANNEL_PORT=$((5600 + k)) \
+        uv run inference \
+            @ $CONFIG_DIR/inference.toml \
+            --server.host 0.0.0.0 \
+            --server.port $RANK_PORT \
+            --parallel.dp $DP \
+            --data-parallel-size-local 1 \
+            --api-server-count 1 \
+            --data-parallel-rpc-port $INFERENCE_DATA_PARALLEL_RPC_PORT \
+            --vllm-extra "$RANK_EXTRA" \
+            2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}_rank_${k}.log &
+    done
+{%- else %}
     uv run inference \
         @ $CONFIG_DIR/inference.toml \
         --server.host 0.0.0.0 \
@@ -375,6 +423,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         --data-parallel-rpc-port $INFERENCE_DATA_PARALLEL_RPC_PORT \
         --vllm-extra "$VLLM_EXTRA" \
         2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log &
+{%- endif %}
 {%- else -%}
     # Start router on the first node of each replica
     if [ "$RANK_IN_REPLICA" -eq 0 ]; then
@@ -385,7 +434,8 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         echo "Starting llm-d router (EPP+Envoy) on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG
         export PATH="$PROJECT_DIR/third_party/llmd/bin:$PATH"
         LLMD_DIR="$OUTPUT_DIR/logs/inference/llmd_${REPLICA_IDX}"
-        bash $PROJECT_DIR/scripts/write_llmd_configs.sh multi_node $ROUTER_PORT "$LLMD_DIR" $REPLICA_ROUTER_ARGS
+        bash $PROJECT_DIR/scripts/write_llmd_configs.sh multi_node $ROUTER_PORT "$LLMD_DIR" \
+            --dp-size $INFERENCE_DP_LOCAL $REPLICA_ROUTER_ARGS
 
         epp --pool-name prime-rl --pool-namespace slurm \
             --config-file "$LLMD_DIR/epp.yaml" \
@@ -408,6 +458,33 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 {%- endif %}
     fi
 
+{%- if router_backend == "llm-d" %}
+    read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
+    REPLICA_HEAD_HOST="${HOSTNAMES[$((REPLICA_IDX * NODES_PER_INFER_REPLICA))]}"
+    INFER_DP_START_RANK=$((RANK_IN_REPLICA * INFERENCE_DP_LOCAL))
+    TOTAL_DP=$((NODES_PER_INFER_REPLICA * INFERENCE_DP_LOCAL))
+    # External DP LB: one process per local rank; see PD branch for details.
+    for k in $(seq 0 $((INFERENCE_DP_LOCAL - 1))); do
+        RANK_PORT=$((BACKEND_PORT + k))
+        GLOBAL_RANK=$((INFER_DP_START_RANK + k))
+        if [ "$GLOBAL_RANK" -eq 0 ]; then
+            RANK_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\", \"data_parallel_rank\": $GLOBAL_RANK}"
+        else
+            RANK_EXTRA="{\"data_parallel_address\": \"$REPLICA_HEAD_HOST\", \"data_parallel_rank\": $GLOBAL_RANK}"
+        fi
+        CUDA_VISIBLE_DEVICES=$k \
+        uv run inference \
+            @ $CONFIG_DIR/inference.toml \
+            --server.host 0.0.0.0 \
+            --server.port $RANK_PORT \
+            --parallel.dp $TOTAL_DP \
+            --data-parallel-size-local 1 \
+            --api-server-count 1 \
+            --data-parallel-rpc-port $INFERENCE_DATA_PARALLEL_RPC_PORT \
+            --vllm-extra "$RANK_EXTRA" \
+            2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}_rank_${k}.log &
+    done
+{%- else %}
     if [ "$USE_DISTRIBUTED_EP" -eq 1 ]; then
         read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
         REPLICA_HEAD_HOST="${HOSTNAMES[$((REPLICA_IDX * NODES_PER_INFER_REPLICA))]}"
@@ -433,6 +510,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             --server.port $BACKEND_PORT \
             2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log &
     fi
+{%- endif %}
 {%- endif %}
 
 else
