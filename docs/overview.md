@@ -36,11 +36,11 @@ The `rl` entrypoint reads `examples/reverse_text/rl.toml`, splits it into per-pr
 
 ## Where to go next
 
-- **[Configuration](configuration.md)** — How TOML files, `@` composition, CLI overrides, and env vars combine; the precedence rules; worked examples.
-- **[Training](training.md)** — End-to-end recipes for RL, SFT, and evals; checkpointing and resume; observability (logs, W&B, Prometheus, platform monitoring); rules of thumb and common issues.
-- **[Scaling](scaling.md)** — Single-GPU through 1000+ GPU; FSDP / EP / CP knobs; SLURM; benchmarking.
-- **[Algorithms](algorithms.md)** — Async / off-policy semantics; the default loss; built-in and custom losses, advantages, and filters; multi-turn trajectory merging.
-- **[Advanced](advanced.md)** — Custom modeling (EP backends, custom impls); multimodal training; LoRA + multi-tenant training; disaggregated prefill/decode inference.
-- **[Development](development.md)** — Test suite (unit / integration / nightly), pre-commit hooks, adding a new model architecture.
-- **[Reference](reference.md)** — Auto-generated field-by-field reference for every entrypoint config.
+- **[Configuration](configuration.md)** — TOML composition, CLI overrides, dry-run.
+- **[Training](training.md)** — Launch and observe RL and SFT runs.
+- **[Scaling](scaling.md)** — Single-GPU through multi-node clusters via FSDP / EP / CP and SLURM.
+- **[Algorithms](algorithms.md)** — Async semantics, loss / advantage / filter plugins, trajectory merging.
+- **[Advanced](advanced.md)** — Custom modeling, multimodal, LoRA, multi-tenant, P/D inference.
+- **[Development](development.md)** — Test suite, pre-commit hooks, adding a new architecture.
+- **[Reference](reference.md)** — Auto-generated config field reference.
 - **[FAQs](faqs.md)** — Quick answers to recurring questions.
