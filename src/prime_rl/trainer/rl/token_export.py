@@ -11,7 +11,6 @@ from torch import Tensor
 
 from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
 from prime_rl.trainer.rl.loss import compute_importance_ratio_and_mismatch_kl
-from prime_rl.transport.types import MicroBatchMetadata
 
 SCHEMA_VERSION = 1
 
@@ -54,12 +53,12 @@ class TokenExporter:
         model_output: Mapping[str, Tensor],
         response_lengths: list[int],
         loss_config: Any,
-        metadata: MicroBatchMetadata | None = None,
     ) -> None:
         columns = _export_columns(micro_batch, model_output, loss_config)
         _check_lengths(columns)
-        export_step = metadata.run_step if metadata is not None and metadata.run_step is not None else step
-        file_key = (metadata.run_id if metadata is not None else None, export_step, self.rank)
+        run_id = micro_batch.get("run_id")
+        export_step = micro_batch.get("run_step") if micro_batch.get("run_step") is not None else step
+        file_key = (run_id, export_step, self.rank)
 
         start = 0
         for micro_sequence_idx, length in enumerate(response_lengths):
@@ -75,13 +74,12 @@ class TokenExporter:
                         "micro_step": micro_step,
                         "micro_sequence_idx": micro_sequence_idx,
                         "export_sequence_idx": self._sequences_by_file.get(file_key, 0),
-                        "run_idx": metadata.run_idx if metadata is not None else None,
-                        "run_id": metadata.run_id if metadata is not None else None,
+                        "run_id": run_id,
                         "env_name": _first_non_empty(columns["env_names"][start:end]),
                         "training_mode": str(micro_batch["training_mode"]),
                         **_slice_columns(columns, start, end),
                     },
-                    metadata,
+                    run_id,
                     export_step,
                 )
                 self._sequences_by_file[file_key] = self._sequences_by_file.get(file_key, 0) + 1
@@ -96,26 +94,26 @@ class TokenExporter:
         _mark_stable_dirs(self._pending_stable_dirs)
         self._pending_stable_dirs.clear()
 
-    def _export_dir(self, export_step: int, metadata: MicroBatchMetadata | None) -> Path:
-        if metadata is not None and metadata.run_id is not None:
-            return self.root_output_dir / metadata.run_id / "token_exports" / f"step_{export_step}"
+    def _export_dir(self, export_step: int, run_id: str | None) -> Path:
+        if run_id is not None:
+            return self.root_output_dir / run_id / "token_exports" / f"step_{export_step}"
         return self.output_dir / f"step_{export_step}"
 
-    def _export_file(self, export_step: int, metadata: MicroBatchMetadata | None) -> Path:
+    def _export_file(self, export_step: int, run_id: str | None) -> Path:
         if self._closed:
             raise RuntimeError(f"Token exporter is closed for {self.output_dir}")
 
-        step_dir = self._export_dir(export_step, metadata)
+        step_dir = self._export_dir(export_step, run_id)
         step_dir.mkdir(parents=True, exist_ok=True)
         return step_dir / f"rank_{self.rank}.jsonl"
 
-    def _write(self, record: dict[str, Any], metadata: MicroBatchMetadata | None, export_step: int) -> None:
+    def _write(self, record: dict[str, Any], run_id: str | None, export_step: int) -> None:
         if self._closed:
             raise RuntimeError(f"Token exporter is closed for {self.output_dir}")
 
-        file_key = (metadata.run_id if metadata is not None else None, export_step, self.rank)
+        file_key = (run_id, export_step, self.rank)
         mode = "a" if file_key in self._initialized_files else "w"
-        export_file = self._export_file(export_step, metadata)
+        export_file = self._export_file(export_step, run_id)
         with export_file.open(mode, encoding="utf-8") as file:
             file.write(json.dumps(record, separators=(",", ":"), allow_nan=False) + "\n")
         self._initialized_files.add(file_key)

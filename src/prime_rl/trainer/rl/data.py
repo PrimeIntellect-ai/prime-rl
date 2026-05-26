@@ -12,7 +12,6 @@ from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
 from prime_rl.transport import (
     MicroBatch,
-    MicroBatchMetadata,
     MicroBatchReceiver,
     TransportConfig,
     setup_micro_batch_receiver,
@@ -53,7 +52,8 @@ class TensorMicroBatch(TypedDict):
     training_mode: str
 
     # Packer-derived metadata used for run-local debug exports.
-    metadata: MicroBatchMetadata | None
+    run_id: str | None
+    run_step: int | None
 
 
 class FakeDataLoader:
@@ -129,7 +129,8 @@ class FakeDataLoader:
             "mm_kwargs": None,
             "mm_token_type_ids": None,
             "training_mode": "rl",
-            "metadata": None,
+            "run_id": None,
+            "run_step": None,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -158,7 +159,8 @@ class FakeDataLoader:
             "mm_kwargs": None,
             "mm_token_type_ids": None,
             "training_mode": "rl",
-            "metadata": None,
+            "run_id": None,
+            "run_step": None,
         }
 
 
@@ -205,17 +207,9 @@ class DataLoader:
 
     def get_batch(self) -> list[TensorMicroBatch]:
         payload = self.receiver.receive()
-        metadata = payload.metadata or [None] * len(payload.micro_batches)
-        if len(metadata) != len(payload.micro_batches):
-            raise ValueError(
-                f"Micro batch metadata length must match micro batch length "
-                f"({len(metadata)} != {len(payload.micro_batches)})"
-            )
-        return [self._micro_batch_to_tensor(mb, meta) for mb, meta in zip(payload.micro_batches, metadata)]
+        return [self._micro_batch_to_tensor(mb) for mb in payload.micro_batches]
 
-    def _micro_batch_to_tensor(
-        self, micro_batch: MicroBatch, metadata: MicroBatchMetadata | None = None
-    ) -> TensorMicroBatch:
+    def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
         if micro_batch.lora_num_tokens is None:
             micro_batch.lora_num_tokens = [0] * self.multi_run_manager.max_runs
@@ -262,7 +256,8 @@ class DataLoader:
             else None,
             routed_experts=routed_experts,
             training_mode=micro_batch.training_mode,
-            metadata=metadata,
+            run_id=micro_batch.run_id,
+            run_step=micro_batch.run_step,
         )
 
 

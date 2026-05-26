@@ -10,7 +10,6 @@ from prime_rl.transport.filesystem import (
 )
 from prime_rl.transport.types import (
     MicroBatch,
-    MicroBatchMetadata,
     MicroBatchPayload,
     RoutedExperts,
     TrainingBatch,
@@ -74,7 +73,6 @@ __all__ = [
     "TrainingSample",
     "TrainingBatch",
     "MicroBatch",
-    "MicroBatchMetadata",
     "MicroBatchPayload",
     "RoutedExperts",
     "setup_training_batch_sender",
