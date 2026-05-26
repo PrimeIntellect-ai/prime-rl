@@ -1,19 +1,21 @@
 """Async-pipelined RL orchestrator v2.
 
-``Orchestrator`` is a class with ``__init__(config)`` / ``start()`` / ``stop()``:
+``Orchestrator`` is the only class that holds the whole picture: it owns the
+shared state (policy, progress, ckpt, monitor) and drives the pipeline loop.
 
-- ``__init__`` does the cheap synchronous setup (logger, ckpt manager, monitor).
-- ``start()`` does the async setup (inference pools, env workers, weight
-  broadcast, resume), constructs the four long-lived components
-  (``WeightWatcher``, ``RolloutDispatcher``, ``TrainBatcher``, ``IntervalLogger``),
-  spawns each as an ``asyncio.Task``, and then blocks on the shared
-  ``stopped`` event. Components signal completion by setting that event (e.g.
-  the batcher sets it when ``progress.step >= max_steps``).
-- ``stop()`` just sets the shared event. Cleanup is driven from inside
-  ``start()`` after the event fires, so callers get one obvious path.
+Components are deliberately single-purpose and only know about the deps they
+need:
 
-No control-flow exceptions — components and the orchestrator coordinate via
-``orch.stopped: asyncio.Event``.
+- ``RolloutDispatcher`` schedules rollouts, emits ``Trajectory`` to a queue.
+- ``Batcher`` is a buffer with ``add / ready / pop``.
+- ``PostProcessor`` turns a popped batch into ``TrainingSample``\\ s and ships them.
+- ``MetricsBuilder`` builds the per-step W&B dict.
+- ``EvalCollector`` buckets eval Trajectories and flushes per-epoch metrics.
+- ``WeightWatcher`` advances ``Policy`` and notifies the dispatcher.
+- ``IntervalLogger`` writes dispatcher gauges + event-loop lag on a time axis.
+
+None of these hold a reference to the orchestrator. The orchestrator wires
+them in ``setup()`` and drives them from ``main_loop()``.
 """
 
 from __future__ import annotations
@@ -36,11 +38,14 @@ from prime_rl.orchestrator.patches import (
 )
 from prime_rl.orchestrator.utils import get_weight_dir, set_default_executor
 from prime_rl.orchestrator.vf_utils import intercept_vf_logging
-from prime_rl.orchestrator_v2.batcher import TrainBatcher
+from prime_rl.orchestrator_v2.batcher import Batcher
 from prime_rl.orchestrator_v2.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator_v2.dispatcher import RolloutDispatcher
+from prime_rl.orchestrator_v2.eval_collector import EvalCollector
 from prime_rl.orchestrator_v2.log_loop import IntervalLogger
+from prime_rl.orchestrator_v2.metrics import MetricsBuilder
 from prime_rl.orchestrator_v2.policy import Policy
+from prime_rl.orchestrator_v2.postprocessor import PostProcessor
 from prime_rl.orchestrator_v2.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import setup_training_batch_sender
@@ -70,9 +75,12 @@ SHUTDOWN_TIMEOUT_S = 300
 
 
 class Orchestrator:
-    """v2 orchestrator. Use ``await Orchestrator(config).start()`` to run; call
-    ``stop()`` from outside (or rely on the batcher to set ``stopped`` once
-    ``max_steps`` is reached). Cleanup happens at the tail of ``start()``."""
+    """v2 orchestrator. ``await Orchestrator(config).start()`` to run.
+
+    ``stop()`` from outside (or the orchestrator self-stops when the batcher
+    has driven ``progress.step`` to ``max_steps``). Cleanup happens at the tail
+    of ``start()``.
+    """
 
     def __init__(self, config: OrchestratorConfig) -> None:
         self.config = config
@@ -83,16 +91,15 @@ class Orchestrator:
         if config.bench:
             self.logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
 
-        # Cheap synchronous setup. Heavy async work (inference pools, env
-        # workers, weight broadcast, resume) happens in ``start()``.
+        # Cheap synchronous setup. Heavy async work happens in ``setup()``.
         self.progress = Progress()
         self.ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
-
-        # Stopped event — set by the batcher on max_steps, by ``stop()``, or
-        # by a fatal error. ``start()`` waits on it and then drives cleanup.
+        self.policy = Policy(version=0, model_name="")
         self.stopped = asyncio.Event()
 
-        # All component / shared-state references — populated in ``start()``.
+        # Populated during ``setup()``. Typing as ``Any`` keeps the class
+        # readable; the orchestrator's setup phase fills these in deterministic
+        # order so we never see ``None`` past ``setup()``.
         self.tokenizer = None
         self.renderer = None
         self.mm_token_type_ids_mapping: dict[int, int] | None = None
@@ -102,30 +109,29 @@ class Orchestrator:
         self.heart: Heartbeat | None = None
         self.usage_reporter: UsageReporter | None = None
         self.inference_metrics: InferenceMetricsCollector | None = None
-        self.pre_filters = []  # populated in start()
-        self.post_filters = []
         self.train_envs: TrainEnvs | None = None
         self.eval_envs: EvalEnvs | None = None
         self.sender = None
-        self.policy = Policy(version=0, model_name="")
         self.lora_name: str | None = None
         self.resume_step: int | None = None
 
+        # Components — built at the end of ``setup()``.
         self.dispatcher: RolloutDispatcher | None = None
-        self.batcher: TrainBatcher | None = None
+        self.batcher: Batcher | None = None
+        self.postprocessor: PostProcessor | None = None
+        self.metrics: MetricsBuilder | None = None
+        self.eval_collector: EvalCollector | None = None
         self.watcher: WeightWatcher | None = None
         self.log_loop: IntervalLogger | None = None
 
-        # Spawned tasks — owned by the orchestrator so ``stop()`` can cancel them.
-        self.tasks: list[asyncio.Task] = []
+        # Background tasks for components with their own main loop.
+        self.component_tasks: list[asyncio.Task] = []
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
     async def setup(self) -> None:
         """Async setup: install envs, load models/pools, prepare env workers,
-        resume from checkpoint, instantiate components. Idempotent-safe — the
-        orchestrator class is single-use, but the setup is broken into pieces
-        in case a caller wants to override one."""
+        resume from checkpoint, and construct components."""
         config = self.config
         set_default_executor()
 
@@ -189,8 +195,8 @@ class Orchestrator:
             self.usage_reporter = UsageReporter()
 
         # Filters.
-        self.pre_filters = setup_filters(config.pre_batch_filters, vocab_size=self.tokenizer.vocab_size)
-        self.post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size)
+        pre_filters = setup_filters(config.pre_batch_filters, vocab_size=self.tokenizer.vocab_size)
+        post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size)
 
         # Envs.
         self.logger.info("Loading training environments")
@@ -238,12 +244,10 @@ class Orchestrator:
             await self.teacher_inference.wait_for_ready(config.teacher.model.name)
             self.logger.success("Teacher inference pool ready")
 
-        # Inference metrics collector.
         if config.wandb is not None and config.collect_inference_metrics:
             self.inference_metrics = InferenceMetricsCollector(self.student_inference.admin_clients)
             await self.inference_metrics.start()
 
-        # Weight broadcast init.
         self.logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
         if config.weight_broadcast.type == "nccl":
             await init_nccl_broadcast(
@@ -255,7 +259,6 @@ class Orchestrator:
                 quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
             )
 
-        # Training-batch sender.
         self.logger.info(f"Initializing training batch sender ({config.rollout_transport})")
         self.sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
@@ -278,7 +281,7 @@ class Orchestrator:
         else:
             self.logger.info("Training from scratch")
 
-        # Wire components.
+        # ── Construct components — each gets only the deps it needs. ─────
         self.dispatcher = RolloutDispatcher(
             config=config,
             train_envs=self.train_envs,
@@ -288,98 +291,274 @@ class Orchestrator:
             policy=self.policy,
             resume_step=self.resume_step,
         )
-        self.batcher = TrainBatcher(self)
+        self.batcher = Batcher(
+            batch_size=config.batch_size,
+            token_batch_size=config.token_batch_size,
+            pre_filters=pre_filters,
+        )
+        self.postprocessor = PostProcessor(
+            config,
+            tokenizer=self.tokenizer,
+            renderer=self.renderer,
+            mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
+            sender=self.sender,
+            teacher_inference=self.teacher_inference,
+            post_filters=post_filters,
+        )
+        self.metrics = MetricsBuilder(config)
+        self.eval_collector = EvalCollector(
+            config,
+            monitor=self.monitor,
+            eval_envs=self.eval_envs,
+            post_filters=post_filters,
+        )
         self.watcher = WeightWatcher(
-            config=config,
+            config,
             policy=self.policy,
             student_inference=self.student_inference,
             observers=[self.dispatcher],
             lora_name=self.lora_name,
             ckpt_step=self.progress.step,
         )
-        self.log_loop = IntervalLogger(self)
+        self.log_loop = IntervalLogger(
+            dispatcher=self.dispatcher,
+            policy=self.policy,
+            interval=config.experimental.log_loop_interval,
+        )
 
     async def start(self) -> None:
         """Run the orchestrator until shutdown. Drives setup, spawns the
-        component tasks, blocks on ``self.stopped``, then cleans up."""
+        background tasks, runs the main loop in this task, then cleans up."""
         await self.setup()
         config = self.config
         self.logger.info(f"Starting orchestrator v2 loop (max_steps={config.max_steps or 'infinite'})")
         start_time = time.perf_counter()
 
-        # Spawn the component loops. Each component's ``start()`` is its main
-        # loop; we run them as concurrent tasks.
-        assert self.dispatcher and self.batcher and self.watcher and self.log_loop
-        self.tasks = [
+        # Spawn background loops (dispatcher schedules, watcher polls, log_loop
+        # emits gauges). The pipeline ``main_loop`` runs inline in this task.
+        assert self.dispatcher and self.watcher and self.log_loop
+        self.component_tasks = [
             asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
-            asyncio.create_task(self.batcher.start(), name="batcher"),
             asyncio.create_task(self.watcher.start(), name="watcher"),
             asyncio.create_task(self.log_loop.start(), name="log_loop"),
         ]
 
-        # Block until something sets ``stopped``: the batcher on max_steps,
-        # an external ``stop()`` call, or a future fatal-error path.
-        await self.stopped.wait()
-        self.logger.success(f"Orchestrator v2 step loop done in {time.perf_counter() - start_time:.1f}s")
-
-        # Final evals before shutdown. Uses the legacy ``EvalEnv.evaluate``
-        # directly — the dispatcher / batcher tasks are already winding down.
-        if self.eval_envs is not None and config.eval is not None:
-            self.logger.info("Running final evals")
-            await asyncio.gather(
-                *(
-                    eval_env.evaluate(
-                        model_name=self.student_inference.model_name,
-                        get_client=self.student_inference.get_eval_client,
-                        step=self.progress.step,
-                        cache_salt=str(self.progress.step),
-                    )
-                    for eval_env in self.eval_envs
-                ),
-                return_exceptions=True,
-            )
-
-        assert self.monitor is not None
-        self.monitor.save_final_summary()
-
-        if self.ckpt_manager is not None:
-            self.logger.info("Writing final v2 checkpoint")
-            self.ckpt_manager.save(self.progress, step=self.progress.step)
-
-        await self.shutdown()
-        self.logger.success("Orchestrator v2 finished.")
-
-        # Return free glibc heap pages to the OS so the launcher's exit isn't
-        # held by malloc bookkeeping from numpy/pandas allocations.
         try:
-            ctypes.CDLL("libc.so.6").malloc_trim(0)
-        except Exception as e:
-            get_logger().debug(f"malloc_trim(0) failed: {e}")
+            await self.main_loop()
+        finally:
+            self.logger.success(f"Orchestrator v2 step loop done in {time.perf_counter() - start_time:.1f}s")
+            if self.eval_envs is not None and config.eval is not None:
+                self.logger.info("Running final evals")
+                await asyncio.gather(
+                    *(
+                        eval_env.evaluate(
+                            model_name=self.student_inference.model_name,
+                            get_client=self.student_inference.get_eval_client,
+                            step=self.progress.step,
+                            cache_salt=str(self.progress.step),
+                        )
+                        for eval_env in self.eval_envs
+                    ),
+                    return_exceptions=True,
+                )
+            assert self.monitor is not None
+            self.monitor.save_final_summary()
+            if self.ckpt_manager is not None:
+                self.logger.info("Writing final v2 checkpoint")
+                self.ckpt_manager.save(self.progress, step=self.progress.step)
+            await self.shutdown()
+            self.logger.success("Orchestrator v2 finished.")
+            try:
+                ctypes.CDLL("libc.so.6").malloc_trim(0)
+            except Exception as e:
+                get_logger().debug(f"malloc_trim(0) failed: {e}")
 
     async def stop(self) -> None:
-        """Signal the run to wind down. ``start()`` will see this and drive cleanup."""
+        """Signal a graceful shutdown. ``start()`` will observe this on its
+        next ``main_loop`` iteration and drive the rest of the teardown."""
         self.stopped.set()
 
+    # ── pipeline ──────────────────────────────────────────────────────────
+
+    async def main_loop(self) -> None:
+        """The pipeline driver. Pulls Trajectories from the dispatcher, routes
+        train vs eval, and advances the step counter via ``process_one_step``."""
+        assert self.dispatcher and self.batcher and self.eval_collector
+        while not self.stopped.is_set():
+            try:
+                traj = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
+            except asyncio.TimeoutError:
+                continue
+
+            if traj.kind == "eval":
+                assert traj.eval_step is not None
+                expected = self.dispatcher.expected_eval_counts.get(traj.eval_step)
+                fired = self.dispatcher.eval_step_envs.get(traj.eval_step, set())
+                self.eval_collector.handle(traj, expected, fired)
+                # Mirror the legacy ``progress.last_eval_step`` on flush so the
+                # ckpt resumes don't redundantly re-eval at the resume step.
+                if self.eval_collector.last_flushed_step is not None:
+                    self.progress.last_eval_step = self.eval_collector.last_flushed_step
+                continue
+
+            self.batcher.add(traj.rollouts, policy_version=traj.policy_version)
+            while self.batcher.ready() and not self.stopped.is_set():
+                await self.process_one_step()
+
+    async def process_one_step(self) -> None:
+        """Drive one shipping step: ckpt save → max_steps check → pop → ship
+        → barrier wait → metrics + log → step++."""
+        assert self.batcher and self.postprocessor and self.metrics and self.dispatcher and self.monitor
+        config = self.config
+        step = self.progress.step
+
+        save_ckpt_time = await self.maybe_save_ckpt(step)
+
+        if config.max_steps is not None and step >= config.max_steps:
+            self.logger.success(f"Reached max_steps={config.max_steps}, signaling shutdown")
+            self.stopped.set()
+            return
+
+        self.logger.info(f"Starting orchestrator step {step}")
+        step_start = time.perf_counter()
+
+        batch = self.batcher.pop()
+        result = await self.postprocessor.process(batch, step)
+
+        if result.n_trainable == 0:
+            # No trainable signal in this batch — drop and try again. The
+            # dispatcher keeps emitting; eventually a batch will survive.
+            # Don't advance progress.step.
+            self.logger.warning(f"Step {step}: post-batch filters dropped all {len(batch)} rollouts. Trying again.")
+            return
+        if result.n_trainable / len(batch) <= 0.1:
+            self.logger.warning(
+                f"Only {result.n_trainable}/{len(batch)} rollouts in the batch are trainable "
+                f"({result.n_trainable / len(batch):.1%}) — consider reviewing task difficulty / filter config"
+            )
+
+        await self.wait_barrier(step)
+
+        # Per-step metrics.
+        step_time = time.perf_counter() - step_start
+        to_log = self.metrics.build(
+            step=step,
+            rollouts=batch,
+            result=result,
+            progress=self.progress,
+            dispatcher_gauges=self.dispatcher.gauges(),
+            dispatcher_drain=self.dispatcher.drain_metrics(),
+            step_time=step_time,
+            save_ckpt_time=save_ckpt_time,
+            pre_filter_seen=self.batcher.pre_filter_seen,
+            pre_filter_dropped=self.batcher.pre_filter_dropped,
+            pre_filter_dropped_by_name=dict(self.batcher.pre_filter_dropped_by_name),
+        )
+        self.monitor.log(to_log, step=step)
+        self.monitor.log_samples(batch, step=step)
+        self.monitor.log_distributions(
+            distributions={
+                "rewards": [r["reward"] for r in batch],
+                "advantages": [r["advantage"] for r in batch],
+            },
+            step=step,
+        )
+
+        if self.usage_reporter is not None:
+            run_id = os.getenv("RUN_ID", "")
+            if run_id:
+                self.usage_reporter.report_training_usage(
+                    run_id=run_id,
+                    step=step,
+                    tokens=result.num_prefill_tokens + result.num_decode_tokens,
+                )
+        if self.heart is not None:
+            self.heart.beat()
+
+        # Update progress totals + counters.
+        num_rollouts = len(batch)
+        num_unique_examples = len({(r["env_name"], r["example_id"]) for r in batch})
+        from prime_rl.orchestrator.vf_utils import get_seq_len
+
+        num_tokens = sum(get_seq_len(r) for r in batch)
+        self.progress.total_tokens += num_tokens
+        self.progress.total_samples += num_rollouts
+        self.progress.total_problems += num_unique_examples
+
+        reward_mean = float(sum(r["reward"] for r in batch) / max(num_rollouts, 1))
+        self.logger.success(
+            f"Step {step} | Time: {step_time:.2f}s | Reward: {reward_mean:.4f} | "
+            f"Seq. Length: {num_tokens / max(num_rollouts, 1):.1f} tokens/sample | "
+            f"Trainable: {result.n_trainable}/{num_rollouts} | "
+            f"Async Level: {step - self.policy.version} | "
+            f"Max. Off-Policy Level: {self.dispatcher.max_off_policy_level}"
+        )
+
+        self.batcher.reset_pre_filter_stats()
+        self.progress.step += 1
+
+    async def maybe_save_ckpt(self, step: int) -> float:
+        """Save the checkpoint if we're at an interval boundary. Returns the
+        elapsed time (0.0 if no save happened)."""
+        if self.ckpt_manager is None or self.config.ckpt is None or not self.config.ckpt.interval:
+            return 0.0
+        if step <= 0:
+            return 0.0
+        is_last_step = self.config.max_steps is not None and step == self.config.max_steps - 1
+        if is_last_step:
+            return 0.0
+        if step % self.config.ckpt.interval != 0:
+            return 0.0
+        self.logger.info(f"Saving v2 checkpoint at step {step}")
+        t = time.perf_counter()
+        await asyncio.to_thread(self.ckpt_manager.save, self.progress, step)
+        return time.perf_counter() - t
+
+    async def wait_barrier(self, step: int) -> None:
+        """Block until ``policy.version >= step - 1`` so the orchestrator stays
+        at most one step ahead of the trainer.
+
+        Cascades backpressure into the dispatcher via the bounded ``out_q``:
+        while we wait, the queue fills, the dispatcher stops handing out new
+        semaphore permits, and in-flight rollouts drain without new ones being
+        scheduled.
+        """
+        target_lag = 1
+        next_warn = 60.0
+        t0 = time.perf_counter()
+        while True:
+            lead = step - self.policy.version
+            if lead <= target_lag:
+                return
+            elapsed = time.perf_counter() - t0
+            if elapsed >= next_warn:
+                # Just a stall observation — no speculation about cause.
+                self.logger.info(
+                    f"Orchestrator waiting at async barrier ({int(elapsed)}s): step={step}, "
+                    f"policy.version={self.policy.version}, lead={lead} (max_async_level={target_lag})."
+                )
+                next_warn = elapsed + 60.0
+            await asyncio.sleep(0.1)
+
+    # ── shutdown ──────────────────────────────────────────────────────────
+
     async def shutdown(self) -> None:
-        """Bounded best-effort cleanup. Stops each component, drains the inflight
-        rollouts, and tears down env workers. Has a global timeout so a wedged
-        peer can't keep the process alive forever — training artifacts are
-        already persisted before this is reached."""
+        """Bounded best-effort cleanup. Has a global timeout so a wedged peer
+        can't keep the process alive forever — training artifacts are already
+        persisted before this is reached."""
 
         async def do_shutdown() -> None:
             if self.sender is not None:
                 self.sender.close()
-            if self.batcher is not None:
-                await self.batcher.stop()
             if self.dispatcher is not None:
                 await self.dispatcher.stop()
             if self.watcher is not None:
                 await self.watcher.stop()
             if self.log_loop is not None:
                 await self.log_loop.stop()
-            for task in self.tasks:
+            for task in self.component_tasks:
                 await safe_cancel(task)
-            self.tasks.clear()
+            self.component_tasks.clear()
             if self.inference_metrics is not None:
                 await self.inference_metrics.stop()
             if self.student_inference is not None:
@@ -415,12 +594,7 @@ async def run_orchestrator(config: OrchestratorConfig) -> None:
 
 
 async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer):
-    """Mirror of ``prime_rl.orchestrator.orchestrator.setup_student_inference_pool``.
-
-    Kept inline so the v2 orchestrator can evolve client setup independently
-    (e.g. drop the teacher_inference for sft mode in a follow-up) without
-    touching the legacy code path.
-    """
+    """Mirror of ``prime_rl.orchestrator.orchestrator.setup_student_inference_pool``."""
     from renderers.base import create_renderer
 
     client_config = config.student.client

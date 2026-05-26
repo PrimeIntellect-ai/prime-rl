@@ -89,7 +89,6 @@ envs = [
     "simpleqa-verified",
     "tau2-bench",
     "wiki-search",
-    "wikispeedia",
 ]
 disagg = [
     "deep-ep ; platform_machine == 'x86_64'",
@@ -160,7 +159,6 @@ members = [
     "deps/research-environments/environments/science_env",
     "deps/research-environments/environments/simpleqa_verified",
     "deps/research-environments/environments/tau2_bench",
-    "deps/research-environments/environments/wikispeedia",
 ]
 
 [tool.uv]
@@ -231,7 +229,6 @@ science-env = { workspace = true }
 simpleqa-verified = { workspace = true }
 tau2-bench = { workspace = true }
 wiki-search = { workspace = true }
-wikispeedia = { workspace = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
