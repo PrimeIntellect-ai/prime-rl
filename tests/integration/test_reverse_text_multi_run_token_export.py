@@ -134,8 +134,9 @@ def _start_orchestrator(name: str, output_dir: Path, wandb_project: str, wandb_n
 def _wait_for_export_files(run_dir: Path) -> list[Path]:
     deadline = time.time() + TIMEOUT
     while time.time() < deadline:
-        export_files = sorted((run_dir / "token_exports").glob("step_*/rank_*.jsonl"))
-        if export_files:
+        export_steps = sorted((run_dir / "token_exports").glob("step_*"))
+        export_files = [file for step_dir in export_steps for file in sorted(step_dir.glob("rank_*.jsonl"))]
+        if export_files and any((step_dir / "STABLE").exists() for step_dir in export_steps):
             return export_files
         time.sleep(1)
     raise TimeoutError(f"Timed out waiting for token exports under {run_dir}")
@@ -200,6 +201,10 @@ def test_token_exports_are_run_local(multi_run_token_export_result: dict[str, Pr
     for name, result in multi_run_token_export_result.items():
         assert result.returncode == 0
         run_id = f"run_{name}"
+        export_steps = sorted((output_dir / run_id / "token_exports").glob("step_*"))
+        stable_steps = [step_dir for step_dir in export_steps if (step_dir / "STABLE").exists()]
+        assert stable_steps, f"No stable token export steps found for {run_id}"
+
         export_files = sorted((output_dir / run_id / "token_exports").glob("step_*/rank_*.jsonl"))
         assert export_files, f"No token exports found for {run_id}"
 

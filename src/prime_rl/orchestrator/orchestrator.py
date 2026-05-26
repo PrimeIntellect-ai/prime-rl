@@ -39,6 +39,7 @@ from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.envs import EvalEnv, EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.filters import apply_filters, setup_filters
 from prime_rl.orchestrator.scheduler import Scheduler
+from prime_rl.orchestrator.token_export_metrics import collect_next_token_export_metrics
 from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
     get_weight_dir,
@@ -308,6 +309,7 @@ async def orchestrate(config: OrchestratorConfig):
     # Iterate over dataset in batches
     logger.info(f"Starting orchestrator loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
+    last_token_export_metrics_step_logged = progress.step - 1
 
     while True:
         # Check if this run has been evicted by the trainer
@@ -675,6 +677,15 @@ async def orchestrate(config: OrchestratorConfig):
             # W&B axis
             "step": progress.step,
         }
+
+        token_export_metrics = collect_next_token_export_metrics(
+            config.output_dir,
+            last_logged_step=last_token_export_metrics_step_logged,
+            max_step=progress.step - 1,
+        )
+        if token_export_metrics is not None:
+            to_log.update(token_export_metrics.metrics)
+            last_token_export_metrics_step_logged = token_export_metrics.step
 
         # Per-env metrics
         per_env_columns = [

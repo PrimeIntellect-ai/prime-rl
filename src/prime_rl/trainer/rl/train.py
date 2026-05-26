@@ -540,6 +540,8 @@ def train(config: TrainerConfig):
                 micro_step_message += f" | Routing Conf.: {tensors['routing_confidence'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
+        token_exporter.mark_stable()
+
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
         # across dp_cp so the final gradient is the true per-token mean over the global batch.
         for param in model.parameters():
