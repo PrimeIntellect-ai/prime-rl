@@ -55,16 +55,11 @@ Two pytest markers are declared in `pyproject.toml` (`addopts = "--strict-marker
 
 ## Pre-Commit Hooks
 
-Install the [pre-commit](https://pre-commit.com) hooks before your first commit so ruff and the docs-reference regenerator run automatically:
+Install the [pre-commit](https://pre-commit.com) hooks before your first commit so ruff check + format run on staged Python files automatically:
 
 ```bash
 uv run pre-commit install
 ```
-
-The configured hooks:
-
-- **`ruff` check + format** on staged Python files.
-- **`docs-reference`** — re-runs [`scripts/generate_docs_reference.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/scripts/generate_docs_reference.py) whenever a config class or the generator itself is staged. If `docs/reference.md` would change, the commit fails so you can re-stage the regenerated file.
 
 ## Adding a New Model
 

@@ -99,7 +99,7 @@ ep = 8                     # EP degree; must divide num_experts
 ep_comm_backend = "torch"  # or "deepep"
 ```
 
-`ep_comm_backend = "deepep"` uses DeepEP's custom dispatch/combine kernels for speed, with two extra knobs (`deepep_num_sms`, `deepep_token_chunk_size`) — tune on your hardware. See [Reference § `trainer.model`](reference.md#trainer-model) for the full set.
+`ep_comm_backend = "deepep"` uses DeepEP's custom dispatch/combine kernels for speed, with two extra knobs (`deepep_num_sms`, `deepep_token_chunk_size`) — tune on your hardware.
 
 ### Context Parallelism
 
@@ -206,7 +206,7 @@ uv run rl @ base_rl.toml @ my_slurm.toml --dry-run   # writes the sbatch script 
 
 ### `[deployment]` Block
 
-`[deployment]` is a discriminated union picked by `type` — `single_node` or `multi_node` for RL/SFT, with an extra disaggregated variant for inference. For the full `[slurm]` field reference, see [Reference § `slurm`](reference.md#rl-slurm). RL multi-node:
+`[deployment]` is a discriminated union picked by `type` — `single_node` or `multi_node` for RL/SFT, with an extra disaggregated variant for inference. RL multi-node:
 
 ```toml
 [deployment]

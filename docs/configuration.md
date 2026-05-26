@@ -139,7 +139,7 @@ lr = 1e-5
 mu = 0.95
 ```
 
-Omit `type` to keep the default variant. See [Reference](reference.md) for every variant's fields.
+Omit `type` to keep the default variant.
 
 ### Environments (`[[orchestrator.train.env]]`)
 
@@ -205,5 +205,3 @@ ls /tmp/reverse-dry/configs/
 ```
 
 Each per-process TOML reflects the final, validated configuration that the actual run would consume — exactly what each process sees when started standalone (`uv run trainer @ /tmp/reverse-dry/configs/trainer.toml`, etc.). This is the easiest way to bisect a misbehaving config: dry-run a known-good base, dry-run your overlay, diff the two.
-
-For the full set of fields, defaults, types, and constraints accepted by each entrypoint, jump to [Reference](reference.md).

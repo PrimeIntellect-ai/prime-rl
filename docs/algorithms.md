@@ -141,7 +141,6 @@ Two built-in **length penalties** can be layered on top of any advantage to disc
 - `[orchestrator.length_penalty] type = "tokens"` — penalizes long completions in tokens, with configurable target and slope.
 - `[orchestrator.length_penalty] type = "turns"` — penalizes long multi-turn rollouts by turn count.
 
-See [Reference § orchestrator length penalties](reference.md#orchestrator) for the fields.
 
 ### Custom Advantage
 

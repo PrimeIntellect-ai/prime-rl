@@ -9,13 +9,3 @@ repos:
     # Run the formatter.
     - id: ruff-format
       args: [ --config=pyproject.toml ]
-
-- repo: local
-  hooks:
-    - id: docs-reference
-      name: Regenerate docs/reference.md
-      language: system
-      entry: uv run python scripts/generate_docs_reference.py
-      pass_filenames: false
-      # Regenerate when any config class or the generator itself changes.
-      files: ^(packages/prime-rl-configs/src/prime_rl/configs/.*\.py|scripts/generate_docs_reference\.py)$
