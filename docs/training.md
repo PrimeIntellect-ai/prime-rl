@@ -42,7 +42,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 
 ### Launch
 
-The minimal RL run trains an SFT-warmed `Qwen3-0.6B` on the `reverse-text` task — the env is bundled with the `verifiers` submodule, so nothing else needs to be installed:
+The minimal RL run trains an SFT-warmed `Qwen3-0.6B` on the `reverse-text` task — the env is bundled with the [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) submodule, so nothing else needs to be installed:
 
 ```bash
 uv run rl @ examples/reverse_text/rl.toml
@@ -68,7 +68,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | Knob | What it does |
 |---|---|
 | `log.level` | Process log level for trainer + orchestrator (`info` default; falls back to `$PRIME_LOG_LEVEL`). Set per-process via `trainer.log.level` / `orchestrator.log.level`, or globally on the `rl` entrypoint to propagate to both. |
-| `orchestrator.log.vf_level` | Env-worker / verifiers log level (`info` default; `debug` is noisy but useful for env debugging). |
+| `orchestrator.log.vf_level` | Env-worker / [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) log level (`info` default; `debug` is noisy but useful for env debugging). |
 | `--wandb` (+ `--wandb.project`, `--wandb.name`) | Enable Weights & Biases logging. See [Weights & Biases](#weights--biases). |
 | `--orchestrator.prime-monitor` | Stream metrics to the Prime Intellect platform (Prime Lab). See [Platform monitoring](#platform-monitoring). |
 
@@ -139,7 +139,7 @@ Two accepted layouts:
 
 If both columns are present, `messages` takes precedence.
 
-**Tool definitions.** For tool-use SFT, add a `tools` column (OpenAI function-calling format) or `tool_defs` (verifiers rollout format). Each row's value can be either a list of dicts or a JSON-encoded string of a list — both are accepted, and `tool_defs` rows are auto-converted to OAI shape before being passed into the chat template's `tools=...` argument. The `chat_template_kwargs` column, if present, is forwarded verbatim into `apply_chat_template`.
+**Tool definitions.** For tool-use SFT, add a `tools` column (OpenAI function-calling format) or `tool_defs` ([`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) rollout format). Each row's value can be either a list of dicts or a JSON-encoded string of a list — both are accepted, and `tool_defs` rows are auto-converted to OAI shape before being passed into the chat template's `tools=...` argument. The `chat_template_kwargs` column, if present, is forwarded verbatim into `apply_chat_template`.
 
 **Position-dependent chat templates.** Multi-turn SFT under the default tokenization path (`build_incremental_token_mask`) requires that tokenizing the first _k_ turns of a conversation be a strict prefix of tokenizing all _n ≥ k_ turns. Qwen3's upstream template _violates_ this — it strips past `<think>` blocks across user turns, silently corrupting the loss mask. Two fixes:
 
