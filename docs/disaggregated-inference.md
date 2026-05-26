@@ -53,6 +53,39 @@ Other useful metrics on the `/metrics` endpoint:
 - `vllm:nixl_xfer_time_seconds` — NIXL KV transfer duration
 - `vllm:nixl_bytes_transferred` — bytes per KV transfer
 
+## Router backend (vllm-router vs llm-d)
+
+Disaggregated deployments default to `vllm-router` (PrimeIntellect fork). The
+upstream **llm-d** router is available as an opt-in alternative:
+
+```toml
+[deployment]
+type = "disaggregated"
+router_backend = "llm-d"
+```
+
+When enabled, the SLURM template launches `epp` + `envoy` instead of
+`vllm-router`. The EPP config uses the **pd-disaggregation** plugin profile
+lifted from [`llm-d/guides/pd-disaggregation/router/pd-disaggregation.values.yaml`](https://github.com/llm-d/llm-d/blob/main/guides/pd-disaggregation/router/pd-disaggregation.values.yaml):
+
+- Filter: `prefill-filter` / `decode-filter` (routes by `llm-d.ai/role` label).
+- Decider: `always-disagg-pd-decider` (every request hits both phases).
+- Prefill profile: prefix-cache (w=3), queue-scorer (w=2), kv-cache-utilization (w=2), max-score-picker.
+- Decode profile: active-request-scorer (w=2), prefix-cache (w=3), max-score-picker.
+
+Endpoints are registered via file-discovery (`watchFile: true`) — the SLURM
+template writes `{output_dir}/logs/inference/llmd_<replica>/endpoints.yaml`
+with `llm-d.ai/role: prefill|decode` labels. Prefill/decode wire transfer
+still happens via vLLM's NIXL connector; the router only picks the worker.
+
+Install the binaries once with `bash scripts/install_llmd.sh`.
+
+**Renderer/TITO unsupported.** llm-d's EPP openai-parser cannot parse
+`POST /inference/v1/generate` (prime-rl's raw-tokens schema), so
+`router_backend = "llm-d"` requires `orchestrator.use_renderer = false`.
+A config validator enforces this; for renderer/VLM workloads, keep
+`router_backend = "vllm-router"`.
+
 ## UCX 1.19
 
 NVSHMEM requires UCX >= 1.19 for multi-GPU CUDA support. Most clusters ship UCX 1.17 (via HPC-X), which causes `cuStreamCreate: invalid device context` errors during DeepEP internode dispatch.

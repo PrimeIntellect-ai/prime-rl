@@ -67,7 +67,8 @@ Logs are captured at the deployment level — the entrypoint redirects subproces
 ├── inference/
 │   ├── node_0.log               # per-node inference output
 │   ├── node_1.log
-│   └── router_0.log             # vllm-router per replica
+│   ├── router_0.log             # vllm-router or llm-d (EPP+Envoy) per replica
+│   └── llmd_0/                  # only with router_backend = "llm-d": generated EPP/Envoy/endpoints YAMLs
 └── envs/
     └── ...
 ```
