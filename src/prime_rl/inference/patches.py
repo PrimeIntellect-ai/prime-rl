@@ -39,7 +39,7 @@ def monkey_patch_return_routed_experts_with_nixl_connector():
         kv_transfer_config = config.kv_transfer_config
         return (
             config.model_config is not None
-            and config.model_config.enable_return_routed_experts
+            and getattr(config.model_config, "enable_return_routed_experts", False)
             and kv_transfer_config is not None
             and kv_transfer_config.kv_connector == "NixlConnector"
             and kv_transfer_config.is_kv_transfer_instance
