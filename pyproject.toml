@@ -66,6 +66,7 @@ envs = [
     "code-env",
     "color-codeword",
     "deepdive",
+    "general-agent",
     "gpqa",
     "hle",
     "ifeval",
@@ -118,6 +119,7 @@ dev = [
     "ipywidgets>=8.1.7",
     "pre-commit>=4.2.0",
     "pytest>=8.4.1",
+    "pytest-asyncio>=0.23",
     "ruff>=0.12.1",
 ]
 
@@ -137,6 +139,7 @@ members = [
     "deps/research-environments/environments/code_env",
     "deps/research-environments/environments/color_codeword",
     "deps/research-environments/environments/deepdive",
+    "deps/research-environments/environments/general_agent",
     "deps/research-environments/environments/gpqa",
     "deps/research-environments/environments/hle",
     "deps/research-environments/environments/ifeval",
@@ -203,6 +206,7 @@ alphabet-sort = { workspace = true }
 code-env = { workspace = true }
 color-codeword = { workspace = true }
 deepdive = { workspace = true }
+general-agent = { workspace = true }
 gpqa = { workspace = true }
 hle = { workspace = true }
 ifeval = { workspace = true }

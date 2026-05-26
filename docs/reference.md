@@ -95,7 +95,6 @@ _Defined in_ `prime_rl.configs.rl.RLConfig`.
 | `clean_output_dir` | `bool` | `False` | Delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming. |
 | `max_steps` | `int | None` | `None` | Shared maximum training steps. If None, falls back to the sub-config ``max_steps``. |
 | `seq_len` | `int | None` | `None` | Shared sequence length. Propagates to ``trainer.model.seq_len`` and ``orchestrator.seq_len`` only when those values were not explicitly set; explicit per-component values always win. |
-| `max_async_level` | `int | None` | `None` | Shared async level. If None, falls back to the sub-config ``max_async_level``. |
 | `bench` | `bool` | `False` | Benchmark mode. Sets trainer and orchestrator to benchmark mode and, when set, suffixes the W&B project with ``-bench``. |
 | `dry_run` | `bool` | `False` | Only validate and dump resolved configs, then exit early. |
 
@@ -107,7 +106,6 @@ _Defined in_ `prime_rl.configs.rl.RLConfig`.
 | `trainer.output_dir` | `Path` | `'outputs'` | Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node. |
 | `trainer.matmul_precision` | `'highest' | 'high' | 'medium'` | `'high'` | Precision for float32 matrix multiplications. ``highest`` is full FP32 (required on ROCm/AMD GPUs to avoid catastrophic precision loss in softmax over large vocabularies). ``high`` enables TF32 on NVIDIA GPUs for a speedup with minor precision tradeoff. See ``torch.set_float32_matmul_precision``. |
 | `trainer.max_steps` | `int | None` | `None` | Maximum number of training steps. If None, runs indefinitely. |
-| `trainer.max_async_level` | `int` | `1` | _≥0._ Maximum steps inference can be ahead of training (how off-policy inference can be). Higher values yield better throughput via async execution at the cost of policy lag; ``0`` is fully synchronous. |
 | `trainer.enable_router_replay` | `bool` | `False` | Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models. |
 | `trainer.memory_profiler_path` | `Path | None` | `None` | Path to write the memory profile to. |
 | `trainer.trace_path` | `Path | None` | `None` | Path to write the PyTorch profiler trace to. |
@@ -517,9 +515,7 @@ Discriminated union — set `trainer.rollout_transport.type` to one of `filesyst
 | `orchestrator.num_train_workers` | `int` | `1` | _≥1._ Training workers to use. |
 | `orchestrator.max_steps` | `int | None` | `None` | Maximum training steps. If None, runs indefinitely. |
 | `orchestrator.max_off_policy_steps` | `int` | `8` | _≥0._ Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise. |
-| `orchestrator.max_async_level` | `int` | `1` | _≥0._ Maximum steps inference can be ahead of training. ``0`` degenerates to synchronous on-policy RL; ``≥1`` overlaps training and inference. |
-| `orchestrator.strict_async_level` | `bool` | `False` | Strictly enforce ``max_async_level``. When True, the rollout policy is always exactly ``max_async_level`` steps ahead of training. When False, any policy within ``max_async_level`` steps is allowed (always uses the latest available policy). |
-| `orchestrator.bench` | `bool` | `False` | Benchmark mode. Sets ``max_steps`` to 5, ``max_async_level`` to ~∞, and disables W&B. |
+| `orchestrator.bench` | `bool` | `False` | Benchmark mode. Sets ``max_steps`` to 5 and disables W&B. |
 | `orchestrator.seed` | `int | None` | `42` | Random seed for the orchestrator. |
 | `orchestrator.use_renderer` | `bool` | `True` | Use the renderer-backed TITO client (client-side tokenization via the [`renderers`](https://github.com/PrimeIntellect-ai/renderers) package, served by ``/v1/generate``). When True, the ``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) applies. Default for both text-only and VLM rollouts; VLMs require it. False falls back to MITO (``openai_chat_completions``). |
 | `orchestrator.env_install_prerelease` | `bool` | `False` | Allow pre-release versions when installing environments (e.g. ``verifiers>=0.1.12.dev5``). Passes ``--prerelease`` to ``prime env install``. |
@@ -1724,7 +1720,6 @@ _Defined in_ `prime_rl.configs.trainer.TrainerConfig`.
 | `output_dir` | `Path` | `'outputs'` | Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node. |
 | `matmul_precision` | `'highest' | 'high' | 'medium'` | `'high'` | Precision for float32 matrix multiplications. ``highest`` is full FP32 (required on ROCm/AMD GPUs to avoid catastrophic precision loss in softmax over large vocabularies). ``high`` enables TF32 on NVIDIA GPUs for a speedup with minor precision tradeoff. See ``torch.set_float32_matmul_precision``. |
 | `max_steps` | `int | None` | `None` | Maximum number of training steps. If None, runs indefinitely. |
-| `max_async_level` | `int` | `1` | _≥0._ Maximum steps inference can be ahead of training (how off-policy inference can be). Higher values yield better throughput via async execution at the cost of policy lag; ``0`` is fully synchronous. |
 | `enable_router_replay` | `bool` | `False` | Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models. |
 | `memory_profiler_path` | `Path | None` | `None` | Path to write the memory profile to. |
 | `trace_path` | `Path | None` | `None` | Path to write the PyTorch profiler trace to. |
@@ -2138,9 +2133,7 @@ _Defined in_ `prime_rl.configs.orchestrator.OrchestratorConfig`.
 | `num_train_workers` | `int` | `1` | _≥1._ Training workers to use. |
 | `max_steps` | `int | None` | `None` | Maximum training steps. If None, runs indefinitely. |
 | `max_off_policy_steps` | `int` | `8` | _≥0._ Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise. |
-| `max_async_level` | `int` | `1` | _≥0._ Maximum steps inference can be ahead of training. ``0`` degenerates to synchronous on-policy RL; ``≥1`` overlaps training and inference. |
-| `strict_async_level` | `bool` | `False` | Strictly enforce ``max_async_level``. When True, the rollout policy is always exactly ``max_async_level`` steps ahead of training. When False, any policy within ``max_async_level`` steps is allowed (always uses the latest available policy). |
-| `bench` | `bool` | `False` | Benchmark mode. Sets ``max_steps`` to 5, ``max_async_level`` to ~∞, and disables W&B. |
+| `bench` | `bool` | `False` | Benchmark mode. Sets ``max_steps`` to 5 and disables W&B. |
 | `seed` | `int | None` | `42` | Random seed for the orchestrator. |
 | `use_renderer` | `bool` | `True` | Use the renderer-backed TITO client (client-side tokenization via the [`renderers`](https://github.com/PrimeIntellect-ai/renderers) package, served by ``/v1/generate``). When True, the ``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) applies. Default for both text-only and VLM rollouts; VLMs require it. False falls back to MITO (``openai_chat_completions``). |
 | `env_install_prerelease` | `bool` | `False` | Allow pre-release versions when installing environments (e.g. ``verifiers>=0.1.12.dev5``). Passes ``--prerelease`` to ``prime env install``. |

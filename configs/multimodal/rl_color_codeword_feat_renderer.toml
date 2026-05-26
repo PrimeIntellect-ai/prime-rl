@@ -19,10 +19,6 @@ max_steps = 20
 seq_len = 4096
 output_dir = "outputs/rl_color_codeword_feat_renderer"
 clean_output_dir = true
-# Pure on-policy: inference can't run ahead of training, so every rollout
-# is generated from the latest policy weights. Removes async/off-policy
-# drift as a confound for the sampler-vs-trainer KL.
-max_async_level = 0
 
 [model]
 name = "Qwen/Qwen3-VL-4B-Instruct"

@@ -535,9 +535,6 @@ class TrainerConfig(BaseConfig):
     max_steps: int | None = None
     """Maximum number of training steps. If None, runs indefinitely."""
 
-    max_async_level: int = Field(1, ge=0)
-    """Maximum steps inference can be ahead of training (how off-policy inference can be). Higher values yield better throughput via async execution at the cost of policy lag; ``0`` is fully synchronous."""
-
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
 
@@ -627,12 +624,6 @@ class TrainerConfig(BaseConfig):
                     "save_adapter_separately=True requires LoRA to be enabled. "
                     "Set model.lora or disable save_adapter_separately."
                 )
-        return self
-
-    @model_validator(mode="after")
-    def validate_weight_broadcast_type(self):
-        if self.weight_broadcast.type == "nccl" and self.max_async_level != 1:
-            raise ValueError("NCCL weight broadcast only works with async level 1")
         return self
 
     @model_validator(mode="after")
