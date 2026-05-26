@@ -11,22 +11,22 @@ Pipeline per ``Trajectory``:
   barrier (``policy.version >= step - 1``), then ``post_batch_filters`` →
   tokenize → ship → log → increment step.
 
-Raises ``Done`` once the step counter reaches ``max_steps`` so the orchestrator
-can unwind the ``TaskGroup`` cleanly.
+Signals ``orch.stopped`` when ``progress.step >= max_steps`` so the orchestrator
+can drive an orderly shutdown without using exceptions for control flow.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections import defaultdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 import verifiers as vf
 
-from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
+from prime_rl.orchestrator.filters import apply_filters
 from prime_rl.orchestrator.trajectories import (
     backfill_rollout_tokens,
     interleave_rollout,
@@ -34,74 +34,34 @@ from prime_rl.orchestrator.trajectories import (
 )
 from prime_rl.orchestrator.utils import compute_teacher_logprobs
 from prime_rl.orchestrator.vf_utils import get_seq_len, save_rollouts
-from prime_rl.orchestrator_v2.ckpt import CheckpointManager, Progress
-from prime_rl.orchestrator_v2.dispatcher import RolloutDispatcher, Trajectory
-from prime_rl.orchestrator_v2.policy import Policy
+from prime_rl.orchestrator_v2.dispatcher import Trajectory
 from prime_rl.transport import TrainingBatch, TrainingSample
-from prime_rl.transport.base import TrainingBatchSender
 from prime_rl.utils.async_utils import safe_cancel
-from prime_rl.utils.client import InferencePool
-from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_rollout_dir, get_step_path
-from prime_rl.utils.usage_reporter import UsageReporter
 
-# Maximum consecutive batches with zero trainable rollouts before crashing.
-# Mirrors the legacy orchestrator's MAX_EMPTY_BATCH_ATTEMPTS — guards against
-# pathological filter configs (e.g. zero_advantage enforce + uniform-reward env).
-MAX_EMPTY_BATCH_ATTEMPTS = 3
-
-
-class Done(Exception):
-    """Raised by the batcher once ``progress.step >= max_steps``. Caught by orchestrate()."""
+if TYPE_CHECKING:
+    from prime_rl.orchestrator_v2.orchestrator import Orchestrator
 
 
 class TrainBatcher:
-    """Single async task. ``await batcher.run()`` to start."""
+    """Single async task. ``await batcher.start()`` runs until ``stop()`` is called
+    (or the batcher signals ``orch.stopped`` after reaching ``max_steps``).
 
-    def __init__(
-        self,
-        config: OrchestratorConfig,
-        *,
-        dispatcher: RolloutDispatcher,
-        tokenizer,
-        renderer,
-        mm_token_type_ids_mapping: dict[int, int] | None,
-        student_inference: InferencePool,
-        teacher_inference: InferencePool | None,
-        pre_filters: list[RolloutFilter],
-        post_filters: list[RolloutFilter],
-        sender: TrainingBatchSender,
-        ckpt_manager: CheckpointManager | None,
-        progress: Progress,
-        policy: Policy,
-        heart: Heartbeat | None,
-        monitor,
-        usage_reporter: UsageReporter | None = None,
-    ) -> None:
+    Takes the parent ``Orchestrator`` instance for shared state — keeps the
+    constructor minimal instead of threading 15 individual wiring args through.
+    """
+
+    def __init__(self, orch: "Orchestrator") -> None:
+        self.orch = orch
+        self.config = orch.config
         self.logger = get_logger()
-        self.config = config
-        self.dispatcher = dispatcher
-        self.tokenizer = tokenizer
-        self.renderer = renderer
-        self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
-        self.student_inference = student_inference
-        self.teacher_inference = teacher_inference
-        self.pre_filters = pre_filters
-        self.post_filters = post_filters
-        self.sender = sender
-        self.ckpt_manager = ckpt_manager
-        self.progress = progress
-        self.policy = policy
-        self.heart = heart
-        self.monitor = monitor
-        self.usage_reporter = usage_reporter
 
         # Rollout-mode batching (``batch_size``) is the only mode that has a
-        # straight rollout count target. Token-mode batching shipss when token
+        # straight rollout count target. Token-mode batching ships when token
         # accumulation crosses a threshold.
-        self.batch_size: int | None = config.batch_size
-        self.token_batch_size: int | None = config.token_batch_size
+        self.batch_size: int | None = self.config.batch_size
+        self.token_batch_size: int | None = self.config.token_batch_size
 
         self.batch_buf: list[vf.RolloutOutput] = []
 
@@ -109,19 +69,16 @@ class TrainBatcher:
         # the dispatcher reports the expected count has come back. Mirrors the
         # legacy ``EvalEnv.evaluate`` per-env aggregation but driven by the
         # dispatcher's queue instead of an ``asyncio.gather`` over all examples.
-        self._eval_buf: dict[int, list[Trajectory]] = defaultdict(list)
-        self._eval_received: dict[int, int] = defaultdict(int)
-
-        # Empty-batch guard mirroring legacy MAX_EMPTY_BATCH_ATTEMPTS.
-        self._empty_batch_attempts = 0
+        self.eval_buf: dict[int, list[Trajectory]] = defaultdict(list)
+        self.eval_received: dict[int, int] = defaultdict(int)
 
         # Aggregated pre-filter detection counters reset each batch.
-        self._pre_filter_drops_total = 0
-        self._pre_filter_drops_by_name: dict[str, int] = defaultdict(int)
-        self._pre_filter_rollouts_seen = 0
+        self.pre_filter_drops_total = 0
+        self.pre_filter_drops_by_name: dict[str, int] = defaultdict(int)
+        self.pre_filter_rollouts_seen = 0
 
         # Per-batch step timing — measured between consecutive ships.
-        self._last_step_time = time.perf_counter()
+        self.last_step_time = time.perf_counter()
 
         # Cached last batch metrics for IntervalLogger to surface progress
         # gauges in between ship events.
@@ -129,58 +86,97 @@ class TrainBatcher:
         self.last_batch_reward: float | None = None
         self.last_batch_size_shipped: int | None = None
 
-        self._stopped = asyncio.Event()
-        self._task: asyncio.Task | None = None
+        self.stopped = asyncio.Event()
+        self.task: asyncio.Task | None = None
+
+    # ── convenience accessors so the body reads naturally ─────────────────
+
+    @property
+    def dispatcher(self):
+        return self.orch.dispatcher
+
+    @property
+    def policy(self):
+        return self.orch.policy
+
+    @property
+    def progress(self):
+        return self.orch.progress
+
+    @property
+    def monitor(self):
+        return self.orch.monitor
+
+    @property
+    def sender(self):
+        return self.orch.sender
+
+    @property
+    def tokenizer(self):
+        return self.orch.tokenizer
+
+    @property
+    def renderer(self):
+        return self.orch.renderer
+
+    @property
+    def mm_token_type_ids_mapping(self):
+        return self.orch.mm_token_type_ids_mapping
+
+    @property
+    def pre_filters(self):
+        return self.orch.pre_filters
+
+    @property
+    def post_filters(self):
+        return self.orch.post_filters
+
+    @property
+    def teacher_inference(self):
+        return self.orch.teacher_inference
+
+    @property
+    def ckpt_manager(self):
+        return self.orch.ckpt_manager
+
+    @property
+    def heart(self):
+        return self.orch.heart
+
+    @property
+    def usage_reporter(self):
+        return self.orch.usage_reporter
 
     # ── public lifecycle ──────────────────────────────────────────────────
 
-    async def run(self) -> None:
-        self._task = asyncio.current_task()
+    async def start(self) -> None:
+        """Main consumer loop. Runs until ``stop()`` or ``orch.stopped`` fires."""
+        self.task = asyncio.current_task()
         try:
-            while not self._stopped.is_set():
+            while not self.stopped.is_set() and not self.orch.stopped.is_set():
                 try:
                     traj = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
                 except asyncio.TimeoutError:
                     continue
                 if traj.kind == "eval":
-                    self._handle_eval(traj)
+                    self.handle_eval(traj)
                 else:
-                    await self._handle_train(traj)
+                    await self.handle_train(traj)
         except asyncio.CancelledError:
             return
 
     async def stop(self) -> None:
-        self._stopped.set()
-        if self._task is not None:
-            await safe_cancel(self._task)
-            self._task = None
-
-    async def drain_pending_eval(self, *, timeout: float = 300.0) -> None:
-        """Drain trajectories until every active eval epoch is flushed.
-
-        Used by the orchestrator at the end of ``run()`` to flush a final-eval
-        epoch triggered via ``dispatcher.force_eval``. Returns when the eval
-        aggregator has no pending epochs (or timeout).
-        """
-        t0 = time.perf_counter()
-        while (self._eval_buf or self.dispatcher.expected_eval_counts) and time.perf_counter() - t0 < timeout:
-            try:
-                traj = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=1.0)
-            except asyncio.TimeoutError:
-                continue
-            if traj.kind == "eval":
-                self._handle_eval(traj)
-            else:
-                # Train rollouts during final-eval drain go on the floor — we
-                # don't want a half-built batch to ship after force_eval.
-                continue
+        self.stopped.set()
+        if self.task is not None:
+            await safe_cancel(self.task)
+            self.task = None
 
     # ── train path ────────────────────────────────────────────────────────
 
-    async def _handle_train(self, traj: Trajectory) -> None:
+    async def handle_train(self, traj: Trajectory) -> None:
         """Apply ``pre_batch_filters`` (annotate+drop) and add survivors to ``batch_buf``."""
-        # ``apply_filters`` mutates each rollout in place. Reset ``policy_version``
-        # marker so post-batch metrics can reflect per-rollout off-policy lag.
+        # ``apply_filters`` mutates each rollout in place. Stamp ``policy_version``
+        # so post-batch metrics can reflect per-rollout off-policy lag.
         for r in traj.rollouts:
             r["_policy_version"] = traj.policy_version
 
@@ -188,12 +184,12 @@ class TrainBatcher:
             apply_filters(self.pre_filters, traj.rollouts)
         survivors: list[vf.RolloutOutput] = []
         for r in traj.rollouts:
-            self._pre_filter_rollouts_seen += 1
+            self.pre_filter_rollouts_seen += 1
             if r.get("is_filtered"):
-                self._pre_filter_drops_total += 1
+                self.pre_filter_drops_total += 1
                 for name, hit in (r.get("filters") or {}).items():
                     if hit:
-                        self._pre_filter_drops_by_name[name] += 1
+                        self.pre_filter_drops_by_name[name] += 1
                 continue
             # Clear filter annotations so post_batch_filters can re-annotate
             # cleanly with their own per-filter detection dict.
@@ -204,10 +200,12 @@ class TrainBatcher:
         if not survivors:
             return
         self.batch_buf.extend(survivors)
-        while self._batch_ready():
-            await self._ship_batch()
+        while self.batch_ready():
+            await self.ship_batch()
+            if self.orch.stopped.is_set():
+                return
 
-    def _batch_ready(self) -> bool:
+    def batch_ready(self) -> bool:
         """True when ``batch_buf`` has enough material to ship."""
         if self.batch_size is not None:
             return len(self.batch_buf) >= self.batch_size
@@ -215,7 +213,7 @@ class TrainBatcher:
             return sum(get_seq_len(r) for r in self.batch_buf) >= self.token_batch_size
         return False
 
-    def _pop_batch(self) -> list[vf.RolloutOutput]:
+    def pop_batch(self) -> list[vf.RolloutOutput]:
         if self.batch_size is not None:
             batch = self.batch_buf[: self.batch_size]
             self.batch_buf = self.batch_buf[self.batch_size :]
@@ -233,7 +231,7 @@ class TrainBatcher:
         self.batch_buf = self.batch_buf[cut:]
         return batch
 
-    async def _wait_barrier(self) -> None:
+    async def wait_barrier(self) -> None:
         """Block until ``policy.version >= step - 1`` so the orchestrator stays
         at most one step ahead of the trainer.
 
@@ -242,7 +240,7 @@ class TrainBatcher:
         semaphore stops handing out new permits, and in-flight rollouts drain
         without new ones being scheduled."""
         target_lag = 1
-        next_warn = 30.0
+        next_warn = 60.0
         t0 = time.perf_counter()
         while True:
             lead = self.progress.step - self.policy.version
@@ -250,15 +248,16 @@ class TrainBatcher:
                 return
             elapsed = time.perf_counter() - t0
             if elapsed >= next_warn:
-                self.logger.warning(
-                    f"Batcher stalled at async barrier for {int(elapsed)}s: step={self.progress.step}, "
-                    f"policy.version={self.policy.version}, lead={lead} (max_async_level={target_lag}). "
-                    "Trainer may be stuck."
+                # Just a stall observation — no speculation about cause.
+                # Most of the time inference is just faster than the trainer.
+                self.logger.info(
+                    f"Batcher waiting at async barrier ({int(elapsed)}s): step={self.progress.step}, "
+                    f"policy.version={self.policy.version}, lead={lead} (max_async_level={target_lag})."
                 )
                 next_warn = elapsed + 60.0
             await asyncio.sleep(0.1)
 
-    async def _ship_batch(self) -> None:
+    async def ship_batch(self) -> None:
         step = self.progress.step
 
         # Save checkpoint (matches legacy: at interval, not on first/last step).
@@ -277,15 +276,18 @@ class TrainBatcher:
             await asyncio.to_thread(self.ckpt_manager.save, self.progress, step)
             save_ckpt_time = time.perf_counter() - t
 
-        # Stop early if max_steps reached.
+        # Stop signal if max_steps reached — set the shared event so the
+        # orchestrator drives the shutdown. No exception-based control flow.
         if self.config.max_steps is not None and step >= self.config.max_steps:
-            raise Done()
+            self.logger.success(f"Reached max_steps={self.config.max_steps}, signaling shutdown")
+            self.orch.stopped.set()
+            return
 
         self.logger.info(f"Starting orchestrator step {step}")
         step_start = time.perf_counter()
 
         # Pop ``batch_size`` rollouts off the buffer.
-        train_rollouts = self._pop_batch()
+        train_rollouts = self.pop_batch()
         num_rollouts = len(train_rollouts)
         num_unique_examples = len({(r["env_name"], r["example_id"]) for r in train_rollouts})
 
@@ -302,23 +304,10 @@ class TrainBatcher:
         n_trainable = sum(1 for r in train_rollouts if not r.get("is_filtered"))
         trainable_ratio = n_trainable / num_rollouts if num_rollouts else 0.0
         if n_trainable == 0:
-            self._empty_batch_attempts += 1
-            self.logger.warning(
-                f"Attempt {self._empty_batch_attempts}/{MAX_EMPTY_BATCH_ATTEMPTS} at step {step}: "
-                f"post-batch filters dropped all {num_rollouts} rollouts."
-            )
-            if self._empty_batch_attempts >= MAX_EMPTY_BATCH_ATTEMPTS:
-                reason = (
-                    f"All {num_rollouts} rollouts were filtered out on "
-                    f"{MAX_EMPTY_BATCH_ATTEMPTS} consecutive batches at step {step}"
-                )
-                evicted_path = self.config.output_dir / "control" / "evicted.txt"
-                evicted_path.parent.mkdir(parents=True, exist_ok=True)
-                evicted_path.write_text(reason)
-                raise RuntimeError(reason)
-            return  # try again with the next batch
-        else:
-            self._empty_batch_attempts = 0
+            # Zero trainable signal — drop this batch entirely and loop. The
+            # dispatcher keeps feeding new rollouts; eventually one survives.
+            self.logger.warning(f"Step {step}: post-batch filters dropped all {num_rollouts} rollouts. Trying again.")
+            return
         if trainable_ratio <= 0.1:
             self.logger.warning(
                 f"Only {n_trainable}/{num_rollouts} rollouts in the batch are trainable "
@@ -326,7 +315,7 @@ class TrainBatcher:
             )
 
         # Now block until the trainer is no more than one step behind.
-        await self._wait_barrier()
+        await self.wait_barrier()
 
         # Persist rollouts to disk (fire-and-forget background thread).
         step_path = get_step_path(get_rollout_dir(self.config.output_dir), step)
@@ -420,7 +409,7 @@ class TrainBatcher:
 
         # Per-step metrics + W&B log.
         step_time = time.perf_counter() - step_start
-        to_log = self._build_metrics(
+        to_log = self.build_metrics(
             step=step,
             train_rollouts=train_rollouts,
             rollout_prefill_lens=rollout_prefill_lens,
@@ -447,8 +436,6 @@ class TrainBatcher:
         )
 
         if self.usage_reporter is not None:
-            import os
-
             run_id = os.getenv("RUN_ID", "")
             if run_id:
                 self.usage_reporter.report_training_usage(
@@ -466,9 +453,9 @@ class TrainBatcher:
         self.last_batch_size_shipped = len(train_examples)
 
         # Reset per-batch pre-filter counters.
-        self._pre_filter_drops_total = 0
-        self._pre_filter_drops_by_name.clear()
-        self._pre_filter_rollouts_seen = 0
+        self.pre_filter_drops_total = 0
+        self.pre_filter_drops_by_name.clear()
+        self.pre_filter_rollouts_seen = 0
 
         reward_mean = self.last_batch_reward
         message = (
@@ -482,7 +469,7 @@ class TrainBatcher:
 
         self.progress.step += 1
 
-    def _build_metrics(
+    def build_metrics(
         self,
         *,
         step: int,
@@ -503,7 +490,7 @@ class TrainBatcher:
         """Assemble the per-step W&B dict. Mirrors the legacy orchestrator's
         metric names byte-for-byte so existing dashboards / alerts keep working.
 
-        Per-rollout pandas aggregations were verbatim from the legacy
+        Per-rollout pandas aggregations are verbatim from the legacy
         orchestrator; only the source of `scheduler.get_metrics()` and
         `buffer.get_metrics()` is swapped for `dispatcher.{gauges, drain_metrics}`.
         """
@@ -524,7 +511,7 @@ class TrainBatcher:
         )
         metrics_df = pd.DataFrame([(r.get("metrics") or {}) for r in train_rollouts])
         filter_df = pd.DataFrame([(r.get("filters") or {}) for r in train_rollouts])
-        timing_df = self._timing_df(train_rollouts)
+        timing_df = self.timing_df(train_rollouts)
 
         def compute_solve_rates(df):
             reward_per_problem = df.groupby(["env_name", "example_id"]).reward.sum()
@@ -639,15 +626,15 @@ class TrainBatcher:
         to_log.update(self.dispatcher.drain_metrics())
 
         # Pre-batch filter detection rates (per batch).
-        if self._pre_filter_rollouts_seen > 0:
-            to_log["pre_filters/all/dropped_rate"] = self._pre_filter_drops_total / self._pre_filter_rollouts_seen
-            for name, count in self._pre_filter_drops_by_name.items():
-                to_log[f"pre_filters/all/{name}/rate"] = count / self._pre_filter_rollouts_seen
+        if self.pre_filter_rollouts_seen > 0:
+            to_log["pre_filters/all/dropped_rate"] = self.pre_filter_drops_total / self.pre_filter_rollouts_seen
+            for name, count in self.pre_filter_drops_by_name.items():
+                to_log[f"pre_filters/all/{name}/rate"] = count / self.pre_filter_rollouts_seen
 
         return to_log
 
     @staticmethod
-    def _timing_df(train_rollouts: list[vf.RolloutOutput]) -> pd.DataFrame:
+    def timing_df(train_rollouts: list[vf.RolloutOutput]) -> pd.DataFrame:
         return pd.DataFrame(
             [
                 {
@@ -665,7 +652,7 @@ class TrainBatcher:
 
     # ── eval path ─────────────────────────────────────────────────────────
 
-    def _handle_eval(self, traj: Trajectory) -> None:
+    def handle_eval(self, traj: Trajectory) -> None:
         """Bucket eval trajectories by ``eval_step`` and flush per-env metrics
         once the dispatcher's expected count comes back."""
         assert traj.eval_step is not None, "eval Trajectory missing eval_step"
@@ -673,22 +660,22 @@ class TrainBatcher:
         if self.post_filters:
             apply_filters(self.post_filters, traj.rollouts)
 
-        self._eval_buf[traj.eval_step].append(traj)
-        self._eval_received[traj.eval_step] += len(traj.rollouts)
+        self.eval_buf[traj.eval_step].append(traj)
+        self.eval_received[traj.eval_step] += len(traj.rollouts)
 
         expected = self.dispatcher.expected_eval_counts.get(traj.eval_step)
-        if expected is None or self._eval_received[traj.eval_step] < expected:
+        if expected is None or self.eval_received[traj.eval_step] < expected:
             return
 
-        trajs = self._eval_buf.pop(traj.eval_step)
-        received = self._eval_received.pop(traj.eval_step)
+        trajs = self.eval_buf.pop(traj.eval_step)
+        received = self.eval_received.pop(traj.eval_step)
         envs_fired = self.dispatcher.eval_step_envs.pop(traj.eval_step, set())
         self.dispatcher.expected_eval_counts.pop(traj.eval_step, None)
         self.progress.last_eval_step = traj.eval_step
 
-        self._flush_eval(traj.eval_step, trajs, expected, received, envs_fired)
+        self.flush_eval(traj.eval_step, trajs, expected, received, envs_fired)
 
-    def _flush_eval(
+    def flush_eval(
         self,
         eval_step: int,
         trajs: list[Trajectory],
@@ -715,13 +702,9 @@ class TrainBatcher:
             all_rewards.extend(rewards)
             all_lens.extend(lens)
 
-            # Per-env stats (mirror legacy ``EvalEnv.evaluate`` keys).
             no_response_rate = sum(1 for r in rollouts if not r.get("completion")) / len(rollouts)
             truncation_rate = sum(1 for r in rollouts if r.get("is_truncated")) / len(rollouts)
             prefix = f"eval/{env_name}"
-            # Pull eval env group_size for the ``avg@k`` key. The dispatcher's
-            # eval queue snapshots this per env, so we look it up via the eval
-            # envs container if available.
             group_size = 1
             if self.dispatcher.eval_envs is not None:
                 try:
@@ -738,7 +721,6 @@ class TrainBatcher:
             to_log[f"{prefix}/n_rollouts"] = float(len(rollouts))
             to_log[f"{prefix}/n_examples"] = float(len(env_trajs))
 
-            # Pass@k for binary rewards (same gate as legacy).
             unique_rewards = {float(r) for r in rewards}
             could_be_binary = unique_rewards.issubset({0.0, 1.0})
             if could_be_binary:
@@ -750,7 +732,6 @@ class TrainBatcher:
                         values = [d.get(k, 0.0) for d in pass_at_k_per_example]
                         to_log[f"{prefix}/{k}"] = float(sum(values) / len(values))
 
-            # Save eval rollouts to disk.
             step_path = get_step_path(get_rollout_dir(self.config.output_dir), eval_step)
             asyncio.create_task(
                 asyncio.to_thread(

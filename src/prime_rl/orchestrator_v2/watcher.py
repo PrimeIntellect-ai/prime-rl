@@ -45,7 +45,7 @@ class VersionObserver(Protocol):
 
 
 class WeightWatcher:
-    """Single async task. ``await run()`` to start the polling loop."""
+    """``await watcher.start()`` to drive the polling loop until ``stop()``."""
 
     def __init__(
         self,
@@ -72,29 +72,29 @@ class WeightWatcher:
         self.last_wait_for_ckpt_time: float = 0.0
         self.update_count: int = 0
 
-        self._task: asyncio.Task | None = None
-        self._update_lock = asyncio.Lock()
-        self._stopped = asyncio.Event()
+        self.task: asyncio.Task | None = None
+        self.update_lock = asyncio.Lock()
+        self.stopped = asyncio.Event()
 
-    async def run(self) -> None:
-        """Poll for new weights, apply them, notify observers."""
-        self._task = asyncio.current_task()
+    async def start(self) -> None:
+        """Main poll loop. Runs until ``stop()`` is called."""
+        self.task = asyncio.current_task()
         try:
-            while not self._stopped.is_set():
-                next_step = self._compute_next_ckpt_step()
+            while not self.stopped.is_set():
+                next_step = self.compute_next_ckpt_step()
                 if next_step > self.ckpt_step:
-                    await self._apply_policy_update(next_step)
+                    await self.apply_policy_update(next_step)
                 await asyncio.sleep(self.poll_interval)
         except asyncio.CancelledError:
             return
 
     async def stop(self) -> None:
-        self._stopped.set()
-        if self._task is not None:
-            await safe_cancel(self._task)
-            self._task = None
+        self.stopped.set()
+        if self.task is not None:
+            await safe_cancel(self.task)
+            self.task = None
 
-    def _compute_next_ckpt_step(self) -> int:
+    def compute_next_ckpt_step(self) -> int:
         """Same one-step-ahead semantics as the legacy scheduler.
 
         The orchestrator always runs one step ahead of the trainer, so we
@@ -107,8 +107,8 @@ class WeightWatcher:
         latest_ckpt_step = get_latest_ckpt_step(broadcast_dir) or 0
         return max(self.policy.version, latest_ckpt_step)
 
-    async def _apply_policy_update(self, next_step: int) -> None:
-        async with self._update_lock:
+    async def apply_policy_update(self, next_step: int) -> None:
+        async with self.update_lock:
             if next_step <= self.ckpt_step:
                 # Another caller raced us — bail without re-applying.
                 return

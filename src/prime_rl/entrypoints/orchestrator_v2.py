@@ -17,9 +17,9 @@ from prime_rl.utils.process import set_proc_title
 def main():
     set_proc_title("OrchestratorV2")
     config = cli(OrchestratorConfig)
-    from prime_rl.orchestrator_v2.orchestrator import orchestrate
+    from prime_rl.orchestrator_v2.orchestrator import run_orchestrator
 
-    asyncio.run(orchestrate(config))
+    asyncio.run(run_orchestrator(config))
 
 
 if __name__ == "__main__":
