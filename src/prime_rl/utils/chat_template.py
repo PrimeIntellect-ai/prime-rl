@@ -1,7 +1,13 @@
 import json
-from typing import Any
+from typing import Any, Callable
 
 from transformers.tokenization_utils import PreTrainedTokenizer
+
+
+class IncrementalTokenizationError(ValueError):
+    """Raised when incremental tokenization produces inconsistent token prefixes."""
+
+    pass
 
 
 def common_prefix_len(a: list[int], b: list[int]) -> int:
@@ -70,6 +76,15 @@ def strip_message_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]
     return [_strip(message) for message in messages]
 
 
+def should_add_generation_prompt(messages: list[dict[str, Any]], idx: int) -> bool:
+    role = messages[idx].get("role")
+    if role not in ("user", "tool"):
+        return False
+    if idx + 1 >= len(messages):
+        return False
+    return messages[idx + 1].get("role") == "assistant"
+
+
 def render_messages(
     tokenizer: PreTrainedTokenizer,
     messages: list[dict[str, Any]],
@@ -90,3 +105,46 @@ def render_messages(
         return list(result["input_ids"][0])
     kwargs["return_dict"] = False
     return list(tokenizer.apply_chat_template(messages, **kwargs))
+
+
+def build_incremental_token_mask(
+    tokenizer: PreTrainedTokenizer,
+    messages: list[dict[str, Any]],
+    *,
+    role_to_mask: Callable[[dict[str, Any]], bool],
+    tools: list[dict[str, Any]] | None = None,
+    chat_template_kwargs: dict[str, Any] | None = None,
+    collapse_consecutive_tool_messages: bool = False,
+    processor=None,
+) -> tuple[list[int], list[bool]]:
+    token_mask: list[bool] = []
+    prev_ids: list[int] = []
+    prev_len = 0
+
+    for idx, message in enumerate(messages):
+        role = message.get("role")
+        if collapse_consecutive_tool_messages and role == "tool" and idx + 1 < len(messages):
+            if messages[idx + 1].get("role") == "tool":
+                continue
+
+        cur_ids = render_messages(
+            tokenizer,
+            messages[: idx + 1],
+            tools=tools,
+            chat_template_kwargs=chat_template_kwargs,
+            add_generation_prompt=should_add_generation_prompt(messages, idx),
+            processor=processor,
+        )
+
+        if prev_ids != cur_ids[:prev_len]:
+            raise IncrementalTokenizationError(
+                f"Mismatch in incremental tokenization with chat template at message {idx} (role={role}). "
+                "This usually means the chat template is not stable under incremental application. "
+                "The sample will be skipped."
+            )
+
+        token_mask.extend([role_to_mask(message)] * (len(cur_ids) - prev_len))
+        prev_ids = cur_ids
+        prev_len = len(cur_ids)
+
+    return prev_ids, token_mask

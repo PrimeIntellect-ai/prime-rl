@@ -20,6 +20,7 @@ class TensorMicroBatch(TypedDict):
     input_ids: Int[Tensor, "batch seq"]
     position_ids: Int[Tensor, "batch seq"]
     advantages: Float[Tensor, "batch seq"]
+    rewards: Float[Tensor, "batch seq"] | None
     inference_logprobs: Float[Tensor, "batch seq"]
     teacher_logprobs: Float[Tensor, "batch seq"] | None
     loss_mask: Bool[Tensor, "batch seq"]
@@ -108,6 +109,7 @@ class FakeDataLoader:
             "input_ids": input_ids.unsqueeze(0),
             "position_ids": position_ids.unsqueeze(0),
             "advantages": advantages.unsqueeze(0),
+            "rewards": None,
             "inference_logprobs": inference_logprobs.unsqueeze(0),
             "teacher_logprobs": None,
             "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
@@ -135,6 +137,7 @@ class FakeDataLoader:
             ),
             "position_ids": torch.cat([torch.arange(self.seq_len)]).unsqueeze(0),
             "advantages": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
+            "rewards": None,
             "inference_logprobs": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
             "teacher_logprobs": None,
             "temperatures": torch.ones(self.seq_len).unsqueeze(0),
@@ -207,10 +210,25 @@ class DataLoader:
                 key: torch.frombuffer(bytearray(payload.data), dtype=_torch_dtype(payload.dtype)).reshape(payload.shape)
                 for key, payload in micro_batch.mm_kwargs.items()
             }
+        routed_experts = None
+        packed_routed_experts = micro_batch.routed_experts
+        if packed_routed_experts is not None:
+            routed_experts = (
+                torch.frombuffer(
+                    packed_routed_experts.data,
+                    dtype=_torch_dtype(packed_routed_experts.dtype),
+                )
+                .reshape(packed_routed_experts.shape)
+                .to(torch.int32)
+                .unsqueeze(0)
+            )
         return TensorMicroBatch(
             input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
             advantages=torch.tensor(micro_batch.advantages, dtype=torch.float).unsqueeze(0),
+            rewards=torch.tensor(micro_batch.rewards, dtype=torch.float).unsqueeze(0)
+            if micro_batch.rewards is not None
+            else None,
             inference_logprobs=torch.tensor(micro_batch.inference_logprobs, dtype=torch.float).unsqueeze(0),
             teacher_logprobs=torch.tensor(micro_batch.teacher_logprobs, dtype=torch.float).unsqueeze(0)
             if micro_batch.teacher_logprobs is not None
@@ -223,11 +241,7 @@ class DataLoader:
             mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)
             if micro_batch.mm_token_type_ids is not None
             else None,
-            routed_experts=torch.tensor(micro_batch.routed_experts, dtype=torch.int32).unsqueeze(
-                0
-            )  # [1, seq_len, layers, topk]
-            if micro_batch.routed_experts is not None
-            else None,
+            routed_experts=routed_experts,
             training_mode=micro_batch.training_mode,
         )
 

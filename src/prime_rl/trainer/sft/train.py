@@ -33,7 +33,6 @@ from prime_rl.trainer.model import (
     setup_processor,
     setup_tokenizer,
 )
-from renderers.base import create_renderer
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import load_sft_dataset, setup_dataloader, setup_dataset
@@ -161,32 +160,26 @@ def train(config: SFTConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
     processor = setup_processor(config.tokenizer)
-    renderer = create_renderer(tokenizer, renderer="auto")
-    # Attach the multimodal processor so the renderer can render image content
-    # parts. Renderers that don't ship a processor slot ignore this attribute.
-    if processor is not None and hasattr(renderer, "_processor"):
-        renderer._processor = processor
-    logger.info(f"Initialized renderer {type(renderer).__name__} (multimodal_processor={processor is not None})")
 
     renderer = None
-    if config.use_renderer:
-        renderer = create_renderer(
-            tokenizer,
-            renderer=config.renderer.name,
-            tool_parser=config.renderer.tool_parser,
-            reasoning_parser=config.renderer.reasoning_parser,
-            preserve_all_thinking=config.renderer.preserve_all_thinking,
-            preserve_thinking_between_tool_calls=config.renderer.preserve_thinking_between_tool_calls,
-        )
+    if config.renderer is not None:
+        renderer = create_renderer(tokenizer, config.renderer)
         if isinstance(renderer, DefaultRenderer):
             raise ValueError(
-                f"use_renderer=True for {config.tokenizer.name!r} resolved to DefaultRenderer. "
+                f"renderer set for {config.tokenizer.name!r} resolved to DefaultRenderer. "
                 "DefaultRenderer falls back to incremental apply_chat_template and does NOT "
-                "fix position-dependent chat templates — the bug use_renderer is meant to solve. "
+                "fix position-dependent chat templates — the bug the renderer client is meant to solve. "
                 "Either use a model with a hand-coded renderer (see renderers.base.MODEL_RENDERER_MAP), "
-                "set [renderer] name=<hand-coded renderer> explicitly, or set use_renderer=false."
+                "set [renderer] name=<hand-coded renderer> explicitly, or remove the [renderer] block."
             )
-        logger.info(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
+        # Attach the multimodal processor so the renderer can render image
+        # content parts. Renderers without a processor slot ignore this.
+        if processor is not None and hasattr(renderer, "_processor"):
+            renderer._processor = processor
+        logger.info(
+            f"Initialized {type(renderer).__name__} for {config.tokenizer.name} "
+            f"(multimodal_processor={processor is not None})"
+        )
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -312,8 +305,19 @@ def train(config: SFTConfig):
         total_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
         nan_count = torch.tensor(0, device="cuda")
 
+        # Variable-length packing yields different per-rank batch counts. Under FSDP
+        # every forward is a collective, so all ranks must agree on when to stop —
+        # otherwise the first rank to exit deadlocks the rest in the next all-gather.
+        # Sync per batch and exit together as soon as any rank exhausts its iterator.
+        data_iter = iter(data_iter)
+
         with torch.no_grad():
-            for micro_batch in data_iter:
+            while True:
+                micro_batch = next(data_iter, None)
+                has_data = torch.tensor(micro_batch is not None, dtype=torch.int32, device="cuda")
+                dist.all_reduce(has_data, op=dist.ReduceOp.MIN)
+                if has_data.item() == 0:
+                    break
                 loss_sum, token_count = compute_loss(micro_batch)
                 if not torch.isnan(loss_sum.detach()):
                     total_loss_sum += loss_sum.detach()
@@ -406,7 +410,15 @@ def train(config: SFTConfig):
         step_loss_sum = torch.tensor(0.0, device="cuda")
         step_local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
         nan_loss_count = torch.tensor(0, device="cuda")
-        batch_max_vio = torch.tensor(0.0, device="cuda")
+        is_moe_model = is_tt_moe_model(model)
+        moe_stats = (
+            {
+                "max_vio": torch.tensor(0.0, device="cuda"),
+                "routing_confidence": torch.tensor(0.0, device="cuda"),
+            }
+            if is_moe_model
+            else {}
+        )
         for micro_step in range(grad_accum_steps):
             micro_batch = next(dataiter)
 
@@ -431,12 +443,16 @@ def train(config: SFTConfig):
             with maybe_record_function("backward"):
                 scaled_loss.backward()
 
-            if is_tt_moe_model(model):
-                max_vio = get_load_balance_stats(model)["max_vio"]
-                if max_vio is not None:
-                    max_vio = max_vio.mean()
-                    dist.all_reduce(max_vio, op=dist.ReduceOp.MAX)
-                    batch_max_vio += max_vio / grad_accum_steps
+            if is_moe_model:
+                for name, values in get_load_balance_stats(model).items():
+                    if values is None:
+                        continue
+                    value = values.mean()
+                    reduce_op = dist.ReduceOp.MAX if name == "max_vio" else dist.ReduceOp.SUM
+                    dist.all_reduce(value, op=reduce_op)
+                    if reduce_op == dist.ReduceOp.SUM:
+                        value /= dist.get_world_size()
+                    moe_stats[name] += value / grad_accum_steps
 
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
@@ -514,8 +530,11 @@ def train(config: SFTConfig):
         if grad_norm is not None:
             step_message += f" | Grad. Norm: {grad_norm:.4f}"
         step_message += f" | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
-        if is_tt_moe_model(model) and batch_max_vio.item() > 0:
-            step_message += f" | Max Vio: {batch_max_vio.item():.4f}"
+        if is_moe_model:
+            for name, label in (("max_vio", "Max Vio"), ("routing_confidence", "Routing Conf.")):
+                value = moe_stats[name].item()
+                if value > 0:
+                    step_message += f" | {label}: {value:.4f}"
         logger.success(step_message)
 
         # Log progress metrics
@@ -583,8 +602,9 @@ def train(config: SFTConfig):
         disk_metrics["step"] = progress.step
         monitor.log(disk_metrics, step=progress.step)
 
-        if is_tt_moe_model(model) and batch_max_vio.item() > 0:
-            monitor.log({"max_vio/mean": batch_max_vio.item(), "step": progress.step}, step=progress.step)
+        moe_log_metrics = {f"{name}/mean": value.item() for name, value in moe_stats.items() if value.item() > 0}
+        if moe_log_metrics:
+            monitor.log({**moe_log_metrics, "step": progress.step}, step=progress.step)
 
         is_first_step = False
         progress.step += 1

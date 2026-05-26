@@ -2,15 +2,10 @@ from collections import Counter
 
 import pytest
 from datasets import Dataset, interleave_datasets
-from renderers.base import create_renderer
 from transformers import AutoTokenizer
 
 from prime_rl.trainer.sft.data import SFTDataset
 from prime_rl.trainer.utils import print_sample
-
-
-def _make_renderer(tokenizer):
-    return create_renderer(tokenizer, renderer="auto")
 
 
 @pytest.fixture(scope="module")
@@ -21,7 +16,7 @@ def build_dummy_dataset():
 def test_init_sft_dataset(build_dummy_dataset):
     """Tests basic initialization."""
     dataset = build_dummy_dataset("a", 1)
-    sft_dataset = SFTDataset(dataset, renderer=None)
+    sft_dataset = SFTDataset(dataset, tokenizer=None)
     assert sft_dataset is not None
 
 
@@ -29,7 +24,7 @@ def test_raise_error_if_no_prompt_and_completion(build_dummy_dataset):
     """Tests that an error is raised if no supported SFT message fields are provided."""
     dataset = build_dummy_dataset("a", 1)
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    sft_dataset = SFTDataset(dataset, renderer=_make_renderer(tokenizer))
+    sft_dataset = SFTDataset(dataset, tokenizer=tokenizer)
     with pytest.raises(ValueError):
         next(iter(sft_dataset))
 
@@ -40,7 +35,7 @@ def test_sft_first_exhausted(build_dummy_dataset, max_epochs: int):
     b = build_dummy_dataset("b", 2)
     ds = [a, b]
     dataset = interleave_datasets(ds, stopping_strategy="first_exhausted")
-    dataset = SFTDataset(dataset, renderer=None, shuffle=False, max_epochs=max_epochs)
+    dataset = SFTDataset(dataset, tokenizer=None, shuffle=False, max_epochs=max_epochs)
     num_samples = 0
     sampling_order = []
     for x in dataset:
@@ -56,7 +51,7 @@ def test_sft_all_exhausted(build_dummy_dataset, max_epochs: int):
     b = build_dummy_dataset("b", 2)
     ds = [a, b]
     dataset = interleave_datasets(ds, stopping_strategy="all_exhausted")
-    dataset = SFTDataset(dataset, renderer=None, shuffle=False, max_epochs=max_epochs)
+    dataset = SFTDataset(dataset, tokenizer=None, shuffle=False, max_epochs=max_epochs)
     num_samples = 0
     sampling_order = []
     for x in dataset:
@@ -81,7 +76,7 @@ def test_sft_all_exhausted_with_probs(build_dummy_dataset, probs: list[float]):
     b = build_dummy_dataset("b", int(10e3))
     ds = [a, b]
     dataset = interleave_datasets(ds, stopping_strategy="all_exhausted", probabilities=probs)
-    dataset = SFTDataset(dataset, renderer=None, shuffle=False, max_epochs=1)
+    dataset = SFTDataset(dataset, tokenizer=None, shuffle=False, max_epochs=1)
     num_samples = 0
     sampling_freq = []
     for x in dataset:
@@ -101,7 +96,7 @@ def test_sft_all_exhausted_with_probs(build_dummy_dataset, probs: list[float]):
 def test_sft_dataset_state(build_dummy_dataset):
     """Tests the state of the dataset within and across epochs."""
     dataset = build_dummy_dataset("", 4)
-    dataset = SFTDataset(dataset, renderer=None, shuffle=False, max_epochs=2)
+    dataset = SFTDataset(dataset, tokenizer=None, shuffle=False, max_epochs=2)
     dataiter = iter(dataset)
 
     # Initial state
@@ -127,7 +122,7 @@ def test_sft_dataset_state_resume(build_dummy_dataset):
     """Tests resuming the dataset from checkpoint in between epochs."""
     dataset = SFTDataset(
         build_dummy_dataset("", 4),
-        renderer=None,
+        tokenizer=None,
         shuffle=False,
         max_epochs=2,
     )
@@ -148,7 +143,7 @@ def test_sft_dataset_state_resume(build_dummy_dataset):
     del dataset
     dataset = SFTDataset(
         build_dummy_dataset("", 4),
-        renderer=None,
+        tokenizer=None,
         shuffle=False,
         max_epochs=2,
     )
@@ -167,7 +162,7 @@ def test_sft_dataset_state_resume(build_dummy_dataset):
     del dataset
     dataset = SFTDataset(
         build_dummy_dataset("", 4),
-        renderer=None,
+        tokenizer=None,
         shuffle=False,
         max_epochs=2,
     )
@@ -199,7 +194,7 @@ def test_multiturn_loss_mask():
         ]
     )
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")  # Properly handles multi-turn think
-    dataset = SFTDataset(dataset, renderer=_make_renderer(tokenizer), max_examples=1)
+    dataset = SFTDataset(dataset, tokenizer=tokenizer, max_examples=1)
     sample = next(iter(dataset))
     print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
 
@@ -262,7 +257,7 @@ def test_multiturn_loss_mask_with_tools():
 
     dataset = Dataset.from_list([tool_example])
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")  # Properly handles multi-turn think
-    dataset = SFTDataset(dataset, renderer=_make_renderer(tokenizer), max_examples=1)
+    dataset = SFTDataset(dataset, tokenizer=tokenizer, max_examples=1)
     sample = next(iter(dataset))
     print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
 
@@ -287,12 +282,10 @@ def test_messages_rows_are_equivalent_to_empty_prompt_completion():
     ]
 
     tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")
-    messages_dataset = SFTDataset(
-        Dataset.from_list([{"messages": messages}]), renderer=_make_renderer(tokenizer), max_examples=1
-    )
+    messages_dataset = SFTDataset(Dataset.from_list([{"messages": messages}]), tokenizer=tokenizer, max_examples=1)
     split_dataset = SFTDataset(
         Dataset.from_list([{"prompt": [], "completion": messages}]),
-        renderer=_make_renderer(tokenizer),
+        tokenizer=tokenizer,
         max_examples=1,
     )
 
@@ -311,10 +304,10 @@ def test_messages_take_precedence_over_prompt_and_completion():
         "completion": [{"role": "assistant", "content": "Ignored completion"}],
     }
 
-    messages_dataset = SFTDataset(Dataset.from_list([row]), renderer=_make_renderer(tokenizer), max_examples=1)
+    messages_dataset = SFTDataset(Dataset.from_list([row]), tokenizer=tokenizer, max_examples=1)
     expected_dataset = SFTDataset(
         Dataset.from_list([{"prompt": [], "completion": row["messages"]}]),
-        renderer=_make_renderer(tokenizer),
+        tokenizer=tokenizer,
         max_examples=1,
     )
 

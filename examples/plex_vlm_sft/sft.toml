@@ -20,6 +20,11 @@ name = "Qwen/Qwen3.5-0.8B"
 optimization_dtype = "bfloat16"
 reduce_dtype = "bfloat16"
 
+# VLM SFT tokenizes images through the renderer. "auto" resolves the concrete
+# renderer (here qwen3.5) from model.name via MODEL_RENDERER_MAP.
+[renderer]
+name = "auto"
+
 [model.vlm]
 vision_encoder_attr = "model.visual"
 language_model_attr = "model.language_model"

@@ -42,6 +42,7 @@ class GroupState:
     rollouts_to_schedule: int
     completed_rollouts: list[vf.RolloutOutput] = field(default_factory=list)
     pinned_client: vf.ClientConfig | None = None
+    failed_rollouts: int = 0
 
 
 class Scheduler:
@@ -63,9 +64,7 @@ class Scheduler:
         buffer: Buffer,
         config: OrchestratorConfig,
         max_inflight_rollouts: int,
-        max_async_level: int,
         max_off_policy_steps: int,
-        strict_async_level: bool,
         tasks_per_minute: int | None,
         lora_name: str | None = None,
     ):
@@ -79,11 +78,9 @@ class Scheduler:
         self.config = config
         self.batch_size = config.batch_size
         self.token_batch_size = config.token_batch_size
-        self.rollouts_per_example = config.rollouts_per_example
+        self.group_size = config.group_size
         self.max_inflight_rollouts = max_inflight_rollouts
-        self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
-        self.strict_async_level = strict_async_level
         self.lora_name = lora_name
         self.json_logging = config.log.json_logging
 
@@ -218,7 +215,7 @@ class Scheduler:
                     client=client_config,
                     example=group.example,
                     model_name=self.model_name,
-                    rollouts_per_example=rollout_count,
+                    group_size=rollout_count,
                     cache_salt=cache_salt,
                 )
             )
@@ -265,13 +262,13 @@ class Scheduler:
                 await self.schedule_rollout(group_id=group_id)
                 return True
 
-        if remaining_capacity < self.rollouts_per_example:
+        if remaining_capacity < self.group_size:
             return False
 
         example = self.buffer.sample_examples(n=1)[0]
         group_id = self.next_group_id
         self.next_group_id += 1
-        self.groups[group_id] = GroupState(example=example, rollouts_to_schedule=self.rollouts_per_example)
+        self.groups[group_id] = GroupState(example=example, rollouts_to_schedule=self.group_size)
         await self.schedule_rollout(group_id=group_id)
         return True
 
@@ -286,18 +283,20 @@ class Scheduler:
             await asyncio.sleep(1)
 
     def _compute_next_ckpt_step(self) -> int:
+        # The orchestrator always runs one step ahead of the trainer, so we must advance to at
+        # least step - 1. We additionally adopt anything fresher the trainer has already
+        # broadcast (so a fast trainer briefly running on-policy is fine). ``latest_ckpt_step``
+        # is non-negative so it also clamps a self.step == 0 startup.
         latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
-        async_away_ckpt_step = max(self.step - self.max_async_level, 0)
-        if self.strict_async_level:
-            return async_away_ckpt_step
-        return max(async_away_ckpt_step, latest_ckpt_step)
+        return max(self.step - 1, latest_ckpt_step)
 
     async def _apply_policy_update(self, next_ckpt_step: int) -> None:
-        async_away_ckpt_step = max(self.step - self.max_async_level, 0)
-        if next_ckpt_step == async_away_ckpt_step:
+        # If we're advancing to step - 1, the trainer hasn't broadcast it yet (otherwise
+        # we would've picked something newer); block until the file lands.
+        if next_ckpt_step == max(self.step - 1, 0):
             self.logger.info(
-                f"Orchestrator paused: waiting for trainer process to complete checkpoint {next_ckpt_step} "
-                f"(>{self.max_async_level} step(s) ahead). Training is progressing normally."
+                f"Orchestrator paused: waiting for trainer to broadcast checkpoint {next_ckpt_step} "
+                f"(orchestrator is one step ahead). Training is progressing normally."
             )
             self.checkpoint_ready.clear()
             wait_for_ckpt_start_time = time.perf_counter()
@@ -391,7 +390,8 @@ class Scheduler:
             await safe_cancel(self.update_policy_task)
 
         # Manually check the async barrier before starting the step, then re-create the update policy loop
-        # This ensures that we respect max_async_level, while still listening for policy updates mid-step
+        # This ensures the orchestrator stays at most one step ahead of the trainer, while still
+        # listening for policy updates mid-step.
         await self.maybe_update_policy()
         self.update_policy_task = asyncio.create_task(self.update_policy_loop())
 
@@ -435,39 +435,66 @@ class Scheduler:
                     rollouts: list[vf.RolloutOutput] = result if isinstance(result, list) else [result]
                     self.total_rollouts_by_env[env_name] += len(rollouts)
 
-                    # Drop the whole group on any rollout error or empty trajectory.
-                    # Env-side retries (env.max_retries) already absorb transient
-                    # failures; anything that bubbles up here is treated as
-                    # non-retryable, and partial groups aren't trainable.
-                    # Tally every failure (group-scoring envs return N rollouts
-                    # per task) so error-rate metrics aren't deflated.
-                    failure_reason: str | None = None
+                    # Partition rollouts into valid vs failed and tally per-rollout
+                    # error metrics. Tally every failure (group-scoring envs return
+                    # N rollouts per task) so error-rate metrics aren't deflated.
+                    env = self.train_envs.get(env_name)
+                    valid_rollouts: list[vf.RolloutOutput] = []
                     for rollout in rollouts:
                         if rollout["error"] is not None:
                             self.errored_rollouts_by_env[env_name] += 1
                             self.errors_by_type[rollout["error"]["error"]] += 1
-                            if failure_reason is None:
-                                failure_reason = rollout["error"]["error_chain_repr"]
+                            self.logger.warning(
+                                f"Rollout failed in group {group_id} ({env_name}) - "
+                                f"{rollout['error']['error_chain_repr']}"
+                            )
                         elif len(rollout["trajectory"]) == 0:
                             self.empty_rollouts_by_env[env_name] += 1
-                            if failure_reason is None:
-                                failure_reason = "empty trajectory"
+                            self.logger.warning(f"Empty trajectory in group {group_id} ({env_name})")
+                        else:
+                            rollout["env_name"] = env_name
+                            valid_rollouts.append(rollout)
 
-                    if failure_reason is not None:
+                    num_failed = len(rollouts) - len(valid_rollouts)
+                    group.failed_rollouts += num_failed
+
+                    # Group-scoring envs compute scores over all N rollouts
+                    # together; the surviving rollouts carry scores computed against
+                    # the (now-missing) failed ones, so partial salvage is unsafe.
+                    # Drop the whole group on any failure.
+                    if num_failed > 0 and env.requires_group_scoring:
                         self.dropped_groups_by_env[env_name] += 1
                         self.logger.warning(
-                            f"Dropping group {group_id} ({env_name}) after rollout failure "
-                            f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete): "
-                            f"{failure_reason}"
+                            f"Dropping group-scored group {group_id} ({env_name}) after rollout failure"
                         )
                         await self.drop_group(group_id)
                         continue
 
-                    for rollout in rollouts:
-                        rollout["env_name"] = env_name
-                    group.completed_rollouts.extend(rollouts)
-                    if len(group.completed_rollouts) < self.rollouts_per_example:
+                    group.completed_rollouts.extend(valid_rollouts)
+
+                    # Wait until every dispatched rollout has come back (succeeded
+                    # or failed) before finalizing. The group may finalize as a
+                    # partial group (< group_size) when some rollouts
+                    # errored - downstream advantage computation groups by
+                    # (env_name, example_id), so variable-size groups are fine.
+                    if len(group.completed_rollouts) + group.failed_rollouts < self.group_size:
                         continue
+
+                    if not group.completed_rollouts:
+                        self.dropped_groups_by_env[env_name] += 1
+                        self.logger.warning(
+                            f"Dropping group {group_id} ({env_name}) - all {self.group_size} rollouts failed"
+                        )
+                        self.groups.pop(group_id, None)
+                        continue
+
+                    if group.failed_rollouts > 0:
+                        self.logger.warning(
+                            f"Partial group {group_id} ({env_name}) - "
+                            f"{len(group.completed_rollouts)}/{self.group_size} valid "
+                            f"({group.failed_rollouts} failed)"
+                        )
+
                     completed_rollouts = self.groups.pop(group_id).completed_rollouts
 
                 except asyncio.CancelledError:
@@ -481,7 +508,7 @@ class Scheduler:
                     continue
 
                 self.buffer.update(completed_rollouts)
-                accepted_rollouts = self.buffer.sample_rollouts(n=self.rollouts_per_example)
+                accepted_rollouts = self.buffer.sample_rollouts(n=len(completed_rollouts))
 
                 batch_rollouts.extend(accepted_rollouts)
                 progress_increment = self.get_batch_progress_increment(accepted_rollouts)

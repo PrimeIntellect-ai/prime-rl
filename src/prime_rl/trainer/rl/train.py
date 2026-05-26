@@ -35,6 +35,7 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_left,
     shift_tensor_right,
 )
+from prime_rl.trainer.rl.token_export import setup_token_exporter
 from prime_rl.trainer.model import (
     forward,
     setup_tokenizer,
@@ -239,6 +240,8 @@ def train(config: TrainerConfig):
             config.rollout_transport,
         )
 
+    token_exporter = setup_token_exporter(config, parallel_dims, world, logger)
+
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
@@ -255,21 +258,28 @@ def train(config: TrainerConfig):
             gc_handler.run(progress.step)
         is_last_step = config.max_steps is not None and progress.step == config.max_steps
 
-        # Broadcast weights at every step, (except step 0, because no need to broadcast the base model)
-        # Also, with NCCL broadcast, we do not broadcast weights the last async level step as the orchestrator is already finished and will not initialize the receive on the inference; for filesystem broadcast, we do "broadcast" until the final step to allow to resume from the broadcast directory
+        # Broadcast weights every step except:
+        #   - step 0: nothing has changed yet, the orchestrator has the base model.
+        #   - the final NCCL broadcast: with a 1-step async barrier the orchestrator's last step
+        #     uses the trainer's penultimate ckpt, so the trainer's last broadcast has no receiver
+        #     (the inference NCCL group has been torn down). Filesystem broadcast still writes the
+        #     final step so we can resume from the broadcast directory.
         if weight_broadcast is None:
             broadcast_weights_time = 0
         else:
-            last_async_level_steps = config.max_steps and progress.step >= config.max_steps - config.max_async_level
-            if progress.step > 0 and (not last_async_level_steps or config.weight_broadcast.type == "filesystem"):
+            nccl_broadcast_unused = (
+                config.weight_broadcast.type == "nccl"
+                and config.max_steps is not None
+                and progress.step >= config.max_steps - 1
+            )
+            if progress.step > 0 and not nccl_broadcast_unused:
                 broadcast_weights_start_time = time.perf_counter()
                 weight_broadcast.broadcast_weights(model, step=progress.step)
                 broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
                 # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
-                ckpt_interval = config.ckpt and config.ckpt.interval
-                interval_to_keep = ckpt_interval if config.weight_broadcast.type == "filesystem" else None
                 if config.weight_broadcast.type == "filesystem":
-                    weight_broadcast.maybe_clean(config.max_async_level, interval_to_keep)
+                    interval_to_keep = config.ckpt and config.ckpt.interval
+                    weight_broadcast.maybe_clean(interval_to_keep)
             else:
                 broadcast_weights_time = 0
                 # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.
@@ -500,6 +510,8 @@ def train(config: TrainerConfig):
                 for env_name, indices in env_to_indices.items():
                     tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
+            token_exporter.export(progress.step, micro_step, micro_batch, out, response_lengths, config.loss)
+
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)
                 for k, v in load_balance_stats.items():
@@ -516,6 +528,8 @@ def train(config: TrainerConfig):
                 micro_step_message += f" | Mismatch KL: {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
+            if "routing_confidence" in tensors:
+                micro_step_message += f" | Routing Conf.: {tensors['routing_confidence'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
@@ -575,6 +589,8 @@ def train(config: TrainerConfig):
         step_message += f" | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
         if "max_vio/mean" in tensor_stats:
             step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
+        if "routing_confidence/mean" in tensor_stats:
+            step_message += f" | Routing Conf.: {tensor_stats['routing_confidence/mean']:.4f}"
         logger.success(step_message)
 
         # Log performance metrics
@@ -677,6 +693,8 @@ def train(config: TrainerConfig):
         logger.info(f"Saving trace to {trace_file}")
         prof.export_chrome_trace(trace_file)
         logger.info(f"Saved trace to {trace_file}")
+
+    token_exporter.close()
 
     # Write final checkpoint (only for single-run mode; multi-run checkpoints are managed by MultiCheckpointManager)
     if config.max_concurrent_runs == 1 and ckpt_manager is not None:

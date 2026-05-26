@@ -3,7 +3,9 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, model_serializer, model_validator
+from pydantic_core.core_schema import SerializerFunctionWrapHandler
+from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -12,7 +14,6 @@ from prime_rl.configs.shared import (
     HeartbeatConfig,
     LogConfig,
     PrimeMonitorConfig,
-    RendererConfig,
     TransportConfig,
     WandbWithExtrasConfig,
 )
@@ -206,6 +207,9 @@ class EnvConfig(BaseConfig):
     timeout: float | None = Field(None, validation_alias=AliasChoices("timeout", "timeout_seconds"))
     """Per-rollout wall-clock timeout in seconds. None disables."""
 
+    state_columns: list[str] = []
+    """Extra ``State`` fields to persist into the saved rollout records (in addition to the always-saved ``trajectory`` and ``sampling_args``). Values must be JSON-serializable."""
+
     @property
     def stripped_id(self) -> str:
         """Environment ID without the @version suffix."""
@@ -247,8 +251,8 @@ class EvalEnvConfig(EnvConfig):
     num_examples: int = -1
     """Eval examples to sample from the dataset. ``-1`` uses all available examples."""
 
-    rollouts_per_example: int = Field(1, ge=1)
-    """Rollouts generated per example. Used for pass@k estimation (e.g. ``rollouts_per_example=8`` enables pass@1 through pass@8)."""
+    group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
+    """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8)."""
 
     interval: int = Field(100, ge=1)
     """Per-env eval interval. If unset, inherits from the group-level eval interval."""
@@ -313,7 +317,7 @@ class EvalConfig(BaseConfig):
     num_examples: int = -1
     """Default eval examples per environment. ``-1`` uses all. Can be overridden per env."""
 
-    rollouts_per_example: int = Field(1, ge=1)
+    group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Default rollouts per example. Can be overridden per env."""
 
     num_workers: int | Literal["auto"] = "auto"
@@ -327,7 +331,7 @@ class EvalConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling, num_workers, max_retries, num_examples, rollouts_per_example, and interval. Then resolve auto num_workers."""
+        """Resolve per-env overrides: inherit group-level sampling, num_workers, max_retries, num_examples, group_size, and interval. Then resolve auto num_workers."""
         group_sampling = self.sampling.model_dump()
         for env in self.env:
             if "sampling" not in env.model_fields_set:
@@ -337,20 +341,20 @@ class EvalConfig(BaseConfig):
                 env.sampling = EvalSamplingConfig(**merged)
             if "num_examples" not in env.model_fields_set:
                 env.num_examples = self.num_examples
-            if "rollouts_per_example" not in env.model_fields_set:
-                env.rollouts_per_example = self.rollouts_per_example
+            if "group_size" not in env.model_fields_set:
+                env.group_size = self.group_size
             if "interval" not in env.model_fields_set:
                 env.interval = self.interval
             if "num_workers" not in env.model_fields_set:
                 env.num_workers = self.num_workers
             if "max_retries" not in env.model_fields_set:
                 env.max_retries = self.max_retries
-            # Resolve auto num_workers now that num_examples and rollouts_per_example are set
+            # Resolve auto num_workers now that num_examples and group_size are set
             if env.num_workers == "auto":
                 if env.num_examples == -1:
                     env.num_workers = 4
                 else:
-                    max_concurrent = env.num_examples * env.rollouts_per_example
+                    max_concurrent = env.num_examples * env.group_size
                     env.num_workers = max(1, math.ceil(max_concurrent / 256))
         return self
 
@@ -567,8 +571,30 @@ class OrchestratorConfig(BaseConfig):
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
-    renderer: RendererConfig = RendererConfig()
-    """Client-side renderer configuration. Only consumed when ``use_renderer=true``."""
+    renderer: RendererConfig | None = AutoRendererConfig()
+    """Typed renderer config (``renderers.RendererConfig`` discriminated
+    union). Defaults to ``"auto"``, which resolves from
+    ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. ``None``
+    opts into MITO (``openai_chat_completions``); SFT mode forces this."""
+
+    pool_size: int | None = Field(None, ge=1)
+    """Number of renderer slots shared across concurrent rollouts. Bump
+    for long multi-turn prompts where client-side jinja tokenization
+    serializes. Only meaningful when ``renderer`` is not ``None``."""
+
+    @model_serializer(mode="wrap")
+    def _preserve_mito_renderer(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """Emit ``renderer = "None"`` (string) when MITO so
+        ``model_dump(exclude_none=True)`` round-trips: dumped TOML has
+        ``renderer = "None"``, and on reload
+        ``BaseConfig._none_str_to_none`` coerces it back to ``None``.
+        Without this, a MITO orchestrator config saved to
+        ``control/orch.toml`` would lose the renderer key entirely and
+        reload as the default ``AutoRendererConfig()`` (TITO)."""
+        result = handler(self)
+        if self.renderer is None:
+            result["renderer"] = "None"
+        return result
 
     optim: OptimizerConfig = OptimizerConfig()
     """Per-run optimizer configuration for multi-run training."""
@@ -591,6 +617,9 @@ class OrchestratorConfig(BaseConfig):
 
     collect_inference_metrics: bool = True
     """Collect inference-server metrics (requires wandb)."""
+
+    inference_metrics_roles: list[Literal["prefill", "decode"]] | None = None
+    """Role for each student admin client when collecting P/D inference metrics."""
 
     ckpt: CheckpointConfig | None = None
     """Checkpoint configuration."""
@@ -619,7 +648,7 @@ class OrchestratorConfig(BaseConfig):
     max_inflight_rollouts: int | None = Field(None, ge=1)
     """Maximum number of rollouts kept in-flight. Required for token-based batching. With ``batch_size`` set, defaults to ``batch_size * oversampling_factor`` (or ``batch_size`` when ``oversampling_factor`` is unset)."""
 
-    rollouts_per_example: int = Field(1, ge=1)
+    group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Output sequences returned per example during training."""
 
     seq_len: int = 2048
@@ -635,23 +664,14 @@ class OrchestratorConfig(BaseConfig):
     max_off_policy_steps: int = Field(8, ge=0)
     """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
 
-    max_async_level: int = Field(1, ge=0)
-    """Maximum steps inference can be ahead of training. ``0`` degenerates to synchronous on-policy RL; ``≥1`` overlaps training and inference."""
-
-    strict_async_level: bool = False
-    """Strictly enforce ``max_async_level``. When True, the rollout policy is always exactly ``max_async_level`` steps ahead of training. When False, any policy within ``max_async_level`` steps is allowed (always uses the latest available policy)."""
-
     bench: bool = False
-    """Benchmark mode. Sets ``max_steps`` to 5, ``max_async_level`` to ~∞, and disables W&B."""
+    """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""
 
     seed: int | None = 42
     """Random seed for the orchestrator."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
-
-    use_renderer: bool = True
-    """Use the renderer-backed TITO client (client-side tokenization via the ``renderers`` package, served by ``/v1/generate``). When True, the ``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) applies. Default for both text-only and VLM rollouts; VLMs require it. False falls back to MITO (``openai_chat_completions``)."""
 
     env_install_prerelease: bool = False
     """Allow pre-release versions when installing environments (e.g. ``verifiers>=0.1.12.dev5``). Passes ``--prerelease`` to ``prime env install``."""
@@ -757,7 +777,7 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_session_headers(self):
         """Ensure X-Session-ID header is always set for sticky DP-aware routing at the inference router."""
-        self.student.client.extra_headers_from_state.setdefault("X-Session-ID", "example_id")
+        self.student.client.extra_headers_from_state.setdefault("X-Session-ID", "trajectory_id")
         return self
 
     @model_validator(mode="after")
@@ -780,11 +800,11 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def _force_no_renderer_for_sft(self):
         """SFT rolls out via the teacher's plain chat-completions endpoint; the
-        renderer client doesn't apply. Force use_renderer=False so the user
+        renderer client doesn't apply. Force ``renderer=None`` so the user
         doesn't have to remember to set it. Declared before the renderer
         validators below so they see the corrected value."""
         if self.training_mode == "sft":
-            self.use_renderer = False
+            self.renderer = None
         return self
 
     @model_validator(mode="after")
@@ -798,33 +818,15 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_renderer_args(self):
-        """``[orchestrator.renderer]`` knobs are only meaningful when
-        ``use_renderer=True``. Reject otherwise so callers don't silently
-        pass them and wonder why they're ignored."""
-        if self.use_renderer:
-            return self
-
-        renderer_args_set = []
-        if self.renderer.name != "auto":
-            renderer_args_set.append(f"renderer.name={self.renderer.name!r}")
-        if self.renderer.tool_parser is not None:
-            renderer_args_set.append(f"renderer.tool_parser={self.renderer.tool_parser!r}")
-        if self.renderer.reasoning_parser is not None:
-            renderer_args_set.append(f"renderer.reasoning_parser={self.renderer.reasoning_parser!r}")
-        if self.renderer.pool_size is not None:
-            renderer_args_set.append(f"renderer.pool_size={self.renderer.pool_size!r}")
-        if self.renderer.preserve_all_thinking:
-            renderer_args_set.append(f"renderer.preserve_all_thinking={self.renderer.preserve_all_thinking!r}")
-        if self.renderer.preserve_thinking_between_tool_calls:
-            renderer_args_set.append(
-                f"renderer.preserve_thinking_between_tool_calls={self.renderer.preserve_thinking_between_tool_calls!r}"
-            )
-
-        if renderer_args_set:
+    def validate_pool_size(self):
+        """``pool_size`` is only meaningful when the renderer is enabled
+        (``renderer is not None``). Reject otherwise so callers don't
+        silently pass it and wonder why it's ignored."""
+        if self.renderer is None and self.pool_size is not None:
             raise ValueError(
-                "Renderer-specific args set without orchestrator.use_renderer=True: "
-                f"{', '.join(renderer_args_set)}. Either enable the renderer client or remove these knobs."
+                f"orchestrator.pool_size={self.pool_size!r} is set but "
+                "orchestrator.renderer is None (MITO mode). Either configure a renderer "
+                "or remove pool_size."
             )
         return self
 
@@ -836,9 +838,9 @@ class OrchestratorConfig(BaseConfig):
         tokens, and ships generic ``mm_kwargs`` keyed by whatever the
         model's forward signature expects.
         """
-        if self.student.model.vlm is not None and not self.use_renderer:
+        if self.student.model.vlm is not None and self.renderer is None:
             raise ValueError(
-                "orchestrator.use_renderer must be true when model.vlm is set. "
+                "orchestrator.renderer must be set when model.vlm is set. "
                 "VLMs must go through a renderer (e.g. Qwen3VLRenderer) that owns the processor."
             )
         return self
@@ -847,16 +849,16 @@ class OrchestratorConfig(BaseConfig):
     def validate_renderer_auto_resolves(self):
         """Reject the silent DefaultRenderer fallback at config time.
 
-        When ``use_renderer=True`` with ``renderer.name='auto'`` and the
-        model isn't in ``MODEL_RENDERER_MAP``, ``create_renderer`` would
-        fall back to ``DefaultRenderer``. That fallback doesn't fix the
-        position-dependent chat-template bug the renderer client exists to
-        solve, and rejects envs that pass tools (the rollout dies with
-        "RendererPool does not support tools") unless
-        ``renderer.tool_parser`` is configured. Surface at config time so
-        ``--dry-run`` reports the error.
+        When ``renderer.name='auto'`` and the model isn't in
+        ``MODEL_RENDERER_MAP``, ``create_renderer`` would fall back to
+        ``DefaultRenderer``. That fallback doesn't fix the
+        position-dependent chat-template bug the renderer client exists
+        to solve, and rejects envs that pass tools (the rollout dies
+        with "RendererPool does not support tools") unless
+        ``DefaultRendererConfig.tool_parser`` is configured. Surface at
+        config time so ``--dry-run`` reports the error.
         """
-        if not self.use_renderer or self.renderer.name != "auto":
+        if self.renderer is None or self.renderer.name != "auto":
             return self
         from renderers.base import MODEL_RENDERER_MAP
 
@@ -864,27 +866,20 @@ class OrchestratorConfig(BaseConfig):
         if model_id in MODEL_RENDERER_MAP:
             return self
         raise ValueError(
-            f"orchestrator.use_renderer=True with renderer.name='auto' but "
+            f"orchestrator.renderer.name='auto' but "
             f"{model_id!r} is not in renderers.base.MODEL_RENDERER_MAP, so it "
             f"would silently fall back to DefaultRenderer. Pick one: "
             f"(a) [orchestrator.renderer] name='default' — for fine-tunes / "
             f"vendored mirrors with custom chat templates (DefaultRenderer "
-            f"calls apply_chat_template); pair with tool_parser=<name> if "
-            f"the env uses tools. "
+            f"calls apply_chat_template); set tool_parser=<name> if the env "
+            f"uses tools. "
             f"(b) [orchestrator.renderer] name=<model-specific renderer> — "
             f"if {model_id!r} is template-identical to a mapped family "
             f"(and ideally also add it upstream to "
             f"renderers.base.MODEL_RENDERER_MAP). "
-            f"(c) orchestrator.use_renderer=false — opt out of the renderer "
-            f"client entirely."
+            f"(c) orchestrator.renderer='none' — opt out of the renderer "
+            f"client entirely (MITO)."
         )
-
-    @model_validator(mode="after")
-    def nccl_max_async_level(self):
-        if self.weight_broadcast.type == "nccl":
-            if not self.max_async_level == 1:
-                raise ValueError("max_async_level must be 1 for NCCL broadcast")
-        return self
 
     @model_validator(mode="after")
     def resolve_batching(self):
@@ -904,11 +899,11 @@ class OrchestratorConfig(BaseConfig):
                 raise ValueError("max_inflight_rollouts must be set when token_batch_size is set")
         else:
             assert self.batch_size is not None
-            if self.batch_size % self.rollouts_per_example != 0:
+            if self.batch_size % self.group_size != 0:
                 raise ValueError("Batch size must be divisible by the number of samples per problem")
             oversampling_factor = self.oversampling_factor if self.oversampling_factor is not None else 1.0
             resolved_max_inflight_rollouts = max(
-                self.rollouts_per_example,
+                self.group_size,
                 int(self.batch_size * oversampling_factor),
             )
             if self.max_inflight_rollouts is not None and self.oversampling_factor is not None:
@@ -918,7 +913,7 @@ class OrchestratorConfig(BaseConfig):
             if self.max_inflight_rollouts is None:
                 self.max_inflight_rollouts = resolved_max_inflight_rollouts
 
-        if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.rollouts_per_example:
+        if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.group_size:
             raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")
 
         # Resolve train env num_workers from max_inflight_rollouts
@@ -933,7 +928,6 @@ class OrchestratorConfig(BaseConfig):
     def auto_setup_bench(self):
         if self.bench:
             self.max_steps = 4  # Run for 1 warmup step + 3 evaluation steps
-            self.max_async_level = int(1e9)  # Never wait for RL weight checkpoints
 
             # Disable evaluation
             self.eval = None

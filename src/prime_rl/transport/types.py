@@ -14,6 +14,14 @@ class EncodedTensor(msgspec.Struct, array_like=True, gc=False):
     data: bytes
 
 
+# Routed experts are large per-token arrays. tolist() is too expensive, so we
+# send raw bytes through msgpack and carry the shape/dtype needed to rebuild.
+class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    data: bytes
+    shape: list[int]  # [seq_len, layers, topk]
+    dtype: str
+
+
 # Orchestrator -> Packer
 class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A single training example."""
@@ -39,7 +47,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # touching this transport.
     mm_kwargs: dict[str, EncodedTensor] | None = None
 
-    routed_experts: list[list[list[int]]] | None = None  # [seq_len, layers, topk]
+    routed_experts: RoutedExperts | None = None
 
     # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: list[int] | None = None
@@ -70,7 +78,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     env_names: list[str]
     teacher_logprobs: list[float] | None = None
     lora_num_tokens: list[int] | None = None
-    routed_experts: list[list[list[int]]] | None = None
+    routed_experts: RoutedExperts | None = None
 
     # See TrainingSample.mm_kwargs.
     mm_kwargs: dict[str, EncodedTensor] | None = None
@@ -80,3 +88,4 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # Loss dispatch is batch-driven (rl/opd → default loss with mode-specific taus,
     # sft → sft loss). All samples packed into a micro batch share the same mode.
     training_mode: TrainingMode = "rl"
+    rewards: list[float] | None = None

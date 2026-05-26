@@ -11,8 +11,8 @@ from datasets import Dataset, interleave_datasets, load_dataset
 from jaxtyping import Bool, Int
 from renderers.base import (
     MultiModalData,
-    PlaceholderRange,
     Renderer,
+    build_training_sample,
 )
 from renderers.base import (
     is_multimodal as is_multimodal_renderer,
@@ -25,14 +25,16 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTDataConfig
 from prime_rl.trainer.world import get_world
-from prime_rl.utils.chat_template import normalize_messages
+from prime_rl.utils.chat_template import (
+    IncrementalTokenizationError,
+    build_incremental_token_mask,
+    deserialize_tool_calls,
+    normalize_messages,
+    strip_message_content,
+)
 from prime_rl.utils.logger import get_logger
 
 STACKING_DATASET_BUCKET_TIMEOUT = 10
-
-# Map renderer content type -> mm_token_type_id used by VLM forward passes.
-# Mirrors the convention in trainer/rl/data.py: 0=text, 1=image, 2=video.
-_MM_TYPE_ID = {"image": 1, "video": 2}
 
 
 class Sample(TypedDict):
@@ -213,30 +215,13 @@ def _truncate_mm_data(mm: MultiModalData, cut: int) -> MultiModalData:
     )
 
 
-def _build_mm_token_type_ids(
-    mm_placeholders: dict[str, list[Any]],
-    seq_len: int,
-) -> list[int]:
-    """Build per-token modality flags from the renderer's placeholder ranges."""
-    ids = [0] * seq_len
-    for content_type, ranges in mm_placeholders.items():
-        type_id = _MM_TYPE_ID.get(content_type, 0)
-        if type_id == 0:
-            continue
-        for r in ranges:
-            end = min(r.offset + r.length, seq_len)
-            for i in range(r.offset, end):
-                ids[i] = type_id
-    return ids
-
-
 class SFTDataset(StatefulIterableDataset):
     """A dataset wrapping a HF SFT dataset with prompt/completion or raw messages format."""
 
     def __init__(
         self,
         dataset: Dataset,
-        renderer: Renderer | None,
+        tokenizer: PreTrainedTokenizer | None,
         shuffle: bool = True,
         seed: int = 0,
         seq_len: int = 128,
@@ -244,23 +229,25 @@ class SFTDataset(StatefulIterableDataset):
         loss_mask_config: LossMaskConfig = LossMaskConfig(),
         max_examples: int | None = None,
         max_epochs: int | None = None,
+        renderer: Renderer | None = None,
     ):
         super().__init__()
         self.logger = get_logger()
         self.dataset = dataset
         self.num_examples = len(self.dataset)
-        self.renderer = renderer
+        self.tokenizer = tokenizer
         self.shuffle = shuffle
         self.seed = seed
         self.seq_len = seq_len
         self.loss_mask_config = loss_mask_config
         self.max_examples = max_examples
         self.max_epochs = max_epochs
+        self.renderer = renderer
         self._warned_chat_template_kwargs = False
         self.is_multimodal = renderer is not None and is_multimodal_renderer(renderer)
 
-        if self.renderer is None:
-            self.logger.warning("No renderer provided, will not process examples")
+        if self.tokenizer is None:
+            self.logger.warning("No tokenizer provided, will not process examples")
 
         # If specified, select a subset of the dataset
         if self.max_examples is not None:
@@ -278,59 +265,168 @@ class SFTDataset(StatefulIterableDataset):
         self.data_world_size = get_world().world_size // non_dp_size * num_workers
 
     def _process(self, example: dict) -> dict | None:
-        if self.renderer is None:
+        # Skip processing if no tokenizer was provided
+        if self.tokenizer is None:
             return example
 
-        messages = self._resolve_messages(example)
-        tools = self._resolve_tools(example)
+        def resolve_messages(example: dict) -> list[dict]:
+            # `messages` takes precedence over explicit split fields and is interpreted
+            # as a whole-chat training sample with an empty prompt.
+            if "messages" in example:
+                messages = normalize_messages(example["messages"], default_role="assistant")
+            elif "prompt" in example and "completion" in example:
+                messages = normalize_messages(example["prompt"], default_role="user") + normalize_messages(
+                    example["completion"], default_role="assistant"
+                )
+            else:
+                raise ValueError(
+                    "All examples in the dataset must have either a 'messages' column "
+                    "or both 'prompt' and 'completion' columns for SFT"
+                )
 
-        rendered = self.renderer.render(messages, tools=tools)
-        input_ids = list(rendered.token_ids)
-        loss_mask = [self._should_mask(messages[idx]) if idx >= 0 else False for idx in rendered.message_indices]
-        mm = rendered.multi_modal_data
+            # Deserialize tool call arguments from message list, if present - assumes OAI format
+            messages = deserialize_tool_calls(messages)
+            # Drop null-valued fields (browser-agent OAI records carry many)
+            # before rendering / stripping.
+            messages = [_drop_null_fields(m) for m in messages]
+            # Strip content from all messages so that incremental tokenization works.
+            # No-op on multimodal list content (only strips string content), so it
+            # is safe for VLM samples.
+            return strip_message_content(messages)
 
-        # Clip oversized samples at the data-pipeline level, matching the
-        # existing CatDataset/StackDataset convention of truncating to seq_len.
-        # The budget is ``seq_len + 1`` because the causal shift below drops one
-        # token. For VLM we additionally pull the cut back to a position that
-        # doesn't split an image_pad run, and slice ``mm_items`` in lockstep so
-        # the surviving placeholders stay one-to-one with surviving pixel
-        # buffers. Samples whose trainable tokens all fall past the cut are
-        # then filtered out by the no-trainable-tokens guard below.
-        budget = self.seq_len + 1
-        if len(input_ids) > budget:
-            cut = _find_image_safe_cut(budget, mm)
-            self.logger.debug(
-                f"Truncating example {example.get('__index', '')} from "
-                f"{len(input_ids)} → {cut} tokens (budget={budget})"
+        messages = resolve_messages(example)
+
+        # Parse available tools, if present - assumes OAI format. Accepts either
+        # `tools` or `tool_defs` (the verifiers rollout format), as either a
+        # JSON-encoded string of a list or a list of dicts; verifiers-shaped
+        # tools are converted to OAI form for the chat template.
+        raw_tools = example.get("tools", example.get("tool_defs"))
+        if not raw_tools:
+            tools = []
+        else:
+            if isinstance(raw_tools, str):
+                raw_tools = json.loads(raw_tools)
+            tools = [
+                t
+                if isinstance(t, dict) and t.get("type") == "function" and "function" in t
+                else {
+                    "type": "function",
+                    "function": {
+                        "name": t.get("name"),
+                        "description": t.get("description"),
+                        "parameters": t.get("parameters"),
+                        **({} if t.get("strict") is None else {"strict": t["strict"]}),
+                    },
+                }
+                for t in raw_tools
+            ]
+
+        def should_mask(message: dict) -> bool:
+            assert "role" in message, "Message must have a role"
+            match message["role"]:
+                case "user":
+                    return self.loss_mask_config.user
+                case "assistant":
+                    return self.loss_mask_config.assistant
+                case "system":
+                    return self.loss_mask_config.system
+                case "tool":
+                    return self.loss_mask_config.tool
+                case _:
+                    raise ValueError(f"Invalid message role: {message['role']}")
+
+        # Multimodal payload, populated only on the renderer path for VLMs.
+        mm: MultiModalData | None = None
+        mm_token_type_ids: list[int] | None = None
+
+        if self.renderer is not None:
+            if example.get("chat_template_kwargs") and not self._warned_chat_template_kwargs:
+                self.logger.warning(
+                    "Example carries chat_template_kwargs but a renderer is configured; "
+                    "renderers don't forward chat_template_kwargs (model-specific "
+                    "renderers bake their template behavior in). These kwargs will "
+                    "be ignored. Further warnings suppressed for this dataset."
+                )
+                self._warned_chat_template_kwargs = True
+
+            sample = build_training_sample(
+                self.renderer,
+                messages,
+                role_to_mask=should_mask,
+                tools=tools,
             )
-            input_ids = input_ids[:cut]
-            loss_mask = loss_mask[:cut]
-            if mm is not None and mm.mm_items:
-                mm = _truncate_mm_data(mm, cut)
+            input_ids = list(sample.token_ids)
+            loss_mask = list(sample.loss_mask)
+            mm = sample.multi_modal_data
+            mm_token_type_ids = list(sample.mm_token_type_ids) if sample.mm_token_type_ids is not None else None
+
+            # VLM samples carry per-image pixel buffers that can't be packed
+            # across samples, so we truncate to seq_len here (text-only samples
+            # are left full-length for the downstream Cat/Stack dataset). The
+            # cut is pulled back so it never splits an <|image_pad|> run, and
+            # mm_items / mm_token_type_ids are sliced in lockstep so surviving
+            # placeholders stay 1-to-1 with surviving pixel buffers. Budget is
+            # seq_len + 1 because the causal shift below drops one token.
+            if mm is not None:
+                budget = self.seq_len + 1
+                if len(input_ids) > budget:
+                    cut = _find_image_safe_cut(budget, mm)
+                    self.logger.debug(
+                        f"Truncating example {example.get('__index', '')} from "
+                        f"{len(input_ids)} → {cut} tokens (budget={budget})"
+                    )
+                    input_ids = input_ids[:cut]
+                    loss_mask = loss_mask[:cut]
+                    if mm_token_type_ids is not None:
+                        mm_token_type_ids = mm_token_type_ids[:cut]
+                    if mm.mm_items:
+                        mm = _truncate_mm_data(mm, cut)
+        else:
+            try:
+                input_ids, loss_mask = build_incremental_token_mask(
+                    self.tokenizer,
+                    messages,
+                    role_to_mask=should_mask,
+                    tools=tools,
+                    chat_template_kwargs=example.get("chat_template_kwargs", {}),
+                    collapse_consecutive_tool_messages=True,
+                )
+            except IncrementalTokenizationError as e:
+                self.logger.warning(f"Skipping example {example.get('__index', '')}: {e}")
+                return None
+
+        # If EOS token is not found, manually append it (keep mm_token_type_ids aligned).
+        if not self.tokenizer.eos_token_id in input_ids:
+            self.logger.warning(
+                f"Did not find EOS token ID {self.tokenizer.eos_token_id} in input_ids. Is something wrong with the chat template? Manually appending EOS token..."
+            )
+            input_ids.append(cast(int, self.tokenizer.eos_token_id))
+            loss_mask.append(True)
+            if mm_token_type_ids is not None:
+                mm_token_type_ids.append(0)
 
         # Causal shift: model predicts next token from current.
-        target_ids = input_ids[1:]
+        target_ids = input_ids.copy()[1:]
         loss_mask = loss_mask[1:]
         input_ids = input_ids[:-1]
-        seq_len = len(input_ids)
-
-        mm_kwargs: dict[str, Tensor] | None = None
-        mm_token_type_ids: list[int] | None = None
-        if mm is not None and mm.mm_items:
-            mm_kwargs = _flatten_mm_items(mm.mm_items)
-            # Build mm_token_type_ids against the unshifted token stream, then
-            # mirror the shift so indices line up with input_ids.
-            full_type_ids = _build_mm_token_type_ids(mm.mm_placeholders, seq_len + 1)
-            mm_token_type_ids = full_type_ids[:-1]
+        if mm_token_type_ids is not None:
+            mm_token_type_ids = mm_token_type_ids[1:]
 
         if sum(loss_mask[: self.seq_len]) == 0:
             self.logger.warning(
-                f"Skipping example {example.get('__index', '')}: no trainable tokens within context window ({self.seq_len})."
+                f"Skipping example {example.get('__index', '')} because no trainable tokens were found within the context window ({self.seq_len}). This is to prevent NaN loss."
             )
             return None
 
-        assert len(input_ids) == len(loss_mask) == len(target_ids)
+        assert len(input_ids) == len(loss_mask) == len(target_ids), (
+            f"input_ids, loss_mask and target_ids must have the same length, but got {len(input_ids)=}, {len(loss_mask)=}, {len(target_ids)=}"
+        )
+        assert sum(loss_mask) > 0, "There are no tokens in this sample that contribute to the loss"
+        assert self.tokenizer.eos_token_id in target_ids, "EOS token ID must be present in target_ids"
+
+        mm_kwargs: dict[str, Tensor] | None = None
+        if mm is not None and mm.mm_items:
+            mm_kwargs = _flatten_mm_items(mm.mm_items)
         if mm_token_type_ids is not None:
             assert len(mm_token_type_ids) == len(input_ids)
 
@@ -342,45 +438,6 @@ class SFTDataset(StatefulIterableDataset):
             "mm_kwargs": mm_kwargs,
             "mm_token_type_ids": mm_token_type_ids,
         }
-
-    def _resolve_messages(self, example: dict) -> list[dict]:
-        """Pull messages off the example, normalising prompt/completion form."""
-        if "messages" in example:
-            messages = normalize_messages(example["messages"], default_role="assistant")
-        elif "prompt" in example and "completion" in example:
-            messages = normalize_messages(example["prompt"], default_role="user") + normalize_messages(
-                example["completion"], default_role="assistant"
-            )
-        else:
-            raise ValueError(
-                "All examples in the dataset must have either a 'messages' column "
-                "or both 'prompt' and 'completion' columns for SFT"
-            )
-        return [_drop_null_fields(m) for m in messages]
-
-    def _resolve_tools(self, example: dict) -> list[dict] | None:
-        """Accept tools as either a JSON string (old-style HF datasets) or a list/dict (modern)."""
-        raw = example.get("tools")
-        if raw is None:
-            return None
-        if isinstance(raw, str):
-            decoded = json.loads(raw) if raw else []
-            return decoded or None
-        return raw or None
-
-    def _should_mask(self, message: dict) -> bool:
-        role = message.get("role")
-        match role:
-            case "user":
-                return self.loss_mask_config.user
-            case "assistant":
-                return self.loss_mask_config.assistant
-            case "system":
-                return self.loss_mask_config.system
-            case "tool":
-                return self.loss_mask_config.tool
-            case _:
-                raise ValueError(f"Invalid message role: {role}")
 
     def __iter__(self):
         dataset = self.dataset.shuffle(seed=self.epoch + self.seed) if self.shuffle else self.dataset
@@ -856,13 +913,14 @@ def setup_dataset(
             raw_dataset = load_sft_dataset(config)
         return SFTDataset(
             raw_dataset,
-            renderer,
+            tokenizer,
             shuffle=config.shuffle,
             seed=config.seed,
             seq_len=config.seq_len,
             loss_mask_config=config.loss_mask,
             non_dp_size=non_dp_size,
             max_epochs=max_epochs,
+            renderer=renderer,
         )
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")
