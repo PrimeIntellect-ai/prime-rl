@@ -71,7 +71,7 @@ class StaticInferencePool:
         train_client_type: str = "openai_chat_completions",
         eval_client_type: str = "openai_chat_completions",
         renderer_config: RendererConfig | None = None,
-        renderer_pool_size: int | None = None,
+        pool_size: int | None = None,
     ):
         renderer_model_name = model_name if train_client_type == "renderer" else None
         self._train_clients = setup_clients(
@@ -79,7 +79,7 @@ class StaticInferencePool:
             client_type=train_client_type,
             renderer_config=renderer_config,
             renderer_model_name=renderer_model_name,
-            renderer_pool_size=renderer_pool_size,
+            pool_size=pool_size,
         )
         self._eval_clients = setup_clients(client_config, client_type=eval_client_type)
         self._admin_clients = setup_admin_clients(client_config)
@@ -128,7 +128,7 @@ async def setup_inference_pool(
     train_client_type: str = "openai_chat_completions",
     eval_client_type: str = "openai_chat_completions",
     renderer_config: RendererConfig | None = None,
-    renderer_pool_size: int | None = None,
+    pool_size: int | None = None,
 ) -> InferencePool:
     """Create an inference pool from config (static or elastic)."""
     if client_config.is_elastic:
@@ -140,7 +140,7 @@ async def setup_inference_pool(
             train_client_type=train_client_type,
             eval_client_type=eval_client_type,
             renderer_config=renderer_config,
-            renderer_pool_size=renderer_pool_size,
+            pool_size=pool_size,
         )
 
     return StaticInferencePool(
@@ -149,7 +149,7 @@ async def setup_inference_pool(
         train_client_type=train_client_type,
         eval_client_type=eval_client_type,
         renderer_config=renderer_config,
-        renderer_pool_size=renderer_pool_size,
+        pool_size=pool_size,
     )
 
 
@@ -158,7 +158,7 @@ def setup_clients(
     client_type: str = "openai_chat_completions",
     renderer_config: RendererConfig | None = None,
     renderer_model_name: str | None = None,
-    renderer_pool_size: int | None = None,
+    pool_size: int | None = None,
 ) -> list[vf.ClientConfig]:
     clients = []
     client_idx = 0
@@ -169,7 +169,7 @@ def setup_clients(
         renderer_extra = {
             "renderer_config": renderer_config,
             "renderer_model_name": renderer_model_name,
-            "renderer_pool_size": renderer_pool_size,
+            "renderer_pool_size": pool_size,
         }
     env_headers = {
         k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None

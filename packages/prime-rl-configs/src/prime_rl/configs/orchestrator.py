@@ -571,18 +571,16 @@ class OrchestratorConfig(BaseConfig):
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
-    renderer: RendererConfig | None = Field(default_factory=AutoRendererConfig)
+    renderer: RendererConfig | None = AutoRendererConfig()
     """Typed renderer config (``renderers.RendererConfig`` discriminated
-    union — one of ``AutoRendererConfig``, ``Qwen35RendererConfig``,
-    ``GLM5RendererConfig``, …). The ``name`` discriminator picks the
-    variant; the rest of the fields are that variant's chat-template
-    kwargs plus the shared ``preserve_*`` flags. Defaults to ``"auto"``,
-    which resolves the renderer from ``tokenizer.name_or_path`` against
-    ``renderers.MODEL_RENDERER_MAP``. ``None`` opts into MITO
-    (``openai_chat_completions``); SFT mode forces this."""
+    union). Defaults to ``"auto"``, which resolves from
+    ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. ``None``
+    opts into MITO (``openai_chat_completions``); SFT mode forces this."""
 
-    renderer_pool_size: int | None = Field(None, ge=1)
-    """Number of renderer slots shared across concurrent rollouts. Bump for long multi-turn prompts where client-side jinja tokenization serializes. Only meaningful when ``renderer`` is not ``None``."""
+    pool_size: int | None = Field(None, ge=1)
+    """Number of renderer slots shared across concurrent rollouts. Bump
+    for long multi-turn prompts where client-side jinja tokenization
+    serializes. Only meaningful when ``renderer`` is not ``None``."""
 
     @model_serializer(mode="wrap")
     def _preserve_mito_renderer(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
@@ -817,15 +815,15 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_renderer_pool_size(self):
-        """``renderer_pool_size`` is only meaningful when the renderer is
-        enabled (``renderer is not None``). Reject otherwise so callers
-        don't silently pass it and wonder why it's ignored."""
-        if self.renderer is None and self.renderer_pool_size is not None:
+    def validate_pool_size(self):
+        """``pool_size`` is only meaningful when the renderer is enabled
+        (``renderer is not None``). Reject otherwise so callers don't
+        silently pass it and wonder why it's ignored."""
+        if self.renderer is None and self.pool_size is not None:
             raise ValueError(
-                f"orchestrator.renderer_pool_size={self.renderer_pool_size!r} is set but "
+                f"orchestrator.pool_size={self.pool_size!r} is set but "
                 "orchestrator.renderer is None (MITO mode). Either configure a renderer "
-                "or remove renderer_pool_size."
+                "or remove pool_size."
             )
         return self
 

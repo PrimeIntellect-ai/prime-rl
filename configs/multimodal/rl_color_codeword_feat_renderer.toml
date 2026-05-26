@@ -39,7 +39,7 @@ group_size = 8
 # more than one tokenizer slot to avoid serialization queueing. The
 # image processor (CPU-bound) dominates for VLMs so returns diminish
 # past 4; bump to 4 as the default for multimodal runs.
-renderer_pool_size = 4
+pool_size = 4
 
 # Track zero-advantage groups but don't drop them — we're validating the
 # multimodal renderer path on 20 steps, not optimizing training efficiency.

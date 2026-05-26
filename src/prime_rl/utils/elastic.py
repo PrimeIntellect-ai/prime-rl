@@ -108,7 +108,7 @@ class ElasticInferencePool:
         train_client_type: str = "openai_chat_completions",
         eval_client_type: str = "openai_chat_completions",
         renderer_config: RendererConfig | None = None,
-        renderer_pool_size: int | None = None,
+        pool_size: int | None = None,
     ):
         self.logger = get_logger()
         self.client_config = client_config
@@ -121,7 +121,7 @@ class ElasticInferencePool:
         self.train_client_type = train_client_type
         self.eval_client_type = eval_client_type
         self.renderer_config = renderer_config
-        self.renderer_pool_size = renderer_pool_size
+        self.pool_size = pool_size
         self.router_url = client_config.router_url
 
         self._servers: dict[str, ServerState] = {}
@@ -146,7 +146,7 @@ class ElasticInferencePool:
         train_client_type: str = "openai_chat_completions",
         eval_client_type: str = "openai_chat_completions",
         renderer_config: RendererConfig | None = None,
-        renderer_pool_size: int | None = None,
+        pool_size: int | None = None,
     ) -> ElasticInferencePool:
         if client_config.elastic is None:
             raise ValueError("Elastic inference pool requires elastic config")
@@ -156,7 +156,7 @@ class ElasticInferencePool:
             train_client_type=train_client_type,
             eval_client_type=eval_client_type,
             renderer_config=renderer_config,
-            renderer_pool_size=renderer_pool_size,
+            pool_size=pool_size,
         )
         await pool.start()
         return pool
@@ -205,7 +205,7 @@ class ElasticInferencePool:
                     client_type=self.train_client_type,
                     renderer_config=self.renderer_config,
                     renderer_model_name=self.renderer_model_name,
-                    renderer_pool_size=self.renderer_pool_size,
+                    pool_size=self.pool_size,
                 )
                 if urls
                 else []

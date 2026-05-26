@@ -18,7 +18,7 @@ def test_setup_student_inference_pool_uses_renderer_when_enabled():
                 model=SimpleNamespace(name="student-model"),
             ),
             renderer=renderer_settings,
-            renderer_pool_size=None,
+            pool_size=None,
         )
         logger = MagicMock()
         renderer = object()
@@ -46,7 +46,7 @@ def test_setup_student_inference_pool_uses_renderer_when_enabled():
             train_client_type="renderer",
             eval_client_type="openai_chat_completions",
             renderer_config=renderer_settings,
-            renderer_pool_size=None,
+            pool_size=None,
         )
 
     asyncio.run(run())
@@ -60,7 +60,7 @@ def test_setup_student_inference_pool_defaults_to_mito():
         config = SimpleNamespace(
             training_mode="rl",
             renderer=None,
-            renderer_pool_size=None,
+            pool_size=None,
             student=SimpleNamespace(
                 client=SimpleNamespace(base_url=["http://localhost:8000/v1"]),
                 model=SimpleNamespace(name="student-model"),

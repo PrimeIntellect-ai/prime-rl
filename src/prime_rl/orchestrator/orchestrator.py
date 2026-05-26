@@ -880,7 +880,7 @@ async def setup_student_inference_pool(
             train_client_type="renderer",
             eval_client_type="openai_chat_completions",
             renderer_config=config.renderer,
-            renderer_pool_size=config.renderer_pool_size,
+            pool_size=config.pool_size,
         )
         logger.info("Using direct renderer rollout client")
         return renderer, inference_pool
