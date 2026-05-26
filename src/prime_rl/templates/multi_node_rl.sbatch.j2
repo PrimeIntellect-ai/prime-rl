@@ -168,6 +168,8 @@ srun bash -s <<'CLEANUP_SH'
     pkill -9 -f "[p]ython.*prime_rl" 2>/dev/null
     pkill -9 -f "[t]orchrun" 2>/dev/null
     pkill -9 -f "[v]llm-router" 2>/dev/null
+    pkill -9 -f "[e]pp.*pool-name" 2>/dev/null
+    pkill -9 -f "[e]nvoy.*envoy.yaml" 2>/dev/null
     pkill -9 -f "[v]llm" 2>/dev/null
     pkill -9 -f "[p]rime_rl" 2>/dev/null
     # Also match prctl-set process names (kernel comm) like "vllm::router"
@@ -305,12 +307,26 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         fi
     fi
 
-    # Start vllm-router on the first node of each replica (PD mode)
+    # Start router on the first node of each replica (PD mode)
     if [ "$RANK_IN_REPLICA" -eq 0 ]; then
         ROUTER_LOG="$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log"
-        echo "Starting vllm-router (PD) on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG
-
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
+
+{%- if router_backend == "llm-d" %}
+        echo "Starting llm-d router (EPP+Envoy, PD) on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG
+        export PATH="$PROJECT_DIR/third_party/llmd/bin:$PATH"
+        LLMD_DIR="$OUTPUT_DIR/logs/inference/llmd_${REPLICA_IDX}"
+        bash $PROJECT_DIR/scripts/write_llmd_configs.sh disaggregated $ROUTER_PORT "$LLMD_DIR" $REPLICA_ROUTER_ARGS
+
+        epp --pool-name prime-rl --pool-namespace slurm \
+            --config-file "$LLMD_DIR/epp.yaml" \
+            --grpc-port 9002 --grpc-health-port 9003 --metrics-port 9090 \
+            --secure-serving=false --metrics-endpoint-auth=false --tracing=false \
+            >> $ROUTER_LOG 2>&1 &
+        envoy -c "$LLMD_DIR/envoy.yaml" --concurrency 1 \
+            >> $ROUTER_LOG 2>&1 &
+{%- else %}
+        echo "Starting vllm-router (PD) on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG
 
         vllm-router \
             --policy consistent_hash \
@@ -321,6 +337,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             --intra-node-data-parallel-size {{ dp_per_node }} \
             --worker-startup-timeout-secs 4200 \
             >> $ROUTER_LOG 2>&1 &
+{%- endif %}
     fi
 
     uv run inference \
@@ -332,12 +349,26 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         --vllm-extra "$VLLM_EXTRA" \
         2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log &
 {%- else -%}
-    # Start vllm-router on the first node of each replica
+    # Start router on the first node of each replica
     if [ "$RANK_IN_REPLICA" -eq 0 ]; then
         ROUTER_LOG="$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log"
-        echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG
-
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
+
+{%- if router_backend == "llm-d" %}
+        echo "Starting llm-d router (EPP+Envoy) on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG
+        export PATH="$PROJECT_DIR/third_party/llmd/bin:$PATH"
+        LLMD_DIR="$OUTPUT_DIR/logs/inference/llmd_${REPLICA_IDX}"
+        bash $PROJECT_DIR/scripts/write_llmd_configs.sh multi_node $ROUTER_PORT "$LLMD_DIR" $REPLICA_ROUTER_ARGS
+
+        epp --pool-name prime-rl --pool-namespace slurm \
+            --config-file "$LLMD_DIR/epp.yaml" \
+            --grpc-port 9002 --grpc-health-port 9003 --metrics-port 9090 \
+            --secure-serving=false --metrics-endpoint-auth=false --tracing=false \
+            >> $ROUTER_LOG 2>&1 &
+        envoy -c "$LLMD_DIR/envoy.yaml" --concurrency 1 \
+            >> $ROUTER_LOG 2>&1 &
+{%- else %}
+        echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG
 
         vllm-router \
             --policy consistent_hash \
@@ -347,6 +378,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             --intra-node-data-parallel-size {{ dp_per_node }} \
             --worker-startup-timeout-secs 4200 \
             >> $ROUTER_LOG 2>&1 &
+{%- endif %}
     fi
 
     if [ "$USE_DISTRIBUTED_EP" -eq 1 ]; then
