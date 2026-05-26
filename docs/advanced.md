@@ -4,20 +4,20 @@ This page covers the specialized features layered on top of the core training st
 
 ## Table of Contents
 
-- [Custom modeling](#custom-modeling)
-  - [Custom vs HF implementations](#custom-vs-hf-implementations)
-  - [Expert parallelism backends](#expert-parallelism-backends)
-- [Multimodal training](#multimodal-training)
-  - [Supported families](#supported-families)
-  - [Enabling VLM mode](#enabling-vlm-mode)
+- [Custom Modeling](#custom-modeling)
+  - [Custom vs HF Implementations](#custom-vs-hf-implementations)
+  - [Expert Parallelism Backends](#expert-parallelism-backends)
+- [Multimodal Training](#multimodal-training)
+  - [Supported Families](#supported-families)
+  - [Enabling VLM Mode](#enabling-vlm-mode)
   - [Limitations](#limitations)
-- [LoRA training](#lora-training)
-- [Multi-tenant training](#multi-tenant-training)
-- [Disaggregated prefill/decode inference](#disaggregated-prefilldecode-inference)
+- [LoRA Training](#lora-training)
+- [Multi-Tenant Training](#multi-tenant-training)
+- [Disaggregated Prefill/Decode Inference](#disaggregated-prefilldecode-inference)
 
-## Custom modeling
+## Custom Modeling
 
-### Custom vs HF implementations
+### Custom vs HF Implementations
 
 `prime-rl` ships custom optimized model implementations for several MoE families. With `model.impl = "auto"` (default) the trainer picks the custom path when the HF config type is registered, falling back to plain HF otherwise. To force one:
 
@@ -41,7 +41,7 @@ impl = "custom"        # or "hf" to force the HF path
 
 The custom path enables EP, selective activation checkpointing, FP8 training (`model.fp8 = true`, requires SM90+), and faster MoE kernels (`moe_use_grouped_mm = true`, default). Forcing `impl = "hf"` is mostly useful when debugging — it's slower and disables most MoE-specific knobs.
 
-### Expert parallelism backends
+### Expert Parallelism Backends
 
 `model.ep_comm_backend` picks the all-to-all kernel used for EP dispatch/combine:
 
@@ -52,9 +52,9 @@ DeepEP intranode dispatch derives the RDMA channel count as `deepep_num_sms / 2`
 
 When you enable DeepEP, gradient clipping is auto-disabled (`optim.max_norm` set to `None`) because the kernels don't currently support it.
 
-## Multimodal training
+## Multimodal Training
 
-### Supported families
+### Supported Families
 
 The built-in VLM registry covers:
 
@@ -67,7 +67,7 @@ The built-in VLM registry covers:
 
 For a model not in the table, look up the attribute paths on the loaded HF model with `model.named_children()` and set them under `[model.vlm]` directly.
 
-### Enabling VLM mode
+### Enabling VLM Mode
 
 Add `[model.vlm]` and bfloat16 dtypes:
 
@@ -95,7 +95,7 @@ To add a new model family permanently, append an entry to `VLM_REGISTRY` in `src
 - **Higher KL mismatch with multi-image inputs.** Expect noisier `mismatch_kl` than text-only; this is from minor numerical differences between the trainer's and vLLM's image processing.
 - **Images aren't logged to monitors.** Sample logging captures the prompt text but not the actual images.
 
-## LoRA training
+## LoRA Training
 
 LoRA is enabled by adding `[model.lora]`:
 
@@ -117,11 +117,11 @@ save_adapter_separately = true
 
 LoRA pairs naturally with [multi-tenant training](#multi-tenant-training) — each tenant gets its own adapter and the backbone is shared across all of them in trainer memory.
 
-## Multi-tenant training
+## Multi-Tenant Training
 
 Multi-tenant training lets a single trainer + inference deployment serve many concurrent LoRA "tenants" — each a fully isolated run with its own orchestrator, LoRA adapter, optimizer, scheduler, checkpoints, and progress tracking — sharing the same backbone weights and the same vLLM server. This is the topology behind hosted training on the [Prime Intellect platform (Lab)](https://app.primeintellect.ai). The trainer-side implementation is the `MultiRunManager` singleton, enabled by setting `trainer.max_concurrent_runs > 1`. For the full API surface, see [`src/prime_rl/trainer/runs/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/src/prime_rl/trainer/runs).
 
-## Disaggregated prefill/decode inference
+## Disaggregated Prefill/Decode Inference
 
 For large MoE serving, splitting prefill and decode onto separate vLLM groups can substantially improve throughput. Pick the prefill:decode ratio based on workload shape:
 

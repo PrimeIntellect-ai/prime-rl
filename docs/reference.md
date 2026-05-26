@@ -274,7 +274,7 @@ Weight-checkpoint sub-configuration. If None, no HF-compatible weight checkpoint
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `trainer.log.level` | `str` | `'info'` | Log level for the process. Defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``. |
-| `trainer.log.vf_level` | `str` | `'info'` | Log level for the verifiers package. Defaults to ``$PRIME_VF_LOG_LEVEL`` if set, else ``info``. |
+| `trainer.log.vf_level` | `str` | `'info'` | Log level for the [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) package. Defaults to ``$PRIME_VF_LOG_LEVEL`` if set, else ``info``. |
 | `trainer.log.json_logging` | `bool` | `False` | Emit newline-delimited JSON logs for aggregation (Loki, Grafana, etc.). |
 | `trainer.log.log_data` | `bool` | `False` | Log the first data sample at startup. |
 | `trainer.log.ranks_filter` | `list[int]` | `[0]` | Trainer ranks to show in console output. Passed to ``torchrun --local-ranks-filter``. |
@@ -521,7 +521,7 @@ Discriminated union — set `trainer.rollout_transport.type` to one of `filesyst
 | `orchestrator.strict_async_level` | `bool` | `False` | Strictly enforce ``max_async_level``. When True, the rollout policy is always exactly ``max_async_level`` steps ahead of training. When False, any policy within ``max_async_level`` steps is allowed (always uses the latest available policy). |
 | `orchestrator.bench` | `bool` | `False` | Benchmark mode. Sets ``max_steps`` to 5, ``max_async_level`` to ~∞, and disables W&B. |
 | `orchestrator.seed` | `int | None` | `42` | Random seed for the orchestrator. |
-| `orchestrator.use_renderer` | `bool` | `True` | Use the renderer-backed TITO client (client-side tokenization via the ``renderers`` package, served by ``/v1/generate``). When True, the ``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) applies. Default for both text-only and VLM rollouts; VLMs require it. False falls back to MITO (``openai_chat_completions``). |
+| `orchestrator.use_renderer` | `bool` | `True` | Use the renderer-backed TITO client (client-side tokenization via the [`renderers`](https://github.com/PrimeIntellect-ai/renderers) package, served by ``/v1/generate``). When True, the ``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) applies. Default for both text-only and VLM rollouts; VLMs require it. False falls back to MITO (``openai_chat_completions``). |
 | `orchestrator.env_install_prerelease` | `bool` | `False` | Allow pre-release versions when installing environments (e.g. ``verifiers>=0.1.12.dev5``). Passes ``--prerelease`` to ``prime env install``. |
 
 <a id="rl-orchestrator-student"></a>
@@ -681,7 +681,7 @@ Training environments.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `orchestrator.train.env.<n>.id` | `str` | `'reverse-text'` | Registered verifiers environment ID (e.g. ``math-env``, ``primeintellect/math-env``). May include an ``@version`` suffix for installation. |
+| `orchestrator.train.env.<n>.id` | `str` | `'reverse-text'` | Registered [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) environment ID (e.g. ``math-env``, ``primeintellect/math-env``). May include an ``@version`` suffix for installation. |
 | `orchestrator.train.env.<n>.name` | `str | None` | `None` | Display name for this environment in logs, metrics, and buffer keys. Defaults to the ``id`` without ``@version``. Must be unique across all envs in the same group. |
 | `orchestrator.train.env.<n>.args` | `dict` | `{}` | Keyword arguments forwarded to ``vf.load_environment``. See the environment's docstring for accepted args. |
 | `orchestrator.train.env.<n>.extra_env_kwargs` | `dict[str, Any]` | `{}` | Extra kwargs passed to the env (e.g. ``seq_len``, ``max_total_completion_tokens``). Auto-populated by the orchestrator; user overrides are generally discouraged. The main use case is matching ``extra_env_kwargs`` when running an env in an isolated environment server. |
@@ -724,8 +724,8 @@ Client-side renderer configuration. Only consumed when ``use_renderer=true``.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `orchestrator.renderer.name` | `str` | `'auto'` | Renderer used for chat-template tokenization. One of: ``auto`` (detect from tokenizer), ``qwen3``, ``qwen3_vl``, ``qwen3.5``, ``glm5``, ``glm4.5``, ``minimax-m2``, ``deepseek_v3``, ``kimi_k2``, ``kimi_k25``, ``nemotron3``, ``gpt_oss``, ``default``. |
-| `orchestrator.renderer.tool_parser` | `str | None` | `None` | Tool parser from ``renderers.parsers``. Only consumed by DefaultRenderer; model-specific renderers bake their own parsing in. Options: ``qwen3``, ``qwen3.5``, ``glm``, ``deepseek_v3``. |
-| `orchestrator.renderer.reasoning_parser` | `str | None` | `None` | Reasoning parser from ``renderers.parsers``. Only consumed by DefaultRenderer. Options: ``think``. |
+| `orchestrator.renderer.tool_parser` | `str | None` | `None` | Tool parser from [`renderers.parsers`](https://github.com/PrimeIntellect-ai/renderers). Only consumed by DefaultRenderer; model-specific renderers bake their own parsing in. Options: ``qwen3``, ``qwen3.5``, ``glm``, ``deepseek_v3``. |
+| `orchestrator.renderer.reasoning_parser` | `str | None` | `None` | Reasoning parser from [`renderers.parsers`](https://github.com/PrimeIntellect-ai/renderers). Only consumed by DefaultRenderer. Options: ``think``. |
 | `orchestrator.renderer.pool_size` | `int | None` | `None` | _≥1._ Number of renderer slots shared across concurrent rollouts. Bump for long multi-turn prompts where client-side jinja tokenization serializes. |
 | `orchestrator.renderer.preserve_all_thinking` | `bool` | `False` | Re-emit every past-assistant turn's ``reasoning_content`` between ``<think>``/``</think>`` (or the model's equivalent), even when the chat template would drop it. Strict superset of preserve_thinking_between_tool_calls. |
 | `orchestrator.renderer.preserve_thinking_between_tool_calls` | `bool` | `False` | Preserve past-assistant ``reasoning_content`` only inside the current tool cycle — the contiguous assistant→tool→…→assistant block after the most recent user message, when that block contains at least one tool response. A new user turn closes the block. |
@@ -780,7 +780,7 @@ Evaluation environments.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `orchestrator.eval.env.<n>.id` | `str` | `'reverse-text'` | Registered verifiers environment ID (e.g. ``math-env``, ``primeintellect/math-env``). May include an ``@version`` suffix for installation. |
+| `orchestrator.eval.env.<n>.id` | `str` | `'reverse-text'` | Registered [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) environment ID (e.g. ``math-env``, ``primeintellect/math-env``). May include an ``@version`` suffix for installation. |
 | `orchestrator.eval.env.<n>.name` | `str | None` | `None` | Display name for this environment in logs, metrics, and buffer keys. Defaults to the ``id`` without ``@version``. Must be unique across all envs in the same group. |
 | `orchestrator.eval.env.<n>.args` | `dict` | `{}` | Keyword arguments forwarded to ``vf.load_environment``. See the environment's docstring for accepted args. |
 | `orchestrator.eval.env.<n>.extra_env_kwargs` | `dict[str, Any]` | `{}` | Extra kwargs passed to the env (e.g. ``seq_len``, ``max_total_completion_tokens``). Auto-populated by the orchestrator; user overrides are generally discouraged. The main use case is matching ``extra_env_kwargs`` when running an env in an isolated environment server. |
@@ -832,7 +832,7 @@ Per-env sampling overrides. Unset fields inherit from the group-level eval sampl
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `orchestrator.log.level` | `str` | `'info'` | Log level for the process. Defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``. |
-| `orchestrator.log.vf_level` | `str` | `'info'` | Log level for the verifiers package. Defaults to ``$PRIME_VF_LOG_LEVEL`` if set, else ``info``. |
+| `orchestrator.log.vf_level` | `str` | `'info'` | Log level for the [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) package. Defaults to ``$PRIME_VF_LOG_LEVEL`` if set, else ``info``. |
 | `orchestrator.log.json_logging` | `bool` | `False` | Emit newline-delimited JSON logs for aggregation (Loki, Grafana, etc.). |
 | `orchestrator.log.log_data` | `bool` | `False` | Log the first data sample at startup. |
 
@@ -1283,7 +1283,7 @@ _Defined in_ `prime_rl.configs.sft.SFTConfig`.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `use_renderer` | `bool` | `False` | Tokenize SFT samples through the ``renderers`` library (single ``render()`` + ``message_indices`` mask) instead of the default ``build_incremental_token_mask`` path. Required for chat templates that render position-dependently (e.g. Qwen3, Qwen3.5). |
+| `use_renderer` | `bool` | `False` | Tokenize SFT samples through the [`renderers`](https://github.com/PrimeIntellect-ai/renderers) library (single ``render()`` + ``message_indices`` mask) instead of the default ``build_incremental_token_mask`` path. Required for chat templates that render position-dependently (e.g. Qwen3, Qwen3.5). |
 | `output_dir` | `Path` | `'outputs'` | Directory to write outputs to — checkpoints and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node. |
 | `clean_output_dir` | `bool` | `False` | Delete the output directory before starting training. Required to overwrite an output directory that contains checkpoints from a previous run when not resuming. |
 | `matmul_precision` | `'highest' | 'high' | 'medium'` | `'high'` | Precision for float32 matrix multiplications. ``highest`` is full FP32 (required on ROCm/AMD GPUs to avoid catastrophic precision loss in softmax over large vocabularies). ``high`` enables TF32 on NVIDIA GPUs for a speedup with minor precision tradeoff. See ``torch.set_float32_matmul_precision``. |
@@ -1413,8 +1413,8 @@ Client-side renderer configuration. Only consumed when ``use_renderer=true``.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `renderer.name` | `str` | `'auto'` | Renderer used for chat-template tokenization. One of: ``auto`` (detect from tokenizer), ``qwen3``, ``qwen3_vl``, ``qwen3.5``, ``glm5``, ``glm4.5``, ``minimax-m2``, ``deepseek_v3``, ``kimi_k2``, ``kimi_k25``, ``nemotron3``, ``gpt_oss``, ``default``. |
-| `renderer.tool_parser` | `str | None` | `None` | Tool parser from ``renderers.parsers``. Only consumed by DefaultRenderer; model-specific renderers bake their own parsing in. Options: ``qwen3``, ``qwen3.5``, ``glm``, ``deepseek_v3``. |
-| `renderer.reasoning_parser` | `str | None` | `None` | Reasoning parser from ``renderers.parsers``. Only consumed by DefaultRenderer. Options: ``think``. |
+| `renderer.tool_parser` | `str | None` | `None` | Tool parser from [`renderers.parsers`](https://github.com/PrimeIntellect-ai/renderers). Only consumed by DefaultRenderer; model-specific renderers bake their own parsing in. Options: ``qwen3``, ``qwen3.5``, ``glm``, ``deepseek_v3``. |
+| `renderer.reasoning_parser` | `str | None` | `None` | Reasoning parser from [`renderers.parsers`](https://github.com/PrimeIntellect-ai/renderers). Only consumed by DefaultRenderer. Options: ``think``. |
 | `renderer.pool_size` | `int | None` | `None` | _≥1._ Number of renderer slots shared across concurrent rollouts. Bump for long multi-turn prompts where client-side jinja tokenization serializes. |
 | `renderer.preserve_all_thinking` | `bool` | `False` | Re-emit every past-assistant turn's ``reasoning_content`` between ``<think>``/``</think>`` (or the model's equivalent), even when the chat template would drop it. Strict superset of preserve_thinking_between_tool_calls. |
 | `renderer.preserve_thinking_between_tool_calls` | `bool` | `False` | Preserve past-assistant ``reasoning_content`` only inside the current tool cycle — the contiguous assistant→tool→…→assistant block after the most recent user message, when that block contains at least one tool response. A new user turn closes the block. |
@@ -1493,7 +1493,7 @@ Weight-checkpoint sub-configuration. If None, no HF-compatible weight checkpoint
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `log.level` | `str` | `'info'` | Log level for the process. Defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``. |
-| `log.vf_level` | `str` | `'info'` | Log level for the verifiers package. Defaults to ``$PRIME_VF_LOG_LEVEL`` if set, else ``info``. |
+| `log.vf_level` | `str` | `'info'` | Log level for the [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) package. Defaults to ``$PRIME_VF_LOG_LEVEL`` if set, else ``info``. |
 | `log.json_logging` | `bool` | `False` | Emit newline-delimited JSON logs for aggregation (Loki, Grafana, etc.). |
 | `log.log_data` | `bool` | `False` | Log the first data sample at startup. |
 | `log.ranks_filter` | `list[int]` | `[0]` | Trainer ranks to show in console output. Passed to ``torchrun --local-ranks-filter``. |
@@ -1891,7 +1891,7 @@ Weight-checkpoint sub-configuration. If None, no HF-compatible weight checkpoint
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `log.level` | `str` | `'info'` | Log level for the process. Defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``. |
-| `log.vf_level` | `str` | `'info'` | Log level for the verifiers package. Defaults to ``$PRIME_VF_LOG_LEVEL`` if set, else ``info``. |
+| `log.vf_level` | `str` | `'info'` | Log level for the [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) package. Defaults to ``$PRIME_VF_LOG_LEVEL`` if set, else ``info``. |
 | `log.json_logging` | `bool` | `False` | Emit newline-delimited JSON logs for aggregation (Loki, Grafana, etc.). |
 | `log.log_data` | `bool` | `False` | Log the first data sample at startup. |
 | `log.ranks_filter` | `list[int]` | `[0]` | Trainer ranks to show in console output. Passed to ``torchrun --local-ranks-filter``. |
@@ -2142,7 +2142,7 @@ _Defined in_ `prime_rl.configs.orchestrator.OrchestratorConfig`.
 | `strict_async_level` | `bool` | `False` | Strictly enforce ``max_async_level``. When True, the rollout policy is always exactly ``max_async_level`` steps ahead of training. When False, any policy within ``max_async_level`` steps is allowed (always uses the latest available policy). |
 | `bench` | `bool` | `False` | Benchmark mode. Sets ``max_steps`` to 5, ``max_async_level`` to ~∞, and disables W&B. |
 | `seed` | `int | None` | `42` | Random seed for the orchestrator. |
-| `use_renderer` | `bool` | `True` | Use the renderer-backed TITO client (client-side tokenization via the ``renderers`` package, served by ``/v1/generate``). When True, the ``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) applies. Default for both text-only and VLM rollouts; VLMs require it. False falls back to MITO (``openai_chat_completions``). |
+| `use_renderer` | `bool` | `True` | Use the renderer-backed TITO client (client-side tokenization via the [`renderers`](https://github.com/PrimeIntellect-ai/renderers) package, served by ``/v1/generate``). When True, the ``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) applies. Default for both text-only and VLM rollouts; VLMs require it. False falls back to MITO (``openai_chat_completions``). |
 | `env_install_prerelease` | `bool` | `False` | Allow pre-release versions when installing environments (e.g. ``verifiers>=0.1.12.dev5``). Passes ``--prerelease`` to ``prime env install``. |
 
 <a id="orchestrator-student"></a>
@@ -2302,7 +2302,7 @@ Training environments.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `train.env.<n>.id` | `str` | `'reverse-text'` | Registered verifiers environment ID (e.g. ``math-env``, ``primeintellect/math-env``). May include an ``@version`` suffix for installation. |
+| `train.env.<n>.id` | `str` | `'reverse-text'` | Registered [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) environment ID (e.g. ``math-env``, ``primeintellect/math-env``). May include an ``@version`` suffix for installation. |
 | `train.env.<n>.name` | `str | None` | `None` | Display name for this environment in logs, metrics, and buffer keys. Defaults to the ``id`` without ``@version``. Must be unique across all envs in the same group. |
 | `train.env.<n>.args` | `dict` | `{}` | Keyword arguments forwarded to ``vf.load_environment``. See the environment's docstring for accepted args. |
 | `train.env.<n>.extra_env_kwargs` | `dict[str, Any]` | `{}` | Extra kwargs passed to the env (e.g. ``seq_len``, ``max_total_completion_tokens``). Auto-populated by the orchestrator; user overrides are generally discouraged. The main use case is matching ``extra_env_kwargs`` when running an env in an isolated environment server. |
@@ -2345,8 +2345,8 @@ Client-side renderer configuration. Only consumed when ``use_renderer=true``.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `renderer.name` | `str` | `'auto'` | Renderer used for chat-template tokenization. One of: ``auto`` (detect from tokenizer), ``qwen3``, ``qwen3_vl``, ``qwen3.5``, ``glm5``, ``glm4.5``, ``minimax-m2``, ``deepseek_v3``, ``kimi_k2``, ``kimi_k25``, ``nemotron3``, ``gpt_oss``, ``default``. |
-| `renderer.tool_parser` | `str | None` | `None` | Tool parser from ``renderers.parsers``. Only consumed by DefaultRenderer; model-specific renderers bake their own parsing in. Options: ``qwen3``, ``qwen3.5``, ``glm``, ``deepseek_v3``. |
-| `renderer.reasoning_parser` | `str | None` | `None` | Reasoning parser from ``renderers.parsers``. Only consumed by DefaultRenderer. Options: ``think``. |
+| `renderer.tool_parser` | `str | None` | `None` | Tool parser from [`renderers.parsers`](https://github.com/PrimeIntellect-ai/renderers). Only consumed by DefaultRenderer; model-specific renderers bake their own parsing in. Options: ``qwen3``, ``qwen3.5``, ``glm``, ``deepseek_v3``. |
+| `renderer.reasoning_parser` | `str | None` | `None` | Reasoning parser from [`renderers.parsers`](https://github.com/PrimeIntellect-ai/renderers). Only consumed by DefaultRenderer. Options: ``think``. |
 | `renderer.pool_size` | `int | None` | `None` | _≥1._ Number of renderer slots shared across concurrent rollouts. Bump for long multi-turn prompts where client-side jinja tokenization serializes. |
 | `renderer.preserve_all_thinking` | `bool` | `False` | Re-emit every past-assistant turn's ``reasoning_content`` between ``<think>``/``</think>`` (or the model's equivalent), even when the chat template would drop it. Strict superset of preserve_thinking_between_tool_calls. |
 | `renderer.preserve_thinking_between_tool_calls` | `bool` | `False` | Preserve past-assistant ``reasoning_content`` only inside the current tool cycle — the contiguous assistant→tool→…→assistant block after the most recent user message, when that block contains at least one tool response. A new user turn closes the block. |
@@ -2401,7 +2401,7 @@ Evaluation environments.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `eval.env.<n>.id` | `str` | `'reverse-text'` | Registered verifiers environment ID (e.g. ``math-env``, ``primeintellect/math-env``). May include an ``@version`` suffix for installation. |
+| `eval.env.<n>.id` | `str` | `'reverse-text'` | Registered [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) environment ID (e.g. ``math-env``, ``primeintellect/math-env``). May include an ``@version`` suffix for installation. |
 | `eval.env.<n>.name` | `str | None` | `None` | Display name for this environment in logs, metrics, and buffer keys. Defaults to the ``id`` without ``@version``. Must be unique across all envs in the same group. |
 | `eval.env.<n>.args` | `dict` | `{}` | Keyword arguments forwarded to ``vf.load_environment``. See the environment's docstring for accepted args. |
 | `eval.env.<n>.extra_env_kwargs` | `dict[str, Any]` | `{}` | Extra kwargs passed to the env (e.g. ``seq_len``, ``max_total_completion_tokens``). Auto-populated by the orchestrator; user overrides are generally discouraged. The main use case is matching ``extra_env_kwargs`` when running an env in an isolated environment server. |
@@ -2453,7 +2453,7 @@ Per-env sampling overrides. Unset fields inherit from the group-level eval sampl
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `log.level` | `str` | `'info'` | Log level for the process. Defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``. |
-| `log.vf_level` | `str` | `'info'` | Log level for the verifiers package. Defaults to ``$PRIME_VF_LOG_LEVEL`` if set, else ``info``. |
+| `log.vf_level` | `str` | `'info'` | Log level for the [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) package. Defaults to ``$PRIME_VF_LOG_LEVEL`` if set, else ``info``. |
 | `log.json_logging` | `bool` | `False` | Emit newline-delimited JSON logs for aggregation (Loki, Grafana, etc.). |
 | `log.log_data` | `bool` | `False` | Log the first data sample at startup. |
 

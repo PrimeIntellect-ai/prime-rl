@@ -4,18 +4,18 @@ This page covers workflows for developing on `prime-rl` itself — running the t
 
 ## Table of Contents
 
-- [Test suite](#test-suite)
+- [Test Suite](#test-suite)
   - [Layout](#layout)
-  - [Running tests locally](#running-tests-locally)
-  - [CI workflows](#ci-workflows)
+  - [Running Tests Locally](#running-tests-locally)
+  - [CI Workflows](#ci-workflows)
   - [Markers](#markers)
-- [Pre-commit hooks](#pre-commit-hooks)
-- [Adding a new architecture](#adding-a-new-architecture)
+- [Pre-Commit Hooks](#pre-commit-hooks)
+- [Adding a New Architecture](#adding-a-new-architecture)
 - [Debugging MoE](#debugging-moe)
-  - [Create mini model](#create-mini-model)
-  - [Smoke-test training](#smoke-test-training)
+  - [Create Mini Model](#create-mini-model)
+  - [Smoke-Test Training](#smoke-test-training)
 
-## Test suite
+## Test Suite
 
 The test suite is split into three tiers, each with its own CI workflow.
 
@@ -25,7 +25,7 @@ The test suite is split into three tiers, each with its own CI workflow.
 - **`tests/integration/`** — full-stack RL/SFT runs on a tiny model end-to-end through inference + orchestrator + trainer.
 - **`tests/nightly/`** — runs the configs in [`examples/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples) every night to catch regressions in the shipped examples.
 
-### Running tests locally
+### Running Tests Locally
 
 ```bash
 uv run pytest -v                                           # everything
@@ -36,7 +36,7 @@ uv run pytest -v -m gpu                                    # GPU-only subset
 uv run pytest tests/integration/test_reverse_text.py -vvs  # one specific scenario
 ```
 
-### CI workflows
+### CI Workflows
 
 | Workflow | Trigger | What runs | Where |
 |---|---|---|---|
@@ -53,7 +53,7 @@ Two pytest markers are declared in `pyproject.toml` (`addopts = "--strict-marker
 - `gpu` — gate a test that needs CUDA. CPU CI uses `-m "not gpu"`; the GPU unit job uses `-m gpu`.
 - `slow` — gate a test that's expensive enough you'd usually skip it locally. Deselect with `-m "not slow"`.
 
-## Pre-commit hooks
+## Pre-Commit Hooks
 
 Install the [pre-commit](https://pre-commit.com) hooks before your first commit so ruff and the docs-reference regenerator run automatically:
 
@@ -66,7 +66,7 @@ The configured hooks:
 - **`ruff` check + format** on staged Python files.
 - **`docs-reference`** — re-runs [`scripts/generate_docs_reference.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/scripts/generate_docs_reference.py) whenever a config class or the generator itself is staged. If `docs/reference.md` would change, the commit fails so you can re-stage the regenerated file.
 
-## Adding a new architecture
+## Adding a New Architecture
 
 Bringing up a new model family is two steps: implement the modeling code, then register a small-scale preset so you can smoke-test the new architecture end-to-end without paying the cost of the full-size model.
 
@@ -93,7 +93,7 @@ Bringing up a new model family is two steps: implement the modeling code, then r
 
 When working on MoE architectures (GLM-4, Kimi, etc.), you can't iterate on a 100B+ model locally. The workflow below builds a ~0.5B model with the same architecture, warms it up with SFT, and runs RL — all on 1–2 GPUs. The goal is catching bugs in modeling code, state-dict conversions, and pipeline integration before scaling.
 
-### Create mini model
+### Create Mini Model
 
 ```bash
 uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe
@@ -105,7 +105,7 @@ This creates a ~543M parameter GLM-4 MoE (1024 hidden, 24 layers, 8 experts) wit
 uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe --verify-only
 ```
 
-### Smoke-test training
+### Smoke-Test Training
 
 First warm up the random-weight mini model with SFT on reverse-text so KL divergence becomes meaningful in the RL phase:
 

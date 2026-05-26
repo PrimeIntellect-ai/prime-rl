@@ -4,28 +4,28 @@ This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster
 
 ## Table of Contents
 
-- [Single-node vs. multi-node deployment](#single-node-vs-multi-node-deployment)
+- [Single-Node vs. Multi-Node Deployment](#single-node-vs-multi-node-deployment)
   - [Single GPU](#single-gpu)
-  - [Single-node multi-GPU](#single-node-multi-gpu)
-    - [RL placement](#rl-placement)
-    - [SFT and torchrun](#sft-and-torchrun)
-  - [Multi-node](#multi-node)
-- [Parallelism knobs](#parallelism-knobs)
+  - [Single-Node Multi-GPU](#single-node-multi-gpu)
+    - [RL Placement](#rl-placement)
+    - [SFT and Torchrun](#sft-and-torchrun)
+  - [Multi-Node](#multi-node)
+- [Parallelism Knobs](#parallelism-knobs)
   - [FSDP](#fsdp)
-  - [Expert parallelism](#expert-parallelism)
-  - [Context parallelism](#context-parallelism)
-  - [Activation checkpointing and offloading](#activation-checkpointing-and-offloading)
-  - [CPU optimizer offload](#cpu-optimizer-offload)
-- [Memory-tight recipe](#memory-tight-recipe)
+  - [Expert Parallelism](#expert-parallelism)
+  - [Context Parallelism](#context-parallelism)
+  - [Activation Checkpointing and Offloading](#activation-checkpointing-and-offloading)
+  - [CPU Optimizer Offload](#cpu-optimizer-offload)
+- [Memory-Tight Recipe](#memory-tight-recipe)
 - [SLURM](#slurm)
   - [Activation](#activation)
-  - [`[slurm]` and `[deployment]` reference](#slurm-and-deployment-reference)
-  - [RL example](#rl-example)
-  - [SFT and inference examples](#sft-and-inference-examples)
-  - [Custom templates](#custom-templates)
+  - [`[slurm]` and `[deployment]` Reference](#slurm-and-deployment-reference)
+  - [RL Example](#rl-example)
+  - [SFT and Inference Examples](#sft-and-inference-examples)
+  - [Custom Templates](#custom-templates)
 - [Benchmarking](#benchmarking)
 
-## Single-node vs. multi-node deployment
+## Single-Node vs. Multi-Node Deployment
 
 The `rl`, `sft`, and `inference` entrypoints all accept a `[deployment]` block (`type = "single_node"` or `"multi_node"`) that picks how the trainer / orchestrator / inference processes are placed across hardware. **Single-node** runs locally; **multi-node** currently goes through [SLURM](#slurm) — the launcher writes an sbatch script that places inference replicas, the orchestrator, and the trainer with the right rendezvous endpoints, IPs, ports, and shared-filesystem paths wired in.
 
@@ -52,9 +52,9 @@ CUDA_VISIBLE_DEVICES=0 uv run trainer @ train.toml
 
 Single-GPU RL is for debugging only — production RL needs 2+ GPUs.
 
-### Single-node multi-GPU
+### Single-Node Multi-GPU
 
-#### RL placement
+#### RL Placement
 
 `rl` defaults to 1 trainer GPU and 1 inference GPU. To give inference 6 GPUs with data parallelism and the trainer the remaining 2 on an 8-GPU node:
 
@@ -82,7 +82,7 @@ CUDA_VISIBLE_DEVICES=2,3 uv run rl @ rl.toml \
   --output-dir outputs/exp2
 ```
 
-#### SFT and torchrun
+#### SFT and Torchrun
 
 `uv run sft` manages torchrun internally — you don't need to call torchrun yourself. To scale from 1 to N GPUs, set the deployment GPU count (or just let it pick up `WORLD_SIZE`). For non-default layouts, the manual equivalent is:
 
@@ -95,11 +95,11 @@ uv run torchrun \
 
 `--local-ranks-filter 0` keeps console output to rank 0 only; per-rank stdout/stderr is still captured in `<output_dir>/logs/trainer/torchrun/`.
 
-### Multi-node
+### Multi-Node
 
-Multi-node deployments (RL or SFT) are launched via [SLURM](#slurm) — set `[deployment] type = "multi_node"` plus the matching `[slurm]` block, and the launcher writes the sbatch script that places inference, orchestrator, and trainer across the requested nodes with the inter-process wiring set up correctly. See [SLURM § RL example](#rl-example) and [SLURM § SFT and inference examples](#sft-and-inference-examples) for full configs.
+Multi-node deployments (RL or SFT) are launched via [SLURM](#slurm) — set `[deployment] type = "multi_node"` plus the matching `[slurm]` block, and the launcher writes the sbatch script that places inference, orchestrator, and trainer across the requested nodes with the inter-process wiring set up correctly. See [SLURM § RL Example](#rl-example) and [SLURM § SFT and Inference Examples](#sft-and-inference-examples) for full configs.
 
-## Parallelism knobs
+## Parallelism Knobs
 
 ### FSDP
 
@@ -112,7 +112,7 @@ FSDP2 is the default model sharding strategy. By default the trainer fully shard
 | `trainer.model.fsdp_cpu_offload` | Offload params + grads + optimizer state to CPU. Big memory win, large throughput hit. |
 | `trainer.model.optim_cpu_offload` | Offload only optimizer state. Mid-ground — small throughput cost, decent memory savings, especially at low GPU count. |
 
-### Expert parallelism
+### Expert Parallelism
 
 EP shards MoE expert weights across the EP mesh, dramatically reducing the FSDP communication volume per layer. EP is only available with the custom model implementation (`model.impl = "custom"` or `"auto"` for supported families).
 
@@ -125,7 +125,7 @@ ep_comm_backend = "torch"  # or "deepep"
 
 `ep_comm_backend = "deepep"` uses DeepEP's custom dispatch/combine kernels for speed, with two extra knobs (`deepep_num_sms`, `deepep_token_chunk_size`) — tune on your hardware. See [Reference § `trainer.model`](reference.md#trainer-model) for the full set.
 
-### Context parallelism
+### Context Parallelism
 
 CP shards a single sequence across multiple GPUs along the token dimension — necessary for sequences past ~32K tokens. Only available with the custom impl and flash-attention.
 
@@ -139,7 +139,7 @@ cp_style = "ring"            # "ulysses" for non-FA kernels
 
 `cp = 2` or `cp = 4` works for most 128K-token training. Pushing past CP 8 typically isn't worth it — cross-node CP collectives become the bottleneck.
 
-### Activation checkpointing and offloading
+### Activation Checkpointing and Offloading
 
 | Knob | Memory ↓ | Throughput ↓ |
 |---|---|---|
@@ -155,7 +155,7 @@ mode = "selective"
 targets = ["norm", "attn_proj"]  # see Reference for the full list per architecture
 ```
 
-### CPU optimizer offload
+### CPU Optimizer Offload
 
 In RL, the trainer typically does many gradient-accumulation steps per optimizer step, so the offload cost is amortized. Offloading optimizer states to CPU is a near-free memory win at low GPU counts:
 
@@ -170,7 +170,7 @@ optim_cpu_offload = true
 
 Mutually exclusive with `fsdp_cpu_offload`. Also incompatible with `trainer.max_concurrent_runs > 1` (multi-tenant training). Muon doesn't support `fsdp_cpu_offload` but does support `optim_cpu_offload`.
 
-## Memory-tight recipe
+## Memory-Tight Recipe
 
 The kitchen-sink config for fitting large MoE on limited GPUs at acceptable throughput:
 
@@ -200,7 +200,7 @@ The `rl`, `sft`, and `inference` entrypoints all submit to SLURM when a `[slurm]
 
 ### Activation
 
-A SLURM config is usually a thin overlay that adds `[slurm]` (and `[deployment]` for multi-node) on top of a base config. Configs are composed left-to-right via the `@` CLI syntax — see [Configuration § TOML files and composition](configuration.md#toml-files-and-composition):
+A SLURM config is usually a thin overlay that adds `[slurm]` (and `[deployment]` for multi-node) on top of a base config. Configs are composed left-to-right via the `@` CLI syntax — see [Configuration § TOML Composition](configuration.md#toml-composition):
 
 ```toml
 # my_slurm.toml
@@ -219,7 +219,7 @@ uv run rl @ base_rl.toml @ my_slurm.toml --dry-run   # writes the sbatch script 
 
 The dry-run mode is invaluable — inspect `<output_dir>/job.sbatch` and the per-process TOMLs before burning a queue slot.
 
-### `[slurm]` and `[deployment]` reference
+### `[slurm]` and `[deployment]` Reference
 
 | `[slurm]` field | Default | Description |
 |---|---|---|
@@ -252,7 +252,7 @@ num_nodes = 2
 gpus_per_node = 8
 ```
 
-### RL example
+### RL Example
 
 A two-node RL run with NCCL weight broadcast and a 30B MoE student. Compose with the base config at launch time (`uv run rl @ base.toml @ my_slurm.toml`):
 
@@ -303,7 +303,7 @@ dp = 2
 
 See [`examples/multinode/rl.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/multinode/rl.toml) for a complete worked example.
 
-### SFT and inference examples
+### SFT and Inference Examples
 
 SFT multi-node MoE (compose with `uv run sft @ base_sft.toml @ my_slurm.toml`):
 
@@ -352,7 +352,7 @@ job_name = "my-inference"
 
 Submission prints one URL per node — point clients at any of them, or front them with a router.
 
-### Custom templates
+### Custom Templates
 
 For unusual partitions, module loads, or environment setup, supply your own Jinja2 template:
 

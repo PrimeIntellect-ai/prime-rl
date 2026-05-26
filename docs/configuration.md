@@ -6,21 +6,21 @@ Every `prime-rl` entrypoint uses [`pydantic-config`](https://github.com/PrimeInt
 
 ## Table of Contents
 
-- [Sources and precedence](#sources-and-precedence)
-- [TOML composition](#toml-composition)
-- [CLI overrides](#cli-overrides)
-- [Inspecting and validating](#inspecting-and-validating)
+- [Sources and Precedence](#sources-and-precedence)
+- [TOML Composition](#toml-composition)
+- [CLI Overrides](#cli-overrides)
+- [Inspecting and Validating](#inspecting-and-validating)
 - [Syntax](#syntax)
   - [Booleans](#booleans)
   - [Lists](#lists)
   - [Dicts](#dicts)
-  - [Optional sub-configs](#optional-sub-configs)
+  - [Optional Sub-Configs](#optional-sub-configs)
   - [None](#none)
-  - [Discriminated unions](#discriminated-unions)
+  - [Discriminated Unions](#discriminated-unions)
   - [Environments (`[[orchestrator.train.env]]`)](#environments-orchestratortrainenv)
 - [Examples](#examples)
 
-## Sources and precedence
+## Sources and Precedence
 
 Field values come from three sources — Pydantic defaults, TOML files (passed with `@`), and CLI flags. They're layered in this order, with later sources winning:
 
@@ -28,7 +28,7 @@ Field values come from three sources — Pydantic defaults, TOML files (passed w
 2. **TOML files** passed with `@`, left to right — later files override earlier ones.
 3. **CLI flags** in dotted, kebab-case form (`--model.name`).
 
-## TOML composition
+## TOML Composition
 
 The `@` token introduces a TOML file. Multiple `@` arguments compose left-to-right, deep-merged — unset fields in an overlay keep the base value:
 
@@ -41,7 +41,7 @@ uv run rl @ base.toml --trainer @ trainer.toml                 # mixed
 
 > Mind the space: `@ path/to/x.toml`, not `@path/to/x.toml`.
 
-## CLI overrides
+## CLI Overrides
 
 CLI flags mirror the TOML tree using dots:
 
@@ -56,7 +56,7 @@ CLI flags mirror the TOML tree using dots:
 
 > Renamed fields keep their old name as a validation alias — e.g. `rollouts_per_example` is still accepted in TOML and CLI after being renamed to `group_size`. Mixing the two names across sources is safe.
 
-## Inspecting and validating
+## Inspecting and Validating
 
 ```bash
 uv run rl --help                                       # full schema
@@ -108,7 +108,7 @@ uv run rl @ rl.toml --orchestrator.train.env.0.args \
 args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
 ```
 
-### Optional sub-configs
+### Optional Sub-Configs
 
 Many sub-configs are typed `SomeConfig | None`. Two patterns enable them:
 
@@ -128,7 +128,7 @@ max_model_len = "None"
 
 On the CLI: `--inference.model.max-model-len None`.
 
-### Discriminated unions
+### Discriminated Unions
 
 Loss, advantage, optimizer, scheduler, weight broadcast transport, and several others are discriminated unions. Set the `type` field to pick a variant:
 
@@ -183,7 +183,7 @@ The shipped end-to-end examples in [`examples/`](https://github.com/PrimeIntelle
 - [**MiniMax-M2.5 SWE**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/minimax_m2.5_swe) — `MiniMax-M2.5` on agentic SWE.
 - [**High-throughput GLM-5**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/glm5_pd_disag) — `GLM-5` with P/D disaggregation and FP8 inference.
 
-### Worked example: compose, override, dry-run
+### Worked Example: Compose, Override, Dry-Run
 
 Start from a shipped base config, override two fields on the CLI, and dry-run:
 

@@ -4,31 +4,30 @@ This page covers the math and the configurable algorithmic components: how off-p
 
 ## Table of Contents
 
-- [Async / off-policy training](#async--off-policy-training)
-  - [Step semantics](#step-semantics)
-  - [The default loss](#the-default-loss)
+- [Async / Off-Policy Training](#async--off-policy-training)
+  - [Step Semantics](#step-semantics)
 - [Loss](#loss)
-  - [Default loss](#default-loss)
-  - [Custom loss](#custom-loss)
+  - [Default Loss](#default-loss)
+  - [Custom Loss](#custom-loss)
 - [Advantage](#advantage)
-  - [Default advantage](#default-advantage)
-  - [Custom advantage](#custom-advantage)
+  - [Default Advantage](#default-advantage)
+  - [Custom Advantage](#custom-advantage)
 - [Filters](#filters)
-- [Difficulty pools](#difficulty-pools)
-- [Online difficulty filtering](#online-difficulty-filtering)
-- [Multi-turn trajectories](#multi-turn-trajectories)
-  - [Extension property](#extension-property)
-  - [Best-effort interleaving](#best-effort-interleaving)
+- [Difficulty Pools](#difficulty-pools)
+- [Online Difficulty Filtering](#online-difficulty-filtering)
+- [Multi-Turn Trajectories](#multi-turn-trajectories)
+  - [Extension Property](#extension-property)
+  - [Best-Effort Interleaving](#best-effort-interleaving)
   - [Renderers](#renderers)
-  - [Discontinuous trajectories](#discontinuous-trajectories)
+  - [Discontinuous Trajectories](#discontinuous-trajectories)
 
-## Async / off-policy training
+## Async / Off-Policy Training
 
 `prime-rl` is asynchronous by default. The trainer and inference always run one step overlapped: while the trainer is producing $\pi_n$ from rollouts at step $n$, inference is already generating the rollouts for step $n+1$ using $\pi_{n-1}$. With matched trainer and inference step times this produces fully-overlapped pipeline parallelism — neither side ever idles.
 
 ![Async pipeline: trainer step n produces $\theta_n$, inference at step n samples with $\theta_{n-1}$](assets/async-pipeline.png)
 
-### Step semantics
+### Step Semantics
 
 At step $n = 1, 2, 3, \dots$:
 
@@ -37,7 +36,9 @@ At step $n = 1, 2, 3, \dots$:
 
 Step indices are 0-indexed so the gap holds at startup — inference is exactly one step behind the trainer.
 
-### The default loss
+## Loss
+
+### Default Loss
 
 The default RL loss combines a token-level [AIPO](https://arxiv.org/abs/2505.24034)-style policy-gradient term (importance-ratio clipped from above, plus DPPO token-level masking) with the Kimi-K2.5 KL regularizer. For each prompt $x_j$ we sample a group of $G$ rollouts $\{y_i\}_{i=1}^G$, score them to get $s_i$, then optimize:
 
@@ -71,11 +72,7 @@ The knobs (under `[trainer.loss]` with `type = "default"`):
 | `adv_tau` | 1.0 | Temperature on the advantage term. Set to 0 for pure distillation (no RL signal). |
 | `kl_tau` | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
 
-## Loss
-
-### Default loss
-
-The default loss is the DPPO + KL formulation above. The trainer dispatches automatically based on the batch's training mode (set by the orchestrator via `orchestrator.training_mode`):
+The trainer dispatches automatically based on the batch's training mode (set by the orchestrator via `orchestrator.training_mode`):
 
 - `rl` mode → DPPO + KL with the advantage signal.
 - `opd` mode → KL distillation against the teacher's per-token logprobs. The teacher must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
@@ -83,7 +80,7 @@ The default loss is the DPPO + KL formulation above. The trainer dispatches auto
 
 Set `[trainer.loss] type = "default"` and configure via the knobs above. SFT and OPD modes ignore the policy-gradient–specific fields.
 
-### Custom loss
+### Custom Loss
 
 The loss is computed **per sequence**: you write a function that takes one sequence's tensors and returns a scalar loss. The trainer iterates and aggregates.
 
@@ -136,7 +133,7 @@ Anything you put in `metrics` is averaged across sequences and logged with the o
 
 ## Advantage
 
-### Default advantage
+### Default Advantage
 
 The default advantage is per-group reward minus per-group baseline (DR-GRPO without std normalization). For each prompt's group of `group_size` rollouts, every token in rollout $i$ receives advantage $s_i - \bar{s}$ where $\bar{s}$ is the group mean.
 
@@ -149,7 +146,7 @@ Two built-in **length penalties** can be layered on top of any advantage to disc
 
 See [Reference § orchestrator length penalties](reference.md#orchestrator) for the fields.
 
-### Custom advantage
+### Custom Advantage
 
 Advantages are computed **per group**. You write a function that takes one group of rollouts and returns one advantage scalar per rollout. The orchestrator handles groups of varying size automatically — partial-group training kicks in when some rollouts in a group errored.
 
@@ -197,7 +194,7 @@ threshold = 0.4
 
 Filtered rollouts still appear in W&B distributions, just not in the trainer batch — useful for spotting whether filtering is doing its job.
 
-## Difficulty pools
+## Difficulty Pools
 
 Difficulty pools gradually retire problems the model has solved or never solves. After each rollout, the average reward across a problem's group is compared to two thresholds:
 
@@ -217,7 +214,7 @@ hard_fraction = 0.0   # default; bump on resume to bring some hard problems back
 
 Watch `pool/{env}/{easy,normal,hard}` (current pool ratios) and `evicted_examples/{env}/{easy,hard}` (per-step eviction rate).
 
-## Online difficulty filtering
+## Online Difficulty Filtering
 
 Online difficulty filtering (ODF) drops collapsed-advantage groups on the way *into* the buffer. Set `buffer.online_difficulty_filtering = true` (default `false`) to enable:
 
@@ -236,11 +233,11 @@ online_difficulty_filtering = true
 
 ODF is orthogonal to the [pools](#difficulty-pools): ODF reacts to the *current* group's reward distribution, the pools track the *running* per-problem average. Many configs use both — ODF for per-step density, pools for long-horizon curriculum cleanup.
 
-## Multi-turn trajectories
+## Multi-Turn Trajectories
 
 Multi-turn rollouts (tool use, browser environments, long conversations) used to be stitched into a single fake "single-turn" sample, which silently corrupted the importance ratio when chat templates didn't roundtrip. Since [`verifiers` v0.1.8](https://github.com/PrimeIntellect-ai/verifiers/releases/tag/v0.1.8), `prime-rl` records each LLM request/response as an independent **trajectory step** and merges them at training time using best-effort interleaving — with [renderers](#renderers) as the mechanism that keeps the merge safe by construction.
 
-### Extension property
+### Extension Property
 
 A sequence of trajectory steps has the **extension property** when each successive step's prompt contains all previous prompts and completions as an exact prefix. The trainer relies on this property — when it holds:
 
@@ -252,7 +249,7 @@ When it breaks (chat template strips past thinking, environment compacts context
 - Graceful fallback to multiple samples — no corrupted data.
 - Worst case (every step breaks extension) is $O(T^2)$.
 
-### Best-effort interleaving
+### Best-Effort Interleaving
 
 Concretely:
 
@@ -306,6 +303,6 @@ name = "auto"   # detect from tokenizer; pass an explicit name for fine-tunes
 
 For the full design rationale (failure modes ruled out, empirical token-identity comparison against `apply_chat_template`, when to write a hand-coded renderer), see [the renderers writeup on the Prime Intellect blog](https://www.primeintellect.ai/blog/renderers) — the canonical reference.
 
-### Discontinuous trajectories
+### Discontinuous Trajectories
 
 Some envs are discontinuous by design — e.g. a main agent delegating to a sub-agent and getting back only a summarized result, not the sub-agent's whole conversation. Best-effort interleaving handles this naturally: each agent's contiguous turns merge, the handoff starts a new sample. The trainer never sees fabricated extension where there is none.

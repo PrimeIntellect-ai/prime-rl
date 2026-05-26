@@ -7,26 +7,26 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 ## Table of Contents
 
 - [Entrypoints](#entrypoints)
-- [RL trainer](#rl-trainer)
+- [RL Trainer](#rl-trainer)
   - [Launch](#launch)
-  - [Useful knobs](#useful-knobs)
-  - [Training modes (RL / OPD / SFT)](#training-modes-rl--opd--sft)
-  - [Important metrics](#important-metrics)
-- [SFT trainer](#sft-trainer)
-  - [Dataset format](#dataset-format)
+  - [Useful Knobs](#useful-knobs)
+  - [Training Modes (RL / OPD / SFT)](#training-modes-rl--opd--sft)
+  - [Important Metrics](#important-metrics)
+- [SFT Trainer](#sft-trainer)
+  - [Dataset Format](#dataset-format)
   - [Launch](#launch-1)
-  - [SFT-specific knobs](#sft-specific-knobs)
-  - [Important metrics](#important-metrics-1)
+  - [SFT-Specific Knobs](#sft-specific-knobs)
+  - [Important Metrics](#important-metrics-1)
 - [Checkpointing](#checkpointing)
-  - [Enabling checkpoints](#enabling-checkpoints)
-  - [Resuming a run](#resuming-a-run)
-  - [Serving checkpoints](#serving-checkpoints)
+  - [Enabling Checkpoints](#enabling-checkpoints)
+  - [Resuming a Run](#resuming-a-run)
+  - [Serving Checkpoints](#serving-checkpoints)
 - [Observability](#observability)
-  - [Log files](#log-files)
-  - [Console output](#console-output)
+  - [Log Files](#log-files)
+  - [Console Output](#console-output)
   - [Weights & Biases](#weights--biases)
-  - [Platform monitoring](#platform-monitoring)
-- [Rules of thumb](#rules-of-thumb)
+  - [Platform Monitoring](#platform-monitoring)
+- [Rules of Thumb](#rules-of-thumb)
 
 ## Entrypoints
 
@@ -38,7 +38,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 | `uv run trainer` | Standalone trainer process group. | Use only when launching the trainer separately from the orchestrator (e.g. multi-node RL without the `rl` wrapper). |
 | `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched trainer + inference. |
 
-## RL trainer
+## RL Trainer
 
 ### Launch
 
@@ -48,7 +48,7 @@ The minimal RL run trains an SFT-warmed `Qwen3-0.6B` on the `reverse-text` task 
 uv run rl @ examples/reverse_text/rl.toml
 ```
 
-### Useful knobs
+### Useful Knobs
 
 A condensed view of the knobs you'll most often tune. For trainer-side parallelism, sampling, optimizer, and loss knobs see [Scaling](scaling.md) and [Algorithms](algorithms.md); for the full field reference see [Reference](reference.md).
 
@@ -81,7 +81,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `--max-steps N` | Stop after `N` trainer steps. Overrides the config value. |
 | `--dry-run` | Resolve + validate the full config, write per-process TOMLs to `<output_dir>/configs/`, and exit without launching. The fastest way to debug a misbehaving config. |
 
-### Training modes (RL / OPD / SFT)
+### Training Modes (RL / OPD / SFT)
 
 The RL entrypoint supports three training modes, switched via `orchestrator.training_mode`:
 
@@ -100,7 +100,7 @@ CUDA_VISIBLE_DEVICES=1 uv run inference \
 
 The standalone `uv run sft` entrypoint is the more traditional SFT path — pure dataset-based, no teacher, no orchestrator. Use `orchestrator.training_mode = "sft"` only when you want a teacher to generate the supervision on the fly.
 
-### Important metrics
+### Important Metrics
 
 Pulled from the console logs and mirrored to W&B.
 
@@ -126,11 +126,11 @@ Pulled from the console logs and mirrored to W&B.
 | trainer | `time/wait_for_batch` | **high → orchestrator bottleneck** |
 | orchestrator | `time/wait_for_ckpt` | **high → trainer bottleneck** |
 
-## SFT trainer
+## SFT Trainer
 
 `uv run sft` runs supervised fine-tuning from a HF dataset. It shares model loaders, FSDP setup, checkpointing, and the chat-template plumbing with the RL trainer, so a typical workflow is _SFT → RL → SFT → …_ without any reformatting.
 
-### Dataset format
+### Dataset Format
 
 Two accepted layouts:
 
@@ -146,7 +146,7 @@ If both columns are present, `messages` takes precedence.
 - **Enable the renderer** (`use_renderer = true`, recommended). The [`renderers`](algorithms.md#renderers) package owns tokenization end-to-end and is robust to position-dependent templates. Hand-coded renderers ship for Qwen3, Qwen3.5, GLM-5, GLM-4.5, Kimi K2/K2.5, MiniMax M2, DeepSeek V3, Nemotron 3, GPT-OSS. Not supported for VLMs.
 - **Patched chat template** — the prime-rl–patched checkpoints (e.g. `PrimeIntellect/Qwen3-0.6B`, used in `examples/reverse_text/sft.toml`) ship a chat template that preserves thinking. Or supply your own.
 
-See [Algorithms § Multi-turn trajectories](algorithms.md#multi-turn-trajectories) for the full picture.
+See [Algorithms § Multi-Turn Trajectories](algorithms.md#multi-turn-trajectories) for the full picture.
 
 ### Launch
 
@@ -156,9 +156,9 @@ The minimal SFT run trains `Qwen3-0.6B` on the `reverse-text` SFT dataset:
 uv run sft @ examples/reverse_text/sft.toml --wandb
 ```
 
-Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manages this for you — see [Scaling § SFT and torchrun](scaling.md#sft-and-torchrun) for non-default layouts; multi-node SFT goes through [SLURM](scaling.md#slurm)).
+Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manages this for you — see [Scaling § SFT and Torchrun](scaling.md#sft-and-torchrun) for non-default layouts; multi-node SFT goes through [SLURM](scaling.md#slurm)).
 
-### SFT-specific knobs
+### SFT-Specific Knobs
 
 | Knob | What it controls |
 |---|---|
@@ -168,7 +168,7 @@ Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manag
 | `loss_mask.*` | Which roles contribute to loss; see [Reference § `sft.data.loss_mask`](reference.md#sft-data-sft-loss-mask) |
 | `val.interval` | Run validation every N steps; `val.data` mirrors `data` |
 
-### Important metrics
+### Important Metrics
 
 Pulled from the console log and mirrored to W&B.
 
@@ -205,7 +205,7 @@ Checkpointing is split across processes because the orchestrator and trainer can
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
 | Trainer (HF weights) | HF-compatible weight snapshot for serving | `<output_dir>/weights/step_N/` |
 
-### Enabling checkpoints
+### Enabling Checkpoints
 
 Checkpointing is **off by default** to save disk. Enable it with `--ckpt`:
 
@@ -216,7 +216,7 @@ uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-last 3  # rolling window of 3
 uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-interval 100  # …plus permanent every 100
 ```
 
-### Resuming a run
+### Resuming a Run
 
 Re-run the same launch command and pass `--ckpt.resume-step <N>` (or `-1` for "latest"). Make sure `--max-steps` is at least the target final step, not the remaining delta:
 
@@ -228,7 +228,7 @@ uv run rl @ rl.toml --max-steps 10 --ckpt
 uv run rl @ rl.toml --max-steps 20 --ckpt.resume-step 10
 ```
 
-### Serving checkpoints
+### Serving Checkpoints
 
 HF-compatible weight snapshots are written under `<output_dir>/weights/step_N/` whenever a full checkpoint runs (or you can write weights-only via `--ckpt.weights-only` for cheaper snapshots). Upload directly:
 
@@ -240,7 +240,7 @@ For LoRA runs, set `ckpt.weights.save_adapter_separately = true` to also write t
 
 ## Observability
 
-### Log files
+### Log Files
 
 The launcher tees every process's stdout/stderr into `<output_dir>/logs/`. The full layout (single-node runs skip the `node_*.log` and `router_*.log` files):
 
@@ -270,7 +270,7 @@ tail -F <output_dir>/logs/trainer/node_*.log     # multi-node only
 tail -F <output_dir>/logs/inference/router_*.log # multi-node only
 ```
 
-### Console output
+### Console Output
 
 `scripts/tmux.sh` opens a 4-pane tmux session that follows `trainer.log`, `orchestrator.log`, `inference.log`, and the union of env worker logs. Start it before launching:
 
@@ -301,7 +301,7 @@ uv run rl @ rl.toml --wandb \
   --no-trainer.wandb.log-extras.distributions
 ```
 
-### Platform monitoring
+### Platform Monitoring
 
 Register a run on the Prime Intellect platform (Prime Lab) and stream training metrics, samples, and distributions to the platform dashboard. Bare flag uses defaults:
 
@@ -318,7 +318,7 @@ run_name = "my-experiment"
 
 Requires `PRIME_API_KEY` (set via `prime login` or env var) and an allowlisted team. Currently internal-only.
 
-## Rules of thumb
+## Rules of Thumb
 
 - **Start small.** Run `examples/reverse_text/rl.toml` end-to-end on 2 GPUs before scaling. If the smoke run finishes cleanly, your install is good.
 - **Batch size ≥ 64.** Smaller batches give noisy gradient estimates and the trainer's overhead-per-step dominates throughput. 64 is the practical floor; 128–512 is the range for quick ablations; production RL often runs at 1024+.
