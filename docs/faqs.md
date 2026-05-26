@@ -33,7 +33,7 @@ See [Overview § Quick run](overview.md#quick-run).
 
 ### What hardware do I need?
 
-Any NVIDIA GPU with compute capability ≥ 8.0 (RTX 3090/4090/5090, A100, H100, H200, B200). MoE training with FP8 needs SM ≥ 9.0 (Hopper or newer). RL needs at least 2 GPUs in practice (1 inference + 1 trainer), but you can co-locate both on a single GPU for the smallest debug runs.
+Any NVIDIA GPU with compute capability ≥ 8.0 (RTX 3090/4090/5090, A100, H100, H200, B200). MoE training with FP8 needs SM ≥ 9.0 (Hopper or newer). RL needs at least 2 GPUs in practice (1 inference + 1 trainer); a single-GPU smoke-test is possible by launching the three processes manually — see [Scaling § Single GPU](scaling.md#single-gpu).
 
 ### Why `uv run` and not `python`?
 
@@ -76,7 +76,7 @@ See [Configuration § Environments](configuration.md#environments-orchestratortr
 
 ### What should I tune for off-policy noise on long agentic rollouts?
 
-`orchestrator.max_off_policy_steps` (default 8). It caps how many distinct policies are allowed to have contributed to a single rollout — rollouts whose source policy fell more than that many steps behind the trainer get discarded. On long multi-turn rollouts (SWE, browsing, anything where one rollout spans many trainer steps), this is often the most important throughput-vs-noise knob: bump it for higher throughput and accept more off-policy noise; lower it to keep training tighter. Watch the `errored_rollouts` and `mismatch_kl/all/mean` metrics when changing it.
+`orchestrator.max_off_policy_steps` (default 8). It caps how many distinct policies are allowed to have contributed to a single rollout — rollouts whose source policy fell more than that many steps behind the trainer get discarded. On long multi-turn rollouts (SWE, browsing, anything where one rollout spans many trainer steps), this is often the most important off-policy dial: bump it for higher throughput and accept more off-policy noise; lower it to keep training tighter. Watch the `errored_rollouts` and `mismatch_kl/all/mean` metrics when changing it.
 
 ### My reward isn't improving. What should I check first?
 
@@ -85,7 +85,7 @@ In order:
 1. `reward/all/mean` and `reward/all/std`. If std is ~0, the env is too easy or rewards are degenerate — increase difficulty or check the rubric.
 2. `is_truncated/all/mean`. If high, your model is hitting `max_completion_tokens` — either raise it or the model isn't learning to stop.
 3. Eval scores vs train rewards. If train reward rises but eval is flat, you may be hitting a chat-template prefix violation; see [Algorithms § Multi-turn trajectories](algorithms.md#multi-turn-trajectories).
-4. `mismatch_kl/all/mean`. If growing, drop `max_async_level` or LR.
+4. `mismatch_kl/all/mean`. If growing, drop `max_off_policy_steps` or the LR.
 5. `optim/grad_norm`. Sustained spikes mean you're about to diverge — drop LR.
 
 ### How do I evaluate without training?
@@ -150,7 +150,7 @@ Not currently documented. Multi-node deployments go through [SLURM](scaling.md#s
 
 ### How big a difference does NCCL weight broadcast make?
 
-NCCL broadcast is much faster than filesystem for local-cluster setups, at the cost of being synchronous: it requires `max_async_level = 1` and doesn't support LoRA today. Use it for multi-node single-cluster RL where you want maximum throughput; stick with filesystem for cross-WAN, LoRA, or async-heavy setups.
+NCCL broadcast is much faster than filesystem for local-cluster setups, but doesn't support LoRA today. Use it for multi-node single-cluster RL where you want maximum throughput; stick with filesystem for cross-WAN or LoRA setups.
 
 ### Should I use TP, DP, EP, or CP?
 

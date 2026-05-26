@@ -271,7 +271,7 @@ num_train_nodes = 1
 num_infer_nodes = 1
 
 [weight_broadcast]
-type = "nccl"          # synchronous; max_async_level forced to 1
+type = "nccl"
 
 [model]
 name = "Qwen/Qwen3-30B-A3B-Thinking-2507"

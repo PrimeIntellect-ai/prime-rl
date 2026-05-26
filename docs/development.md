@@ -13,7 +13,7 @@ This page covers workflows for developing on `prime-rl` itself — running the t
 - [Adding a new architecture](#adding-a-new-architecture)
 - [Debugging MoE](#debugging-moe)
   - [Create mini model](#create-mini-model)
-  - [Smoketest training](#smoketest-training)
+  - [Smoke-test training](#smoke-test-training)
 
 ## Test suite
 
@@ -105,7 +105,7 @@ This creates a ~543M parameter GLM-4 MoE (1024 hidden, 24 layers, 8 experts) wit
 uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe --verify-only
 ```
 
-### Smoketest training
+### Smoke-test training
 
 First warm up the random-weight mini model with SFT on reverse-text so KL divergence becomes meaningful in the RL phase:
 
