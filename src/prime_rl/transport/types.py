@@ -93,9 +93,3 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # Packer-derived metadata used for run-local token exports.
     run_id: str | None = None
     run_step: int | None = None
-
-
-class MicroBatchPayload(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
-    """Transport envelope for one data rank's packed micro batches."""
-
-    micro_batches: list[MicroBatch]

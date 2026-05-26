@@ -206,8 +206,8 @@ class DataLoader:
         self.multi_run_manager.synchronize_state()
 
     def get_batch(self) -> list[TensorMicroBatch]:
-        payload = self.receiver.receive()
-        return [self._micro_batch_to_tensor(mb) for mb in payload.micro_batches]
+        micro_batches = self.receiver.receive()
+        return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""

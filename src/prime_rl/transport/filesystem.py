@@ -4,7 +4,7 @@ from time import time
 
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender, TrainingBatchReceiver, TrainingBatchSender
-from prime_rl.transport.types import MicroBatch, MicroBatchPayload, TrainingBatch
+from prime_rl.transport.types import MicroBatch, TrainingBatch
 from prime_rl.utils.pathing import get_rollout_dir, get_step_path, sync_wait_for_path
 
 BATCH_FILE_TMP_NAME = "train_rollouts.bin.tmp"
@@ -136,8 +136,7 @@ class FileSystemMicroBatchSender(MicroBatchSender):
         step_path.mkdir(parents=True, exist_ok=True)
 
         for data_rank in range(self.data_world_size):
-            payload = MicroBatchPayload(micro_batches=micro_batch_grid[data_rank])
-            buffer = self.encoder.encode(payload)
+            buffer = self.encoder.encode(micro_batch_grid[data_rank])
             tmp_path = step_path / f"rank_{data_rank}.bin.tmp"
             with open(tmp_path, "wb") as f:
                 f.write(buffer)
@@ -164,9 +163,9 @@ class FileSystemMicroBatchReceiver(MicroBatchReceiver):
         """Check if the micro batch file exists."""
         return self._get_micro_batch_path().exists()
 
-    def receive(self) -> MicroBatchPayload:
+    def receive(self) -> list[MicroBatch]:
         """Read and return the micro batches from disk."""
         with open(self._get_micro_batch_path(), "rb") as f:
-            payload: MicroBatchPayload = self.decoder.decode(f.read())
+            micro_batches: list[MicroBatch] = self.decoder.decode(f.read())
         self.current_step += 1
-        return payload
+        return micro_batches
