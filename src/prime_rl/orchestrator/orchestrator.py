@@ -513,12 +513,18 @@ async def orchestrate(config: OrchestratorConfig):
             if samples is None:
                 samples = []
             rollout_samples_per_rollout.append(len(samples))
-            env_sft_config = train_envs.get(rollout["env_name"]).config.sft
+            env_name = rollout["env_name"]
+            env = train_envs.get(env_name)
+            env_sft_config = env.config.sft
+            # Single env-wide temperature per rollout — fan out across each
+            # sample's completion tokens here (interleave leaves it empty).
+            temperature = env.sampling_args["temperature"]
             for sample in samples:
                 sample.advantage = rollout["advantage"]
                 sample.reward = rollout["reward"]
-                sample.env_name = rollout["env_name"]
+                sample.env_name = env_name
                 sample.training_mode = config.training_mode
+                sample.completion_temperatures = [temperature] * len(sample.completion_ids)
                 # Per-env SFT-on-tool-body advantage. ``sft_mask`` was populated
                 # by interleave_rollout when the env opted in; we attach the
                 # alpha here so prepare_sample sets advantage = alpha on those
