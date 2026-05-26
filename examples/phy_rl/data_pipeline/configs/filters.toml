@@ -1,0 +1,27 @@
+[years]
+train_max_year = 2023
+frozen_test_years = [2024, 2025]
+
+[blocked_training]
+competitions = [
+  "HiPhO",
+  "PanPhO",
+  "PanMechanics",
+  "F=MA",
+]
+sources = [
+  "PHYSICS_test",
+  "OlympiadBench_eval",
+  "JEEBench",
+  "SciBench",
+]
+
+[admissibility]
+min_problem_chars = 40
+min_solution_chars = 20
+reject_if_requires_diagram = true
+
+[dedup]
+exact_text_hash = true
+exact_answer_hash = true
+ngram_jaccard_threshold = 0.92
