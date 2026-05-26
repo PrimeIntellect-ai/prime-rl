@@ -1,0 +1,36 @@
+max_steps = 100
+seq_len = 2048
+
+[wandb]
+project = "alphabet-sort-debug"
+name = "alphabet-sort-v1"
+
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[orchestrator]
+batch_size = 512
+group_size = 16
+
+[orchestrator.train.sampling]
+max_completion_tokens = 512
+
+[[orchestrator.train.env]]
+id = "alphabet-sort"
+name = "alphabet-sort"
+args = { v1 = true, min_turns = 2, max_turns = 2 }
+
+[orchestrator.eval]
+interval = 50
+
+[[orchestrator.eval.env]]
+id = "alphabet-sort"
+name = "alphabet-sort"
+num_examples = 50
+group_size = 4
+args = { v1 = true, min_turns = 2, max_turns = 2 }
+
+[trainer]
+
+[inference]
