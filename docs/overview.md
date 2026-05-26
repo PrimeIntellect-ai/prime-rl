@@ -41,5 +41,5 @@ The `rl` entrypoint reads `examples/reverse_text/rl.toml`, splits it into per-pr
 - **[Scaling](scaling.md)** — Single-GPU through multi-node clusters via FSDP / EP / CP and SLURM.
 - **[Algorithms](algorithms.md)** — Async semantics, loss / advantage / filter plugins, trajectory merging.
 - **[Advanced](advanced.md)** — Custom modeling, multimodal, LoRA, multi-tenant, P/D inference.
-- **[Development](development.md)** — Test suite, pre-commit hooks, adding a new architecture.
+- **[Development](development.md)** — Test suite, pre-commit hooks, adding a new model.
 - **[Reference](reference.md)** — Auto-generated config field reference.

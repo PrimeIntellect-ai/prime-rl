@@ -5,7 +5,6 @@ This page covers the math and the configurable algorithmic components: how off-p
 ## Table of Contents
 
 - [Async / Off-Policy Training](#async--off-policy-training)
-  - [Step Semantics](#step-semantics)
 - [Loss](#loss)
   - [Default Loss](#default-loss)
   - [Custom Loss](#custom-loss)
@@ -27,8 +26,6 @@ This page covers the math and the configurable algorithmic components: how off-p
 
 ![Async pipeline: trainer step n produces $\theta_n$, inference at step n samples with $\theta_{n-1}$](assets/async-pipeline.png)
 
-### Step Semantics
-
 At step $n = 1, 2, 3, \dots$:
 
 - **Trainer** produces policy $\pi_n$ with weights $\theta_n$ from rollouts $(x_n, y_n)$.
@@ -40,7 +37,7 @@ Step indices are 0-indexed so the gap holds at startup — inference is exactly 
 
 ### Default Loss
 
-The default RL loss combines a token-level [AIPO](https://arxiv.org/abs/2505.24034)-style policy-gradient term (importance-ratio clipped from above, plus DPPO token-level masking) with the Kimi-K2.5 KL regularizer. For each prompt $x_j$ we sample a group of $G$ rollouts $\{y_i\}_{i=1}^G$, score them to get $s_i$, then optimize:
+The default RL loss is a DPPO policy-gradient term combined with a KL regularizer similar to Kimi-K2.5. For each prompt $x_j$ we sample a group of $G$ rollouts $\{y_i\}_{i=1}^G$, score them to get $s_i$, then optimize:
 
 $$
 \mathcal{L}(\theta) = -\,\mathcal{J}_{\text{PG}}(\theta) \;+\; \tau_{KL}\,\mathcal{L}_{KL}(\theta)

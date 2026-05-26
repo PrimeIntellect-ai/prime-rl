@@ -161,7 +161,9 @@ name = "gsm8k-eval"
 args = { dataset_name = "openai/gsm8k", dataset_subset = "main" }
 ```
 
-`args` is forwarded verbatim to the environment's `load_environment(**args)`. See each environment's README on the [Hub](https://app.primeintellect.ai/dashboard/environments) for accepted args.
+`args` is forwarded verbatim to the environment's `load_environment(**args)`.
+
+The same `id` can appear multiple times across train and eval (or with different `args`) — useful for evaluating on a held-out split of the env you're training on, or comparing two configurations of the same env side by side. When `id` is reused, set a distinct `name` on each entry; `name` defaults to `id` and must be unique across all envs in the same group.
 
 ## Examples
 

@@ -1,6 +1,6 @@
 # Development
 
-This page covers workflows for developing on `prime-rl` itself — running the test suite, contributing changes, adding new model architectures, and the small-scale tooling we use to iterate on MoE families without booting up a 100B+ run.
+This page covers workflows for developing on `prime-rl` itself — running the test suite, contributing changes, and adding new model architectures with the small-scale tooling we use to iterate on MoE families without booting up a 100B+ run.
 
 ## Table of Contents
 
@@ -10,10 +10,10 @@ This page covers workflows for developing on `prime-rl` itself — running the t
   - [CI Workflows](#ci-workflows)
   - [Markers](#markers)
 - [Pre-Commit Hooks](#pre-commit-hooks)
-- [Adding a New Architecture](#adding-a-new-architecture)
-- [Debugging MoE](#debugging-moe)
-  - [Create Mini Model](#create-mini-model)
-  - [Smoke-Test Training](#smoke-test-training)
+- [Adding a New Model](#adding-a-new-model)
+  - [Implement the Modeling Code](#implement-the-modeling-code)
+  - [Register a Mini Preset](#register-a-mini-preset)
+  - [Run the Smoke Test](#run-the-smoke-test)
 
 ## Test Suite
 
@@ -66,48 +66,46 @@ The configured hooks:
 - **`ruff` check + format** on staged Python files.
 - **`docs-reference`** — re-runs [`scripts/generate_docs_reference.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/scripts/generate_docs_reference.py) whenever a config class or the generator itself is staged. If `docs/reference.md` would change, the commit fails so you can re-stage the regenerated file.
 
-## Adding a New Architecture
+## Adding a New Model
 
-Bringing up a new model family is two steps: implement the modeling code, then register a small-scale preset so you can smoke-test the new architecture end-to-end without paying the cost of the full-size model.
+Bringing up a new model family is three steps: implement the modeling code, register a mini preset, and run the smoke test. The preset and smoke test let you iterate on the modeling code at ~0.5B scale on 1–2 GPUs instead of paying the cost of the full-size model — useful for catching bugs in modeling code, state-dict conversions, and pipeline integration before scaling.
 
-1. **Implement the modeling code** under `src/prime_rl/trainer/models/<arch>/` (HF-compatible config, modeling, and weight conversion). Mirror the layout of an existing family — `glm4_moe/` or `qwen3_moe/` are good starting points.
+### Implement the Modeling Code
 
-2. **Register a mini preset** in [`scripts/mini_moe.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/scripts/mini_moe.py) so the [Debugging MoE](#debugging-moe) workflow can build a ~0.5B test model in your architecture. The preset names the config class, picks small dimensions, and wires up the HF + PrimeRL model classes plus a tokenizer source:
+Drop the modeling code under `src/prime_rl/trainer/models/<arch>/` (HF-compatible config, modeling, and weight conversion). Mirror the layout of an existing family — `glm4_moe/` or `qwen3_moe/` are good starting points.
 
-   ```python
-   ARCH_PRESETS = {
-       "glm4_moe": {
-           "config_class": Glm4MoeConfig,
-           "config_kwargs": dict(hidden_size=1024, num_hidden_layers=24, n_routed_experts=8, ...),
-           "hf_model_class": HFGlm4MoeForCausalLM,
-           "prime_model_class": PrimeRLGlm4MoeForCausalLM,
-           "tokenizer_source": "THUDM/GLM-4-9B-0414",
-       },
-       # add your arch here
-   }
-   ```
+### Register a Mini Preset
 
-3. **Smoke-test** with the [Debugging MoE](#debugging-moe) workflow using `--arch <your_arch>`. That runs the HF↔PrimeRL roundtrip, the SFT warmup, and the full RL stack end-to-end on the mini model.
+Add an entry to [`scripts/mini_moe.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/scripts/mini_moe.py) so the smoke-test workflow can build a ~0.5B test model in your architecture. The preset names the config class, picks small dimensions, and wires up the HF + PrimeRL model classes plus a tokenizer source:
 
-## Debugging MoE
+```python
+ARCH_PRESETS = {
+    "glm4_moe": {
+        "config_class": Glm4MoeConfig,
+        "config_kwargs": dict(hidden_size=1024, num_hidden_layers=24, n_routed_experts=8, ...),
+        "hf_model_class": HFGlm4MoeForCausalLM,
+        "prime_model_class": PrimeRLGlm4MoeForCausalLM,
+        "tokenizer_source": "THUDM/GLM-4-9B-0414",
+    },
+    # add your arch here
+}
+```
 
-When working on MoE architectures (GLM-4, Kimi, etc.), you can't iterate on a 100B+ model locally. The workflow below builds a ~0.5B model with the same architecture, warms it up with SFT, and runs RL — all on 1–2 GPUs. The goal is catching bugs in modeling code, state-dict conversions, and pipeline integration before scaling.
+### Run the Smoke Test
 
-### Create Mini Model
+Build the mini model. This creates a ~543M-parameter GLM-4 MoE (1024 hidden, 24 layers, 8 experts) with random weights, copies the tokenizer from the original GLM-4 model, and verifies the HF↔PrimeRL roundtrip is lossless:
 
 ```bash
 uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe
 ```
 
-This creates a ~543M parameter GLM-4 MoE (1024 hidden, 24 layers, 8 experts) with random weights, copies the tokenizer from the original GLM-4 model, and verifies the HF↔PrimeRL roundtrip is lossless. To re-verify after a modeling-code change without re-creating the model:
+To re-verify the roundtrip after a modeling-code change without re-creating the model:
 
 ```bash
 uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe --verify-only
 ```
 
-### Smoke-Test Training
-
-First warm up the random-weight mini model with SFT on reverse-text so KL divergence becomes meaningful in the RL phase:
+Warm up the random-weight mini model with SFT on reverse-text so KL divergence becomes meaningful in the RL phase. Loss drops from ~12 to ~2.5 — the output won't be coherent, but the distribution is non-trivial. A pre-built SFT'd checkpoint lives at [samsja/mini-glm-moe](https://huggingface.co/samsja/mini-glm-moe) if you want to skip this step:
 
 ```bash
 uv run sft @ configs/debug/moe/sft/train.toml \
@@ -118,8 +116,6 @@ uv run sft @ configs/debug/moe/sft/train.toml \
   --optim.lr 1e-4 \
   --ckpt.weights
 ```
-
-Loss drops from ~12 to ~2.5. The output won't be coherent, but the model now has a non-trivial distribution. A pre-built SFT'd checkpoint lives at [samsja/mini-glm-moe](https://huggingface.co/samsja/mini-glm-moe) if you want to skip this step.
 
 Then run the full RL stack on reverse-text:
 

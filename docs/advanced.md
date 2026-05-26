@@ -5,7 +5,6 @@ This page covers the specialized features layered on top of the core training st
 ## Table of Contents
 
 - [Custom Modeling](#custom-modeling)
-  - [Custom vs HF Implementations](#custom-vs-hf-implementations)
   - [Expert Parallelism Backends](#expert-parallelism-backends)
 - [Multimodal Training](#multimodal-training)
   - [Supported Families](#supported-families)
@@ -16,8 +15,6 @@ This page covers the specialized features layered on top of the core training st
 - [Disaggregated Prefill/Decode Inference](#disaggregated-prefilldecode-inference)
 
 ## Custom Modeling
-
-### Custom vs HF Implementations
 
 `prime-rl` ships custom optimized model implementations for several MoE families. With `model.impl = "auto"` (default) the trainer picks the custom path when the HF config type is registered, falling back to plain HF otherwise. To force one:
 
