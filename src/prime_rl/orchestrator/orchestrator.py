@@ -508,11 +508,16 @@ async def orchestrate(config: OrchestratorConfig):
             if samples is None:
                 samples = []
             rollout_samples_per_rollout.append(len(samples))
+            env_name = rollout["env_name"]
+            # Single env-wide temperature per rollout — fan out across each
+            # sample's completion tokens here (interleave leaves it empty).
+            temperature = train_envs.get(env_name).sampling_args["temperature"]
             for sample in samples:
                 sample.advantage = rollout["advantage"]
                 sample.reward = rollout["reward"]
-                sample.env_name = rollout["env_name"]
+                sample.env_name = env_name
                 sample.training_mode = config.training_mode
+                sample.completion_temperatures = [temperature] * len(sample.completion_ids)
                 sample_decode_tokens = sum(sample.completion_mask)
                 sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens
                 rollout_decode_tokens += sample_decode_tokens
