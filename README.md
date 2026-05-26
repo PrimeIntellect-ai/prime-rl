@@ -247,28 +247,11 @@ uv run pre-commit install
 
 ### Tests
 
-Run the full test suite 
-
 ```bash
-uv run pytest -v
-```
-
-To run unit tests, run
-
-```bash
-uv run pytest tests/unit -v
-```
-
-To run integration tests, run
-
-```bash
-uv run pytest tests/integration -v
-```
-
-To run CPU-only tests, use the inverse of the `gpu` marker:
-
-```bash
-uv run pytest -v -m "not gpu"
+uv run pytest -v                    # everything
+uv run pytest tests/unit -v         # unit only
+uv run pytest tests/integration -v  # integration only
+uv run pytest -v -m "not gpu"       # CPU-only (inverse of the gpu marker)
 ```
 
 ## License
