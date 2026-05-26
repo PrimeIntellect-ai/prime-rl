@@ -13,7 +13,12 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTDataConfig
+from prime_rl.configs.sft import (
+    DataConfig,
+    LossMaskConfig,
+    LossMaskRolesConfig,
+    SFTDataConfig,
+)
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import (
     IncrementalTokenizationError,
@@ -25,6 +30,41 @@ from prime_rl.utils.chat_template import (
 from prime_rl.utils.logger import get_logger
 
 STACKING_DATASET_BUCKET_TIMEOUT = 10
+
+
+def _always_true_role_filter(message: dict) -> bool:
+    """Role filter that trains on every message regardless of role.
+
+    Used when :data:`LossMaskConfig` is ``"all"`` to bypass the
+    role-based ``role_to_mask`` gate in
+    :func:`renderers.base.build_training_sample`.
+    """
+    return True
+
+
+def _role_filter_for(cfg: LossMaskRolesConfig):
+    """Build a per-message role filter from :class:`LossMaskRolesConfig`.
+
+    The returned callable is the ``role_to_mask`` argument passed to
+    :func:`renderers.base.build_training_sample` and to
+    :func:`prime_rl.utils.chat_template.build_incremental_token_mask`.
+    """
+
+    def role_filter(message: dict) -> bool:
+        assert "role" in message, "Message must have a role"
+        match message["role"]:
+            case "user":
+                return cfg.user
+            case "assistant":
+                return cfg.assistant
+            case "system":
+                return cfg.system
+            case "tool":
+                return cfg.tool
+            case _:
+                raise ValueError(f"Invalid message role: {message['role']}")
+
+    return role_filter
 
 
 class Sample(TypedDict):
@@ -125,7 +165,7 @@ class SFTDataset(StatefulIterableDataset):
         seed: int = 0,
         seq_len: int = 128,
         non_dp_size: int = 1,
-        loss_mask_config: LossMaskConfig = LossMaskConfig(),
+        loss_mask_config: LossMaskConfig = "sampled",
         max_examples: int | None = None,
         max_epochs: int | None = None,
         renderer: Renderer | None = None,
@@ -219,19 +259,23 @@ class SFTDataset(StatefulIterableDataset):
                 for t in raw_tools
             ]
 
-        def should_mask(message: dict) -> bool:
-            assert "role" in message, "Message must have a role"
-            match message["role"]:
-                case "user":
-                    return True if self.loss_mask_config.user else False
-                case "assistant":
-                    return True if self.loss_mask_config.assistant else False
-                case "system":
-                    return True if self.loss_mask_config.system else False
-                case "tool":
-                    return True if self.loss_mask_config.tool else False
-                case _:
-                    raise ValueError(f"Invalid message role: {message['role']}")
+        # Dispatch the loss-mask config to a renderer-side role filter.
+        # The string sentinels map to no filter ("sampled" → trust
+        # sampled_mask) or an always-True filter ("all"); the
+        # :class:`LossMaskRolesConfig` instance maps to a per-role
+        # boolean lookup. The chat-template fallback below has no
+        # ``is_sampled`` signal so we treat sentinel modes as the
+        # ``LossMaskRolesConfig()`` defaults (assistant-only).
+        loss_mask_cfg = self.loss_mask_config
+        if loss_mask_cfg == "sampled":
+            renderer_role_filter = None
+            fallback_role_filter = _role_filter_for(LossMaskRolesConfig())
+        elif loss_mask_cfg == "all":
+            renderer_role_filter = _always_true_role_filter
+            fallback_role_filter = _role_filter_for(LossMaskRolesConfig())
+        else:
+            renderer_role_filter = _role_filter_for(loss_mask_cfg)
+            fallback_role_filter = renderer_role_filter
 
         if self.renderer is not None:
             if example.get("chat_template_kwargs") and not self._warned_chat_template_kwargs:
@@ -246,7 +290,7 @@ class SFTDataset(StatefulIterableDataset):
             input_ids, loss_mask = build_training_sample(
                 self.renderer,
                 messages,
-                role_to_mask=should_mask,
+                role_to_mask=renderer_role_filter,
                 tools=tools,
             )
         else:
@@ -254,7 +298,7 @@ class SFTDataset(StatefulIterableDataset):
                 input_ids, loss_mask = build_incremental_token_mask(
                     self.tokenizer,
                     messages,
-                    role_to_mask=should_mask,
+                    role_to_mask=fallback_role_filter,
                     tools=tools,
                     chat_template_kwargs=example.get("chat_template_kwargs", {}),
                     collapse_consecutive_tool_messages=True,

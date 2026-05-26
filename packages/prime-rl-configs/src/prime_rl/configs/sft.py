@@ -57,7 +57,15 @@ class FakeDataConfig(BaseDataConfig):
     """Token id generator: ``increasing`` for deterministic sequences, ``random`` for random ids."""
 
 
-class LossMaskConfig(BaseConfig):
+class LossMaskRolesConfig(BaseConfig):
+    """Per-role loss-mask: AND the renderer's ``is_sampled`` signal with
+    these booleans. Use when you want to restrict SFT supervision to a
+    subset of roles even when other roles' tokens are model-sampled
+    (e.g. GLM's ``<|observation|>`` stop opener attributed to the
+    following tool message — see renderer fix in
+    ``PrimeIntellect-ai/renderers#66``).
+    """
+
     system: bool = False
     """System messages contribute to the loss."""
 
@@ -69,6 +77,25 @@ class LossMaskConfig(BaseConfig):
 
     tool: bool = False
     """Tool messages contribute to the loss."""
+
+
+LossMaskConfig: TypeAlias = Literal["sampled", "all"] | LossMaskRolesConfig
+"""How to compute the per-token loss mask in SFT.
+
+- ``"sampled"`` (default, recommended with renderers): every token the
+  renderer marks ``is_sampled=True`` is trainable, regardless of role.
+  Correctly trains chat-template stop tokens whose structural
+  attribution lives in the next message's span.
+- ``"all"``: every renderer token contributes to the loss, regardless
+  of role or ``is_sampled``. Useful for debugging.
+- :class:`LossMaskRolesConfig`: AND ``is_sampled`` with a per-role
+  filter. Strict opt-in.
+
+The chat-template fallback path (no renderer registered) ignores
+``"sampled"`` / ``"all"`` and treats the loss-mask as
+``LossMaskRolesConfig()`` defaults — it has no ``is_sampled`` signal
+to fall back on.
+"""
 
 
 class SFTDataConfig(BaseDataConfig):
@@ -96,8 +123,8 @@ class SFTDataConfig(BaseDataConfig):
     """Random seed for shuffling. Re-shuffled per epoch by adding the epoch count to the seed."""
 
     # Configuring
-    loss_mask: LossMaskConfig = LossMaskConfig()
-    """Which message types contribute to the loss."""
+    loss_mask: LossMaskConfig = "sampled"
+    """How to compute the per-token loss mask. See :data:`LossMaskConfig`."""
 
     @model_validator(mode="after")
     def validate_subsets_and_splits(self):
