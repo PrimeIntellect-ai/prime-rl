@@ -268,8 +268,7 @@ srun --kill-on-bad-exit=1 bash -c '
         export PATH="$PROJECT_DIR/third_party/llmd/bin:$PATH"
         LLMD_DIR="$OUTPUT_DIR/logs/inference/llmd_${REPLICA_IDX}"
         bash $PROJECT_DIR/scripts/write_llmd_configs.sh disaggregated $ROUTER_PORT "$LLMD_DIR" \
-            --decode-sidecar-port $DECODE_SIDECAR_PORT --dp-size {{ dp_per_node }} \
-            $REPLICA_ROUTER_ARGS
+            --decode-sidecar-port $DECODE_SIDECAR_PORT $REPLICA_ROUTER_ARGS
 
         epp --pool-name prime-rl --pool-namespace slurm \
             --config-file "$LLMD_DIR/epp.yaml" \
@@ -333,8 +332,7 @@ srun --kill-on-bad-exit=1 bash -c '
         echo "Starting llm-d router (EPP+Envoy) on $LOCAL_IP:$ROUTER_PORT" | tee $ROUTER_LOG
         export PATH="$PROJECT_DIR/third_party/llmd/bin:$PATH"
         LLMD_DIR="$OUTPUT_DIR/logs/inference/llmd"
-        bash $PROJECT_DIR/scripts/write_llmd_configs.sh multi_node $ROUTER_PORT "$LLMD_DIR" \
-            --dp-size {{ dp_per_node }} $ROUTER_ARGS
+        bash $PROJECT_DIR/scripts/write_llmd_configs.sh multi_node $ROUTER_PORT "$LLMD_DIR" $ROUTER_ARGS
 
         epp --pool-name prime-rl --pool-namespace slurm \
             --config-file "$LLMD_DIR/epp.yaml" \
