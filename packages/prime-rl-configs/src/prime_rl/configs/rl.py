@@ -165,6 +165,9 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     nodes_per_fsdp_group: int | None = None
     """Training nodes per FSDP island. Auto-sets ``trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
 
+    router_backend: Literal["vllm-router", "llm-d"] = "vllm-router"
+    """Router implementation for multi-node inference. ``vllm-router`` is the PrimeIntellect fork (default). ``llm-d`` runs the upstream llm-d EPP + Envoy sidecar in standalone mode. Ignored for disaggregated inference, which reads ``inference.deployment.router_backend`` instead."""
+
     @property
     def total_infer_nodes(self) -> int:
         return self.num_infer_nodes * self.num_infer_replicas
@@ -246,6 +249,38 @@ class RLConfig(BaseConfig):
                     "Must use fake data (trainer.data.fake or bench = true) when num_infer_nodes = 0, "
                     "since no orchestrator or inference server will be running."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_llmd_router_compat(self):
+        """llm-d's EPP openai-parser only understands OpenAI-format requests
+        (/v1/chat/completions, /v1/completions). prime-rl's renderer/TITO path
+        and routed-experts replay both POST to /inference/v1/generate with the
+        raw-tokens schema (prompt_token_ids), which the EPP rejects with
+        `BadRequest - invalid completions request: must have prompt field`.
+        Until llm-d adds raw-tokens support, block features that need it."""
+        rl_backend = getattr(self.deployment, "router_backend", "vllm-router")
+        inf_backend = (
+            getattr(self.inference.deployment, "router_backend", "vllm-router") if self.inference else "vllm-router"
+        )
+        if "llm-d" not in (rl_backend, inf_backend):
+            return self
+        if self.inference is None:
+            return self
+        if self.orchestrator.use_renderer:
+            raise ValueError(
+                "router_backend = 'llm-d' is incompatible with orchestrator.use_renderer = true. "
+                "The llm-d EPP openai-parser rejects POST /inference/v1/generate (raw-tokens "
+                "schema). Set orchestrator.use_renderer = false (MITO via /v1/chat/completions), "
+                "or use router_backend = 'vllm-router'."
+            )
+        if self.inference.enable_return_routed_experts or self.trainer.enable_router_replay:
+            raise ValueError(
+                "router_backend = 'llm-d' is incompatible with routed-experts return / router replay "
+                "(inference.enable_return_routed_experts or trainer.enable_router_replay). "
+                "These post to /inference/v1/generate, which llm-d's EPP rejects. "
+                "Disable router replay / routed-experts return, or use router_backend = 'vllm-router'."
+            )
         return self
 
     @model_validator(mode="after")
