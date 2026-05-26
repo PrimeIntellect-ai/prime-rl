@@ -11,7 +11,7 @@ from prime_rl.configs.shared import FileSystemTransportConfig
 from prime_rl.trainer.rl.packer import MultiPacker
 from prime_rl.trainer.runs import setup_multi_run_manager
 from prime_rl.trainer.world import reset_world
-from prime_rl.transport.types import TrainingSample
+from prime_rl.transport.types import MicroBatchMetadata, TrainingSample
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -71,9 +71,11 @@ def test_packer_progress_updates_once_per_run(tmp_path: Path, monkeypatch: pytes
     class DummySender:
         def __init__(self):
             self.sent = []
+            self.metadata = []
 
-        def send(self, micro_batch_grid):
+        def send(self, micro_batch_grid, metadata_grid: list[list[MicroBatchMetadata]] | None = None):
             self.sent.append(micro_batch_grid)
+            self.metadata.append(metadata_grid)
 
     sender_holder: dict[str, DummySender] = {}
 
@@ -110,3 +112,4 @@ def test_packer_progress_updates_once_per_run(tmp_path: Path, monkeypatch: pytes
     sender = sender_holder["sender"]
     assert len(sender.sent) == 1
     assert len(sender.sent[0][0]) == 1
+    assert sender.metadata == [[[MicroBatchMetadata(run_idx=run_idx, run_id="run_test123", run_step=0)]]]
