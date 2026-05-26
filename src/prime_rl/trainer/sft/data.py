@@ -307,8 +307,13 @@ class SFTDataset(StatefulIterableDataset):
                 self.logger.warning(f"Skipping example {example.get('__index', '')}: {e}")
                 return None
 
-        # If EOS token is not found, manually append it
-        if not self.tokenizer.eos_token_id in input_ids:
+        # The renderer's token stream is authoritative: it mirrors the model's
+        # chat template (which carries no EOS by design) and trains the real
+        # stop signals via sampled_mask (e.g. GLM's turn-closing <|observation|>
+        # / <|user|>). Don't inject an EOS the renderer didn't emit. Only the
+        # chat-template fallback path (no sampled_mask) needs EOS appended so
+        # the model learns to stop.
+        if self.renderer is None and not self.tokenizer.eos_token_id in input_ids:
             self.logger.warning(
                 f"Did not find EOS token ID {self.tokenizer.eos_token_id} in input_ids. Is something wrong with the chat template? Manually appending EOS token..."
             )
@@ -330,7 +335,11 @@ class SFTDataset(StatefulIterableDataset):
             f"input_ids, loss_mask and target_ids must have the same length, but got {len(input_ids)=}, {len(loss_mask)=}, {len(target_ids)=}"
         )
         assert sum(loss_mask) > 0, "There are no tokens in this sample that contribute to the loss"
-        assert self.tokenizer.eos_token_id in target_ids, "EOS token ID must be present in target_ids"
+        # Only the chat-template fallback guarantees an EOS; the renderer honors
+        # the template and may legitimately omit it (stop signals come from
+        # sampled turn markers instead).
+        if self.renderer is None:
+            assert self.tokenizer.eos_token_id in target_ids, "EOS token ID must be present in target_ids"
 
         # Create sample (with one fake target for the last token)
         return {
