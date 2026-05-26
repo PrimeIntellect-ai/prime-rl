@@ -6,7 +6,7 @@ import zmq
 from prime_rl.configs.shared import ZMQTransportConfig
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender, TrainingBatchReceiver, TrainingBatchSender
-from prime_rl.transport.types import MicroBatch, MicroBatchPayload, TrainingBatch
+from prime_rl.transport.types import MicroBatch, TrainingBatch
 
 LOG_FREQ_SECONDS = 10
 
@@ -227,8 +227,7 @@ class ZMQMicroBatchSender(MicroBatchSender):
 
         self.logger.debug(f"Sending micro batch grid for step {self._current_step}")
         for data_rank in range(self.data_world_size):
-            payload = MicroBatchPayload(micro_batches=micro_batch_grid[data_rank])
-            buffer = self.encoder.encode(payload)
+            buffer = self.encoder.encode(micro_batch_grid[data_rank])
             topic = self._topic_prefix + str(data_rank).encode("utf-8") + b"|"
             self.socket.send_multipart([topic, buffer], copy=False)
         self._current_step += 1
@@ -279,15 +278,13 @@ class ZMQMicroBatchReceiver(MicroBatchReceiver):
         events = dict(self.poller.poll(timeout=0))
         return self.socket in events
 
-    def receive(self) -> MicroBatchPayload:
+    def receive(self) -> list[MicroBatch]:
         """Receive a micro batch from the trainer."""
         _, payload = self.socket.recv_multipart(copy=False)
-        micro_batch_payload: MicroBatchPayload = self.decoder.decode(payload)
-        self.logger.debug(
-            f"Received {len(micro_batch_payload.micro_batches)} micro batches for step {self._current_step}"
-        )
+        micro_batches: list[MicroBatch] = self.decoder.decode(payload)
+        self.logger.debug(f"Received {len(micro_batches)} micro batches for step {self._current_step}")
         self._current_step += 1
-        return micro_batch_payload
+        return micro_batches
 
     def close(self) -> None:
         try:
