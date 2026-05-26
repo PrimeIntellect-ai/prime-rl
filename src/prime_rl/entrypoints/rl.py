@@ -368,6 +368,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             router_backend=infer_deploy.router_backend,
             prefill_port=infer_deploy.prefill_port,
             decode_port=infer_deploy.decode_port,
+            decode_sidecar_port=infer_deploy.decode_sidecar_port,
             inference_tp=config.inference.parallel.tp,
             inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
             use_deep_gemm=config.inference.use_deep_gemm,

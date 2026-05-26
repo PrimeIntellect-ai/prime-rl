@@ -164,6 +164,9 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     decode_port: int = 8200
     """Port for decode vLLM instances."""
 
+    decode_sidecar_port: int = 8300
+    """Port for the llm-d pd-sidecar on decode nodes (PD only, llm-d backend). EPP/Envoy route decode requests here; the sidecar then orchestrates remote prefill via x-prefiller-host-port and forwards the actual decode to vLLM on ``decode_port``."""
+
     router_policy: str = "consistent_hash"
     """vllm-router routing policy (e.g. ``consistent_hash``, ``round_robin``). Ignored when ``router_backend = "llm-d"``."""
 

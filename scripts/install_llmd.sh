@@ -3,14 +3,15 @@
 # third_party/llmd/bin/ for use by the `router_backend = "llm-d"` SLURM
 # branches. No Docker, no sudo, no Kubernetes.
 #
-# EPP: built from source with `go install` against llm-d/llm-d-router.
-# Envoy: fetched via func-e (Tetrate's Envoy version manager) — a single static
-#        binary download per Envoy version.
+# EPP + pd-sidecar: built from source with `go install` against llm-d/llm-d-router.
+# Envoy: downloaded directly from archive.tetratelabs.io (static tarball).
+#   1.36+ is required — older Envoy lacks `FULL_DUPLEX_STREAMED` body mode
+#   used by ext_proc.
 #
 # Usage:
 #   bash scripts/install_llmd.sh                       # default versions
 #   bash scripts/install_llmd.sh --epp-ref REV         # pin EPP git ref
-#   bash scripts/install_llmd.sh --envoy-ver VER       # pin Envoy version
+#   bash scripts/install_llmd.sh --envoy-ver VER       # pin Envoy version (>=1.36)
 #
 # Requires: curl. Bootstraps Go locally if not on PATH.
 
@@ -22,7 +23,7 @@ REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 # Pin to a known-good revision rather than @latest. Bump as needed.
 EPP_REPO="github.com/llm-d/llm-d-router"
 EPP_REF="main"
-ENVOY_VER="1.32.2"
+ENVOY_VER="1.36.0"
 GO_VER="1.23.4"
 
 while [[ $# -gt 0 ]]; do
@@ -51,21 +52,25 @@ if ! command -v go >/dev/null; then
 fi
 go version
 
-echo "=== Building EPP from ${EPP_REPO}@${EPP_REF} ==="
+echo "=== Building EPP + pd-sidecar from ${EPP_REPO}@${EPP_REF} ==="
 TMP_GOBIN="$(mktemp -d)"
 trap 'rm -rf "$TMP_GOBIN"' EXIT
 GOBIN="$TMP_GOBIN" go install "${EPP_REPO}/cmd/epp@${EPP_REF}"
+GOBIN="$TMP_GOBIN" go install "${EPP_REPO}/cmd/pd-sidecar@${EPP_REF}"
 mv "$TMP_GOBIN/epp" "$DEST/epp"
-chmod +x "$DEST/epp"
-echo "Installed: $DEST/epp"
+mv "$TMP_GOBIN/pd-sidecar" "$DEST/pd-sidecar"
+chmod +x "$DEST/epp" "$DEST/pd-sidecar"
+echo "Installed: $DEST/epp, $DEST/pd-sidecar"
 
 echo
-echo "=== Fetching Envoy ${ENVOY_VER} via func-e ==="
-FUNC_E_BIN="$TMP_GOBIN/func-e"
-curl -fsSL https://func-e.io/install.sh | bash -s -- -b "$TMP_GOBIN"
-"$FUNC_E_BIN" use "$ENVOY_VER"
-ENVOY_SRC="$($FUNC_E_BIN which)"
-cp "$ENVOY_SRC" "$DEST/envoy"
+echo "=== Fetching Envoy ${ENVOY_VER} from archive.tetratelabs.io ==="
+TMP_ENVOY="$(mktemp -d)"
+trap 'rm -rf "$TMP_GOBIN" "$TMP_ENVOY"' EXIT
+curl -fL "https://archive.tetratelabs.io/envoy/download/v${ENVOY_VER}/envoy-v${ENVOY_VER}-linux-amd64.tar.xz" \
+    -o "$TMP_ENVOY/envoy.tar.xz"
+mkdir -p "$TMP_ENVOY/extract"
+tar -xJf "$TMP_ENVOY/envoy.tar.xz" -C "$TMP_ENVOY/extract" --strip-components=1
+cp "$TMP_ENVOY/extract/bin/envoy" "$DEST/envoy"
 chmod +x "$DEST/envoy"
 echo "Installed: $DEST/envoy"
 

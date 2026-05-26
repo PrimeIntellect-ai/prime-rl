@@ -45,6 +45,10 @@ export NODES_PER_PREFILL_REPLICA=$((NUM_PREFILL_NODES / NUM_PREFILL_REPLICAS))
 export NODES_PER_DECODE_REPLICA=$((NUM_DECODE_NODES / NUM_DECODE_REPLICAS))
 export PREFILL_PORT={{ prefill_port }}
 export DECODE_PORT={{ decode_port }}
+# pd-sidecar listens here when router_backend == "llm-d"; ignored otherwise.
+# EPP routes decode requests to this port; sidecar proxies to vLLM on DECODE_PORT
+# after orchestrating remote prefill via x-prefiller-host-port.
+export DECODE_SIDECAR_PORT={{ decode_sidecar_port }}
 {%- else -%}
 export BACKEND_PORT={{ backend_port }}
 export INFERENCE_ENABLE_EXPERT_PARALLEL={{ "1" if inference_enable_expert_parallel else "0" }}
@@ -170,6 +174,7 @@ srun bash -s <<'CLEANUP_SH'
     pkill -9 -f "[v]llm-router" 2>/dev/null
     pkill -9 -f "[e]pp.*pool-name" 2>/dev/null
     pkill -9 -f "[e]nvoy.*envoy.yaml" 2>/dev/null
+    pkill -9 -f "[p]d-sidecar" 2>/dev/null
     pkill -9 -f "[v]llm" 2>/dev/null
     pkill -9 -f "[p]rime_rl" 2>/dev/null
     # Also match prctl-set process names (kernel comm) like "vllm::router"
@@ -316,7 +321,8 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         echo "Starting llm-d router (EPP+Envoy, PD) on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG
         export PATH="$PROJECT_DIR/third_party/llmd/bin:$PATH"
         LLMD_DIR="$OUTPUT_DIR/logs/inference/llmd_${REPLICA_IDX}"
-        bash $PROJECT_DIR/scripts/write_llmd_configs.sh disaggregated $ROUTER_PORT "$LLMD_DIR" $REPLICA_ROUTER_ARGS
+        bash $PROJECT_DIR/scripts/write_llmd_configs.sh disaggregated $ROUTER_PORT "$LLMD_DIR" \
+            --decode-sidecar-port $DECODE_SIDECAR_PORT $REPLICA_ROUTER_ARGS
 
         epp --pool-name prime-rl --pool-namespace slurm \
             --config-file "$LLMD_DIR/epp.yaml" \
@@ -339,6 +345,27 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             >> $ROUTER_LOG 2>&1 &
 {%- endif %}
     fi
+
+{%- if router_backend == "llm-d" %}
+    # Each decode node also runs a pd-sidecar (canonical llm-d P/D). EPP routes
+    # decode requests to DECODE_SIDECAR_PORT; the sidecar reads
+    # x-prefiller-host-port, sends prefill to the prefill worker (max_tokens=1),
+    # then forwards the actual decode to vLLM on DECODE_PORT.
+    if [ "$ROLE" = "decode" ] && [ "$ROLE_RANK" -eq 0 ]; then
+        SIDECAR_LOG="$OUTPUT_DIR/logs/inference/sidecar_${INFER_NODE_RANK}.log"
+        echo "Starting pd-sidecar on $LOCAL_IP:$DECODE_SIDECAR_PORT → vLLM $DECODE_PORT" | tee $SIDECAR_LOG
+        export PATH="$PROJECT_DIR/third_party/llmd/bin:$PATH"
+        pd-sidecar \
+            --port $DECODE_SIDECAR_PORT \
+            --vllm-port $DECODE_PORT \
+            --kv-connector nixlv2 \
+            --secure-proxy=false \
+            --enable-ssrf-protection=false \
+            --inference-pool prime-rl \
+            --data-parallel-size $DP \
+            >> $SIDECAR_LOG 2>&1 &
+    fi
+{%- endif %}
 
     uv run inference \
         @ $CONFIG_DIR/inference.toml \

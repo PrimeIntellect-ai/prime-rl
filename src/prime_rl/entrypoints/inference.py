@@ -58,6 +58,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
             num_decode_replicas=config.deployment.num_decode_replicas,
             prefill_port=config.deployment.prefill_port,
             decode_port=config.deployment.decode_port,
+            decode_sidecar_port=config.deployment.decode_sidecar_port,
             router_port=config.deployment.router_port,
             router_policy=config.deployment.router_policy,
             router_backend=config.deployment.router_backend,
