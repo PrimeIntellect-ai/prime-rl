@@ -73,10 +73,14 @@ overrides = [
     { name = "nvidia-cudnn-cu12", specifier = ">=9.15" },
     { name = "nvidia-cutlass-dsl", specifier = ">=4.4.1" },
     { name = "openenv-core" },
-    { name = "protobuf", specifier = "==6.33.6" },
     { name = "torch", specifier = ">=2.9.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
 ]
+
+[[manifest.dependency-metadata]]
+name = "modelexpress"
+version = "0.3.0"
+requires-dist = ["grpcio>=1.66.2", "huggingface-hub>=0.20.0", "nixl[cu12]", "numpy>=1.24.0", "protobuf>=5.27.0", "pydantic>=2.0.0", "torch>=2.6.0"]
 
 [[package]]
 name = "absl-py"
