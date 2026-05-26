@@ -192,13 +192,16 @@ def rl_local(config: RLConfig):
                 "orchestrator starts, otherwise rollouts will hang."
             )
 
-        # Start orchestrator process
+        # Start orchestrator process. Picks the v2 binary when
+        # ``orchestrator.experimental.use_orch_v2`` is set so we can flip
+        # implementations from the rl entrypoint without changing any TOML.
+        orchestrator_bin = "orchestrator-v2" if config.orchestrator.experimental.use_orch_v2 else "orchestrator"
         orchestrator_cmd = [
-            "orchestrator",
+            orchestrator_bin,
             "@",
             (config_dir / ORCHESTRATOR_TOML).as_posix(),
         ]
-        logger.info("Starting orchestrator process")
+        logger.info(f"Starting orchestrator process ({orchestrator_bin})")
         logger.debug(f"Orchestrator start command: {' '.join(orchestrator_cmd)}")
         with open(log_dir / "orchestrator.log", "w") as log_file:
             orchestrator_process = Popen(

@@ -547,7 +547,18 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 
 
 class OrchestratorExperimentalConfig(BaseConfig):
-    pass
+    use_orch_v2: bool = False
+    """Opt into the v2 orchestrator (`prime_rl.orchestrator_v2`). When True, the `rl`
+    entrypoint launches the `orchestrator-v2` console script instead of the legacy
+    `orchestrator` one. The v2 orchestrator shares a single concurrency limiter
+    between train and eval rollouts and overlaps the two via priority-based
+    drain-switch instead of pausing weight updates during eval."""
+
+    log_loop_interval: float = Field(5.0, gt=0)
+    """Interval (seconds) at which the v2 orchestrator's `IntervalLogger` task emits
+    dispatcher gauges (in-flight counts, off-policy levels, semaphore availability)
+    and event-loop lag to the monitor on the time axis. Ignored under the legacy
+    orchestrator."""
 
 
 class RolloutModelConfig(BaseConfig):
@@ -583,8 +594,23 @@ class OrchestratorConfig(BaseConfig):
 
     advantage: AdvantageConfig | None = DefaultAdvantageConfig()
 
-    filters: list[FilterConfig] = [GibberishFilterConfig(), RepetitionFilterConfig(), ZeroAdvantageFilterConfig()]
-    """Rollout filters. Each filter can ``monitor`` (default) or ``enforce`` (skip rollouts)."""
+    pre_batch_filters: list[FilterConfig] = [
+        GibberishFilterConfig(enforce=False),
+        RepetitionFilterConfig(enforce=False),
+        ZeroAdvantageFilterConfig(enforce=False),
+    ]
+    """Filters applied *before* a rollout enters the training batch buffer (orchestrator v2 only).
+    All three filter types are registered in monitor mode by default; flip ``enforce=true`` per type
+    to drop matching rollouts before they consume a slot in the batch (e.g. a zero-advantage group
+    never makes it into a training batch). The legacy orchestrator ignores this list."""
+
+    post_batch_filters: list[FilterConfig] = Field(
+        default=[GibberishFilterConfig(), RepetitionFilterConfig(), ZeroAdvantageFilterConfig()],
+        validation_alias=AliasChoices("post_batch_filters", "filters"),
+    )
+    """Filters applied *after* a batch has been assembled. Each filter annotates each rollout;
+    rollouts flagged by an enforcing filter are still recorded but not shipped to the trainer.
+    ``filters`` is accepted as a silent alias for backwards compatibility."""
 
     log: LogConfig = LogConfig()
 
@@ -769,10 +795,18 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_unique_filter_types(self):
-        types = [f.type for f in self.filters]
-        if len(types) != len(set(types)):
-            raise ValueError(f"Duplicate filter types: {types}. Each filter type may only appear once.")
+        for slot_name in ("pre_batch_filters", "post_batch_filters"):
+            types = [f.type for f in getattr(self, slot_name)]
+            if len(types) != len(set(types)):
+                raise ValueError(
+                    f"Duplicate filter types in {slot_name}: {types}. Each filter type may only appear once per slot."
+                )
         return self
+
+    @property
+    def filters(self) -> list[FilterConfig]:
+        """Backwards-compatible alias for ``post_batch_filters``."""
+        return self.post_batch_filters
 
     @model_validator(mode="after")
     def _force_no_renderer_for_sft(self):

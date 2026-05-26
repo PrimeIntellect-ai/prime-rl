@@ -1,0 +1,12 @@
+# Smoke config — flips the rl entrypoint to launch ``orchestrator-v2`` instead of
+# the legacy orchestrator. Compose with any rl.toml, e.g.:
+#
+#   uv run rl @ examples/reverse_text/rl.toml @ configs/debug/orch_v2.toml
+#
+# Pairs naturally with ``configs/debug/orch.toml`` for very short smoke runs:
+#
+#   uv run rl @ examples/reverse_text/rl.toml @ configs/debug/orch_v2.toml \
+#     @ configs/debug/orch.toml @ configs/debug/infer.toml
+#
+[orchestrator.experimental]
+use_orch_v2 = true
