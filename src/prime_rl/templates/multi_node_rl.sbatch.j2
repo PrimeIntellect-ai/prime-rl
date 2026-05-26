@@ -362,7 +362,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             --secure-proxy=false \
             --enable-ssrf-protection=false \
             --inference-pool prime-rl \
-            --data-parallel-size $DP \
+            --data-parallel-size $INFERENCE_DP_LOCAL \
             >> $SIDECAR_LOG 2>&1 &
     fi
 {%- endif %}

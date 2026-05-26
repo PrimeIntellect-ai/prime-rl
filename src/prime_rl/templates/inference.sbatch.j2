@@ -306,7 +306,7 @@ srun --kill-on-bad-exit=1 bash -c '
             --secure-proxy=false \
             --enable-ssrf-protection=false \
             --inference-pool prime-rl \
-            --data-parallel-size $EP \
+            --data-parallel-size {{ dp_per_node }} \
             >> $SIDECAR_LOG 2>&1 &
     fi
 {%- endif %}
