@@ -14,8 +14,6 @@ A `prime-rl` RL run is three cooperating processes:
 
 The three processes communicate through configurable transports — by default the trainer↔orchestrator rollout link uses the local filesystem, and weight broadcast uses the filesystem (or NCCL for synchronous setups). Swap to ZMQ for multi-host setups without shared storage. See [Scaling](scaling.md) for the deployment options.
 
-Training is **asynchronous by default**: inference is allowed to run ahead of training by up to `max_async_level` steps, which hides the weight-broadcast latency behind ongoing rollouts. The loss combines an off-policy-aware policy gradient with a KL regularizer; see [Algorithms](algorithms.md) for the details.
-
 ## Installation
 
 ```bash
