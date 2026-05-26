@@ -3,7 +3,9 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, model_serializer, model_validator
+from pydantic_core.core_schema import SerializerFunctionWrapHandler
+from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -12,7 +14,6 @@ from prime_rl.configs.shared import (
     HeartbeatConfig,
     LogConfig,
     PrimeMonitorConfig,
-    RendererConfig,
     TransportConfig,
     WandbWithExtrasConfig,
 )
@@ -570,8 +571,30 @@ class OrchestratorConfig(BaseConfig):
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
-    renderer: RendererConfig = RendererConfig()
-    """Client-side renderer configuration. Only consumed when ``use_renderer=true``."""
+    renderer: RendererConfig | None = AutoRendererConfig()
+    """Typed renderer config (``renderers.RendererConfig`` discriminated
+    union). Defaults to ``"auto"``, which resolves from
+    ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. ``None``
+    opts into MITO (``openai_chat_completions``); SFT mode forces this."""
+
+    pool_size: int | None = Field(None, ge=1)
+    """Number of renderer slots shared across concurrent rollouts. Bump
+    for long multi-turn prompts where client-side jinja tokenization
+    serializes. Only meaningful when ``renderer`` is not ``None``."""
+
+    @model_serializer(mode="wrap")
+    def _preserve_mito_renderer(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """Emit ``renderer = "None"`` (string) when MITO so
+        ``model_dump(exclude_none=True)`` round-trips: dumped TOML has
+        ``renderer = "None"``, and on reload
+        ``BaseConfig._none_str_to_none`` coerces it back to ``None``.
+        Without this, a MITO orchestrator config saved to
+        ``control/orch.toml`` would lose the renderer key entirely and
+        reload as the default ``AutoRendererConfig()`` (TITO)."""
+        result = handler(self)
+        if self.renderer is None:
+            result["renderer"] = "None"
+        return result
 
     optim: OptimizerConfig = OptimizerConfig()
     """Per-run optimizer configuration for multi-run training."""
@@ -649,9 +672,6 @@ class OrchestratorConfig(BaseConfig):
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
-
-    use_renderer: bool = True
-    """Use the renderer-backed TITO client (client-side tokenization via the ``renderers`` package, served by ``/v1/generate``). When True, the ``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) applies. Default for both text-only and VLM rollouts; VLMs require it. False falls back to MITO (``openai_chat_completions``)."""
 
     env_install_prerelease: bool = False
     """Allow pre-release versions when installing environments (e.g. ``verifiers>=0.1.12.dev5``). Passes ``--prerelease`` to ``prime env install``."""
@@ -780,11 +800,11 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def _force_no_renderer_for_sft(self):
         """SFT rolls out via the teacher's plain chat-completions endpoint; the
-        renderer client doesn't apply. Force use_renderer=False so the user
+        renderer client doesn't apply. Force ``renderer=None`` so the user
         doesn't have to remember to set it. Declared before the renderer
         validators below so they see the corrected value."""
         if self.training_mode == "sft":
-            self.use_renderer = False
+            self.renderer = None
         return self
 
     @model_validator(mode="after")
@@ -798,33 +818,15 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_renderer_args(self):
-        """``[orchestrator.renderer]`` knobs are only meaningful when
-        ``use_renderer=True``. Reject otherwise so callers don't silently
-        pass them and wonder why they're ignored."""
-        if self.use_renderer:
-            return self
-
-        renderer_args_set = []
-        if self.renderer.name != "auto":
-            renderer_args_set.append(f"renderer.name={self.renderer.name!r}")
-        if self.renderer.tool_parser is not None:
-            renderer_args_set.append(f"renderer.tool_parser={self.renderer.tool_parser!r}")
-        if self.renderer.reasoning_parser is not None:
-            renderer_args_set.append(f"renderer.reasoning_parser={self.renderer.reasoning_parser!r}")
-        if self.renderer.pool_size is not None:
-            renderer_args_set.append(f"renderer.pool_size={self.renderer.pool_size!r}")
-        if self.renderer.preserve_all_thinking:
-            renderer_args_set.append(f"renderer.preserve_all_thinking={self.renderer.preserve_all_thinking!r}")
-        if self.renderer.preserve_thinking_between_tool_calls:
-            renderer_args_set.append(
-                f"renderer.preserve_thinking_between_tool_calls={self.renderer.preserve_thinking_between_tool_calls!r}"
-            )
-
-        if renderer_args_set:
+    def validate_pool_size(self):
+        """``pool_size`` is only meaningful when the renderer is enabled
+        (``renderer is not None``). Reject otherwise so callers don't
+        silently pass it and wonder why it's ignored."""
+        if self.renderer is None and self.pool_size is not None:
             raise ValueError(
-                "Renderer-specific args set without orchestrator.use_renderer=True: "
-                f"{', '.join(renderer_args_set)}. Either enable the renderer client or remove these knobs."
+                f"orchestrator.pool_size={self.pool_size!r} is set but "
+                "orchestrator.renderer is None (MITO mode). Either configure a renderer "
+                "or remove pool_size."
             )
         return self
 
@@ -836,9 +838,9 @@ class OrchestratorConfig(BaseConfig):
         tokens, and ships generic ``mm_kwargs`` keyed by whatever the
         model's forward signature expects.
         """
-        if self.student.model.vlm is not None and not self.use_renderer:
+        if self.student.model.vlm is not None and self.renderer is None:
             raise ValueError(
-                "orchestrator.use_renderer must be true when model.vlm is set. "
+                "orchestrator.renderer must be set when model.vlm is set. "
                 "VLMs must go through a renderer (e.g. Qwen3VLRenderer) that owns the processor."
             )
         return self
@@ -847,16 +849,16 @@ class OrchestratorConfig(BaseConfig):
     def validate_renderer_auto_resolves(self):
         """Reject the silent DefaultRenderer fallback at config time.
 
-        When ``use_renderer=True`` with ``renderer.name='auto'`` and the
-        model isn't in ``MODEL_RENDERER_MAP``, ``create_renderer`` would
-        fall back to ``DefaultRenderer``. That fallback doesn't fix the
-        position-dependent chat-template bug the renderer client exists to
-        solve, and rejects envs that pass tools (the rollout dies with
-        "RendererPool does not support tools") unless
-        ``renderer.tool_parser`` is configured. Surface at config time so
-        ``--dry-run`` reports the error.
+        When ``renderer.name='auto'`` and the model isn't in
+        ``MODEL_RENDERER_MAP``, ``create_renderer`` would fall back to
+        ``DefaultRenderer``. That fallback doesn't fix the
+        position-dependent chat-template bug the renderer client exists
+        to solve, and rejects envs that pass tools (the rollout dies
+        with "RendererPool does not support tools") unless
+        ``DefaultRendererConfig.tool_parser`` is configured. Surface at
+        config time so ``--dry-run`` reports the error.
         """
-        if not self.use_renderer or self.renderer.name != "auto":
+        if self.renderer is None or self.renderer.name != "auto":
             return self
         from renderers.base import MODEL_RENDERER_MAP
 
@@ -864,19 +866,19 @@ class OrchestratorConfig(BaseConfig):
         if model_id in MODEL_RENDERER_MAP:
             return self
         raise ValueError(
-            f"orchestrator.use_renderer=True with renderer.name='auto' but "
+            f"orchestrator.renderer.name='auto' but "
             f"{model_id!r} is not in renderers.base.MODEL_RENDERER_MAP, so it "
             f"would silently fall back to DefaultRenderer. Pick one: "
             f"(a) [orchestrator.renderer] name='default' — for fine-tunes / "
             f"vendored mirrors with custom chat templates (DefaultRenderer "
-            f"calls apply_chat_template); pair with tool_parser=<name> if "
-            f"the env uses tools. "
+            f"calls apply_chat_template); set tool_parser=<name> if the env "
+            f"uses tools. "
             f"(b) [orchestrator.renderer] name=<model-specific renderer> — "
             f"if {model_id!r} is template-identical to a mapped family "
             f"(and ideally also add it upstream to "
             f"renderers.base.MODEL_RENDERER_MAP). "
-            f"(c) orchestrator.use_renderer=false — opt out of the renderer "
-            f"client entirely."
+            f"(c) orchestrator.renderer='none' — opt out of the renderer "
+            f"client entirely (MITO)."
         )
 
     @model_validator(mode="after")

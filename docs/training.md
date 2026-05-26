@@ -143,7 +143,7 @@ If both columns are present, `messages` takes precedence.
 
 **Position-dependent chat templates.** Multi-turn SFT under the default tokenization path (`build_incremental_token_mask`) requires that tokenizing the first _k_ turns of a conversation be a strict prefix of tokenizing all _n ≥ k_ turns. Qwen3's upstream template _violates_ this — it strips past `<think>` blocks across user turns, silently corrupting the loss mask. Two fixes:
 
-- **Enable the renderer** (`use_renderer = true`, recommended). The [`renderers`](algorithms.md#renderers) package owns tokenization end-to-end and is robust to position-dependent templates. Hand-coded renderers ship for Qwen3, Qwen3.5, GLM-5, GLM-4.5, Kimi K2/K2.5, MiniMax M2, DeepSeek V3, Nemotron 3, GPT-OSS. Not supported for VLMs.
+- **Enable the renderer** (set a typed `[renderer]` config, e.g. `name = "qwen3"`, recommended; defaults to `"auto"` for RL). The [`renderers`](algorithms.md#renderers) package owns tokenization end-to-end and is robust to position-dependent templates. Hand-coded renderers ship for Qwen3, Qwen3.5, GLM-5, GLM-4.5, Kimi K2/K2.5, MiniMax M2, DeepSeek V3, Nemotron 3, GPT-OSS. Not supported for VLMs.
 - **Patched chat template** — the prime-rl–patched checkpoints (e.g. `PrimeIntellect/Qwen3-0.6B`, used in `examples/reverse_text/sft.toml`) ship a chat template that preserves thinking. Or supply your own.
 
 See [Algorithms § Multi-Turn Trajectories](algorithms.md#multi-turn-trajectories) for the full picture.
