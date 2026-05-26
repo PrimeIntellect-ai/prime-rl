@@ -510,7 +510,15 @@ def train(config: TrainerConfig):
                 for env_name, indices in env_to_indices.items():
                     tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
-            token_exporter.export(progress.step, micro_step, micro_batch, out, response_lengths, config.loss)
+            token_exporter.export(
+                progress.step,
+                micro_step,
+                micro_batch,
+                out,
+                response_lengths,
+                config.loss,
+                micro_batch.get("metadata"),
+            )
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)

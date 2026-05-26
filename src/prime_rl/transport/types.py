@@ -89,3 +89,22 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # sft → sft loss). All samples packed into a micro batch share the same mode.
     training_mode: TrainingMode = "rl"
     rewards: list[float] | None = None
+
+
+class MicroBatchMetadata(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    """Packer-derived metadata for a micro batch.
+
+    This intentionally lives outside ``MicroBatch`` so tenant/run routing does
+    not become part of the training tensor schema.
+    """
+
+    run_idx: int | None = None
+    run_id: str | None = None
+    run_step: int | None = None
+
+
+class MicroBatchPayload(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    """Transport envelope for one data rank's packed micro batches."""
+
+    micro_batches: list[MicroBatch]
+    metadata: list[MicroBatchMetadata | None] | None = None
