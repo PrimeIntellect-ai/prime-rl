@@ -18,7 +18,7 @@ from typing import Literal
 import httpx
 import verifiers as vf
 from httpx import AsyncClient
-from renderers import RendererConfig as RendererSettings
+from renderers import RendererConfig
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.client import load_lora_adapter, setup_admin_clients, setup_clients
@@ -107,7 +107,7 @@ class ElasticInferencePool:
         model_name: str,
         train_client_type: str = "openai_chat_completions",
         eval_client_type: str = "openai_chat_completions",
-        renderer_config: RendererSettings | None = None,
+        renderer_config: RendererConfig | None = None,
         renderer_pool_size: int | None = None,
     ):
         self.logger = get_logger()
@@ -145,7 +145,7 @@ class ElasticInferencePool:
         model_name: str,
         train_client_type: str = "openai_chat_completions",
         eval_client_type: str = "openai_chat_completions",
-        renderer_config: RendererSettings | None = None,
+        renderer_config: RendererConfig | None = None,
         renderer_pool_size: int | None = None,
     ) -> ElasticInferencePool:
         if client_config.elastic is None:

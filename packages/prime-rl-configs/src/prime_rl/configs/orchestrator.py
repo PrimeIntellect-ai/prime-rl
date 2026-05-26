@@ -3,7 +3,8 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, model_serializer, model_validator
+from pydantic_core.core_schema import SerializerFunctionWrapHandler
 from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import (
@@ -582,6 +583,20 @@ class OrchestratorConfig(BaseConfig):
 
     renderer_pool_size: int | None = Field(None, ge=1)
     """Number of renderer slots shared across concurrent rollouts. Bump for long multi-turn prompts where client-side jinja tokenization serializes. Only meaningful when ``renderer`` is not ``None``."""
+
+    @model_serializer(mode="wrap")
+    def _preserve_mito_renderer(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """Emit ``renderer = "None"`` (string) when MITO so
+        ``model_dump(exclude_none=True)`` round-trips: dumped TOML has
+        ``renderer = "None"``, and on reload
+        ``BaseConfig._none_str_to_none`` coerces it back to ``None``.
+        Without this, a MITO orchestrator config saved to
+        ``control/orch.toml`` would lose the renderer key entirely and
+        reload as the default ``AutoRendererConfig()`` (TITO)."""
+        result = handler(self)
+        if self.renderer is None:
+            result["renderer"] = "None"
+        return result
 
     optim: OptimizerConfig = OptimizerConfig()
     """Per-run optimizer configuration for multi-run training."""

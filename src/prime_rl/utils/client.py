@@ -10,7 +10,7 @@ import httpx
 import verifiers as vf
 from httpx import AsyncClient
 from openai import NotFoundError
-from renderers import RendererConfig as RendererSettings
+from renderers import RendererConfig
 from tenacity import retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
 
 from prime_rl.configs.shared import ClientConfig
@@ -70,7 +70,7 @@ class StaticInferencePool:
         model_name: str,
         train_client_type: str = "openai_chat_completions",
         eval_client_type: str = "openai_chat_completions",
-        renderer_config: RendererSettings | None = None,
+        renderer_config: RendererConfig | None = None,
         renderer_pool_size: int | None = None,
     ):
         renderer_model_name = model_name if train_client_type == "renderer" else None
@@ -127,7 +127,7 @@ async def setup_inference_pool(
     model_name: str,
     train_client_type: str = "openai_chat_completions",
     eval_client_type: str = "openai_chat_completions",
-    renderer_config: RendererSettings | None = None,
+    renderer_config: RendererConfig | None = None,
     renderer_pool_size: int | None = None,
 ) -> InferencePool:
     """Create an inference pool from config (static or elastic)."""
@@ -156,7 +156,7 @@ async def setup_inference_pool(
 def setup_clients(
     client_config: ClientConfig,
     client_type: str = "openai_chat_completions",
-    renderer_config: RendererSettings | None = None,
+    renderer_config: RendererConfig | None = None,
     renderer_model_name: str | None = None,
     renderer_pool_size: int | None = None,
 ) -> list[vf.ClientConfig]:
