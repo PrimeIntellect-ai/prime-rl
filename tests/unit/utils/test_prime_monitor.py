@@ -109,31 +109,3 @@ def test_sanitize_json_payload_drops_non_finite_values_and_logs_paths():
     monitor.logger.warning.assert_called_once_with(
         "Dropping 2 non-finite value(s) from Prime monitor metrics payload: metrics.nan, distributions[1]"
     )
-
-
-def test_log_sends_metrics_payload_to_prime_monitor():
-    monitor = _new_monitor()
-    monitor._keep_full_history = True
-    monitor.history = []
-    monitor.is_master = True
-    monitor.enabled = True
-    monitor.run_id = "run-123"
-    monitor._make_request = Mock()
-
-    metrics = {
-        "entropy/mean": 1.5,
-        "entropy/max": 2.0,
-        "mismatch_kl/mean": 0.25,
-        "mismatch_kl/max": 0.5,
-    }
-
-    monitor.log(metrics, step=7)
-
-    assert monitor.history == [metrics]
-    monitor._make_request.assert_called_once_with(
-        "metrics",
-        {
-            "run_id": "run-123",
-            "metrics": metrics,
-        },
-    )

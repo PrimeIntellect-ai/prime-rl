@@ -519,7 +519,6 @@ def train(config: TrainerConfig):
                 out,
                 response_lengths,
                 config.loss,
-                micro_batch.get("metadata"),
             )
 
             if is_tt_moe_model(model):

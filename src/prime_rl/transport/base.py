@@ -3,7 +3,7 @@ from pathlib import Path
 
 import msgspec
 
-from prime_rl.transport.types import MicroBatch, MicroBatchMetadata, MicroBatchPayload, TrainingBatch
+from prime_rl.transport.types import MicroBatch, MicroBatchPayload, TrainingBatch
 from prime_rl.utils.logger import get_logger
 
 
@@ -72,11 +72,7 @@ class MicroBatchSender(ABC):
         self.data_world_size = data_world_size
 
     @abstractmethod
-    def send(
-        self,
-        micro_batch_grid: list[list[MicroBatch]],
-        metadata_grid: list[list[MicroBatchMetadata | None]] | None = None,
-    ) -> None:
+    def send(self, micro_batch_grid: list[list[MicroBatch]]) -> None:
         """Send grid of micro batches to the trainers."""
         pass
 
