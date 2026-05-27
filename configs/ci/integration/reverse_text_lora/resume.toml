@@ -18,7 +18,7 @@ save_adapter_separately = true
 
 [orchestrator]
 batch_size = 128
-rollouts_per_example = 16
+group_size = 16
 
 [orchestrator.model.lora]
 name = "r8-1e-4"

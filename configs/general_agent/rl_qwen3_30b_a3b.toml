@@ -1,0 +1,52 @@
+max_steps = 400
+seq_len = 32768
+
+[slurm]
+job_name = "general-agent-qwen3-30b-a3b-rlm"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+
+[wandb]
+project = "general-agent-debug"
+name = "qwen3-30b-a3b-rlm"
+
+[ckpt]
+interval = 50
+keep_last = 1
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+
+[trainer]
+
+[trainer.model]
+cp = 2
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.compile]
+
+[orchestrator]
+batch_size = 512
+rollouts_per_example = 16
+max_off_policy_steps = 32
+
+[[orchestrator.train.env]]
+id = "general-agent-solver-rlm"
+
+[orchestrator.train.env.args]
+min_tier = 1
+
+[inference]
+gpu_memory_utilization = 0.85
+
+[inference.model]
+max_model_len = 32768
+
+[inference.parallel]
+dp = 2
+tp = 4

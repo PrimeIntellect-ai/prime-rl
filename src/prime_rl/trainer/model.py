@@ -12,9 +12,8 @@ os.environ.setdefault("USE_HUB_KERNELS", "NO")
 import torch
 import torch._dynamo
 import torch.nn as nn
-from beartype import beartype as typechecker
 from huggingface_hub import snapshot_download
-from jaxtyping import Float, Int, jaxtyped
+from jaxtyping import Int
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
@@ -394,6 +393,7 @@ def get_load_balance_stats(
     model: nn.Module, reset_stats: bool = True, try_to_avoid_padding_experts: bool = True
 ) -> dict[str, Tensor | None]:
     per_layer_max_vio = []
+    per_layer_routing_confidence = []
     language_model = get_language_model(model)
     for transformer_block in language_model.layers:
         # This is necessary for models that have mixed dense layers
@@ -401,16 +401,25 @@ def get_load_balance_stats(
         if block_mlp is None or not hasattr(block_mlp, "tokens_per_expert"):
             continue
         tokens_per_expert: torch.Tensor = block_mlp.tokens_per_expert
+        num_routed_tokens = tokens_per_expert.sum() / block_mlp.router.top_k
         if try_to_avoid_padding_experts:
             tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[block_mlp.router.top_k :]
         balanced_load = tokens_per_expert.mean()
         max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
-        per_layer_max_vio.append(max_vio.item())
+        per_layer_max_vio.append(max_vio.detach())
+
+        routing_confidence = block_mlp.routing_confidence_sum / num_routed_tokens
+        per_layer_routing_confidence.append(routing_confidence.detach())
+
         if reset_stats:
             block_mlp.tokens_per_expert.zero_()
+            block_mlp.routing_confidence_sum.zero_()
     if len(per_layer_max_vio) == 0:
-        return {"max_vio": None}
-    return {"max_vio": torch.tensor(per_layer_max_vio, device=torch.device("cuda"))}
+        return {"max_vio": None, "routing_confidence": None}
+    return {
+        "max_vio": torch.stack(per_layer_max_vio),
+        "routing_confidence": torch.stack(per_layer_routing_confidence),
+    }
 
 
 def get_model(
@@ -472,6 +481,11 @@ def get_model(
             subconfig.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
     model_config.fp8 = config.fp8
+
+    if config.index_cache is not None:
+        model_config.use_index_cache = True
+        model_config.index_topk_freq = config.index_cache.topk_freq
+        model_config.index_topk_pattern = config.index_cache.topk_pattern
 
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
     # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
@@ -1100,25 +1114,6 @@ def setup_model(
     return model
 
 
-def _get_qwen3_vl_mm_token_type_ids(model: nn.Module, input_ids: Tensor) -> Tensor | None:
-    config = getattr(model, "config", None)
-    if getattr(config, "model_type", None) != "qwen3_vl":
-        return None
-
-    mm_token_type_ids = torch.zeros_like(input_ids)
-
-    image_token_id = getattr(config, "image_token_id", None)
-    if image_token_id is not None:
-        mm_token_type_ids = mm_token_type_ids.masked_fill(input_ids == image_token_id, 1)
-
-    video_token_id = getattr(config, "video_token_id", None)
-    if video_token_id is not None:
-        mm_token_type_ids = mm_token_type_ids.masked_fill(input_ids == video_token_id, 2)
-
-    return mm_token_type_ids
-
-
-@jaxtyped(typechecker=typechecker)
 def forward(
     model: nn.Module,
     input_ids: Int[Tensor, "batch seq"],
@@ -1126,9 +1121,13 @@ def forward(
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
-    # Multimodal fields (Qwen3-VL)
-    pixel_values: Float[Tensor, "num_patches patch_dim"] | None = None,
-    image_grid_thw: Int[Tensor, "num_images 3"] | None = None,
+    # Generic multimodal kwargs (e.g. {"pixel_values": ...,
+    # "image_grid_thw": ...} for Qwen3-VL; just {"pixel_values": ...}
+    # for Gemma3). Passed straight through to ``model(**kwargs)`` so
+    # the model's HF forward signature is the schema. ``mm_token_type_ids``
+    # is split out because it's prime-rl-computed (from token ids),
+    # not a renderer/processor output.
+    mm_kwargs: dict[str, Tensor] | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
 ) -> PrimeLmOutput:
     # Build kwargs for model forward
@@ -1138,15 +1137,19 @@ def forward(
         "temperature": temperature,
     }
 
-    # For multimodal (VLM), don't pass position_ids - let the model compute MRoPE internally
-    # using image_grid_thw. Qwen3-VL only computes proper MRoPE when position_ids is None.
-    if pixel_values is not None:
-        assert image_grid_thw is not None, "pixel_values requires image_grid_thw for MRoPE computation"
-        kwargs["pixel_values"] = pixel_values
-        kwargs["image_grid_thw"] = image_grid_thw
-        mm_token_type_ids = _get_qwen3_vl_mm_token_type_ids(model, input_ids)
+    if mm_kwargs:
+        # Forward the per-model multimodal tensors verbatim, plus the
+        # renderer-supplied ``mm_token_type_ids`` (renderer owns the
+        # token→modality mapping via ``mm_token_type_id_map``).
+        kwargs.update(mm_kwargs)
         if mm_token_type_ids is not None:
             kwargs["mm_token_type_ids"] = mm_token_type_ids
+        # ``position_ids`` for MRoPE families: Qwen3-VL's HF forward
+        # recomputes 3D positions from ``image_grid_thw`` and breaks if
+        # given the trainer's pre-computed 1D ``position_ids``. Detect
+        # via the mm_kwargs shape so we don't enumerate model_types.
+        if "image_grid_thw" not in mm_kwargs:
+            kwargs["position_ids"] = position_ids
     else:
         kwargs["position_ids"] = position_ids
 

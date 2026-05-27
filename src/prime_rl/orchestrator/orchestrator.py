@@ -8,15 +8,13 @@ import tomli_w
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
 from prime_rl.orchestrator.advantage import compute_advantages
-from prime_rl.orchestrator.eval_utils import compute_eval_ckpt_step
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import (
-    build_vlm_image_cache,
+    backfill_rollout_tokens,
     interleave_rollout,
     offload_images_to_disk,
-    pretokenize_rollout_trajectory,
 )
 from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
 from prime_rl.utils.pathing import get_log_dir, get_rollout_dir, get_step_path
@@ -34,7 +32,6 @@ monkey_patch_chat_completion_logprobs()
 import pandas as pd
 import verifiers as vf
 from renderers.base import create_renderer
-from transformers import AutoProcessor
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.buffer import Buffer
@@ -118,16 +115,8 @@ async def orchestrate(config: OrchestratorConfig):
     for env_id in env_ids_to_install:
         install_env(env_id, prerelease=config.env_install_prerelease)
 
-    # Load tokenizer and processor (processor only for VLM models)
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
-
-    processor = None
-    if config.student.model.is_vlm:
-        logger.info(f"Loading VLM processor for {config.student.model.name}")
-        processor = AutoProcessor.from_pretrained(
-            config.student.model.name, trust_remote_code=config.student.model.trust_remote_code, use_fast=True
-        )
 
     # Set up student inference pool (required for all training modes).
     logger.info(
@@ -139,6 +128,18 @@ async def orchestrate(config: OrchestratorConfig):
         tokenizer=tokenizer,
         logger=logger,
     )
+
+    # Token-id → modality marker (1 = image patch, 2 = video patch) used
+    # to build ``mm_token_type_ids`` per sample. The renderer is the
+    # single source of truth — it already knows its own special-token
+    # IDs (``<|image_pad|>`` etc.) from the tokenizer it owns, so the
+    # orchestrator never needs to load a separate ``AutoProcessor``.
+    # Text-only renderers expose an empty map (or no attribute).
+    mm_token_type_ids_mapping: dict[int, int] | None = (
+        getattr(renderer, "mm_token_type_id_map", None) if renderer is not None else None
+    )
+    if mm_token_type_ids_mapping == {}:
+        mm_token_type_ids_mapping = None
 
     # Set up teacher inference pool (configured for opd or sft). Always MITO for
     # simplicity - this also keeps external OAI-compatible teachers (PI inference,
@@ -243,9 +244,7 @@ async def orchestrate(config: OrchestratorConfig):
         student_inference=student_inference,
         teacher_inference=teacher_inference,
         max_inflight_rollouts=config.max_inflight_rollouts,
-        max_async_level=config.max_async_level,
         max_off_policy_steps=config.max_off_policy_steps,
-        strict_async_level=config.strict_async_level,
         tasks_per_minute=config.tasks_per_minute,
         lora_name=config.student.model.lora.name if config.student.model.lora else None,
         config=config,
@@ -264,7 +263,10 @@ async def orchestrate(config: OrchestratorConfig):
     # Start inference metrics collector (requires W&B)
     inference_metrics_collector = None
     if config.wandb is not None and config.collect_inference_metrics:
-        inference_metrics_collector = InferenceMetricsCollector(student_inference.admin_clients)
+        inference_metrics_collector = InferenceMetricsCollector(
+            student_inference.admin_clients,
+            roles=config.inference_metrics_roles,
+        )
         await inference_metrics_collector.start()
 
     # Set up weight broadcast backend (targets student inference)
@@ -283,11 +285,6 @@ async def orchestrate(config: OrchestratorConfig):
     logger.info(f"Initializing training batch sender ({config.rollout_transport})")
     training_batch_sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
-    # Track last online eval checkpoint step per eval env
-    last_eval_steps: dict[str, int] = {env.name: -1 for env in eval_envs} if eval_envs else {}
-    # Track previous ckpt_step to detect when ckpt_step jumps over eval interval boundaries
-    prev_ckpt_step = -1
-
     # Reset weights to base model if starting from scratch
     progress = Progress()
 
@@ -295,13 +292,6 @@ async def orchestrate(config: OrchestratorConfig):
         ckpt_manager.load(progress, buffer, step=checkpoint_step)
         logger.info(f"Resuming training from checkpoint step {checkpoint_step}")
         scheduler.ckpt_step = progress.step  # Always resume from the latest checkpoint
-        if config.eval and config.eval.skip_eval_on_resume:
-            prev_ckpt_step = scheduler.ckpt_step
-            last_eval_steps = {name: scheduler.ckpt_step for name in last_eval_steps}
-            logger.info(f"Skipping online eval on resume (ckpt_step={scheduler.ckpt_step})")
-        else:
-            # Allow eval at resumed step by setting prev_ckpt_step one behind
-            prev_ckpt_step = scheduler.ckpt_step - 1
 
         # In NCCL mode, skip existence check - weights are broadcasted, not stored on disk
         check_exists = config.weight_broadcast.type != "nccl"
@@ -360,21 +350,18 @@ async def orchestrate(config: OrchestratorConfig):
         envs_to_eval: list[EvalEnv] = []
         if config.eval:
             assert eval_envs is not None
-            for eval_env in eval_envs:
-                eval_ckpt_step = compute_eval_ckpt_step(
-                    ckpt_step=ckpt_step,
-                    prev_ckpt_step=prev_ckpt_step,
-                    last_eval_step=last_eval_steps[eval_env.name],
-                    interval=eval_env.config.interval,
-                    eval_base_model=config.eval.eval_base_model,
-                )
-                if eval_ckpt_step is not None:
-                    last_eval_steps[eval_env.name] = ckpt_step
-                    envs_to_eval.append(eval_env)
+            if is_first_step and checkpoint_step is not None and config.eval.skip_eval_on_resume:
+                logger.info(f"Skipping online eval on resume (step={progress.step})")
+            else:
+                for eval_env in eval_envs:
+                    if progress.step % eval_env.config.interval == 0 and (
+                        progress.step > 0 or config.eval.eval_base_model
+                    ):
+                        envs_to_eval.append(eval_env)
 
         if envs_to_eval:
             env_names = ", ".join(e.name for e in envs_to_eval)
-            logger.info(f"Running evals at {ckpt_step=} for {env_names}")
+            logger.info(f"Running evals at step={progress.step} for {env_names}")
 
             # Pause weight updates and re-scheduling of training rollouts during eval
             # to avoid evaluating across different checkpoints and avoid congestion
@@ -390,7 +377,6 @@ async def orchestrate(config: OrchestratorConfig):
                     eval_env.evaluate(
                         model_name=student_inference.model_name,
                         get_client=student_inference.get_eval_client,
-                        ckpt_step=ckpt_step,
                         step=progress.step,
                         cache_salt=str(ckpt_step),
                     )
@@ -409,9 +395,6 @@ async def orchestrate(config: OrchestratorConfig):
             # Resume weight updates
             scheduler.checkpoint_ready.set()
 
-        # Update prev_ckpt_step for next iteration
-        prev_ckpt_step = ckpt_step
-
         # Schedule generating the training batch. Retry on empty-after-filter
         # batches so the trainer never receives an empty batch.
         generate_completions_time = 0.0
@@ -426,10 +409,10 @@ async def orchestrate(config: OrchestratorConfig):
             # Compute advantages (in-place)
             num_rollouts = len(train_rollouts)
             num_unique_examples = len({(r["env_name"], r["example_id"]) for r in train_rollouts})
-            compute_advantages(train_rollouts, config.rollouts_per_example, config.advantage)
+            await asyncio.to_thread(compute_advantages, train_rollouts, config.advantage)
 
             # Apply rollout filters — sets rollout["filters"] and rollout["is_filtered"]
-            apply_filters(rollout_filters, train_rollouts)
+            await asyncio.to_thread(apply_filters, rollout_filters, train_rollouts)
 
             n_trainable = sum(1 for r in train_rollouts if not r["is_filtered"])
             if n_trainable > 0:
@@ -468,69 +451,47 @@ async def orchestrate(config: OrchestratorConfig):
             save_rollouts, train_rollouts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
         )
 
-        # VLM: offload base64 images to disk immediately to free memory
-        if config.student.model.is_vlm:
-            offload_start = time.perf_counter()
-            num_offloaded = offload_images_to_disk(train_rollouts, config.output_dir)
-            if num_offloaded:
-                logger.info(
-                    f"VLM offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
-                )
+        # Offload base64 images to disk to free memory. No-op for text-only
+        # rollouts (no ``data:image`` URLs to find); cheap to call always.
+        offload_start = time.perf_counter()
+        num_offloaded = offload_images_to_disk(train_rollouts, config.output_dir)
+        if num_offloaded:
+            logger.info(
+                f"Offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
+            )
 
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
 
-        # Stage 1: pretokenize + (for VLM) build image cache concurrently.
-        # Pretokenize is a no-op when the renderer client already populated
-        # `tokens` on each trajectory step, but the fallback-tokenizer path
-        # and image-cache build are both CPU-heavy. Running them on threads
-        # and awaiting a single gather lets whichever finishes first free
-        # the event loop immediately and, with max_async_level >= 2, overlaps
-        # this whole stage with inference for the next batch.
-        async def _pretokenize_all() -> None:
+        # We only expect to backfill tokens for training_mode=sft against an
+        # external teacher API (OpenAI/etc.), which returns no token IDs —
+        # reconstruct via tokenizer/renderer. The vLLM-served paths (RL/OPD
+        # renderer + MITO, and training_mode=sft against a local vLLM teacher)
+        # already populate tokens via prompt_token_ids/token_ids, so we
+        # short-circuit the 256-way fanout.
+        needs_backfill = any(step["tokens"] is None for rollout in train_rollouts for step in rollout["trajectory"])
+        if needs_backfill:
+            logger.info(
+                "Backfilling tokens for rollout trajectories (expected for training_mode=sft against an external teacher API)"
+            )
             await asyncio.gather(
                 *(
                     asyncio.to_thread(
-                        pretokenize_rollout_trajectory,
+                        backfill_rollout_tokens,
                         rollout,
                         tokenizer,
-                        processor=processor,
                         renderer=renderer,
                     )
                     for rollout in train_rollouts
                 )
             )
 
-        if config.student.model.is_vlm:
-            mm_token_type_ids_mapping = {}
-            if hasattr(processor, "image_token_id") and processor.image_token_id is not None:
-                mm_token_type_ids_mapping[processor.image_token_id] = 1
-            if hasattr(processor, "video_token_id") and processor.video_token_id is not None:
-                mm_token_type_ids_mapping[processor.video_token_id] = 2
-            _, vlm_cache = await asyncio.gather(
-                _pretokenize_all(),
-                asyncio.to_thread(build_vlm_image_cache, train_rollouts, processor),
-            )
-            logger.info(
-                f"VLM timing: extract={vlm_cache.extract_time:.2f}s, preprocess={vlm_cache.preprocess_time:.2f}s "
-                f"({vlm_cache.num_unique_images} unique images from {vlm_cache.num_unique_examples} examples)"
-            )
-        else:
-            await _pretokenize_all()
-            vlm_cache = None
-            mm_token_type_ids_mapping = None
-
         # Process rollouts in parallel
-        def process_rollout(rollout: vf.RolloutOutput, rollout_idx: int) -> list[TrainingSample] | None:
-            return interleave_rollout(
-                rollout,
-                vlm_cache=vlm_cache,
-                cache_key=rollout_idx,
-                mm_token_type_ids_mapping=mm_token_type_ids_mapping,
-            )
-
         results = await asyncio.gather(
-            *(asyncio.to_thread(process_rollout, r, rollout_idx) for rollout_idx, r in enumerate(train_rollouts))
+            *(
+                asyncio.to_thread(interleave_rollout, r, mm_token_type_ids_mapping=mm_token_type_ids_mapping)
+                for r in train_rollouts
+            )
         )
 
         # Collect results and assign advantages. Metrics are computed over all
@@ -590,7 +551,7 @@ async def orchestrate(config: OrchestratorConfig):
             step=progress.step,
         )
 
-        training_batch_sender.send(training_batch)
+        await training_batch_sender.send(training_batch)
 
         step_time = time.perf_counter() - step_start_time
 
@@ -640,7 +601,7 @@ async def orchestrate(config: OrchestratorConfig):
             """Compute solve_none, solve_all, effective_batch_size for a set of rollouts."""
             reward_per_problem = df.groupby(["env_name", "example_id"]).reward.sum()
             solve_none = (reward_per_problem == 0).mean()
-            solve_all = (reward_per_problem == config.rollouts_per_example).mean()
+            solve_all = (reward_per_problem == config.group_size).mean()
             return solve_none, solve_all, 1 - solve_none - solve_all
 
         # Group by (env_name, example_id) to average across rollouts within each problem
@@ -657,7 +618,6 @@ async def orchestrate(config: OrchestratorConfig):
             "progress/total_tokens": progress.total_tokens,
             "progress/total_samples": progress.total_samples,
             "progress/total_problems": progress.total_problems,
-            "progress/ckpt_step": ckpt_step,  # Shared W&B axis
             # Sequence length metrics
             "seq_len/all/mean": by_example.seq_len.mean().mean(),
             "seq_len/all/max": by_example.seq_len.mean().max(),
@@ -793,7 +753,7 @@ async def orchestrate(config: OrchestratorConfig):
         is_first_step = False
 
         # Free large per-step objects to prevent memory accumulation
-        del train_rollouts, train_examples, training_batch, vlm_cache
+        del train_rollouts, train_examples, training_batch
         del results_df, metrics_df
         gc.collect()
         # Return free glibc heap pages to the OS. numpy/pandas allocate array data
@@ -817,7 +777,6 @@ async def orchestrate(config: OrchestratorConfig):
                 eval_env.evaluate(
                     model_name=student_inference.model_name,
                     get_client=student_inference.get_eval_client,
-                    ckpt_step=ckpt_step,
                     step=progress.step,
                     cache_salt=str(ckpt_step),
                 )
@@ -889,6 +848,9 @@ async def orchestrate(config: OrchestratorConfig):
 def main():
     """Main entry-point for orchestrator. Run using `uv run orchestrator`"""
     set_proc_title("Orchestrator")
+    import uvloop
+
+    uvloop.install()
     asyncio.run(orchestrate(cli(OrchestratorConfig)))
 
 
@@ -900,41 +862,28 @@ async def setup_student_inference_pool(
 ):
     """Set up the student inference pool (rollouts when rl/opd, evals + weight sync always).
 
-    Routing policy is driven by ``config.use_renderer``:
+    Routing policy is driven by ``config.renderer``:
 
-      - ``use_renderer=True``  → renderer-backed TITO client (``/v1/generate``).
-        Default for text-only rollouts. Not allowed for VLMs (validated at
-        config time).
-      - ``use_renderer=False`` → MITO (``openai_chat_completions``). VLMs
-        land here too.
+      - ``renderer is not None`` → renderer-backed TITO client (``/v1/generate``).
+        Default for both text-only and VLM rollouts; required for VLMs.
+      - ``renderer is None``     → MITO (``openai_chat_completions``).
 
-    Eval clients always use MITO. In sft mode ``use_renderer`` is forced off
+    Eval clients always use MITO. In sft mode ``renderer`` is forced to ``None``
     by a config validator, so the student pool is plain MITO end-to-end.
     """
     client_config = config.student.client
     model_name = config.student.model.name
 
-    if config.use_renderer:
-        renderer = create_renderer(
-            tokenizer,
-            renderer=config.renderer.name,
-            tool_parser=config.renderer.tool_parser,
-            reasoning_parser=config.renderer.reasoning_parser,
-            preserve_all_thinking=config.renderer.preserve_all_thinking,
-            preserve_thinking_between_tool_calls=config.renderer.preserve_thinking_between_tool_calls,
-        )
+    if config.renderer is not None:
+        renderer = create_renderer(tokenizer, config.renderer)
         logger.info(f"Initialized {type(renderer).__name__} for {model_name}")
         inference_pool = await setup_inference_pool(
             client_config,
             model_name=model_name,
             train_client_type="renderer",
             eval_client_type="openai_chat_completions",
-            renderer_name=config.renderer.name,
-            tool_parser=config.renderer.tool_parser,
-            reasoning_parser=config.renderer.reasoning_parser,
-            renderer_pool_size=config.renderer.pool_size,
-            preserve_all_thinking=config.renderer.preserve_all_thinking,
-            preserve_thinking_between_tool_calls=config.renderer.preserve_thinking_between_tool_calls,
+            renderer_config=config.renderer,
+            pool_size=config.pool_size,
         )
         logger.info("Using direct renderer rollout client")
         return renderer, inference_pool

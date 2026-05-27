@@ -1,5 +1,6 @@
 .vscode/*
 .claude/scheduled_tasks.lock
+.claude/worktrees/
 *.ipynb
 *.jsonl
 configs/endpoints.py

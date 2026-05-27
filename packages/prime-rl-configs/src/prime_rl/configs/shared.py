@@ -84,26 +84,6 @@ class BaseModelConfig(BaseConfig):
         return self.vlm is not None
 
 
-class RendererConfig(BaseConfig):
-    name: str = "auto"
-    """Renderer used for chat-template tokenization. One of: ``auto`` (detect from tokenizer), ``qwen3``, ``qwen3_vl``, ``qwen3.5``, ``glm5``, ``glm4.5``, ``minimax-m2``, ``deepseek_v3``, ``kimi_k2``, ``kimi_k25``, ``nemotron3``, ``gpt_oss``, ``default``."""
-
-    tool_parser: str | None = None
-    """Tool parser from ``renderers.parsers``. Only consumed by DefaultRenderer; model-specific renderers bake their own parsing in. Options: ``qwen3``, ``qwen3.5``, ``glm``, ``deepseek_v3``."""
-
-    reasoning_parser: str | None = None
-    """Reasoning parser from ``renderers.parsers``. Only consumed by DefaultRenderer. Options: ``think``."""
-
-    pool_size: int | None = Field(None, ge=1)
-    """Number of renderer slots shared across concurrent rollouts. Bump for long multi-turn prompts where client-side jinja tokenization serializes."""
-
-    preserve_all_thinking: bool = False
-    """Re-emit every past-assistant turn's ``reasoning_content`` between ``<think>``/``</think>`` (or the model's equivalent), even when the chat template would drop it. Strict superset of preserve_thinking_between_tool_calls."""
-
-    preserve_thinking_between_tool_calls: bool = False
-    """Preserve past-assistant ``reasoning_content`` only inside the current tool cycle — the contiguous assistant→tool→…→assistant block after the most recent user message, when that block contains at least one tool response. A new user turn closes the block."""
-
-
 class ElasticConfig(BaseConfig):
     hostname: str
     """DNS hostname that resolves to inference server IPs."""
@@ -138,7 +118,7 @@ class ClientConfig(BaseConfig):
     """Maps HTTP header names to environment variable names; each entry is resolved via ``os.getenv`` and merged into request headers. e.g. ``{"X-Prime-Team-ID": "PRIME_TEAM_ID"}``."""
 
     extra_headers_from_state: dict[str, str] = {}
-    """Maps HTTP header names to rollout-state field names. The header value is read from the rollout state dict on every request. e.g. ``{"X-Session-ID": "example_id"}`` enables sticky routing at the inference router."""
+    """Maps HTTP header names to rollout-state field names. The header value is read from the rollout state dict on every request. e.g. ``{"X-Session-ID": "trajectory_id"}`` enables sticky routing at the inference router."""
 
     skip_model_check: bool = False
     """Skip checking that the model is available in the inference pool. Useful for external APIs or keys that do not expose ``/models``."""
