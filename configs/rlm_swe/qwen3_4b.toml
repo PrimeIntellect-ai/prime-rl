@@ -1,6 +1,6 @@
 output_dir = "/beegfs/outputs/rlm-swe-qwen3-4b-thinking"
 max_steps = 1000
-seq_len = 4096
+seq_len = 65536
 
 [slurm]
 job_name = "rlm-swe-qwen3-4b-thinking"
@@ -96,7 +96,7 @@ labels = ["rlm-swe-qwen3-4b-thinking"]
 gpu_memory_utilization = 0.85
 
 [inference.model]
-max_model_len = 4096
+max_model_len = 65536
 tool_call_parser = "hermes"
 
 [inference.parallel]
