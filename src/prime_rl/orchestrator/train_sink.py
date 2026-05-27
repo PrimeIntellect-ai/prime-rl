@@ -154,7 +154,7 @@ class TrainSink:
         rollout ``TrainingSample``\\ s, then run the pre-batch filter pass.
         Survivors (not filtered) land in ``pending_batch``.
         """
-        env_name, _example_id = key
+        env_name, example_id = key
         group = self.pending_groups.pop(key, [])
         if not group:
             return
@@ -166,17 +166,17 @@ class TrainSink:
         # rewards unsafe (computed relative to the missing ones). Drop.
         env = self.train_envs.get(env_name)
         if num_errored > 0 and env.requires_group_scoring:
-            get_logger().warning(
-                f"Dropping group-scored train group ({env_name}) — {num_errored}/{len(all_raws)} rollouts failed"
+            get_logger().info(
+                f"Group | env={env_name} example_id={example_id} | "
+                f"rollouts={len(all_raws)} (errored={num_errored}) | dropped: group-scored partial"
             )
             return
         if not survivors:
-            get_logger().warning(f"Dropping train group ({env_name}) — all {len(all_raws)} rollouts failed")
-            return
-        if num_errored > 0:
-            get_logger().warning(
-                f"Partial train group ({env_name}) — {len(survivors)}/{len(all_raws)} survived ({num_errored} failed)"
+            get_logger().info(
+                f"Group | env={env_name} example_id={example_id} | "
+                f"rollouts={len(all_raws)} (errored={num_errored}) | dropped: all failed"
             )
+            return
 
         # Advantages over surviving rollouts only.
         if self.advantage_config is not None:
@@ -198,18 +198,33 @@ class TrainSink:
         # Pre-batch filter pass.
         if self.pre_filters:
             apply_filters(self.pre_filters, survivors)
+        filtered_by_name: dict[str, int] = {}
+        num_filtered = 0
         for raw in survivors:
             self.pre_filter_seen += 1
             if raw.get("is_filtered"):
                 self.pre_filter_dropped += 1
+                num_filtered += 1
                 for name, hit in (raw.get("filters") or {}).items():
                     if hit:
                         self.pre_filter_dropped_by_name[name] = self.pre_filter_dropped_by_name.get(name, 0) + 1
+                        filtered_by_name[name] = filtered_by_name.get(name, 0) + 1
                 continue
             # Reset annotations so the post-batch filter pass starts clean.
             raw["filters"] = {}
             raw["is_filtered"] = False
             self.pending_batch.append(raw)
+
+        # Per-group summary. One line per finalized group; per-filter
+        # detection breakdown lives at debug level in ``apply_filters``.
+        rewards = [raw.get("reward", 0.0) for raw in survivors]
+        avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
+        filter_str = ", ".join(f"{n}={c}" for n, c in filtered_by_name.items()) if filtered_by_name else "—"
+        get_logger().info(
+            f"Group | env={env_name} example_id={example_id} | "
+            f"rollouts={len(all_raws)} (errored={num_errored}, filtered={num_filtered}) | "
+            f"reward={avg_reward:.4f} | filters: {filter_str}"
+        )
 
     # ── level 3: per-batch (post-filter + samples assembly) ───────────────
 

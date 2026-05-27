@@ -182,7 +182,10 @@ def apply_filters(filters: list[RolloutFilter], rollouts: list[vf.RolloutOutput]
 
     if total_detected > 0:
         enforced_msg = f", enforced {total_enforced}" if total_enforced > 0 else ""
-        get_logger().info(
+        # Per-group filter detection is noisy at info-level (one line per
+        # group). The sink emits a single aggregated line per finalized
+        # group at info-level; this is the per-filter breakdown for debug.
+        get_logger().debug(
             f"Detected {total_detected}/{len(rollouts)} rollouts "
             f"({', '.join(f'{name}={c}' for name, c in counts.items() if c > 0)})" + enforced_msg
         )

@@ -36,6 +36,7 @@ from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.eval_utils import compute_pass_at_k
 from prime_rl.orchestrator.types import EvalBatch, Rollout
 from prime_rl.orchestrator.vf_utils import get_seq_len
+from prime_rl.utils.logger import get_logger
 
 
 class EvalSink:
@@ -102,9 +103,22 @@ class EvalSink:
         group = self.pending_groups.pop(key, [])
         if not group:
             return
-        env_name, _example_id, eval_step = key
+        env_name, example_id, eval_step = key
         bucket = self.pending_batches[(env_name, eval_step)]
         bucket.extend(r.raw for r in group)
+
+        # Per-group summary (eval). Mirrors the train side: one info line
+        # per finalized group with error / reward counts. Eval doesn't run
+        # filters, so the filter slot is always empty.
+        all_raws = [r.raw for r in group]
+        survivors = [raw for raw in all_raws if raw.get("error") is None]
+        num_errored = len(all_raws) - len(survivors)
+        rewards = [raw.get("reward", 0.0) for raw in survivors]
+        avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
+        get_logger().info(
+            f"Group | env={env_name} example_id={example_id} eval_step={eval_step} | "
+            f"rollouts={len(all_raws)} (errored={num_errored}) | reward={avg_reward:.4f}"
+        )
 
     # ── level 3: per-batch (per-env metrics) ──────────────────────────────
 
