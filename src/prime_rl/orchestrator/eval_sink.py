@@ -47,11 +47,10 @@ class EvalSink:
         # into the batch bucket when arrivals reach ``group_size``.
         self.pending_groups: dict[tuple[str, int, int], list[Rollout]] = defaultdict(list)
         # Per (env_name, eval_step) accumulation — emits an ``EvalBatch``
-        # when arrivals reach ``num_examples * group_size``.
+        # when ``len(bucket) >= num_examples * group_size``. ``process_group``
+        # flushes every member of a finalized group into here without
+        # filtering, so the bucket size IS the arrival count.
         self.pending_batches: dict[tuple[str, int], list[vf.RolloutOutput]] = defaultdict(list)
-        # Per (env_name, eval_step) arrival counter — independent of bucket
-        # size because process_group moves rollouts out of pending_groups.
-        self.batch_arrivals: dict[tuple[str, int], int] = defaultdict(int)
 
     # ── ingest ────────────────────────────────────────────────────────────
 
@@ -67,10 +66,9 @@ class EvalSink:
         gkey = (rollout.env_name, rollout.example_id, rollout.eval_step)
         bkey = (rollout.env_name, rollout.eval_step)
         self.pending_groups[gkey].append(rollout)
-        self.batch_arrivals[bkey] += 1
         if len(self.pending_groups[gkey]) >= self.group_size_for(rollout.env_name):
             self.process_group(gkey)
-        if self.batch_arrivals[bkey] >= self.batch_size_for(rollout.env_name):
+        if len(self.pending_batches[bkey]) >= self.batch_size_for(rollout.env_name):
             return self.process_batch(bkey)
         return None
 
@@ -123,7 +121,6 @@ class EvalSink:
         """
         env_name, step = key
         rollouts = self.pending_batches.pop(key, [])
-        self.batch_arrivals.pop(key, None)
 
         to_log: dict[str, Any] = {"step": step}
         prefix = f"eval/{env_name}"
