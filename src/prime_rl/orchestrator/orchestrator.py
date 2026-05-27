@@ -712,7 +712,7 @@ class Orchestrator:
         inflight_total = inflight_train + inflight_eval
         train_progress, train_target, train_unit = self.train_sink.batch_progress()
         train_batch_by_env = self.train_sink.pending_batch_by_env()
-        eval_epochs = self.eval_sink.epoch_progress() if self.eval_sink is not None else []
+        eval_epochs = self.eval_sink.batch_progress() if self.eval_sink is not None else []
         multi_train = len(self.train_envs) > 1
         multi_eval = self.eval_envs is not None and len(self.eval_envs) > 1
 

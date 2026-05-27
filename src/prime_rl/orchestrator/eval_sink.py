@@ -89,10 +89,13 @@ class EvalSink:
         env = self.eval_envs.get(env_name)
         return len(env.examples) * env.config.group_size
 
-    def epoch_progress(self) -> list[tuple[str, int, int, int]]:
+    def batch_progress(self) -> list[tuple[str, int, int, int]]:
         """``(env_name, eval_step, arrivals_so_far, expected)`` for every
-        epoch currently accumulating — fuel for the orchestrator's
-        pipeline log. ``arrivals_so_far`` counts ``pending_batches``
+        per-(env, eval_step) batch currently accumulating — fuel for the
+        orchestrator's pipeline log. Mirrors ``TrainSink.batch_progress``,
+        but eval can have multiple batches in parallel (one per active
+        ``(env, eval_step)``) so this returns a list.
+        ``arrivals_so_far`` counts ``pending_batches``
         (groups already finalized this epoch) plus per-rollout partial
         groups from non-group-scoring envs (so the counter ticks
         per-rollout). Group-scoring envs only contribute via
