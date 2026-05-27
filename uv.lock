@@ -15,7 +15,7 @@ conflicts = [[
 ]]
 
 [options]
-exclude-newer = "2026-05-18T23:20:22.611873892Z"
+exclude-newer = "2026-05-20T22:25:52.535094223Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -4833,7 +4833,7 @@ requires-dist = [
     { name = "jinja2" },
     { name = "numpy" },
     { name = "openai", specifier = ">=1.108.1" },
-    { name = "openai-harmony", specifier = ">=0.0.8" },
+    { name = "openai-harmony", specifier = ">=0.0.4" },
     { name = "prime-pydantic-config", editable = "deps/pydantic-config" },
     { name = "tiktoken" },
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
