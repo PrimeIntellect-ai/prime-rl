@@ -76,7 +76,7 @@ class RolloutDispatcher:
         tasks_per_minute: float | None,
         group_size: int,
         max_off_policy_steps_train: int,
-        max_off_policy_steps_eval: int | None,
+        max_off_policy_steps_eval: int,
         training_mode: Literal["rl", "opd", "sft"],
     ) -> None:
         self.logger = get_logger()
@@ -202,10 +202,13 @@ class RolloutDispatcher:
         """
         stale_groups: dict[uuid.UUID, Kind] = {}
         cancelled_by_kind: dict[Kind, int] = {"train": 0, "eval": 0}
+        caps: dict[Kind, int] = {
+            "train": self.max_off_policy_steps_train,
+            "eval": self.max_off_policy_steps_eval,
+        }
         for meta in self.inflight.values():
             meta.off_policy_steps += 1
-            limit = self.max_off_policy_steps_train if meta.kind == "train" else self.max_off_policy_steps_eval
-            if limit is not None and meta.off_policy_steps > limit:
+            if meta.off_policy_steps > caps[meta.kind]:
                 stale_groups[meta.group_id] = meta.kind
 
         for gid, kind in stale_groups.items():
@@ -216,9 +219,8 @@ class RolloutDispatcher:
             n = cancelled_by_kind[kind]
             if n:
                 self.metrics.record_cancellation(kind=kind, n=n)
-                limit = self.max_off_policy_steps_train if kind == "train" else self.max_off_policy_steps_eval
                 self.logger.warning(
-                    f"Cancelled {n} {kind} rollouts past max_off_policy_steps={limit}. "
+                    f"Cancelled {n} {kind} rollouts past max_off_policy_steps={caps[kind]}. "
                     "Consider increasing it to avoid this."
                 )
 

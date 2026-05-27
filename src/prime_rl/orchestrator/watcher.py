@@ -4,7 +4,7 @@ Standalone async task. The watcher does three things:
 
 1. Discovers the next checkpoint step from ``broadcasts/`` (or, equivalently,
    from the NCCL-broadcast in-memory path which writes a ``NCCL_READY`` marker).
-2. Calls ``student_inference.update_weights(weights_path, lora_name, step)`` —
+2. Calls ``inference.update_weights(weights_path, lora_name, step)`` —
    the inference pool's pause/resume + LoRA / NCCL handshake lives there.
 3. Mutates the shared ``Policy`` (version and, on LoRA, model_name) and walks
    the observer list in order so each observer (dispatcher, future plugins) can
@@ -38,7 +38,7 @@ class WeightWatcher:
         config: OrchestratorConfig,
         *,
         policy: Policy,
-        student_inference: InferencePool,
+        inference: InferencePool,
         observers: list[VersionObserver],
         lora_name: str | None,
         ckpt_step: int = 0,
@@ -46,7 +46,7 @@ class WeightWatcher:
     ) -> None:
         self.config = config
         self.policy = policy
-        self.student_inference = student_inference
+        self.inference = inference
         self.observers = observers
         self.lora_name = lora_name
         self.ckpt_step = ckpt_step
@@ -116,7 +116,7 @@ class WeightWatcher:
 
             self.logger.debug(f"Updating weights to step {next_step}")
             t1 = time.perf_counter()
-            await self.student_inference.update_weights(weights_path, lora_name=self.lora_name, step=next_step)
+            await self.inference.update_weights(weights_path, lora_name=self.lora_name, step=next_step)
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
             self.logger.debug(f"Updated weights to step {next_step} in {self.last_update_weights_time:.2f}s")
@@ -124,7 +124,7 @@ class WeightWatcher:
             self.ckpt_step = next_step
             self.policy.version = next_step
             if self.lora_name is not None:
-                self.student_inference.update_model_name(self.lora_name)
+                self.inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name
 
             # Notify observers in registration order. Each gets the freshly
