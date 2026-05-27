@@ -4,7 +4,7 @@ import time
 from contextlib import nullcontext
 from datetime import timedelta
 
-from renderers.base import create_renderer
+from renderers.base import create_renderer, is_multimodal
 from renderers.default import DefaultRenderer
 from ring_flash_attn import substitute_hf_flash_attn
 from torch.nn import CrossEntropyLoss
@@ -177,6 +177,12 @@ def train(config: SFTConfig):
                 "Either use a model with a hand-coded renderer (see renderers.base.MODEL_RENDERER_MAP), "
                 "set [renderer] name=<hand-coded renderer> explicitly, or set use_renderer=false."
             )
+        if config.model.vlm is not None and not is_multimodal(renderer):
+            raise ValueError(
+                f"VLM training requires a MultimodalRenderer; got {type(renderer).__name__}. "
+                "Pick a multimodal-aware renderer (e.g. qwen3_vl, qwen3.5, qwen3.6, kimi_k25) "
+                "or remove [model.vlm] from the config."
+            )
         logger.info(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
 
     # Set up the optimizer
@@ -198,7 +204,7 @@ def train(config: SFTConfig):
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
     dataset = setup_dataset(tokenizer, config.data, config.model.cp, renderer=renderer)
-    dataloader = setup_dataloader(dataset, config.data)
+    dataloader = setup_dataloader(dataset, config.data, pad_token_id=tokenizer.pad_token_id)
     dataiter = iter(dataloader)
 
     val_raw_dataset = None
@@ -250,7 +256,22 @@ def train(config: SFTConfig):
         target_ids = micro_batch["target_ids"].to("cuda")
         loss_mask = micro_batch["loss_mask"].to("cuda")
 
+        # Multimodal kwargs are an opaque per-model dict (e.g.
+        # ``{"pixel_values": ..., "image_grid_thw": ...}`` for Qwen3-VL) —
+        # we move every tensor to CUDA and let the model's forward sort
+        # them. ``mm_token_type_ids`` mirrors ``input_ids`` shape and
+        # marks image-placeholder tokens (1) vs text (0).
+        mm_kwargs_raw = micro_batch.get("mm_kwargs")
+        mm_kwargs = {k: v.to("cuda") for k, v in mm_kwargs_raw.items()} if mm_kwargs_raw else None
+        mm_token_type_ids = (
+            micro_batch["mm_token_type_ids"].to("cuda")
+            if micro_batch.get("mm_token_type_ids") is not None
+            else None
+        )
+
         if cp_enabled:
+            # VLM + CP is rejected at config-validation time, but be defensive.
+            assert mm_kwargs is None, "Context parallelism is not supported with VLM/multimodal training"
             input_ids, position_ids = setup_cp_params(
                 input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
             )
@@ -266,10 +287,23 @@ def train(config: SFTConfig):
             if config.loss_impl in ("liger_fused", "quack_fused"):
                 masked_target_ids = target_ids.clone()
                 masked_target_ids[~loss_mask] = FUSED_CE_IGNORE_INDEX
-                out = forward(model, input_ids, position_ids, labels=masked_target_ids)
+                out = forward(
+                    model,
+                    input_ids,
+                    position_ids,
+                    labels=masked_target_ids,
+                    mm_kwargs=mm_kwargs,
+                    mm_token_type_ids=mm_token_type_ids,
+                )
                 loss_sum = out["loss"] * token_count
             else:
-                out = forward(model, input_ids, position_ids)
+                out = forward(
+                    model,
+                    input_ids,
+                    position_ids,
+                    mm_kwargs=mm_kwargs,
+                    mm_token_type_ids=mm_token_type_ids,
+                )
                 logits = out["logits"]
                 B, L, V = logits.shape
                 token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
@@ -312,7 +346,7 @@ def train(config: SFTConfig):
             raw_dataset=val_raw_dataset,
             renderer=renderer,
         )
-        val_dataloader = setup_dataloader(val_dataset, config.val.data)
+        val_dataloader = setup_dataloader(val_dataset, config.val.data, pad_token_id=tokenizer.pad_token_id)
 
         # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
         mean_loss, nan_count = run_eval_loop(val_dataloader)

@@ -32,8 +32,8 @@ class BaseDataConfig(BaseConfig):
     seq_len: int = Field(128, ge=1)
     """Sequence length."""
 
-    pack_function: Literal["cat", "stack"] = "cat"
-    """Sample packing strategy. ``cat`` concatenates; ``stack`` requires ``seq_len`` divisible by 256."""
+    pack_function: Literal["cat", "stack", "mm_cat"] = "cat"
+    """Sample packing strategy. ``cat`` concatenates; ``stack`` requires ``seq_len`` divisible by 256; ``mm_cat`` is the multimodal-aware variant (boundary-aware, never splits an image-pad run, carries per-image tensors)."""
 
     micro_batch_size: int = Field(1, ge=1)
     """Per-step micro batch size. ``batch_size`` must be divisible by this."""
@@ -318,12 +318,40 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_renderer_vs_vlm(self):
-        if self.use_renderer and self.model.vlm is not None:
+    def validate_vlm_requires_renderer(self):
+        if self.model.vlm is None:
+            return self
+        if not self.use_renderer:
             raise ValueError(
-                "use_renderer is not supported for VLMs. The renderer tokenizes "
-                "text-only message dicts client-side and cannot handle image inputs."
+                "VLM SFT requires use_renderer=True. Multimodal renderers "
+                "(e.g. Qwen3VLRenderer, Qwen35Renderer) own the HF processor "
+                "and emit per-image pixel_values/image_grid_thw alongside the "
+                "token stream."
             )
+        if self.model.cp > 1:
+            raise ValueError(
+                "Context parallelism is not supported with VLM/multimodal training (yet)."
+            )
+        if self.data.pack_function == "stack":
+            raise ValueError(
+                "pack_function='stack' is incompatible with VLM training "
+                "(variable image-tensor shapes). Use 'cat' or 'mm_cat'."
+            )
+        if self.loss_impl not in ("torch", "liger"):
+            raise ValueError(
+                "VLM SFT with fused CE (liger_fused / quack_fused) has not "
+                "been validated. Use loss_impl='torch' or 'liger'."
+            )
+        if self.val is not None and self.val.data.pack_function == "stack":
+            raise ValueError(
+                "Validation pack_function='stack' is incompatible with VLM training."
+            )
+        # Default-flip to the multimodal-aware packer so users don't get
+        # mid-sample truncation through image-pad runs.
+        if self.data.pack_function == "cat":
+            self.data.pack_function = "mm_cat"
+        if self.val is not None and self.val.data.pack_function == "cat":
+            self.val.data.pack_function = "mm_cat"
         return self
 
     @model_validator(mode="after")

@@ -1,12 +1,18 @@
 import json
 import uuid
 from collections import defaultdict
-from typing import Literal, TypedDict, cast
+from typing import Any, Callable, Literal, TypedDict, cast
 
 import torch
 from datasets import Dataset, interleave_datasets, load_dataset
 from jaxtyping import Bool, Int
-from renderers.base import Renderer, build_training_sample
+from renderers.base import (
+    Message,
+    Renderer,
+    ToolSpec,
+    build_training_sample,
+    is_multimodal,
+)
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.utils.data import IterableDataset, get_worker_info
@@ -27,18 +33,81 @@ from prime_rl.utils.logger import get_logger
 STACKING_DATASET_BUCKET_TIMEOUT = 10
 
 
-class Sample(TypedDict):
+class Sample(TypedDict, total=False):
     input_ids: list[int]
     position_ids: list[int]
     loss_mask: list[bool]
     target_ids: list[int]
+    # Per-token modality marker (0=text, 1=image, 2=video). Populated by
+    # multimodal renderers via ``mm_token_type_id_map``; absent on the
+    # text-only path.
+    mm_token_type_ids: list[int]
+    # Per-image processor outputs keyed by the model's forward kwarg
+    # names (e.g. ``pixel_values``, ``image_grid_thw``). One tensor per
+    # image, not yet batched — packing decides which to keep, the
+    # collate step concatenates along dim=0.
+    mm_items: dict[str, list[Tensor]]
 
 
-class Batch(TypedDict):
+class Batch(TypedDict, total=False):
     input_ids: Int[Tensor, "batch seq"]
     position_ids: Int[Tensor, "batch seq"]
     target_ids: Int[Tensor, "batch seq"]
     loss_mask: Bool[Tensor, "batch seq"]
+    # Multimodal kwargs forwarded verbatim to ``model(**kwargs)``: tensors
+    # are concatenated per-key along dim=0 (no batch dim), matching what
+    # ``prime_rl.trainer.model.forward`` expects.
+    mm_kwargs: dict[str, Tensor] | None
+    mm_token_type_ids: Int[Tensor, "batch seq"] | None
+
+
+def build_mm_training_sample(
+    renderer: Renderer,
+    messages: list[Message],
+    *,
+    role_to_mask: Callable[[Message], bool],
+    tools: list[ToolSpec] | None = None,
+) -> tuple[list[int], list[bool], list[int], dict[str, list[Tensor]]]:
+    """Multimodal variant of ``renderers.base.build_training_sample``.
+
+    Returns ``(token_ids, loss_mask, mm_token_type_ids, mm_items)``:
+
+    - ``loss_mask`` follows the same rules as upstream — AND of the
+      renderer's ``sampled_mask`` (when populated) and ``role_to_mask``.
+    - ``mm_token_type_ids[k]`` is ``1`` for image-placeholder tokens,
+      ``2`` for video, ``0`` otherwise. Derived from
+      ``renderer.mm_token_type_id_map`` (single source of truth). On a
+      text-only renderer the map is missing / empty and every entry is ``0``.
+    - ``mm_items[key]`` is the per-image tensor list emitted by the HF
+      processor inside the renderer (e.g. ``"pixel_values"``,
+      ``"image_grid_thw"`` for Qwen3-VL). Packing decides which to keep;
+      the collate step concatenates per key along dim=0.
+    """
+    rendered = renderer.render(messages, tools=tools)
+    has_sampled_info = len(rendered.sampled_mask) == len(rendered.token_ids)
+
+    loss_mask: list[bool] = []
+    for k, msg_idx in enumerate(rendered.message_indices):
+        if msg_idx < 0:
+            loss_mask.append(False)
+            continue
+        if has_sampled_info and not rendered.sampled_mask[k]:
+            loss_mask.append(False)
+            continue
+        loss_mask.append(role_to_mask(messages[msg_idx]))
+
+    mtt_map = getattr(renderer, "mm_token_type_id_map", {}) or {}
+    mm_token_type_ids = [mtt_map.get(tid, 0) for tid in rendered.token_ids]
+
+    mm_items: dict[str, list[Tensor]] = {}
+    mmd = rendered.multi_modal_data
+    if mmd is not None and not mmd.is_empty():
+        for items in mmd.mm_items.values():
+            for item in items:
+                for key, payload in item.items():
+                    mm_items.setdefault(key, []).append(torch.as_tensor(payload))
+
+    return rendered.token_ids, loss_mask, mm_token_type_ids, mm_items
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -142,6 +211,7 @@ class SFTDataset(StatefulIterableDataset):
         self.max_examples = max_examples
         self.max_epochs = max_epochs
         self.renderer = renderer
+        self.is_multimodal = renderer is not None and is_multimodal(renderer)
         self._warned_chat_template_kwargs = False
 
         if self.tokenizer is None:
@@ -233,6 +303,9 @@ class SFTDataset(StatefulIterableDataset):
                 case _:
                     raise ValueError(f"Invalid message role: {message['role']}")
 
+        mm_token_type_ids: list[int] | None = None
+        mm_items: dict[str, list[Tensor]] | None = None
+
         if self.renderer is not None:
             if example.get("chat_template_kwargs") and not self._warned_chat_template_kwargs:
                 self.logger.warning(
@@ -243,12 +316,20 @@ class SFTDataset(StatefulIterableDataset):
                 )
                 self._warned_chat_template_kwargs = True
 
-            input_ids, loss_mask = build_training_sample(
-                self.renderer,
-                messages,
-                role_to_mask=should_mask,
-                tools=tools,
-            )
+            if self.is_multimodal:
+                input_ids, loss_mask, mm_token_type_ids, mm_items = build_mm_training_sample(
+                    self.renderer,
+                    messages,
+                    role_to_mask=should_mask,
+                    tools=tools,
+                )
+            else:
+                input_ids, loss_mask = build_training_sample(
+                    self.renderer,
+                    messages,
+                    role_to_mask=should_mask,
+                    tools=tools,
+                )
         else:
             try:
                 input_ids, loss_mask = build_incremental_token_mask(
@@ -270,15 +351,38 @@ class SFTDataset(StatefulIterableDataset):
             )
             input_ids.append(cast(int, self.tokenizer.eos_token_id))
             loss_mask.append(True)
+            if mm_token_type_ids is not None:
+                mm_token_type_ids.append(0)
 
         # Prepare inputs
         target_ids = input_ids.copy()[1:]
         loss_mask = loss_mask[1:]
         input_ids = input_ids[:-1]
+        if mm_token_type_ids is not None:
+            # Align with the shifted ``input_ids``: position k feeds token
+            # input_ids[k] into the model, so mm_token_type_ids must
+            # describe positions 0..N-2 of the original stream.
+            mm_token_type_ids = mm_token_type_ids[:-1]
 
         if sum(loss_mask[: self.seq_len]) == 0:
             self.logger.warning(
                 f"Skipping example {example.get('__index', '')} because no trainable tokens were found within the context window ({self.seq_len}). This is to prevent NaN loss."
+            )
+            return
+
+        # Multimodal samples must never be sliced — a mid-image-pad-run
+        # truncation would leave image-feature tensors that no longer
+        # correspond to placeholder tokens. Drop on oversize and warn.
+        # We gate on the sample actually carrying images (rather than the
+        # renderer being multimodal-capable) so text-only data passing
+        # through a multimodal renderer (e.g. Qwen3.5 text SFT) keeps the
+        # existing truncate-in-packer behaviour.
+        sample_has_images = bool(mm_items)
+        if sample_has_images and len(input_ids) > self.seq_len:
+            self.logger.warning(
+                f"Skipping multimodal example {example.get('__index', '')} "
+                f"because it has {len(input_ids)} tokens > seq_len ({self.seq_len}). "
+                "Multimodal samples cannot be safely truncated; increase seq_len or drop the example."
             )
             return
 
@@ -288,13 +392,28 @@ class SFTDataset(StatefulIterableDataset):
         assert sum(loss_mask) > 0, "There are no tokens in this sample that contribute to the loss"
         assert self.tokenizer.eos_token_id in target_ids, "EOS token ID must be present in target_ids"
 
-        # Create sample (with one fake target for the last token)
-        return {
+        sample: dict[str, Any] = {
             "input_ids": input_ids,
             "target_ids": target_ids,
             "loss_mask": loss_mask,
             "position_ids": list(range(len(input_ids))),
         }
+        # When the renderer is multimodal-capable we always attach
+        # ``mm_token_type_ids`` (a list — ``CatDataset`` accepts, and
+        # ``cat_collate`` silently ignores when unused) so packed batches
+        # can mix image-bearing and text-only samples without breaking
+        # ``MMCatDataset``'s buffer alignment. ``mm_items`` is a dict and
+        # only attached when actually present, so the ``CatDataset`` path
+        # (which asserts every sample value is a ``list``) keeps working
+        # for text-only data flowing through a multimodal renderer.
+        if mm_token_type_ids is not None:
+            assert len(mm_token_type_ids) == len(input_ids), (
+                f"mm_token_type_ids length mismatch: {len(mm_token_type_ids)=} vs {len(input_ids)=}"
+            )
+            sample["mm_token_type_ids"] = mm_token_type_ids
+        if sample_has_images:
+            sample["mm_items"] = mm_items
+        return sample
 
     def __iter__(self):
         """
@@ -375,6 +494,107 @@ class CatDataset(StatefulIterableDataset):
                     packed_samples[key] = value[: self.seq_len]
                 yield packed_samples
                 packed_samples, seq_len = defaultdict(list), 0
+
+
+class MMCatDataset(StatefulIterableDataset):
+    """Boundary-aware concatenation packer for (multi)modal samples.
+
+    Unlike :class:`CatDataset`, this packer:
+
+    1. Never splits a source sample. When the next sample wouldn't fit in
+       ``seq_len``, the current buffer is padded to ``seq_len`` and
+       yielded. The next sample starts a fresh buffer. This keeps
+       image-pad runs intact and avoids dropping image tokens whose
+       processed tensors would still describe the full image set.
+    2. Carries ``mm_items`` (per-image tensors) alongside the text-side
+       lists. Tensors are forwarded verbatim to the collate step which
+       concatenates per-key along dim=0 — the shape the trainer's
+       ``forward`` expects.
+    3. Resets ``position_ids`` at every sample boundary by construction
+       (each source sample contributes its own ``range(0, L)``). HF
+       flash-attention varlen recovers ``cu_seqlens`` from the resets.
+
+    For text-only data this is byte-equivalent to ``CatDataset`` except
+    for the pad-rather-than-truncate trailing behaviour: every yielded
+    sequence is exactly ``seq_len`` tokens, padded with ``pad_token_id``
+    when the buffer can't be filled without splitting the next sample.
+    """
+
+    def __init__(self, dataset: StatefulIterableDataset, seq_len: int, pad_token_id: int):
+        self.logger = get_logger()
+        self.dataset = dataset
+        self.seq_len = seq_len
+        self.pad_token_id = pad_token_id
+
+    def state_dict(self) -> dict:
+        return {"dataset": self.dataset.state_dict()}
+
+    def load_state_dict(self, state_dict: dict):
+        self.dataset.load_state_dict(state_dict["dataset"])
+
+    def _empty_buffers(self) -> tuple[dict[str, list], dict[str, list[Tensor]]]:
+        return defaultdict(list), defaultdict(list)
+
+    def _finalize(self, buf: dict[str, list], mm_items: dict[str, list[Tensor]], cur_len: int) -> dict:
+        """Pad text-side fields to ``seq_len`` and emit as a single packed sample."""
+        pad_len = self.seq_len - cur_len
+        if pad_len < 0:
+            # Should be impossible: we check ``cur + L > seq_len`` before
+            # extending. Defensive — if a bug lets us overshoot, truncate
+            # at the tail (text-only fields only; mm_items stay intact).
+            self.logger.warning(
+                f"MMCatDataset overshoot ({cur_len} > {self.seq_len}); truncating tail."
+            )
+            for key in ("input_ids", "target_ids", "position_ids", "loss_mask", "mm_token_type_ids"):
+                if key in buf:
+                    buf[key] = buf[key][: self.seq_len]
+            pad_len = 0
+
+        if pad_len > 0:
+            buf["input_ids"].extend([self.pad_token_id] * pad_len)
+            buf["target_ids"].extend([self.pad_token_id] * pad_len)
+            buf["position_ids"].extend([0] * pad_len)
+            buf["loss_mask"].extend([False] * pad_len)
+            if "mm_token_type_ids" in buf:
+                buf["mm_token_type_ids"].extend([0] * pad_len)
+
+        out: dict[str, Any] = dict(buf)
+        if mm_items:
+            out["mm_items"] = dict(mm_items)
+        return out
+
+    def __iter__(self):
+        buf, mm_items = self._empty_buffers()
+        cur_len = 0
+        for sample in self.dataset:
+            L = len(sample["input_ids"])
+            if L > self.seq_len:
+                # ``_process`` should have dropped these already (for the
+                # multimodal path) or callers should have set seq_len
+                # appropriately. Defensive skip — never split.
+                self.logger.warning(
+                    f"MMCatDataset dropping a sample of length {L} > seq_len {self.seq_len}."
+                )
+                continue
+
+            if cur_len > 0 and cur_len + L > self.seq_len:
+                yield self._finalize(buf, mm_items, cur_len)
+                buf, mm_items = self._empty_buffers()
+                cur_len = 0
+
+            for key in ("input_ids", "target_ids", "position_ids", "loss_mask", "mm_token_type_ids"):
+                value = sample.get(key)
+                if value is None:
+                    continue
+                buf[key].extend(value)
+            for key, tensors in (sample.get("mm_items") or {}).items():
+                mm_items[key].extend(tensors)
+            cur_len += L
+
+            if cur_len == self.seq_len:
+                yield self._finalize(buf, mm_items, cur_len)
+                buf, mm_items = self._empty_buffers()
+                cur_len = 0
 
 
 class StackDataset(StatefulIterableDataset):
@@ -506,6 +726,37 @@ def cat_collate(samples: list[Sample]) -> Batch:
     }
 
 
+def mm_collate(samples: list[Sample]) -> Batch:
+    """Collate a single MMCatDataset-packed sample into model-ready tensors.
+
+    ``StatefulDataLoader`` is built with ``batch_size=1`` for this packer
+    (the packing already produced a sequence of length ``seq_len * micro_batch_size``),
+    so we operate on ``samples[0]`` directly. ``mm_kwargs`` are per-image
+    tensors concatenated along dim=0 — same shape as the RL path produces
+    (``src/prime_rl/trainer/rl/data.py``).
+    """
+    s = samples[0]
+    batch: Batch = {
+        "input_ids": torch.tensor(s["input_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
+        "position_ids": torch.tensor(s["position_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
+        "target_ids": torch.tensor(s["target_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
+        "loss_mask": torch.tensor(s["loss_mask"], dtype=torch.bool, device="cuda").unsqueeze(0),
+        "mm_kwargs": None,
+        "mm_token_type_ids": None,
+    }
+    if "mm_token_type_ids" in s:
+        batch["mm_token_type_ids"] = torch.tensor(
+            s["mm_token_type_ids"], dtype=torch.long, device="cuda"
+        ).unsqueeze(0)
+    mm_items = s.get("mm_items") or {}
+    if mm_items:
+        batch["mm_kwargs"] = {
+            key: torch.cat([t.to("cuda") for t in tensors], dim=0).contiguous()
+            for key, tensors in mm_items.items()
+        }
+    return batch
+
+
 def setup_and_interleave_datasets(
     dataset_name: str,
     subsets_and_splits: list[tuple[str | None, str]],
@@ -605,12 +856,24 @@ def setup_dataset(
         raise ValueError(f"Invalid dataset type: {config.type}")
 
 
-def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> StatefulDataLoader:
+def setup_dataloader(
+    dataset: StatefulIterableDataset,
+    config: DataConfig,
+    *,
+    pad_token_id: int | None = None,
+) -> StatefulDataLoader:
     if config.pack_function == "stack":
         stacking_dataset = StackDataset(dataset, config.seq_len * config.micro_batch_size)
         return StatefulDataLoader(stacking_dataset, batch_size=1, collate_fn=stack_collate)
     elif config.pack_function == "cat":
         packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size)
         return StatefulDataLoader(packing_dataset, batch_size=1, collate_fn=cat_collate)
+    elif config.pack_function == "mm_cat":
+        if pad_token_id is None:
+            raise ValueError(
+                "mm_cat packer requires a pad_token_id; pass it from the tokenizer or model config."
+            )
+        mm_dataset = MMCatDataset(dataset, config.seq_len * config.micro_batch_size, pad_token_id)
+        return StatefulDataLoader(mm_dataset, batch_size=1, collate_fn=mm_collate)
     else:
         raise ValueError(f"Invalid pack function: {config.pack_function}")
