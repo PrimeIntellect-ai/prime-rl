@@ -654,14 +654,17 @@ class RolloutDispatcher:
 
     async def drop_group(self, group_id: uuid.UUID) -> int:
         """Cancel any remaining in-flight tasks for this group and emit a
-        cancellation marker for each, so the sink can finalize the partial
-        group.
+        cancellation marker per rollout the group still owes the sink
+        (both in-flight and not-yet-scheduled), so the sink hits
+        ``target_rollouts`` and the per-group + per-epoch finalizations
+        both fire.
 
         Returns the number of rollouts cancelled (for off-policy metrics).
         """
         group = self.groups.pop(group_id, None)
         tasks_to_cancel: list[asyncio.Task] = []
         cancelled = 0
+        last_meta: RolloutMeta | None = None
         for task, meta in list(self.inflight.items()):
             if meta.group_id != group_id:
                 continue
@@ -669,6 +672,7 @@ class RolloutDispatcher:
             self.release(meta.rollout_count)
             tasks_to_cancel.append(task)
             cancelled += meta.rollout_count
+            last_meta = meta
             # Emit a marker per rollout this task would have produced so the
             # sink sees ``group_size`` arrivals overall and finalizes.
             # ``emit_rollout`` stamps env_name / example_id / _eval_step on
@@ -676,6 +680,21 @@ class RolloutDispatcher:
             for _ in range(meta.rollout_count):
                 raw = self.error_rollout_output(error_type="Cancelled", error_repr="Off-policy cancel")
                 await self.emit_rollout(meta, group, raw)
+
+        # Emit synthetic markers for the not-yet-scheduled remainder too.
+        # ``rollouts_to_schedule`` is only nonzero for non-group-scoring
+        # envs that dispatch rollouts one-at-a-time (group-scoring envs
+        # dispatch the whole group in a single task, so the loop above
+        # already emits ``meta.rollout_count == group_size`` markers).
+        # Without this, the sink's per-group arrival count never reaches
+        # ``target_rollouts`` and the per-epoch ``EvalBatch`` never fires.
+        if group is not None and last_meta is not None and group.rollouts_to_schedule > 0:
+            remaining = group.rollouts_to_schedule
+            for _ in range(remaining):
+                raw = self.error_rollout_output(error_type="Cancelled", error_repr="Off-policy cancel")
+                await self.emit_rollout(last_meta, group, raw)
+            cancelled += remaining
+
         if tasks_to_cancel:
             await safe_cancel_all(tasks_to_cancel)
         return cancelled
