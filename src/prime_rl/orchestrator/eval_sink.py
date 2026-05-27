@@ -33,8 +33,8 @@ import verifiers as vf
 
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.eval_utils import compute_pass_at_k
+from prime_rl.orchestrator.types import EvalBatch, Rollout
 from prime_rl.orchestrator.vf_utils import get_seq_len
-from prime_rl.orchestrator_v2.types import EvalBatch, Rollout
 
 
 class EvalSink:

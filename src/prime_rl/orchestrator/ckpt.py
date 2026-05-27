@@ -1,27 +1,30 @@
+"""Lean checkpoint manager. Persists ``Progress(step, totals…)`` only.
+
+No buffer state — the dispatcher iterates the dataset directly via the
+``TrainEnvs`` abstraction — and no difficulty pools (replaced by
+``pre_batch_filters``).
+
+Layout: ``<output_dir>/checkpoints/step_N/orchestrator/state.pt``.
+"""
+
+from __future__ import annotations
+
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 
 import torch
 
 from prime_rl.configs.orchestrator import CheckpointConfig
-from prime_rl.orchestrator.buffer import Buffer
+from prime_rl.orchestrator.types import Progress
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import get_ckpt_dir, get_step_path
-
-
-@dataclass
-class Progress:
-    step: int = 0
-    total_tokens: int = 0
-    total_samples: int = 0
-    total_problems: int = 0
+from prime_rl.utils.pathing import get_ckpt_dir, get_step_path
 
 
 class CheckpointManager:
-    """Utility class to save and load orchestrator checkpoints to resume orchestrator."""
+    """Saves/loads ``Progress`` under ``<output_dir>/checkpoints/step_N/orchestrator/state.pt``."""
 
-    def __init__(self, output_dir: Path, config: CheckpointConfig):
+    def __init__(self, output_dir: Path, config: CheckpointConfig) -> None:
         self.config = config
         self.ckpt_dir = get_ckpt_dir(output_dir)
         self.logger = get_logger()
@@ -29,65 +32,31 @@ class CheckpointManager:
     def get_ckpt_path(self, step: int) -> Path:
         return get_step_path(self.ckpt_dir, step) / "orchestrator"
 
-    def save_to_path(
-        self,
-        ckpt_path: Path,
-        progress: Progress,
-        buffer: Buffer,
-    ):
-        self.logger.debug(f"Saving orchestrator checkpoint to {ckpt_path}")
-        start_time = time.perf_counter()
-
-        # Save progress
-        with open(ckpt_path / "progress.pt", "wb") as f:
+    def save(self, progress: Progress, step: int) -> None:
+        ckpt_path = self.get_ckpt_path(step)
+        ckpt_path.mkdir(parents=True, exist_ok=True)
+        start = time.perf_counter()
+        with open(ckpt_path / "state.pt", "wb") as f:
             torch.save({"progress": progress}, f)
+        self.logger.debug(f"V2 orchestrator checkpoint saved to {ckpt_path} in {time.perf_counter() - start:.2f}s")
 
-        # Save buffer
-        buffer.save(ckpt_path / "buffer")
-
-        self.logger.debug(f"Orchestrator checkpoint saved in {time.perf_counter() - start_time:.2f} seconds")
-
-    def load_from_path(self, ckpt_path: Path, progress: Progress, buffer: Buffer) -> None:
-        """Loads a checkpoint from a given path in-place."""
-        self.logger.debug(f"Loading checkpoint from {ckpt_path}")
-        start_time = time.perf_counter()
-
-        # Load progress
+    def load(self, progress: Progress, step: int) -> None:
+        ckpt_path = self.get_ckpt_path(step)
+        state_file = ckpt_path / "state.pt"
+        if not state_file.exists():
+            raise FileNotFoundError(f"V2 orchestrator checkpoint not found at {state_file}")
+        self.logger.debug(f"Loading checkpoint from {state_file}")
+        start = time.perf_counter()
         if self.config.skip_progress:
             self.logger.info("Skipping progress loading from checkpoint")
         else:
-            with open(ckpt_path / "progress.pt", "rb") as f:
+            with open(state_file, "rb") as f:
                 state = torch.load(f, weights_only=False)
-
-            # Set progress in-place
-            for key, value in asdict(state["progress"]).items():
-                setattr(progress, key, value)
-
-        # Load buffer
-        if self.config.skip_buffer:
-            self.logger.info("Skipping buffer loading from checkpoint")
-        else:
-            buffer.load(ckpt_path / "buffer")
-
-        self.logger.debug(f"Orchestrator checkpoint loaded in {time.perf_counter() - start_time:.2f} seconds")
-
-    def load(self, progress: Progress, buffer: Buffer, step: int) -> None:
-        """Loads a checkpoint from a given path."""
-        ckpt_path = self.get_ckpt_path(step)
-        if not ckpt_path.exists():
-            raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")
-        self.load_from_path(ckpt_path, progress, buffer)
-
-    def save(
-        self,
-        progress: Progress,
-        buffer: Buffer,
-        step: int,
-    ) -> None:
-        """Saves the full checkpoint state for a specified step."""
-        ckpt_path = self.get_ckpt_path(step)
-        ckpt_path.mkdir(parents=True, exist_ok=True)
-        self.save_to_path(ckpt_path, progress, buffer)
+            saved: Progress = state["progress"]
+            for key, value in asdict(saved).items():
+                if hasattr(progress, key):
+                    setattr(progress, key, value)
+        self.logger.debug(f"V2 orchestrator checkpoint loaded in {time.perf_counter() - start:.2f}s")
 
 
 def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager | None:

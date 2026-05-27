@@ -1,7 +1,6 @@
 """WeightWatcher: polls the broadcast dir, advances ``Policy``, notifies observers.
 
-Replaces the legacy ``Scheduler.update_policy_loop`` / ``_apply_policy_update``
-pair with a standalone async task. The watcher does three things:
+Standalone async task. The watcher does three things:
 
 1. Discovers the next checkpoint step from ``broadcasts/`` (or, equivalently,
    from the NCCL-broadcast in-memory path which writes a ``NCCL_READY`` marker).
@@ -23,7 +22,7 @@ import asyncio
 import time
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator_v2.types import Policy, VersionObserver
+from prime_rl.orchestrator.types import Policy, VersionObserver
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import get_logger
@@ -82,7 +81,7 @@ class WeightWatcher:
             self.task = None
 
     def compute_next_ckpt_step(self) -> int:
-        """Same one-step-ahead semantics as the legacy scheduler.
+        """Next-checkpoint discovery: one step ahead of the trainer.
 
         The orchestrator always runs one step ahead of the trainer, so we
         must advance to at least ``policy.version + 1`` once the trainer

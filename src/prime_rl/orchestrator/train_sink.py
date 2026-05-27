@@ -44,8 +44,8 @@ from prime_rl.orchestrator.trajectories import (
     backfill_rollout_tokens,
     interleave_rollout,
 )
+from prime_rl.orchestrator.types import ProcessResult, Rollout, TrainBatch
 from prime_rl.orchestrator.vf_utils import get_seq_len
-from prime_rl.orchestrator_v2.types import ProcessResult, Rollout, TrainBatch
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 

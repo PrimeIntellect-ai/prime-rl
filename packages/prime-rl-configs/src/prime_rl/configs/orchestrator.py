@@ -547,18 +547,10 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 
 
 class OrchestratorExperimentalConfig(BaseConfig):
-    use_orch_v2: bool = False
-    """Opt into the v2 orchestrator (`prime_rl.orchestrator_v2`). When True, the `rl`
-    entrypoint launches the `orchestrator-v2` console script instead of the legacy
-    `orchestrator` one. The v2 orchestrator shares a single concurrency limiter
-    between train and eval rollouts and overlaps the two via priority-based
-    drain-switch instead of pausing weight updates during eval."""
-
     log_loop_interval: float = Field(5.0, gt=0)
-    """Interval (seconds) at which the v2 orchestrator's `IntervalLogger` task emits
-    dispatcher gauges (in-flight counts, off-policy levels, semaphore availability)
-    and event-loop lag to the monitor on the time axis. Ignored under the legacy
-    orchestrator."""
+    """Interval (seconds) at which the orchestrator's ``IntervalLogger`` task
+    emits dispatcher gauges (in-flight counts, off-policy levels, semaphore
+    availability) and event-loop lag to the monitor on the time axis."""
 
 
 class RolloutModelConfig(BaseConfig):

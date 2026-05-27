@@ -1,4 +1,4 @@
-"""RolloutDispatcher: the single thing that schedules rollouts in v2.
+"""RolloutDispatcher: the only thing that schedules rollouts.
 
 Owns:
 
@@ -34,7 +34,7 @@ from aiolimiter import AsyncLimiter
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
-from prime_rl.orchestrator_v2.types import (
+from prime_rl.orchestrator.types import (
     GroupState,
     Policy,
     Rollout,
@@ -49,8 +49,7 @@ from prime_rl.utils.logger import get_logger
 class TrainEnvCycle:
     """Round-robin / weighted iterator over training datasets.
 
-    Replaces the legacy ``Buffer.sample_examples`` for env-ratio sampling
-    without dragging in the difficulty-pool tracking the v2 design dropped.
+    Round-robin or weighted sampling across training environments.
     """
 
     def __init__(self, train_envs: TrainEnvs, seed: int | None) -> None:
@@ -81,7 +80,7 @@ class TrainEnvCycle:
         if all(r is not None for r in configured_ratios):
             self.weights: list[float] = [float(r) for r in configured_ratios]  # type: ignore[arg-type]
         else:
-            # Natural distribution by dataset size — matches legacy Buffer's
+            # Natural distribution by dataset size —
             # "ratio unset → weight by num_normal" fallback.
             self.weights = [float(len(self.examples[name])) for name in self.env_names]
 
@@ -98,7 +97,7 @@ class TrainEnvCycle:
 
 
 class RolloutDispatcher:
-    """The only scheduler in v2. ``await dispatcher.start()`` runs the dispatch
+    """``await dispatcher.start()`` runs the dispatch
     loop until ``stop()`` is called.
 
     Observers (notably the watcher) drive ``on_new_version`` to advance off-policy
@@ -174,7 +173,7 @@ class RolloutDispatcher:
 
         self.eval_step_envs: dict[int, set[str]] = {}  # eval_step -> set of envs that fired
 
-        # First-step eval handling — mirror legacy ``eval_base_model`` / ``skip_eval_on_resume``.
+        # First-step eval handling — ``eval_base_model`` / ``skip_eval_on_resume``.
         eval_at_zero = False
         if config.eval is not None and config.eval.eval_base_model and resume_step is None:
             eval_at_zero = True
@@ -461,7 +460,7 @@ class RolloutDispatcher:
         loops to keep scheduling.
         """
         # Pick or pin a client for the group. Pinning keeps prefix-cache hits
-        # within a group (matches the legacy scheduler).
+        # within a group.
         if group.pinned_client is None:
             client = await self.select_least_loaded_client()
             if group_id not in self.groups:

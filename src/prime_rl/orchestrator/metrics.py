@@ -16,8 +16,8 @@ import pandas as pd
 import verifiers as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.orchestrator.types import ProcessResult, Progress
 from prime_rl.orchestrator.vf_utils import get_seq_len
-from prime_rl.orchestrator_v2.types import ProcessResult, Progress
 
 
 class MetricsBuilder:
@@ -40,7 +40,7 @@ class MetricsBuilder:
         pre_filter_dropped: int,
         pre_filter_dropped_by_name: dict[str, int],
     ) -> dict[str, Any]:
-        """Mirrors the legacy orchestrator's metric names byte-for-byte so
+        """Builds the per-step W&B dict. Stable metric names so
         existing dashboards / alerts keep working."""
         num_rollouts = len(rollouts)
         num_unique_examples = len({(r["env_name"], r["example_id"]) for r in rollouts})

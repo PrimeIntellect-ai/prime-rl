@@ -1,10 +1,11 @@
-"""Shared dataclasses, type aliases, and protocols for orchestrator v2.
+"""Shared dataclasses, type aliases, and protocols for the orchestrator.
 
-All of v2's data carriers and small types live here so behavioral modules
-(dispatcher, sinks, watcher, metrics, ckpt) can import without depending on
-each other's implementation modules.
+Data carriers and small types live here so behavioral modules (dispatcher,
+sinks, watcher, metrics, ckpt) can import without depending on each other's
+implementation modules.
 
-Sections (in dependency order, but no module here imports another v2 module):
+Sections (in dependency order; no module here imports another orchestrator
+module):
 
 - ``Policy``: the single mutable view of the current trainer weights.
 - ``Progress``: persistent counters owned by the checkpoint manager.
@@ -45,7 +46,7 @@ class Policy:
 
 @dataclass
 class Progress:
-    """Persistent counters for the v2 orchestrator.
+    """Persistent counters for the orchestrator.
 
     ``step`` is the trainer-aligned step (== ``policy.version`` after every
     successful weight update). The eval boundary is a strict function of
