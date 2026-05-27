@@ -3982,7 +3982,7 @@ dependencies = [
     { name = "uvloop", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "verifiers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "vllm", version = "0.21.0+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.21.0/vllm-0.21.0+cu129-cp38-abi3-manylinux_2_34_aarch64.whl" }, marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine != 'aarch64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "vllm", version = "0.21.0+cu129.r42434.pr39568.a106aa6", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.21.0+cu129.r42434.pr39568.a106aa6-cp38-abi3-manylinux_2_34_x86_64.whl" }, marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "vllm", version = "0.21.0+cu129.r42434.pr39568.a106aa6.pause550c363", source = { path = "/home/matej/dev/vllm-0.21-revert42434-pr39568/dist/vllm-0.21.0+cu129.r42434.pr39568.a106aa6.pause550c363-cp38-abi3-manylinux_2_34_x86_64.whl" }, marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "wandb", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
 ]
 
@@ -4143,7 +4143,7 @@ requires-dist = [
     { name = "verifiers", editable = "deps/verifiers" },
     { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'", specifier = ">=0.21.0" },
     { name = "vllm", marker = "platform_machine == 'aarch64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.21.0/vllm-0.21.0+cu129-cp38-abi3-manylinux_2_34_aarch64.whl" },
-    { name = "vllm", marker = "platform_machine == 'x86_64'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.21.0+cu129.r42434.pr39568.a106aa6-cp38-abi3-manylinux_2_34_x86_64.whl" },
+    { name = "vllm", marker = "platform_machine == 'x86_64'", path = "/home/matej/dev/vllm-0.21-revert42434-pr39568/dist/vllm-0.21.0+cu129.r42434.pr39568.a106aa6.pause550c363-cp38-abi3-manylinux_2_34_x86_64.whl" },
     { name = "vllm-router", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.25/vllm_router-0.1.25-cp38-abi3-manylinux_2_28_x86_64.whl" },
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wiki-search", marker = "extra == 'envs'", editable = "deps/verifiers/environments/wiki_search" },
@@ -6007,7 +6007,7 @@ rl = [
     { name = "torch", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "transformers", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "vllm", version = "0.21.0+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.21.0/vllm-0.21.0+cu129-cp38-abi3-manylinux_2_34_aarch64.whl" }, marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine != 'aarch64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "vllm", version = "0.21.0+cu129.r42434.pr39568.a106aa6", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.21.0+cu129.r42434.pr39568.a106aa6-cp38-abi3-manylinux_2_34_x86_64.whl" }, marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "vllm", version = "0.21.0+cu129.r42434.pr39568.a106aa6.pause550c363", source = { path = "/home/matej/dev/vllm-0.21-revert42434-pr39568/dist/vllm-0.21.0+cu129.r42434.pr39568.a106aa6.pause550c363-cp38-abi3-manylinux_2_34_x86_64.whl" }, marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "wandb", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
 ]
 ta = [
@@ -6085,7 +6085,7 @@ requires-dist = [
     { name = "uvloop", marker = "platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'", specifier = ">=0.21.0" },
     { name = "vllm", marker = "platform_machine == 'aarch64' and extra == 'rl'", url = "https://github.com/vllm-project/vllm/releases/download/v0.21.0/vllm-0.21.0+cu129-cp38-abi3-manylinux_2_34_aarch64.whl" },
     { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'rl'", specifier = ">=0.10.0,<0.11.0" },
-    { name = "vllm", marker = "platform_machine == 'x86_64' and extra == 'rl'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.21.0+cu129.r42434.pr39568.a106aa6-cp38-abi3-manylinux_2_34_x86_64.whl" },
+    { name = "vllm", marker = "platform_machine == 'x86_64' and extra == 'rl'", path = "/home/matej/dev/vllm-0.21-revert42434-pr39568/dist/vllm-0.21.0+cu129.r42434.pr39568.a106aa6.pause550c363-cp38-abi3-manylinux_2_34_x86_64.whl" },
     { name = "wandb", marker = "extra == 'rl'" },
 ]
 provides-extras = ["browser", "openenv", "renderers", "rg", "rl", "ta"]
@@ -6305,8 +6305,8 @@ provides-extras = ["zen", "bench", "tensorizer", "fastsafetensors", "instanttens
 
 [[package]]
 name = "vllm"
-version = "0.21.0+cu129.r42434.pr39568.a106aa6"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.21.0+cu129.r42434.pr39568.a106aa6-cp38-abi3-manylinux_2_34_x86_64.whl" }
+version = "0.21.0+cu129.r42434.pr39568.a106aa6.pause550c363"
+source = { path = "/home/matej/dev/vllm-0.21-revert42434-pr39568/dist/vllm-0.21.0+cu129.r42434.pr39568.a106aa6.pause550c363-cp38-abi3-manylinux_2_34_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
@@ -6382,7 +6382,7 @@ dependencies = [
     { name = "xgrammar", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.21.0+cu129.r42434.pr39568.a106aa6-cp38-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:0f0533a9122dfa738fc0f5532cb6795556f072b133f0058a22ff4be2d2f165f0" },
+    { filename = "vllm-0.21.0+cu129.r42434.pr39568.a106aa6.pause550c363-cp38-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:063d80b709eb13dda98dc2070d3de2ce2f89572b6671286301a8dfec689e353d" },
 ]
 
 [package.metadata]
