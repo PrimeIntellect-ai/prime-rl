@@ -1,8 +1,8 @@
 """EvalSource: trigger-driven finite-per-epoch pull of eval examples.
 
-Holds the per-env example lists + intervals + the per-(env, step) pending
-queue. The orchestrator pokes it via ``trigger(step)`` after each ship step
-(or ``trigger_at_start(step)`` once at startup for the startup eval), and
+Holds the per-env example lists + intervals + the pending queue. The
+orchestrator pokes it via ``trigger(step)`` after each ship step (or
+``trigger_at_start(step)`` once at startup for the startup eval), and
 the dispatcher pulls one example at a time via
 ``next_example(available_permits)`` until ``bool(source) == False``.
 
@@ -10,12 +10,10 @@ Empty pool (``eval_envs is None`` or ``eval_config is None``) is a valid
 state — ``trigger`` and ``next_example`` become no-ops, ``bool(source)``
 stays ``False`` forever.
 
-The dispatcher still owns scheduling priority (``dispatcher.SchedMode``)
-and capacity (``max_inflight`` counter); this source answers "what's the
-next eval example to schedule, *if any fits*?". The per-env cost lookup
-lives here so the API can mirror ``TrainSource.next_example()`` — a single
-call that returns a committed item or ``None`` — instead of a peek + pop
-pair.
+The dispatcher still owns scheduling priority (``dispatcher.DispatcherMode``)
+and capacity (``max_inflight`` counter); this source owns the per-env
+permit cost lookup. Mirrors ``TrainSource.next_example`` so the
+dispatcher hits both sources through a single symmetric API.
 """
 
 from __future__ import annotations
@@ -45,9 +43,11 @@ class EvalSource:
                 self.examples_by_env[env.name] = rows
                 self.intervals[env.name] = env.config.interval
 
-        # (env_name, example, eval_step) FIFO. Each ``trigger`` extends it
-        # with one batch per fired env.
-        self.queue: deque[tuple[str, dict, int]] = deque()
+        # Pending eval examples in FIFO order, each carrying ``env_name`` +
+        # ``_eval_step`` baked in. ``trigger`` extends with one fresh copy
+        # per example per fired env, so the same row can be enqueued at
+        # multiple eval steps over the run without aliasing.
+        self.queue: deque[dict] = deque()
 
     # ── trigger ────────────────────────────────────────────────────────────
 
@@ -87,24 +87,26 @@ class EvalSource:
 
     def enqueue(self, env_name: str, step: int) -> None:
         for example in self.examples_by_env.get(env_name, []):
-            self.queue.append((env_name, example, step))
+            row = dict(example)
+            row["_eval_step"] = step
+            self.queue.append(row)
 
     # ── pull ───────────────────────────────────────────────────────────────
 
-    def next_example(self, available_permits: int) -> tuple[str, dict, int] | None:
+    def next_example(self, available_permits: int) -> dict | None:
         """Pop the next eval example if the dispatcher can afford its cost.
 
         Returns ``None`` when the queue is empty or the head requires more
         permits than available (head stays put — the dispatch loop will
         retry on the next iteration once permits free up).
 
-        Mirrors ``TrainSource.next_example()``: one call commits, no
+        Mirrors ``TrainSource.next_example``: one call commits, no
         separate peek/pop pair.
         """
         if self.eval_envs is None or not self.queue:
             return None
-        env_name, _example, _step = self.queue[0]
-        env = self.eval_envs.get(env_name)
+        head = self.queue[0]
+        env = self.eval_envs.get(head["env_name"])
         cost = env.config.group_size if env.requires_group_scoring else 1
         if cost > available_permits:
             return None

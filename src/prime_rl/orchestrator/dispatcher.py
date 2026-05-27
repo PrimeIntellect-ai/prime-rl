@@ -19,7 +19,7 @@ Owns:
   the sink can finalize the partial group. Eval rollouts are exempt (snapshot
   at dispatch, never cancelled mid-flight).
 - Eval triggers: per-env ``policy.version % env.interval == 0`` queues an epoch.
-  ``SchedMode.PREFER_EVAL`` means we only schedule eval until the queue drains;
+  ``DispatcherMode.PREFER_EVAL`` means we only schedule eval until the queue drains;
   ``PREFER_TRAIN`` only schedules train. Both transitions are level-triggered
   (never cancel-and-restart), so in-flight rollouts of the opposite kind drain
   naturally on each side of the eval boundary — that's where the overlap lives.
@@ -47,7 +47,7 @@ from prime_rl.utils.client import InferencePool, client_identity
 from prime_rl.utils.logger import get_logger
 
 
-class SchedMode(Enum):
+class DispatcherMode(Enum):
     """Which kind of work the dispatcher will schedule next.
 
     Transitions are level-triggered (driven by the eval queue's emptiness), so
@@ -192,7 +192,7 @@ class RolloutDispatcher:
         self.out_q: asyncio.Queue[Rollout] = asyncio.Queue(maxsize=max(8, self.max_inflight))
 
         # Scheduling priority.
-        self.sched_mode: SchedMode = SchedMode.PREFER_TRAIN
+        self.mode: DispatcherMode = DispatcherMode.PREFER_TRAIN
 
         # Drain switch: orchestrator sets this after the final train step so
         # the pipeline winds down (no new train, in-flight eval/train finish).
@@ -353,10 +353,10 @@ class RolloutDispatcher:
             if self.available_permits <= 0:
                 return
 
-            if self.sched_mode == SchedMode.PREFER_EVAL:
+            if self.mode == DispatcherMode.PREFER_EVAL:
                 if not self.eval_source and self.inflight_eval_count == 0:
                     # All eval examples dispatched and finished — switch back to train.
-                    self.switch_mode(SchedMode.PREFER_TRAIN, reason="eval queue drained")
+                    self.switch_mode(DispatcherMode.PREFER_TRAIN, reason="eval queue drained")
                     continue
                 if not self.eval_source:
                     # Eval queue empty but eval still in flight: don't schedule
@@ -370,17 +370,17 @@ class RolloutDispatcher:
                 if not scheduled:
                     return
 
-    def switch_mode(self, new_mode: SchedMode, *, reason: str) -> None:
-        if new_mode == self.sched_mode:
+    def switch_mode(self, new_mode: DispatcherMode, *, reason: str) -> None:
+        if new_mode == self.mode:
             return
         # INFO-level so the eval-overlap transitions are visible in steady-state
         # production logs without needing DEBUG verbosity.
         get_logger().info(
-            f"Dispatcher mode: {self.sched_mode.name} → {new_mode.name} "
+            f"Dispatcher mode: {self.mode.name} → {new_mode.name} "
             f"(inflight_train={self.inflight_train_count}, inflight_eval={self.inflight_eval_count}, "
             f"reason={reason})"
         )
-        self.sched_mode = new_mode
+        self.mode = new_mode
         self.metrics.mode_transitions += 1
 
     async def try_schedule(self, kind: Kind) -> bool:
@@ -390,8 +390,8 @@ class RolloutDispatcher:
            rollouts to schedule and fits in the available permits (keeps
            prefix-cache hits within a group).
         2. Otherwise open a fresh group from the corresponding source — both
-           expose ``next_example`` (eval also takes ``available_permits`` so
-           it can refuse when the head's per-env cost doesn't fit).
+           expose ``next_example(available_permits)`` and refuse when the
+           picked env's per-env cost doesn't fit.
 
         Returns False when nothing could be scheduled (no permits / source
         empty for eval).
@@ -422,28 +422,26 @@ class RolloutDispatcher:
     def next_fresh_group(self, kind: Kind, envs) -> GroupState | None:
         """Resolve the next example to schedule for ``kind`` and reserve a
         ``GroupState`` for it. Returns ``None`` if nothing can be scheduled
-        right now (no permits / source empty).
+        right now (source empty / picked env's permit cost doesn't fit).
 
-        Both sources expose a single ``next_example`` that commits on call.
-        Train passes no args (uniform cost, prechecked here); eval passes
-        ``available_permits`` so the source itself decides whether the
-        head's per-env cost fits.
+        Both sources expose a single ``next_example(available_permits)``
+        that returns either a committed example dict (with ``env_name`` and,
+        for eval, ``_eval_step`` baked in) or ``None``. Each source owns
+        its per-env cost lookup — group-scoring envs need ``group_size``
+        permits up front, per-rollout envs only need 1.
         """
+        source = self.train_source if kind == "train" else self.eval_source
+        example = source.next_example(self.available_permits)
+        if example is None:
+            return None
+
+        env_name = example["env_name"]
         if kind == "train":
-            # Pre-check: a fresh train group needs ``group_size`` permits up
-            # front. Avoids pulling an example we can't immediately dispatch.
-            if self.available_permits < self.group_size:
-                return None
-            example = self.train_source.next_example()
-            env_name = example["env_name"]
             group_size = self.group_size
             eval_step: int | None = None
         else:
-            item = self.eval_source.next_example(self.available_permits)
-            if item is None:
-                return None
-            env_name, example, eval_step = item
             group_size = envs.get(env_name).config.group_size
+            eval_step = example["_eval_step"]
 
         return GroupState(
             kind=kind,
@@ -728,7 +726,7 @@ class RolloutDispatcher:
             "dispatcher/inflight_permits": float(self.inflight_permits),
             "dispatcher/available_permits": float(self.available_permits),
             "dispatcher/queued_eval_examples": float(len(self.eval_source)),
-            "dispatcher/sched_mode": float(self.sched_mode == SchedMode.PREFER_EVAL),
+            "dispatcher/mode": float(self.mode == DispatcherMode.PREFER_EVAL),
             "dispatcher/mode_transitions": float(self.metrics.mode_transitions),
             "dispatcher/groups_in_flight": float(len(self.groups)),
             "dispatcher/off_policy_level_max": float(self.max_off_policy_level),

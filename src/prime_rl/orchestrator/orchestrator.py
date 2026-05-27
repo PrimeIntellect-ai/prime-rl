@@ -35,7 +35,7 @@ import tomli_w
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
-from prime_rl.orchestrator.dispatcher import RolloutDispatcher, SchedMode
+from prime_rl.orchestrator.dispatcher import DispatcherMode, RolloutDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
@@ -307,7 +307,7 @@ class Orchestrator:
 
         # Example sources are orchestrator-owned: the orchestrator triggers
         # eval epochs and the dispatcher just pulls from them.
-        self.train_source = TrainSource(self.train_envs, seed=42)
+        self.train_source = TrainSource(self.train_envs, seed=42, group_size=config.group_size)
         self.eval_source = EvalSource(self.eval_envs, config.eval)
 
         assert config.max_inflight_rollouts is not None, "max_inflight_rollouts must be resolved before dispatcher init"
@@ -584,7 +584,7 @@ class Orchestrator:
         self.maybe_trigger_eval(step=self.progress.step)
 
     def maybe_trigger_eval(self, *, step: int | None = None, at_start: bool = False) -> None:
-        """Trigger eligible eval epochs and flip ``SchedMode`` to PREFER_EVAL
+        """Trigger eligible eval epochs and flip ``DispatcherMode`` to PREFER_EVAL
         if anything fired. ``at_start=True`` runs the startup-eval path
         (default unless ``skip_first_step=True``) on whatever model state
         the orchestrator starts from — base model on a cold start, resumed
@@ -604,7 +604,7 @@ class Orchestrator:
             step_label = step
         if not fired:
             return
-        self.dispatcher.switch_mode(SchedMode.PREFER_EVAL, reason=reason)
+        self.dispatcher.switch_mode(DispatcherMode.PREFER_EVAL, reason=reason)
         self.dispatcher.metrics.eval_epochs_started += 1
         get_logger().info(
             f"Eval @ step={step_label} for env(s) {','.join(fired)} (queued {len(self.eval_source)} example(s))"
