@@ -15,10 +15,13 @@ def propagate_shared_fields(data: Any) -> Any:
     Behaviour:
       - **Fill-if-absent**: an explicit sub-config value is never overwritten.
         The shared block acts as a default, not a stomper.
-      - **Up-front mutex**: setting the same field at both the shared and
-        sub-config level raises. Under fill-if-absent the sub would silently
-        win, and any later CLI override of the shared field would invisibly
-        no-op.
+      - **Consistency mutex**: setting the same field at both the shared and
+        sub-config level only raises when the values *disagree*. Matching
+        values are accepted as a harmless no-op so that the materialized
+        config (``model_dump`` writes both copies) round-trips through re-load.
+        The original footgun the mutex was designed to catch — a sub-config
+        value silently winning over a later CLI shared override — is still
+        caught because that scenario produces *different* values.
       - **Aliased sub-paths**: ``orchestrator.model.*`` is checked against its
         ``orchestrator.student.model.*`` alias (and vice versa), so the
         conflict fires regardless of which spelling the user wrote.
@@ -49,14 +52,17 @@ def propagate_shared_fields(data: Any) -> Any:
     conflicts: list[tuple[str, str]] = []
 
     def propagate(shared_path: str, *targets: str, aliases: tuple[str, ...] = ()) -> None:
-        """Verbatim shared → targets. Records overlap (incl. alias spellings)
-        into ``conflicts`` and fills each target if the shared value is set.
+        """Verbatim shared → targets. Records *disagreeing* overlap (incl. alias
+        spellings) into ``conflicts`` and fills each target if the shared value
+        is set. Matching values are silently accepted so the materialized
+        config round-trips through re-load.
         """
         value = get(shared_path)
         if value is None:
             return
         for sub in (*targets, *aliases):
-            if get(sub) is not None:
+            sub_value = get(sub)
+            if sub_value is not None and sub_value != value:
                 conflicts.append((shared_path, sub))
         for target in targets:
             fill(target, value)
@@ -100,14 +106,20 @@ def propagate_shared_fields(data: Any) -> Any:
     # ``-trainer`` / ``-orchestrator`` suffixes so the W&B runs are
     # distinguishable. ``OrchestratorConfig.auto_setup_prime_monitor_run_name``
     # then defaults prime_monitor.run_name to the (unsuffixed) value.
+    # Conflicts are reported against the *transformed* sub-config value, not
+    # the raw shared name, so the materialized config round-trips cleanly.
     wandb_name = get("wandb.name")
     if wandb_name is not None:
-        for sub in ("trainer.wandb.name", "orchestrator.wandb.name"):
-            if get(sub) is not None:
-                conflicts.append(("wandb.name", sub))
         non_shared = get("wandb.shared") is False
-        fill("trainer.wandb.name", f"{wandb_name}-trainer" if non_shared else wandb_name)
-        fill("orchestrator.wandb.name", f"{wandb_name}-orchestrator" if non_shared else wandb_name)
+        expected = {
+            "trainer.wandb.name": f"{wandb_name}-trainer" if non_shared else wandb_name,
+            "orchestrator.wandb.name": f"{wandb_name}-orchestrator" if non_shared else wandb_name,
+        }
+        for sub, expected_value in expected.items():
+            sub_value = get(sub)
+            if sub_value is not None and sub_value != expected_value:
+                conflicts.append(("wandb.name", sub))
+            fill(sub, expected_value)
 
     # [tokenizer]. ``chat_template`` also flows to ``inference.model`` (vLLM's
     # ``--chat-template``); ``name`` and ``trust_remote_code`` can legitimately
@@ -132,13 +144,19 @@ def propagate_shared_fields(data: Any) -> Any:
 
     # output_dir: orchestrator gets a ``/run_default`` subdir so trainer +
     # orchestrator nest under the same experiment root without colliding.
+    # Conflicts are reported against the *transformed* sub-config value, not
+    # the raw shared path, so the materialized config round-trips cleanly.
     output_dir = get("output_dir")
     if output_dir is not None:
-        for sub in ("trainer.output_dir", "orchestrator.output_dir"):
-            if get(sub) is not None:
+        expected = {
+            "trainer.output_dir": output_dir,
+            "orchestrator.output_dir": f"{output_dir}/run_default",
+        }
+        for sub, expected_value in expected.items():
+            sub_value = get(sub)
+            if sub_value is not None and sub_value != expected_value:
                 conflicts.append(("output_dir", sub))
-        fill("trainer.output_dir", output_dir)
-        fill("orchestrator.output_dir", f"{output_dir}/run_default")
+            fill(sub, expected_value)
 
     # Cascade trainer.tokenizer.chat_template → inference.model.chat_template
     # (vLLM ``--chat-template``). Read trainer's value *after* the shared
