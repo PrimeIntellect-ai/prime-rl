@@ -154,6 +154,13 @@ class LogConfig(BaseConfig):
     log_data: bool = False
     """Log the first data sample at startup."""
 
+    interval: float = Field(5.0, gt=0)
+    """Interval (seconds) shared across every async component's
+    ``PeriodicLogger`` — dispatcher gauges (in-flight counts, off-policy
+    levels, permits availability), watcher state (policy version, weight-
+    update latency), and orchestrator event-loop lag all sample on this
+    cadence and emit on the wandb ``_timestamp`` axis."""
+
 
 class TrainerLogConfig(LogConfig):
     ranks_filter: list[int] = [0]

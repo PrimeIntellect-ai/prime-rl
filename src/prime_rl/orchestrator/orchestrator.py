@@ -30,8 +30,19 @@ import ctypes
 import logging
 import os
 import time
+from typing import TYPE_CHECKING
 
 import tomli_w
+
+if TYPE_CHECKING:
+    from renderers.base import Renderer
+    from transformers.tokenization_utils import PreTrainedTokenizer
+
+    from prime_rl.orchestrator.ckpt import CheckpointManager
+    from prime_rl.transport.base import TrainingBatchSender
+    from prime_rl.utils.client import InferencePool
+    from prime_rl.utils.monitor.base import Monitor
+from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
@@ -40,7 +51,6 @@ from prime_rl.orchestrator.dispatcher import DispatcherMode, RolloutDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
-from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.metrics import MetricsBuilder
@@ -90,6 +100,52 @@ class Orchestrator:
     the tail of ``start()``.
     """
 
+    # ── attribute schema ──────────────────────────────────────────────
+    # Class-level annotations so pyright sees ``self.dispatcher`` etc. as
+    # non-Optional at call sites. The required attributes are guaranteed
+    # to be set in ``setup()`` (which ``start()`` calls before anything
+    # touches them); pre-setup access raises ``AttributeError``, which is
+    # the right runtime behavior given the contract.
+
+    # Set in ``__init__``.
+    config: OrchestratorConfig
+    progress: Progress
+    policy: Policy
+    stopped: asyncio.Event
+    draining: bool
+    last_batch_at: float | None
+    eval_triggered_at: dict[tuple[str, int], float]
+    ckpt_manager: CheckpointManager | None
+    component_tasks: list[asyncio.Task]
+
+    # Always set by ``setup()``.
+    tokenizer: PreTrainedTokenizer
+    student_inference: InferencePool
+    monitor: Monitor
+    sender: TrainingBatchSender
+    train_envs: TrainEnvs
+    train_source: TrainSource
+    train_sink: TrainSink
+    dispatcher: RolloutDispatcher
+    watcher: WeightWatcher
+    metrics: MetricsBuilder
+    lag_monitor: EventLoopLagMonitor
+    periodic_logger: PeriodicLogger
+
+    # Set by ``setup()`` only when relevant config is present.
+    renderer: Renderer | None
+    mm_token_type_ids_mapping: dict[int, int] | None
+    teacher_inference: InferencePool | None
+    heart: Heartbeat | None
+    usage_reporter: UsageReporter | None
+    inference_metrics: InferenceMetricsCollector | None
+    eval_envs: EvalEnvs | None
+    eval_sink: EvalSink | None
+    eval_source: EvalSource | None
+    lora_name: str | None
+    resume_step: int | None
+    lag_task: asyncio.Task | None
+
     def __init__(self, config: OrchestratorConfig) -> None:
         self.config = config
         setup_logger(config.log.level, json_logging=config.log.json_logging)
@@ -112,49 +168,34 @@ class Orchestrator:
         self.stopped = asyncio.Event()
         # Drain mode: after the final train step, stop scheduling new train
         # rollouts but keep consuming until in-flight train + any triggered
-        # eval drain. Set in ``ship_train_batch`` when ``max_steps`` is hit.
-        self.draining: bool = False
+        # eval drain. Set in ``finalize_train_batch`` when ``max_steps`` is hit.
+        self.draining = False
         # Wall-clock timestamp of the previous ``TrainBatch`` arrival from
-        # ``TrainSink``. Reset on each new arrival in ``ship_train_batch``
+        # ``TrainSink``. Reset on each new arrival in ``finalize_train_batch``
         # so ``step_time`` in the success log is the actual pipeline cycle
         # time (sink-emit to sink-emit) — the slowest component along the
         # path of rollout generation → tokenize → group/batch finalize.
-        self.last_batch_at: float | None = None
+        self.last_batch_at = None
         # Start time per (env_name, eval_step), stamped by
-        # ``maybe_trigger_eval`` and popped by ``log_eval_batch`` so the
+        # ``maybe_trigger_eval`` and popped by ``finalize_eval_batch`` so the
         # eval success log can report wall-clock epoch duration.
-        self.eval_triggered_at: dict[tuple[str, int], float] = {}
+        self.eval_triggered_at = {}
+        self.component_tasks = []
 
-        # Populated during ``setup()``. Typing as ``Any`` keeps the class
-        # readable; the orchestrator's setup phase fills these in deterministic
-        # order so we never see ``None`` past ``setup()``.
-        self.tokenizer = None
+        # Genuinely-optional attributes default to None here; ``setup()``
+        # only assigns them when their corresponding config is present.
         self.renderer = None
-        self.mm_token_type_ids_mapping: dict[int, int] | None = None
-        self.student_inference = None
+        self.mm_token_type_ids_mapping = None
         self.teacher_inference = None
-        self.monitor = None
-        self.heart: Heartbeat | None = None
-        self.usage_reporter: UsageReporter | None = None
-        self.inference_metrics: InferenceMetricsCollector | None = None
-        self.train_envs: TrainEnvs | None = None
-        self.eval_envs: EvalEnvs | None = None
-        self.sender = None
-        self.lora_name: str | None = None
-        self.resume_step: int | None = None
-
-        # Components — built at the end of ``setup()``.
-        self.dispatcher: RolloutDispatcher | None = None
-        self.train_sink: TrainSink | None = None
-        self.eval_sink: EvalSink | None = None
-        self.metrics: MetricsBuilder | None = None
-        self.watcher: WeightWatcher | None = None
-        self.periodic_logger: PeriodicLogger | None = None
-        self.lag_monitor: EventLoopLagMonitor | None = None
-        self.lag_task: asyncio.Task | None = None
-
-        # Background tasks for components with their own main loop.
-        self.component_tasks: list[asyncio.Task] = []
+        self.heart = None
+        self.usage_reporter = None
+        self.inference_metrics = None
+        self.eval_envs = None
+        self.eval_sink = None
+        self.eval_source = None
+        self.lora_name = None
+        self.resume_step = None
+        self.lag_task = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -325,12 +366,16 @@ class Orchestrator:
             rollout_inference = self.student_inference
 
         # Example sources are orchestrator-owned: the orchestrator triggers
-        # eval epochs and the dispatcher just pulls from them.
+        # eval epochs and the dispatcher just pulls from them. ``EvalSource``
+        # is None when no eval is configured — the dispatcher's eval paths
+        # are gated on ``eval_envs is None`` and never touch the source.
         self.train_source = TrainSource(self.train_envs, seed=42)
-        self.eval_source = EvalSource(self.eval_envs, config.eval)
+        self.eval_source: EvalSource | None = (
+            EvalSource(self.eval_envs, config.eval) if config.eval is not None and self.eval_envs is not None else None
+        )
 
         assert config.max_inflight_rollouts is not None, "max_inflight_rollouts must be resolved before dispatcher init"
-        log_interval = config.experimental.log_interval
+        log_interval = config.log.interval
         wandb_enabled = config.wandb is not None
         self.dispatcher = RolloutDispatcher(
             train_envs=self.train_envs,
@@ -372,11 +417,20 @@ class Orchestrator:
         )
         # Orchestrator's own periodic logger: tracks event-loop lag (a
         # process-wide concern that fits naturally with the main loop).
+        # Imported from verifiers — see ``verifiers.utils.async_utils``.
         self.lag_monitor = EventLoopLagMonitor()
         self.periodic_logger = PeriodicLogger(
             name="Event Loop",
             collect=self.collect_event_loop_lag,
-            metric_keys=list(self.lag_monitor.get_metrics().keys()),
+            metric_keys=[
+                "event_loop_lag/min",
+                "event_loop_lag/mean",
+                "event_loop_lag/median",
+                "event_loop_lag/p90",
+                "event_loop_lag/p99",
+                "event_loop_lag/max",
+                "event_loop_lag/n",
+            ],
             interval=log_interval,
             wandb_enabled=wandb_enabled,
         )
@@ -392,8 +446,6 @@ class Orchestrator:
         # Spawn background loops (dispatcher schedules, watcher polls). The
         # pipeline ``main_loop`` runs inline in this task; each component
         # also runs its own ``PeriodicLogger`` for steady-state gauges.
-        assert self.dispatcher and self.watcher
-        assert self.periodic_logger is not None and self.lag_monitor is not None
         self.lag_task = asyncio.create_task(self.lag_monitor.run(), name="event_loop_lag")
         await self.periodic_logger.start()
         self.component_tasks = [
@@ -413,16 +465,12 @@ class Orchestrator:
             # orchestrator enters drain mode, the dispatcher stops scheduling
             # new train, and any interval-aligned eval at the final step
             # completes through the normal pipeline before ``main_loop`` exits.
-            assert self.monitor is not None
             self.monitor.save_final_summary()
             if self.ckpt_manager is not None:
                 get_logger().info("Writing final checkpoint")
                 self.ckpt_manager.save(self.progress, step=self.progress.step)
             await self.shutdown()
-            # Trailing newline gives a visual break between the orchestrator's
-            # lifecycle logs and whatever the parent process (e.g. the ``rl``
-            # entrypoint) emits next.
-            get_logger().success("Orchestrator finished.\n")
+            get_logger().success("Orchestrator finished.")
             try:
                 ctypes.CDLL("libc.so.6").malloc_trim(0)
             except Exception as e:
@@ -444,7 +492,6 @@ class Orchestrator:
         eval epochs); both ``add()`` return a finalized batch (or ``None``)
         directly, so the orchestrator just dispatches on the result.
         """
-        assert self.dispatcher and self.train_sink
         while not self.stopped.is_set():
             # Drain check: once the orchestrator has signaled draining (final
             # train step done, no more train scheduling), exit as soon as the
@@ -465,7 +512,7 @@ class Orchestrator:
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
                 eval_batch = self.eval_sink.add(rollout)
                 if eval_batch is not None:
-                    self.log_eval_batch(eval_batch)
+                    self.finalize_eval_batch(eval_batch)
                 continue
 
             train_batch = await self.train_sink.add(rollout)
@@ -473,23 +520,22 @@ class Orchestrator:
             # still complete after the final step just get accumulated and
             # discarded; we don't want to do extra trainer steps past max.
             if train_batch is not None and not self.draining and not self.stopped.is_set():
-                await self.ship_train_batch(train_batch)
+                await self.finalize_train_batch(train_batch)
 
-    async def ship_train_batch(self, batch: TrainBatch) -> None:
+    async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer + log side-effects.
-        Mirrors ``log_eval_batch`` on the eval side: the sink has finished
+        Mirrors ``finalize_eval_batch`` on the eval side: the sink has finished
         all data-transformation work (``TrainSink.process_rollout / group /
         batch``); this method owns only the I/O and lifecycle concerns —
         ckpt save, save_rollouts to disk, teacher logprobs (opd), async
         barrier wait, ``sender.send``, metrics build + ``monitor.log``,
         heartbeat / usage reporter, ``progress.step += 1``, and the eval
         trigger for the freshly-completed step."""
-        assert self.train_sink and self.metrics and self.dispatcher and self.monitor and self.sender
         config = self.config
         step = self.progress.step
 
         # Pipeline cycle time: sink-emit (now) − previous sink-emit. Reset
-        # the marker on every arrival so consecutive ``ship_train_batch``
+        # the marker on every arrival so consecutive ``finalize_train_batch``
         # calls measure the actual time between batches, not the I/O cost
         # of the orchestrator's ship pipeline (which is overlapped with
         # the dispatcher producing the next batch).
@@ -613,14 +659,16 @@ class Orchestrator:
         PREFER_EVAL if anything fired. ``EvalSource.trigger`` handles
         both the startup case (first call → fires every env unless
         ``skip_first_step``) and the steady-state per-interval case
-        (subsequent calls → ``step % interval == 0`` per env)."""
-        assert self.dispatcher is not None
+        (subsequent calls → ``step % interval == 0`` per env). No-op
+        when eval is not configured."""
+        if self.eval_source is None:
+            return
         fired = self.eval_source.trigger(step)
         if not fired:
             return
         reason = f"eval was triggered for {', '.join(fired)} at step {step}"
         self.dispatcher.switch_mode(DispatcherMode.PREFER_EVAL, reason=reason)
-        # Stamp the start time per (env, step) so ``log_eval_batch`` can
+        # Stamp the start time per (env, step) so ``finalize_eval_batch`` can
         # report wall-clock duration of the epoch in its success log.
         now = time.perf_counter()
         for env_name in fired:
@@ -635,18 +683,27 @@ class Orchestrator:
     def collect_event_loop_lag(self) -> tuple[str, dict[str, float]]:
         """Format the event-loop-lag periodic line + return the wandb dict.
         Empty payload when no samples have been collected yet."""
-        metrics = self.lag_monitor.get_metrics()
-        if not metrics:
+        stats = EventLoopLagStats.from_monitor(self.lag_monitor)
+        if stats.n == 0:
             return "(no samples yet)", {}
         body = (
-            f"min={format_time(metrics['event_loop_lag/min'])} | "
-            f"mean={format_time(metrics['event_loop_lag/mean'])} | "
-            f"median={format_time(metrics['event_loop_lag/med'])} | "
-            f"p90={format_time(metrics['event_loop_lag/p90'])} | "
-            f"p99={format_time(metrics['event_loop_lag/p99'])} | "
-            f"max={format_time(metrics['event_loop_lag/max'])}"
+            f"min={format_time(stats.min)} | "
+            f"mean={format_time(stats.mean)} | "
+            f"median={format_time(stats.median)} | "
+            f"p90={format_time(stats.p90)} | "
+            f"p99={format_time(stats.p99)} | "
+            f"max={format_time(stats.max)} (n={stats.n})"
         )
-        return body, metrics
+        payload = {
+            "event_loop_lag/min": stats.min,
+            "event_loop_lag/mean": stats.mean,
+            "event_loop_lag/median": stats.median,
+            "event_loop_lag/p90": stats.p90,
+            "event_loop_lag/p99": stats.p99,
+            "event_loop_lag/max": stats.max,
+            "event_loop_lag/n": float(stats.n),
+        }
+        return body, payload
 
     def log_train_batch(self, batch: TrainBatch, *, step: int, step_time: float) -> None:
         """Emit the per-step ``Train step …`` success line.
@@ -668,7 +725,7 @@ class Orchestrator:
         max_off_policy = max((int(r.get("_off_policy_steps", 0)) for r in batch.rollouts), default=0)
 
         head = (
-            f"Train step {step} | {format_time(step_time)} | Reward {reward_mean:.4f} | "
+            f"Train step {step} | {format_time(step_time):>7} | Reward {reward_mean:.4f} | "
             f"Error {error_rate:.1%} | Trainable {n_trainable}/{n_survivors} ({trainable_rate:.1%}) | "
             f"Max Off-Policy {max_off_policy}"
         )
@@ -697,7 +754,7 @@ class Orchestrator:
             )
         get_logger().success("\n\t\t".join(lines))
 
-    def log_eval_batch(self, batch: EvalBatch) -> None:
+    def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch. Builds the metrics dict
         from the raw rollouts (the ``EvalBatch`` deliberately doesn't carry a
         pre-baked metrics dict — it's a pure view computed here), then handles
@@ -706,7 +763,6 @@ class Orchestrator:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no surviving rollouts, skipping log")
             return
 
-        assert self.monitor is not None
         step_path = get_step_path(get_rollout_dir(self.config.output_dir), batch.step)
         save_rollouts(
             batch.rollouts,
@@ -727,7 +783,7 @@ class Orchestrator:
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
 
         get_logger().success(
-            f"Eval step {batch.step} ({batch.env_name}) | {format_time(elapsed)} | "
+            f"Eval step {batch.step} ({batch.env_name}) | {format_time(elapsed):>7} | "
             f"Reward {batch.metrics.reward_mean:.4f} | Error {error_rate:.1%} | "
             f"Valid {n_valid}/{n_total} ({valid_rate:.1%}) | "
             f"Max Off-Policy {max_off_policy}"

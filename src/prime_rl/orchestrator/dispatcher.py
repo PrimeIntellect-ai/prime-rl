@@ -144,7 +144,7 @@ class RolloutDispatcher:
         train_envs: TrainEnvs,
         eval_envs: EvalEnvs | None,
         train_source: TrainSource,
-        eval_source: EvalSource,
+        eval_source: EvalSource | None,
         inference: InferencePool,
         policy: Policy,
         max_inflight_rollouts: int,
@@ -232,14 +232,15 @@ class RolloutDispatcher:
 
     @property
     def queued_eval_examples(self) -> int:
-        return len(self.eval_source)
+        return len(self.eval_source) if self.eval_source is not None else 0
 
     @property
     def is_idle(self) -> bool:
         """Drain check: nothing in-flight, no eval queued, no rollouts waiting
         for the sink to pick up. Used by the orchestrator to detect when the
         pipeline has fully drained after ``disable_train_scheduling``."""
-        return not self.inflight and not self.eval_source and self.out_q.empty()
+        eval_drained = self.eval_source is None or not self.eval_source
+        return not self.inflight and eval_drained and self.out_q.empty()
 
     def disable_train_scheduling(self) -> None:
         """Stop scheduling new train rollouts. In-flight train rollouts and any
@@ -307,7 +308,7 @@ class RolloutDispatcher:
         so the group still finalizes.
 
         Eval epoch *triggering* is the orchestrator's job (after each
-        training step) — see ``Orchestrator.ship_train_batch``.
+        training step) — see ``Orchestrator.finalize_train_batch``.
         """
         stale_groups: dict[uuid.UUID, Kind] = {}
         cancelled_by_kind: dict[Kind, int] = {"train": 0, "eval": 0}
@@ -345,6 +346,9 @@ class RolloutDispatcher:
                 return
 
             if self.mode == DispatcherMode.PREFER_EVAL:
+                # PREFER_EVAL is only entered when the orchestrator triggers
+                # eval, which requires ``eval_source`` to be configured.
+                assert self.eval_source is not None
                 if not self.eval_source and self.inflight_eval_count == 0:
                     # All eval examples dispatched and finished — switch back to train.
                     self.switch_mode(DispatcherMode.PREFER_TRAIN, reason="the eval queue drained")
@@ -417,7 +421,14 @@ class RolloutDispatcher:
         its per-env cost lookup — group-scoring envs need ``group_size``
         permits up front, per-rollout envs only need 1.
         """
-        source = self.train_source if kind == "train" else self.eval_source
+        # ``next_fresh_group`` for ``kind == "eval"`` is only called from
+        # the PREFER_EVAL branch of ``fill_inflight``, which already asserts
+        # ``eval_source`` is non-None — safe to access directly here.
+        if kind == "train":
+            source = self.train_source
+        else:
+            assert self.eval_source is not None
+            source = self.eval_source
         example = source.next_example(self.available_permits)
         if example is None:
             return None
@@ -756,7 +767,7 @@ class RolloutDispatcher:
             "dispatcher/inflight_eval": float(self.inflight_eval_count),
             "dispatcher/inflight_permits": float(self.inflight_permits),
             "dispatcher/available_permits": float(self.available_permits),
-            "dispatcher/queued_eval_examples": float(len(self.eval_source)),
+            "dispatcher/queued_eval_examples": float(self.queued_eval_examples),
             "dispatcher/mode": float(self.mode == DispatcherMode.PREFER_EVAL),
             "dispatcher/groups_in_flight": float(len(self.groups)),
             "dispatcher/off_policy_level_max": float(self.max_off_policy_level),
@@ -785,7 +796,7 @@ class RolloutDispatcher:
             f"(train={self.inflight_train_count}, eval={self.inflight_eval_count}) | "
             f"permits={self.inflight_permits}/{self.max_inflight} | "
             f"groups={len(self.groups)} | "
-            f"queued_eval={len(self.eval_source)} | "
+            f"queued_eval={self.queued_eval_examples} | "
             f"off_policy={self.mean_off_policy_level:.1f} (max={self.max_off_policy_level}) | "
             f"rollouts={total} (errored={errored} empty={empty} cancelled={cancelled})"
         )

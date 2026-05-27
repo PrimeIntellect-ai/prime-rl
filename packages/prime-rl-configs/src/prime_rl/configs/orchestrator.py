@@ -334,9 +334,8 @@ class EvalConfig(BaseConfig):
     """Step interval at which to evaluate the model."""
 
     skip_first_step: bool = False
-    """If False (default), run a startup eval on the model state the
-    orchestrator starts from (base model or resumed checkpoint) before
-    any train rollouts. If True, skip it."""
+    """If True, skip the startup eval that otherwise runs before any
+    train rollouts."""
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
@@ -365,6 +364,20 @@ class EvalConfig(BaseConfig):
                 else:
                     max_concurrent = env.num_examples * env.group_size
                     env.num_workers = max(1, math.ceil(max_concurrent / 256))
+        return self
+
+    @model_validator(mode="after")
+    def validate_non_empty_envs(self):
+        # Keeps the invariant that ``EvalConfig is not None`` ⇒ ``len(env) > 0``.
+        # The orchestrator constructs ``EvalEnvs`` / ``EvalSource`` only when
+        # ``config.eval is not None``, so a zero-env eval block would create
+        # an ``EvalEnvs`` of size 0 with nothing to schedule — silent failure.
+        if not self.env:
+            raise ValueError(
+                "EvalConfig must define at least one env. Either drop the "
+                "[orchestrator.eval] block entirely (to disable eval) or "
+                "add a [[orchestrator.eval.env]] block."
+            )
         return self
 
     @model_validator(mode="after")
@@ -548,15 +561,6 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
-class OrchestratorExperimentalConfig(BaseConfig):
-    log_interval: float = Field(5.0, gt=0)
-    """Interval (seconds) shared across every async component's
-    ``PeriodicLogger`` — dispatcher gauges (in-flight counts, off-policy
-    levels, semaphore availability), watcher state (policy version, weight-
-    update latency), and orchestrator event-loop lag all sample on this
-    cadence and emit on the wandb ``_timestamp`` axis."""
-
-
 class RolloutModelConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
 
@@ -697,8 +701,6 @@ class OrchestratorConfig(BaseConfig):
 
     env_install_prerelease: bool = False
     """Allow pre-release versions when installing environments (e.g. ``verifiers>=0.1.12.dev5``). Passes ``--prerelease`` to ``prime env install``."""
-
-    experimental: OrchestratorExperimentalConfig = OrchestratorExperimentalConfig()
 
     @model_validator(mode="before")
     @classmethod
