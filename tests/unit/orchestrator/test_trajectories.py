@@ -348,7 +348,7 @@ def test_branching_equivalent_multi_step_trajectory(multi_step_trajectory_extens
     assert rollout.completion_ids == [3, 4]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2]
-    assert rollout.completion_temperatures == [1.0, 1.0]
+    assert rollout.completion_temperatures == []
 
     # second step
     rollout = rollouts[1]
@@ -357,7 +357,7 @@ def test_branching_equivalent_multi_step_trajectory(multi_step_trajectory_extens
     assert rollout.completion_ids == [7, 8]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.3, -0.4]
-    assert rollout.completion_temperatures == [1.0, 1.0]
+    assert rollout.completion_temperatures == []
 
 
 def test_branching_equivalent_multi_step_trajectory_with_tool_calls(
@@ -375,7 +375,7 @@ def test_branching_equivalent_multi_step_trajectory_with_tool_calls(
     assert rollout.completion_ids == [3, 4]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2]
-    assert rollout.completion_temperatures == [1.0, 1.0]
+    assert rollout.completion_temperatures == []
 
     # second step
     rollout = rollouts[1]
@@ -384,7 +384,7 @@ def test_branching_equivalent_multi_step_trajectory_with_tool_calls(
     assert rollout.completion_ids == [7, 8]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.3, -0.4]
-    assert rollout.completion_temperatures == [1.0, 1.0]
+    assert rollout.completion_temperatures == []
 
 
 def test_interleave_rollout_single_step_trajectory(single_step_trajectory_output):
@@ -399,7 +399,7 @@ def test_interleave_rollout_single_step_trajectory(single_step_trajectory_output
     assert rollout.completion_ids == [3, 4]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2]
-    assert rollout.completion_temperatures == [1.0, 1.0]
+    assert rollout.completion_temperatures == []
     assert rollout.env_name == "test-env"
 
 
@@ -414,8 +414,8 @@ def test_interleave_rollout_multi_step_trajectory(multi_step_trajectory_output):
     assert rollout.completion_ids == [3, 4, 5, 6, 7, 8]
     assert rollout.completion_mask == [True, True, False, False, True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2, 0, 0, -0.3, -0.4]
-    # Temperatures: 2 completion tokens at temp 1.0, then 2 prompt tokens at temp 1.0, then 2 completion tokens at temp 1.0
-    assert rollout.completion_temperatures == [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    # ``completion_temperatures`` is filled by the orchestrator post-interleave; empty here.
+    assert rollout.completion_temperatures == []
 
 
 def test_interleave_rollout_multi_step_trajectory_with_tool_calls(multi_step_trajectory_with_tool_calls_output):
@@ -429,8 +429,8 @@ def test_interleave_rollout_multi_step_trajectory_with_tool_calls(multi_step_tra
     assert rollout.completion_ids == [3, 4, 5, 6, 7, 8]
     assert rollout.completion_mask == [True, True, False, False, True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2, 0, 0, -0.3, -0.4]
-    # Temperatures: 2 completion tokens at temp 1.0, then 2 prompt tokens at temp 1.0, then 2 completion tokens at temp 1.0
-    assert rollout.completion_temperatures == [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    # ``completion_temperatures`` is filled by the orchestrator post-interleave; empty here.
+    assert rollout.completion_temperatures == []
 
 
 @pytest.fixture
@@ -817,9 +817,9 @@ def test_interleave_rollout_error_masks_all_false():
     # Extension holds so tokens merge, but ALL completion_mask should be False
     assert rollout.completion_ids == [3, 4, 5, 6, 7, 8]
     assert rollout.completion_mask == [False, False, False, False, False, False]
-    # Logprobs and temperatures still present
+    # Logprobs preserved; ``completion_temperatures`` is filled by the orchestrator post-interleave.
     assert rollout.completion_logprobs == [-0.1, -0.2, 0.0, 0.0, -0.3, -0.4]
-    assert rollout.completion_temperatures == [0.8] * 6
+    assert rollout.completion_temperatures == []
 
 
 def test_align_routed_experts_none():
