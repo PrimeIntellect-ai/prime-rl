@@ -162,15 +162,10 @@ def propagate_shared_fields(data: Any) -> Any:
     # conflicts (e.g. shared ``ckpt.interval`` vs ``trainer.ckpt.interval``)
     # are already caught above; the bare block is exempt because
     # ``[ckpt]`` + ``[trainer.ckpt] keep_last = 3`` is a legitimate
-    # "enable + customise per side" pattern.
-    #
-    # The ``isinstance(dict)`` check is load-bearing: pydantic-config's CLI
-    # negation (``--no-wandb`` / ``--no-ckpt``) writes the string ``"None"``
-    # into the input dict, which only becomes real ``None`` later via
-    # ``BaseConfig._none_str_to_none``. Subclass ``mode="before"`` validators
-    # (this one) run *before* parent-class ones, so without the dict check
-    # ``--no-wandb`` would still re-enable ``trainer.wandb`` /
-    # ``orchestrator.wandb`` with defaults from the bare-block signal.
+    # "enable + customise per side" pattern. The ``isinstance(dict)`` check
+    # (not ``is not None``) is what makes CLI ``--no-wandb`` / ``--no-ckpt``
+    # work — those land as the *string* ``"None"`` until ``BaseConfig``'s
+    # parent-class validator converts it, which happens after this one.
     for key in ("ckpt", "wandb"):
         if isinstance(get(key), dict):
             fill(f"trainer.{key}", {})
