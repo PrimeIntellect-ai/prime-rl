@@ -162,9 +162,12 @@ def propagate_shared_fields(data: Any) -> Any:
     # conflicts (e.g. shared ``ckpt.interval`` vs ``trainer.ckpt.interval``)
     # are already caught above; the bare block is exempt because
     # ``[ckpt]`` + ``[trainer.ckpt] keep_last = 3`` is a legitimate
-    # "enable + customise per side" pattern.
+    # "enable + customise per side" pattern. The ``isinstance(dict)`` check
+    # (not ``is not None``) is what makes CLI ``--no-wandb`` / ``--no-ckpt``
+    # work — those land as the *string* ``"None"`` until ``BaseConfig``'s
+    # parent-class validator converts it, which happens after this one.
     for key in ("ckpt", "wandb"):
-        if get(key) is not None:
+        if isinstance(get(key), dict):
             fill(f"trainer.{key}", {})
             fill(f"orchestrator.{key}", {})
 
