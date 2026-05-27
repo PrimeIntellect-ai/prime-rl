@@ -271,7 +271,7 @@ PI's `ExpertSlot` (in `slots.py`) and `build_topology()` (in `nixl_checkpoint_en
 
 ## 6. MX client adoption — layered with this plan
 
-The two-phase migration from our previous review (`pensieve/RL/PrimeRL/07_pr_2389_review_comments.md` + the "Phase 1 / Phase 2" framing) is the foundation this plan builds on:
+The two-phase migration from our earlier review of #2389 (Phase 1 surgical / Phase 2 client adoption) is the foundation this plan builds on:
 
 ### Phase 1 — surgical fixes against the `nixl_mx` in-tree code (drop-in patches)
 
