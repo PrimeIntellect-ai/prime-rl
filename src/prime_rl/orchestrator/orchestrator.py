@@ -7,16 +7,11 @@ import time
 import tomli_w
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
-from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
-from prime_rl.orchestrator.trajectories import (
-    backfill_rollout_tokens,
-    interleave_rollout,
-    offload_images_to_disk,
-)
-from prime_rl.transport import TrainingBatch, TrainingSample, setup_training_batch_sender
+from prime_rl.orchestrator.postprocess import build_training_batch_and_metrics
+from prime_rl.transport import setup_training_batch_sender
 from prime_rl.utils.pathing import get_log_dir, get_rollout_dir, get_step_path
 from prime_rl.utils.usage_reporter import UsageReporter
 
@@ -29,7 +24,6 @@ monkey_patch_chat_completion_logprobs()
 
 # Import environment before any other imports
 
-import pandas as pd
 import verifiers as vf
 from renderers.base import create_renderer
 
@@ -37,7 +31,7 @@ from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator.envs import EvalEnv, EvalEnvs, TrainEnvs
-from prime_rl.orchestrator.filters import apply_filters, setup_filters
+from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.orchestrator.scheduler import Scheduler
 from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
@@ -46,7 +40,6 @@ from prime_rl.orchestrator.utils import (
     set_default_executor,
 )
 from prime_rl.orchestrator.vf_utils import (
-    get_seq_len,
     intercept_vf_logging,
     save_rollouts,
 )
@@ -399,32 +392,37 @@ async def orchestrate(config: OrchestratorConfig):
         # batches so the trainer never receives an empty batch.
         generate_completions_time = 0.0
         train_rollouts: list[vf.RolloutOutput] = []
-        num_rollouts = 0
-        num_unique_examples = 0
-        n_trainable = 0
+        postprocess_result = None
         for attempt in range(MAX_EMPTY_BATCH_ATTEMPTS):
             train_rollouts = await scheduler.generate_batch(step=progress.step)
             generate_completions_time += scheduler.last_batch_generation_time
 
-            # Compute advantages (in-place)
-            num_rollouts = len(train_rollouts)
-            num_unique_examples = len({(r["env_name"], r["example_id"]) for r in train_rollouts})
-            await asyncio.to_thread(compute_advantages, train_rollouts, config.advantage)
+            step_path = get_step_path(get_rollout_dir(config.output_dir), progress.step)
+            postprocess_result = await asyncio.to_thread(
+                build_training_batch_and_metrics,
+                train_rollouts=train_rollouts,
+                step=progress.step,
+                advantage_config=config.advantage,
+                rollout_filters=rollout_filters,
+                output_dir=config.output_dir,
+                rollout_path=step_path / "train_rollouts.jsonl",
+                tokenizer=tokenizer,
+                renderer=renderer,
+                training_mode=config.training_mode,
+                group_size=config.group_size,
+                mm_token_type_ids_mapping=mm_token_type_ids_mapping,
+            )
 
-            # Apply rollout filters — sets rollout["filters"] and rollout["is_filtered"]
-            await asyncio.to_thread(apply_filters, rollout_filters, train_rollouts)
-
-            n_trainable = sum(1 for r in train_rollouts if not r["is_filtered"])
-            if n_trainable > 0:
+            if postprocess_result.training_batch is not None:
                 break
 
             if attempt == MAX_EMPTY_BATCH_ATTEMPTS - 1:
                 logger.error(
                     f"Attempt {attempt + 1}/{MAX_EMPTY_BATCH_ATTEMPTS} at step {progress.step} "
-                    f"filtered out all {num_rollouts} rollouts - crashing orchestrator"
+                    f"filtered out all {postprocess_result.num_rollouts} rollouts - crashing orchestrator"
                 )
                 reason = (
-                    f"All {num_rollouts} rollouts were filtered out on "
+                    f"All {postprocess_result.num_rollouts} rollouts were filtered out on "
                     f"{MAX_EMPTY_BATCH_ATTEMPTS} consecutive attempts at step {progress.step}"
                 )
                 evicted_path = config.output_dir / "control" / "evicted.txt"
@@ -434,293 +432,70 @@ async def orchestrate(config: OrchestratorConfig):
 
             logger.warning(
                 f"Attempt {attempt + 1}/{MAX_EMPTY_BATCH_ATTEMPTS} at step {progress.step} "
-                f"filtered out all {num_rollouts} rollouts - retrying batch generation"
+                f"filtered out all {postprocess_result.num_rollouts} rollouts - retrying batch generation"
             )
 
-        trainable_ratio = n_trainable / num_rollouts
+        assert postprocess_result is not None
+        training_batch = postprocess_result.training_batch
+        assert training_batch is not None
+
+        trainable_ratio = postprocess_result.n_trainable / postprocess_result.num_rollouts
         if trainable_ratio <= 0.1:
             logger.warning(
-                f"Only {n_trainable}/{num_rollouts} rollouts in the batch are trainable "
+                f"Only {postprocess_result.n_trainable}/{postprocess_result.num_rollouts} rollouts in the batch are trainable "
                 f"({trainable_ratio:.1%}) - this can mean the tasks are too easy or too hard for the "
                 "model, consider reviewing the task difficulty of your environment(s)"
             )
 
-        # Save train rollouts to disk (fire-and-forget background thread)
-        step_path = get_step_path(get_rollout_dir(config.output_dir), progress.step)
-        await asyncio.to_thread(
-            save_rollouts, train_rollouts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
-        )
-
-        # Offload base64 images to disk to free memory. No-op for text-only
-        # rollouts (no ``data:image`` URLs to find); cheap to call always.
-        offload_start = time.perf_counter()
-        num_offloaded = offload_images_to_disk(train_rollouts, config.output_dir)
-        if num_offloaded:
+        if postprocess_result.num_offloaded_images:
             logger.info(
-                f"Offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
+                f"Offloaded {postprocess_result.num_offloaded_images} unique images to disk "
+                f"in {postprocess_result.offload_time:.2f}s"
             )
-
-        # Convert rollouts to training samples
-        parallel_preprocess_start = time.perf_counter()
-
-        # We only expect to backfill tokens for training_mode=sft against an
-        # external teacher API (OpenAI/etc.), which returns no token IDs —
-        # reconstruct via tokenizer/renderer. The vLLM-served paths (RL/OPD
-        # renderer + MITO, and training_mode=sft against a local vLLM teacher)
-        # already populate tokens via prompt_token_ids/token_ids, so we
-        # short-circuit the 256-way fanout.
-        needs_backfill = any(step["tokens"] is None for rollout in train_rollouts for step in rollout["trajectory"])
-        if needs_backfill:
-            logger.info(
-                "Backfilling tokens for rollout trajectories (expected for training_mode=sft against an external teacher API)"
-            )
-            await asyncio.gather(
-                *(
-                    asyncio.to_thread(
-                        backfill_rollout_tokens,
-                        rollout,
-                        tokenizer,
-                        renderer=renderer,
-                    )
-                    for rollout in train_rollouts
-                )
-            )
-
-        # Process rollouts in parallel
-        results = await asyncio.gather(
-            *(
-                asyncio.to_thread(interleave_rollout, r, mm_token_type_ids_mapping=mm_token_type_ids_mapping)
-                for r in train_rollouts
-            )
-        )
-
-        # Collect results and assign advantages. Metrics are computed over all
-        # rollouts; only non-filtered samples are sent to the trainer.
-        train_examples: list[TrainingSample] = []
-        rollout_prefill_lens: list[int] = []
-        rollout_decode_lens: list[int] = []
-        rollout_samples_per_rollout: list[int] = []
-        num_prefill_tokens = 0
-        num_decode_tokens = 0
-        for rollout, samples in zip(train_rollouts, results):
-            rollout_prefill_tokens = 0
-            rollout_decode_tokens = 0
-            if samples is None:
-                samples = []
-            rollout_samples_per_rollout.append(len(samples))
-            for sample in samples:
-                sample.advantage = rollout["advantage"]
-                sample.reward = rollout["reward"]
-                sample.env_name = rollout["env_name"]
-                sample.training_mode = config.training_mode
-                sample_decode_tokens = sum(sample.completion_mask)
-                sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens
-                rollout_decode_tokens += sample_decode_tokens
-                rollout_prefill_tokens += sample_prefill_tokens
-                if not rollout["is_filtered"]:
-                    train_examples.append(sample)
-            rollout_prefill_lens.append(rollout_prefill_tokens)
-            rollout_decode_lens.append(rollout_decode_tokens)
-            num_prefill_tokens += rollout_prefill_tokens
-            num_decode_tokens += rollout_decode_tokens
-
-        parallel_preprocess_time = time.perf_counter() - parallel_preprocess_start
         logger.debug(
-            f"Converted {len(train_rollouts)} rollouts ({num_unique_examples} unique examples) "
-            f"to {len(train_examples)} training examples"
+            f"Converted {len(train_rollouts)} rollouts ({postprocess_result.num_unique_examples} unique examples) "
+            f"to {len(training_batch.examples)} training examples"
         )
 
         # Compute teacher logprobs (opd only - sft trains on teacher tokens directly)
-        teacher_logprobs_time = 0
+        teacher_logprobs_time = 0.0
         if config.training_mode == "opd" and teacher_inference is not None:
             assert config.teacher is not None
-            logger.info(f"Computing teacher logprobs for {len(train_examples)} training examples")
+            logger.info(f"Computing teacher logprobs for {len(training_batch.examples)} training examples")
             teacher_logprobs_start_time = time.perf_counter()
             teacher_logprobs_list = await compute_teacher_logprobs(
                 clients=teacher_inference.train_clients,
                 model_name=config.teacher.model.name,
-                samples=train_examples,
+                samples=training_batch.examples,
             )
-            for train_example, teacher_logprobs in zip(train_examples, teacher_logprobs_list):
+            for train_example, teacher_logprobs in zip(training_batch.examples, teacher_logprobs_list):
                 train_example.teacher_logprobs = teacher_logprobs
             teacher_logprobs_time = time.perf_counter() - teacher_logprobs_start_time
             logger.debug(f"Computed teacher logprobs in {teacher_logprobs_time:.2f}s")
-
-        training_batch = TrainingBatch(
-            examples=train_examples,
-            step=progress.step,
-        )
 
         await training_batch_sender.send(training_batch)
 
         step_time = time.perf_counter() - step_start_time
 
-        # Gather metrics in dataframes
-        results_df = pd.DataFrame(
-            {
-                "example_id": [rollout["example_id"] for rollout in train_rollouts],
-                "env_name": [rollout["env_name"] for rollout in train_rollouts],
-                "reward": [rollout["reward"] for rollout in train_rollouts],
-                "is_truncated": [rollout["is_truncated"] for rollout in train_rollouts],
-                "is_filtered": [rollout["is_filtered"] for rollout in train_rollouts],
-                "stop_condition": [rollout.get("stop_condition") for rollout in train_rollouts],
-                "seq_len": [get_seq_len(rollout) for rollout in train_rollouts],
-                "prefill_len": rollout_prefill_lens,
-                "decode_len": rollout_decode_lens,
-                "samples_per_rollout": rollout_samples_per_rollout,
-                "num_turns": [len(rollout["trajectory"]) for rollout in train_rollouts],
-            }
-        )
-
-        # Separate DataFrames for env reward function metrics, filter flags, and per-rollout timings
-        # to avoid column name collisions
-        metrics_df = pd.DataFrame([rollout["metrics"] for rollout in train_rollouts])
-        filter_df = pd.DataFrame([rollout["filters"] for rollout in train_rollouts])
-        timing_df = pd.DataFrame(
-            [
-                {
-                    "total": rollout["timing"]["total"],
-                    "setup": rollout["timing"]["setup"]["duration"],
-                    "generation": rollout["timing"]["generation"]["duration"],
-                    "model": rollout["timing"]["model"]["duration"],
-                    "env": rollout["timing"]["env"]["duration"],
-                    "scoring": rollout["timing"]["scoring"]["duration"],
-                    "overhead": rollout["timing"]["overhead"],
-                }
-                for rollout in train_rollouts
-            ]
-        )
-
         # Update progress metrics
-        num_tokens = int(results_df.seq_len.sum())
-        progress.total_tokens += num_tokens
-        progress.total_samples += num_rollouts
-        progress.total_problems += num_unique_examples
+        progress.total_tokens += postprocess_result.num_tokens
+        progress.total_samples += postprocess_result.num_rollouts
+        progress.total_problems += postprocess_result.num_unique_examples
 
-        def compute_solve_rates(df):
-            """Compute solve_none, solve_all, effective_batch_size for a set of rollouts."""
-            reward_per_problem = df.groupby(["env_name", "example_id"]).reward.sum()
-            solve_none = (reward_per_problem == 0).mean()
-            solve_all = (reward_per_problem == config.group_size).mean()
-            return solve_none, solve_all, 1 - solve_none - solve_all
-
-        # Group by (env_name, example_id) to average across rollouts within each problem
-        by_example = results_df.groupby(["env_name", "example_id"])
-
-        solve_none, solve_all, effective_batch_size = compute_solve_rates(results_df)
         to_log = {
-            # Progress metrics
-            "progress/tokens": num_tokens,
-            "progress/prefill_tokens": num_prefill_tokens,
-            "progress/decode_tokens": num_decode_tokens,
-            "progress/samples": num_rollouts,
-            "progress/problems": num_unique_examples,
+            **postprocess_result.metric_logs,
             "progress/total_tokens": progress.total_tokens,
             "progress/total_samples": progress.total_samples,
             "progress/total_problems": progress.total_problems,
-            # Sequence length metrics
-            "seq_len/all/mean": by_example.seq_len.mean().mean(),
-            "seq_len/all/max": by_example.seq_len.mean().max(),
-            "seq_len/all/min": by_example.seq_len.mean().min(),
-            "prefill_len/all/mean": by_example.prefill_len.mean().mean(),
-            "prefill_len/all/max": by_example.prefill_len.mean().max(),
-            "prefill_len/all/min": by_example.prefill_len.mean().min(),
-            "decode_len/all/mean": by_example.decode_len.mean().mean(),
-            "decode_len/all/max": by_example.decode_len.mean().max(),
-            "decode_len/all/min": by_example.decode_len.mean().min(),
-            "is_truncated/all/mean": by_example.is_truncated.mean().mean(),
-            "is_truncated/all/max": by_example.is_truncated.mean().max(),
-            "stop_condition/all/generation_truncated": (
-                results_df.is_truncated & (results_df.stop_condition != "prompt_too_long")
-            ).mean(),
-            **{
-                f"stop_condition/all/{sc}": rate
-                for sc, rate in results_df.stop_condition.dropna().value_counts(normalize=True).items()
-            },
-            "samples_per_rollout/all/mean": by_example.samples_per_rollout.mean().mean(),
-            "samples_per_rollout/all/max": by_example.samples_per_rollout.mean().max(),
-            "samples_per_rollout/all/min": by_example.samples_per_rollout.mean().min(),
-            "num_turns/all/mean": by_example.num_turns.mean().mean(),
-            "num_turns/all/max": by_example.num_turns.mean().max(),
-            "num_turns/all/min": by_example.num_turns.mean().min(),
-            **{
-                f"timing/all/{key}/{stat}": getattr(
-                    timing_df[key].groupby([results_df.env_name, results_df.example_id]).mean(),
-                    stat,
-                )()
-                for key in timing_df.columns
-                for stat in ("mean", "max", "min")
-            },
-            # Train reward
-            "reward/all/mean": by_example.reward.mean().mean(),
-            "reward/all/max": by_example.reward.mean().max(),
-            "reward/all/min": by_example.reward.mean().min(),
-            # Solve / batch metrics
-            "solve_none/all": solve_none,
-            "solve_all/all": solve_all,
-            "effective_batch_size/all": effective_batch_size,
-            **{f"batch/{env}": r for env, r in results_df.env_name.value_counts(normalize=True).items()},
-            # Time metrics
             "time/step": step_time,
             "time/generate_completions": generate_completions_time,
             "time/teacher_logprobs": teacher_logprobs_time,
             "time/save_ckpt": save_ckpt_time,
-            "time/parallel_preprocess": parallel_preprocess_time,
-            # Scheduler metrics
             **scheduler.get_metrics(),
-            # Buffer metrics
             **buffer.get_metrics(),
-            # Event loop lag metrics
             **event_loop_lag_monitor.get_metrics(),
-            # Rollout filter metrics (detection rate per filter + overall drop rate)
-            "filters/all/is_filtered": results_df.is_filtered.astype(float).mean(),
-            **{f"filters/all/{name}": filter_df[name].astype(float).mean() for name in filter_df.columns},
-            # W&B axis
             "step": progress.step,
         }
-
-        # Per-env metrics
-        per_env_columns = [
-            "seq_len",
-            "prefill_len",
-            "decode_len",
-            "is_truncated",
-            "samples_per_rollout",
-            "num_turns",
-        ]
-
-        for env, env_df in results_df.groupby("env_name"):
-            env_by_example = env_df.groupby("example_id")
-            for col in per_env_columns:
-                to_log[f"{col}/{env}/mean"] = env_by_example[col].mean().mean()
-                to_log[f"{col}/{env}/max"] = env_by_example[col].mean().max()
-                if col != "is_truncated":
-                    to_log[f"{col}/{env}/min"] = env_by_example[col].mean().min()
-            env_timing_df = timing_df.loc[env_df.index]
-            for key in timing_df.columns:
-                per_example = env_timing_df.groupby(env_df["example_id"])[key].mean()
-                to_log[f"timing/{env}/{key}/mean"] = per_example.mean()
-                to_log[f"timing/{env}/{key}/max"] = per_example.max()
-                to_log[f"timing/{env}/{key}/min"] = per_example.min()
-            to_log[f"reward/{env}/mean"] = env_by_example.reward.mean().mean()
-            to_log[f"reward/{env}/max"] = env_by_example.reward.mean().max()
-            to_log[f"reward/{env}/min"] = env_by_example.reward.mean().min()
-            solve_none, solve_all, effective_batch_size = compute_solve_rates(env_df)
-            to_log[f"solve_none/{env}"] = solve_none
-            to_log[f"solve_all/{env}"] = solve_all
-            to_log[f"effective_batch_size/{env}"] = effective_batch_size
-            to_log[f"stop_condition/{env}/generation_truncated"] = (
-                env_df.is_truncated & (env_df.stop_condition != "prompt_too_long")
-            ).mean()
-            for sc, rate in env_df.stop_condition.dropna().value_counts(normalize=True).items():
-                to_log[f"stop_condition/{env}/{sc}"] = rate
-            env_metrics_df = metrics_df.loc[env_df.index]
-            for metric in metrics_df.columns:
-                to_log[f"metrics/{env}/{metric}"] = env_metrics_df.groupby(env_df["example_id"])[metric].mean().mean()
-            to_log[f"filters/{env}/is_filtered"] = env_df.is_filtered.astype(float).mean()
-            env_filter_df = filter_df.loc[env_df.index]
-            for name in filter_df.columns:
-                to_log[f"filters/{env}/{name}"] = env_filter_df[name].astype(float).mean()
 
         # Log metrics to monitor(s)
         monitor.log(to_log, step=progress.step)
@@ -731,8 +506,8 @@ async def orchestrate(config: OrchestratorConfig):
         # Log distributions (rewards, advantages) if enabled
         monitor.log_distributions(
             distributions={
-                "rewards": [r["reward"] for r in train_rollouts],
-                "advantages": [r["advantage"] for r in train_rollouts],
+                "rewards": postprocess_result.rewards,
+                "advantages": postprocess_result.advantages,
             },
             step=progress.step,
         )
@@ -741,11 +516,14 @@ async def orchestrate(config: OrchestratorConfig):
             usage_reporter.report_training_usage(
                 run_id=run_id,
                 step=progress.step,
-                tokens=num_prefill_tokens + num_decode_tokens,
+                tokens=postprocess_result.num_prefill_tokens + postprocess_result.num_decode_tokens,
             )
 
-        reward_mean = by_example.reward.mean().mean()
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {reward_mean:.4f} | Seq. Length: {by_example.seq_len.mean().mean():.1f} tokens/sample | Max. Off-Policy Level: {scheduler.max_off_policy_level}"
+        step_message = (
+            f"Step {progress.step} | Time: {step_time:.2f}s | Reward: {postprocess_result.reward_mean:.4f} | "
+            f"Seq. Length: {postprocess_result.seq_len_mean:.1f} tokens/sample | "
+            f"Max. Off-Policy Level: {scheduler.max_off_policy_level}"
+        )
         logger.success(step_message)
 
         # Increment step
@@ -753,8 +531,7 @@ async def orchestrate(config: OrchestratorConfig):
         is_first_step = False
 
         # Free large per-step objects to prevent memory accumulation
-        del train_rollouts, train_examples, training_batch
-        del results_df, metrics_df
+        del train_rollouts, training_batch, postprocess_result
         gc.collect()
         # Return free glibc heap pages to the OS. numpy/pandas allocate array data
         # via malloc (outside Python's allocator), so gc.collect() alone doesn't
