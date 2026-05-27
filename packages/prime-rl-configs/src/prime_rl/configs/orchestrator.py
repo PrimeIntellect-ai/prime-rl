@@ -552,10 +552,12 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 
 
 class OrchestratorExperimentalConfig(BaseConfig):
-    log_loop_interval: float = Field(5.0, gt=0)
-    """Interval (seconds) at which the orchestrator's ``IntervalLogger`` task
-    emits dispatcher gauges (in-flight counts, off-policy levels, semaphore
-    availability) and event-loop lag to the monitor on the time axis."""
+    log_interval: float = Field(5.0, gt=0)
+    """Interval (seconds) shared across every async component's
+    ``PeriodicLogger`` — dispatcher gauges (in-flight counts, off-policy
+    levels, semaphore availability), watcher state (policy version, weight-
+    update latency), and orchestrator event-loop lag all sample on this
+    cadence and emit on the wandb ``_timestamp`` axis."""
 
 
 class RolloutModelConfig(BaseConfig):

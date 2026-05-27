@@ -14,7 +14,10 @@ need:
 - ``MetricsBuilder`` builds the per-step train W&B dict from the popped batch
   and orchestrator-side timings (called inline by the orchestrator).
 - ``WeightWatcher`` advances ``Policy`` and notifies the dispatcher.
-- ``IntervalLogger`` writes dispatcher gauges + event-loop lag on a time axis.
+- Each async component owns its own ``PeriodicLogger`` for steady-state
+  gauges (dispatcher / watcher / orchestrator-main-loop). They share a
+  single log interval and write to console + wandb on the ``_timestamp``
+  axis.
 
 None of these hold a reference to the orchestrator. The orchestrator wires
 them in ``setup()`` and drives them from ``main_loop()``.
@@ -35,14 +38,15 @@ from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.dispatcher import RolloutDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
+from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
-from prime_rl.orchestrator.log_loop import IntervalLogger
 from prime_rl.orchestrator.metrics import MetricsBuilder
 from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
     monkey_patch_oai_iterable_types,
 )
+from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.sources import EvalSource, TrainSource
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.trajectories import offload_images_to_disk
@@ -123,7 +127,9 @@ class Orchestrator:
         self.eval_sink: EvalSink | None = None
         self.metrics: MetricsBuilder | None = None
         self.watcher: WeightWatcher | None = None
-        self.log_loop: IntervalLogger | None = None
+        self.periodic_logger: PeriodicLogger | None = None
+        self.lag_monitor: EventLoopLagMonitor | None = None
+        self.lag_task: asyncio.Task | None = None
 
         # Background tasks for components with their own main loop.
         self.component_tasks: list[asyncio.Task] = []
@@ -300,6 +306,8 @@ class Orchestrator:
         self.eval_source = EvalSource(self.eval_envs, config.eval, resume_step=self.resume_step)
 
         assert config.max_inflight_rollouts is not None, "max_inflight_rollouts must be resolved before dispatcher init"
+        log_interval = config.experimental.log_interval
+        wandb_enabled = config.wandb is not None
         self.dispatcher = RolloutDispatcher(
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
@@ -312,6 +320,8 @@ class Orchestrator:
             group_size=config.group_size,
             max_off_policy_steps=config.max_off_policy_steps,
             training_mode=config.training_mode,
+            log_interval=log_interval,
+            wandb_enabled=wandb_enabled,
         )
         self.metrics = MetricsBuilder(config)
         self.train_sink = TrainSink(
@@ -334,11 +344,18 @@ class Orchestrator:
             observers=[self.dispatcher],
             lora_name=self.lora_name,
             ckpt_step=self.progress.step,
+            log_interval=log_interval,
+            wandb_enabled=wandb_enabled,
         )
-        self.log_loop = IntervalLogger(
-            dispatcher=self.dispatcher,
-            policy=self.policy,
-            interval=config.experimental.log_loop_interval,
+        # Orchestrator's own periodic logger: tracks event-loop lag (a
+        # process-wide concern that fits naturally with the main loop).
+        self.lag_monitor = EventLoopLagMonitor()
+        self.periodic_logger = PeriodicLogger(
+            name="orchestrator",
+            snapshot=self.lag_monitor.get_metrics,
+            metric_keys=list(self.lag_monitor.get_metrics().keys()),
+            interval=log_interval,
+            wandb_enabled=wandb_enabled,
         )
 
     async def start(self) -> None:
@@ -349,13 +366,16 @@ class Orchestrator:
         self.logger.info(f"Starting orchestrator loop (max_steps={config.max_steps or 'infinite'})")
         start_time = time.perf_counter()
 
-        # Spawn background loops (dispatcher schedules, watcher polls, log_loop
-        # emits gauges). The pipeline ``main_loop`` runs inline in this task.
-        assert self.dispatcher and self.watcher and self.log_loop
+        # Spawn background loops (dispatcher schedules, watcher polls). The
+        # pipeline ``main_loop`` runs inline in this task; each component
+        # also runs its own ``PeriodicLogger`` for steady-state gauges.
+        assert self.dispatcher and self.watcher
+        assert self.periodic_logger is not None and self.lag_monitor is not None
+        self.lag_task = asyncio.create_task(self.lag_monitor.run(), name="event_loop_lag")
+        await self.periodic_logger.start()
         self.component_tasks = [
             asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
             asyncio.create_task(self.watcher.start(), name="watcher"),
-            asyncio.create_task(self.log_loop.start(), name="log_loop"),
         ]
 
         # Opt-in step-0 eval (``eval.skip_first_step=True``) — fire before the
@@ -655,8 +675,11 @@ class Orchestrator:
                 await self.dispatcher.stop()
             if self.watcher is not None:
                 await self.watcher.stop()
-            if self.log_loop is not None:
-                await self.log_loop.stop()
+            if self.periodic_logger is not None:
+                await self.periodic_logger.stop()
+            if self.lag_task is not None:
+                await safe_cancel(self.lag_task)
+                self.lag_task = None
             for task in self.component_tasks:
                 await safe_cancel(task)
             self.component_tasks.clear()

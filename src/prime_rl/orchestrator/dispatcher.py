@@ -34,6 +34,7 @@ import verifiers as vf
 from aiolimiter import AsyncLimiter
 
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
+from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.sources import EvalSource, TrainSource
 from prime_rl.orchestrator.types import (
     DispatcherMetrics,
@@ -77,6 +78,8 @@ class RolloutDispatcher:
         group_size: int,
         max_off_policy_steps: int,
         training_mode: Literal["rl", "opd", "sft"],
+        log_interval: float,
+        wandb_enabled: bool,
     ) -> None:
         self.logger = get_logger()
         self.policy = policy
@@ -110,6 +113,16 @@ class RolloutDispatcher:
 
         # All per-poll counters live on this dataclass — see ``DispatcherMetrics``.
         self.metrics = DispatcherMetrics()
+
+        # Dispatcher-owned periodic logger. Started in ``start()``, stopped
+        # in ``stop()`` — same lifecycle as the dispatch loop itself.
+        self.periodic_logger = PeriodicLogger(
+            name="dispatcher",
+            snapshot=self.gauges,
+            metric_keys=list(self.gauges().keys()),
+            interval=log_interval,
+            wandb_enabled=wandb_enabled,
+        )
 
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
@@ -154,6 +167,7 @@ class RolloutDispatcher:
     async def start(self) -> None:
         """Single dispatch loop: schedule, wait, collect, repeat. Runs until ``stop()``."""
         self.task = asyncio.current_task()
+        await self.periodic_logger.start()
         try:
             while not self.stopped.is_set():
                 await self.fill_inflight()
@@ -179,6 +193,7 @@ class RolloutDispatcher:
 
     async def stop(self) -> None:
         self.stopped.set()
+        await self.periodic_logger.stop()
         await self.cancel_inflight_rollouts()
         if self.task is not None:
             await safe_cancel(self.task)
