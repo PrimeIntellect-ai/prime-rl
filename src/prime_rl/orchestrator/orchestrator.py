@@ -779,9 +779,9 @@ class Orchestrator:
 
         head = (
             f"Train step {step} | {format_time(step_time):>7} | Reward {reward_mean:.4f} | "
-            f"Error {error_rate:.1%} | Trainable {n_trainable}/{n_survivors} ({trainable_rate:.1%}) | "
-            f"Turns {turns_mean:.1f} | Truncation {truncation_rate:.1%} | "
-            f"Max Off-Policy {max_off_policy}"
+            f"Trainable {n_trainable}/{n_survivors} ({trainable_rate:.1%}) | "
+            f"Turns {turns_mean:.1f} | Max Off-Policy {max_off_policy} | "
+            f"Error {error_rate:.1%} | Truncation {truncation_rate:.1%}"
         )
         if len(self.train_envs) <= 1:
             get_logger().success(head)
@@ -810,8 +810,8 @@ class Orchestrator:
             )
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_reward:.4f} | "
-                f"Error {env_error_rate:.1%} | Turns {env_turns:.1f} | Truncation {env_truncation:.1%} | "
-                f"Max Off-Policy {env_max_off_policy}"
+                f"Turns {env_turns:.1f} | Max Off-Policy {env_max_off_policy} | "
+                f"Error {env_error_rate:.1%} | Truncation {env_truncation:.1%}"
             )
         get_logger().success("\n\t\t".join(lines))
 
@@ -845,10 +845,10 @@ class Orchestrator:
 
         get_logger().success(
             f"Eval step {batch.step} ({batch.env_name}) | {format_time(elapsed):>7} | "
-            f"Reward {batch.metrics.reward_mean:.4f} | Error {error_rate:.1%} | "
+            f"Reward {batch.metrics.reward_mean:.4f} | "
             f"Valid {n_valid}/{n_total} ({valid_rate:.1%}) | "
-            f"Turns {batch.metrics.num_turns_mean:.1f} | Truncation {batch.metrics.truncation_rate:.1%} | "
-            f"Max Off-Policy {max_off_policy}"
+            f"Turns {batch.metrics.num_turns_mean:.1f} | Max Off-Policy {max_off_policy} | "
+            f"Error {error_rate:.1%} | Truncation {batch.metrics.truncation_rate:.1%}"
         )
 
     async def maybe_save_ckpt(self, step: int) -> float:
