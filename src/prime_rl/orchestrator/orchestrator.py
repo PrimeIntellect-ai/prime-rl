@@ -403,7 +403,7 @@ class Orchestrator:
 
         # Default step-0 base-model eval — fires before any train rollouts
         # unless ``eval.skip_first_step=True`` (or this is a resume).
-        self.maybe_trigger_eval(at_start=True)
+        self.maybe_trigger_eval(self.progress.step)
 
         try:
             await self.main_loop()
@@ -606,35 +606,25 @@ class Orchestrator:
         self.progress.step += 1
         # Fire eligible eval epochs for the new training step. The dispatcher
         # picks them up the next time it fills inflight.
-        self.maybe_trigger_eval(step=self.progress.step)
+        self.maybe_trigger_eval(self.progress.step)
 
-    def maybe_trigger_eval(self, *, step: int | None = None, at_start: bool = False) -> None:
-        """Trigger eligible eval epochs and flip ``DispatcherMode`` to PREFER_EVAL
-        if anything fired. ``at_start=True`` runs the startup-eval path
-        (default unless ``skip_first_step=True``) on whatever model state
-        the orchestrator starts from — base model on a cold start, resumed
-        checkpoint on a resume. Otherwise ``step`` is the just-completed
-        training step from ``progress``.
-        """
+    def maybe_trigger_eval(self, step: int) -> None:
+        """Trigger eligible eval epochs and flip ``DispatcherMode`` to
+        PREFER_EVAL if anything fired. ``EvalSource.trigger`` handles
+        both the startup case (first call → fires every env unless
+        ``skip_first_step``) and the steady-state per-interval case
+        (subsequent calls → ``step % interval == 0`` per env)."""
         assert self.dispatcher is not None
-        if at_start:
-            startup_step = self.progress.step
-            fired = self.eval_source.trigger_at_start(startup_step)
-            reason = f"startup eval was triggered at step {startup_step}"
-            step_label = startup_step
-        else:
-            assert step is not None
-            fired = self.eval_source.trigger(step)
-            reason = f"eval was triggered for {', '.join(fired)} at step {step}"
-            step_label = step
+        fired = self.eval_source.trigger(step)
         if not fired:
             return
+        reason = f"eval was triggered for {', '.join(fired)} at step {step}"
         self.dispatcher.switch_mode(DispatcherMode.PREFER_EVAL, reason=reason)
         # Stamp the start time per (env, step) so ``log_eval_batch`` can
         # report wall-clock duration of the epoch in its success log.
         now = time.perf_counter()
         for env_name in fired:
-            self.eval_triggered_at[(env_name, step_label)] = now
+            self.eval_triggered_at[(env_name, step)] = now
         assert self.eval_envs is not None  # non-empty ``fired`` implies eval is configured
         total_rollouts = sum(
             self.eval_envs.get(env_name).config.group_size * len(self.eval_envs.get(env_name).examples)

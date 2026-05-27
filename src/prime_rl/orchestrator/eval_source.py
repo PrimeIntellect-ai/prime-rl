@@ -1,9 +1,8 @@
 """EvalSource: trigger-driven finite-per-epoch pull of eval examples.
 
 Holds the per-env example lists + intervals + the pending queue. The
-orchestrator pokes it via ``trigger(step)`` after each ship step (or
-``trigger_at_start(step)`` once at startup for the startup eval), and
-the dispatcher pulls one example at a time via
+orchestrator pokes it via ``trigger(step)`` after each ship step (and
+once at startup), and the dispatcher pulls one example at a time via
 ``next_example(available_permits)`` until ``bool(source) == False``.
 
 Empty pool (``eval_envs is None`` or ``eval_config is None``) is a valid
@@ -49,38 +48,34 @@ class EvalSource:
         # multiple eval steps over the run without aliasing.
         self.queue: deque[dict] = deque()
 
+        # The first ``trigger`` call (orchestrator startup) fires every
+        # env unconditionally — the startup eval evaluates whatever model
+        # state we begin from (base model or resumed checkpoint) before
+        # any train rollouts. ``eval.skip_first_step`` gates this one
+        # call; subsequent calls use the usual ``% interval`` gating.
+        self.first_trigger = True
+
     # ── trigger ────────────────────────────────────────────────────────────
 
     def trigger(self, step: int) -> list[str]:
         """Fire eligible envs for ``step`` and return their names.
 
-        An env fires iff ``step % interval == 0``. Caller (``Orchestrator
-        .ship_train_batch``) only ever invokes this with monotonically
-        increasing ``step`` values, so no double-fire guard is needed.
+        First call (startup): fire every env, unless ``skip_first_step``
+        is True. Subsequent calls: fire each env iff ``step % interval ==
+        0``. Caller (``Orchestrator``) only ever invokes this with
+        monotonically increasing ``step`` values, so no double-fire guard
+        is needed.
         """
         if self.eval_envs is None or self.eval_config is None:
             return []
-        fired: list[str] = []
-        for env_name, interval in self.intervals.items():
-            if step % interval != 0:
-                continue
-            self.enqueue(env_name, step)
-            fired.append(env_name)
-        return fired
-
-    def trigger_at_start(self, step: int) -> list[str]:
-        """Fire all envs at ``step`` unless ``eval.skip_first_step`` is True.
-
-        Called once from ``Orchestrator.start`` with ``progress.step`` — the
-        startup eval runs by default on whatever model state the
-        orchestrator starts from (base model on a cold start, resumed
-        checkpoint on a resume). Bypasses ``% interval`` gating so the
-        startup eval always fires for all envs.
-        """
-        if self.eval_envs is None or self.eval_config is None or self.eval_config.skip_first_step:
+        is_first = self.first_trigger
+        self.first_trigger = False
+        if is_first and self.eval_config.skip_first_step:
             return []
         fired: list[str] = []
-        for env_name in self.examples_by_env:
+        for env_name, interval in self.intervals.items():
+            if not is_first and step % interval != 0:
+                continue
             self.enqueue(env_name, step)
             fired.append(env_name)
         return fired
