@@ -46,19 +46,10 @@ class TrainSamplingConfig(BaseConfig):
     temperature: float = Field(1.0, ge=0)
     """Sampling temperature."""
 
-    repetition_penalty: float = Field(1.0, ge=0)
-    """Repetition penalty. Values > 1.0 discourage repetition, < 1.0 encourage it, 1.0 disables."""
-
     max_completion_tokens: int | None = Field(
         None, validation_alias=AliasChoices("max_completion_tokens", "max_tokens")
     )
     """Maximum output tokens per turn. If None, generates until max context length or EOS."""
-
-    min_tokens: int = Field(0, ge=0)
-    """Minimum output tokens per sequence."""
-
-    seed: int | None = None
-    """Random seed for sampling. If None, no seeding is used."""
 
     # Strictly speaking, extra_body is not a sampling parameter, but it is the
     # easiest way to pass arbitrary extra parameters to the server via verifiers
@@ -67,7 +58,6 @@ class TrainSamplingConfig(BaseConfig):
 
     def to_sampling_args(self) -> dict[str, Any]:
         """Convert to OAI-compatible sampling args dict, omitting None values."""
-        # Top-level OAI params
         args: dict[str, Any] = {
             "temperature": self.temperature,
             "top_p": 1.0,
@@ -75,17 +65,9 @@ class TrainSamplingConfig(BaseConfig):
         }
         if self.max_completion_tokens is not None:
             args["max_completion_tokens"] = self.max_completion_tokens
-        if self.seed is not None:
-            args["seed"] = self.seed
 
-        # vLLM extra_body params
-        extra_body = dict(self.extra_body)
-        if self.min_tokens > 0:
-            extra_body["min_tokens"] = self.min_tokens
-        if self.repetition_penalty != 1.0:
-            extra_body["repetition_penalty"] = self.repetition_penalty
-        if extra_body:
-            args["extra_body"] = extra_body
+        if self.extra_body:
+            args["extra_body"] = dict(self.extra_body)
 
         return args
 
@@ -106,9 +88,6 @@ class EvalSamplingConfig(BaseConfig):
     temperature: float | None = Field(None, ge=0)
     """Sampling temperature. None defers to the inference server default."""
 
-    repetition_penalty: float | None = Field(None, ge=0)
-    """Repetition penalty. None defers to the inference server default."""
-
     top_p: float | None = None
     """Nucleus sampling threshold. None defers to the inference server default."""
 
@@ -123,14 +102,8 @@ class EvalSamplingConfig(BaseConfig):
     )
     """Maximum output tokens per turn. None defers to the inference server default."""
 
-    min_tokens: int | None = Field(None, ge=0)
-    """Minimum output tokens per sequence. None defers to the inference server default."""
-
     reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = None
     """Reasoning effort constraint for reasoning models."""
-
-    seed: int | None = None
-    """Random seed for sampling. None means no seeding."""
 
     extra_body: dict[str, Any] = {}
     """Extra body parameters forwarded to the inference server."""
@@ -146,18 +119,12 @@ class EvalSamplingConfig(BaseConfig):
             args["max_completion_tokens"] = self.max_completion_tokens
         if self.reasoning_effort is not None:
             args["reasoning_effort"] = self.reasoning_effort
-        if self.seed is not None:
-            args["seed"] = self.seed
 
         extra_body = dict(self.extra_body)
         if self.top_k is not None:
             extra_body["top_k"] = self.top_k
         if self.min_p is not None:
             extra_body["min_p"] = self.min_p
-        if self.min_tokens is not None:
-            extra_body["min_tokens"] = self.min_tokens
-        if self.repetition_penalty is not None:
-            extra_body["repetition_penalty"] = self.repetition_penalty
         if extra_body:
             args["extra_body"] = extra_body
 
