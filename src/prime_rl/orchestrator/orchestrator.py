@@ -459,6 +459,12 @@ class Orchestrator:
         # unless ``eval.skip_first_step=True`` (or this is a resume).
         self.maybe_trigger_eval(self.progress.step)
 
+        # Anchor the step-time clock to the moment scheduling begins, so
+        # step 0's ``step_time`` measures startup → first batch (otherwise
+        # ``last_batch_at`` would be ``None`` on first ship and we'd
+        # report 0ms).
+        self.last_batch_at = time.perf_counter()
+
         try:
             await self.main_loop()
         finally:
@@ -684,19 +690,17 @@ class Orchestrator:
     def collect_pipeline_view(self) -> tuple[str, dict[str, float]]:
         """Unified pipeline view for the orchestrator's ``PeriodicLogger``.
 
-        Console body — headline carries the aggregate (total inflight,
-        total finished this tick, current train-batch fill); indented
-        rows break it down per env, with the eval rows also reporting
-        their epoch progress (``batch=arrivals/expected``).
+        Console body — headline carries the aggregate (total inflight +
+        current train-batch fill, plus single-eval epoch progress when an
+        eval is the only one accumulating). Per-env ``╰─`` rows appear
+        only when there's more than one train env (or more than one eval
+        env) — for single-env runs the aggregate already is the per-env
+        view.
 
         Wandb payload: all the dispatcher / watcher / event-loop gauges
         and drain counters from the periodic axis — existing
         ``_timestamp``-axis dashboards keep working.
         """
-        # ``metrics.drained()`` clears its per-env dicts on read, so we
-        # snapshot ``total_rollouts_by_env`` first; ``drained()`` then
-        # consumes the totals + resets all the drain counters.
-        finished_by_env = dict(self.dispatcher.metrics.total_rollouts_by_env)
         disp_gauges = self.dispatcher.gauges()
         disp_drain = self.dispatcher.metrics.drained()
         watcher_gauges = self.watcher.gauges()
@@ -707,27 +711,35 @@ class Orchestrator:
         inflight_eval = self.dispatcher.inflight_eval_count
         inflight_total = inflight_train + inflight_eval
         train_progress, train_target, train_unit = self.train_sink.batch_progress()
-        total_finished = int(disp_drain["dispatcher/total_rollouts"])
+        train_batch_by_env = self.train_sink.pending_batch_by_env()
+        eval_epochs = self.eval_sink.epoch_progress() if self.eval_sink is not None else []
+        multi_train = len(self.train_envs) > 1
+        multi_eval = self.eval_envs is not None and len(self.eval_envs) > 1
 
-        lines = [
+        head = (
             f"inflight {inflight_total}/{self.dispatcher.max_inflight} "
             f"(train={inflight_train}, eval={inflight_eval}) | "
-            f"finished {total_finished} | "
             f"train batch {train_progress}/{train_target} {train_unit}"
-        ]
-        # Per-env train rows.
-        for env in self.train_envs:
-            lines.append(
-                f"╰─ train {env.name} | dispatched={inflight_by_env.get(('train', env.name), 0)} "
-                f"finished={finished_by_env.get(env.name, 0)}"
-            )
-        # Per-epoch eval rows (only when accumulating).
-        if self.eval_sink is not None:
-            for env_name, eval_step, arrivals, expected in self.eval_sink.epoch_progress():
+        )
+        # Single-eval-env case: bake the active epoch's progress into the
+        # headline. Multi-eval is handled by the per-env rows below.
+        if not multi_eval and len(eval_epochs) == 1:
+            env_name, eval_step, arrivals, expected = eval_epochs[0]
+            head += f" | eval {env_name}@{eval_step} batch={arrivals}/{expected}"
+
+        lines = [head]
+        if multi_train:
+            for env in self.train_envs:
+                lines.append(
+                    f"╰─ train {env.name} | "
+                    f"inflight={inflight_by_env.get(('train', env.name), 0)} "
+                    f"batch={train_batch_by_env.get(env.name, 0)}"
+                )
+        if multi_eval:
+            for env_name, eval_step, arrivals, expected in eval_epochs:
                 lines.append(
                     f"╰─ eval {env_name}@{eval_step} | "
-                    f"dispatched={inflight_by_env.get(('eval', env_name), 0)} "
-                    f"finished={finished_by_env.get(env_name, 0)} | "
+                    f"inflight={inflight_by_env.get(('eval', env_name), 0)} "
                     f"batch={arrivals}/{expected}"
                 )
 

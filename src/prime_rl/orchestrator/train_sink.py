@@ -119,6 +119,16 @@ class TrainSink:
         assert self.token_batch_size is not None
         return sum(get_seq_len(r) for r in self.pending_batch), self.token_batch_size, "tokens"
 
+    def pending_batch_by_env(self) -> dict[str, int]:
+        """Per-env contribution to the current ``pending_batch`` (post-error-
+        filter survivors only). Per-env values sum to ``batch_progress()``'s
+        rollout count — used by the orchestrator's pipeline view so the
+        aggregate and per-env breakdown reconcile."""
+        counts: dict[str, int] = defaultdict(int)
+        for raw in self.pending_batch:
+            counts[raw["env_name"]] += 1
+        return dict(counts)
+
     # ── ingest ────────────────────────────────────────────────────────────
 
     async def add(self, rollout: Rollout) -> TrainBatch | None:
