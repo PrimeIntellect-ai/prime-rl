@@ -236,8 +236,10 @@ def interleave_rollout(
         return None
 
     has_error = output["error"] is not None
-    # this field should be guaranteed because we set temperature in get_sampling_args
-    temperature = output["sampling_args"]["temperature"]
+    sampling_args = output["sampling_args"]
+    temperature = sampling_args["temperature"]
+    top_p = sampling_args["top_p"]
+    top_k = sampling_args["extra_body"]["top_k"]
 
     def prepare_step_tokens(step: vf.TrajectoryStep, step_idx: int) -> dict[str, Any] | None:
         tokens = step["tokens"]
@@ -293,7 +295,9 @@ def interleave_rollout(
             completion_ids=completion_ids,
             completion_mask=completion_mask,
             completion_logprobs=list(tokens["completion_logprobs"]),
-            completion_temperatures=[temperature] * len(completion_ids),
+            temperature=float(temperature),
+            top_k=int(top_k),
+            top_p=float(top_p),
             teacher_logprobs=None,
             advantage=None,
             env_name=output["env_name"],
@@ -325,7 +329,6 @@ def interleave_rollout(
         sample.completion_ids.extend(new_prompt_ids)
         sample.completion_mask.extend([False] * len(new_prompt_ids))
         sample.completion_logprobs.extend([0.0] * len(new_prompt_ids))
-        sample.completion_temperatures.extend([temperature] * len(new_prompt_ids))
 
         # Extend with new completion tokens
         completion_ids = tokens["completion_ids"]
@@ -335,7 +338,6 @@ def interleave_rollout(
         else:
             sample.completion_mask.extend(tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
-        sample.completion_temperatures.extend([temperature] * len(completion_ids))
 
         step_routed = tokens.get("routed_experts")
         state = sample_routed_state.get(id(sample))

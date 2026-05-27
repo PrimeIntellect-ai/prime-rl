@@ -47,6 +47,52 @@ def selective_log_softmax(
     return torch.gather(logprobs, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
 
 
+def apply_top_k_top_p(
+    logits: Tensor,
+    top_k: int | None,
+    top_p: float | None,
+    labels: Tensor | None = None,
+) -> Tensor:
+    """Mirror vLLM's top-k / top-p truncation so the trainer logits sum over
+    the same support as the inference-time sample. Bit-exact match against
+    vLLM's ``apply_top_k_top_p_pytorch``. Scalar k / p; ``k <= 0`` and
+    ``p >= 1.0`` are no-ops.
+
+    ``labels`` is the safety guard: restore the label's original logit after
+    masking so FP-precision boundary cases (the sampled token falling just
+    outside the trainer's top-k) don't push its logprob to ``-inf``. Also
+    keeps prompt / padding positions finite when the scalar truncation is
+    applied uniformly.
+    """
+    vocab_size = logits.shape[-1]
+    do_top_k = top_k is not None and 0 < top_k < vocab_size
+    do_top_p = top_p is not None and top_p < 1.0
+    if not do_top_k and not do_top_p:
+        return logits
+
+    label_logits = logits.gather(-1, labels.unsqueeze(-1)) if labels is not None else None
+
+    if do_top_k:
+        top_values, _ = logits.topk(top_k, dim=-1)
+        threshold = top_values[..., -1:]
+        logits = logits.masked_fill(logits < threshold, float("-inf"))
+
+    if do_top_p:
+        # Sort ascending so the low-probability tail is at the front (mirrors vLLM).
+        sorted_logits, sorted_idx = logits.sort(dim=-1, descending=False)
+        sorted_probs = sorted_logits.softmax(dim=-1)
+        cumprobs = sorted_probs.cumsum(dim=-1)
+        top_p_mask = cumprobs <= (1.0 - top_p)
+        top_p_mask[..., -1] = False  # always keep the top token
+        sorted_logits = sorted_logits.masked_fill(top_p_mask, float("-inf"))
+        logits = torch.empty_like(logits).scatter_(-1, sorted_idx, sorted_logits)
+
+    if label_logits is not None:
+        logits = logits.scatter(-1, labels.unsqueeze(-1), label_logits)
+
+    return logits
+
+
 @jaxtyped(typechecker=typechecker)
 @torch.compile(dynamic=True)
 def compute_entropy(shifted_logits: Float[Tensor, "batch seq vocab"]) -> Float[Tensor, "batch seq"]:

@@ -24,7 +24,9 @@ class TensorMicroBatch(TypedDict):
     inference_logprobs: Float[Tensor, "batch seq"]
     teacher_logprobs: Float[Tensor, "batch seq"] | None
     loss_mask: Bool[Tensor, "batch seq"]
-    temperatures: Float[Tensor, "batch seq"]  # Per-token temperatures
+    temperature: float
+    top_k: int  # -1 disables truncation
+    top_p: float  # 1.0 disables truncation
     env_names: list[str]
 
     # Batch level
@@ -112,7 +114,9 @@ class FakeDataLoader:
             "rewards": None,
             "inference_logprobs": inference_logprobs.unsqueeze(0),
             "teacher_logprobs": None,
-            "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
+            "temperature": 1.0,
+            "top_k": -1,
+            "top_p": 1.0,
             "env_names": ["fake"] * input_ids.shape[0],
             "loss_mask": loss_mask.unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
@@ -140,7 +144,9 @@ class FakeDataLoader:
             "rewards": None,
             "inference_logprobs": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
             "teacher_logprobs": None,
-            "temperatures": torch.ones(self.seq_len).unsqueeze(0),
+            "temperature": 1.0,
+            "top_k": -1,
+            "top_p": 1.0,
             "env_names": ["fake"] * self.seq_len,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "lora_num_tokens": lora_num_tokens,
@@ -234,7 +240,9 @@ class DataLoader:
             if micro_batch.teacher_logprobs is not None
             else None,
             loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
-            temperatures=torch.tensor(micro_batch.temperatures, dtype=torch.float).unsqueeze(0),
+            temperature=micro_batch.temperature,
+            top_k=micro_batch.top_k,
+            top_p=micro_batch.top_p,
             env_names=micro_batch.env_names,
             lora_num_tokens=torch.tensor(micro_batch.lora_num_tokens, dtype=torch.int32),
             mm_kwargs=mm_kwargs,

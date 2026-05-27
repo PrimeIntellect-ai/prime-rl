@@ -49,7 +49,7 @@ def test_interleave_rollout_missing_tokens_returns_none():
                 extras={},
             )
         ],
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
 
@@ -89,7 +89,7 @@ def test_backfill_rollout_tokens_for_sft():
                 extras={},
             ),
         ],
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
 

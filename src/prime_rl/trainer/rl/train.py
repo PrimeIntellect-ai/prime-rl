@@ -27,6 +27,7 @@ from prime_rl.utils.cp import (
 )
 from prime_rl.utils.logger import setup_logger
 from prime_rl.trainer.rl.loss import (
+    apply_top_k_top_p,
     compute_entropy,
     compute_loss,
     compute_importance_ratio_and_mismatch_kl,
@@ -427,11 +428,12 @@ def train(config: TrainerConfig):
                     )
                 set_lora_num_tokens(lora_num_tokens)
 
-            temperatures = micro_batch["temperatures"].to("cuda")
-
-            # Shard temperatures for context parallelism if enabled
-            if cp_enabled:
-                temperatures = shard_for_cp(temperatures, cp_rank=cp_rank, cp_world_size=cp_size)
+            temperature = micro_batch["temperature"]
+            top_k = micro_batch["top_k"]
+            top_p = micro_batch["top_p"]
+            truncate_logits = (top_k > 0) or (top_p < 1.0)
+            # Fused LM head wants a per-token tensor; CP-sharded input_ids gives the right shape.
+            temperatures = torch.full(input_ids.shape, temperature, dtype=torch.float32, device="cuda")
 
             # Forward pass with per-token temperatures
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
@@ -452,9 +454,18 @@ def train(config: TrainerConfig):
                 logits = out["logits"]
                 # Per-token temperature scaling: temperatures is [batch, seq], logits is [batch, seq, vocab]
                 scaled_logits = logits / temperatures.unsqueeze(-1)
-                out["logprobs"] = selective_log_softmax(scaled_logits, labels)
+                # Entropy on the full distribution so it stays comparable across truncated / not.
                 out["entropy"] = compute_entropy(scaled_logits)
-            # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures
+                scaled_logits = apply_top_k_top_p(scaled_logits, top_k, top_p, labels=labels)
+                out["logprobs"] = selective_log_softmax(scaled_logits, labels)
+            else:
+                # FusedOutputLinear streams over vocab chunks and can't find a global top-k threshold.
+                if truncate_logits:
+                    raise ValueError(
+                        "top_k / top_p truncation requires the vanilla LM head - set "
+                        "model.fused_lm_head_token_chunk_size = 'disabled' or run with top_k=-1 "
+                        "and top_p=1.0."
+                    )
 
             if cp_enabled:
                 out["logprobs"] = gather_for_cp(out["logprobs"], cp_group)

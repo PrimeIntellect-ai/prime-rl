@@ -49,7 +49,7 @@ def test_compute_teacher_logprobs_uses_inference_generate(monkeypatch):
             completion_ids=[2, 3],
             completion_mask=[True, True],
             completion_logprobs=[-0.1, -0.2],
-            completion_temperatures=[1.0, 1.0],
+            temperature=1.0,
             env_name="test-env",
         )
 

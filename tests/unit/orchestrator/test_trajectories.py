@@ -98,7 +98,7 @@ def single_step_trajectory_output():
                 extras={},
             )
         ],
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
     return output
@@ -152,7 +152,7 @@ def multi_step_trajectory_output():
                 extras={},
             ),
         ],
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
     return output
@@ -210,7 +210,7 @@ def multi_step_trajectory_with_tool_calls_output():
         advantage=None,
         stop_condition=None,
         metrics={"has_error": 0.0, "tool_calls": 1.0},
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
     return output
@@ -269,7 +269,7 @@ def multi_step_trajectory_extension_never_holds():
                 extras={},
             ),
         ],
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
     return output
@@ -328,7 +328,7 @@ def multi_step_trajectory_with_tool_calls_extension_never_holds():
         reward=1.0,
         advantage=None,
         stop_condition=None,
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         metrics={"has_error": 0.0, "tool_calls": 1.0},
         error=None,
     )
@@ -348,7 +348,7 @@ def test_branching_equivalent_multi_step_trajectory(multi_step_trajectory_extens
     assert rollout.completion_ids == [3, 4]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2]
-    assert rollout.completion_temperatures == [1.0, 1.0]
+    assert rollout.temperature == 1.0
 
     # second step
     rollout = rollouts[1]
@@ -357,7 +357,7 @@ def test_branching_equivalent_multi_step_trajectory(multi_step_trajectory_extens
     assert rollout.completion_ids == [7, 8]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.3, -0.4]
-    assert rollout.completion_temperatures == [1.0, 1.0]
+    assert rollout.temperature == 1.0
 
 
 def test_branching_equivalent_multi_step_trajectory_with_tool_calls(
@@ -375,7 +375,7 @@ def test_branching_equivalent_multi_step_trajectory_with_tool_calls(
     assert rollout.completion_ids == [3, 4]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2]
-    assert rollout.completion_temperatures == [1.0, 1.0]
+    assert rollout.temperature == 1.0
 
     # second step
     rollout = rollouts[1]
@@ -384,7 +384,7 @@ def test_branching_equivalent_multi_step_trajectory_with_tool_calls(
     assert rollout.completion_ids == [7, 8]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.3, -0.4]
-    assert rollout.completion_temperatures == [1.0, 1.0]
+    assert rollout.temperature == 1.0
 
 
 def test_interleave_rollout_single_step_trajectory(single_step_trajectory_output):
@@ -399,7 +399,7 @@ def test_interleave_rollout_single_step_trajectory(single_step_trajectory_output
     assert rollout.completion_ids == [3, 4]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2]
-    assert rollout.completion_temperatures == [1.0, 1.0]
+    assert rollout.temperature == 1.0
     assert rollout.env_name == "test-env"
 
 
@@ -415,7 +415,7 @@ def test_interleave_rollout_multi_step_trajectory(multi_step_trajectory_output):
     assert rollout.completion_mask == [True, True, False, False, True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2, 0, 0, -0.3, -0.4]
     # Temperatures: 2 completion tokens at temp 1.0, then 2 prompt tokens at temp 1.0, then 2 completion tokens at temp 1.0
-    assert rollout.completion_temperatures == [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    assert rollout.temperature == 1.0
 
 
 def test_interleave_rollout_multi_step_trajectory_with_tool_calls(multi_step_trajectory_with_tool_calls_output):
@@ -430,7 +430,7 @@ def test_interleave_rollout_multi_step_trajectory_with_tool_calls(multi_step_tra
     assert rollout.completion_mask == [True, True, False, False, True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2, 0, 0, -0.3, -0.4]
     # Temperatures: 2 completion tokens at temp 1.0, then 2 prompt tokens at temp 1.0, then 2 completion tokens at temp 1.0
-    assert rollout.completion_temperatures == [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    assert rollout.temperature == 1.0
 
 
 @pytest.fixture
@@ -576,7 +576,7 @@ def five_step_trajectory_with_extension_break():
                 trajectory_id="1",
             ),
         ],
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
     return output
@@ -713,7 +713,7 @@ def interleaved_agents_trajectory():
                 extras={},
             ),
         ],
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
     return output
@@ -806,7 +806,7 @@ def test_interleave_rollout_error_masks_all_false():
             ),
         ],
         error="timeout: environment exceeded time limit",
-        sampling_args={"temperature": 0.8},
+        sampling_args={"temperature": 0.8, "top_p": 1.0, "extra_body": {"top_k": -1}},
     )
 
     rollouts = interleave_rollout(output)
@@ -819,7 +819,7 @@ def test_interleave_rollout_error_masks_all_false():
     assert rollout.completion_mask == [False, False, False, False, False, False]
     # Logprobs and temperatures still present
     assert rollout.completion_logprobs == [-0.1, -0.2, 0.0, 0.0, -0.3, -0.4]
-    assert rollout.completion_temperatures == [0.8] * 6
+    assert rollout.temperature == 0.8
 
 
 def test_align_routed_experts_none():
@@ -888,7 +888,7 @@ def test_interleave_rollout_single_step_with_routed_experts():
                 extras={},
             )
         ],
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
 
@@ -961,7 +961,7 @@ def test_interleave_rollout_multi_step_with_routed_experts():
                 extras={},
             ),
         ],
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
 
@@ -1002,7 +1002,7 @@ def test_interleave_rollout_none_routed_experts_stays_none():
                 extras={},
             )
         ],
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
 
@@ -1095,7 +1095,7 @@ def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
                 extras={},
             ),
         ],
-        sampling_args={"temperature": 1.0},
+        sampling_args={"temperature": 1.0, "top_p": 1.0, "extra_body": {"top_k": -1}},
         error=None,
     )
 
