@@ -422,12 +422,33 @@ def interleave_rollout(
         tokens = prepared_steps[step_idx]
         step_prompt_ids = tokens["prompt_ids"]
 
-        # Check if this step extends ANY active prefix
+        # Pick the *longest* matching active prefix. With compaction/rollback,
+        # one active sample's prefix can be a strict prefix of another (e.g. a
+        # later sample re-generated tokens that overlap an earlier sample's
+        # prefix). Both would satisfy the slice check; the shorter would
+        # silently absorb the longer sample's generated tokens as user input.
         matched_idx = None
+        matched_len = -1
+        matching_prefix_lens: list[int] = []
         for idx, (prefix_tokens, _, _) in enumerate(active_samples):
-            if step_prompt_ids[: len(prefix_tokens)] == prefix_tokens:
-                matched_idx = idx
-                break
+            pl = len(prefix_tokens)
+            if step_prompt_ids[:pl] == prefix_tokens:
+                matching_prefix_lens.append(pl)
+                if pl > matched_len:
+                    matched_idx = idx
+                    matched_len = pl
+
+        if len(matching_prefix_lens) > 1:
+            # Ambiguous extension: rare, but reachable via compaction/rollback
+            # where a new sample's prefix happens to start with an older
+            # sample's prefix. Longest-match is the correct choice; surface
+            # the ambiguity so we can audit if it shows up in real rollouts.
+            logger.warning(
+                f"Ambiguous prefix match at step {step_idx} for example {output['example_id']}: "
+                f"{len(matching_prefix_lens)} of {len(active_samples)} active prefixes match "
+                f"(lens={sorted(matching_prefix_lens)}, step_prompt_len={len(step_prompt_ids)}). "
+                f"Extending the longest (len={matched_len})."
+            )
 
         if matched_idx is not None:
             # Extension holds - merge into matched sample
