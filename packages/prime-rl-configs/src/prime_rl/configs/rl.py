@@ -74,15 +74,36 @@ class SharedWandbConfig(BaseConfig):
     """W&B tags attached to the run."""
 
     offline: bool | None = False
-    """Run W&B in offline mode."""
+    """Run W&B in offline mode. Incompatible with shared mode, which is always on for the ``rl`` entrypoint."""
 
-    shared: bool = True
-    """Log trainer and orchestrator metrics to a single shared W&B run. Requires wandb SDK ≥ 0.19.9. Incompatible with offline mode."""
+    @model_validator(mode="before")
+    @classmethod
+    def deprecate_shared_field(cls, data: Any) -> Any:
+        """``wandb.shared`` is deprecated. The ``rl`` entrypoint now always uses
+        shared W&B mode (single run for trainer + orchestrator); the legacy split
+        with ``-trainer`` / ``-orchestrator`` suffixes is gone. Drop the field
+        from input dicts with a warning so older configs keep loading.
+        """
+        if isinstance(data, dict) and "shared" in data:
+            warnings.warn(
+                "wandb.shared is deprecated and will be removed in a future release. "
+                "The rl entrypoint always uses shared W&B mode now; remove this field "
+                "from your config.",
+                FutureWarning,
+                stacklevel=2,
+            )
+            data.pop("shared", None)
+        return data
 
     @model_validator(mode="after")
-    def validate_shared_not_offline(self):
-        if self.shared and self.offline:
-            raise ValueError("W&B shared mode requires server connectivity and is incompatible with offline mode")
+    def validate_not_offline(self):
+        if self.offline:
+            raise ValueError(
+                "W&B shared mode is always on for the rl entrypoint and requires server "
+                "connectivity; wandb.offline = true is not supported. Use offline mode "
+                "via the sub-config wandb blocks (trainer.wandb.offline, "
+                "orchestrator.wandb.offline) if you really need it per-process."
+            )
         return self
 
 

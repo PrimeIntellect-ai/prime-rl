@@ -96,30 +96,15 @@ def propagate_shared_fields(data: Any) -> Any:
     propagate("ckpt.keep_interval", "trainer.ckpt.keep_interval", "orchestrator.ckpt.keep_interval")
 
     # [wandb] leaves. (Bare empty ``[wandb]`` block enablement is at the end.)
+    # ``wandb.name`` flows verbatim to both sub-configs — shared W&B mode is
+    # always on for the rl entrypoint, so the legacy ``-trainer`` /
+    # ``-orchestrator`` suffix split is gone.
     propagate("wandb.project", "trainer.wandb.project", "orchestrator.wandb.project")
     propagate("wandb.entity", "trainer.wandb.entity", "orchestrator.wandb.entity")
+    propagate("wandb.name", "trainer.wandb.name", "orchestrator.wandb.name")
     propagate("wandb.group", "trainer.wandb.group", "orchestrator.wandb.group")
     propagate("wandb.tags", "trainer.wandb.tags", "orchestrator.wandb.tags")
     propagate("wandb.offline", "trainer.wandb.offline", "orchestrator.wandb.offline")
-
-    # wandb.name: in non-shared mode the two sub-configs get distinct
-    # ``-trainer`` / ``-orchestrator`` suffixes so the W&B runs are
-    # distinguishable. ``OrchestratorConfig.auto_setup_prime_monitor_run_name``
-    # then defaults prime_monitor.run_name to the (unsuffixed) value.
-    # Conflicts are reported against the *transformed* sub-config value, not
-    # the raw shared name, so the materialized config round-trips cleanly.
-    wandb_name = get("wandb.name")
-    if wandb_name is not None:
-        non_shared = get("wandb.shared") is False
-        expected = {
-            "trainer.wandb.name": f"{wandb_name}-trainer" if non_shared else wandb_name,
-            "orchestrator.wandb.name": f"{wandb_name}-orchestrator" if non_shared else wandb_name,
-        }
-        for sub, expected_value in expected.items():
-            sub_value = get(sub)
-            if sub_value is not None and sub_value != expected_value:
-                conflicts.append(("wandb.name", sub))
-            fill(sub, expected_value)
 
     # [tokenizer]. ``chat_template`` also flows to ``inference.model`` (vLLM's
     # ``--chat-template``); ``name`` and ``trust_remote_code`` can legitimately
