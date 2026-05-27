@@ -91,11 +91,23 @@ class EvalSink:
 
     def epoch_progress(self) -> list[tuple[str, int, int, int]]:
         """``(env_name, eval_step, arrivals_so_far, expected)`` for every
-        epoch currently accumulating in ``pending_batches`` — fuel for the
-        orchestrator's pipeline log. Empty list when no eval is in flight."""
+        epoch currently accumulating — fuel for the orchestrator's
+        pipeline log. ``arrivals_so_far`` counts both ``pending_batches``
+        (groups already finalized this epoch) and ``pending_groups``
+        rollouts not yet at the ``group_size`` threshold (in-progress
+        partial groups), so the user sees real per-tick progress instead
+        of waiting for whole groups to land at once.
+        Empty list when no eval is in flight."""
+        counts: dict[tuple[str, int], int] = {bkey: len(bucket) for bkey, bucket in self.pending_batches.items()}
+        for rollouts in self.pending_groups.values():
+            if not rollouts:
+                continue
+            raw = rollouts[0].raw
+            bkey = (raw["env_name"], raw["_eval_step"])
+            counts[bkey] = counts.get(bkey, 0) + len(rollouts)
         return [
-            (env_name, eval_step, len(bucket), self.batch_size_for(env_name))
-            for (env_name, eval_step), bucket in self.pending_batches.items()
+            (env_name, eval_step, count, self.batch_size_for(env_name))
+            for (env_name, eval_step), count in counts.items()
         ]
 
     # ── level 1: per-rollout (no-op for eval) ─────────────────────────────

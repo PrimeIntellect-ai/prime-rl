@@ -341,30 +341,23 @@ class RolloutDispatcher:
                 # PREFER_EVAL is only entered when the orchestrator triggers
                 # eval, which requires ``eval_source`` to be configured.
                 assert self.eval_source is not None
-                if not self.eval_source and self.inflight_eval_count == 0:
-                    # All eval examples dispatched and finished — switch back
-                    # to train. Sanity check: every triggered eval group must
-                    # have fully dispatched all its rollouts before we leave
-                    # PREFER_EVAL, otherwise the sink's per-epoch bucket
-                    # silently undercounts and ``process_batch`` never fires.
-                    orphans = [
-                        (g.env_name, g.eval_step, g.rollouts_to_schedule)
-                        for g in self.groups.values()
-                        if g.kind == "eval" and g.rollouts_to_schedule > 0
-                    ]
-                    if orphans:
-                        get_logger().error(
-                            f"Bug: leaving PREFER_EVAL with {len(orphans)} eval group(s) "
-                            f"holding undispatched rollouts (will silently drop): {orphans}"
-                        )
+                eval_has_work = bool(self.eval_source) or any(
+                    g.kind == "eval" and g.rollouts_to_schedule > 0 for g in self.groups.values()
+                )
+                if not eval_has_work:
+                    # Eval source + all eval groups fully dispatched. Flip
+                    # to PREFER_TRAIN so any remaining permits go to train
+                    # while the in-flight eval tail completes naturally.
+                    # This is the second half of the drain-switch overlap:
+                    # eval triggers → in-flight train drains while eval
+                    # queues up → eval source exhausts → in-flight eval
+                    # drains while train resumes scheduling.
                     self.switch_mode(DispatcherMode.PREFER_TRAIN, reason="the eval queue drained")
                     continue
-                # Note: when ``eval_source`` is empty but eval is still in flight,
-                # ``try_schedule("eval")`` falls through step 1 (continue existing
-                # group) — that branch is the only way non-group-scoring eval
-                # groups dispatch their tail one rollout at a time. Step 2 (open
-                # fresh) returns ``None`` when the source is empty, so an early
-                # return here would orphan the last group's remaining rollouts.
+                # Eval source non-empty OR existing eval groups still have
+                # undispatched rollouts (non-group-scoring tail). Step 1 of
+                # ``try_schedule`` covers the continuation case; step 2 hits
+                # the source for new groups.
                 scheduled = await self.try_schedule("eval")
                 if not scheduled:
                     return
