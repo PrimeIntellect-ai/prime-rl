@@ -109,24 +109,46 @@ class TrainSink:
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
 
+    def in_progress_groups(self) -> list[list[Rollout]]:
+        """Per-rollout groups currently accumulating in ``pending_groups`` —
+        i.e. groups that haven't hit ``group_size`` yet, so the pipeline log
+        can reflect partial-group progress. Skips group-scoring envs (whose
+        rollouts only make sense as a unit — the user expects per-group
+        fill, not per-rollout, for those)."""
+        out: list[list[Rollout]] = []
+        for rollouts in self.pending_groups.values():
+            if not rollouts:
+                continue
+            env_name = rollouts[0].raw["env_name"]
+            if self.train_envs.get(env_name).requires_group_scoring:
+                continue
+            out.append(rollouts)
+        return out
+
     def batch_progress(self) -> tuple[int, int, str]:
         """``(current, target, unit)`` for the in-progress train batch — fuel
-        for the orchestrator's pipeline log. Returns rollout count vs
-        ``batch_size`` when rollout-batching, or token count vs
-        ``token_batch_size`` when token-batching."""
+        for the orchestrator's pipeline log. Counts ``pending_batch``
+        (post-group-finalize survivors) plus per-rollout partial groups
+        from non-group-scoring envs, so the counter ticks per-rollout as
+        the user expects (group-scoring envs jump in ``group_size``
+        increments since their rollouts only commit as a unit)."""
+        in_progress_rollouts = [r for group in self.in_progress_groups() for r in group]
         if self.batch_size is not None:
-            return len(self.pending_batch), self.batch_size, "rollouts"
+            return len(self.pending_batch) + len(in_progress_rollouts), self.batch_size, "rollouts"
         assert self.token_batch_size is not None
-        return sum(get_seq_len(r) for r in self.pending_batch), self.token_batch_size, "tokens"
+        in_progress_tokens = sum(get_seq_len(r.raw) for r in in_progress_rollouts)
+        return sum(get_seq_len(r) for r in self.pending_batch) + in_progress_tokens, self.token_batch_size, "tokens"
 
     def pending_batch_by_env(self) -> dict[str, int]:
-        """Per-env contribution to the current ``pending_batch`` (post-error-
-        filter survivors only). Per-env values sum to ``batch_progress()``'s
-        rollout count — used by the orchestrator's pipeline view so the
-        aggregate and per-env breakdown reconcile."""
+        """Per-env contribution to ``batch_progress()``. Mirrors that method's
+        counting policy (pending_batch survivors + non-group-scoring partial
+        groups) so per-env values sum to the aggregate."""
         counts: dict[str, int] = defaultdict(int)
         for raw in self.pending_batch:
             counts[raw["env_name"]] += 1
+        for group in self.in_progress_groups():
+            for r in group:
+                counts[r.raw["env_name"]] += 1
         return dict(counts)
 
     # ── ingest ────────────────────────────────────────────────────────────

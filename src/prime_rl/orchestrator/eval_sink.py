@@ -92,18 +92,22 @@ class EvalSink:
     def epoch_progress(self) -> list[tuple[str, int, int, int]]:
         """``(env_name, eval_step, arrivals_so_far, expected)`` for every
         epoch currently accumulating — fuel for the orchestrator's
-        pipeline log. ``arrivals_so_far`` counts both ``pending_batches``
-        (groups already finalized this epoch) and ``pending_groups``
-        rollouts not yet at the ``group_size`` threshold (in-progress
-        partial groups), so the user sees real per-tick progress instead
-        of waiting for whole groups to land at once.
-        Empty list when no eval is in flight."""
+        pipeline log. ``arrivals_so_far`` counts ``pending_batches``
+        (groups already finalized this epoch) plus per-rollout partial
+        groups from non-group-scoring envs (so the counter ticks
+        per-rollout). Group-scoring envs only contribute via
+        ``pending_batches`` — their rollouts commit as a unit, so the
+        counter should jump in ``group_size`` increments. Empty list
+        when no eval is in flight."""
         counts: dict[tuple[str, int], int] = {bkey: len(bucket) for bkey, bucket in self.pending_batches.items()}
         for rollouts in self.pending_groups.values():
             if not rollouts:
                 continue
             raw = rollouts[0].raw
-            bkey = (raw["env_name"], raw["_eval_step"])
+            env_name = raw["env_name"]
+            if self.eval_envs.get(env_name).requires_group_scoring:
+                continue
+            bkey = (env_name, raw["_eval_step"])
             counts[bkey] = counts.get(bkey, 0) + len(rollouts)
         return [
             (env_name, eval_step, count, self.batch_size_for(env_name))
