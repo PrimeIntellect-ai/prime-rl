@@ -246,7 +246,10 @@ class Orchestrator:
             self.logger.success("Teacher inference pool ready")
 
         if config.wandb is not None and config.collect_inference_metrics:
-            self.inference_metrics = InferenceMetricsCollector(self.student_inference.admin_clients)
+            self.inference_metrics = InferenceMetricsCollector(
+                self.student_inference.admin_clients,
+                roles=config.inference_metrics_roles,
+            )
             await self.inference_metrics.start()
 
         self.logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
@@ -703,34 +706,25 @@ async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer)
     """Build the student inference pool + matching renderer (if configured).
 
     Returns ``(renderer | None, inference_pool)``. The renderer is None when
-    ``config.use_renderer`` is False (default MITO / TITO path).
+    ``config.renderer is None`` (MITO path); otherwise the typed
+    ``config.renderer`` discriminated union resolves to a hand-coded /
+    default renderer that owns client-side tokenization.
     """
     from renderers.base import create_renderer
 
     client_config = config.student.client
     model_name = config.student.model.name
 
-    if config.use_renderer:
-        renderer = create_renderer(
-            tokenizer,
-            renderer=config.renderer.name,
-            tool_parser=config.renderer.tool_parser,
-            reasoning_parser=config.renderer.reasoning_parser,
-            preserve_all_thinking=config.renderer.preserve_all_thinking,
-            preserve_thinking_between_tool_calls=config.renderer.preserve_thinking_between_tool_calls,
-        )
+    if config.renderer is not None:
+        renderer = create_renderer(tokenizer, config.renderer)
         get_logger().info(f"Initialized {type(renderer).__name__} for {model_name}")
         inference_pool = await setup_inference_pool(
             client_config,
             model_name=model_name,
             train_client_type="renderer",
             eval_client_type="openai_chat_completions",
-            renderer_name=config.renderer.name,
-            tool_parser=config.renderer.tool_parser,
-            reasoning_parser=config.renderer.reasoning_parser,
-            renderer_pool_size=config.renderer.pool_size,
-            preserve_all_thinking=config.renderer.preserve_all_thinking,
-            preserve_thinking_between_tool_calls=config.renderer.preserve_thinking_between_tool_calls,
+            renderer_config=config.renderer,
+            pool_size=config.pool_size,
         )
         get_logger().info("Using direct renderer rollout client")
         return renderer, inference_pool

@@ -77,6 +77,11 @@ overrides = [
     { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
 ]
 
+[[manifest.dependency-metadata]]
+name = "modelexpress"
+version = "0.3.0"
+requires-dist = ["grpcio>=1.66.2", "huggingface-hub>=0.20.0", "nixl[cu12]", "numpy>=1.24.0", "protobuf>=5.27.0,<7.0.0", "pydantic>=2.0.0", "torch>=2.6.0"]
+
 [[package]]
 name = "absl-py"
 version = "2.4.0"
@@ -2833,6 +2838,23 @@ wheels = [
 ]
 
 [[package]]
+name = "modelexpress"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "grpcio", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "huggingface-hub", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "nixl", extra = ["cu12"], marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "numpy", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "protobuf", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "pydantic", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "torch", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7c/b5/12f940a41940fd83b9e50ce46124695b68a80feab02612779f8fb584db09/modelexpress-0.3.0-py3-none-any.whl", hash = "sha256:6f93d8de74903f6c11ebf9b4621fa02e3c493a5e05207c38fb2c98395a774618", size = 44333, upload-time = "2026-04-17T20:17:29.478Z" },
+]
+
+[[package]]
 name = "more-itertools"
 version = "11.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2952,6 +2974,12 @@ dependencies = [
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/bb/a4/10e80e623790d3fb070e966b36bced009419d483c92ae0df6645230f606f/nixl-0.10.1-py3-none-any.whl", hash = "sha256:616465673dae5180d296525a03237af4cd5f2c00c3228d185bc06dbe621509b7", size = 6680, upload-time = "2026-03-03T19:55:44.848Z" },
+]
+
+[package.optional-dependencies]
+cu12 = [
+    { name = "nixl-cu12", version = "0.10.1", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine != 'aarch64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "nixl-cu12", version = "0.10.1", source = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }, marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
 ]
 
 [[package]]
@@ -4019,6 +4047,9 @@ flash-attn-cute = [
 gpt-oss = [
     { name = "kernels", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
 ]
+modelexpress = [
+    { name = "modelexpress", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+]
 quack = [
     { name = "quack-kernels", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
 ]
@@ -4070,6 +4101,7 @@ requires-dist = [
     { name = "mini-swe-agent-plus", marker = "extra == 'envs'", editable = "deps/research-environments/environments/mini_swe_agent_plus" },
     { name = "mini-swe-agent-plus-rlm", marker = "extra == 'envs'", editable = "deps/research-environments/environments/mini_swe_agent_plus_rlm" },
     { name = "mmlu-pro", marker = "extra == 'envs'", editable = "deps/research-environments/environments/mmlu_pro" },
+    { name = "modelexpress", marker = "extra == 'modelexpress'", specifier = "==0.3.0" },
     { name = "nixl", marker = "extra == 'disagg'" },
     { name = "nixl-cu12", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" },
     { name = "numpy", specifier = ">=2.2.6" },
@@ -4116,7 +4148,7 @@ requires-dist = [
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wiki-search", marker = "extra == 'envs'", editable = "deps/verifiers/environments/wiki_search" },
 ]
-provides-extras = ["flash-attn", "flash-attn-3", "flash-attn-cute", "envs", "disagg", "gpt-oss", "quack", "all"]
+provides-extras = ["flash-attn", "flash-attn-3", "flash-attn-cute", "envs", "disagg", "gpt-oss", "modelexpress", "quack", "all"]
 
 [package.metadata.requires-dev]
 dev = [

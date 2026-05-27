@@ -160,22 +160,15 @@ def train(config: SFTConfig):
     tokenizer = setup_tokenizer(config.tokenizer)
 
     renderer = None
-    if config.use_renderer:
-        renderer = create_renderer(
-            tokenizer,
-            renderer=config.renderer.name,
-            tool_parser=config.renderer.tool_parser,
-            reasoning_parser=config.renderer.reasoning_parser,
-            preserve_all_thinking=config.renderer.preserve_all_thinking,
-            preserve_thinking_between_tool_calls=config.renderer.preserve_thinking_between_tool_calls,
-        )
+    if config.renderer is not None:
+        renderer = create_renderer(tokenizer, config.renderer)
         if isinstance(renderer, DefaultRenderer):
             raise ValueError(
-                f"use_renderer=True for {config.tokenizer.name!r} resolved to DefaultRenderer. "
+                f"renderer set for {config.tokenizer.name!r} resolved to DefaultRenderer. "
                 "DefaultRenderer falls back to incremental apply_chat_template and does NOT "
-                "fix position-dependent chat templates — the bug use_renderer is meant to solve. "
+                "fix position-dependent chat templates — the bug the renderer client is meant to solve. "
                 "Either use a model with a hand-coded renderer (see renderers.base.MODEL_RENDERER_MAP), "
-                "set [renderer] name=<hand-coded renderer> explicitly, or set use_renderer=false."
+                "set [renderer] name=<hand-coded renderer> explicitly, or remove the [renderer] block."
             )
         logger.info(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
 
@@ -287,8 +280,19 @@ def train(config: SFTConfig):
         total_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
         nan_count = torch.tensor(0, device="cuda")
 
+        # Variable-length packing yields different per-rank batch counts. Under FSDP
+        # every forward is a collective, so all ranks must agree on when to stop —
+        # otherwise the first rank to exit deadlocks the rest in the next all-gather.
+        # Sync per batch and exit together as soon as any rank exhausts its iterator.
+        data_iter = iter(data_iter)
+
         with torch.no_grad():
-            for micro_batch in data_iter:
+            while True:
+                micro_batch = next(data_iter, None)
+                has_data = torch.tensor(micro_batch is not None, dtype=torch.int32, device="cuda")
+                dist.all_reduce(has_data, op=dist.ReduceOp.MIN)
+                if has_data.item() == 0:
+                    break
                 loss_sum, token_count = compute_loss(micro_batch)
                 if not torch.isnan(loss_sum.detach()):
                     total_loss_sum += loss_sum.detach()

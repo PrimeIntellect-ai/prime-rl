@@ -99,6 +99,9 @@ disagg = [
 gpt-oss = [
     "kernels",
 ]
+modelexpress = [
+    "modelexpress==0.3.0",
+]
 quack = [
     "quack-kernels>=0.4.1",
 ]
@@ -176,6 +179,22 @@ override-dependencies = [
     "transformers>=5.1.0.dev0",
     "torch>=2.9.0",
     "openenv-core",
+]
+
+# ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
+# compatible with protobuf 6. prime-sandboxes requires protobuf>=6.31.1; keep
+# this capped to the validated protobuf major.
+[[tool.uv.dependency-metadata]]
+name = "modelexpress"
+version = "0.3.0"
+requires-dist = [
+    "grpcio>=1.66.2",
+    "huggingface_hub>=0.20.0",
+    "nixl[cu12]",
+    "numpy>=1.24.0",
+    "protobuf>=5.27.0,<7.0.0",
+    "pydantic>=2.0.0",
+    "torch>=2.6.0",
 ]
 
 [tool.uv.exclude-newer-package]
