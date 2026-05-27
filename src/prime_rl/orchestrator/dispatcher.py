@@ -26,15 +26,15 @@ Owns:
 from __future__ import annotations
 
 import asyncio
-import random
 import uuid
-from collections import Counter, defaultdict, deque
+from collections import Counter, defaultdict
 
 import verifiers as vf
 from aiolimiter import AsyncLimiter
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
+from prime_rl.orchestrator.sources import EvalSource, TrainSource
 from prime_rl.orchestrator.types import (
     GroupState,
     Policy,
@@ -45,56 +45,6 @@ from prime_rl.orchestrator.types import (
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.client import InferencePool, client_identity
 from prime_rl.utils.logger import get_logger
-
-
-class TrainEnvCycle:
-    """Round-robin / weighted iterator over training datasets.
-
-    Round-robin or weighted sampling across training environments.
-    """
-
-    def __init__(self, train_envs: TrainEnvs, seed: int | None) -> None:
-        self.rng = random.Random(seed)
-        self.envs = list(train_envs)
-        if not self.envs:
-            raise ValueError("RolloutDispatcher needs at least one train env")
-
-        self.examples: dict[str, list[dict]] = {}
-        self.cursors: dict[str, int] = {}
-        for env in self.envs:
-            dataset = env.get_dataset(seed=seed)
-            column_names = getattr(dataset, "column_names", None)
-            has_example_id = column_names is not None and "example_id" in column_names
-            rows: list[dict] = []
-            for i, row in enumerate(dataset):
-                ex = dict(row)
-                ex["env_name"] = env.name
-                if not has_example_id and "example_id" not in ex:
-                    ex["example_id"] = i
-                rows.append(ex)
-            self.rng.shuffle(rows)
-            self.examples[env.name] = rows
-            self.cursors[env.name] = 0
-
-        self.env_names = [e.name for e in self.envs]
-        configured_ratios = [e.config.ratio for e in self.envs]
-        if all(r is not None for r in configured_ratios):
-            self.weights: list[float] = [float(r) for r in configured_ratios]  # type: ignore[arg-type]
-        else:
-            # Natural distribution by dataset size —
-            # "ratio unset → weight by num_normal" fallback.
-            self.weights = [float(len(self.examples[name])) for name in self.env_names]
-
-    def next_example(self) -> dict:
-        env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
-        rows = self.examples[env_name]
-        cursor = self.cursors[env_name]
-        if cursor >= len(rows):
-            self.rng.shuffle(rows)
-            cursor = 0
-        example = rows[cursor]
-        self.cursors[env_name] = cursor + 1
-        return example
 
 
 class RolloutDispatcher:
@@ -134,8 +84,9 @@ class RolloutDispatcher:
             AsyncLimiter(config.tasks_per_minute, time_period=60) if config.tasks_per_minute else None
         )
 
-        # Dataset cycle (train) + eval queue.
-        self.train_cycle = TrainEnvCycle(train_envs, seed=config.seed)
+        # Train + eval example sources.
+        self.train_source = TrainSource(train_envs, seed=config.seed)
+        self.eval_source = EvalSource(eval_envs, config.eval, resume_step=resume_step)
         self.group_size = config.group_size
 
         # In-flight tracking. Group IDs are UUIDs so dispatcher restarts /
@@ -143,41 +94,11 @@ class RolloutDispatcher:
         self.inflight: dict[asyncio.Task, RolloutMeta] = {}
         self.groups: dict[uuid.UUID, GroupState] = {}
 
-        # Output queue. Bounded so the dispatcher backpressures on a slow batcher.
-        self.out_q: asyncio.Queue[Trajectory] = asyncio.Queue(maxsize=max(8, self.max_inflight))
+        # Output queue. Bounded so the dispatcher backpressures on a slow sink.
+        self.out_q: asyncio.Queue[Rollout] = asyncio.Queue(maxsize=max(8, self.max_inflight))
 
         # Scheduling priority.
         self.sched_mode: SchedMode = SchedMode.PREFER_TRAIN
-
-        # Eval state.
-        self.eval_queue: deque[tuple[str, dict, int]] = deque()  # (env_name, example, eval_step)
-        self.eval_examples: dict[str, list[dict]] = {}
-        self.eval_intervals: dict[str, int] = {}
-        if eval_envs is not None and config.eval is not None:
-            for env in eval_envs:
-                rows: list[dict] = []
-                for i, ex in enumerate(env.examples):
-                    row = dict(ex)
-                    row["env_name"] = env.name
-                    if "example_id" not in row:
-                        row["example_id"] = i
-                    rows.append(row)
-                self.eval_examples[env.name] = rows
-                self.eval_intervals[env.name] = env.config.interval
-
-        self.eval_step_envs: dict[int, set[str]] = {}  # eval_step -> set of envs that fired
-
-        # First-step eval handling — ``eval_base_model`` / ``skip_eval_on_resume``.
-        eval_at_zero = False
-        if config.eval is not None and config.eval.eval_base_model and resume_step is None:
-            eval_at_zero = True
-        self.eval_at_zero_pending = eval_at_zero
-        self.resume_step = resume_step
-        # ``last_eval_step`` per env: prevents re-triggering at the resumed step.
-        self.last_eval_step_per_env: dict[str, int] = {name: 0 for name in self.eval_examples}
-        if resume_step is not None:
-            for name in self.last_eval_step_per_env:
-                self.last_eval_step_per_env[name] = resume_step
 
         # Metrics counters (reset every poll by IntervalLogger).
         self.cancelled_rollouts_count = 0
@@ -219,7 +140,7 @@ class RolloutDispatcher:
 
     @property
     def queued_eval_examples(self) -> int:
-        return len(self.eval_queue)
+        return len(self.eval_source)
 
     @property
     def max_off_policy_level(self) -> int:
@@ -236,17 +157,19 @@ class RolloutDispatcher:
     async def start(self) -> None:
         """Single dispatch loop: schedule, wait, collect, repeat. Runs until ``stop()``."""
         self.task = asyncio.current_task()
-        if self.eval_at_zero_pending and self.eval_envs is not None:
-            self.fire_eval_epoch(0, log_reason="eval_base_model=true at step 0")
-            self.eval_at_zero_pending = False
+        fired = self.eval_source.trigger_at_start()
+        if fired:
+            self.switch_mode(SchedMode.PREFER_EVAL, reason="eval_base_model=true at step 0")
+            self.eval_epochs_started += 1
+            self.logger.info(f"Eval @ step=0 (eval_base_model) — queued envs={','.join(fired)}")
 
         try:
             while not self.stopped.is_set():
                 await self.fill_inflight()
                 if not self.inflight:
                     # No work — sleep briefly and retry. Eval triggers from the
-                    # watcher (sync ``fire_eval_epoch`` mutation) will wake the
-                    # next iteration.
+                    # watcher (sync ``eval_source.trigger`` mutation) will wake
+                    # the next iteration.
                     try:
                         await asyncio.wait_for(self.stopped.wait(), timeout=0.1)
                     except asyncio.TimeoutError:
@@ -295,53 +218,14 @@ class RolloutDispatcher:
                     "Consider increasing it to avoid this."
                 )
 
-        # 3) Per-env eval trigger checks.
-        if self.eval_envs is None or self.config.eval is None:
-            return
-        if step == 0:
-            return  # the step-0 eval is handled by ``eval_at_zero_pending`` at startup
-        if step == self.resume_step and self.config.eval.skip_eval_on_resume:
-            return  # explicit resume opt-out
-        fired_envs: list[str] = []
-        for env_name, interval in self.eval_intervals.items():
-            if step % interval != 0:
-                continue
-            if step <= self.last_eval_step_per_env.get(env_name, 0):
-                continue
-            self.enqueue_eval_env(env_name, step)
-            fired_envs.append(env_name)
-        if fired_envs:
-            self.switch_mode(SchedMode.PREFER_EVAL, reason=f"eval triggered for {','.join(fired_envs)} @ step={step}")
+        # 3) Per-env eval trigger checks (delegated to EvalSource).
+        fired = self.eval_source.trigger(step)
+        if fired:
+            self.switch_mode(SchedMode.PREFER_EVAL, reason=f"eval triggered for {','.join(fired)} @ step={step}")
             self.eval_epochs_started += 1
             self.logger.info(
-                f"Eval @ step={step} for env(s) {','.join(fired_envs)} (queued {len(self.eval_queue)} example(s))"
+                f"Eval @ step={step} for env(s) {','.join(fired)} (queued {len(self.eval_source)} example(s))"
             )
-
-    # ── eval epoch machinery ───────────────────────────────────────────────
-
-    def fire_eval_epoch(self, step: int, log_reason: str) -> None:
-        """Queue every example × group_size for each eval env at this step."""
-        if self.eval_envs is None or self.config.eval is None:
-            return
-        fired_envs: list[str] = []
-        for env_name in list(self.eval_examples):
-            self.enqueue_eval_env(env_name, step, force=True)
-            fired_envs.append(env_name)
-        if fired_envs:
-            self.switch_mode(SchedMode.PREFER_EVAL, reason=log_reason)
-            self.eval_epochs_started += 1
-            self.logger.info(f"Eval @ step={step} ({log_reason}) — queued envs={','.join(fired_envs)}")
-
-    def enqueue_eval_env(self, env_name: str, step: int, *, force: bool = False) -> None:
-        examples = self.eval_examples.get(env_name)
-        if not examples:
-            return
-        if not force and step <= self.last_eval_step_per_env.get(env_name, 0):
-            return
-        for example in examples:
-            self.eval_queue.append((env_name, example, step))
-        self.last_eval_step_per_env[env_name] = step
-        self.eval_step_envs.setdefault(step, set()).add(env_name)
 
     # ── fill ────────────────────────────────────────────────────────────────
 
@@ -359,11 +243,11 @@ class RolloutDispatcher:
                 return
 
             if self.sched_mode == SchedMode.PREFER_EVAL:
-                if not self.eval_queue and self.inflight_eval_count == 0:
+                if not self.eval_source and self.inflight_eval_count == 0:
                     # All eval examples dispatched and finished — switch back to train.
                     self.switch_mode(SchedMode.PREFER_TRAIN, reason="eval queue drained")
                     continue
-                if not self.eval_queue:
+                if not self.eval_source:
                     # Eval queue empty but eval still in flight: don't schedule train here
                     # (we don't want a hard PREFER_TRAIN flip until eval is done). The
                     # condition above handles that on the next iteration.
@@ -403,7 +287,7 @@ class RolloutDispatcher:
         # Need a fresh group; reserve ``group_size`` permits for it.
         if self.available_permits < self.group_size:
             return False
-        example = self.train_cycle.next_example()
+        example = self.train_source.next_example()
         env_name = example["env_name"]
         group_id = uuid.uuid4()
         self.groups[group_id] = GroupState(
@@ -417,19 +301,20 @@ class RolloutDispatcher:
         return await self.schedule_group_rollout(group_id, self.groups[group_id])
 
     async def try_schedule_eval(self) -> bool:
-        if not self.eval_queue:
+        item = self.eval_source.peek()
+        if item is None:
             return False
         # Peek: do we have enough capacity for the next eval example's rollouts?
-        env_name, example, eval_step = self.eval_queue[0]
+        env_name, example, eval_step = item
         eval_env = self.eval_envs.get(env_name) if self.eval_envs is not None else None
         if eval_env is None:
-            self.eval_queue.popleft()
+            self.eval_source.pop()
             return False
         per_example_rollouts = eval_env.config.group_size
         cost = per_example_rollouts if eval_env.requires_group_scoring else 1
         if cost > self.available_permits:
             return False
-        self.eval_queue.popleft()
+        self.eval_source.pop()
         group_id = uuid.uuid4()
         self.groups[group_id] = GroupState(
             kind="eval",
