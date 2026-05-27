@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from dataclasses import dataclass
 
 import verifiers as vf
 
@@ -44,24 +43,9 @@ from prime_rl.orchestrator.trajectories import (
     interleave_rollout,
 )
 from prime_rl.orchestrator.vf_utils import get_seq_len
-from prime_rl.orchestrator_v2.dispatcher import Rollout
-from prime_rl.orchestrator_v2.metrics import ProcessResult
+from prime_rl.orchestrator_v2.types import ProcessResult, Rollout, TrainBatch
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
-
-
-@dataclass
-class TrainBatch:
-    """Raw payload the orchestrator hands back to ``MetricsBuilder.build`` /
-    ``sender.send``. The ``samples`` list is the trainer-bound subset
-    (post-filter survivors only); ``rollouts`` is the full cohort kept for
-    metric aggregation. Metrics are NOT pre-baked here — they're a derived
-    view computed at log time by the orchestrator with up-to-date timings.
-    """
-
-    rollouts: list[vf.RolloutOutput]
-    samples: list[TrainingSample]
-    result: ProcessResult
 
 
 class TrainSink:

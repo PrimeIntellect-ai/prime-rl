@@ -22,7 +22,6 @@ Filters do not apply to eval — filters are a train-only concept.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
 from typing import Any
 
 import verifiers as vf
@@ -30,17 +29,7 @@ import verifiers as vf
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.eval_utils import compute_pass_at_k
 from prime_rl.orchestrator.vf_utils import get_seq_len
-from prime_rl.orchestrator_v2.dispatcher import Rollout
-
-
-@dataclass
-class EvalBatch:
-    """One env's eval epoch — the raw rollouts the orchestrator hands back
-    to ``EvalSink.build_metrics`` and to the monitor (samples + save_rollouts)."""
-
-    env_name: str
-    step: int
-    rollouts: list[vf.RolloutOutput]
+from prime_rl.orchestrator_v2.types import EvalBatch, Rollout
 
 
 class EvalSink:

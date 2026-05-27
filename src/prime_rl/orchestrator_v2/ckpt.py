@@ -12,30 +12,15 @@ prefix so trainer weight discovery does not need to change.
 from __future__ import annotations
 
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 
 import torch
 
 from prime_rl.configs.orchestrator import CheckpointConfig
+from prime_rl.orchestrator_v2.types import Progress
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_ckpt_dir, get_step_path
-
-
-@dataclass
-class Progress:
-    """Persistent counters for the v2 orchestrator.
-
-    ``step`` is the trainer-aligned step (== ``policy.version`` after every
-    successful weight update). The eval boundary is a strict function of
-    ``step`` + ``eval.interval`` + ``eval_base_model`` + ``skip_eval_on_resume``,
-    so we don't track a separate ``last_eval_step``.
-    """
-
-    step: int = 0
-    total_tokens: int = 0
-    total_samples: int = 0
-    total_problems: int = 0
 
 
 class CheckpointManager:

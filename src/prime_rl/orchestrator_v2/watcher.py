@@ -21,27 +21,14 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Protocol
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator_v2.policy import Policy
+from prime_rl.orchestrator_v2.types import Policy, VersionObserver
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_broadcast_dir, get_step_path, wait_for_path
 from prime_rl.utils.utils import get_latest_ckpt_step
-
-
-class VersionObserver(Protocol):
-    """Notified after each successful policy update.
-
-    The watcher walks the observer list synchronously in registration order
-    *after* mutating ``Policy``. Observers see the freshly-installed version
-    immediately and can use the call to invalidate caches, cancel stale
-    in-flight work, or trigger evals.
-    """
-
-    async def on_new_version(self, step: int) -> None: ...
 
 
 class WeightWatcher:

@@ -41,13 +41,13 @@ from prime_rl.orchestrator.patches import (
 from prime_rl.orchestrator.trajectories import offload_images_to_disk
 from prime_rl.orchestrator.utils import compute_teacher_logprobs, get_weight_dir, set_default_executor
 from prime_rl.orchestrator.vf_utils import get_seq_len, intercept_vf_logging, save_rollouts
-from prime_rl.orchestrator_v2.ckpt import Progress, setup_ckpt_manager
-from prime_rl.orchestrator_v2.dispatcher import Rollout, RolloutDispatcher
-from prime_rl.orchestrator_v2.eval_sink import EvalBatch, EvalSink
+from prime_rl.orchestrator_v2.ckpt import setup_ckpt_manager
+from prime_rl.orchestrator_v2.dispatcher import RolloutDispatcher
+from prime_rl.orchestrator_v2.eval_sink import EvalSink
 from prime_rl.orchestrator_v2.log_loop import IntervalLogger
 from prime_rl.orchestrator_v2.metrics import MetricsBuilder
-from prime_rl.orchestrator_v2.policy import Policy
 from prime_rl.orchestrator_v2.train_sink import TrainSink
+from prime_rl.orchestrator_v2.types import EvalBatch, Policy, Progress, Rollout
 from prime_rl.orchestrator_v2.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender

@@ -13,7 +13,7 @@ import time
 
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator_v2.dispatcher import RolloutDispatcher
-from prime_rl.orchestrator_v2.policy import Policy
+from prime_rl.orchestrator_v2.types import Policy
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.logger import get_logger
 

@@ -25,99 +25,22 @@ from __future__ import annotations
 import asyncio
 import random
 from collections import Counter, defaultdict, deque
-from dataclasses import dataclass, field
-from enum import Enum, auto
-from typing import Literal
 
 import verifiers as vf
 from aiolimiter import AsyncLimiter
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
-from prime_rl.orchestrator_v2.policy import Policy
+from prime_rl.orchestrator_v2.types import (
+    GroupState,
+    Policy,
+    Rollout,
+    RolloutMeta,
+    SchedMode,
+)
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import get_logger
-
-Kind = Literal["train", "eval"]
-
-
-class SchedMode(Enum):
-    """Which kind of work the dispatcher will schedule next.
-
-    Transitions are level-triggered (driven by the eval queue's emptiness), so
-    in-flight rollouts of the opposite kind drain naturally on both sides of
-    every eval boundary — the overlap mechanism.
-    """
-
-    PREFER_TRAIN = auto()
-    PREFER_EVAL = auto()
-
-
-@dataclass
-class Rollout:
-    """The atomic unit emitted by the dispatcher — one completed rollout.
-
-    Carries two boundary signals that sinks use to drive ``process_rollout``
-    (always) / ``process_group`` (on ``is_group_done``) / ``process_batch``
-    (on ``is_batch_done`` for eval, or sink-derived for train):
-
-    - ``is_group_done``: last rollout of the ``(env, example_id)`` GRPO
-      group. Set for both train (last in GRPO group) and eval (last in
-      per-example group).
-    - ``is_batch_done``: last rollout of the natural "batch" unit. Set by
-      the dispatcher for eval (last rollout of the env's epoch). Always
-      ``False`` for train — the train sink determines batch boundaries
-      itself from the configured ``batch_size``/``token_batch_size``.
-
-    ``policy_version`` is the snapshot at dispatch time; the train sink
-    uses it for per-rollout off-policy metrics. ``eval_step`` is set only
-    for eval rollouts (the policy version at which the eval epoch was
-    triggered).
-    """
-
-    kind: Kind
-    env_name: str
-    example_id: int
-    raw: vf.RolloutOutput
-    policy_version: int
-    is_group_done: bool
-    is_batch_done: bool
-    eval_step: int | None = None
-
-
-@dataclass
-class RolloutMeta:
-    """Per-task bookkeeping. One entry per in-flight ``run_rollout`` / ``run_group``."""
-
-    kind: Kind
-    env_name: str
-    group_id: int
-    policy_version: int
-    rollout_count: int  # number of semaphore permits this task holds
-    client_config: vf.ClientConfig | None = None
-    off_policy_steps: int = 0  # incremented on every ``on_new_version``; train only
-    eval_step: int | None = None
-
-
-@dataclass
-class GroupState:
-    """Accumulator for one rollout group across N independent ``run_rollout`` tasks.
-
-    For group-scoring envs ``rollouts_to_schedule`` collapses to 0 after the
-    single ``run_group`` task is queued; otherwise it's decremented per rollout.
-    """
-
-    kind: Kind
-    env_name: str
-    example: dict
-    rollouts_to_schedule: int
-    target_rollouts: int  # total rollouts expected for this group
-    completed_rollouts: list[vf.RolloutOutput] = field(default_factory=list)
-    failed_rollouts: int = 0
-    eval_step: int | None = None
-    pinned_client: vf.ClientConfig | None = None
-    policy_version_at_start: int = 0
 
 
 class TrainEnvCycle:
