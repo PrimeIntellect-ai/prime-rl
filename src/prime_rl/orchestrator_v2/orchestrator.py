@@ -543,7 +543,6 @@ class Orchestrator:
         assert self.monitor is not None
         self.monitor.log_eval_samples(result.rollouts, env_name=result.env_name, step=result.eval_step)
         self.monitor.log(result.metrics, step=result.eval_step)
-        self.progress.last_eval_step = result.eval_step
 
         n_examples = len({r["example_id"] for r in result.rollouts})
         reward_mean = result.metrics.get(f"eval/{result.env_name}/reward/mean", float("nan"))

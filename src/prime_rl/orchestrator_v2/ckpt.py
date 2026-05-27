@@ -1,10 +1,9 @@
 """Lean checkpoint manager for orchestrator v2.
 
-Persists ``Progress(step, last_eval_step, totals…)`` only. The legacy
-orchestrator's buffer / difficulty-pool persistence is intentionally dropped:
-v2 has no buffer (the dispatcher iterates the dataset directly via the
-existing ``TrainEnvs`` abstraction) and no difficulty pools (replaced by
-``pre_batch_filters``).
+Persists ``Progress(step, totals…)`` only. The legacy orchestrator's buffer /
+difficulty-pool persistence is intentionally dropped: v2 has no buffer (the
+dispatcher iterates the dataset directly via the existing ``TrainEnvs``
+abstraction) and no difficulty pools (replaced by ``pre_batch_filters``).
 
 Layout — matches the legacy orchestrator's ``checkpoints/step_N/orchestrator/``
 prefix so trainer weight discovery does not need to change.
@@ -28,13 +27,12 @@ class Progress:
     """Persistent counters for the v2 orchestrator.
 
     ``step`` is the trainer-aligned step (== ``policy.version`` after every
-    successful weight update). ``last_eval_step`` is the most recent step at
-    which the dispatcher fired an eval epoch — used to suppress a redundant
-    re-eval on resume when ``skip_eval_on_resume=True``.
+    successful weight update). The eval boundary is a strict function of
+    ``step`` + ``eval.interval`` + ``eval_base_model`` + ``skip_eval_on_resume``,
+    so we don't track a separate ``last_eval_step``.
     """
 
     step: int = 0
-    last_eval_step: int = 0
     total_tokens: int = 0
     total_samples: int = 0
     total_problems: int = 0
