@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -397,6 +398,18 @@ class InferenceMetricsCollector:
         self.previous: dict[str, TimedRollup] = {}
         self.task: asyncio.Task | None = None
         self.has_pd_roles = {endpoint.role for endpoint in self.endpoints if endpoint.role is not None} == PD_ROLES
+        self.server_names = {
+            endpoint.key: self._server_name(endpoint_idx, endpoint.client)
+            for endpoint_idx, endpoint in enumerate(self.endpoints)
+        }
+
+    @staticmethod
+    def _server_name(idx: int, client: AsyncClient) -> str:
+        host = client.base_url.host or f"server_{idx}"
+        port = client.base_url.port
+        raw = f"{host}_{port}" if port is not None else host
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("_")
+        return f"server_{idx:02d}_{safe or 'unknown'}"
 
     async def start(self):
         wandb.define_metric("inference/*", step_metric="_timestamp")
@@ -429,7 +442,9 @@ class InferenceMetricsCollector:
             for endpoint, text in zip(self.endpoints, results)
             if text is not None
         ]
+        active_server_names = {self.server_names[sample.endpoint.key] for sample in samples}
         if not samples:
+            wandb.log({**self.server_up_metrics(active_server_names), "_timestamp": time.time()})
             return
 
         metrics = build_scope_metrics("agg", samples, self.previous)
@@ -438,11 +453,17 @@ class InferenceMetricsCollector:
                 role_samples = [sample for sample in samples if sample.endpoint.role == role]
                 if role_samples:
                     metrics.update(build_scope_metrics(role, role_samples, self.previous))
+        for sample in samples:
+            server_name = self.server_names[sample.endpoint.key]
+            metrics.update(build_scope_metrics(f"server/{server_name}", [sample], self.previous))
+        self.add_cache_alias_metrics(metrics)
 
         for sample in samples:
             self.previous[sample.endpoint.key] = TimedRollup(timestamp=sample.timestamp, rollup=sample.rollup)
 
         smoothed_metrics = self.smooth_metrics(metrics)
+        self.drop_stale_server_metrics(smoothed_metrics, metrics)
+        smoothed_metrics.update(self.server_up_metrics(active_server_names))
         if smoothed_metrics:
             smoothed_metrics["_timestamp"] = time.time()
             wandb.log(smoothed_metrics)
@@ -452,6 +473,44 @@ class InferenceMetricsCollector:
         for key, value in metrics.items():
             self.metric_history.setdefault(key, deque(maxlen=WINDOW_SIZE)).append(value)
         return {key: sum(values) / len(values) for key, values in self.metric_history.items() if values}
+
+    def drop_stale_server_metrics(self, smoothed_metrics: dict[str, float], current_metrics: dict[str, float]) -> None:
+        """Do not keep logging stale per-server metrics when a server fails to respond."""
+        for key in list(smoothed_metrics):
+            if key.startswith("inference/server/") and key not in current_metrics:
+                del smoothed_metrics[key]
+
+    def server_up_metrics(self, active_servers: set[str]) -> dict[str, float]:
+        return {
+            f"inference/server/{server_name}/up": float(server_name in active_servers)
+            for server_name in self.server_names.values()
+        }
+
+    @classmethod
+    def add_cache_alias_metrics(cls, metrics: dict[str, float]) -> None:
+        for key, value in list(metrics.items()):
+            if key.endswith("/prefix_cache_hit_rate"):
+                prefix = key.removesuffix("prefix_cache_hit_rate")
+                metrics[f"{prefix}kv_cache_hit_rate"] = value
+            elif key.endswith("/cpu_prefix_cache_hit_rate"):
+                prefix = key.removesuffix("cpu_prefix_cache_hit_rate")
+                metrics[f"{prefix}cpu_kv_cache_hit_rate"] = value
+            elif key.endswith("/kv_cache_usage_mean"):
+                prefix = key.removesuffix("kv_cache_usage_mean")
+                metrics[f"{prefix}kv_cache_left_perc_mean"] = cls.cache_left(value)
+            elif key.endswith("/kv_cache_usage_max"):
+                prefix = key.removesuffix("kv_cache_usage_max")
+                metrics[f"{prefix}kv_cache_left_perc_min"] = cls.cache_left(value)
+            elif key.endswith("/cpu_kv_cache_usage_mean"):
+                prefix = key.removesuffix("cpu_kv_cache_usage_mean")
+                metrics[f"{prefix}cpu_kv_cache_left_perc_mean"] = cls.cache_left(value)
+            elif key.endswith("/cpu_kv_cache_usage_max"):
+                prefix = key.removesuffix("cpu_kv_cache_usage_max")
+                metrics[f"{prefix}cpu_kv_cache_left_perc_min"] = cls.cache_left(value)
+
+    @staticmethod
+    def cache_left(usage: float) -> float:
+        return min(max(1.0 - usage, 0.0), 1.0)
 
     async def stop(self):
         if self.task is not None:
