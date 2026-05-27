@@ -29,13 +29,12 @@ from __future__ import annotations
 
 import uuid
 from collections import defaultdict
-from typing import Any
 
 import verifiers as vf
 
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.eval_utils import compute_pass_at_k
-from prime_rl.orchestrator.types import EvalBatch, Rollout
+from prime_rl.orchestrator.types import EvalBatch, EvalBatchMetrics, Rollout
 from prime_rl.orchestrator.vf_utils import get_seq_len
 from prime_rl.utils.logger import get_logger
 
@@ -127,62 +126,54 @@ class EvalSink:
     # ── level 3: per-batch (per-env metrics) ──────────────────────────────
 
     def process_batch(self, key: tuple[str, int]) -> EvalBatch:
-        """Build the per-env metrics dict and return the finalized
-        ``EvalBatch``. This is the natural per-batch processing hook — all
-        per-batch derivations happen here so the orchestrator just has to
-        log + persist.
+        """Build the typed ``EvalBatchMetrics`` and return the finalized
+        ``EvalBatch``. The orchestrator turns metrics into the wandb dict
+        at log time via ``metrics.to_wandb_dict(env_name=…, step=…)``.
 
         Errored rollouts (``raw["error"] is not None`` — env-side failures,
         cancellations, task exceptions) are excluded from reward / seq_len /
-        pass@k aggregation and surfaced separately as ``cancelled_count`` /
-        ``errored_count`` (an errored rollout doesn't represent a real
+        pass@k aggregation and surfaced separately as ``n_cancelled`` /
+        ``n_errored`` (an errored rollout doesn't represent a real
         evaluation attempt and including it as reward=0 would silently bias
         the score down).
         """
         env_name, step = key
         rollouts = self.pending_batches.pop(key, [])
 
-        to_log: dict[str, Any] = {"step": step}
-        prefix = f"eval/{env_name}"
         n_total = len(rollouts)
         n_cancelled = sum(1 for r in rollouts if (r.get("error") or {}).get("error") == "Cancelled")
         n_errored = sum(1 for r in rollouts if r.get("error") is not None) - n_cancelled
         valid = [r for r in rollouts if r.get("error") is None]
-        to_log[f"{prefix}/cancelled_count"] = float(n_cancelled)
-        to_log[f"{prefix}/errored_count"] = float(n_errored)
-        to_log[f"{prefix}/n_rollouts"] = float(n_total)
-        to_log[f"{prefix}/valid_rate"] = float(len(valid) / max(n_total, 1))
+        metrics = EvalBatchMetrics(
+            n_rollouts=n_total,
+            n_cancelled=n_cancelled,
+            n_errored=n_errored,
+            valid_rate=float(len(valid) / max(n_total, 1)),
+        )
 
         if valid:
             rewards = [r.get("reward", 0.0) for r in valid]
             lens = [get_seq_len(r) for r in valid]
-            no_response_rate = sum(1 for r in valid if not r.get("completion")) / len(valid)
-            truncation_rate = sum(1 for r in valid if r.get("is_truncated")) / len(valid)
-            group_size = self.group_size_for(env_name)
-            to_log.update(
-                {
-                    f"{prefix}/avg@{group_size}": float(sum(rewards) / len(rewards)),
-                    f"{prefix}/reward/mean": float(sum(rewards) / len(rewards)),
-                    f"{prefix}/completion_len/mean": float(sum(lens) / len(lens)),
-                    f"{prefix}/completion_len/max": float(max(lens)),
-                    f"{prefix}/completion_len/min": float(min(lens)),
-                    f"{prefix}/is_truncated/mean": float(truncation_rate),
-                    f"{prefix}/no_response/mean": float(no_response_rate),
-                }
-            )
+            metrics.group_size = self.group_size_for(env_name)
+            metrics.reward_mean = float(sum(rewards) / len(rewards))
+            metrics.completion_len_mean = float(sum(lens) / len(lens))
+            metrics.completion_len_max = float(max(lens))
+            metrics.completion_len_min = float(min(lens))
+            metrics.truncation_rate = float(sum(1 for r in valid if r.get("is_truncated")) / len(valid))
+            metrics.no_response_rate = float(sum(1 for r in valid if not r.get("completion")) / len(valid))
 
             # pass@k: reconstruct per-example reward sets from ``example_id``,
             # ignoring errored attempts (they don't count toward k tries).
             by_example: dict[int, list[float]] = {}
             for r in valid:
                 by_example.setdefault(r["example_id"], []).append(float(r.get("reward", 0.0)))
-            to_log[f"{prefix}/n_examples"] = float(len(by_example))
+            metrics.n_examples = len(by_example)
             unique_rewards = {float(r) for r in rewards}
             if unique_rewards.issubset({0.0, 1.0}) and by_example:
                 pass_at_k_per_example = [compute_pass_at_k(rs) for rs in by_example.values()]
                 keys = set().union(*(d.keys() for d in pass_at_k_per_example))
                 for k in keys:
                     values = [d.get(k, 0.0) for d in pass_at_k_per_example]
-                    to_log[f"{prefix}/{k}"] = float(sum(values) / len(values))
+                    metrics.pass_at_k[k] = float(sum(values) / len(values))
 
-        return EvalBatch(env_name=env_name, step=step, rollouts=rollouts, metrics=to_log)
+        return EvalBatch(env_name=env_name, step=step, rollouts=rollouts, metrics=metrics)

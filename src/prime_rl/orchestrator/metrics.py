@@ -1,7 +1,7 @@
 """MetricsBuilder: assembles the per-step W&B metrics dict.
 
 Single responsibility. Takes the rollout cohort (post-filter annotated), the
-``ProcessResult`` from the train sink's per-batch hook, and a few
+``TrainBatchMetrics`` from the train sink's per-batch hook, and a few
 orchestrator scalars (step, step_time, dispatcher gauges); returns the dict
 the monitor logs.
 
@@ -16,7 +16,7 @@ import pandas as pd
 import verifiers as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.types import ProcessResult, Progress
+from prime_rl.orchestrator.types import Progress, TrainBatchMetrics
 from prime_rl.orchestrator.vf_utils import get_seq_len
 
 
@@ -29,7 +29,7 @@ class MetricsBuilder:
         *,
         step: int,
         rollouts: list[vf.RolloutOutput],
-        result: ProcessResult,
+        metrics: TrainBatchMetrics,
         progress: Progress,
         dispatcher_gauges: dict[str, float],
         dispatcher_drain: dict[str, float],
@@ -55,9 +55,9 @@ class MetricsBuilder:
                 "is_filtered": [r.get("is_filtered", False) for r in rollouts],
                 "stop_condition": [r.get("stop_condition") for r in rollouts],
                 "seq_len": [get_seq_len(r) for r in rollouts],
-                "prefill_len": result.rollout_prefill_lens,
-                "decode_len": result.rollout_decode_lens,
-                "samples_per_rollout": result.samples_per_rollout,
+                "prefill_len": metrics.rollout_prefill_lens,
+                "decode_len": metrics.rollout_decode_lens,
+                "samples_per_rollout": metrics.samples_per_rollout,
                 "num_turns": [len(r["trajectory"]) for r in rollouts],
             }
         )
@@ -76,8 +76,8 @@ class MetricsBuilder:
 
         to_log: dict[str, Any] = {
             "progress/tokens": num_tokens,
-            "progress/prefill_tokens": result.num_prefill_tokens,
-            "progress/decode_tokens": result.num_decode_tokens,
+            "progress/prefill_tokens": metrics.num_prefill_tokens,
+            "progress/decode_tokens": metrics.num_decode_tokens,
             "progress/samples": num_rollouts,
             "progress/problems": num_unique_examples,
             "progress/total_tokens": progress.total_tokens,

@@ -445,15 +445,15 @@ class Orchestrator:
         self.logger.info(f"Starting orchestrator step {step}")
         step_start = time.perf_counter()
 
-        if batch.result.n_trainable == 0:
+        if batch.metrics.n_trainable == 0:
             self.logger.warning(
                 f"Step {step}: post-batch filters dropped all {len(batch.rollouts)} rollouts. Trying again."
             )
             return
-        if batch.result.n_trainable / len(batch.rollouts) <= 0.1:
+        if batch.metrics.n_trainable / len(batch.rollouts) <= 0.1:
             self.logger.warning(
-                f"Only {batch.result.n_trainable}/{len(batch.rollouts)} rollouts in the batch are trainable "
-                f"({batch.result.n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
+                f"Only {batch.metrics.n_trainable}/{len(batch.rollouts)} rollouts in the batch are trainable "
+                f"({batch.metrics.n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
             )
 
         # Persist rollouts to disk (cheap, background thread).
@@ -494,7 +494,7 @@ class Orchestrator:
         metrics = self.metrics.build(
             step=step,
             rollouts=batch.rollouts,
-            result=batch.result,
+            metrics=batch.metrics,
             progress=self.progress,
             dispatcher_gauges=self.dispatcher.gauges(),
             dispatcher_drain=self.dispatcher.drain_metrics(),
@@ -521,7 +521,7 @@ class Orchestrator:
                 self.usage_reporter.report_training_usage(
                     run_id=run_id,
                     step=step,
-                    tokens=batch.result.num_prefill_tokens + batch.result.num_decode_tokens,
+                    tokens=batch.metrics.num_prefill_tokens + batch.metrics.num_decode_tokens,
                 )
         if self.heart is not None:
             self.heart.beat()
@@ -538,7 +538,7 @@ class Orchestrator:
         self.logger.success(
             f"Step {step} | Time: {step_time:.2f}s | Reward: {reward_mean:.4f} | "
             f"Seq. Length: {num_tokens / max(num_rollouts, 1):.1f} tokens/sample | "
-            f"Trainable: {batch.result.n_trainable}/{num_rollouts} | "
+            f"Trainable: {batch.metrics.n_trainable}/{num_rollouts} | "
             f"Async Level: {step - self.policy.version} | "
             f"Max. Off-Policy Level: {self.dispatcher.max_off_policy_level}"
         )
@@ -590,13 +590,12 @@ class Orchestrator:
             exclude_keys={"trajectory"},
         )
         self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
-        self.monitor.log(batch.metrics, step=batch.step)
+        self.monitor.log(batch.metrics.to_wandb_dict(env_name=batch.env_name, step=batch.step), step=batch.step)
 
-        n_examples = len({r["example_id"] for r in batch.rollouts})
-        reward_mean = batch.metrics.get(f"eval/{batch.env_name}/reward/mean", float("nan"))
         self.logger.success(
             f"Eval @ step={batch.step} env={batch.env_name} | "
-            f"Reward: {reward_mean:.4f} | Rollouts: {len(batch.rollouts)} | Examples: {n_examples}"
+            f"Reward: {batch.metrics.reward_mean:.4f} | "
+            f"Rollouts: {batch.metrics.n_rollouts} | Examples: {batch.metrics.n_examples}"
         )
 
     async def maybe_save_ckpt(self, step: int) -> float:

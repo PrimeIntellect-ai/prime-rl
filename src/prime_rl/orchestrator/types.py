@@ -12,8 +12,9 @@ module):
 - ``Kind`` / ``SchedMode``: dispatch primitives.
 - ``Rollout`` / ``RolloutMeta`` / ``GroupState``: the dispatcher's in-flight
   bookkeeping + the atomic unit flowing on its output queue.
-- ``TrainBatch`` / ``EvalBatch`` / ``ProcessResult``: per-batch payloads
-  the sinks return to the orchestrator.
+- ``TrainBatch`` / ``EvalBatch`` and their ``TrainBatchMetrics`` /
+  ``EvalBatchMetrics``: per-batch payloads the sinks return to the
+  orchestrator.
 - ``VersionObserver``: the watcher → dispatcher notification interface.
 """
 
@@ -23,7 +24,7 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol
 
 import verifiers as vf
 
@@ -160,9 +161,12 @@ class GroupState:
 
 
 @dataclass
-class ProcessResult:
-    """Per-batch counters the metrics builder reads. Produced by
-    ``TrainSink.process_batch`` and passed back via ``TrainBatch.result``."""
+class TrainBatchMetrics:
+    """Per-batch counters/aggregates that ``TrainSink.process_batch``
+    extracts from the rollout cohort. The orchestrator passes this to
+    ``MetricsBuilder.build`` (along with post-barrier timing scalars) to
+    assemble the wandb dict — keeps the heavy per-rollout walk out of the
+    log-time critical path."""
 
     n_trainable: int
     num_prefill_tokens: int
@@ -175,29 +179,80 @@ class ProcessResult:
 
 @dataclass
 class TrainBatch:
-    """Raw payload the orchestrator hands back to ``MetricsBuilder.build`` /
-    ``sender.send``. The ``samples`` list is the trainer-bound subset
-    (post-filter survivors only); ``rollouts`` is the full cohort kept for
-    metric aggregation. Metrics are NOT pre-baked here — they're a derived
-    view computed at log time by the orchestrator with up-to-date timings.
+    """One training batch ready to ship.
+
+    - ``samples`` is the trainer-bound payload (post-filter survivors only)
+      that goes to ``sender.send``.
+    - ``rollouts`` is the full cohort (including post-filter dropouts) kept
+      for orchestrator-side I/O (``save_rollouts``, ``log_samples``,
+      ``log_distributions``, ``offload_images_to_disk``) and as input to
+      ``MetricsBuilder``.
+    - ``metrics`` is the extracted per-batch counter view (no derived wandb
+      dict here — that's the orchestrator's job at log time once it knows
+      step_time / teacher_logprobs_time / save_ckpt_time).
     """
 
     rollouts: list[vf.RolloutOutput]
     samples: list[TrainingSample]
-    result: ProcessResult
+    metrics: TrainBatchMetrics
+
+
+@dataclass
+class EvalBatchMetrics:
+    """Per-batch typed metrics built by ``EvalSink.process_batch``. Final
+    wandb dict is derived via ``to_wandb_dict`` at log time, keeping the
+    dataclass typed while still preserving wandb-friendly keys downstream."""
+
+    n_rollouts: int
+    n_cancelled: int
+    n_errored: int
+    valid_rate: float
+    # Survivor-derived. Zeros when no valid rollouts (all errored).
+    n_examples: int = 0
+    group_size: int = 1
+    reward_mean: float = 0.0
+    completion_len_mean: float = 0.0
+    completion_len_max: float = 0.0
+    completion_len_min: float = 0.0
+    truncation_rate: float = 0.0
+    no_response_rate: float = 0.0
+    pass_at_k: dict[str, float] = field(default_factory=dict)
+
+    def to_wandb_dict(self, *, env_name: str, step: int) -> dict[str, float]:
+        prefix = f"eval/{env_name}"
+        out: dict[str, float] = {
+            "step": float(step),
+            f"{prefix}/n_rollouts": float(self.n_rollouts),
+            f"{prefix}/cancelled_count": float(self.n_cancelled),
+            f"{prefix}/errored_count": float(self.n_errored),
+            f"{prefix}/valid_rate": self.valid_rate,
+        }
+        if self.n_examples > 0:
+            out[f"{prefix}/n_examples"] = float(self.n_examples)
+            out[f"{prefix}/avg@{self.group_size}"] = self.reward_mean
+            out[f"{prefix}/reward/mean"] = self.reward_mean
+            out[f"{prefix}/completion_len/mean"] = self.completion_len_mean
+            out[f"{prefix}/completion_len/max"] = self.completion_len_max
+            out[f"{prefix}/completion_len/min"] = self.completion_len_min
+            out[f"{prefix}/is_truncated/mean"] = self.truncation_rate
+            out[f"{prefix}/no_response/mean"] = self.no_response_rate
+            for k, v in self.pass_at_k.items():
+                out[f"{prefix}/{k}"] = v
+        return out
 
 
 @dataclass
 class EvalBatch:
-    """One env's eval epoch. ``metrics`` is built in ``EvalSink.process_batch``
-    — the natural per-batch processing hook — from ``rollouts``; the
-    orchestrator just hands it to ``monitor.log`` along with the raw
-    rollouts (for samples + save_rollouts)."""
+    """One env's eval epoch. ``rollouts`` is the raw cohort kept for
+    ``save_rollouts`` + ``monitor.log_eval_samples``; ``metrics`` is the
+    typed per-env metrics view built by ``EvalSink.process_batch``. The
+    orchestrator turns ``metrics`` into the wandb dict at log time via
+    ``metrics.to_wandb_dict(env_name=…, step=…)``."""
 
     env_name: str
     step: int
     rollouts: list[vf.RolloutOutput]
-    metrics: dict[str, Any]
+    metrics: EvalBatchMetrics
 
 
 # ── watcher → observer interface ──────────────────────────────────────────

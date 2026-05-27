@@ -45,7 +45,7 @@ from prime_rl.orchestrator.trajectories import (
     backfill_rollout_tokens,
     interleave_rollout,
 )
-from prime_rl.orchestrator.types import ProcessResult, Rollout, TrainBatch
+from prime_rl.orchestrator.types import Rollout, TrainBatch, TrainBatchMetrics
 from prime_rl.orchestrator.vf_utils import get_seq_len
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
@@ -287,7 +287,7 @@ class TrainSink:
 
         n_trainable = sum(1 for r in cohort if not r.get("is_filtered"))
 
-        result = ProcessResult(
+        metrics = TrainBatchMetrics(
             n_trainable=n_trainable,
             num_prefill_tokens=num_prefill,
             num_decode_tokens=num_decode,
@@ -296,7 +296,7 @@ class TrainSink:
             samples_per_rollout=samples_per_rollout,
             samples_shipped=len(samples),
         )
-        return TrainBatch(rollouts=cohort, samples=samples, result=result)
+        return TrainBatch(rollouts=cohort, samples=samples, metrics=metrics)
 
     def reset_pre_filter_stats(self) -> None:
         self.pre_filter_seen = 0
