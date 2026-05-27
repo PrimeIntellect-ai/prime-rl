@@ -18,7 +18,6 @@ def transformers_v5_compat():
     _patch_qwen35_lora()
     _patch_lora_key_prefix()
     monkey_patch_deep_gemm_silu_mul_quant_int64()
-    monkey_patch_dp_engine_core_pause_resume_deadlock()
     monkey_patch_vllm_layerwise_reload_alias_buffers()
     monkey_patch_vllm_padded_input_scrub()
     monkey_patch_return_routed_experts_with_nixl_connector()
@@ -780,87 +779,6 @@ def monkey_patch_harmony_stop_token_propagation():
         return params
 
     ChatCompletionRequest.to_sampling_params = _patched_to_sampling_params
-
-
-def monkey_patch_dp_engine_core_pause_resume_deadlock():
-    """Fix DP pause/resume deadlocks around weight updates.
-
-    Bug 1 (job 3756): while paused, START_DP_WAVE can wake idle ranks into the
-    DP loop. Those ranks then run dummy batches and hit DP collectives while
-    other ranks are still in NCCL weight transfer.
-
-    Bug 2 (jobs 3769/3771): resume ties the DP running state to local
-    unfinished requests, but the DP wave state is global. Ranks with no local
-    work still need to re-enter the loop so they can participate in the same
-    DP collectives as ranks that are resuming remote-KV or decode work.
-
-    Fix:
-    - ignore START_DP_WAVE wakeups while paused
-    - on resume, wake every DP rank and force an immediate global unfinished
-      sync instead of waiting for the normal 32-step cadence
-
-    This also bypasses vLLM's two-phase DP pause implementation
-    (https://github.com/vllm-project/vllm/pull/39366), which makes resume
-    reject states that our weight-update flow can validly hit.
-    """
-    from vllm.config import ParallelConfig
-    from vllm.v1.core.sched.interface import PauseState
-    from vllm.v1.engine import EngineCoreOutputs, EngineCoreRequestType
-    from vllm.v1.engine.core import DPEngineCoreProc, EngineCore, EngineCoreProc
-    from vllm.v1.request import Request
-
-    _base_add_request = EngineCore.add_request
-    _base_handle_client_request = EngineCoreProc._handle_client_request
-    _base_pause_complete = EngineCoreProc._pause_complete
-    _base_resume_scheduler = EngineCoreProc.resume_scheduler
-
-    def _patched_add_request(self, request: Request, request_wave: int = 0):
-        _base_add_request(self, request, request_wave)
-        if self.has_coordinator and request_wave != self.current_wave:
-            if request_wave > self.current_wave:
-                self.current_wave = request_wave
-            elif not self.engines_running and self.scheduler.pause_state == PauseState.UNPAUSED:
-                self.engines_running = True
-                self.output_queue.put_nowait((-1, EngineCoreOutputs(start_wave=self.current_wave)))
-
-    def _patched_handle_client_request(self, request_type, request):
-        if request_type == EngineCoreRequestType.START_DP_WAVE:
-            new_wave, exclude_eng_index = request
-            if exclude_eng_index != self.engine_index and new_wave >= self.current_wave:
-                self.current_wave = new_wave
-                if not self.engines_running and self.scheduler.pause_state == PauseState.UNPAUSED:
-                    self.engines_running = True
-        else:
-            _base_handle_client_request(self, request_type, request)
-
-    def _patched_pause_complete(self) -> bool:
-        self.pending_pause = False
-        self.ignore_start_dp_wave = False
-        return _base_pause_complete(self)
-
-    def _patched_resume_scheduler(self):
-        was_paused = self.scheduler.pause_state != PauseState.UNPAUSED
-        self.pending_pause = False
-        self.ignore_start_dp_wave = False
-        _base_resume_scheduler(self)
-        if was_paused:
-            self.engines_running = True
-            self._force_dp_running_state_sync = True
-
-    def _patched_has_global_unfinished_reqs(self, local_unfinished: bool) -> bool:
-        self.step_counter += 1
-        if getattr(self, "_force_dp_running_state_sync", False):
-            self._force_dp_running_state_sync = False
-            return ParallelConfig.has_unfinished_dp(self.dp_group, local_unfinished)
-        if self.step_counter % 32 != 0:
-            return True
-        return ParallelConfig.has_unfinished_dp(self.dp_group, local_unfinished)
-
-    DPEngineCoreProc.add_request = _patched_add_request
-    DPEngineCoreProc._handle_client_request = _patched_handle_client_request
-    DPEngineCoreProc._pause_complete = _patched_pause_complete
-    DPEngineCoreProc.resume_scheduler = _patched_resume_scheduler
-    DPEngineCoreProc._has_global_unfinished_reqs = _patched_has_global_unfinished_reqs
 
 
 def monkey_patch_no_moe_lora():
