@@ -109,6 +109,16 @@ class TrainSink:
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
 
+    def batch_progress(self) -> tuple[int, int, str]:
+        """``(current, target, unit)`` for the in-progress train batch — fuel
+        for the orchestrator's pipeline log. Returns rollout count vs
+        ``batch_size`` when rollout-batching, or token count vs
+        ``token_batch_size`` when token-batching."""
+        if self.batch_size is not None:
+            return len(self.pending_batch), self.batch_size, "rollouts"
+        assert self.token_batch_size is not None
+        return sum(get_seq_len(r) for r in self.pending_batch), self.token_batch_size, "tokens"
+
     # ── ingest ────────────────────────────────────────────────────────────
 
     async def add(self, rollout: Rollout) -> TrainBatch | None:

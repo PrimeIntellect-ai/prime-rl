@@ -39,7 +39,6 @@ from aiolimiter import AsyncLimiter
 
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
-from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import GroupState, Kind, Policy, Rollout, RolloutMeta
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
@@ -151,8 +150,6 @@ class RolloutDispatcher:
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
         training_mode: Literal["rl", "opd", "sft"],
-        log_interval: float,
-        wandb_enabled: bool,
     ) -> None:
         self.policy = policy
         self.train_envs = train_envs
@@ -190,21 +187,9 @@ class RolloutDispatcher:
         self.train_scheduling_disabled: bool = False
 
         # All per-poll counters live on this dataclass — see ``DispatcherMetrics``.
+        # The orchestrator's ``PeriodicLogger`` is the only consumer; it reads
+        # ``gauges()`` + ``metrics.drained()`` once per tick.
         self.metrics = DispatcherMetrics()
-
-        # Dispatcher-owned periodic logger. Started in ``start()``, stopped
-        # in ``stop()`` — same lifecycle as the dispatch loop itself. The
-        # snapshot merges instantaneous gauges with per-poll drain
-        # counters; drained() flushes (clears the drain on read), so this
-        # is the only thing that resets them. Metric keys for both are
-        # enumerated up front.
-        self.periodic_logger = PeriodicLogger(
-            name="Dispatcher",
-            collect=self.collect,
-            metric_keys=list(self.gauges().keys()) + list(DispatcherMetrics.DRAIN_KEYS),
-            interval=log_interval,
-            wandb_enabled=wandb_enabled,
-        )
 
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
@@ -229,6 +214,15 @@ class RolloutDispatcher:
     @property
     def available_permits(self) -> int:
         return self.max_inflight - self.inflight_permits
+
+    @property
+    def inflight_by_env(self) -> dict[tuple[Kind, str], int]:
+        """Per-(kind, env) inflight rollout count. Used by the orchestrator's
+        pipeline log to break down dispatched rollouts per env."""
+        counts: dict[tuple[Kind, str], int] = defaultdict(int)
+        for meta in self.inflight.values():
+            counts[(meta.kind, meta.env_name)] += meta.rollout_count
+        return dict(counts)
 
     @property
     def queued_eval_examples(self) -> int:
@@ -264,7 +258,6 @@ class RolloutDispatcher:
     async def start(self) -> None:
         """Single dispatch loop: schedule, wait, collect, repeat. Runs until ``stop()``."""
         self.task = asyncio.current_task()
-        await self.periodic_logger.start()
         try:
             while not self.stopped.is_set():
                 await self.fill_inflight()
@@ -290,7 +283,6 @@ class RolloutDispatcher:
 
     async def stop(self) -> None:
         self.stopped.set()
-        await self.periodic_logger.stop()
         await self.cancel_inflight_rollouts()
         if self.task is not None:
             await safe_cancel(self.task)
@@ -773,31 +765,3 @@ class RolloutDispatcher:
             "dispatcher/off_policy_level_max": float(self.max_off_policy_level),
             "dispatcher/off_policy_level_mean": self.mean_off_policy_level,
         }
-
-    def collect(self) -> tuple[str, dict[str, float]]:
-        """Single source of periodic-logger truth: produces both the
-        compact console body and the wandb dict from one consistent
-        snapshot.
-
-        ``DispatcherMetrics.drained`` clears its counters on read, so we
-        call it exactly once here — anywhere else calling it would steal
-        the drain interval.
-        """
-        gauges = self.gauges()
-        drain = self.metrics.drained()
-        mode_name = "PREFER_EVAL" if self.mode == DispatcherMode.PREFER_EVAL else "PREFER_TRAIN"
-        total = int(drain["dispatcher/total_rollouts"])
-        errored = int(drain["dispatcher/errored_rollouts_total"])
-        empty = int(drain["dispatcher/empty_rollouts_total"])
-        cancelled = int(drain["dispatcher/cancelled_train_rollouts"] + drain["dispatcher/cancelled_eval_rollouts"])
-        body = (
-            f"mode={mode_name} | "
-            f"inflight={self.inflight_train_count + self.inflight_eval_count} "
-            f"(train={self.inflight_train_count}, eval={self.inflight_eval_count}) | "
-            f"permits={self.inflight_permits}/{self.max_inflight} | "
-            f"groups={len(self.groups)} | "
-            f"queued_eval={self.queued_eval_examples} | "
-            f"off_policy={self.mean_off_policy_level:.1f} (max={self.max_off_policy_level}) | "
-            f"rollouts={total} (errored={errored} empty={empty} cancelled={cancelled})"
-        )
-        return body, {**gauges, **drain}

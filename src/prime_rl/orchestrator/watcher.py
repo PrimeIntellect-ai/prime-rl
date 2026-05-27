@@ -22,7 +22,6 @@ import asyncio
 import time
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.types import Policy, VersionObserver
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.client import InferencePool
@@ -42,8 +41,6 @@ class WeightWatcher:
         inference: InferencePool,
         observers: list[VersionObserver],
         lora_name: str | None,
-        log_interval: float,
-        wandb_enabled: bool,
         ckpt_step: int = 0,
         poll_interval: float = 1.0,
     ) -> None:
@@ -55,19 +52,11 @@ class WeightWatcher:
         self.ckpt_step = ckpt_step
         self.poll_interval = poll_interval
 
-        # Latency metrics surfaced via ``gauges()`` to the periodic logger.
+        # Latency metrics surfaced via ``gauges()`` to the orchestrator's
+        # ``PeriodicLogger`` (single consumer; reads once per tick).
         self.last_update_weights_time: float = 0.0
         self.last_wait_for_ckpt_time: float = 0.0
         self.update_count: int = 0
-
-        # Watcher-owned periodic logger. Same lifecycle as the polling loop.
-        self.periodic_logger = PeriodicLogger(
-            name="Watcher",
-            collect=self.collect,
-            metric_keys=list(self.gauges().keys()),
-            interval=log_interval,
-            wandb_enabled=wandb_enabled,
-        )
 
         self.task: asyncio.Task | None = None
         self.update_lock = asyncio.Lock()
@@ -76,7 +65,6 @@ class WeightWatcher:
     async def start(self) -> None:
         """Main poll loop. Runs until ``stop()`` is called."""
         self.task = asyncio.current_task()
-        await self.periodic_logger.start()
         try:
             while not self.stopped.is_set():
                 next_step = self.compute_next_ckpt_step()
@@ -88,7 +76,6 @@ class WeightWatcher:
 
     async def stop(self) -> None:
         self.stopped.set()
-        await self.periodic_logger.stop()
         if self.task is not None:
             await safe_cancel(self.task)
             self.task = None
@@ -159,13 +146,3 @@ class WeightWatcher:
             "watcher/last_update_weights_time_s": self.last_update_weights_time,
             "watcher/last_wait_for_ckpt_time_s": self.last_wait_for_ckpt_time,
         }
-
-    def collect(self) -> tuple[str, dict[str, float]]:
-        gauges = self.gauges()
-        body = (
-            f"policy_version={self.policy.version} | "
-            f"updates={self.update_count} | "
-            f"last_update={format_time(self.last_update_weights_time)} | "
-            f"last_ckpt_wait={format_time(self.last_wait_for_ckpt_time)}"
-        )
-        return body, gauges

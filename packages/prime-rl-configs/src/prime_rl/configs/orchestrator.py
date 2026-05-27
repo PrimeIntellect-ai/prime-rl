@@ -561,6 +561,13 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
+class OrchestratorExperimentalConfig(BaseConfig):
+    """Reserved for experimental orchestrator fields. Currently empty —
+    kept around so adding a new ``experimental`` toggle later doesn't
+    need to re-introduce the class + the ``OrchestratorConfig
+    .experimental`` field at the same time."""
+
+
 class RolloutModelConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
 
@@ -626,13 +633,15 @@ class OrchestratorConfig(BaseConfig):
     to drop matching rollouts before they consume a slot in the batch (e.g. a zero-advantage group
     never makes it into a training batch). The legacy orchestrator ignores this list."""
 
-    post_batch_filters: list[FilterConfig] = Field(
-        default=[GibberishFilterConfig(), RepetitionFilterConfig(), ZeroAdvantageFilterConfig()],
-        validation_alias=AliasChoices("post_batch_filters", "filters"),
-    )
+    post_batch_filters: list[FilterConfig] = [
+        GibberishFilterConfig(),
+        RepetitionFilterConfig(),
+        ZeroAdvantageFilterConfig(),
+    ]
     """Filters applied *after* a batch has been assembled. Each filter annotates each rollout;
     rollouts flagged by an enforcing filter are still recorded but not shipped to the trainer.
-    ``filters`` is accepted as a silent alias for backwards compatibility."""
+    The legacy ``filters`` TOML/CLI key is silently renamed to ``post_batch_filters`` via a
+    ``@model_validator(mode="before")`` — see ``_alias_filters_to_post_batch_filters``."""
 
     log: LogConfig = LogConfig()
 
@@ -701,6 +710,20 @@ class OrchestratorConfig(BaseConfig):
 
     env_install_prerelease: bool = False
     """Allow pre-release versions when installing environments (e.g. ``verifiers>=0.1.12.dev5``). Passes ``--prerelease`` to ``prime env install``."""
+
+    experimental: OrchestratorExperimentalConfig = OrchestratorExperimentalConfig()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _alias_filters_to_post_batch_filters(cls, data: Any) -> Any:
+        """Legacy TOML/CLI used ``[orchestrator.filters]`` for what is now
+        ``post_batch_filters``. Rename the key here so existing configs
+        keep parsing without forcing the runtime code to know about the
+        alias."""
+        if isinstance(data, dict) and "filters" in data and "post_batch_filters" not in data:
+            data = dict(data)
+            data["post_batch_filters"] = data.pop("filters")
+        return data
 
     @model_validator(mode="before")
     @classmethod
@@ -823,11 +846,6 @@ class OrchestratorConfig(BaseConfig):
                     f"Duplicate filter types in {slot_name}: {types}. Each filter type may only appear once per slot."
                 )
         return self
-
-    @property
-    def filters(self) -> list[FilterConfig]:
-        """Backwards-compatible alias for ``post_batch_filters``."""
-        return self.post_batch_filters
 
     @model_validator(mode="after")
     def _force_no_renderer_for_sft(self):

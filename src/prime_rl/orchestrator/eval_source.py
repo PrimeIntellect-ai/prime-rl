@@ -19,6 +19,7 @@ non-Optional ``eval_envs`` / ``eval_config`` and the body is free of
 from __future__ import annotations
 
 from collections import deque
+from itertools import zip_longest
 
 from prime_rl.configs.orchestrator import EvalConfig
 from prime_rl.orchestrator.envs import EvalEnvs
@@ -43,9 +44,10 @@ class EvalSource:
             self.intervals[env.name] = env.config.interval
 
         # Pending eval examples in FIFO order, each carrying ``env_name`` +
-        # ``_eval_step`` baked in. ``trigger`` extends with one fresh copy
-        # per example per fired env, so the same row can be enqueued at
-        # multiple eval steps over the run without aliasing.
+        # ``_eval_step`` baked in. ``trigger`` round-robins across fired
+        # envs at example granularity, copying each row fresh so the same
+        # row can be enqueued at multiple eval steps over the run without
+        # aliasing.
         self.queue: deque[dict] = deque()
 
         # The first ``trigger`` call (orchestrator startup) fires every
@@ -70,15 +72,22 @@ class EvalSource:
         if is_first and self.eval_config.skip_first_step:
             return []
         fired = [name for name, interval in self.intervals.items() if is_first or step % interval == 0]
-        for name in fired:
-            self.enqueue(name, step)
+        # Round-robin enqueue across fired envs (A₁, B₁, A₂, B₂, …) so the
+        # dispatcher rotates through them at example granularity instead of
+        # draining all of A before starting B. ``try_schedule``'s "continue
+        # existing group" branch still keeps each example's ``group_size``
+        # rollouts back-to-back, so per-example prefix-cache locality is
+        # intact. ``zip_longest`` pads short envs with ``None`` once they
+        # run out — those are skipped.
+        iters = [iter(self.examples_by_env[name]) for name in fired]
+        for round_examples in zip_longest(*iters):
+            for example in round_examples:
+                if example is None:
+                    continue
+                row = dict(example)
+                row["_eval_step"] = step
+                self.queue.append(row)
         return fired
-
-    def enqueue(self, env_name: str, step: int) -> None:
-        for example in self.examples_by_env.get(env_name, []):
-            row = dict(example)
-            row["_eval_step"] = step
-            self.queue.append(row)
 
     # ── pull ───────────────────────────────────────────────────────────────
 

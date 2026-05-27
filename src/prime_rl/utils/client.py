@@ -303,17 +303,17 @@ async def check_health(
 NCCL_READY_MARKER = "NCCL_READY"
 
 
-async def _pause_engines(admin_clients: list[AsyncClient]) -> None:
+async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None:
     """Pause all inference engines, waiting for in-flight requests to drain."""
     logger = get_logger()
-    logger.info("Pausing inference engines for weight update")
+    logger.info(f"Updating policy in-flight to v{step}")
 
     async def _pause(client: AsyncClient) -> None:
         response = await client.post("/pause", params={"mode": "keep", "clear_cache": "false"})
         response.raise_for_status()
 
     await asyncio.gather(*[_pause(client) for client in admin_clients])
-    logger.info("All inference engines paused")
+    logger.debug("All inference engines paused")
 
 
 async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
@@ -325,7 +325,7 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
         response.raise_for_status()
 
     await asyncio.gather(*[_resume(client) for client in admin_clients])
-    logger.info("All inference engines resumed")
+    logger.debug("All inference engines resumed")
 
 
 async def update_weights(
@@ -356,7 +356,7 @@ async def update_weights(
             response.raise_for_status()
 
         # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
-        await _pause_engines(admin_clients)
+        await _pause_engines(admin_clients, step=step)
 
         try:
             # Create ready marker before servers enter receive path (used by NCCL broadcast)

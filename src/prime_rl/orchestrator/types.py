@@ -208,6 +208,7 @@ class EvalBatchMetrics:
     completion_len_min: float = 0.0
     truncation_rate: float = 0.0
     no_response_rate: float = 0.0
+    num_turns_mean: float = 0.0
     pass_at_k: dict[str, float] = field(default_factory=dict)
 
     def to_wandb_dict(self, *, env_name: str, step: int) -> dict[str, float]:
@@ -228,6 +229,7 @@ class EvalBatchMetrics:
             out[f"{prefix}/completion_len/min"] = self.completion_len_min
             out[f"{prefix}/is_truncated/mean"] = self.truncation_rate
             out[f"{prefix}/no_response/mean"] = self.no_response_rate
+            out[f"{prefix}/num_turns/mean"] = self.num_turns_mean
             for k, v in self.pass_at_k.items():
                 out[f"{prefix}/{k}"] = v
         return out

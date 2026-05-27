@@ -370,7 +370,7 @@ class Envs(Generic[EnvT]):
         if not processes:
             return
         logger = get_logger()
-        logger.debug(f"Shutting down {len(processes)} env server(s), waiting for sandbox cleanup...")
+        logger.debug(f"Shutting down {len(processes)} env server(s)")
         for p in processes:
             p.terminate()
         for p in processes:

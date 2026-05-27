@@ -89,6 +89,15 @@ class EvalSink:
         env = self.eval_envs.get(env_name)
         return len(env.examples) * env.config.group_size
 
+    def epoch_progress(self) -> list[tuple[str, int, int, int]]:
+        """``(env_name, eval_step, arrivals_so_far, expected)`` for every
+        epoch currently accumulating in ``pending_batches`` — fuel for the
+        orchestrator's pipeline log. Empty list when no eval is in flight."""
+        return [
+            (env_name, eval_step, len(bucket), self.batch_size_for(env_name))
+            for (env_name, eval_step), bucket in self.pending_batches.items()
+        ]
+
     # ── level 1: per-rollout (no-op for eval) ─────────────────────────────
 
     def process_rollout(self, rollout: Rollout) -> None:
@@ -161,6 +170,7 @@ class EvalSink:
             metrics.completion_len_min = float(min(lens))
             metrics.truncation_rate = float(sum(1 for r in valid if r.get("is_truncated")) / len(valid))
             metrics.no_response_rate = float(sum(1 for r in valid if not r.get("completion")) / len(valid))
+            metrics.num_turns_mean = float(sum(len(r.get("trajectory") or []) for r in valid) / len(valid))
 
             # pass@k: reconstruct per-example reward sets from ``example_id``,
             # ignoring errored attempts (they don't count toward k tries).

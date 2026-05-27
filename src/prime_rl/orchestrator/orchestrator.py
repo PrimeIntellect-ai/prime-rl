@@ -47,7 +47,7 @@ from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
-from prime_rl.orchestrator.dispatcher import DispatcherMode, RolloutDispatcher
+from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
@@ -388,8 +388,6 @@ class Orchestrator:
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
             training_mode=config.training_mode,
-            log_interval=log_interval,
-            wandb_enabled=wandb_enabled,
         )
         self.metrics = MetricsBuilder(config)
         self.train_sink = TrainSink(
@@ -412,17 +410,20 @@ class Orchestrator:
             observers=[self.dispatcher],
             lora_name=self.lora_name,
             ckpt_step=self.progress.step,
-            log_interval=log_interval,
-            wandb_enabled=wandb_enabled,
         )
-        # Orchestrator's own periodic logger: tracks event-loop lag (a
-        # process-wide concern that fits naturally with the main loop).
-        # Imported from verifiers — see ``verifiers.utils.async_utils``.
+        # Single periodic logger for the whole pipeline. It pulls live state
+        # from the dispatcher / watcher / sinks / lag monitor each tick. The
+        # dispatcher's drain counters are consumed exactly once here (via
+        # ``self.dispatcher.metrics.drained()``), so this is also the only
+        # place that resets them.
         self.lag_monitor = EventLoopLagMonitor()
         self.periodic_logger = PeriodicLogger(
-            name="Event Loop",
-            collect=self.collect_event_loop_lag,
+            name="Pipeline",
+            collect=self.collect_pipeline_view,
             metric_keys=[
+                *list(self.dispatcher.gauges().keys()),
+                *list(DispatcherMetrics.DRAIN_KEYS),
+                *list(self.watcher.gauges().keys()),
                 "event_loop_lag/min",
                 "event_loop_lag/mean",
                 "event_loop_lag/median",
@@ -444,8 +445,9 @@ class Orchestrator:
         start_time = time.perf_counter()
 
         # Spawn background loops (dispatcher schedules, watcher polls). The
-        # pipeline ``main_loop`` runs inline in this task; each component
-        # also runs its own ``PeriodicLogger`` for steady-state gauges.
+        # pipeline ``main_loop`` runs inline in this task; the single
+        # ``PeriodicLogger`` polls dispatcher / watcher / sinks / lag
+        # monitor each ``log.interval`` seconds for the pipeline-view log.
         self.lag_task = asyncio.create_task(self.lag_monitor.run(), name="event_loop_lag")
         await self.periodic_logger.start()
         self.component_tasks = [
@@ -550,9 +552,8 @@ class Orchestrator:
             self.dispatcher.disable_train_scheduling()
             n_cancelled = await self.dispatcher.cancel_inflight_train_rollouts()
             get_logger().info(
-                f"Reached max_steps={config.max_steps}, draining pipeline "
-                f"(cancelled {n_cancelled} in-flight train rollout(s); "
-                f"any triggered eval will complete)"
+                f"Draining pipeline (cancelled {n_cancelled} in-flight train rollout(s); "
+                f"any in-flight evals will complete)"
             )
             return
 
@@ -680,29 +681,67 @@ class Orchestrator:
         )
         get_logger().info(f"Starting evals in {', '.join(fired)} ({total_rollouts} total rollouts)")
 
-    def collect_event_loop_lag(self) -> tuple[str, dict[str, float]]:
-        """Format the event-loop-lag periodic line + return the wandb dict.
-        Empty payload when no samples have been collected yet."""
-        stats = EventLoopLagStats.from_monitor(self.lag_monitor)
-        if stats.n == 0:
-            return "(no samples yet)", {}
-        body = (
-            f"min={format_time(stats.min)} | "
-            f"mean={format_time(stats.mean)} | "
-            f"median={format_time(stats.median)} | "
-            f"p90={format_time(stats.p90)} | "
-            f"p99={format_time(stats.p99)} | "
-            f"max={format_time(stats.max)} (n={stats.n})"
-        )
-        payload = {
-            "event_loop_lag/min": stats.min,
-            "event_loop_lag/mean": stats.mean,
-            "event_loop_lag/median": stats.median,
-            "event_loop_lag/p90": stats.p90,
-            "event_loop_lag/p99": stats.p99,
-            "event_loop_lag/max": stats.max,
-            "event_loop_lag/n": float(stats.n),
-        }
+    def collect_pipeline_view(self) -> tuple[str, dict[str, float]]:
+        """Unified pipeline view for the orchestrator's ``PeriodicLogger``.
+
+        Console body — headline carries the aggregate (total inflight,
+        total finished this tick, current train-batch fill); indented
+        rows break it down per env, with the eval rows also reporting
+        their epoch progress (``batch=arrivals/expected``).
+
+        Wandb payload: all the dispatcher / watcher / event-loop gauges
+        and drain counters from the periodic axis — existing
+        ``_timestamp``-axis dashboards keep working.
+        """
+        # ``metrics.drained()`` clears its per-env dicts on read, so we
+        # snapshot ``total_rollouts_by_env`` first; ``drained()`` then
+        # consumes the totals + resets all the drain counters.
+        finished_by_env = dict(self.dispatcher.metrics.total_rollouts_by_env)
+        disp_gauges = self.dispatcher.gauges()
+        disp_drain = self.dispatcher.metrics.drained()
+        watcher_gauges = self.watcher.gauges()
+        lag_stats = EventLoopLagStats.from_monitor(self.lag_monitor)
+
+        inflight_by_env = self.dispatcher.inflight_by_env
+        inflight_train = self.dispatcher.inflight_train_count
+        inflight_eval = self.dispatcher.inflight_eval_count
+        inflight_total = inflight_train + inflight_eval
+        train_progress, train_target, train_unit = self.train_sink.batch_progress()
+        total_finished = int(disp_drain["dispatcher/total_rollouts"])
+
+        lines = [
+            f"inflight {inflight_total}/{self.dispatcher.max_inflight} "
+            f"(train={inflight_train}, eval={inflight_eval}) | "
+            f"finished {total_finished} | "
+            f"train batch {train_progress}/{train_target} {train_unit}"
+        ]
+        # Per-env train rows.
+        for env in self.train_envs:
+            lines.append(
+                f"╰─ train {env.name} | dispatched={inflight_by_env.get(('train', env.name), 0)} "
+                f"finished={finished_by_env.get(env.name, 0)}"
+            )
+        # Per-epoch eval rows (only when accumulating).
+        if self.eval_sink is not None:
+            for env_name, eval_step, arrivals, expected in self.eval_sink.epoch_progress():
+                lines.append(
+                    f"╰─ eval {env_name}@{eval_step} | "
+                    f"dispatched={inflight_by_env.get(('eval', env_name), 0)} "
+                    f"finished={finished_by_env.get(env_name, 0)} | "
+                    f"batch={arrivals}/{expected}"
+                )
+
+        body = lines[0] if len(lines) == 1 else lines[0] + "\n\t\t" + "\n\t\t".join(lines[1:])
+
+        payload: dict[str, float] = {**disp_gauges, **disp_drain, **watcher_gauges}
+        if lag_stats.n > 0:
+            payload["event_loop_lag/min"] = lag_stats.min
+            payload["event_loop_lag/mean"] = lag_stats.mean
+            payload["event_loop_lag/median"] = lag_stats.median
+            payload["event_loop_lag/p90"] = lag_stats.p90
+            payload["event_loop_lag/p99"] = lag_stats.p99
+            payload["event_loop_lag/max"] = lag_stats.max
+            payload["event_loop_lag/n"] = float(lag_stats.n)
         return body, payload
 
     def log_train_batch(self, batch: TrainBatch, *, step: int, step_time: float) -> None:
@@ -723,10 +762,13 @@ class Orchestrator:
         trainable_rate = (n_trainable / n_survivors) if n_survivors else 0.0
         reward_mean = sum(r["reward"] for r in batch.rollouts) / max(n_survivors, 1)
         max_off_policy = max((int(r.get("_off_policy_steps", 0)) for r in batch.rollouts), default=0)
+        turns_mean = sum(len(r.get("trajectory") or []) for r in batch.rollouts) / max(n_survivors, 1)
+        truncation_rate = sum(1 for r in batch.rollouts if r.get("is_truncated")) / max(n_survivors, 1)
 
         head = (
             f"Train step {step} | {format_time(step_time):>7} | Reward {reward_mean:.4f} | "
             f"Error {error_rate:.1%} | Trainable {n_trainable}/{n_survivors} ({trainable_rate:.1%}) | "
+            f"Turns {turns_mean:.1f} | Truncation {truncation_rate:.1%} | "
             f"Max Off-Policy {max_off_policy}"
         )
         if len(self.train_envs) <= 1:
@@ -748,9 +790,16 @@ class Orchestrator:
             env_error_rate = (n_env_errors / n_env_arrivals) if n_env_arrivals else 0.0
             env_reward = (sum(r["reward"] for r in env_rollouts) / len(env_rollouts)) if env_rollouts else 0.0
             env_max_off_policy = max((int(r.get("_off_policy_steps", 0)) for r in env_rollouts), default=0)
+            env_turns = (
+                sum(len(r.get("trajectory") or []) for r in env_rollouts) / len(env_rollouts) if env_rollouts else 0.0
+            )
+            env_truncation = (
+                sum(1 for r in env_rollouts if r.get("is_truncated")) / len(env_rollouts) if env_rollouts else 0.0
+            )
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_reward:.4f} | "
-                f"Error {env_error_rate:.1%} | Max Off-Policy {env_max_off_policy}"
+                f"Error {env_error_rate:.1%} | Turns {env_turns:.1f} | Truncation {env_truncation:.1%} | "
+                f"Max Off-Policy {env_max_off_policy}"
             )
         get_logger().success("\n\t\t".join(lines))
 
@@ -786,6 +835,7 @@ class Orchestrator:
             f"Eval step {batch.step} ({batch.env_name}) | {format_time(elapsed):>7} | "
             f"Reward {batch.metrics.reward_mean:.4f} | Error {error_rate:.1%} | "
             f"Valid {n_valid}/{n_total} ({valid_rate:.1%}) | "
+            f"Turns {batch.metrics.num_turns_mean:.1f} | Truncation {batch.metrics.truncation_rate:.1%} | "
             f"Max Off-Policy {max_off_policy}"
         )
 
