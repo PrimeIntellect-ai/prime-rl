@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import socket
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -20,7 +21,7 @@ import verifiers as vf
 from httpx import AsyncClient
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.client import load_lora_adapter, setup_admin_clients, setup_clients
+from prime_rl.utils.client import ClientIdentity, client_identity, load_lora_adapter, setup_admin_clients, setup_clients
 from prime_rl.utils.logger import get_logger
 
 # --- Shared discovery functions ---
@@ -248,6 +249,11 @@ class ElasticInferencePool:
         client = self._eval_clients[self._eval_index % len(self._eval_clients)]
         self._eval_index += 1
         return client
+
+    async def select_train_client(self, load: Mapping[ClientIdentity, int]) -> vf.ClientConfig:
+        while not self.train_clients:
+            await asyncio.sleep(self.sync_interval)
+        return min(self.train_clients, key=lambda c: load[client_identity(c)])
 
     @property
     def admin_clients(self) -> list[AsyncClient]:

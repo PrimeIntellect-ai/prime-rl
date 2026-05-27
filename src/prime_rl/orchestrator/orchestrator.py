@@ -282,12 +282,18 @@ class Orchestrator:
             self.logger.info("Training from scratch")
 
         # ── Construct components — each gets only the deps it needs. ─────
+        # Rollouts go to the teacher in sft mode (teacher generates, student
+        # is trained via the teacher's outputs), to the student otherwise.
+        if config.training_mode == "sft":
+            assert self.teacher_inference is not None, "sft mode requires teacher inference"
+            rollout_inference = self.teacher_inference
+        else:
+            rollout_inference = self.student_inference
         self.dispatcher = RolloutDispatcher(
             config=config,
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
-            student_inference=self.student_inference,
-            teacher_inference=self.teacher_inference,
+            inference=rollout_inference,
             policy=self.policy,
             resume_step=self.resume_step,
         )
@@ -652,7 +658,11 @@ async def run_orchestrator(config: OrchestratorConfig) -> None:
 
 
 async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer):
-    """Mirror of ``prime_rl.orchestrator.orchestrator.setup_student_inference_pool``."""
+    """Build the student inference pool + matching renderer (if configured).
+
+    Returns ``(renderer | None, inference_pool)``. The renderer is None when
+    ``config.use_renderer`` is False (default MITO / TITO path).
+    """
     from renderers.base import create_renderer
 
     client_config = config.student.client
@@ -698,7 +708,7 @@ def main() -> None:
     from prime_rl.utils.config import cli
     from prime_rl.utils.process import set_proc_title
 
-    set_proc_title("OrchestratorV2")
+    set_proc_title("Orchestrator")
     import uvloop
 
     uvloop.install()

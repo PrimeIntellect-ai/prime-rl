@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Mapping
 from itertools import cycle
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -14,6 +15,16 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, stop_after_d
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
+
+# Identity tuple used by ``select_train_client`` to key load counts. ``api_base_url``
+# distinguishes servers; ``X-data-parallel-rank`` distinguishes DP shards within a
+# server, since the router uses that header to route to specific GPU ranks.
+ClientIdentity = tuple[str, str | None]
+
+
+def client_identity(client: vf.ClientConfig) -> ClientIdentity:
+    """Stable identity for load balancing across inference clients."""
+    return (client.api_base_url, client.extra_headers.get("X-data-parallel-rank"))
 
 
 @runtime_checkable
@@ -41,6 +52,15 @@ class InferencePool(Protocol):
 
     async def get_eval_client(self) -> vf.ClientConfig:
         """Get next eval client in round-robin fashion."""
+        ...
+
+    async def select_train_client(self, load: Mapping[ClientIdentity, int]) -> vf.ClientConfig:
+        """Pick the train client with lowest in-flight load.
+
+        Waits for at least one train client to be available, then returns
+        the one with the smallest ``load[client_identity(client)]``. The
+        caller owns the in-flight counter; the pool just picks against it.
+        """
         ...
 
     async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
@@ -112,6 +132,11 @@ class StaticInferencePool:
 
     async def get_eval_client(self) -> vf.ClientConfig:
         return next(self._eval_cycle)
+
+    async def select_train_client(self, load: Mapping[ClientIdentity, int]) -> vf.ClientConfig:
+        while not self.train_clients:
+            await asyncio.sleep(0.5)
+        return min(self.train_clients, key=lambda c: load[client_identity(c)])
 
     async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
         await check_health(

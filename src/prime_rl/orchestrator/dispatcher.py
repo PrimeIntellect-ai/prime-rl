@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import uuid
 from collections import Counter, defaultdict, deque
 
 import verifiers as vf
@@ -42,7 +43,7 @@ from prime_rl.orchestrator.types import (
     SchedMode,
 )
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
-from prime_rl.utils.client import InferencePool
+from prime_rl.utils.client import InferencePool, client_identity
 from prime_rl.utils.logger import get_logger
 
 
@@ -111,8 +112,7 @@ class RolloutDispatcher:
         *,
         train_envs: TrainEnvs,
         eval_envs: EvalEnvs | None,
-        student_inference: InferencePool,
-        teacher_inference: InferencePool | None,
+        inference: InferencePool,
         policy: Policy,
         resume_step: int | None = None,
     ) -> None:
@@ -121,13 +121,7 @@ class RolloutDispatcher:
         self.policy = policy
         self.train_envs = train_envs
         self.eval_envs = eval_envs
-
-        # Rollouts go to teacher in sft mode, student otherwise.
-        if config.training_mode == "sft":
-            assert teacher_inference is not None, "sft mode requires teacher_inference"
-            self.rollout_inference = teacher_inference
-        else:
-            self.rollout_inference = student_inference
+        self.inference = inference
 
         # Shared concurrency cap. ``config.max_inflight_rollouts`` is guaranteed
         # to be set by the OrchestratorConfig resolver (it falls back from
@@ -144,10 +138,10 @@ class RolloutDispatcher:
         self.train_cycle = TrainEnvCycle(train_envs, seed=config.seed)
         self.group_size = config.group_size
 
-        # In-flight tracking.
+        # In-flight tracking. Group IDs are UUIDs so dispatcher restarts /
+        # resumed runs don't accidentally collide on a stale counter.
         self.inflight: dict[asyncio.Task, RolloutMeta] = {}
-        self.groups: dict[int, GroupState] = {}
-        self.next_group_id = 0
+        self.groups: dict[uuid.UUID, GroupState] = {}
 
         # Output queue. Bounded so the dispatcher backpressures on a slow batcher.
         self.out_q: asyncio.Queue[Trajectory] = asyncio.Queue(maxsize=max(8, self.max_inflight))
@@ -201,9 +195,10 @@ class RolloutDispatcher:
     @property
     def model_name(self) -> str:
         """Model name to send on rollout requests — follows ``policy.model_name``
-        in non-sft modes, the teacher's model name in sft."""
+        in non-sft modes, the inference pool's model name in sft (where the
+        pool points at the teacher and the policy is irrelevant)."""
         if self.config.training_mode == "sft":
-            return self.rollout_inference.model_name
+            return self.inference.model_name
         return self.policy.model_name
 
     @property
@@ -280,7 +275,7 @@ class RolloutDispatcher:
     async def on_new_version(self, step: int) -> None:
         """Bump off-policy counters, cancel stale train rollouts, fire eval triggers."""
         # 1) Increment off-policy steps for in-flight train rollouts.
-        stale_group_ids: set[int] = set()
+        stale_group_ids: set[uuid.UUID] = set()
         for meta in self.inflight.values():
             if meta.kind != "train":
                 continue
@@ -410,7 +405,7 @@ class RolloutDispatcher:
             return False
         example = self.train_cycle.next_example()
         env_name = example["env_name"]
-        group_id = self.new_group_id()
+        group_id = uuid.uuid4()
         self.groups[group_id] = GroupState(
             kind="train",
             env_name=env_name,
@@ -435,7 +430,7 @@ class RolloutDispatcher:
         if cost > self.available_permits:
             return False
         self.eval_queue.popleft()
-        group_id = self.new_group_id()
+        group_id = uuid.uuid4()
         self.groups[group_id] = GroupState(
             kind="eval",
             env_name=env_name,
@@ -447,12 +442,7 @@ class RolloutDispatcher:
         )
         return await self.schedule_group_rollout(group_id, self.groups[group_id])
 
-    def new_group_id(self) -> int:
-        gid = self.next_group_id
-        self.next_group_id += 1
-        return gid
-
-    async def schedule_group_rollout(self, group_id: int, group: GroupState) -> bool:
+    async def schedule_group_rollout(self, group_id: uuid.UUID, group: GroupState) -> bool:
         """Dispatch one ``run_rollout`` / ``run_group`` task for this group.
 
         Returns False only if we couldn't even schedule one rollout (no clients
@@ -462,7 +452,10 @@ class RolloutDispatcher:
         # Pick or pin a client for the group. Pinning keeps prefix-cache hits
         # within a group.
         if group.pinned_client is None:
-            client = await self.select_least_loaded_client()
+            load = Counter(
+                client_identity(m.client_config) for m in self.inflight.values() if m.client_config is not None
+            )
+            client = await self.inference.select_train_client(load)
             if group_id not in self.groups:
                 return False
             group.pinned_client = client
@@ -525,20 +518,6 @@ class RolloutDispatcher:
         for _ in range(n):
             self.semaphore.release()
             self.inflight_permits -= 1
-
-    @staticmethod
-    def client_identity(c: vf.ClientConfig) -> tuple[str, str | None]:
-        return (c.api_base_url, c.extra_headers.get("X-data-parallel-rank"))
-
-    async def select_least_loaded_client(self) -> vf.ClientConfig:
-        clients = self.rollout_inference.train_clients
-        while not clients:
-            await asyncio.sleep(0.5)
-            clients = self.rollout_inference.train_clients
-        load = Counter(
-            self.client_identity(m.client_config) for m in self.inflight.values() if m.client_config is not None
-        )
-        return min(clients, key=lambda c: load[self.client_identity(c)])
 
     # ── completion handling ────────────────────────────────────────────────
 
@@ -656,7 +635,7 @@ class RolloutDispatcher:
         out["stop_condition"] = None
         return out
 
-    async def drop_group(self, group_id: int) -> int:
+    async def drop_group(self, group_id: uuid.UUID) -> int:
         """Cancel any remaining in-flight tasks for this group and emit a
         cancellation marker for each, so the sink can finalize the partial
         group.
@@ -751,7 +730,7 @@ class RolloutDispatcher:
             env_total = max(self.total_rollouts_by_env[env_name], 1)
             out[f"rollouts/{env_name}/empty_rate"] = self.empty_rollouts_by_env.get(env_name, 0) / env_total
             out[f"rollouts/{env_name}/errored_rate"] = self.errored_rollouts_by_env.get(env_name, 0) / env_total
-        out.update(self.rollout_inference.get_metrics())
+        out.update(self.inference.get_metrics())
         self.cancelled_rollouts_count = 0
         self.empty_rollouts_by_env.clear()
         self.errored_rollouts_by_env.clear()

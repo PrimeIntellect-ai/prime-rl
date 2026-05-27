@@ -19,6 +19,7 @@ module):
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Literal, Protocol
@@ -114,7 +115,7 @@ class RolloutMeta:
 
     kind: Kind
     env_name: str
-    group_id: int
+    group_id: uuid.UUID
     policy_version: int
     rollout_count: int  # number of semaphore permits this task holds
     client_config: vf.ClientConfig | None = None
