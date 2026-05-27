@@ -9,8 +9,8 @@ need:
 - ``RolloutDispatcher`` schedules rollouts and emits ``Rollout``\\ s on its queue.
 - ``TrainSink`` ingests train rollouts (tokenize → advantages + pre-filter →
   post-filter), exposes ``pop_batch`` returning a ``TrainBatch``.
-- ``EvalSink`` ingests eval rollouts, exposes ``add`` returning an ``EvalBatch``
-  on epoch completion + ``build_metrics`` for log time.
+- ``EvalSink`` ingests eval rollouts, exposes ``add`` returning a finalized
+  ``EvalBatch`` (rollouts + pre-built per-env metrics) on epoch completion.
 - ``MetricsBuilder`` builds the per-step train W&B dict from the popped batch
   and orchestrator-side timings (called inline by the orchestrator).
 - ``WeightWatcher`` advances ``Policy`` and notifies the dispatcher.
@@ -599,9 +599,7 @@ class Orchestrator:
             self.logger.warning(f"Eval @ step={batch.step} env={batch.env_name}: no surviving rollouts, skipping log")
             return
 
-        assert self.eval_sink is not None and self.monitor is not None
-        metrics = self.eval_sink.build_metrics(batch)
-
+        assert self.monitor is not None
         step_path = get_step_path(get_rollout_dir(self.config.output_dir), batch.step)
         save_rollouts(
             batch.rollouts,
@@ -609,10 +607,10 @@ class Orchestrator:
             exclude_keys={"trajectory"},
         )
         self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
-        self.monitor.log(metrics, step=batch.step)
+        self.monitor.log(batch.metrics, step=batch.step)
 
         n_examples = len({r["example_id"] for r in batch.rollouts})
-        reward_mean = metrics.get(f"eval/{batch.env_name}/reward/mean", float("nan"))
+        reward_mean = batch.metrics.get(f"eval/{batch.env_name}/reward/mean", float("nan"))
         self.logger.success(
             f"Eval @ step={batch.step} env={batch.env_name} | "
             f"Reward: {reward_mean:.4f} | Rollouts: {len(batch.rollouts)} | Examples: {n_examples}"

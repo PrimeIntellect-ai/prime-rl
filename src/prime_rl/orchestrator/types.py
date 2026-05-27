@@ -23,7 +23,7 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 import verifiers as vf
 
@@ -183,12 +183,15 @@ class TrainBatch:
 
 @dataclass
 class EvalBatch:
-    """One env's eval epoch — the raw rollouts the orchestrator hands back
-    to ``EvalSink.build_metrics`` and to the monitor (samples + save_rollouts)."""
+    """One env's eval epoch. ``metrics`` is built in ``EvalSink.process_batch``
+    — the natural per-batch processing hook — from ``rollouts``; the
+    orchestrator just hands it to ``monitor.log`` along with the raw
+    rollouts (for samples + save_rollouts)."""
 
     env_name: str
     step: int
     rollouts: list[vf.RolloutOutput]
+    metrics: dict[str, Any]
 
 
 # ── watcher → observer interface ──────────────────────────────────────────
