@@ -112,16 +112,20 @@ class TrainSink:
 
     # ── ingest ────────────────────────────────────────────────────────────
 
-    async def add(self, rollout: Rollout) -> bool:
+    async def add(self, rollout: Rollout) -> None:
         """Run the per-rollout level (always) and per-group level (on
-        ``is_group_done``). Returns True if the batch is now ready to pop."""
+        ``is_group_done``). Mutates ``rollout.is_batch_done = True`` when the
+        buffer has reached its batch threshold — so the orchestrator triggers
+        ``process_one_step`` on the same uniform signal as eval.
+        """
         assert rollout.kind == "train", "TrainSink only handles train rollouts"
         await self.process_rollout(rollout)
         key = (rollout.env_name, rollout.example_id)
         self.pending_groups[key].append(rollout)
         if rollout.is_group_done:
             self.process_group(key)
-        return self.batch_ready()
+            if self.is_batch_done():
+                rollout.is_batch_done = True
 
     # ── level 1: per-rollout (tokenization) ───────────────────────────────
 
@@ -190,7 +194,10 @@ class TrainSink:
 
     # ── level 3: per-batch (post-filter + metrics) ────────────────────────
 
-    def batch_ready(self) -> bool:
+    def is_batch_done(self) -> bool:
+        """Polling counterpart of the ``Rollout.is_batch_done`` flag: True iff
+        the survivor buffer has reached ``batch_size`` (or ``token_batch_size``
+        tokens)."""
         if self.batch_size is not None:
             return len(self.batch_buf) >= self.batch_size
         assert self.token_batch_size is not None

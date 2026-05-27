@@ -377,13 +377,11 @@ class Orchestrator:
         (the atomic unit) and routes train vs eval to their respective sinks.
 
         Both sinks have the same three-level processing structure
-        (``process_rollout`` / ``process_group`` / ``process_batch``); the
-        orchestrator only sees the top-level signal:
-
-        - ``await train_sink.add(rollout) is True`` means the train batch
-          is now ready → ``process_one_step`` does ship + metrics-log + ckpt.
-        - ``eval_sink.add(rollout)`` returns an ``EvalBatchResult`` when an
-          env's epoch is complete → ``log_eval_batch`` writes monitor + disk.
+        (``process_rollout`` / ``process_group`` / ``process_batch``) and
+        share the same batch-boundary signal: ``rollout.is_batch_done``.
+        The eval sink relies on the dispatcher to stamp the flag (last
+        rollout of an env-epoch); the train sink stamps it itself inside
+        ``add()`` when its buffer reaches ``batch_size``.
         """
         assert self.dispatcher and self.train_sink and self.eval_sink
         while not self.stopped.is_set():
@@ -398,10 +396,12 @@ class Orchestrator:
                     self.log_eval_batch(result)
                 continue
 
-            batch_ready = await self.train_sink.add(rollout)
-            while batch_ready and not self.stopped.is_set():
+            await self.train_sink.add(rollout)
+            while rollout.is_batch_done and not self.stopped.is_set():
                 await self.process_one_step()
-                batch_ready = self.train_sink.batch_ready()
+                # Re-stamp from the sink's polling state: did another batch
+                # complete while we were processing this one?
+                rollout.is_batch_done = self.train_sink.is_batch_done()
 
     async def process_one_step(self) -> None:
         """Drive one shipping step. The train sink has done all per-rollout /
