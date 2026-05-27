@@ -116,6 +116,13 @@ class EvalSink:
         """Build the per-env metrics dict from a popped ``EvalBatch``. Pass@k
         is computed when the env's reward set is binary (subset of {0.0, 1.0}).
 
+        Errored rollouts (``raw["error"] is not None`` — env-side failures,
+        cancellations, task exceptions) are excluded from reward / seq_len /
+        pass@k aggregation and surfaced separately as ``cancelled_count`` /
+        ``errored_count`` (an errored rollout doesn't represent a real
+        evaluation attempt and including it as reward=0 would silently bias
+        the score down).
+
         Pure function — the orchestrator calls this when it's ready to log.
         Keeping it off the ``EvalBatch`` dataclass avoids carrying derived
         state alongside the raw rollouts.
@@ -124,10 +131,22 @@ class EvalSink:
         if not batch.rollouts:
             return to_log
 
-        rewards = [r.get("reward", 0.0) for r in batch.rollouts]
-        lens = [get_seq_len(r) for r in batch.rollouts]
-        no_response_rate = sum(1 for r in batch.rollouts if not r.get("completion")) / len(batch.rollouts)
-        truncation_rate = sum(1 for r in batch.rollouts if r.get("is_truncated")) / len(batch.rollouts)
+        prefix = f"eval/{batch.env_name}"
+        n_total = len(batch.rollouts)
+        n_cancelled = sum(1 for r in batch.rollouts if (r.get("error") or {}).get("error") == "Cancelled")
+        n_errored = sum(1 for r in batch.rollouts if r.get("error") is not None) - n_cancelled
+        valid = [r for r in batch.rollouts if r.get("error") is None]
+        to_log[f"{prefix}/cancelled_count"] = float(n_cancelled)
+        to_log[f"{prefix}/errored_count"] = float(n_errored)
+        to_log[f"{prefix}/n_rollouts"] = float(n_total)
+        to_log[f"{prefix}/valid_rate"] = float(len(valid) / max(n_total, 1))
+        if not valid:
+            return to_log
+
+        rewards = [r.get("reward", 0.0) for r in valid]
+        lens = [get_seq_len(r) for r in valid]
+        no_response_rate = sum(1 for r in valid if not r.get("completion")) / len(valid)
+        truncation_rate = sum(1 for r in valid if r.get("is_truncated")) / len(valid)
 
         group_size = 1
         if self.eval_envs is not None:
@@ -136,7 +155,6 @@ class EvalSink:
             except KeyError:
                 pass
 
-        prefix = f"eval/{batch.env_name}"
         to_log.update(
             {
                 f"{prefix}/avg@{group_size}": float(sum(rewards) / len(rewards)),
@@ -146,13 +164,13 @@ class EvalSink:
                 f"{prefix}/completion_len/min": float(min(lens)),
                 f"{prefix}/is_truncated/mean": float(truncation_rate),
                 f"{prefix}/no_response/mean": float(no_response_rate),
-                f"{prefix}/n_rollouts": float(len(batch.rollouts)),
             }
         )
 
-        # pass@k: reconstruct per-example reward sets from ``example_id``.
+        # pass@k: reconstruct per-example reward sets from ``example_id``,
+        # ignoring errored attempts (they don't count toward k tries).
         by_example: dict[int, list[float]] = {}
-        for r in batch.rollouts:
+        for r in valid:
             by_example.setdefault(r["example_id"], []).append(float(r.get("reward", 0.0)))
         to_log[f"{prefix}/n_examples"] = float(len(by_example))
         unique_rewards = {float(r) for r in rewards}

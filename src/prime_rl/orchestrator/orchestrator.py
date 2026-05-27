@@ -43,9 +43,10 @@ from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
     monkey_patch_oai_iterable_types,
 )
+from prime_rl.orchestrator.sources import EvalSource, TrainSource
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.trajectories import offload_images_to_disk
-from prime_rl.orchestrator.types import EvalBatch, Policy, Progress, Rollout
+from prime_rl.orchestrator.types import EvalBatch, Policy, Progress, Rollout, SchedMode
 from prime_rl.orchestrator.utils import compute_teacher_logprobs, get_weight_dir, set_default_executor
 from prime_rl.orchestrator.vf_utils import get_seq_len, intercept_vf_logging, save_rollouts
 from prime_rl.orchestrator.watcher import WeightWatcher
@@ -289,13 +290,26 @@ class Orchestrator:
             rollout_inference = self.teacher_inference
         else:
             rollout_inference = self.student_inference
+
+        # Example sources are orchestrator-owned: the orchestrator triggers
+        # eval epochs and the dispatcher just pulls from them.
+        self.train_source = TrainSource(self.train_envs, seed=42)
+        self.eval_source = EvalSource(self.eval_envs, config.eval, resume_step=self.resume_step)
+
+        assert config.max_inflight_rollouts is not None, "max_inflight_rollouts must be resolved before dispatcher init"
         self.dispatcher = RolloutDispatcher(
-            config=config,
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
+            train_source=self.train_source,
+            eval_source=self.eval_source,
             inference=rollout_inference,
             policy=self.policy,
-            resume_step=self.resume_step,
+            max_inflight_rollouts=config.max_inflight_rollouts,
+            tasks_per_minute=config.tasks_per_minute,
+            group_size=config.group_size,
+            max_off_policy_steps_train=config.max_off_policy_steps,
+            max_off_policy_steps_eval=config.max_off_policy_steps_eval,
+            training_mode=config.training_mode,
         )
         self.metrics = MetricsBuilder(config)
         self.train_sink = TrainSink(
@@ -341,6 +355,10 @@ class Orchestrator:
             asyncio.create_task(self.watcher.start(), name="watcher"),
             asyncio.create_task(self.log_loop.start(), name="log_loop"),
         ]
+
+        # Opt-in step-0 eval (``eval.skip_first_step=True``) — fire before the
+        # first training step so the base model is evaluated.
+        self.maybe_trigger_eval(at_start=True)
 
         try:
             await self.main_loop()
@@ -532,6 +550,33 @@ class Orchestrator:
 
         self.train_sink.reset_pre_filter_stats()
         self.progress.step += 1
+        # Fire eligible eval epochs for the new training step. The dispatcher
+        # picks them up the next time it fills inflight.
+        self.maybe_trigger_eval(step=self.progress.step)
+
+    def maybe_trigger_eval(self, *, step: int | None = None, at_start: bool = False) -> None:
+        """Trigger eligible eval epochs and flip ``SchedMode`` to PREFER_EVAL
+        if anything fired. ``at_start=True`` runs the ``skip_first_step``
+        opt-in startup path; otherwise ``step`` is the just-completed training
+        step from ``progress``.
+        """
+        assert self.dispatcher is not None
+        if at_start:
+            fired = self.eval_source.trigger_at_start()
+            reason = "skip_first_step=true at step 0"
+            step_label = 0
+        else:
+            assert step is not None
+            fired = self.eval_source.trigger(step)
+            reason = f"eval triggered for {','.join(fired)} @ step={step}"
+            step_label = step
+        if not fired:
+            return
+        self.dispatcher.switch_mode(SchedMode.PREFER_EVAL, reason=reason)
+        self.dispatcher.metrics.eval_epochs_started += 1
+        self.logger.info(
+            f"Eval @ step={step_label} for env(s) {','.join(fired)} (queued {len(self.eval_source)} example(s))"
+        )
 
     def log_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch. Builds the metrics dict

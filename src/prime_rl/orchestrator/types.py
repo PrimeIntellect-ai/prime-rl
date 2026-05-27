@@ -20,7 +20,8 @@ module):
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Literal, Protocol
 
@@ -51,7 +52,7 @@ class Progress:
 
     ``step`` is the trainer-aligned step (== ``policy.version`` after every
     successful weight update). The eval boundary is a strict function of
-    ``step`` + ``eval.interval`` + ``eval_base_model`` + ``skip_eval_on_resume``,
+    ``step`` + ``eval.interval`` + ``skip_first_step`` + ``skip_eval_on_resume``,
     so we don't track a separate ``last_eval_step``.
     """
 
@@ -191,6 +192,73 @@ class EvalBatch:
 
 
 # ── watcher → observer interface ──────────────────────────────────────────
+
+
+@dataclass
+class DispatcherMetrics:
+    """Per-poll counters the dispatcher exposes to ``IntervalLogger``.
+
+    Split into two groups:
+
+    - *Gauges* (read by ``gauges()``): point-in-time snapshots — no reset.
+    - *Drain counters* (``drained()``): monotonic per-poll counters; the
+      logger consumes them with ``drained()`` which clears each one to
+      zero so the next poll measures only what happened since.
+    """
+
+    # Drain counters (reset each ``drained()`` call).
+    cancelled_train_rollouts: int = 0
+    cancelled_eval_rollouts: int = 0
+    empty_rollouts_by_env: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    errored_rollouts_by_env: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    errors_by_type: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    total_rollouts_by_env: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    # Monotonic gauges (not drained — running totals over the run).
+    eval_epochs_started: int = 0
+    mode_transitions: int = 0
+
+    def record_cancellation(self, *, kind: Literal["train", "eval"], n: int) -> None:
+        if kind == "train":
+            self.cancelled_train_rollouts += n
+        else:
+            self.cancelled_eval_rollouts += n
+
+    def record_error(self, env_name: str, error_type: str) -> None:
+        self.errored_rollouts_by_env[env_name] += 1
+        self.errors_by_type[error_type] += 1
+
+    def record_empty(self, env_name: str) -> None:
+        self.empty_rollouts_by_env[env_name] += 1
+
+    def record_arrivals(self, env_name: str, n: int) -> None:
+        self.total_rollouts_by_env[env_name] += n
+
+    def drained(self) -> dict[str, float]:
+        """Return current drain counters as wandb-shaped metrics + clear them.
+
+        Gauges (live snapshots like ``inflight_*``) are reported separately by
+        the dispatcher's ``gauges()`` — those don't need reset semantics.
+        """
+        out: dict[str, float] = {
+            "dispatcher/cancelled_train_rollouts": float(self.cancelled_train_rollouts),
+            "dispatcher/cancelled_eval_rollouts": float(self.cancelled_eval_rollouts),
+        }
+        for env, total in self.total_rollouts_by_env.items():
+            errored = self.errored_rollouts_by_env.get(env, 0)
+            empty = self.empty_rollouts_by_env.get(env, 0)
+            if total > 0:
+                out[f"rollouts/{env}/errored_rate"] = errored / total
+                out[f"rollouts/{env}/empty_rate"] = empty / total
+        for err_type, count in self.errors_by_type.items():
+            out[f"errors/{err_type}"] = float(count)
+
+        self.cancelled_train_rollouts = 0
+        self.cancelled_eval_rollouts = 0
+        self.empty_rollouts_by_env.clear()
+        self.errored_rollouts_by_env.clear()
+        self.errors_by_type.clear()
+        self.total_rollouts_by_env.clear()
+        return out
 
 
 class VersionObserver(Protocol):

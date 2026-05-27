@@ -367,8 +367,12 @@ class EvalConfig(BaseConfig):
             )
         return self
 
-    eval_base_model: bool = True
-    """Evaluate the base model we are training on."""
+    skip_first_step: bool = Field(False, validation_alias=AliasChoices("skip_first_step", "eval_base_model"))
+    """When True, skip the first training step in favor of running an eval
+    epoch at step 0 (a "base model" eval before any weight updates). Default
+    False — no eval at step 0; training starts immediately. The legacy
+    ``eval_base_model`` key is silently accepted as an alias (same
+    semantics)."""
 
     skip_eval_on_resume: bool = Field(
         True, validation_alias=AliasChoices("skip_eval_on_resume", "skip_eval_on_restart")
@@ -654,13 +658,21 @@ class OrchestratorConfig(BaseConfig):
     """Maximum training steps. If None, runs indefinitely."""
 
     max_off_policy_steps: int = Field(8, ge=0)
-    """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
+    """Maximum policies allowed to generate a single train rollout. Train
+    rollouts more than ``max_off_policy_steps`` ahead of the policy are
+    cancelled (a synthetic ``Cancelled`` rollout flows to the sink so the
+    group still finalizes — usually as a partial group). Higher values yield
+    better throughput at the cost of off-policy noise."""
+
+    max_off_policy_steps_eval: int | None = None
+    """Same as ``max_off_policy_steps`` but for eval rollouts. ``None`` (the
+    default) means eval rollouts are never cancelled — useful when eval
+    rewards depend on a specific policy snapshot. Set an integer to cap eval
+    off-policy lag (cancelled eval rollouts are excluded from eval metrics
+    and reported via ``cancelled_eval_rollouts`` counters)."""
 
     bench: bool = False
     """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""
-
-    seed: int | None = 42
-    """Random seed for the orchestrator."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""

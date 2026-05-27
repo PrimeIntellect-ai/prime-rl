@@ -11,7 +11,7 @@ Two abstractions, same spirit:
   ``trigger(step)`` and the source enqueues every example for every eligible
   env at that step. The dispatcher pulls from it in ``PREFER_EVAL`` mode
   until the queue drains, then flips back. ``trigger_at_start()`` handles
-  the ``eval_base_model`` startup-eval case.
+  the ``skip_first_step`` startup-eval case.
 
 The dispatcher still owns scheduling priority (``SchedMode``), capacity
 (semaphore), and per-env cost lookups (``EvalEnvs.get(...).config``); these
@@ -84,7 +84,7 @@ class EvalSource:
     Holds the per-env example lists + intervals + the per-(env, step) pending
     queue. The dispatcher pokes it via ``trigger(step)`` when the watcher
     advances ``policy.version`` (or ``trigger_at_start()`` once at the very
-    start when ``eval_base_model`` is set), then pulls examples via
+    start when ``skip_first_step`` is set), then pulls examples via
     ``peek`` / ``pop`` until ``bool(source) == False``.
 
     Empty pool (``eval_envs is None`` or ``eval_config is None``) is a valid
@@ -138,7 +138,7 @@ class EvalSource:
         (the startup path uses ``trigger_at_start`` instead).
 
         ``force_all=True`` bypasses gating and fires every env — used by
-        ``trigger_at_start`` for the ``eval_base_model`` startup epoch.
+        ``trigger_at_start`` for the ``skip_first_step`` startup epoch.
         """
         if self.eval_envs is None or self.eval_config is None:
             return []
@@ -160,9 +160,9 @@ class EvalSource:
         return fired
 
     def trigger_at_start(self) -> list[str]:
-        """Fire all envs at step 0 if ``eval_base_model`` is set and this is
-        not a resume. Called once from ``RolloutDispatcher.start``."""
-        if self.eval_config is None or not self.eval_config.eval_base_model:
+        """Fire all envs at step 0 if ``eval.skip_first_step`` is True and
+        this is not a resume. Called once from ``Orchestrator.start``."""
+        if self.eval_config is None or not self.eval_config.skip_first_step:
             return []
         if self.resume_step is not None:
             return []
