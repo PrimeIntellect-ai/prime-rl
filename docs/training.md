@@ -291,7 +291,7 @@ uv run rl @ rl.toml --wandb                               # default project, ran
 uv run rl @ rl.toml --wandb.project my-proj --wandb.name run-42
 ```
 
-By default (`wandb.shared = true`) the trainer and orchestrator log into a **single shared W&B run**, so all metrics from both processes land in one place. Set `wandb.shared = false` (or pass `--no-wandb.shared`) to fall back to the legacy split — two runs suffixed `-trainer` and `-orchestrator`. Shared mode requires the W&B SDK ≥ 0.19.9 and is incompatible with `wandb.offline = true`.
+The trainer and orchestrator log into a **single shared W&B run**, so all metrics from both processes land in one place. Shared mode requires the W&B SDK ≥ 0.19.9 and is incompatible with `wandb.offline = true`. The legacy split (two runs suffixed `-trainer` and `-orchestrator`, gated on `wandb.shared = false`) has been removed; the `shared` field is accepted but ignored with a deprecation warning.
 
 By default, every 10 steps each process also logs a sample of prompts/completions (with rewards and advantages) and reward/advantage/entropy distributions as W&B tables. Tune via `--wandb.log-extras.interval` and `--wandb.log-extras.sample-ratio`, or disable subsets:
 
