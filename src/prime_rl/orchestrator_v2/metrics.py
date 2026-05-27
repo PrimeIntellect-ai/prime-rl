@@ -33,8 +33,6 @@ class ProcessResult:
     rollout_prefill_lens: list[int]
     rollout_decode_lens: list[int]
     samples_per_rollout: list[int]
-    parallel_preprocess_time: float
-    teacher_logprobs_time: float
     samples_shipped: int
 
 
@@ -53,6 +51,7 @@ class MetricsBuilder:
         dispatcher_drain: dict[str, float],
         step_time: float,
         save_ckpt_time: float,
+        teacher_logprobs_time: float,
         pre_filter_seen: int,
         pre_filter_dropped: int,
         pre_filter_dropped_by_name: dict[str, int],
@@ -140,9 +139,8 @@ class MetricsBuilder:
             "effective_batch_size/all": effective_batch_size,
             **{f"batch/{env}": r for env, r in results_df.env_name.value_counts(normalize=True).items()},
             "time/step": step_time,
-            "time/teacher_logprobs": result.teacher_logprobs_time,
+            "time/teacher_logprobs": teacher_logprobs_time,
             "time/save_ckpt": save_ckpt_time,
-            "time/parallel_preprocess": result.parallel_preprocess_time,
             "filters/all/is_filtered": results_df.is_filtered.astype(float).mean(),
             **{f"filters/all/{name}": filter_df[name].astype(float).mean() for name in filter_df.columns},
             "step": step,

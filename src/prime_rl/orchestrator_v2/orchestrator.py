@@ -6,11 +6,13 @@ shared state (policy, progress, ckpt, monitor) and drives the pipeline loop.
 Components are deliberately single-purpose and only know about the deps they
 need:
 
-- ``RolloutDispatcher`` schedules rollouts, emits ``Trajectory`` to a queue.
-- ``Batcher`` is a buffer with ``add / ready / pop``.
-- ``PostProcessor`` turns a popped batch into ``TrainingSample``\\ s and ships them.
-- ``MetricsBuilder`` builds the per-step W&B dict.
-- ``EvalCollector`` buckets eval Trajectories and flushes per-epoch metrics.
+- ``RolloutDispatcher`` schedules rollouts and emits ``Rollout``\\ s on its queue.
+- ``TrainSink`` ingests train rollouts (tokenize → advantages + pre-filter →
+  post-filter), exposes ``pop_batch`` returning a ``TrainBatch``.
+- ``EvalSink`` ingests eval rollouts, exposes ``add`` returning an ``EvalBatch``
+  on epoch completion + ``build_metrics`` for log time.
+- ``MetricsBuilder`` builds the per-step train W&B dict from the popped batch
+  and orchestrator-side timings (called inline by the orchestrator).
 - ``WeightWatcher`` advances ``Policy`` and notifies the dispatcher.
 - ``IntervalLogger`` writes dispatcher gauges + event-loop lag on a time axis.
 
@@ -41,7 +43,7 @@ from prime_rl.orchestrator.utils import compute_teacher_logprobs, get_weight_dir
 from prime_rl.orchestrator.vf_utils import get_seq_len, intercept_vf_logging, save_rollouts
 from prime_rl.orchestrator_v2.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator_v2.dispatcher import Rollout, RolloutDispatcher
-from prime_rl.orchestrator_v2.eval_sink import EvalBatchResult, EvalSink
+from prime_rl.orchestrator_v2.eval_sink import EvalBatch, EvalSink
 from prime_rl.orchestrator_v2.log_loop import IntervalLogger
 from prime_rl.orchestrator_v2.metrics import MetricsBuilder
 from prime_rl.orchestrator_v2.policy import Policy
@@ -301,7 +303,6 @@ class Orchestrator:
             advantage_config=config.advantage,
             pre_filters=pre_filters,
             post_filters=post_filters,
-            metrics_builder=self.metrics,
         )
         self.eval_sink = EvalSink(eval_envs=self.eval_envs)
         self.watcher = WeightWatcher(
@@ -391,9 +392,9 @@ class Orchestrator:
                 continue
 
             if rollout.kind == "eval":
-                result = self.eval_sink.add(rollout)
-                if result is not None:
-                    self.log_eval_batch(result)
+                eval_batch = self.eval_sink.add(rollout)
+                if eval_batch is not None:
+                    self.log_eval_batch(eval_batch)
                 continue
 
             await self.train_sink.add(rollout)
@@ -422,38 +423,31 @@ class Orchestrator:
         self.logger.info(f"Starting orchestrator step {step}")
         step_start = time.perf_counter()
 
-        # Pop the next ready batch off the train sink. ``pop_batch`` runs
-        # ``process_batch`` (post-filter + samples assembly + metrics build)
-        # internally and returns the ready-to-ship + ready-to-log result.
-        tbr = self.train_sink.pop_batch(
-            step=step,
-            progress=self.progress,
-            dispatcher_gauges=self.dispatcher.gauges(),
-            dispatcher_drain=self.dispatcher.drain_metrics(),
-            step_time=0.0,  # overwritten after barrier wait
-            save_ckpt_time=save_ckpt_time,
-        )
+        # Pop the next ready batch off the train sink. ``pop_batch`` returns
+        # the raw cohort + the trainer-bound samples + per-rollout counters;
+        # metrics are built at log time below with the final timings.
+        batch = self.train_sink.pop_batch()
 
-        if tbr.result.n_trainable == 0:
+        if batch.result.n_trainable == 0:
             self.logger.warning(
-                f"Step {step}: post-batch filters dropped all {len(tbr.rollouts)} rollouts. Trying again."
+                f"Step {step}: post-batch filters dropped all {len(batch.rollouts)} rollouts. Trying again."
             )
             return
-        if tbr.result.n_trainable / len(tbr.rollouts) <= 0.1:
+        if batch.result.n_trainable / len(batch.rollouts) <= 0.1:
             self.logger.warning(
-                f"Only {tbr.result.n_trainable}/{len(tbr.rollouts)} rollouts in the batch are trainable "
-                f"({tbr.result.n_trainable / len(tbr.rollouts):.1%}) — consider reviewing task difficulty / filter config"
+                f"Only {batch.result.n_trainable}/{len(batch.rollouts)} rollouts in the batch are trainable "
+                f"({batch.result.n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
             )
 
         # Persist rollouts to disk (cheap, background thread).
         step_path = get_step_path(get_rollout_dir(config.output_dir), step)
         await asyncio.to_thread(
-            save_rollouts, tbr.rollouts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
+            save_rollouts, batch.rollouts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
         )
 
         # Offload base64 image bytes to disk for memory hygiene (no-op for text-only).
         offload_start = time.perf_counter()
-        num_offloaded = offload_images_to_disk(tbr.rollouts, config.output_dir)
+        num_offloaded = offload_images_to_disk(batch.rollouts, config.output_dir)
         if num_offloaded:
             self.logger.info(
                 f"Offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
@@ -467,27 +461,39 @@ class Orchestrator:
             teacher_logprobs_list = await compute_teacher_logprobs(
                 clients=self.teacher_inference.train_clients,
                 model_name=config.teacher.model.name,
-                samples=tbr.samples,
+                samples=batch.samples,
             )
-            for ex, lp in zip(tbr.samples, teacher_logprobs_list):
+            for ex, lp in zip(batch.samples, teacher_logprobs_list):
                 ex.teacher_logprobs = lp
             teacher_logprobs_time = time.perf_counter() - t
 
         await self.wait_barrier(step)
 
         # Ship to trainer.
-        await self.sender.send(TrainingBatch(examples=tbr.samples, step=step))
+        await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
 
-        # Patch in the post-barrier numbers and ship metrics.
+        # Build + ship metrics with the final post-barrier timings.
         step_time = time.perf_counter() - step_start
-        tbr.metrics["time/step"] = step_time
-        tbr.metrics["time/teacher_logprobs"] = teacher_logprobs_time
-        self.monitor.log(tbr.metrics, step=step)
-        self.monitor.log_samples(tbr.rollouts, step=step)
+        metrics = self.metrics.build(
+            step=step,
+            rollouts=batch.rollouts,
+            result=batch.result,
+            progress=self.progress,
+            dispatcher_gauges=self.dispatcher.gauges(),
+            dispatcher_drain=self.dispatcher.drain_metrics(),
+            step_time=step_time,
+            save_ckpt_time=save_ckpt_time,
+            teacher_logprobs_time=teacher_logprobs_time,
+            pre_filter_seen=self.train_sink.pre_filter_seen,
+            pre_filter_dropped=self.train_sink.pre_filter_dropped,
+            pre_filter_dropped_by_name=dict(self.train_sink.pre_filter_dropped_by_name),
+        )
+        self.monitor.log(metrics, step=step)
+        self.monitor.log_samples(batch.rollouts, step=step)
         self.monitor.log_distributions(
             distributions={
-                "rewards": [r["reward"] for r in tbr.rollouts],
-                "advantages": [r["advantage"] for r in tbr.rollouts],
+                "rewards": [r["reward"] for r in batch.rollouts],
+                "advantages": [r["advantage"] for r in batch.rollouts],
             },
             step=step,
         )
@@ -498,24 +504,24 @@ class Orchestrator:
                 self.usage_reporter.report_training_usage(
                     run_id=run_id,
                     step=step,
-                    tokens=tbr.result.num_prefill_tokens + tbr.result.num_decode_tokens,
+                    tokens=batch.result.num_prefill_tokens + batch.result.num_decode_tokens,
                 )
         if self.heart is not None:
             self.heart.beat()
 
         # Update progress totals.
-        num_rollouts = len(tbr.rollouts)
-        num_unique_examples = len({(r["env_name"], r["example_id"]) for r in tbr.rollouts})
-        num_tokens = sum(get_seq_len(r) for r in tbr.rollouts)
+        num_rollouts = len(batch.rollouts)
+        num_unique_examples = len({(r["env_name"], r["example_id"]) for r in batch.rollouts})
+        num_tokens = sum(get_seq_len(r) for r in batch.rollouts)
         self.progress.total_tokens += num_tokens
         self.progress.total_samples += num_rollouts
         self.progress.total_problems += num_unique_examples
 
-        reward_mean = float(sum(r["reward"] for r in tbr.rollouts) / max(num_rollouts, 1))
+        reward_mean = float(sum(r["reward"] for r in batch.rollouts) / max(num_rollouts, 1))
         self.logger.success(
             f"Step {step} | Time: {step_time:.2f}s | Reward: {reward_mean:.4f} | "
             f"Seq. Length: {num_tokens / max(num_rollouts, 1):.1f} tokens/sample | "
-            f"Trainable: {tbr.result.n_trainable}/{num_rollouts} | "
+            f"Trainable: {batch.result.n_trainable}/{num_rollouts} | "
             f"Async Level: {step - self.policy.version} | "
             f"Max. Off-Policy Level: {self.dispatcher.max_off_policy_level}"
         )
@@ -523,32 +529,32 @@ class Orchestrator:
         self.train_sink.reset_pre_filter_stats()
         self.progress.step += 1
 
-    def log_eval_batch(self, result: EvalBatchResult) -> None:
-        """Persist + log one completed eval epoch. The metrics dict is already
-        built by ``EvalSink.process_batch``; this method just handles the
-        side effects: save_rollouts to disk, monitor.log_eval_samples,
-        monitor.log."""
-        if not result.rollouts:
-            self.logger.warning(
-                f"Eval @ step={result.eval_step} env={result.env_name}: no surviving rollouts, skipping log"
-            )
+    def log_eval_batch(self, batch: EvalBatch) -> None:
+        """Persist + log one completed eval epoch. Builds the metrics dict
+        from the raw rollouts (the ``EvalBatch`` deliberately doesn't carry a
+        pre-baked metrics dict — it's a pure view computed here), then handles
+        the side effects: save_rollouts, monitor.log_eval_samples, monitor.log."""
+        if not batch.rollouts:
+            self.logger.warning(f"Eval @ step={batch.step} env={batch.env_name}: no surviving rollouts, skipping log")
             return
 
-        step_path = get_step_path(get_rollout_dir(self.config.output_dir), result.eval_step)
+        assert self.eval_sink is not None and self.monitor is not None
+        metrics = self.eval_sink.build_metrics(batch)
+
+        step_path = get_step_path(get_rollout_dir(self.config.output_dir), batch.step)
         save_rollouts(
-            result.rollouts,
-            step_path / f"eval_rollouts_{result.env_name}.jsonl",
+            batch.rollouts,
+            step_path / f"eval_rollouts_{batch.env_name}.jsonl",
             exclude_keys={"trajectory"},
         )
-        assert self.monitor is not None
-        self.monitor.log_eval_samples(result.rollouts, env_name=result.env_name, step=result.eval_step)
-        self.monitor.log(result.metrics, step=result.eval_step)
+        self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
+        self.monitor.log(metrics, step=batch.step)
 
-        n_examples = len({r["example_id"] for r in result.rollouts})
-        reward_mean = result.metrics.get(f"eval/{result.env_name}/reward/mean", float("nan"))
+        n_examples = len({r["example_id"] for r in batch.rollouts})
+        reward_mean = metrics.get(f"eval/{batch.env_name}/reward/mean", float("nan"))
         self.logger.success(
-            f"Eval @ step={result.eval_step} env={result.env_name} | "
-            f"Reward: {reward_mean:.4f} | Rollouts: {len(result.rollouts)} | Examples: {n_examples}"
+            f"Eval @ step={batch.step} env={batch.env_name} | "
+            f"Reward: {reward_mean:.4f} | Rollouts: {len(batch.rollouts)} | Examples: {n_examples}"
         )
 
     async def maybe_save_ckpt(self, step: int) -> float:

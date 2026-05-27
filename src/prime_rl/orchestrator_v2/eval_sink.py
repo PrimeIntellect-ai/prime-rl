@@ -11,9 +11,10 @@ trainer, doesn't compute advantages, doesn't apply filters):
    ``pass@k`` aggregation happens at the batch level.
 3. ``process_batch(key)`` — runs when ``is_batch_done=True`` arrives (the
    dispatcher signals epoch completion on the last expected rollout for an
-   (env, eval_step) pair). Builds per-env metrics (reward, completion_len,
-   pass@k, no_response, truncation) and returns an ``EvalBatchResult``
-   the orchestrator hands to the monitor.
+   (env, eval_step) pair). Returns an ``EvalBatch`` holding the raw
+   rollouts. ``build_metrics(batch)`` produces the per-env W&B dict — the
+   orchestrator invokes it at log time so the metrics aren't pre-baked into
+   the result alongside the data they're derived from.
 
 Filters do not apply to eval — filters are a train-only concept.
 """
@@ -33,17 +34,13 @@ from prime_rl.orchestrator_v2.dispatcher import Rollout
 
 
 @dataclass
-class EvalBatchResult:
-    """One env's eval epoch — fully aggregated and ready to log.
-
-    ``rollouts`` is the raw cohort (used for ``monitor.log_eval_samples`` +
-    saving to disk). ``metrics`` is the pre-built W&B dict.
-    """
+class EvalBatch:
+    """One env's eval epoch — the raw rollouts the orchestrator hands back
+    to ``EvalSink.build_metrics`` and to the monitor (samples + save_rollouts)."""
 
     env_name: str
-    eval_step: int
+    step: int
     rollouts: list[vf.RolloutOutput]
-    metrics: dict[str, Any]
 
 
 class EvalSink:
@@ -54,16 +51,16 @@ class EvalSink:
         # Per (env_name, example_id, eval_step) accumulation — finalized into
         # the batch bucket on ``is_group_done``.
         self.pending_groups: dict[tuple[str, int, int], list[Rollout]] = defaultdict(list)
-        # Per (env_name, eval_step) accumulation — emits an ``EvalBatchResult``
+        # Per (env_name, eval_step) accumulation — emits an ``EvalBatch``
         # on ``is_batch_done``.
         self.pending_batches: dict[tuple[str, int], list[vf.RolloutOutput]] = defaultdict(list)
 
     # ── ingest ────────────────────────────────────────────────────────────
 
-    def add(self, rollout: Rollout) -> EvalBatchResult | None:
+    def add(self, rollout: Rollout) -> EvalBatch | None:
         """Run the per-rollout level (always), per-group level (on
         ``is_group_done``), and per-batch level (on ``is_batch_done``).
-        Returns an ``EvalBatchResult`` when an env's epoch is complete.
+        Returns an ``EvalBatch`` when an env's epoch is complete.
         """
         assert rollout.kind == "eval", "EvalSink only handles eval rollouts"
         assert rollout.eval_step is not None, "eval Rollout missing eval_step"
@@ -98,32 +95,36 @@ class EvalSink:
 
     # ── level 3: per-batch (per-env metrics) ──────────────────────────────
 
-    def process_batch(self, key: tuple[str, int]) -> EvalBatchResult:
-        env_name, eval_step = key
+    def process_batch(self, key: tuple[str, int]) -> EvalBatch:
+        env_name, step = key
         rollouts = self.pending_batches.pop(key, [])
-        metrics = self.build_metrics(env_name, eval_step, rollouts)
-        return EvalBatchResult(env_name=env_name, eval_step=eval_step, rollouts=rollouts, metrics=metrics)
+        return EvalBatch(env_name=env_name, step=step, rollouts=rollouts)
 
-    def build_metrics(self, env_name: str, eval_step: int, rollouts: list[vf.RolloutOutput]) -> dict[str, Any]:
-        """Build the per-env metrics dict. Pass@k computed when the env's
-        reward set is binary (subset of {0.0, 1.0})."""
-        to_log: dict[str, Any] = {"step": eval_step}
-        if not rollouts:
+    def build_metrics(self, batch: EvalBatch) -> dict[str, Any]:
+        """Build the per-env metrics dict from a popped ``EvalBatch``. Pass@k
+        is computed when the env's reward set is binary (subset of {0.0, 1.0}).
+
+        Pure function — the orchestrator calls this when it's ready to log.
+        Keeping it off the ``EvalBatch`` dataclass avoids carrying derived
+        state alongside the raw rollouts.
+        """
+        to_log: dict[str, Any] = {"step": batch.step}
+        if not batch.rollouts:
             return to_log
 
-        rewards = [r.get("reward", 0.0) for r in rollouts]
-        lens = [get_seq_len(r) for r in rollouts]
-        no_response_rate = sum(1 for r in rollouts if not r.get("completion")) / len(rollouts)
-        truncation_rate = sum(1 for r in rollouts if r.get("is_truncated")) / len(rollouts)
+        rewards = [r.get("reward", 0.0) for r in batch.rollouts]
+        lens = [get_seq_len(r) for r in batch.rollouts]
+        no_response_rate = sum(1 for r in batch.rollouts if not r.get("completion")) / len(batch.rollouts)
+        truncation_rate = sum(1 for r in batch.rollouts if r.get("is_truncated")) / len(batch.rollouts)
 
         group_size = 1
         if self.eval_envs is not None:
             try:
-                group_size = self.eval_envs.get(env_name).config.group_size
+                group_size = self.eval_envs.get(batch.env_name).config.group_size
             except KeyError:
                 pass
 
-        prefix = f"eval/{env_name}"
+        prefix = f"eval/{batch.env_name}"
         to_log.update(
             {
                 f"{prefix}/avg@{group_size}": float(sum(rewards) / len(rewards)),
@@ -133,13 +134,13 @@ class EvalSink:
                 f"{prefix}/completion_len/min": float(min(lens)),
                 f"{prefix}/is_truncated/mean": float(truncation_rate),
                 f"{prefix}/no_response/mean": float(no_response_rate),
-                f"{prefix}/n_rollouts": float(len(rollouts)),
+                f"{prefix}/n_rollouts": float(len(batch.rollouts)),
             }
         )
 
         # pass@k: reconstruct per-example reward sets from ``example_id``.
         by_example: dict[int, list[float]] = {}
-        for r in rollouts:
+        for r in batch.rollouts:
             by_example.setdefault(r["example_id"], []).append(float(r.get("reward", 0.0)))
         to_log[f"{prefix}/n_examples"] = float(len(by_example))
         unique_rewards = {float(r) for r in rewards}

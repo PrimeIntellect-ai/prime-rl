@@ -11,17 +11,21 @@ Each rollout passes through three processing levels, each defined by a
    the ``(env, example_id)`` GRPO group. Computes advantages, propagates
    them onto the per-rollout ``TrainingSample``\\ s produced in step 1,
    then applies the pre-batch filters and drops filtered rollouts.
-3. ``process_batch(batch)`` — runs when ``batch_ready()``. Applies post-
-   batch filter annotations (no drops; filter rates only); the result is
-   a ``TrainBatchResult`` carrying tokenized ``TrainingSample``\\ s, the
-   per-rollout cohort (for metrics), and a per-batch metrics dict.
+3. ``process_batch(batch)`` — runs when ``is_batch_done()``. Applies post-
+   batch filter annotations (no drops; filter rates only) and assembles the
+   trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch`` carrying
+   the raw cohort, those samples, and per-rollout counters.
 
 Batch readiness is sink-internal: ``batch_size`` rollouts (or
 ``token_batch_size`` tokens) of survivors accumulate, then the next
-``add()`` returns ``True`` and the orchestrator calls ``pop_batch``.
+``add()`` stamps ``rollout.is_batch_done = True`` and the orchestrator
+calls ``pop_batch``.
 
 I/O concerns (ship to trainer, save_rollouts to disk, offload images,
-teacher_logprobs for opd, monitor.log) live on the orchestrator.
+teacher_logprobs for opd, metrics build, monitor.log) live on the
+orchestrator. Metrics are NOT pre-built here — they're a pure view over
+``rollouts``/``result`` plus orchestrator-side timings, so building them
+at log time keeps a single source of truth.
 """
 
 from __future__ import annotations
@@ -29,7 +33,6 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any
 
 import verifiers as vf
 
@@ -41,27 +44,23 @@ from prime_rl.orchestrator.trajectories import (
     interleave_rollout,
 )
 from prime_rl.orchestrator.vf_utils import get_seq_len
-from prime_rl.orchestrator_v2.ckpt import Progress
 from prime_rl.orchestrator_v2.dispatcher import Rollout
-from prime_rl.orchestrator_v2.metrics import MetricsBuilder, ProcessResult
+from prime_rl.orchestrator_v2.metrics import ProcessResult
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
 
 @dataclass
-class TrainBatchResult:
-    """Everything the orchestrator needs after one batch is processed.
-
-    The ``samples`` list is the trainer-bound payload (filtered survivors
-    only — ``post_batch_filters`` with ``enforce=True`` drop here). The
-    ``rollouts`` list is the full cohort including filtered ones, kept for
-    metric aggregation. ``metrics`` is the W&B dict, fully built; the
-    orchestrator just hands it to ``monitor.log``.
+class TrainBatch:
+    """Raw payload the orchestrator hands back to ``MetricsBuilder.build`` /
+    ``sender.send``. The ``samples`` list is the trainer-bound subset
+    (post-filter survivors only); ``rollouts`` is the full cohort kept for
+    metric aggregation. Metrics are NOT pre-baked here — they're a derived
+    view computed at log time by the orchestrator with up-to-date timings.
     """
 
     rollouts: list[vf.RolloutOutput]
     samples: list[TrainingSample]
-    metrics: dict[str, Any]
     result: ProcessResult
 
 
@@ -80,7 +79,6 @@ class TrainSink:
         advantage_config: AdvantageConfig | None,
         pre_filters: list[RolloutFilter],
         post_filters: list[RolloutFilter],
-        metrics_builder: MetricsBuilder,
     ) -> None:
         assert (batch_size is None) != (token_batch_size is None), (
             "Exactly one of batch_size / token_batch_size must be set"
@@ -94,7 +92,6 @@ class TrainSink:
         self.advantage_config = advantage_config
         self.pre_filters = pre_filters
         self.post_filters = post_filters
-        self.metrics_builder = metrics_builder
         self.logger = get_logger()
 
         # In-progress GRPO groups keyed by (env_name, example_id). Each group
@@ -203,29 +200,12 @@ class TrainSink:
         assert self.token_batch_size is not None
         return sum(get_seq_len(r) for r in self.batch_buf) >= self.token_batch_size
 
-    def pop_batch(
-        self,
-        *,
-        step: int,
-        progress: Progress,
-        dispatcher_gauges: dict[str, float],
-        dispatcher_drain: dict[str, float],
-        step_time: float,
-        save_ckpt_time: float,
-    ) -> TrainBatchResult:
+    def pop_batch(self) -> TrainBatch:
         """Pop a batch off the survivors buffer and run ``process_batch`` on it."""
-        cohort = self._pop_cohort()
-        return self.process_batch(
-            cohort,
-            step=step,
-            progress=progress,
-            dispatcher_gauges=dispatcher_gauges,
-            dispatcher_drain=dispatcher_drain,
-            step_time=step_time,
-            save_ckpt_time=save_ckpt_time,
-        )
+        cohort = self.pop_cohort()
+        return self.process_batch(cohort)
 
-    def _pop_cohort(self) -> list[vf.RolloutOutput]:
+    def pop_cohort(self) -> list[vf.RolloutOutput]:
         if self.batch_size is not None:
             cohort = self.batch_buf[: self.batch_size]
             self.batch_buf = self.batch_buf[self.batch_size :]
@@ -242,20 +222,9 @@ class TrainSink:
         self.batch_buf = self.batch_buf[cut:]
         return cohort
 
-    def process_batch(
-        self,
-        cohort: list[vf.RolloutOutput],
-        *,
-        step: int,
-        progress: Progress,
-        dispatcher_gauges: dict[str, float],
-        dispatcher_drain: dict[str, float],
-        step_time: float,
-        save_ckpt_time: float,
-    ) -> TrainBatchResult:
-        """Apply post-batch filters (annotation only), assemble the trainer-
-        bound ``TrainingSample`` list from already-tokenized rollouts, and
-        build the per-step metrics dict.
+    def process_batch(self, cohort: list[vf.RolloutOutput]) -> TrainBatch:
+        """Apply post-batch filters (annotation only) and assemble the trainer-
+        bound ``TrainingSample`` list from already-tokenized rollouts.
         """
         if self.post_filters:
             apply_filters(self.post_filters, cohort)
@@ -299,26 +268,9 @@ class TrainSink:
             rollout_prefill_lens=prefill_lens,
             rollout_decode_lens=decode_lens,
             samples_per_rollout=samples_per_rollout,
-            parallel_preprocess_time=0.0,  # tokenization is per-rollout now
-            teacher_logprobs_time=0.0,  # set by the orchestrator after teacher logprobs
             samples_shipped=len(samples),
         )
-
-        metrics = self.metrics_builder.build(
-            step=step,
-            rollouts=cohort,
-            result=result,
-            progress=progress,
-            dispatcher_gauges=dispatcher_gauges,
-            dispatcher_drain=dispatcher_drain,
-            step_time=step_time,
-            save_ckpt_time=save_ckpt_time,
-            pre_filter_seen=self.pre_filter_seen,
-            pre_filter_dropped=self.pre_filter_dropped,
-            pre_filter_dropped_by_name=dict(self.pre_filter_dropped_by_name),
-        )
-
-        return TrainBatchResult(rollouts=cohort, samples=samples, metrics=metrics, result=result)
+        return TrainBatch(rollouts=cohort, samples=samples, result=result)
 
     def reset_pre_filter_stats(self) -> None:
         self.pre_filter_seen = 0
