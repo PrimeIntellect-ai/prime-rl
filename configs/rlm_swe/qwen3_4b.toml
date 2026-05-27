@@ -1,0 +1,103 @@
+output_dir = "/beegfs/outputs/rlm-swe-qwen3-4b-thinking"
+max_steps = 1000
+seq_len = 65536
+
+[slurm]
+job_name = "rlm-swe-qwen3-4b-thinking"
+project_dir = "."
+pre_run_command = "srun bash -c 'pkill -9 -f torchrun; pkill -9 -f vllm; true'"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
+gpus_per_node = 8
+
+[log]
+level = "debug"
+
+[wandb]
+project = "rlm-swe"
+name = "qwen3-4b-thinking"
+
+[weight_broadcast]
+type = "nccl"
+
+[ckpt]
+interval = 50
+keep_last = 1
+resume_step = -1
+
+[model]
+name = "Qwen/Qwen3-4B-Thinking-2507"
+
+# --- Trainer ---
+
+[trainer]
+
+[trainer.model]
+cp = 2
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.compile]
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+
+# --- Orchestrator ---
+
+[orchestrator]
+batch_size = 256
+group_size = 8
+max_off_policy_steps = 16
+
+[orchestrator.train.sampling]
+temperature = 1.0
+
+[[orchestrator.train.env]]
+id = "rlm_swe"
+name = "rlm-swe-default"
+num_workers = 8
+
+[orchestrator.train.env.args]
+max_turns = 200
+timeout_seconds = 3600
+poll_interval = 5
+rlm_ref = "f466fccb6bc682092c88edf2b344951d7cbbd000"
+labels = ["rlm-swe-qwen3-4b-thinking"]
+
+[orchestrator.prime_monitor]
+
+[orchestrator.eval]
+interval = 50
+skip_first_step = false
+
+[[orchestrator.eval.env]]
+id = "rlm_swe"
+name = "swebench-verified-quick"
+num_workers = 4
+num_examples = -1
+
+[orchestrator.eval.env.args]
+task_type = "swebench"
+dataset_name = "PrimeIntellect/SWE-Bench-Verified-Quick"
+max_turns = 200
+timeout_seconds = 2700
+poll_interval = 5
+rlm_ref = "f466fccb6bc682092c88edf2b344951d7cbbd000"
+labels = ["rlm-swe-qwen3-4b-thinking"]
+
+# --- Inference ---
+
+[inference]
+gpu_memory_utilization = 0.85
+
+[inference.model]
+max_model_len = 65536
+tool_call_parser = "hermes"
+
+[inference.parallel]
+dp = 8
