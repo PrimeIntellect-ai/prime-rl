@@ -51,17 +51,12 @@ def propagate_shared_fields(data: Any) -> Any:
     def propagate(shared_path: str, *targets: str, aliases: tuple[str, ...] = ()) -> None:
         """Verbatim shared → targets. Records overlap (incl. alias spellings)
         into ``conflicts`` and fills each target if the shared value is set.
-
-        Matching values are NOT flagged as conflicts: a sub-config value equal
-        to the shared value is a harmless roundtrip (e.g. re-loading a dumped
-        resolved config) and would have no semantic effect.
         """
         value = get(shared_path)
         if value is None:
             return
         for sub in (*targets, *aliases):
-            sub_value = get(sub)
-            if sub_value is not None and sub_value != value:
+            if get(sub) is not None:
                 conflicts.append((shared_path, sub))
         for target in targets:
             fill(target, value)
@@ -107,17 +102,12 @@ def propagate_shared_fields(data: Any) -> Any:
     # then defaults prime_monitor.run_name to the (unsuffixed) value.
     wandb_name = get("wandb.name")
     if wandb_name is not None:
-        non_shared = get("wandb.shared") is False
-        expected = {
-            "trainer.wandb.name": f"{wandb_name}-trainer" if non_shared else wandb_name,
-            "orchestrator.wandb.name": f"{wandb_name}-orchestrator" if non_shared else wandb_name,
-        }
-        for sub, want in expected.items():
-            sub_value = get(sub)
-            if sub_value is not None and sub_value != want:
+        for sub in ("trainer.wandb.name", "orchestrator.wandb.name"):
+            if get(sub) is not None:
                 conflicts.append(("wandb.name", sub))
-        for sub, want in expected.items():
-            fill(sub, want)
+        non_shared = get("wandb.shared") is False
+        fill("trainer.wandb.name", f"{wandb_name}-trainer" if non_shared else wandb_name)
+        fill("orchestrator.wandb.name", f"{wandb_name}-orchestrator" if non_shared else wandb_name)
 
     # [tokenizer]. ``chat_template`` also flows to ``inference.model`` (vLLM's
     # ``--chat-template``); ``name`` and ``trust_remote_code`` can legitimately
@@ -144,16 +134,11 @@ def propagate_shared_fields(data: Any) -> Any:
     # orchestrator nest under the same experiment root without colliding.
     output_dir = get("output_dir")
     if output_dir is not None:
-        expected = {
-            "trainer.output_dir": output_dir,
-            "orchestrator.output_dir": f"{output_dir}/run_default",
-        }
-        for sub, want in expected.items():
-            sub_value = get(sub)
-            if sub_value is not None and sub_value != want:
+        for sub in ("trainer.output_dir", "orchestrator.output_dir"):
+            if get(sub) is not None:
                 conflicts.append(("output_dir", sub))
-        for sub, want in expected.items():
-            fill(sub, want)
+        fill("trainer.output_dir", output_dir)
+        fill("orchestrator.output_dir", f"{output_dir}/run_default")
 
     # Cascade trainer.tokenizer.chat_template → inference.model.chat_template
     # (vLLM ``--chat-template``). Read trainer's value *after* the shared
