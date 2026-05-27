@@ -297,18 +297,6 @@ class Orchestrator:
         self.eval_source = EvalSource(self.eval_envs, config.eval, resume_step=self.resume_step)
 
         assert config.max_inflight_rollouts is not None, "max_inflight_rollouts must be resolved before dispatcher init"
-        # Per-side off-policy caps: ``train.max_off_policy_steps`` /
-        # ``eval.max_off_policy_steps`` inherit the global default when unset.
-        max_off_policy_train = (
-            config.train.max_off_policy_steps
-            if config.train.max_off_policy_steps is not None
-            else config.max_off_policy_steps
-        )
-        max_off_policy_eval = (
-            config.eval.max_off_policy_steps
-            if config.eval is not None and config.eval.max_off_policy_steps is not None
-            else config.max_off_policy_steps
-        )
         self.dispatcher = RolloutDispatcher(
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
@@ -319,8 +307,7 @@ class Orchestrator:
             max_inflight_rollouts=config.max_inflight_rollouts,
             tasks_per_minute=config.tasks_per_minute,
             group_size=config.group_size,
-            max_off_policy_steps_train=max_off_policy_train,
-            max_off_policy_steps_eval=max_off_policy_eval,
+            max_off_policy_steps=config.max_off_policy_steps,
             training_mode=config.training_mode,
         )
         self.metrics = MetricsBuilder(config)

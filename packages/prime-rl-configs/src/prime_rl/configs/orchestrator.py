@@ -270,9 +270,6 @@ class TrainConfig(BaseConfig):
     max_retries: int = Field(3, ge=0)
     """Default retries for failed rollouts. Can be overridden per env."""
 
-    max_off_policy_steps: int | None = None
-    """Train off-policy cap. ``None`` (default) inherits ``OrchestratorConfig.max_off_policy_steps``."""
-
     @model_validator(mode="after")
     def resolve_env_defaults(self):
         """Resolve per-env overrides: inherit group-level sampling, num_workers, and max_retries."""
@@ -330,9 +327,6 @@ class EvalConfig(BaseConfig):
 
     interval: int = Field(100, ge=1)
     """Step interval at which to evaluate the model."""
-
-    max_off_policy_steps: int | None = None
-    """Eval off-policy cap. ``None`` (default) inherits ``OrchestratorConfig.max_off_policy_steps``."""
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
@@ -664,12 +658,11 @@ class OrchestratorConfig(BaseConfig):
     """Maximum training steps. If None, runs indefinitely."""
 
     max_off_policy_steps: int = Field(8, ge=0)
-    """Default cap on policy versions a rollout can lag the policy by before
-    being cancelled (a synthetic ``Cancelled`` rollout flows to the sink so
-    the group still finalizes — usually as a partial group). Higher values
-    yield better throughput at the cost of off-policy noise. Inherited by
-    ``train.max_off_policy_steps`` and ``eval.max_off_policy_steps`` when
-    those are not set explicitly."""
+    """Cap on policy versions a rollout can lag the policy by before being
+    cancelled (a synthetic ``Cancelled`` rollout flows to the sink so the
+    group still finalizes — usually as a partial group). Applies to both
+    train and eval rollouts. Higher values yield better throughput at the
+    cost of off-policy noise."""
 
     bench: bool = False
     """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""
