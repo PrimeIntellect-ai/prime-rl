@@ -472,7 +472,6 @@ class RolloutDispatcher:
                         f"Rollout failed in group {meta.group_id} ({meta.env_name}) — "
                         f"{r['error'].get('error_chain_repr', err_type)}"
                     )
-            r["env_name"] = meta.env_name
             await self.emit_rollout(meta, group, r)
 
     async def emit_rollout(self, meta: RolloutMeta, group: GroupState | None, raw: vf.RolloutOutput) -> None:
@@ -480,10 +479,13 @@ class RolloutDispatcher:
 
         Pops the group from ``self.groups`` once every member has been
         emitted, so the dispatcher's group bookkeeping stays bounded.
+        Stamps ``env_name`` / ``example_id`` / ``_eval_step`` on ``raw`` so
+        the sink can read them off without duplicating fields on the
+        ``Rollout`` dataclass.
         """
-        example_id = -1
         eval_step = meta.eval_step
         policy_version = meta.policy_version
+        example_id = -1
         if group is not None:
             ex_id = group.example.get("example_id")
             if ex_id is not None:
@@ -494,14 +496,17 @@ class RolloutDispatcher:
             if group.emitted >= group.target_rollouts:
                 self.groups.pop(meta.group_id, None)
 
+        raw["env_name"] = meta.env_name
+        raw.setdefault("example_id", example_id)
+        if eval_step is not None:
+            raw["_eval_step"] = eval_step
+
         await self.out_q.put(
             Rollout(
                 kind=meta.kind,
-                env_name=meta.env_name,
-                example_id=example_id,
+                group_id=meta.group_id,
                 raw=raw,
                 policy_version=policy_version,
-                eval_step=eval_step,
             )
         )
 
@@ -546,28 +551,11 @@ class RolloutDispatcher:
             cancelled += meta.rollout_count
             # Emit a marker per rollout this task would have produced so the
             # sink sees ``group_size`` arrivals overall and finalizes.
+            # ``emit_rollout`` stamps env_name / example_id / _eval_step on
+            # raw, so we just need a minimal error-shaped RolloutOutput.
             for _ in range(meta.rollout_count):
                 raw = self.error_rollout_output(error_type="Cancelled", error_repr="Off-policy cancel")
-                raw["env_name"] = meta.env_name
-                example_id = -1
-                eval_step = meta.eval_step
-                policy_version = meta.policy_version
-                if group is not None:
-                    ex_id = group.example.get("example_id")
-                    if ex_id is not None:
-                        example_id = int(ex_id)
-                    eval_step = group.eval_step
-                    policy_version = group.policy_version_at_start
-                await self.out_q.put(
-                    Rollout(
-                        kind=meta.kind,
-                        env_name=meta.env_name,
-                        example_id=example_id,
-                        raw=raw,
-                        policy_version=policy_version,
-                        eval_step=eval_step,
-                    )
-                )
+                await self.emit_rollout(meta, group, raw)
         if tasks_to_cancel:
             await safe_cancel_all(tasks_to_cancel)
         return cancelled

@@ -96,18 +96,24 @@ class Rollout:
     off-policy cancellations) are carried via ``raw["error"]`` rather than
     silently dropped. Sinks check that field to decide drop / partial-train.
 
+    ``group_id`` is the dispatcher's UUID for the dispatched group this
+    rollout belongs to. The sink uses it as the ``pending_groups`` key —
+    ``(env_name, example_id)`` isn't unique because the same example can
+    be re-sampled while an earlier group is still in flight, especially on
+    small datasets. ``env_name`` / ``example_id`` are still available on
+    ``raw["env_name"]`` and ``raw["example_id"]`` for logging / aggregation.
+
     ``policy_version`` is the snapshot at dispatch time; the train sink
-    uses it for per-rollout off-policy metrics. ``eval_step`` is set only
-    for eval rollouts (the policy version at which the eval epoch was
-    triggered).
+    uses it for per-rollout off-policy metrics. For eval rollouts, the
+    dispatcher also stamps ``raw["_eval_step"]`` with the policy version at
+    which the eval epoch was triggered (used by the eval sink to bucket
+    groups into epochs).
     """
 
     kind: Kind
-    env_name: str
-    example_id: int
+    group_id: uuid.UUID
     raw: vf.RolloutOutput
     policy_version: int
-    eval_step: int | None = None
 
 
 @dataclass

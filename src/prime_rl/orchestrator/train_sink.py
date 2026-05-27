@@ -32,6 +32,7 @@ orchestrator.
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections import defaultdict
 
 import verifiers as vf
@@ -82,11 +83,13 @@ class TrainSink:
         self.post_filters = post_filters
         self.group_size = config.group_size
 
-        # In-progress GRPO groups keyed by (env_name, example_id). The sink
-        # finalizes a group once ``len(pending_groups[key]) == group_size``
-        # — works because the dispatcher emits every dispatched rollout
-        # (success or error) exactly once.
-        self.pending_groups: dict[tuple[str, int], list[Rollout]] = defaultdict(list)
+        # In-progress GRPO groups keyed by the dispatcher's group UUID.
+        # The sink finalizes a group once ``len(pending_groups[group_id])
+        # == group_size`` — works because the dispatcher emits every
+        # dispatched rollout (success or error) exactly once. We can't key
+        # on ``(env_name, example_id)`` because the same example can be
+        # re-sampled while an earlier group is still in flight.
+        self.pending_groups: dict[uuid.UUID, list[Rollout]] = defaultdict(list)
         # Survivors of the pre-filter pass — waiting to ship. Singular
         # because train has one batch in flight at a time (unlike eval,
         # which can have multiple ``(env, eval_step)`` epochs in parallel).
@@ -106,10 +109,9 @@ class TrainSink:
         if that arrival brought ``pending_batch`` to the batch threshold."""
         assert rollout.kind == "train", "TrainSink only handles train rollouts"
         await self.process_rollout(rollout)
-        key = (rollout.env_name, rollout.example_id)
-        self.pending_groups[key].append(rollout)
-        if len(self.pending_groups[key]) >= self.group_size:
-            self.process_group(key)
+        self.pending_groups[rollout.group_id].append(rollout)
+        if len(self.pending_groups[rollout.group_id]) >= self.group_size:
+            self.process_group(rollout.group_id)
         # Mirror ``EvalSink.add``: trigger ``process_batch`` once the buffer
         # has reached the configured rollout/token threshold, otherwise
         # return None and wait for more arrivals.
@@ -147,18 +149,19 @@ class TrainSink:
 
     # ── level 2: per-group (filter errors + advantages + pre-filter) ──────
 
-    def process_group(self, key: tuple[str, int]) -> None:
+    def process_group(self, group_id: uuid.UUID) -> None:
         """Finalize one GRPO group: filter errored rollouts (and drop the
         whole group when ``requires_group_scoring`` is set and any failed),
         compute advantages over survivors, propagate them onto the per-
         rollout ``TrainingSample``\\ s, then run the pre-batch filter pass.
         Survivors (not filtered) land in ``pending_batch``.
         """
-        env_name, example_id = key
-        group = self.pending_groups.pop(key, [])
+        group = self.pending_groups.pop(group_id, [])
         if not group:
             return
         all_raws = [r.raw for r in group]
+        env_name = all_raws[0]["env_name"]
+        example_id = all_raws[0].get("example_id", -1)
         survivors = [raw for raw in all_raws if raw.get("error") is None]
         num_errored = len(all_raws) - len(survivors)
 

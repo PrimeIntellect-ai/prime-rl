@@ -27,6 +27,7 @@ Filters do not apply to eval — filters are a train-only concept.
 
 from __future__ import annotations
 
+import uuid
 from collections import defaultdict
 from typing import Any
 
@@ -48,9 +49,9 @@ class EvalSink:
 
     def __init__(self, *, eval_envs: EvalEnvs) -> None:
         self.eval_envs = eval_envs
-        # Per (env_name, example_id, eval_step) accumulation — finalized
-        # into the batch bucket when arrivals reach ``group_size``.
-        self.pending_groups: dict[tuple[str, int, int], list[Rollout]] = defaultdict(list)
+        # Per-group accumulation keyed by the dispatcher's group UUID.
+        # Finalized into the batch bucket when arrivals reach ``group_size``.
+        self.pending_groups: dict[uuid.UUID, list[Rollout]] = defaultdict(list)
         # Per (env_name, eval_step) accumulation — emits an ``EvalBatch``
         # when ``len(bucket) >= num_examples * group_size``. ``process_group``
         # flushes every member of a finalized group into here without
@@ -66,14 +67,15 @@ class EvalSink:
         Returns the ``EvalBatch`` when an env's epoch is complete.
         """
         assert rollout.kind == "eval", "EvalSink only handles eval rollouts"
-        assert rollout.eval_step is not None, "eval Rollout missing eval_step"
+        env_name = rollout.raw["env_name"]
+        eval_step = rollout.raw.get("_eval_step")
+        assert eval_step is not None, "eval Rollout missing raw['_eval_step']"
         self.process_rollout(rollout)
-        gkey = (rollout.env_name, rollout.example_id, rollout.eval_step)
-        bkey = (rollout.env_name, rollout.eval_step)
-        self.pending_groups[gkey].append(rollout)
-        if len(self.pending_groups[gkey]) >= self.group_size_for(rollout.env_name):
-            self.process_group(gkey)
-        if len(self.pending_batches[bkey]) >= self.batch_size_for(rollout.env_name):
+        bkey = (env_name, eval_step)
+        self.pending_groups[rollout.group_id].append(rollout)
+        if len(self.pending_groups[rollout.group_id]) >= self.group_size_for(env_name):
+            self.process_group(rollout.group_id)
+        if len(self.pending_batches[bkey]) >= self.batch_size_for(env_name):
             return self.process_batch(bkey)
         return None
 
@@ -99,18 +101,20 @@ class EvalSink:
 
     # ── level 2: per-group (move into batch bucket) ───────────────────────
 
-    def process_group(self, key: tuple[str, int, int]) -> None:
-        group = self.pending_groups.pop(key, [])
+    def process_group(self, group_id: uuid.UUID) -> None:
+        group = self.pending_groups.pop(group_id, [])
         if not group:
             return
-        env_name, example_id, eval_step = key
+        all_raws = [r.raw for r in group]
+        env_name = all_raws[0]["env_name"]
+        example_id = all_raws[0].get("example_id", -1)
+        eval_step = all_raws[0]["_eval_step"]
         bucket = self.pending_batches[(env_name, eval_step)]
-        bucket.extend(r.raw for r in group)
+        bucket.extend(all_raws)
 
         # Per-group summary (eval). Mirrors the train side: one info line
         # per finalized group with error / reward counts. Eval doesn't run
         # filters, so the filter slot is always empty.
-        all_raws = [r.raw for r in group]
         survivors = [raw for raw in all_raws if raw.get("error") is None]
         num_errored = len(all_raws) - len(survivors)
         rewards = [raw.get("reward", 0.0) for raw in survivors]
