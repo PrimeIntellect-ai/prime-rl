@@ -24,6 +24,7 @@ import asyncio
 import ctypes
 import os
 import time
+from typing import Any
 
 import tomli_w
 
@@ -38,14 +39,14 @@ from prime_rl.orchestrator.patches import (
 )
 from prime_rl.orchestrator.utils import get_weight_dir, set_default_executor
 from prime_rl.orchestrator.vf_utils import intercept_vf_logging
-from prime_rl.orchestrator_v2.batcher import Batcher
 from prime_rl.orchestrator_v2.ckpt import Progress, setup_ckpt_manager
-from prime_rl.orchestrator_v2.dispatcher import RolloutDispatcher
-from prime_rl.orchestrator_v2.eval_collector import EvalCollector
+from prime_rl.orchestrator_v2.dispatcher import Rollout, RolloutDispatcher
+from prime_rl.orchestrator_v2.eval_sink import EvalFlush, EvalSink
 from prime_rl.orchestrator_v2.log_loop import IntervalLogger
 from prime_rl.orchestrator_v2.metrics import MetricsBuilder
 from prime_rl.orchestrator_v2.policy import Policy
 from prime_rl.orchestrator_v2.postprocessor import PostProcessor
+from prime_rl.orchestrator_v2.train_sink import TrainSink
 from prime_rl.orchestrator_v2.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import setup_training_batch_sender
@@ -54,7 +55,7 @@ from prime_rl.utils.client import init_nccl_broadcast, setup_inference_pool
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
-from prime_rl.utils.pathing import get_log_dir
+from prime_rl.utils.pathing import get_log_dir, get_rollout_dir, get_step_path
 from prime_rl.utils.usage_reporter import UsageReporter
 from prime_rl.utils.utils import (
     clean_exit,
@@ -117,12 +118,13 @@ class Orchestrator:
 
         # Components — built at the end of ``setup()``.
         self.dispatcher: RolloutDispatcher | None = None
-        self.batcher: Batcher | None = None
+        self.train_sink: TrainSink | None = None
+        self.eval_sink: EvalSink | None = None
         self.postprocessor: PostProcessor | None = None
         self.metrics: MetricsBuilder | None = None
-        self.eval_collector: EvalCollector | None = None
         self.watcher: WeightWatcher | None = None
         self.log_loop: IntervalLogger | None = None
+        self.post_filters = []
 
         # Background tasks for components with their own main loop.
         self.component_tasks: list[asyncio.Task] = []
@@ -194,9 +196,9 @@ class Orchestrator:
         if usage_base_url and usage_api_key:
             self.usage_reporter = UsageReporter()
 
-        # Filters.
+        # Filters — train-only by design (eval rollouts are never filtered).
         pre_filters = setup_filters(config.pre_batch_filters, vocab_size=self.tokenizer.vocab_size)
-        post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size)
+        self.post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size)
 
         # Envs.
         self.logger.info("Loading training environments")
@@ -291,11 +293,13 @@ class Orchestrator:
             policy=self.policy,
             resume_step=self.resume_step,
         )
-        self.batcher = Batcher(
+        self.train_sink = TrainSink(
             batch_size=config.batch_size,
             token_batch_size=config.token_batch_size,
+            advantage_config=config.advantage,
             pre_filters=pre_filters,
         )
+        self.eval_sink = EvalSink()
         self.postprocessor = PostProcessor(
             config,
             tokenizer=self.tokenizer,
@@ -303,15 +307,9 @@ class Orchestrator:
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             sender=self.sender,
             teacher_inference=self.teacher_inference,
-            post_filters=post_filters,
+            post_filters=self.post_filters,
         )
         self.metrics = MetricsBuilder(config)
-        self.eval_collector = EvalCollector(
-            config,
-            monitor=self.monitor,
-            eval_envs=self.eval_envs,
-            post_filters=post_filters,
-        )
         self.watcher = WeightWatcher(
             config,
             policy=self.policy,
@@ -381,34 +379,41 @@ class Orchestrator:
     # ── pipeline ──────────────────────────────────────────────────────────
 
     async def main_loop(self) -> None:
-        """The pipeline driver. Pulls Trajectories from the dispatcher, routes
-        train vs eval, and advances the step counter via ``process_one_step``."""
-        assert self.dispatcher and self.batcher and self.eval_collector
+        """The pipeline driver. Consumes ``Rollout``\\ s from the dispatcher
+        (the atomic unit), routes train vs eval to their respective sinks,
+        and reacts to the sinks' flush signals:
+
+        - Train sink signals ``batch_ready`` once a GRPO group's advantages
+          are computed and pre-filtered survivors fill the batch buffer.
+          That triggers a training step (``process_one_step``).
+        - Eval sink signals ``EvalFlush`` once an env's epoch is complete.
+          That triggers per-env eval-metric logging.
+
+        New policy versions are signalled separately by the watcher, which
+        runs as a background task and notifies the dispatcher via the
+        observer protocol — no main-loop handling needed.
+        """
+        assert self.dispatcher and self.train_sink and self.eval_sink
         while not self.stopped.is_set():
             try:
-                traj = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
+                rollout: Rollout = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 continue
 
-            if traj.kind == "eval":
-                assert traj.eval_step is not None
-                expected = self.dispatcher.expected_eval_counts.get(traj.eval_step)
-                fired = self.dispatcher.eval_step_envs.get(traj.eval_step, set())
-                self.eval_collector.handle(traj, expected, fired)
-                # Mirror the legacy ``progress.last_eval_step`` on flush so the
-                # ckpt resumes don't redundantly re-eval at the resume step.
-                if self.eval_collector.last_flushed_step is not None:
-                    self.progress.last_eval_step = self.eval_collector.last_flushed_step
+            if rollout.kind == "eval":
+                flush = self.eval_sink.add(rollout)
+                if flush is not None:
+                    self.flush_eval(flush)
                 continue
 
-            self.batcher.add(traj.rollouts, policy_version=traj.policy_version)
-            while self.batcher.ready() and not self.stopped.is_set():
+            self.train_sink.add(rollout)
+            while self.train_sink.batch_ready() and not self.stopped.is_set():
                 await self.process_one_step()
 
     async def process_one_step(self) -> None:
         """Drive one shipping step: ckpt save → max_steps check → pop → ship
         → barrier wait → metrics + log → step++."""
-        assert self.batcher and self.postprocessor and self.metrics and self.dispatcher and self.monitor
+        assert self.train_sink and self.postprocessor and self.metrics and self.dispatcher and self.monitor
         config = self.config
         step = self.progress.step
 
@@ -422,7 +427,7 @@ class Orchestrator:
         self.logger.info(f"Starting orchestrator step {step}")
         step_start = time.perf_counter()
 
-        batch = self.batcher.pop()
+        batch = self.train_sink.pop()
         result = await self.postprocessor.process(batch, step)
 
         if result.n_trainable == 0:
@@ -450,9 +455,9 @@ class Orchestrator:
             dispatcher_drain=self.dispatcher.drain_metrics(),
             step_time=step_time,
             save_ckpt_time=save_ckpt_time,
-            pre_filter_seen=self.batcher.pre_filter_seen,
-            pre_filter_dropped=self.batcher.pre_filter_dropped,
-            pre_filter_dropped_by_name=dict(self.batcher.pre_filter_dropped_by_name),
+            pre_filter_seen=self.train_sink.pre_filter_seen,
+            pre_filter_dropped=self.train_sink.pre_filter_dropped,
+            pre_filter_dropped_by_name=dict(self.train_sink.pre_filter_dropped_by_name),
         )
         self.monitor.log(to_log, step=step)
         self.monitor.log_samples(batch, step=step)
@@ -494,8 +499,76 @@ class Orchestrator:
             f"Max. Off-Policy Level: {self.dispatcher.max_off_policy_level}"
         )
 
-        self.batcher.reset_pre_filter_stats()
+        self.train_sink.reset_pre_filter_stats()
         self.progress.step += 1
+
+    def flush_eval(self, flush: EvalFlush) -> None:
+        """Log per-env eval metrics for one completed epoch. Pure side-effect
+        method — reads from the ``EvalFlush`` payload and writes to monitor.
+
+        No filters applied (eval is unfiltered by design); pass@k computed
+        when the env's reward set is binary.
+        """
+        from prime_rl.orchestrator.eval_utils import compute_pass_at_k
+        from prime_rl.orchestrator.vf_utils import get_seq_len, save_rollouts
+
+        env_name = flush.env_name
+        eval_step = flush.eval_step
+        rollouts = flush.rollouts
+        if not rollouts:
+            self.logger.warning(f"Eval @ step={eval_step} env={env_name}: no surviving rollouts, skipping log")
+            return
+
+        rewards = [r.get("reward", 0.0) for r in rollouts]
+        lens = [get_seq_len(r) for r in rollouts]
+        no_response_rate = sum(1 for r in rollouts if not r.get("completion")) / len(rollouts)
+        truncation_rate = sum(1 for r in rollouts if r.get("is_truncated")) / len(rollouts)
+        group_size = 1
+        if self.eval_envs is not None:
+            try:
+                group_size = self.eval_envs.get(env_name).config.group_size
+            except KeyError:
+                pass
+
+        prefix = f"eval/{env_name}"
+        to_log: dict[str, Any] = {
+            "step": eval_step,
+            f"{prefix}/avg@{group_size}": float(sum(rewards) / len(rewards)),
+            f"{prefix}/reward/mean": float(sum(rewards) / len(rewards)),
+            f"{prefix}/completion_len/mean": float(sum(lens) / len(lens)),
+            f"{prefix}/completion_len/max": float(max(lens)),
+            f"{prefix}/completion_len/min": float(min(lens)),
+            f"{prefix}/is_truncated/mean": float(truncation_rate),
+            f"{prefix}/no_response/mean": float(no_response_rate),
+            f"{prefix}/n_rollouts": float(len(rollouts)),
+        }
+
+        # pass@k for binary-reward envs. We need per-example rollout groups,
+        # which we reconstruct from ``example_id``.
+        by_example: dict[int, list[float]] = {}
+        for r in rollouts:
+            by_example.setdefault(r["example_id"], []).append(float(r.get("reward", 0.0)))
+        to_log[f"{prefix}/n_examples"] = float(len(by_example))
+        unique_rewards = {float(r) for r in rewards}
+        if unique_rewards.issubset({0.0, 1.0}) and by_example:
+            pass_at_k_per_example = [compute_pass_at_k(rs) for rs in by_example.values()]
+            keys = set().union(*(d.keys() for d in pass_at_k_per_example))
+            for k in keys:
+                values = [d.get(k, 0.0) for d in pass_at_k_per_example]
+                to_log[f"{prefix}/{k}"] = float(sum(values) / len(values))
+
+        step_path = get_step_path(get_rollout_dir(self.config.output_dir), eval_step)
+        save_rollouts(rollouts, step_path / f"eval_rollouts_{env_name}.jsonl", exclude_keys={"trajectory"})
+        assert self.monitor is not None
+        self.monitor.log_eval_samples(rollouts, env_name=env_name, step=eval_step)
+        self.monitor.log(to_log, step=eval_step)
+        self.progress.last_eval_step = eval_step
+
+        self.logger.success(
+            f"Eval @ step={eval_step} env={env_name} | "
+            f"Reward: {to_log[f'{prefix}/reward/mean']:.4f} | "
+            f"Rollouts: {len(rollouts)} | Examples: {len(by_example)}"
+        )
 
     async def maybe_save_ckpt(self, step: int) -> float:
         """Save the checkpoint if we're at an interval boundary. Returns the

@@ -33,7 +33,6 @@ import verifiers as vf
 from aiolimiter import AsyncLimiter
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.advantage import compute_advantages
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator_v2.policy import Policy
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
@@ -56,20 +55,31 @@ class SchedMode(Enum):
 
 
 @dataclass
-class Trajectory:
-    """One assembled group of rollouts emitted to ``out_q``.
+class Rollout:
+    """The atomic unit emitted by the dispatcher — one completed rollout.
 
-    ``policy_version`` is the snapshot at dispatch time — used by the batcher
-    for per-rollout off-policy metrics. ``eval_step`` is set only for eval
-    trajectories (the policy version at which the eval epoch was triggered)
-    so the batcher can aggregate eval rollouts back to their trigger step.
+    Sinks group these by their relevant grouping unit (``(env, example_id)``
+    for train, ``(env, eval_step)`` for eval) and trigger flush operations
+    on ``is_group_complete=True``.
+
+    For train, "group complete" means the GRPO group is done — the train
+    sink computes advantages on the surviving rollouts at that point.
+
+    For eval, "group complete" means the env's eval epoch has emitted (or
+    dropped) all expected rollouts — the eval sink flushes per-env metrics.
+
+    ``policy_version`` is the snapshot at dispatch time; the train sink uses
+    it for per-rollout off-policy metrics. ``eval_step`` is set only for
+    eval rollouts (the policy version at which the eval epoch was
+    triggered).
     """
 
     kind: Kind
     env_name: str
     example_id: int
-    rollouts: list[vf.RolloutOutput]
+    raw: vf.RolloutOutput
     policy_version: int
+    is_group_complete: bool
     eval_step: int | None = None
 
 
@@ -233,7 +243,14 @@ class RolloutDispatcher:
                 self.eval_examples[env.name] = rows
                 self.eval_intervals[env.name] = env.config.interval
 
-        self.expected_eval_counts: dict[int, int] = {}  # eval_step -> total rollouts expected
+        # Per (env_name, eval_step) tracking: how many rollouts the dispatcher
+        # plans to emit, and how many it has either emitted or dropped. When
+        # ``emitted + dropped == expected`` for a key, the current emission
+        # gets ``is_group_complete=True`` so ``EvalSink`` knows to flush that
+        # env's epoch.
+        self.eval_expected_per_env: dict[tuple[str, int], int] = {}
+        self.eval_emitted_per_env: dict[tuple[str, int], int] = defaultdict(int)
+        self.eval_dropped_per_env: dict[tuple[str, int], int] = defaultdict(int)
         self.eval_step_envs: dict[int, set[str]] = {}  # eval_step -> set of envs that fired
 
         # First-step eval handling — mirror legacy ``eval_base_model`` / ``skip_eval_on_resume``.
@@ -381,9 +398,10 @@ class RolloutDispatcher:
         if fired_envs:
             self.switch_mode(SchedMode.PREFER_EVAL, reason=f"eval triggered for {','.join(fired_envs)} @ step={step}")
             self.eval_epochs_started += 1
+            expected_total = sum(self.eval_expected_per_env.get((name, step), 0) for name in fired_envs)
             self.logger.info(
                 f"Eval @ step={step} for env(s) {','.join(fired_envs)} "
-                f"(queued {len(self.eval_queue)} example(s); expected {self.expected_eval_counts.get(step, 0)} rollouts)"
+                f"(queued {len(self.eval_queue)} example(s); expected {expected_total} rollouts)"
             )
 
     # ── eval epoch machinery ───────────────────────────────────────────────
@@ -399,9 +417,10 @@ class RolloutDispatcher:
         if fired_envs:
             self.switch_mode(SchedMode.PREFER_EVAL, reason=log_reason)
             self.eval_epochs_started += 1
+            expected_total = sum(self.eval_expected_per_env.get((name, step), 0) for name in fired_envs)
             self.logger.info(
                 f"Eval @ step={step} ({log_reason}) — queued envs={','.join(fired_envs)}, "
-                f"{self.expected_eval_counts.get(step, 0)} expected rollouts"
+                f"{expected_total} expected rollouts"
             )
 
     def enqueue_eval_env(self, env_name: str, step: int, *, force: bool = False) -> None:
@@ -419,7 +438,7 @@ class RolloutDispatcher:
             self.eval_queue.append((env_name, example, step))
             added += per_example_rollouts
         self.last_eval_step_per_env[env_name] = step
-        self.expected_eval_counts[step] = self.expected_eval_counts.get(step, 0) + added
+        self.eval_expected_per_env[(env_name, step)] = self.eval_expected_per_env.get((env_name, step), 0) + added
         self.eval_step_envs.setdefault(step, set()).add(env_name)
 
     # ── fill ────────────────────────────────────────────────────────────────
@@ -678,11 +697,12 @@ class RolloutDispatcher:
         await self.maybe_finalize_group(meta.group_id)
 
     async def maybe_finalize_group(self, group_id: int) -> None:
-        """Emit a ``Trajectory`` once every dispatched rollout has come back.
+        """When every dispatched rollout for a group has come back (success or
+        failure), emit the survivors to ``out_q`` as individual ``Rollout``\\ s.
 
-        Partial groups (some failed) are still emitted with the surviving
-        rollouts — matches legacy behavior. All-failed groups are dropped and
-        counted in ``dropped_groups_by_env``.
+        Group-level concerns (advantage computation, pre-filters) belong to
+        the sinks, not here — this method just routes individual rollouts
+        out with the correct grouping signal.
         """
         group = self.groups.get(group_id)
         if group is None:
@@ -690,7 +710,6 @@ class RolloutDispatcher:
         if len(group.completed_rollouts) + group.failed_rollouts < group.target_rollouts:
             return
 
-        # Group complete (or partial-complete).
         self.groups.pop(group_id, None)
         if not group.completed_rollouts:
             self.dropped_groups_by_env[group.env_name] += 1
@@ -698,6 +717,11 @@ class RolloutDispatcher:
                 f"Dropping {group.kind} group {group_id} ({group.env_name}) — all "
                 f"{group.target_rollouts} rollouts failed"
             )
+            # For eval, account for the drop in the per-env counter so the
+            # env's epoch still flushes (or doesn't, but at least doesn't hang).
+            if group.kind == "eval" and group.eval_step is not None:
+                key = (group.env_name, group.eval_step)
+                self.eval_dropped_per_env[key] += group.target_rollouts
             return
 
         if group.failed_rollouts > 0:
@@ -707,27 +731,58 @@ class RolloutDispatcher:
                 f"({group.failed_rollouts} failed)"
             )
 
-        # Compute advantages per-group for train trajectories. Done here so
-        # pre_batch_filters (e.g. ZeroAdvantageFilter) can fire in the batcher
-        # without re-grouping rollouts.
-        if group.kind == "train" and self.config.advantage is not None:
-            await asyncio.to_thread(compute_advantages, group.completed_rollouts, self.config.advantage)
-        elif group.kind == "train" and self.config.advantage is None:
-            for r in group.completed_rollouts:
-                r["advantage"] = r.get("reward", 0.0)
-
         example_id = group.example.get("example_id")
         if example_id is None:
             example_id = -1
-        traj = Trajectory(
-            kind=group.kind,
-            env_name=group.env_name,
-            example_id=int(example_id),
-            rollouts=group.completed_rollouts,
-            policy_version=group.policy_version_at_start,
-            eval_step=group.eval_step,
-        )
-        await self.out_q.put(traj)
+        example_id = int(example_id)
+
+        # Account for eval drops (dropped rollouts never get emitted but the
+        # epoch tracking still needs to know they came through).
+        if group.kind == "eval" and group.eval_step is not None and group.failed_rollouts > 0:
+            self.eval_dropped_per_env[(group.env_name, group.eval_step)] += group.failed_rollouts
+
+        await self.emit_group(group, example_id)
+
+    async def emit_group(self, group: "GroupState", example_id: int) -> None:
+        """Emit each surviving rollout to ``out_q``. The last one in the
+        emission gets ``is_group_complete=True`` so the sink finalizes:
+
+        - For train, the GRPO group is complete and the sink will compute
+          advantages + apply pre-filters on the next ``add()``.
+        - For eval, the env's epoch reaches its expected count and the
+          sink will flush per-env metrics.
+        """
+        rollouts = group.completed_rollouts
+        for i, raw in enumerate(rollouts):
+            is_last_of_emission = i == len(rollouts) - 1
+
+            if group.kind == "train":
+                # Train: "group" = (env, example_id). Last rollout of the GRPO
+                # group triggers sink finalization.
+                is_group_complete = is_last_of_emission
+            else:
+                # Eval: "group" = (env, eval_step). The sink flushes when the
+                # env's epoch has emitted+dropped all expected rollouts. Track
+                # cumulative emit count and flag only the very last expected.
+                assert group.eval_step is not None
+                key = (group.env_name, group.eval_step)
+                self.eval_emitted_per_env[key] += 1
+                expected = self.eval_expected_per_env.get(key, 0)
+                emitted = self.eval_emitted_per_env[key]
+                dropped = self.eval_dropped_per_env[key]
+                is_group_complete = emitted + dropped >= expected and is_last_of_emission
+
+            await self.out_q.put(
+                Rollout(
+                    kind=group.kind,
+                    env_name=group.env_name,
+                    example_id=example_id,
+                    raw=raw,
+                    policy_version=group.policy_version_at_start,
+                    is_group_complete=is_group_complete,
+                    eval_step=group.eval_step,
+                )
+            )
 
     async def drop_group(self, group_id: int) -> int:
         """Cancel any remaining in-flight tasks for this group and forget it.
