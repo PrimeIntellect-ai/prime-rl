@@ -161,6 +161,12 @@ class TrainBatchMetrics:
     rollout_decode_lens: list[int]
     samples_per_rollout: list[int]
     samples_shipped: int
+    # Per-env arrival/error counts accumulated by the sink between ships.
+    # Errored rollouts are dropped at the group level (they don't reach
+    # ``TrainBatch.rollouts``), so we need a separate counter to surface
+    # the per-batch error rate in the success log.
+    arrivals_by_env: dict[str, int] = field(default_factory=dict)
+    errors_by_env: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass

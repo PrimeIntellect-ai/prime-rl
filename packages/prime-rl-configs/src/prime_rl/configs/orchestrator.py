@@ -243,6 +243,10 @@ class TrainEnvConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
 
+    group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
+    """Rollouts generated per example for GRPO group-relative advantages.
+    Inherits from ``orchestrator.group_size`` when unset."""
+
 
 class EvalEnvConfig(EnvConfig):
     sampling: EvalSamplingConfig = EvalSamplingConfig()
@@ -329,6 +333,11 @@ class EvalConfig(BaseConfig):
     interval: int = Field(100, ge=1)
     """Step interval at which to evaluate the model."""
 
+    skip_first_step: bool = False
+    """If False (default), run a startup eval on the model state the
+    orchestrator starts from (base model or resumed checkpoint) before
+    any train rollouts. If True, skip it."""
+
     @model_validator(mode="after")
     def resolve_env_defaults(self):
         """Resolve per-env overrides: inherit group-level sampling, num_workers, max_retries, num_examples, group_size, and interval. Then resolve auto num_workers."""
@@ -367,27 +376,6 @@ class EvalConfig(BaseConfig):
                 f"Duplicate evaluation environment names: {set(duplicates)}. Each env must have a unique name."
             )
         return self
-
-    skip_first_step: bool = False
-    """When False (the default), run an eval epoch on whatever model state
-    the orchestrator starts from — base model on a fresh run, or the
-    resumed checkpoint on a resume. The startup eval is scheduled before
-    any train rollouts. Set to True to skip that startup eval entirely
-    and go straight to training.
-
-    "First step" here means the first step of *this* orchestrator
-    process, not step 0 of the run as a whole — resume and cold start
-    collapse into one path on purpose. If you're resuming from a step
-    that's also an eval interval boundary, you'll get one extra eval
-    pass; that's a tiny cost to pay for not having two near-identical
-    config knobs to reason about.
-
-    Note: the legacy ``eval_base_model`` key is the boolean opposite
-    (``eval_base_model=true`` ≡ ``skip_first_step=false``); we deliberately
-    do not alias the two — the semantic inversion would silently flip
-    behavior on TOMLs that mix names. The legacy ``skip_eval_on_resume``
-    key is also gone, collapsed into this single flag. Update existing
-    configs by hand."""
 
     cancel_inflight_rollouts_on_eval: bool = False
     """Cancel in-flight training rollouts before starting online evals. Avoids congestion (no training + eval rollouts at the same time) at the cost of slower training steps as the pipeline has to refill after each eval."""
@@ -957,6 +945,16 @@ class OrchestratorConfig(BaseConfig):
 
         if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.group_size:
             raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")
+
+        # Propagate the top-level ``group_size`` into each train env that
+        # didn't set its own — mirrors how ``EvalConfig`` resolves per-env
+        # ``group_size`` from its group-level default, so the dispatcher /
+        # sink / source can read ``env.config.group_size`` uniformly for
+        # both kinds. Existing TOMLs with a single top-level ``group_size``
+        # keep working unchanged.
+        for env_cfg in self.train.env:
+            if "group_size" not in env_cfg.model_fields_set:
+                env_cfg.group_size = self.group_size
 
         # Resolve train env num_workers from max_inflight_rollouts
         for env_cfg in self.train.env:

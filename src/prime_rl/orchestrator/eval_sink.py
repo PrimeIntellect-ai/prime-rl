@@ -118,7 +118,7 @@ class EvalSink:
         num_errored = len(all_raws) - len(survivors)
         rewards = [raw.get("reward", 0.0) for raw in survivors]
         avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
-        get_logger().info(
+        get_logger().debug(
             f"Group | env={env_name} example_id={example_id} eval_step={eval_step} | "
             f"rollouts={len(all_raws)} (errored={num_errored}) | reward={avg_reward:.4f}"
         )

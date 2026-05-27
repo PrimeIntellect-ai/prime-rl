@@ -26,7 +26,7 @@ from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.types import Policy, VersionObserver
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.client import InferencePool
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_broadcast_dir, get_step_path, wait_for_path
 from prime_rl.utils.utils import get_latest_ckpt_step
 
@@ -62,8 +62,8 @@ class WeightWatcher:
 
         # Watcher-owned periodic logger. Same lifecycle as the polling loop.
         self.periodic_logger = PeriodicLogger(
-            name="watcher",
-            snapshot=self.gauges,
+            name="Watcher",
+            collect=self.collect,
             metric_keys=list(self.gauges().keys()),
             interval=log_interval,
             wandb_enabled=wandb_enabled,
@@ -124,7 +124,7 @@ class WeightWatcher:
                 await wait_for_path(stable_marker)
                 self.last_wait_for_ckpt_time = time.perf_counter() - t0
                 get_logger().info(
-                    f"Orchestrator resumed: checkpoint {next_step} ready (after {self.last_wait_for_ckpt_time:.2f}s)"
+                    f"Orchestrator resumed: checkpoint {next_step} ready (after {format_time(self.last_wait_for_ckpt_time)})"
                 )
 
             get_logger().debug(f"Updating weights to step {next_step}")
@@ -132,7 +132,7 @@ class WeightWatcher:
             await self.inference.update_weights(weights_path, lora_name=self.lora_name, step=next_step)
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
-            get_logger().debug(f"Updated weights to step {next_step} in {self.last_update_weights_time:.2f}s")
+            get_logger().debug(f"Updated weights to step {next_step} in {format_time(self.last_update_weights_time)}")
 
             self.ckpt_step = next_step
             self.policy.version = next_step
@@ -159,3 +159,13 @@ class WeightWatcher:
             "watcher/last_update_weights_time_s": self.last_update_weights_time,
             "watcher/last_wait_for_ckpt_time_s": self.last_wait_for_ckpt_time,
         }
+
+    def collect(self) -> tuple[str, dict[str, float]]:
+        gauges = self.gauges()
+        body = (
+            f"policy_version={self.policy.version} | "
+            f"updates={self.update_count} | "
+            f"last_update={format_time(self.last_update_weights_time)} | "
+            f"last_ckpt_wait={format_time(self.last_wait_for_ckpt_time)}"
+        )
+        return body, gauges

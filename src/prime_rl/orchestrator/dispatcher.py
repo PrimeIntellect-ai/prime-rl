@@ -61,27 +61,20 @@ class DispatcherMode(Enum):
 
 @dataclass
 class DispatcherMetrics:
-    """Per-poll counters the dispatcher exposes to its ``PeriodicLogger``.
-
-    Split into two groups:
-
-    - *Gauges* (read by ``RolloutDispatcher.gauges``): point-in-time
-      snapshots — no reset.
-    - *Drain counters* (``drained()``): monotonic per-poll counters; the
-      logger consumes them with ``drained()`` which clears each one to
-      zero so the next poll measures only what happened since.
+    """Per-poll drain counters the dispatcher exposes to its
+    ``PeriodicLogger``. The logger consumes them with ``drained()`` which
+    clears each one to zero so the next poll measures only what happened
+    since. Point-in-time gauges (mode, inflight, off-policy levels) live
+    on ``RolloutDispatcher.gauges`` directly — they don't reset and
+    don't belong here.
     """
 
-    # Drain counters (reset each ``drained()`` call).
     cancelled_train_rollouts: int = 0
     cancelled_eval_rollouts: int = 0
     empty_rollouts_by_env: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     errored_rollouts_by_env: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     errors_by_type: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     total_rollouts_by_env: dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    # Monotonic gauges (not drained — running totals over the run).
-    eval_epochs_started: int = 0
-    mode_transitions: int = 0
 
     def record_cancellation(self, *, kind: Literal["train", "eval"], n: int) -> None:
         if kind == "train":
@@ -156,7 +149,6 @@ class RolloutDispatcher:
         policy: Policy,
         max_inflight_rollouts: int,
         tasks_per_minute: float | None,
-        group_size: int,
         max_off_policy_steps: int,
         training_mode: Literal["rl", "opd", "sft"],
         log_interval: float,
@@ -168,7 +160,6 @@ class RolloutDispatcher:
         self.inference = inference
         self.train_source = train_source
         self.eval_source = eval_source
-        self.group_size = group_size
         self.training_mode = training_mode
         self.max_off_policy_steps = max_off_policy_steps
 
@@ -208,8 +199,8 @@ class RolloutDispatcher:
         # is the only thing that resets them. Metric keys for both are
         # enumerated up front.
         self.periodic_logger = PeriodicLogger(
-            name="dispatcher",
-            snapshot=self.snapshot,
+            name="Dispatcher",
+            collect=self.collect,
             metric_keys=list(self.gauges().keys()) + list(DispatcherMetrics.DRAIN_KEYS),
             interval=log_interval,
             wandb_enabled=wandb_enabled,
@@ -356,7 +347,7 @@ class RolloutDispatcher:
             if self.mode == DispatcherMode.PREFER_EVAL:
                 if not self.eval_source and self.inflight_eval_count == 0:
                     # All eval examples dispatched and finished — switch back to train.
-                    self.switch_mode(DispatcherMode.PREFER_TRAIN, reason="eval queue drained")
+                    self.switch_mode(DispatcherMode.PREFER_TRAIN, reason="the eval queue drained")
                     continue
                 if not self.eval_source:
                     # Eval queue empty but eval still in flight: don't schedule
@@ -375,13 +366,9 @@ class RolloutDispatcher:
             return
         # INFO-level so the eval-overlap transitions are visible in steady-state
         # production logs without needing DEBUG verbosity.
-        get_logger().info(
-            f"Dispatcher mode: {self.mode.name} → {new_mode.name} "
-            f"(inflight_train={self.inflight_train_count}, inflight_eval={self.inflight_eval_count}, "
-            f"reason={reason})"
-        )
+        prefer = "eval" if new_mode == DispatcherMode.PREFER_EVAL else "train"
+        get_logger().info(f"Switching dispatcher mode to prefer {prefer} rollouts because {reason}")
         self.mode = new_mode
-        self.metrics.mode_transitions += 1
 
     async def try_schedule(self, kind: Kind) -> bool:
         """Schedule one rollout of ``kind``. Same algorithm for train + eval:
@@ -436,12 +423,8 @@ class RolloutDispatcher:
             return None
 
         env_name = example["env_name"]
-        if kind == "train":
-            group_size = self.group_size
-            eval_step: int | None = None
-        else:
-            group_size = envs.get(env_name).config.group_size
-            eval_step = example["_eval_step"]
+        group_size = envs.get(env_name).config.group_size
+        eval_step: int | None = example.get("_eval_step") if kind == "eval" else None
 
         return GroupState(
             kind=kind,
@@ -514,6 +497,10 @@ class RolloutDispatcher:
             rollout_count=permits,
             client_config=client,
             eval_step=group.eval_step,
+        )
+        get_logger().debug(
+            f"dispatch {group.kind} | group={str(group_id)[:8]} env={group.env_name} "
+            f"ex={group.example['example_id']} | permits={permits} v={group.policy_version_at_start}"
         )
         return True
 
@@ -593,6 +580,12 @@ class RolloutDispatcher:
                     )
             await self.emit_rollout(meta, group, r)
 
+        n_errored = sum(1 for r in rollouts if r.get("error") is not None)
+        get_logger().debug(
+            f"complete {meta.kind} | group={str(meta.group_id)[:8]} env={meta.env_name} | "
+            f"rollouts={len(rollouts)} errored={n_errored}"
+        )
+
     async def emit_rollout(self, meta: RolloutMeta, group: GroupState | None, raw: vf.RolloutOutput) -> None:
         """Put one ``Rollout`` on ``out_q`` and bump per-group emit count.
 
@@ -616,6 +609,7 @@ class RolloutDispatcher:
                 self.groups.pop(meta.group_id, None)
 
         raw["env_name"] = meta.env_name
+        raw["_off_policy_steps"] = meta.off_policy_steps
         if eval_step is not None:
             raw["_eval_step"] = eval_step
 
@@ -661,7 +655,7 @@ class RolloutDispatcher:
         """
         group = self.groups.pop(group_id, None)
         tasks_to_cancel: list[asyncio.Task] = []
-        cancelled = 0
+        inflight_cancelled = 0
         last_meta: RolloutMeta | None = None
         for task, meta in list(self.inflight.items()):
             if meta.group_id != group_id:
@@ -669,7 +663,7 @@ class RolloutDispatcher:
             self.inflight.pop(task, None)
             self.release(meta.rollout_count)
             tasks_to_cancel.append(task)
-            cancelled += meta.rollout_count
+            inflight_cancelled += meta.rollout_count
             last_meta = meta
             # Emit a marker per rollout this task would have produced so the
             # sink sees ``group_size`` arrivals overall and finalizes.
@@ -686,12 +680,19 @@ class RolloutDispatcher:
         # already emits ``meta.rollout_count == group_size`` markers).
         # Without this, the sink's per-group arrival count never reaches
         # ``target_rollouts`` and the per-epoch ``EvalBatch`` never fires.
+        unscheduled_cancelled = 0
         if group is not None and last_meta is not None and group.rollouts_to_schedule > 0:
-            remaining = group.rollouts_to_schedule
-            for _ in range(remaining):
+            unscheduled_cancelled = group.rollouts_to_schedule
+            for _ in range(unscheduled_cancelled):
                 raw = self.error_rollout_output(error_type="Cancelled", error_repr="Off-policy cancel")
                 await self.emit_rollout(last_meta, group, raw)
-            cancelled += remaining
+
+        cancelled = inflight_cancelled + unscheduled_cancelled
+        if cancelled > 0 and last_meta is not None:
+            get_logger().debug(
+                f"drain {last_meta.kind} | group={str(group_id)[:8]} env={last_meta.env_name} | "
+                f"cancelled={cancelled} (inflight={inflight_cancelled} unscheduled={unscheduled_cancelled})"
+            )
 
         if tasks_to_cancel:
             await safe_cancel_all(tasks_to_cancel)
@@ -716,6 +717,36 @@ class RolloutDispatcher:
         if tasks:
             await safe_cancel_all(tasks)
 
+    async def cancel_inflight_train_rollouts(self) -> int:
+        """Cancel only in-flight train rollouts, leaving eval alone.
+
+        Used by the orchestrator on ``max_steps`` to short-circuit any
+        train work that's still mid-generation — the train sink won't ship
+        any more batches in drain mode anyway, so finishing those rollouts
+        is wasted inference. Eval in-flight is preserved so triggered
+        eval epochs can complete through the normal pipeline.
+
+        Returns the number of train rollouts cancelled.
+        """
+        train_tasks: list[asyncio.Task] = []
+        train_group_ids: set[uuid.UUID] = set()
+        cancelled = 0
+        for task, meta in list(self.inflight.items()):
+            if meta.kind != "train":
+                continue
+            self.inflight.pop(task, None)
+            self.release(meta.rollout_count)
+            cancelled += meta.rollout_count
+            train_tasks.append(task)
+            train_group_ids.add(meta.group_id)
+        for gid in train_group_ids:
+            self.groups.pop(gid, None)
+        if cancelled:
+            self.metrics.record_cancellation(kind="train", n=cancelled)
+        if train_tasks:
+            await safe_cancel_all(train_tasks)
+        return cancelled
+
     # ── metrics ────────────────────────────────────────────────────────────
 
     def gauges(self) -> dict[str, float]:
@@ -727,18 +758,35 @@ class RolloutDispatcher:
             "dispatcher/available_permits": float(self.available_permits),
             "dispatcher/queued_eval_examples": float(len(self.eval_source)),
             "dispatcher/mode": float(self.mode == DispatcherMode.PREFER_EVAL),
-            "dispatcher/mode_transitions": float(self.metrics.mode_transitions),
             "dispatcher/groups_in_flight": float(len(self.groups)),
             "dispatcher/off_policy_level_max": float(self.max_off_policy_level),
             "dispatcher/off_policy_level_mean": self.mean_off_policy_level,
-            "dispatcher/eval_epochs_started": float(self.metrics.eval_epochs_started),
         }
 
-    def snapshot(self) -> dict[str, float]:
-        """Single source of periodic-logger truth: gauges + drain counters.
+    def collect(self) -> tuple[str, dict[str, float]]:
+        """Single source of periodic-logger truth: produces both the
+        compact console body and the wandb dict from one consistent
+        snapshot.
 
-        ``DispatcherMetrics.drained`` clears its counters on read, so this
-        method is exactly what the periodic logger should call once per
-        tick — anywhere else calling it would steal the drain interval.
+        ``DispatcherMetrics.drained`` clears its counters on read, so we
+        call it exactly once here — anywhere else calling it would steal
+        the drain interval.
         """
-        return {**self.gauges(), **self.metrics.drained()}
+        gauges = self.gauges()
+        drain = self.metrics.drained()
+        mode_name = "PREFER_EVAL" if self.mode == DispatcherMode.PREFER_EVAL else "PREFER_TRAIN"
+        total = int(drain["dispatcher/total_rollouts"])
+        errored = int(drain["dispatcher/errored_rollouts_total"])
+        empty = int(drain["dispatcher/empty_rollouts_total"])
+        cancelled = int(drain["dispatcher/cancelled_train_rollouts"] + drain["dispatcher/cancelled_eval_rollouts"])
+        body = (
+            f"mode={mode_name} | "
+            f"inflight={self.inflight_train_count + self.inflight_eval_count} "
+            f"(train={self.inflight_train_count}, eval={self.inflight_eval_count}) | "
+            f"permits={self.inflight_permits}/{self.max_inflight} | "
+            f"groups={len(self.groups)} | "
+            f"queued_eval={len(self.eval_source)} | "
+            f"off_policy={self.mean_off_policy_level:.1f} (max={self.max_off_policy_level}) | "
+            f"rollouts={total} (errored={errored} empty={empty} cancelled={cancelled})"
+        )
+        return body, {**gauges, **drain}

@@ -17,7 +17,7 @@ import torch
 
 from prime_rl.configs.orchestrator import CheckpointConfig
 from prime_rl.orchestrator.types import Progress
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_ckpt_dir, get_step_path
 
 
@@ -37,7 +37,9 @@ class CheckpointManager:
         start = time.perf_counter()
         with open(ckpt_path / "state.pt", "wb") as f:
             torch.save({"progress": progress}, f)
-        get_logger().debug(f"Orchestrator checkpoint saved to {ckpt_path} in {time.perf_counter() - start:.2f}s")
+        get_logger().debug(
+            f"Orchestrator checkpoint saved to {ckpt_path} in {format_time(time.perf_counter() - start)}"
+        )
 
     def load(self, progress: Progress, step: int) -> None:
         ckpt_path = self.get_ckpt_path(step)
@@ -55,7 +57,7 @@ class CheckpointManager:
             for key, value in asdict(saved).items():
                 if hasattr(progress, key):
                     setattr(progress, key, value)
-        get_logger().debug(f"Orchestrator checkpoint loaded in {time.perf_counter() - start:.2f}s")
+        get_logger().debug(f"Orchestrator checkpoint loaded in {format_time(time.perf_counter() - start)}")
 
 
 def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager | None:

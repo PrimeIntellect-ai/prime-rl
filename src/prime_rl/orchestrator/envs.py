@@ -31,7 +31,7 @@ class Env:
         self.config = config
         self.sampling_args: dict = {}
 
-        get_logger().info(f"Initializing {config.resolved_name} ({config})")
+        get_logger().debug(f"Initializing {config.resolved_name} ({config})")
         self._env: vf.Environment = vf.load_environment(config.stripped_id, **config.args)
         self._env_client: ZMQEnvClient | None = None
         self._env_server_process: BaseProcess | None = None
@@ -370,7 +370,7 @@ class Envs(Generic[EnvT]):
         if not processes:
             return
         logger = get_logger()
-        logger.info(f"Shutting down {len(processes)} env server(s), waiting for sandbox cleanup...")
+        logger.debug(f"Shutting down {len(processes)} env server(s), waiting for sandbox cleanup...")
         for p in processes:
             p.terminate()
         for p in processes:

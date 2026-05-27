@@ -245,3 +245,35 @@ class ProgressTracker:
             percent = int(100 * self.current / self.total)
             if percent > self._last_logged_percent:
                 self._emit_progress(percent)
+
+
+def format_time(seconds: float) -> str:
+    """Human-readable wall-clock duration for console log lines.
+
+    Buckets:
+
+    - ``<1s``    → ``"50ms"``
+    - ``<60s``   → ``"12.3s"`` (1-decimal seconds)
+    - ``<1h``    → ``"1m 13s"`` (whole seconds — the minute prefix
+      already conveys the magnitude; sub-second precision here is noise)
+    - ``<1d``    → ``"2h 5m"``
+    - ``≥1d``    → ``"1d 3h"``
+
+    Same shape as ``verifiers.utils.logging_utils.print_time`` but with
+    1-decimal seconds under the 1-minute mark — keeps short step times
+    legible without falling back to whole-second rounding.
+    """
+    if seconds < 1:
+        return f"{seconds * 1000:.0f}ms"
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    if seconds < 3600:
+        m, s = divmod(seconds, 60)
+        return f"{int(m)}m {int(s)}s"
+    if seconds < 86400:
+        h, rem = divmod(seconds, 3600)
+        m = rem // 60
+        return f"{int(h)}h {int(m)}m"
+    d, rem = divmod(seconds, 86400)
+    h = rem // 3600
+    return f"{int(d)}d {int(h)}h"

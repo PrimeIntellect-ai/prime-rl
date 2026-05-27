@@ -136,11 +136,17 @@ def setup_filter(config: FilterConfig, vocab_size: int) -> RolloutFilter:
     raise ValueError(f"Unknown filter type: {config.type}")
 
 
-def setup_filters(configs: list[FilterConfig], vocab_size: int) -> list[RolloutFilter]:
-    """Create RolloutFilters from a list of filter configs."""
+def setup_filters(configs: list[FilterConfig], vocab_size: int, *, kind: str) -> list[RolloutFilter]:
+    """Create RolloutFilters from a list of filter configs.
+
+    ``kind`` is included in the setup log (e.g. ``"pre-batch"`` /
+    ``"post-batch"``) so the two passes are visibly distinct in startup
+    logs — both run with the same filter machinery but at different
+    points in the sink pipeline.
+    """
     filters = [setup_filter(config, vocab_size) for config in configs]
     if filters:
-        get_logger().info(f"Configured {len(filters)} rollout filter(s):")
+        get_logger().info(f"Configured {len(filters)} {kind} rollout filter(s):")
         for config, filt in zip(configs, filters):
             mode = "Enforcing" if filt.enforce else "Monitoring"
             params = ", ".join(f"{k}={v}" for k, v in config.model_dump().items())

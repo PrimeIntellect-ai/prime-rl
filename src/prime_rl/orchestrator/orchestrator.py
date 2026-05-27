@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+import logging
 import os
 import time
 
@@ -60,7 +61,7 @@ from prime_rl.transport import TrainingBatch, setup_training_batch_sender
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.client import init_nccl_broadcast, setup_inference_pool
 from prime_rl.utils.heartbeat import Heartbeat
-from prime_rl.utils.logger import get_logger, setup_logger
+from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pathing import get_log_dir, get_rollout_dir, get_step_path
 from prime_rl.utils.usage_reporter import UsageReporter
@@ -92,6 +93,12 @@ class Orchestrator:
     def __init__(self, config: OrchestratorConfig) -> None:
         self.config = config
         setup_logger(config.log.level, json_logging=config.log.json_logging)
+        # Silence the ``verifiers.*`` namespace by default (parser/rubric
+        # mismatches, eval-dataset fallback warnings, etc. from the
+        # in-process ``Environment`` instances are noise here), then
+        # re-enable ``verifiers.serve`` through our loguru handler so the
+        # env-server lifecycle logs still surface with proper formatting.
+        logging.getLogger("verifiers").setLevel(logging.CRITICAL + 1)
         intercept_vf_logging(logger="verifiers.serve", level="WARN")
         get_logger().info(f"Starting orchestrator ({config.training_mode})")
 
@@ -107,6 +114,16 @@ class Orchestrator:
         # rollouts but keep consuming until in-flight train + any triggered
         # eval drain. Set in ``ship_train_batch`` when ``max_steps`` is hit.
         self.draining: bool = False
+        # Wall-clock timestamp of the previous ``TrainBatch`` arrival from
+        # ``TrainSink``. Reset on each new arrival in ``ship_train_batch``
+        # so ``step_time`` in the success log is the actual pipeline cycle
+        # time (sink-emit to sink-emit) — the slowest component along the
+        # path of rollout generation → tokenize → group/batch finalize.
+        self.last_batch_at: float | None = None
+        # Start time per (env_name, eval_step), stamped by
+        # ``maybe_trigger_eval`` and popped by ``log_eval_batch`` so the
+        # eval success log can report wall-clock epoch duration.
+        self.eval_triggered_at: dict[tuple[str, int], float] = {}
 
         # Populated during ``setup()``. Typing as ``Any`` keeps the class
         # readable; the orchestrator's setup phase fills these in deterministic
@@ -207,8 +224,8 @@ class Orchestrator:
             self.usage_reporter = UsageReporter()
 
         # Filters — train-only by design (eval rollouts are never filtered).
-        pre_filters = setup_filters(config.pre_batch_filters, vocab_size=self.tokenizer.vocab_size)
-        post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size)
+        pre_filters = setup_filters(config.pre_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="pre-batch")
+        post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="post-batch")
 
         # Envs.
         get_logger().info("Loading training environments")
@@ -216,7 +233,9 @@ class Orchestrator:
         if config.training_mode == "sft":
             for env in self.train_envs:
                 env.sampling_args.pop("logprobs", None)
-        get_logger().info(f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})")
+        get_logger().debug(
+            f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})"
+        )
         await self.train_envs.start(
             log_dir=get_log_dir(config.output_dir.parent) / "envs" / "train",
             log_level=config.log.vf_level,
@@ -227,7 +246,7 @@ class Orchestrator:
         if config.eval is not None:
             get_logger().info("Loading eval environment(s)")
             self.eval_envs = EvalEnvs(config.eval.env)
-            get_logger().info(f"Loaded {len(self.eval_envs)} eval environment(s) ({', '.join(self.eval_envs.names)})")
+            get_logger().debug(f"Loaded {len(self.eval_envs)} eval environment(s) ({', '.join(self.eval_envs.names)})")
             await self.eval_envs.start(
                 log_dir=get_log_dir(config.output_dir.parent) / "envs" / "eval",
                 log_level=config.log.vf_level,
@@ -307,7 +326,7 @@ class Orchestrator:
 
         # Example sources are orchestrator-owned: the orchestrator triggers
         # eval epochs and the dispatcher just pulls from them.
-        self.train_source = TrainSource(self.train_envs, seed=42, group_size=config.group_size)
+        self.train_source = TrainSource(self.train_envs, seed=42)
         self.eval_source = EvalSource(self.eval_envs, config.eval)
 
         assert config.max_inflight_rollouts is not None, "max_inflight_rollouts must be resolved before dispatcher init"
@@ -322,7 +341,6 @@ class Orchestrator:
             policy=self.policy,
             max_inflight_rollouts=config.max_inflight_rollouts,
             tasks_per_minute=config.tasks_per_minute,
-            group_size=config.group_size,
             max_off_policy_steps=config.max_off_policy_steps,
             training_mode=config.training_mode,
             log_interval=log_interval,
@@ -356,8 +374,8 @@ class Orchestrator:
         # process-wide concern that fits naturally with the main loop).
         self.lag_monitor = EventLoopLagMonitor()
         self.periodic_logger = PeriodicLogger(
-            name="orchestrator",
-            snapshot=self.lag_monitor.get_metrics,
+            name="Event Loop",
+            collect=self.collect_event_loop_lag,
             metric_keys=list(self.lag_monitor.get_metrics().keys()),
             interval=log_interval,
             wandb_enabled=wandb_enabled,
@@ -390,7 +408,7 @@ class Orchestrator:
         try:
             await self.main_loop()
         finally:
-            get_logger().success(f"Orchestrator step loop done in {time.perf_counter() - start_time:.1f}s")
+            get_logger().success(f"Orchestrator step loop done in {format_time(time.perf_counter() - start_time)}")
             # No out-of-band final evals: when ``max_steps`` is reached the
             # orchestrator enters drain mode, the dispatcher stops scheduling
             # new train, and any interval-aligned eval at the final step
@@ -401,7 +419,10 @@ class Orchestrator:
                 get_logger().info("Writing final checkpoint")
                 self.ckpt_manager.save(self.progress, step=self.progress.step)
             await self.shutdown()
-            get_logger().success("Orchestrator finished.")
+            # Trailing newline gives a visual break between the orchestrator's
+            # lifecycle logs and whatever the parent process (e.g. the ``rl``
+            # entrypoint) emits next.
+            get_logger().success("Orchestrator finished.\n")
             try:
                 ctypes.CDLL("libc.so.6").malloc_trim(0)
             except Exception as e:
@@ -467,19 +488,29 @@ class Orchestrator:
         config = self.config
         step = self.progress.step
 
+        # Pipeline cycle time: sink-emit (now) − previous sink-emit. Reset
+        # the marker on every arrival so consecutive ``ship_train_batch``
+        # calls measure the actual time between batches, not the I/O cost
+        # of the orchestrator's ship pipeline (which is overlapped with
+        # the dispatcher producing the next batch).
+        now = time.perf_counter()
+        step_time = (now - self.last_batch_at) if self.last_batch_at is not None else 0.0
+        self.last_batch_at = now
+
         save_ckpt_time = await self.maybe_save_ckpt(step)
 
         if config.max_steps is not None and step >= config.max_steps:
-            get_logger().success(
-                f"Reached max_steps={config.max_steps}, draining pipeline "
-                f"(in-flight train + any triggered eval will complete)"
-            )
             self.draining = True
             self.dispatcher.disable_train_scheduling()
+            n_cancelled = await self.dispatcher.cancel_inflight_train_rollouts()
+            get_logger().info(
+                f"Reached max_steps={config.max_steps}, draining pipeline "
+                f"(cancelled {n_cancelled} in-flight train rollout(s); "
+                f"any triggered eval will complete)"
+            )
             return
 
         get_logger().info(f"Starting orchestrator step {step}")
-        step_start = time.perf_counter()
 
         if batch.metrics.n_trainable == 0:
             get_logger().warning(
@@ -503,7 +534,7 @@ class Orchestrator:
         num_offloaded = offload_images_to_disk(batch.rollouts, config.output_dir)
         if num_offloaded:
             get_logger().info(
-                f"Offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
+                f"Offloaded {num_offloaded} unique images to disk in {format_time(time.perf_counter() - offload_start)}"
             )
 
         # Teacher logprobs (opd only).
@@ -525,8 +556,9 @@ class Orchestrator:
         # Ship to trainer.
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
 
-        # Build + ship metrics with the final post-barrier timings.
-        step_time = time.perf_counter() - step_start
+        # Build + ship metrics. ``step_time`` is the pipeline cycle time
+        # (sink-emit to sink-emit) computed at the top of this method —
+        # the meaningful "time per training step" for throughput.
         metrics = self.metrics.build(
             step=step,
             rollouts=batch.rollouts,
@@ -568,14 +600,7 @@ class Orchestrator:
         self.progress.total_samples += num_rollouts
         self.progress.total_problems += num_unique_examples
 
-        reward_mean = float(sum(r["reward"] for r in batch.rollouts) / max(num_rollouts, 1))
-        get_logger().success(
-            f"Step {step} | Time: {step_time:.2f}s | Reward: {reward_mean:.4f} | "
-            f"Seq. Length: {num_tokens / max(num_rollouts, 1):.1f} tokens/sample | "
-            f"Trainable: {batch.metrics.n_trainable}/{num_rollouts} | "
-            f"Async Level: {step - self.policy.version} | "
-            f"Max. Off-Policy Level: {self.dispatcher.max_off_policy_level}"
-        )
+        self.log_train_batch(batch, step=step, step_time=step_time)
 
         self.train_sink.reset_pre_filter_stats()
         self.progress.step += 1
@@ -595,20 +620,92 @@ class Orchestrator:
         if at_start:
             startup_step = self.progress.step
             fired = self.eval_source.trigger_at_start(startup_step)
-            reason = f"startup eval @ step={startup_step} (skip_first_step=false)"
+            reason = f"startup eval was triggered at step {startup_step}"
             step_label = startup_step
         else:
             assert step is not None
             fired = self.eval_source.trigger(step)
-            reason = f"eval triggered for {','.join(fired)} @ step={step}"
+            reason = f"eval was triggered for {', '.join(fired)} at step {step}"
             step_label = step
         if not fired:
             return
         self.dispatcher.switch_mode(DispatcherMode.PREFER_EVAL, reason=reason)
-        self.dispatcher.metrics.eval_epochs_started += 1
-        get_logger().info(
-            f"Eval @ step={step_label} for env(s) {','.join(fired)} (queued {len(self.eval_source)} example(s))"
+        # Stamp the start time per (env, step) so ``log_eval_batch`` can
+        # report wall-clock duration of the epoch in its success log.
+        now = time.perf_counter()
+        for env_name in fired:
+            self.eval_triggered_at[(env_name, step_label)] = now
+        assert self.eval_envs is not None  # non-empty ``fired`` implies eval is configured
+        total_rollouts = sum(
+            self.eval_envs.get(env_name).config.group_size * len(self.eval_envs.get(env_name).examples)
+            for env_name in fired
         )
+        get_logger().info(f"Starting evals in {', '.join(fired)} ({total_rollouts} total rollouts)")
+
+    def collect_event_loop_lag(self) -> tuple[str, dict[str, float]]:
+        """Format the event-loop-lag periodic line + return the wandb dict.
+        Empty payload when no samples have been collected yet."""
+        metrics = self.lag_monitor.get_metrics()
+        if not metrics:
+            return "(no samples yet)", {}
+        body = (
+            f"min={format_time(metrics['event_loop_lag/min'])} | "
+            f"mean={format_time(metrics['event_loop_lag/mean'])} | "
+            f"median={format_time(metrics['event_loop_lag/med'])} | "
+            f"p90={format_time(metrics['event_loop_lag/p90'])} | "
+            f"p99={format_time(metrics['event_loop_lag/p99'])} | "
+            f"max={format_time(metrics['event_loop_lag/max'])}"
+        )
+        return body, metrics
+
+    def log_train_batch(self, batch: TrainBatch, *, step: int, step_time: float) -> None:
+        """Emit the per-step ``Train step …`` success line.
+
+        Single-env (the typical case) collapses to one dense line; multi-env
+        (``len(train_envs) > 1``) appends an indented ``↳`` line per env
+        with the same fields scoped to that env's rollouts. All percentages
+        are reported relative to arrivals at the sink (so ``Error``
+        accounts for errored rollouts that were group-dropped and never
+        reached ``batch.rollouts``).
+        """
+        n_arrivals_total = sum(batch.metrics.arrivals_by_env.values())
+        n_errors_total = sum(batch.metrics.errors_by_env.values())
+        n_survivors = len(batch.rollouts)
+        n_trainable = batch.metrics.n_trainable
+        error_rate = (n_errors_total / n_arrivals_total) if n_arrivals_total else 0.0
+        trainable_rate = (n_trainable / n_survivors) if n_survivors else 0.0
+        reward_mean = sum(r["reward"] for r in batch.rollouts) / max(n_survivors, 1)
+        max_off_policy = max((int(r.get("_off_policy_steps", 0)) for r in batch.rollouts), default=0)
+
+        head = (
+            f"Train step {step} | {format_time(step_time)} | Reward {reward_mean:.4f} | "
+            f"Error {error_rate:.1%} | Trainable {n_trainable}/{n_survivors} ({trainable_rate:.1%}) | "
+            f"Max Off-Policy {max_off_policy}"
+        )
+        if len(self.train_envs) <= 1:
+            get_logger().success(head)
+            return
+
+        # Multi-env: one success call with ``\n\t\t``-joined per-env lines
+        # so the ``╰─`` indented content visually aligns under the
+        # headline (two tabs ≈ 16 cols, matching the ``HH:MM:SS LEVEL ``
+        # log prefix width).
+        env_names = sorted(set(batch.metrics.arrivals_by_env) | {r["env_name"] for r in batch.rollouts})
+        name_width = max(len(n) for n in env_names) if env_names else 0
+        lines = [head]
+        for env_name in env_names:
+            env_rollouts = [r for r in batch.rollouts if r["env_name"] == env_name]
+            n_env_arrivals = batch.metrics.arrivals_by_env.get(env_name, 0)
+            n_env_errors = batch.metrics.errors_by_env.get(env_name, 0)
+            ratio = (n_env_arrivals / n_arrivals_total) if n_arrivals_total else 0.0
+            env_error_rate = (n_env_errors / n_env_arrivals) if n_env_arrivals else 0.0
+            env_reward = (sum(r["reward"] for r in env_rollouts) / len(env_rollouts)) if env_rollouts else 0.0
+            env_max_off_policy = max((int(r.get("_off_policy_steps", 0)) for r in env_rollouts), default=0)
+            lines.append(
+                f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_reward:.4f} | "
+                f"Error {env_error_rate:.1%} | Max Off-Policy {env_max_off_policy}"
+            )
+        get_logger().success("\n\t\t".join(lines))
 
     def log_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch. Builds the metrics dict
@@ -629,10 +726,21 @@ class Orchestrator:
         self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
         self.monitor.log(batch.metrics.to_wandb_dict(env_name=batch.env_name, step=batch.step), step=batch.step)
 
+        n_total = batch.metrics.n_rollouts
+        n_valid = n_total - batch.metrics.n_cancelled - batch.metrics.n_errored
+        error_rate = ((batch.metrics.n_cancelled + batch.metrics.n_errored) / n_total) if n_total else 0.0
+        valid_rate = (n_valid / n_total) if n_total else 0.0
+        # ``Max Off-Policy`` here is the worst-case lag across the eval
+        # cohort — how many weight updates the eval epoch straddled.
+        max_off_policy = max((int(r.get("_off_policy_steps", 0)) for r in batch.rollouts), default=0)
+        triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
+        elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
+
         get_logger().success(
-            f"Eval @ step={batch.step} env={batch.env_name} | "
-            f"Reward: {batch.metrics.reward_mean:.4f} | "
-            f"Rollouts: {batch.metrics.n_rollouts} | Examples: {batch.metrics.n_examples}"
+            f"Eval step {batch.step} ({batch.env_name}) | {format_time(elapsed)} | "
+            f"Reward {batch.metrics.reward_mean:.4f} | Error {error_rate:.1%} | "
+            f"Valid {n_valid}/{n_total} ({valid_rate:.1%}) | "
+            f"Max Off-Policy {max_off_policy}"
         )
 
     async def maybe_save_ckpt(self, step: int) -> float:

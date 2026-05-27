@@ -33,7 +33,7 @@ class TrainSource:
     an ``example_id`` (the latter guaranteed by verifiers).
     """
 
-    def __init__(self, train_envs: TrainEnvs, *, seed: int | None, group_size: int) -> None:
+    def __init__(self, train_envs: TrainEnvs, *, seed: int | None) -> None:
         self.rng = random.Random(seed)
         self.envs = list(train_envs)
         if not self.envs:
@@ -43,8 +43,8 @@ class TrainSource:
         self.cursors: dict[str, int] = {}
         # Per-env permit cost for opening a fresh group. Group-scoring envs
         # dispatch the whole group as a single task, so they need
-        # ``group_size`` permits up front; per-rollout envs dispatch one at
-        # a time and only need 1 permit to get going.
+        # ``env.config.group_size`` permits up front; per-rollout envs
+        # dispatch one at a time and only need 1 permit to get going.
         self.env_costs: dict[str, int] = {}
         for env in self.envs:
             rows: list[dict] = []
@@ -55,7 +55,7 @@ class TrainSource:
             self.rng.shuffle(rows)
             self.examples[env.name] = rows
             self.cursors[env.name] = 0
-            self.env_costs[env.name] = group_size if env.requires_group_scoring else 1
+            self.env_costs[env.name] = env.config.group_size if env.requires_group_scoring else 1
 
         self.env_names = [e.name for e in self.envs]
         configured_ratios = [e.config.ratio for e in self.envs]

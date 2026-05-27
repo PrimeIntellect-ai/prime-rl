@@ -1,12 +1,15 @@
 """PeriodicLogger: owned by each async component, fires on a shared interval.
 
 Each async component (dispatcher, watcher, orchestrator main loop) constructs
-its own ``PeriodicLogger`` with a ``snapshot()`` callable that returns its
-live gauges. The logger wakes every ``interval`` seconds and emits the
-snapshot to:
+its own ``PeriodicLogger`` with a ``collect()`` callable that returns both
+its human-readable console body string and its flat wandb metrics dict —
+in one call, so any drain-on-read counters fire exactly once per tick.
 
-- **Console** at info-level: a compact ``[name] k=v k=v …`` line so steady-
-  state state is visible in the log stream between per-step lines.
+The logger wakes every ``interval`` seconds and emits to:
+
+- **Console** at info-level: a single line per component formatted as
+  ``Name       | k=v | k=v | …`` with a padded name column so columns
+  align across components.
 - **Wandb** on the ``_timestamp`` axis: each metric key registered at
   construction via ``wandb.define_metric(step_metric="_timestamp")`` so it
   goes on the wall-clock time axis, not the step axis.
@@ -32,6 +35,12 @@ import wandb
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.logger import get_logger
 
+# Padded width for the leading name column across all periodic-logger
+# lines so the ``|`` separators visually align between components.
+# Current component names: "Event Loop" (10), "Dispatcher" (10),
+# "Watcher" (7). Bump if a longer name is added.
+NAME_WIDTH = 10
+
 
 class PeriodicLogger:
     """``await logger.start()`` from inside the owning component."""
@@ -40,13 +49,13 @@ class PeriodicLogger:
         self,
         *,
         name: str,
-        snapshot: Callable[[], dict[str, float]],
+        collect: Callable[[], tuple[str, dict[str, float]]],
         metric_keys: list[str],
         interval: float,
         wandb_enabled: bool,
     ) -> None:
         self.name = name
-        self.snapshot = snapshot
+        self.collect = collect
         self.interval = interval
         self.wandb_enabled = wandb_enabled
         self.task: asyncio.Task | None = None
@@ -74,11 +83,9 @@ class PeriodicLogger:
             return
 
     def emit(self) -> None:
-        payload = self.snapshot()
-        # Console: compact one-liner per component, info-level so it shows
-        # up in the steady-state log stream between per-step lines.
-        get_logger().info(f"[{self.name}] " + " ".join(f"{k}={v:.3g}" for k, v in payload.items()))
-        if self.wandb_enabled:
+        body, payload = self.collect()
+        get_logger().info(f"{self.name:<{NAME_WIDTH}} | {body}")
+        if self.wandb_enabled and payload:
             payload["_timestamp"] = time.time()
             wandb.log(payload)
 

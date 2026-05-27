@@ -81,13 +81,13 @@ class TrainSink:
         self.advantage_config = advantage_config
         self.pre_filters = pre_filters
         self.post_filters = post_filters
-        self.group_size = config.group_size
 
         # In-progress GRPO groups keyed by the dispatcher's group UUID.
-        # The sink finalizes a group once ``len(pending_groups[group_id])
-        # == group_size`` — works because the dispatcher emits every
-        # dispatched rollout (success or error) exactly once. We can't key
-        # on ``(env_name, example_id)`` because the same example can be
+        # The sink finalizes a group once arrivals reach the per-env
+        # ``group_size`` (looked up via ``group_size_for(env_name)``) —
+        # works because the dispatcher emits every dispatched rollout
+        # (success or error) exactly once. We can't key on
+        # ``(env_name, example_id)`` because the same example can be
         # re-sampled while an earlier group is still in flight.
         self.pending_groups: dict[uuid.UUID, list[Rollout]] = defaultdict(list)
         # Survivors of the pre-filter pass — waiting to ship. Singular
@@ -101,6 +101,14 @@ class TrainSink:
         self.pre_filter_dropped = 0
         self.pre_filter_dropped_by_name: dict[str, int] = {}
 
+        # Per-env arrival/error counters since the last ship — fuel for the
+        # per-env breakdown in the success log. Reset in ``process_batch``.
+        self.arrivals_by_env: dict[str, int] = defaultdict(int)
+        self.errors_by_env: dict[str, int] = defaultdict(int)
+
+    def group_size_for(self, env_name: str) -> int:
+        return self.train_envs.get(env_name).config.group_size
+
     # ── ingest ────────────────────────────────────────────────────────────
 
     async def add(self, rollout: Rollout) -> TrainBatch | None:
@@ -109,8 +117,12 @@ class TrainSink:
         if that arrival brought ``pending_batch`` to the batch threshold."""
         assert rollout.kind == "train", "TrainSink only handles train rollouts"
         await self.process_rollout(rollout)
+        env_name = rollout.raw["env_name"]
+        self.arrivals_by_env[env_name] += 1
+        if rollout.raw.get("error") is not None:
+            self.errors_by_env[env_name] += 1
         self.pending_groups[rollout.group_id].append(rollout)
-        if len(self.pending_groups[rollout.group_id]) >= self.group_size:
+        if len(self.pending_groups[rollout.group_id]) >= self.group_size_for(env_name):
             self.process_group(rollout.group_id)
         # Mirror ``EvalSink.add``: trigger ``process_batch`` once the buffer
         # has reached the configured rollout/token threshold, otherwise
@@ -169,13 +181,13 @@ class TrainSink:
         # rewards unsafe (computed relative to the missing ones). Drop.
         env = self.train_envs.get(env_name)
         if num_errored > 0 and env.requires_group_scoring:
-            get_logger().info(
+            get_logger().debug(
                 f"Group | env={env_name} example_id={example_id} | "
                 f"rollouts={len(all_raws)} (errored={num_errored}) | dropped: group-scored partial"
             )
             return
         if not survivors:
-            get_logger().info(
+            get_logger().debug(
                 f"Group | env={env_name} example_id={example_id} | "
                 f"rollouts={len(all_raws)} (errored={num_errored}) | dropped: all failed"
             )
@@ -223,7 +235,7 @@ class TrainSink:
         rewards = [raw.get("reward", 0.0) for raw in survivors]
         avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
         filter_str = ", ".join(f"{n}={c}" for n, c in filtered_by_name.items()) if filtered_by_name else "—"
-        get_logger().info(
+        get_logger().debug(
             f"Group | env={env_name} example_id={example_id} | "
             f"rollouts={len(all_raws)} (errored={num_errored}, filtered={num_filtered}) | "
             f"reward={avg_reward:.4f} | filters: {filter_str}"
@@ -295,7 +307,11 @@ class TrainSink:
             rollout_decode_lens=decode_lens,
             samples_per_rollout=samples_per_rollout,
             samples_shipped=len(samples),
+            arrivals_by_env=dict(self.arrivals_by_env),
+            errors_by_env=dict(self.errors_by_env),
         )
+        self.arrivals_by_env.clear()
+        self.errors_by_env.clear()
         return TrainBatch(rollouts=cohort, samples=samples, metrics=metrics)
 
     def reset_pre_filter_stats(self) -> None:

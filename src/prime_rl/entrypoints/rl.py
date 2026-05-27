@@ -308,7 +308,7 @@ def rl_local(config: RLConfig):
             cleanup_processes(processes)
             sys.exit(1)
 
-        logger.success("RL training finished!")
+        logger.success("Training finished!")
 
         # Cleanup threads and processes
         cleanup_threads(monitor_threads)

@@ -209,7 +209,7 @@ def test_setup_filters_multiple():
         GibberishFilterConfig(),
         RepetitionFilterConfig(),
     ]
-    filters = setup_filters(configs, vocab_size=128_000)
+    filters = setup_filters(configs, vocab_size=128_000, kind="post-batch")
     assert len(filters) == 2
     assert filters[0].name == "gibberish"
     assert filters[1].name == "repetition"

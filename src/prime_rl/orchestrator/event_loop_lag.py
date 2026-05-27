@@ -3,7 +3,7 @@ from time import perf_counter
 
 import numpy as np
 
-from prime_rl.utils.logger import get_logger
+from prime_rl.utils.logger import format_time, get_logger
 
 
 class EventLoopLagMonitor:
@@ -69,7 +69,9 @@ class EventLoopLagMonitor:
             or max_lag > self.warn_max_lag_threshold
         ):
             get_logger().warning(
-                f"Detected busy event loop. Measured {mean_lag:.1f}s (min={min_lag:.1f}s, med={med_lag:.1f}s, p90={p90_lag:.1f}s, p99={p99_lag:.1f}s, max={max_lag:.1f}s) event loop lag over the last {len(last_lags)} measurement(s)"
+                f"Detected busy event loop. Measured {format_time(mean_lag)} (min={format_time(min_lag)}, "
+                f"med={format_time(med_lag)}, p90={format_time(p90_lag)}, p99={format_time(p99_lag)}, "
+                f"max={format_time(max_lag)}) event loop lag over the last {len(last_lags)} measurement(s)"
             )
 
         return {
