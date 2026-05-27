@@ -106,7 +106,7 @@ class EvalSink:
             return
         all_raws = [r.raw for r in group]
         env_name = all_raws[0]["env_name"]
-        example_id = all_raws[0].get("example_id", -1)
+        example_id = all_raws[0]["example_id"]
         eval_step = all_raws[0]["_eval_step"]
         bucket = self.pending_batches[(env_name, eval_step)]
         bucket.extend(all_raws)

@@ -54,7 +54,6 @@ class WeightWatcher:
         self.lora_name = lora_name
         self.ckpt_step = ckpt_step
         self.poll_interval = poll_interval
-        self.logger = get_logger()
 
         # Latency metrics surfaced via ``gauges()`` to the periodic logger.
         self.last_update_weights_time: float = 0.0
@@ -117,23 +116,23 @@ class WeightWatcher:
             weights_path = get_step_path(broadcast_dir, next_step)
             stable_marker = weights_path / "STABLE"
             if not stable_marker.exists():
-                self.logger.info(
+                get_logger().info(
                     f"Orchestrator paused: waiting for trainer to broadcast checkpoint {next_step}. "
                     "Training is progressing normally."
                 )
                 t0 = time.perf_counter()
                 await wait_for_path(stable_marker)
                 self.last_wait_for_ckpt_time = time.perf_counter() - t0
-                self.logger.info(
+                get_logger().info(
                     f"Orchestrator resumed: checkpoint {next_step} ready (after {self.last_wait_for_ckpt_time:.2f}s)"
                 )
 
-            self.logger.debug(f"Updating weights to step {next_step}")
+            get_logger().debug(f"Updating weights to step {next_step}")
             t1 = time.perf_counter()
             await self.inference.update_weights(weights_path, lora_name=self.lora_name, step=next_step)
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
-            self.logger.debug(f"Updated weights to step {next_step} in {self.last_update_weights_time:.2f}s")
+            get_logger().debug(f"Updated weights to step {next_step} in {self.last_update_weights_time:.2f}s")
 
             self.ckpt_step = next_step
             self.policy.version = next_step
@@ -149,7 +148,7 @@ class WeightWatcher:
                 try:
                     await observer.on_new_version(next_step)
                 except Exception as exc:
-                    self.logger.warning(
+                    get_logger().warning(
                         f"Observer {type(observer).__name__}.on_new_version({next_step}) raised: {exc!r}"
                     )
 

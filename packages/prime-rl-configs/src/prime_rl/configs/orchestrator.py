@@ -368,17 +368,26 @@ class EvalConfig(BaseConfig):
             )
         return self
 
-    skip_first_step: bool = Field(False, validation_alias=AliasChoices("skip_first_step", "eval_base_model"))
-    """When True, skip the first training step in favor of running an eval
-    epoch at step 0 (a "base model" eval before any weight updates). Default
-    False — no eval at step 0; training starts immediately. The legacy
-    ``eval_base_model`` key is silently accepted as an alias (same
-    semantics)."""
+    skip_first_step: bool = False
+    """When False (the default), run an eval epoch on whatever model state
+    the orchestrator starts from — base model on a fresh run, or the
+    resumed checkpoint on a resume. The startup eval is scheduled before
+    any train rollouts. Set to True to skip that startup eval entirely
+    and go straight to training.
 
-    skip_eval_on_resume: bool = Field(
-        True, validation_alias=AliasChoices("skip_eval_on_resume", "skip_eval_on_restart")
-    )
-    """When resuming the orchestrator from a checkpoint, skip the (potentially redundant) online eval that would otherwise run immediately at the resumed step."""
+    "First step" here means the first step of *this* orchestrator
+    process, not step 0 of the run as a whole — resume and cold start
+    collapse into one path on purpose. If you're resuming from a step
+    that's also an eval interval boundary, you'll get one extra eval
+    pass; that's a tiny cost to pay for not having two near-identical
+    config knobs to reason about.
+
+    Note: the legacy ``eval_base_model`` key is the boolean opposite
+    (``eval_base_model=true`` ≡ ``skip_first_step=false``); we deliberately
+    do not alias the two — the semantic inversion would silently flip
+    behavior on TOMLs that mix names. The legacy ``skip_eval_on_resume``
+    key is also gone, collapsed into this single flag. Update existing
+    configs by hand."""
 
     cancel_inflight_rollouts_on_eval: bool = False
     """Cancel in-flight training rollouts before starting online evals. Avoids congestion (no training + eval rollouts at the same time) at the cost of slower training steps as the pipeline has to refill after each eval."""

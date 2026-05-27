@@ -35,9 +35,10 @@ import tomli_w
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
-from prime_rl.orchestrator.dispatcher import RolloutDispatcher
+from prime_rl.orchestrator.dispatcher import RolloutDispatcher, SchedMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
+from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
@@ -47,10 +48,10 @@ from prime_rl.orchestrator.patches import (
     monkey_patch_oai_iterable_types,
 )
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
-from prime_rl.orchestrator.sources import EvalSource, TrainSource
 from prime_rl.orchestrator.train_sink import TrainSink
+from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.trajectories import offload_images_to_disk
-from prime_rl.orchestrator.types import EvalBatch, Policy, Progress, Rollout, SchedMode, TrainBatch
+from prime_rl.orchestrator.types import EvalBatch, Policy, Progress, Rollout, TrainBatch
 from prime_rl.orchestrator.utils import compute_teacher_logprobs, get_weight_dir, set_default_executor
 from prime_rl.orchestrator.vf_utils import get_seq_len, intercept_vf_logging, save_rollouts
 from prime_rl.orchestrator.watcher import WeightWatcher
@@ -90,18 +91,22 @@ class Orchestrator:
 
     def __init__(self, config: OrchestratorConfig) -> None:
         self.config = config
-        self.logger = setup_logger(config.log.level, json_logging=config.log.json_logging)
+        setup_logger(config.log.level, json_logging=config.log.json_logging)
         intercept_vf_logging(logger="verifiers.serve", level="WARN")
-        self.logger.info(f"Starting orchestrator ({config.training_mode})")
+        get_logger().info(f"Starting orchestrator ({config.training_mode})")
 
         if config.bench:
-            self.logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
+            get_logger().warning(f"Running in benchmark mode (max_steps={config.max_steps})")
 
         # Cheap synchronous setup. Heavy async work happens in ``setup()``.
         self.progress = Progress()
         self.ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
         self.policy = Policy(version=0, model_name="")
         self.stopped = asyncio.Event()
+        # Drain mode: after the final train step, stop scheduling new train
+        # rollouts but keep consuming until in-flight train + any triggered
+        # eval drain. Set in ``ship_train_batch`` when ``max_steps`` is hit.
+        self.draining: bool = False
 
         # Populated during ``setup()``. Typing as ``Any`` keeps the class
         # readable; the orchestrator's setup phase fills these in deterministic
@@ -155,11 +160,11 @@ class Orchestrator:
         for env_id in env_ids_to_install:
             install_env(env_id, prerelease=config.env_install_prerelease)
 
-        self.logger.info(f"Initializing tokenizer ({config.tokenizer})")
+        get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
         self.tokenizer = setup_tokenizer(config.tokenizer)
 
         # Student inference pool.
-        self.logger.info(
+        get_logger().info(
             f"Initializing student inference pool (base_url={', '.join(config.student.client.base_url)}, "
             f"model={config.student.model.name})"
         )
@@ -173,7 +178,7 @@ class Orchestrator:
             self.mm_token_type_ids_mapping = None
 
         if config.teacher is not None:
-            self.logger.info(
+            get_logger().info(
                 f"Initializing teacher inference pool (base_url={', '.join(config.teacher.client.base_url)}, "
                 f"model={config.teacher.model.name})"
             )
@@ -183,7 +188,7 @@ class Orchestrator:
                 train_client_type="openai_chat_completions",
             )
 
-        self.logger.info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
+        get_logger().info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
         self.monitor = setup_monitor(
             wandb_config=config.wandb,
             prime_config=config.prime_monitor,
@@ -206,29 +211,29 @@ class Orchestrator:
         post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size)
 
         # Envs.
-        self.logger.info("Loading training environments")
+        get_logger().info("Loading training environments")
         self.train_envs = TrainEnvs(config.train.env)
         if config.training_mode == "sft":
             for env in self.train_envs:
                 env.sampling_args.pop("logprobs", None)
-        self.logger.info(f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})")
+        get_logger().info(f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})")
         await self.train_envs.start(
             log_dir=get_log_dir(config.output_dir.parent) / "envs" / "train",
             log_level=config.log.vf_level,
             json_logging=config.log.json_logging,
         )
-        self.logger.success("Train environment(s) ready")
+        get_logger().success("Train environment(s) ready")
 
         if config.eval is not None:
-            self.logger.info("Loading eval environment(s)")
+            get_logger().info("Loading eval environment(s)")
             self.eval_envs = EvalEnvs(config.eval.env)
-            self.logger.info(f"Loaded {len(self.eval_envs)} eval environment(s) ({', '.join(self.eval_envs.names)})")
+            get_logger().info(f"Loaded {len(self.eval_envs)} eval environment(s) ({', '.join(self.eval_envs.names)})")
             await self.eval_envs.start(
                 log_dir=get_log_dir(config.output_dir.parent) / "envs" / "eval",
                 log_level=config.log.vf_level,
                 json_logging=config.log.json_logging,
             )
-            self.logger.success("Eval environment(s) ready")
+            get_logger().success("Eval environment(s) ready")
 
         # Resume.
         if config.ckpt is not None and config.ckpt.resume_step is not None and self.ckpt_manager is not None:
@@ -242,14 +247,14 @@ class Orchestrator:
         self.policy.model_name = self.student_inference.model_name
 
         # Wait for inference pools to be reachable.
-        self.logger.info("Waiting for student inference pool to be ready")
+        get_logger().info("Waiting for student inference pool to be ready")
         await self.student_inference.wait_for_ready(config.student.model.name)
-        self.logger.success("Student inference pool ready")
+        get_logger().success("Student inference pool ready")
         if self.teacher_inference is not None:
             assert config.teacher is not None
-            self.logger.info("Waiting for teacher inference pool to be ready")
+            get_logger().info("Waiting for teacher inference pool to be ready")
             await self.teacher_inference.wait_for_ready(config.teacher.model.name)
-            self.logger.success("Teacher inference pool ready")
+            get_logger().success("Teacher inference pool ready")
 
         if config.wandb is not None and config.collect_inference_metrics:
             self.inference_metrics = InferenceMetricsCollector(
@@ -258,7 +263,7 @@ class Orchestrator:
             )
             await self.inference_metrics.start()
 
-        self.logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
+        get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
         if config.weight_broadcast.type == "nccl":
             await init_nccl_broadcast(
                 self.student_inference.admin_clients,
@@ -269,7 +274,7 @@ class Orchestrator:
                 quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
             )
 
-        self.logger.info(f"Initializing training batch sender ({config.rollout_transport})")
+        get_logger().info(f"Initializing training batch sender ({config.rollout_transport})")
         self.sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
         self.lora_name = config.student.model.lora.name if config.student.model.lora else None
@@ -277,7 +282,7 @@ class Orchestrator:
         # Restore from checkpoint (if resuming).
         if self.resume_step is not None and self.ckpt_manager is not None:
             self.ckpt_manager.load(self.progress, step=self.resume_step)
-            self.logger.info(f"Resuming orchestrator from checkpoint step {self.resume_step}")
+            get_logger().info(f"Resuming orchestrator from checkpoint step {self.resume_step}")
             check_exists = config.weight_broadcast.type != "nccl"
             wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
             weights_path = get_weight_dir(
@@ -289,7 +294,7 @@ class Orchestrator:
                 self.policy.model_name = self.lora_name
             self.policy.version = self.progress.step
         else:
-            self.logger.info("Training from scratch")
+            get_logger().info("Training from scratch")
 
         # ── Construct components — each gets only the deps it needs. ─────
         # Rollouts go to the teacher in sft mode (teacher generates, student
@@ -303,7 +308,7 @@ class Orchestrator:
         # Example sources are orchestrator-owned: the orchestrator triggers
         # eval epochs and the dispatcher just pulls from them.
         self.train_source = TrainSource(self.train_envs, seed=42)
-        self.eval_source = EvalSource(self.eval_envs, config.eval, resume_step=self.resume_step)
+        self.eval_source = EvalSource(self.eval_envs, config.eval)
 
         assert config.max_inflight_rollouts is not None, "max_inflight_rollouts must be resolved before dispatcher init"
         log_interval = config.experimental.log_interval
@@ -363,7 +368,7 @@ class Orchestrator:
         background tasks, runs the main loop in this task, then cleans up."""
         await self.setup()
         config = self.config
-        self.logger.info(f"Starting orchestrator loop (max_steps={config.max_steps or 'infinite'})")
+        get_logger().info(f"Starting orchestrator loop (max_steps={config.max_steps or 'infinite'})")
         start_time = time.perf_counter()
 
         # Spawn background loops (dispatcher schedules, watcher polls). The
@@ -378,35 +383,25 @@ class Orchestrator:
             asyncio.create_task(self.watcher.start(), name="watcher"),
         ]
 
-        # Opt-in step-0 eval (``eval.skip_first_step=True``) — fire before the
-        # first training step so the base model is evaluated.
+        # Default step-0 base-model eval — fires before any train rollouts
+        # unless ``eval.skip_first_step=True`` (or this is a resume).
         self.maybe_trigger_eval(at_start=True)
 
         try:
             await self.main_loop()
         finally:
-            self.logger.success(f"Orchestrator step loop done in {time.perf_counter() - start_time:.1f}s")
-            if self.eval_envs is not None and config.eval is not None:
-                self.logger.info("Running final evals")
-                await asyncio.gather(
-                    *(
-                        eval_env.evaluate(
-                            model_name=self.student_inference.model_name,
-                            get_client=self.student_inference.get_eval_client,
-                            step=self.progress.step,
-                            cache_salt=str(self.progress.step),
-                        )
-                        for eval_env in self.eval_envs
-                    ),
-                    return_exceptions=True,
-                )
+            get_logger().success(f"Orchestrator step loop done in {time.perf_counter() - start_time:.1f}s")
+            # No out-of-band final evals: when ``max_steps`` is reached the
+            # orchestrator enters drain mode, the dispatcher stops scheduling
+            # new train, and any interval-aligned eval at the final step
+            # completes through the normal pipeline before ``main_loop`` exits.
             assert self.monitor is not None
             self.monitor.save_final_summary()
             if self.ckpt_manager is not None:
-                self.logger.info("Writing final checkpoint")
+                get_logger().info("Writing final checkpoint")
                 self.ckpt_manager.save(self.progress, step=self.progress.step)
             await self.shutdown()
-            self.logger.success("Orchestrator finished.")
+            get_logger().success("Orchestrator finished.")
             try:
                 ctypes.CDLL("libc.so.6").malloc_trim(0)
             except Exception as e:
@@ -430,6 +425,16 @@ class Orchestrator:
         """
         assert self.dispatcher and self.train_sink
         while not self.stopped.is_set():
+            # Drain check: once the orchestrator has signaled draining (final
+            # train step done, no more train scheduling), exit as soon as the
+            # dispatcher is idle (no in-flight rollouts, no queued eval, queue
+            # empty). Any interval-aligned eval at the final step is allowed
+            # to complete here — no out-of-band re-evaluation pass needed.
+            if self.draining and self.dispatcher.is_idle:
+                get_logger().info("Pipeline drained, exiting main loop")
+                self.stopped.set()
+                break
+
             try:
                 rollout: Rollout = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
@@ -443,14 +448,21 @@ class Orchestrator:
                 continue
 
             train_batch = await self.train_sink.add(rollout)
-            if train_batch is not None and not self.stopped.is_set():
-                await self.process_one_step(train_batch)
+            # Skip training when draining — any leftover train rollouts that
+            # still complete after the final step just get accumulated and
+            # discarded; we don't want to do extra trainer steps past max.
+            if train_batch is not None and not self.draining and not self.stopped.is_set():
+                await self.ship_train_batch(train_batch)
 
-    async def process_one_step(self, batch: TrainBatch) -> None:
-        """Drive one shipping step. The train sink has done all per-rollout /
-        per-group / per-batch processing already; the orchestrator handles the
-        I/O concerns (ship to trainer, save rollouts, monitor log, heartbeat,
-        usage reporter, ckpt save, step++)."""
+    async def ship_train_batch(self, batch: TrainBatch) -> None:
+        """Ship one ``TrainBatch`` out to the trainer + log side-effects.
+        Mirrors ``log_eval_batch`` on the eval side: the sink has finished
+        all data-transformation work (``TrainSink.process_rollout / group /
+        batch``); this method owns only the I/O and lifecycle concerns —
+        ckpt save, save_rollouts to disk, teacher logprobs (opd), async
+        barrier wait, ``sender.send``, metrics build + ``monitor.log``,
+        heartbeat / usage reporter, ``progress.step += 1``, and the eval
+        trigger for the freshly-completed step."""
         assert self.train_sink and self.metrics and self.dispatcher and self.monitor and self.sender
         config = self.config
         step = self.progress.step
@@ -458,20 +470,24 @@ class Orchestrator:
         save_ckpt_time = await self.maybe_save_ckpt(step)
 
         if config.max_steps is not None and step >= config.max_steps:
-            self.logger.success(f"Reached max_steps={config.max_steps}, signaling shutdown")
-            self.stopped.set()
+            get_logger().success(
+                f"Reached max_steps={config.max_steps}, draining pipeline "
+                f"(in-flight train + any triggered eval will complete)"
+            )
+            self.draining = True
+            self.dispatcher.disable_train_scheduling()
             return
 
-        self.logger.info(f"Starting orchestrator step {step}")
+        get_logger().info(f"Starting orchestrator step {step}")
         step_start = time.perf_counter()
 
         if batch.metrics.n_trainable == 0:
-            self.logger.warning(
+            get_logger().warning(
                 f"Step {step}: post-batch filters dropped all {len(batch.rollouts)} rollouts. Trying again."
             )
             return
         if batch.metrics.n_trainable / len(batch.rollouts) <= 0.1:
-            self.logger.warning(
+            get_logger().warning(
                 f"Only {batch.metrics.n_trainable}/{len(batch.rollouts)} rollouts in the batch are trainable "
                 f"({batch.metrics.n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
             )
@@ -486,7 +502,7 @@ class Orchestrator:
         offload_start = time.perf_counter()
         num_offloaded = offload_images_to_disk(batch.rollouts, config.output_dir)
         if num_offloaded:
-            self.logger.info(
+            get_logger().info(
                 f"Offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
             )
 
@@ -553,7 +569,7 @@ class Orchestrator:
         self.progress.total_problems += num_unique_examples
 
         reward_mean = float(sum(r["reward"] for r in batch.rollouts) / max(num_rollouts, 1))
-        self.logger.success(
+        get_logger().success(
             f"Step {step} | Time: {step_time:.2f}s | Reward: {reward_mean:.4f} | "
             f"Seq. Length: {num_tokens / max(num_rollouts, 1):.1f} tokens/sample | "
             f"Trainable: {batch.metrics.n_trainable}/{num_rollouts} | "
@@ -569,15 +585,18 @@ class Orchestrator:
 
     def maybe_trigger_eval(self, *, step: int | None = None, at_start: bool = False) -> None:
         """Trigger eligible eval epochs and flip ``SchedMode`` to PREFER_EVAL
-        if anything fired. ``at_start=True`` runs the ``skip_first_step``
-        opt-in startup path; otherwise ``step`` is the just-completed training
-        step from ``progress``.
+        if anything fired. ``at_start=True`` runs the startup-eval path
+        (default unless ``skip_first_step=True``) on whatever model state
+        the orchestrator starts from — base model on a cold start, resumed
+        checkpoint on a resume. Otherwise ``step`` is the just-completed
+        training step from ``progress``.
         """
         assert self.dispatcher is not None
         if at_start:
-            fired = self.eval_source.trigger_at_start()
-            reason = "skip_first_step=true at step 0"
-            step_label = 0
+            startup_step = self.progress.step
+            fired = self.eval_source.trigger_at_start(startup_step)
+            reason = f"startup eval @ step={startup_step} (skip_first_step=false)"
+            step_label = startup_step
         else:
             assert step is not None
             fired = self.eval_source.trigger(step)
@@ -587,7 +606,7 @@ class Orchestrator:
             return
         self.dispatcher.switch_mode(SchedMode.PREFER_EVAL, reason=reason)
         self.dispatcher.metrics.eval_epochs_started += 1
-        self.logger.info(
+        get_logger().info(
             f"Eval @ step={step_label} for env(s) {','.join(fired)} (queued {len(self.eval_source)} example(s))"
         )
 
@@ -597,7 +616,7 @@ class Orchestrator:
         pre-baked metrics dict — it's a pure view computed here), then handles
         the side effects: save_rollouts, monitor.log_eval_samples, monitor.log."""
         if not batch.rollouts:
-            self.logger.warning(f"Eval @ step={batch.step} env={batch.env_name}: no surviving rollouts, skipping log")
+            get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no surviving rollouts, skipping log")
             return
 
         assert self.monitor is not None
@@ -610,7 +629,7 @@ class Orchestrator:
         self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
         self.monitor.log(batch.metrics.to_wandb_dict(env_name=batch.env_name, step=batch.step), step=batch.step)
 
-        self.logger.success(
+        get_logger().success(
             f"Eval @ step={batch.step} env={batch.env_name} | "
             f"Reward: {batch.metrics.reward_mean:.4f} | "
             f"Rollouts: {batch.metrics.n_rollouts} | Examples: {batch.metrics.n_examples}"
@@ -628,7 +647,7 @@ class Orchestrator:
             return 0.0
         if step % self.config.ckpt.interval != 0:
             return 0.0
-        self.logger.info(f"Saving checkpoint at step {step}")
+        get_logger().info(f"Saving checkpoint at step {step}")
         t = time.perf_counter()
         await asyncio.to_thread(self.ckpt_manager.save, self.progress, step)
         return time.perf_counter() - t
@@ -639,7 +658,7 @@ class Orchestrator:
 
         Cascades backpressure into the dispatcher via the bounded ``out_q``:
         while we wait, the queue fills, the dispatcher stops handing out new
-        semaphore permits, and in-flight rollouts drain without new ones being
+        inflight permits, and in-flight rollouts drain without new ones being
         scheduled.
         """
         target_lag = 1
@@ -652,7 +671,7 @@ class Orchestrator:
             elapsed = time.perf_counter() - t0
             if elapsed >= next_warn:
                 # Just a stall observation — no speculation about cause.
-                self.logger.info(
+                get_logger().info(
                     f"Orchestrator waiting at async barrier ({int(elapsed)}s): step={step}, "
                     f"policy.version={self.policy.version}, lead={lead} (max_async_level={target_lag})."
                 )
@@ -697,7 +716,7 @@ class Orchestrator:
         task = asyncio.create_task(do_shutdown())
         _, pending = await asyncio.wait({task}, timeout=SHUTDOWN_TIMEOUT_S)
         if pending:
-            self.logger.warning(
+            get_logger().warning(
                 f"Orchestrator shutdown did not complete within {SHUTDOWN_TIMEOUT_S}s; "
                 "forcing process exit. Training artifacts are already persisted."
             )

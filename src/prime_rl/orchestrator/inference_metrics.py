@@ -392,7 +392,6 @@ class InferenceMetricsCollector:
 
     def __init__(self, admin_clients: list[AsyncClient], roles: list[str | None] | None = None):
         self.endpoints = build_metrics_endpoints(admin_clients, roles=roles)
-        self.logger = get_logger()
         self.metric_history: dict[str, deque[float]] = {}
         self.previous: dict[str, TimedRollup] = {}
         self.task: asyncio.Task | None = None
@@ -406,7 +405,7 @@ class InferenceMetricsCollector:
                 try:
                     await self.collect_and_log()
                 except Exception as e:
-                    self.logger.debug(f"Inference metrics poll failed: {e!r}")
+                    get_logger().debug(f"Inference metrics poll failed: {e!r}")
                 await asyncio.sleep(POLL_INTERVAL)
 
         self.task = asyncio.create_task(poll_loop())
@@ -420,7 +419,7 @@ class InferenceMetricsCollector:
                 response.raise_for_status()
                 return response.text
             except Exception as e:
-                self.logger.debug(f"Failed to fetch metrics from {endpoint.client.base_url}: {e!r}")
+                get_logger().debug(f"Failed to fetch metrics from {endpoint.client.base_url}: {e!r}")
                 return None
 
         results = await asyncio.gather(*[fetch(endpoint) for endpoint in self.endpoints])

@@ -9,7 +9,7 @@ module):
 
 - ``Policy``: the single mutable view of the current trainer weights.
 - ``Progress``: persistent counters owned by the checkpoint manager.
-- ``Kind`` / ``SchedMode``: dispatch primitives.
+- ``Kind``: dispatch primitive (the train/eval discriminator).
 - ``Rollout`` / ``RolloutMeta`` / ``GroupState``: the dispatcher's in-flight
   bookkeeping + the atomic unit flowing on its output queue.
 - ``TrainBatch`` / ``EvalBatch`` and their ``TrainBatchMetrics`` /
@@ -21,9 +21,7 @@ module):
 from __future__ import annotations
 
 import uuid
-from collections import defaultdict
 from dataclasses import dataclass, field
-from enum import Enum, auto
 from typing import Literal, Protocol
 
 import verifiers as vf
@@ -53,7 +51,7 @@ class Progress:
 
     ``step`` is the trainer-aligned step (== ``policy.version`` after every
     successful weight update). The eval boundary is a strict function of
-    ``step`` + ``eval.interval`` + ``skip_first_step`` + ``skip_eval_on_resume``,
+    ``step`` + ``eval.interval`` + ``skip_first_step``,
     so we don't track a separate ``last_eval_step``.
     """
 
@@ -69,23 +67,11 @@ class Progress:
 Kind = Literal["train", "eval"]
 
 
-class SchedMode(Enum):
-    """Which kind of work the dispatcher will schedule next.
-
-    Transitions are level-triggered (driven by the eval queue's emptiness), so
-    in-flight rollouts of the opposite kind drain naturally on both sides of
-    every eval boundary — the overlap mechanism.
-    """
-
-    PREFER_TRAIN = auto()
-    PREFER_EVAL = auto()
-
-
 @dataclass
 class Rollout:
     """The atomic unit emitted by the dispatcher — one completed rollout.
 
-    Invariant — every rollout the dispatcher acquires a semaphore permit for
+    Invariant — every rollout the dispatcher acquires an inflight permit for
     eventually arrives at the corresponding sink exactly once, success or
     failure. Group/batch boundaries are sink-derived by counting arrivals up
     to ``group_size`` (and ``num_examples * group_size`` for eval epochs);
@@ -125,7 +111,7 @@ class RolloutMeta:
     env_name: str
     group_id: uuid.UUID
     policy_version: int
-    rollout_count: int  # number of semaphore permits this task holds
+    rollout_count: int  # number of inflight permits this task holds
     client_config: vf.ClientConfig | None = None
     off_policy_steps: int = 0  # incremented on every ``on_new_version``; train only
     eval_step: int | None = None
@@ -256,77 +242,6 @@ class EvalBatch:
 
 
 # ── watcher → observer interface ──────────────────────────────────────────
-
-
-@dataclass
-class DispatcherMetrics:
-    """Per-poll counters the dispatcher exposes to ``IntervalLogger``.
-
-    Split into two groups:
-
-    - *Gauges* (read by ``gauges()``): point-in-time snapshots — no reset.
-    - *Drain counters* (``drained()``): monotonic per-poll counters; the
-      logger consumes them with ``drained()`` which clears each one to
-      zero so the next poll measures only what happened since.
-    """
-
-    # Drain counters (reset each ``drained()`` call).
-    cancelled_train_rollouts: int = 0
-    cancelled_eval_rollouts: int = 0
-    empty_rollouts_by_env: dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    errored_rollouts_by_env: dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    errors_by_type: dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    total_rollouts_by_env: dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    # Monotonic gauges (not drained — running totals over the run).
-    eval_epochs_started: int = 0
-    mode_transitions: int = 0
-
-    def record_cancellation(self, *, kind: Literal["train", "eval"], n: int) -> None:
-        if kind == "train":
-            self.cancelled_train_rollouts += n
-        else:
-            self.cancelled_eval_rollouts += n
-
-    def record_error(self, env_name: str, error_type: str) -> None:
-        self.errored_rollouts_by_env[env_name] += 1
-        self.errors_by_type[error_type] += 1
-
-    def record_empty(self, env_name: str) -> None:
-        self.empty_rollouts_by_env[env_name] += 1
-
-    def record_arrivals(self, env_name: str, n: int) -> None:
-        self.total_rollouts_by_env[env_name] += n
-
-    DRAIN_KEYS: tuple[str, ...] = (
-        "dispatcher/cancelled_train_rollouts",
-        "dispatcher/cancelled_eval_rollouts",
-        "dispatcher/empty_rollouts_total",
-        "dispatcher/errored_rollouts_total",
-        "dispatcher/total_rollouts",
-    )
-
-    def drained(self) -> dict[str, float]:
-        """Return per-poll drain counters with a fixed key set + clear them.
-
-        Per-env / per-error-type breakdowns intentionally don't appear here
-        — the periodic logger pre-registers the wandb keys it'll emit at
-        init time, so the drain shape must be static. The step-aligned
-        ``MetricsBuilder`` covers per-env breakdowns on the step axis.
-        """
-        out: dict[str, float] = {
-            "dispatcher/cancelled_train_rollouts": float(self.cancelled_train_rollouts),
-            "dispatcher/cancelled_eval_rollouts": float(self.cancelled_eval_rollouts),
-            "dispatcher/empty_rollouts_total": float(sum(self.empty_rollouts_by_env.values())),
-            "dispatcher/errored_rollouts_total": float(sum(self.errored_rollouts_by_env.values())),
-            "dispatcher/total_rollouts": float(sum(self.total_rollouts_by_env.values())),
-        }
-        self.cancelled_train_rollouts = 0
-        self.cancelled_eval_rollouts = 0
-        self.empty_rollouts_by_env.clear()
-        self.errored_rollouts_by_env.clear()
-        self.errors_by_type.clear()
-        self.total_rollouts_by_env.clear()
-        return out
 
 
 class VersionObserver(Protocol):

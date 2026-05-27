@@ -161,7 +161,7 @@ class TrainSink:
             return
         all_raws = [r.raw for r in group]
         env_name = all_raws[0]["env_name"]
-        example_id = all_raws[0].get("example_id", -1)
+        example_id = all_raws[0]["example_id"]
         survivors = [raw for raw in all_raws if raw.get("error") is None]
         num_errored = len(all_raws) - len(survivors)
 

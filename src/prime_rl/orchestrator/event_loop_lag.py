@@ -29,7 +29,6 @@ class EventLoopLagMonitor:
         self.warn_p90_lag_threshold = warn_p90_lag_threshold
         self.warn_p99_lag_threshold = warn_p99_lag_threshold
         self.warn_max_lag_threshold = warn_max_lag_threshold
-        self.logger = get_logger()
         self.lags = []
 
     async def measure_lag(self):
@@ -69,7 +68,7 @@ class EventLoopLagMonitor:
             or p99_lag > self.warn_p99_lag_threshold
             or max_lag > self.warn_max_lag_threshold
         ):
-            self.logger.warning(
+            get_logger().warning(
                 f"Detected busy event loop. Measured {mean_lag:.1f}s (min={min_lag:.1f}s, med={med_lag:.1f}s, p90={p90_lag:.1f}s, p99={p99_lag:.1f}s, max={max_lag:.1f}s) event loop lag over the last {len(last_lags)} measurement(s)"
             )
 

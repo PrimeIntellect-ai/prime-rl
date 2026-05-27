@@ -1,0 +1,117 @@
+"""EvalSource: trigger-driven finite-per-epoch pull of eval examples.
+
+Holds the per-env example lists + intervals + the per-(env, step) pending
+queue. The orchestrator pokes it via ``trigger(step)`` after each ship step
+(or ``trigger_at_start(step)`` once at startup for the startup eval), and
+the dispatcher pulls one example at a time via
+``next_example(available_permits)`` until ``bool(source) == False``.
+
+Empty pool (``eval_envs is None`` or ``eval_config is None``) is a valid
+state — ``trigger`` and ``next_example`` become no-ops, ``bool(source)``
+stays ``False`` forever.
+
+The dispatcher still owns scheduling priority (``dispatcher.SchedMode``)
+and capacity (``max_inflight`` counter); this source answers "what's the
+next eval example to schedule, *if any fits*?". The per-env cost lookup
+lives here so the API can mirror ``TrainSource.next_example()`` — a single
+call that returns a committed item or ``None`` — instead of a peek + pop
+pair.
+"""
+
+from __future__ import annotations
+
+from collections import deque
+
+from prime_rl.configs.orchestrator import EvalConfig
+from prime_rl.orchestrator.envs import EvalEnvs
+
+
+class EvalSource:
+    """Finite-per-epoch source of eval examples."""
+
+    def __init__(self, eval_envs: EvalEnvs | None, eval_config: EvalConfig | None) -> None:
+        self.eval_envs = eval_envs
+        self.eval_config = eval_config
+
+        self.examples_by_env: dict[str, list[dict]] = {}
+        self.intervals: dict[str, int] = {}
+        if eval_envs is not None and eval_config is not None:
+            for env in eval_envs:
+                rows: list[dict] = []
+                for ex in env.examples:
+                    row = dict(ex)
+                    row["env_name"] = env.name
+                    rows.append(row)
+                self.examples_by_env[env.name] = rows
+                self.intervals[env.name] = env.config.interval
+
+        # (env_name, example, eval_step) FIFO. Each ``trigger`` extends it
+        # with one batch per fired env.
+        self.queue: deque[tuple[str, dict, int]] = deque()
+
+    # ── trigger ────────────────────────────────────────────────────────────
+
+    def trigger(self, step: int) -> list[str]:
+        """Fire eligible envs for ``step`` and return their names.
+
+        An env fires iff ``step % interval == 0``. Caller (``Orchestrator
+        .ship_train_batch``) only ever invokes this with monotonically
+        increasing ``step`` values, so no double-fire guard is needed.
+        """
+        if self.eval_envs is None or self.eval_config is None:
+            return []
+        fired: list[str] = []
+        for env_name, interval in self.intervals.items():
+            if step % interval != 0:
+                continue
+            self.enqueue(env_name, step)
+            fired.append(env_name)
+        return fired
+
+    def trigger_at_start(self, step: int) -> list[str]:
+        """Fire all envs at ``step`` unless ``eval.skip_first_step`` is True.
+
+        Called once from ``Orchestrator.start`` with ``progress.step`` — the
+        startup eval runs by default on whatever model state the
+        orchestrator starts from (base model on a cold start, resumed
+        checkpoint on a resume). Bypasses ``% interval`` gating so the
+        startup eval always fires for all envs.
+        """
+        if self.eval_envs is None or self.eval_config is None or self.eval_config.skip_first_step:
+            return []
+        fired: list[str] = []
+        for env_name in self.examples_by_env:
+            self.enqueue(env_name, step)
+            fired.append(env_name)
+        return fired
+
+    def enqueue(self, env_name: str, step: int) -> None:
+        for example in self.examples_by_env.get(env_name, []):
+            self.queue.append((env_name, example, step))
+
+    # ── pull ───────────────────────────────────────────────────────────────
+
+    def next_example(self, available_permits: int) -> tuple[str, dict, int] | None:
+        """Pop the next eval example if the dispatcher can afford its cost.
+
+        Returns ``None`` when the queue is empty or the head requires more
+        permits than available (head stays put — the dispatch loop will
+        retry on the next iteration once permits free up).
+
+        Mirrors ``TrainSource.next_example()``: one call commits, no
+        separate peek/pop pair.
+        """
+        if self.eval_envs is None or not self.queue:
+            return None
+        env_name, _example, _step = self.queue[0]
+        env = self.eval_envs.get(env_name)
+        cost = env.config.group_size if env.requires_group_scoring else 1
+        if cost > available_permits:
+            return None
+        return self.queue.popleft()
+
+    def __bool__(self) -> bool:
+        return bool(self.queue)
+
+    def __len__(self) -> int:
+        return len(self.queue)

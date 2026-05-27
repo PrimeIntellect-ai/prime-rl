@@ -27,7 +27,6 @@ class CheckpointManager:
     def __init__(self, output_dir: Path, config: CheckpointConfig) -> None:
         self.config = config
         self.ckpt_dir = get_ckpt_dir(output_dir)
-        self.logger = get_logger()
 
     def get_ckpt_path(self, step: int) -> Path:
         return get_step_path(self.ckpt_dir, step) / "orchestrator"
@@ -38,17 +37,17 @@ class CheckpointManager:
         start = time.perf_counter()
         with open(ckpt_path / "state.pt", "wb") as f:
             torch.save({"progress": progress}, f)
-        self.logger.debug(f"Orchestrator checkpoint saved to {ckpt_path} in {time.perf_counter() - start:.2f}s")
+        get_logger().debug(f"Orchestrator checkpoint saved to {ckpt_path} in {time.perf_counter() - start:.2f}s")
 
     def load(self, progress: Progress, step: int) -> None:
         ckpt_path = self.get_ckpt_path(step)
         state_file = ckpt_path / "state.pt"
         if not state_file.exists():
             raise FileNotFoundError(f"Orchestrator checkpoint not found at {state_file}")
-        self.logger.debug(f"Loading checkpoint from {state_file}")
+        get_logger().debug(f"Loading checkpoint from {state_file}")
         start = time.perf_counter()
         if self.config.skip_progress:
-            self.logger.info("Skipping progress loading from checkpoint")
+            get_logger().info("Skipping progress loading from checkpoint")
         else:
             with open(state_file, "rb") as f:
                 state = torch.load(f, weights_only=False)
@@ -56,7 +55,7 @@ class CheckpointManager:
             for key, value in asdict(saved).items():
                 if hasattr(progress, key):
                     setattr(progress, key, value)
-        self.logger.debug(f"Orchestrator checkpoint loaded in {time.perf_counter() - start:.2f}s")
+        get_logger().debug(f"Orchestrator checkpoint loaded in {time.perf_counter() - start:.2f}s")
 
 
 def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager | None:
