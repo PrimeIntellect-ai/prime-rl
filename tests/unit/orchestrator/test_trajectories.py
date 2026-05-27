@@ -31,11 +31,12 @@ def _decode_mm_thw(sample) -> list:
     return np.frombuffer(g.data, dtype=np.dtype(g.dtype)).reshape(g.shape).tolist()
 
 
-def _routed_experts_payload(data) -> dict:
+def _routed_experts_payload(data, start: int = 0) -> dict:
     arr = np.asarray(data, dtype=np.uint8)
     return {
         "data": pybase64.b64encode(memoryview(np.ascontiguousarray(arr))).decode("ascii"),
         "shape": list(arr.shape),
+        "start": start,
     }
 
 
@@ -910,8 +911,9 @@ def test_interleave_rollout_multi_step_with_routed_experts():
     """Routed experts are extended and aligned across multi-step trajectories."""
     # Step 1: prompt=[1,2], completion=[3,4] -> 4 tokens, vLLM returns 3
     step1_experts = np.asarray([[[1, 2]], [[3, 4]], [[5, 6]]], dtype=np.uint8)
-    # Step 2: prompt=[1,2,3,4,5,6], completion=[7,8] -> 8 tokens, vLLM returns 7
-    step2_experts = np.asarray([[[1, 0]], [[2, 0]], [[3, 0]], [[4, 0]], [[5, 0]], [[6, 0]], [[7, 0]]], dtype=np.uint8)
+    # Step 2: prompt=[1,2,3,4,5,6], completion=[7,8], bridged from prefix len 4.
+    # vLLM returns routed experts starting at row 3: boundary token 4, then 5, 6, 7.
+    step2_experts = np.asarray([[[40, 41]], [[50, 51]], [[60, 61]], [[70, 71]]], dtype=np.uint8)
 
     output = vf.RolloutOutput(
         example_id=0,
@@ -952,7 +954,7 @@ def test_interleave_rollout_multi_step_with_routed_experts():
                     completion_logprobs=[-0.3, -0.4],
                     overlong_prompt=False,
                     is_truncated=False,
-                    routed_experts=_routed_experts_payload(step2_experts),
+                    routed_experts=_routed_experts_payload(step2_experts, start=3),
                 ),
                 reward=None,
                 advantage=None,
@@ -973,7 +975,132 @@ def test_interleave_rollout_multi_step_with_routed_experts():
     # Merged sample: prompt=[1,2], completion=[3,4,5,6,7,8] -> 8 tokens total
     assert len(sample.prompt_ids) + len(sample.completion_ids) == 8
     assert sample.routed_experts is not None
-    assert _sample_routed_experts(sample).shape == (8, 1, 2)
+    routed_experts = _sample_routed_experts(sample)
+    assert routed_experts.shape == (8, 1, 2)
+    np.testing.assert_array_equal(
+        routed_experts,
+        np.asarray(
+            [
+                [[1, 2]],
+                [[3, 4]],
+                [[5, 6]],
+                [[40, 41]],
+                [[50, 51]],
+                [[60, 61]],
+                [[70, 71]],
+                [[0, 0]],
+            ],
+            dtype=np.uint8,
+        ),
+    )
+
+
+def test_interleave_rollout_branch_delta_uses_prior_routed_prefix():
+    step1_experts = np.asarray([[[1, 2]], [[3, 4]], [[5, 6]]], dtype=np.uint8)
+    step2_experts = np.asarray([[[40, 41]], [[50, 51]], [[60, 61]], [[70, 71]]], dtype=np.uint8)
+    step3_experts = np.asarray([[[80, 81]], [[90, 91]], [[100, 101]], [[110, 111]]], dtype=np.uint8)
+
+    output = vf.RolloutOutput(
+        example_id=0,
+        trajectory=[
+            vf.TrajectoryStep(
+                prompt=[{"role": "user", "content": "U1"}],
+                completion=[{"role": "assistant", "content": "A1"}],
+                response=MagicMock(),
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2],
+                    prompt_mask=[0, 0],
+                    completion_ids=[3, 4],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.1, -0.2],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                    routed_experts=_routed_experts_payload(step1_experts),
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            ),
+            vf.TrajectoryStep(
+                prompt=[
+                    {"role": "user", "content": "U1"},
+                    {"role": "assistant", "content": "A1"},
+                    {"role": "user", "content": "U2"},
+                ],
+                completion=[{"role": "assistant", "content": "A2"}],
+                response=MagicMock(),
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2, 3, 4, 5, 6],
+                    prompt_mask=[0, 0, 0, 0, 0, 0],
+                    completion_ids=[7, 8],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.3, -0.4],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                    routed_experts=_routed_experts_payload(step2_experts, start=3),
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            ),
+            vf.TrajectoryStep(
+                prompt=[
+                    {"role": "user", "content": "U1"},
+                    {"role": "assistant", "content": "A1"},
+                    {"role": "user", "content": "branch"},
+                ],
+                completion=[{"role": "assistant", "content": "A3"}],
+                response=MagicMock(),
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2, 3, 4, 9, 10],
+                    prompt_mask=[0, 0, 0, 0, 0, 0],
+                    completion_ids=[11, 12],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.5, -0.6],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                    routed_experts=_routed_experts_payload(step3_experts, start=3),
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            ),
+        ],
+        sampling_args={"temperature": 1.0},
+        error=None,
+    )
+
+    rollouts = interleave_rollout(output)
+
+    assert rollouts is not None
+    assert len(rollouts) == 2
+    branched = rollouts[1]
+    assert branched.prompt_ids == [1, 2, 3, 4, 9, 10]
+    assert branched.completion_ids == [11, 12]
+    routed_experts = _sample_routed_experts(branched)
+    assert routed_experts.shape == (8, 1, 2)
+    np.testing.assert_array_equal(
+        routed_experts,
+        np.asarray(
+            [
+                [[1, 2]],
+                [[3, 4]],
+                [[5, 6]],
+                [[80, 81]],
+                [[90, 91]],
+                [[100, 101]],
+                [[110, 111]],
+                [[0, 0]],
+            ],
+            dtype=np.uint8,
+        ),
+    )
 
 
 def test_interleave_rollout_none_routed_experts_stays_none():
