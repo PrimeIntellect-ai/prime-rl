@@ -381,19 +381,19 @@ def test_trainer_chat_template_cascades_to_inference():
 
 
 def test_shared_wandb_fields_propagate_to_subconfigs():
-    """Every ``SharedWandbConfig`` leaf (project, entity, group, tags, offline)
-    propagates to both trainer.wandb and orchestrator.wandb, not just project
-    and offline. Regression for a miss in the inline propagator."""
+    """Every ``SharedWandbConfig`` leaf (project, entity, name, group, tags,
+    offline) propagates to both trainer.wandb and orchestrator.wandb. Regression
+    for a miss in the inline propagator."""
     config = RLConfig.model_validate(
         {
             "model": {"name": "Qwen/Qwen3-0.6B"},
             "wandb": {
                 "project": "shared-proj",
                 "entity": "shared-entity",
+                "name": "shared-name",
                 "group": "shared-group",
                 "tags": ["a", "b"],
-                "shared": False,
-                "offline": True,
+                "offline": False,
             },
             "trainer": {},
             "orchestrator": {"renderer": None},
@@ -403,9 +403,10 @@ def test_shared_wandb_fields_propagate_to_subconfigs():
         assert component is not None
         assert component.project == "shared-proj"
         assert component.entity == "shared-entity"
+        assert component.name == "shared-name"
         assert component.group == "shared-group"
         assert component.tags == ["a", "b"]
-        assert component.offline is True
+        assert component.offline is False
 
 
 def test_empty_shared_ckpt_block_does_not_conflict_with_subconfig_ckpt():
