@@ -1,0 +1,49 @@
+# SFT on Plex browser-agent traces (multimodal: screenshots + tool calls).
+# Single H200, LoRA, attention-only target_modules to keep adapter param count modest.
+#
+# Notes:
+# - The renderer auto-resolves to ``qwen3.5`` from the tokenizer's name; the
+#   trainer is model-agnostic. To swap to a different VLM (e.g. Qwen3-VL-4B),
+#   change ``model.name`` — no other config changes needed.
+# - VLM SFT forces micro_batch_size = 1 (image samples can't be packed).
+# - Plex screenshots blow each sample up to ~7k–60k tokens (mostly image
+#   patches). Pick a seq_len that fits your single-GPU budget; samples that
+#   exceed it get dropped.
+max_steps = 20
+
+[ckpt]
+[ckpt.weights]
+save_adapter_separately = true
+
+[model]
+name = "Qwen/Qwen3.5-0.8B"
+optimization_dtype = "bfloat16"
+reduce_dtype = "bfloat16"
+
+# VLM SFT tokenizes images through the renderer. "auto" resolves the concrete
+# renderer (here qwen3.5) from model.name via MODEL_RENDERER_MAP.
+[renderer]
+name = "auto"
+
+[model.vlm]
+vision_encoder_attr = "model.visual"
+language_model_attr = "model.language_model"
+freeze_vision_encoder = true
+
+[model.lora]
+rank = 8
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+[model.ac]
+freq = 1
+
+[data]
+type = "sft"
+name = "json"
+data_files = ["/home/ubuntu/plex_traces_sample.jsonl.zst"]
+batch_size = 1
+micro_batch_size = 1
+seq_len = 16384
+
+[optim]
+lr = 1e-5

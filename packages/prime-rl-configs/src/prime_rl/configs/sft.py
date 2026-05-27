@@ -77,6 +77,9 @@ class SFTDataConfig(BaseDataConfig):
     name: str = "PrimeIntellect/Reverse-Text-SFT"
     """HF dataset name or path."""
 
+    data_files: list[str] | None = None
+    """Optional list of local files (JSONL, JSONL.zst, …) to load via ``load_dataset(name, data_files=...)``. When set, ``name`` should be a loader id like ``"json"``. ``.zst`` files are transparently decompressed to a tempdir before loading."""
+
     subsets: list[str] | None = None
     """Subsets to load from the HF dataset."""
 
@@ -301,6 +304,44 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def vlms_require_bfloat16(self):
+        if self.model.vlm is not None and (
+            self.model.optimization_dtype != "bfloat16" or self.model.reduce_dtype != "bfloat16"
+        ):
+            raise ValueError(
+                "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match the HF processor output dtype."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def vlm_freeze_incompatible_with_lora(self):
+        if self.model.vlm is not None and not self.model.vlm.freeze_vision_encoder and self.model.lora is not None:
+            raise ValueError(
+                "freeze_vision_encoder=false is incompatible with LoRA. "
+                "LoRA freezes all non-adapter parameters including the vision encoder."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_vlm_constraints(self):
+        # VLM samples carry image patches, so per-sample pixel buffers can't be
+        # packed across samples and seq dimension can't be sharded without
+        # splitting an image. Enforce both at config time.
+        if self.model.vlm is None:
+            return self
+        if self.data.micro_batch_size != 1:
+            raise ValueError(
+                "VLM SFT requires data.micro_batch_size = 1 (image samples can't be packed across samples)."
+            )
+        if self.val is not None and self.val.data.micro_batch_size != 1:
+            raise ValueError(
+                "VLM SFT requires val.data.micro_batch_size = 1 (image samples can't be packed across samples)."
+            )
+        if self.model.cp > 1:
+            raise ValueError("VLM SFT does not support CP > 1 (image placeholders straddle seq shards).")
+        return self
+
+    @model_validator(mode="after")
     def validate_seq_len(self):
         if self.data.pack_function == "stack" and self.data.seq_len % 256 != 0:
             raise ValueError("The sequence length must be divisible by 256 when using pack function stack")
@@ -320,11 +361,15 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_renderer_vs_vlm(self):
-        if self.renderer is not None and self.model.vlm is not None:
+    def validate_vlm_requires_renderer(self):
+        # VLM SFT tokenizes images through the renderer's multimodal path
+        # (build_training_sample → RenderedTrainingSample.multi_modal_data).
+        # The tokenizer fallback only handles text, so a renderer is required.
+        if self.model.vlm is not None and self.renderer is None:
             raise ValueError(
-                "renderer is not supported for VLMs in SFT. The renderer tokenizes "
-                "text-only message dicts client-side and cannot handle image inputs."
+                "VLM SFT requires a renderer. Set a typed `[renderer]` config "
+                "(e.g. name = \"auto\") so images tokenize through the renderer's "
+                "multimodal path; the tokenizer fallback is text-only."
             )
         return self
 
