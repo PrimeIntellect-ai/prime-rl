@@ -297,6 +297,7 @@ class Orchestrator:
             config,
             tokenizer=self.tokenizer,
             renderer=self.renderer,
+            train_envs=self.train_envs,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             batch_size=config.batch_size,
             token_batch_size=config.token_batch_size,
@@ -377,12 +378,10 @@ class Orchestrator:
         """The pipeline driver. Consumes ``Rollout``\\ s from the dispatcher
         (the atomic unit) and routes train vs eval to their respective sinks.
 
-        Both sinks have the same three-level processing structure
-        (``process_rollout`` / ``process_group`` / ``process_batch``) and
-        share the same batch-boundary signal: ``rollout.is_batch_done``.
-        The eval sink relies on the dispatcher to stamp the flag (last
-        rollout of an env-epoch); the train sink stamps it itself inside
-        ``add()`` when its buffer reaches ``batch_size``.
+        Both sinks own their own batch-boundary detection by counting
+        arrivals up to ``group_size`` (and ``num_examples * group_size`` for
+        eval epochs); their ``add()`` return values signal "batch ready"
+        directly, so the orchestrator doesn't peek at any rollout flag.
         """
         assert self.dispatcher and self.train_sink and self.eval_sink
         while not self.stopped.is_set():
@@ -397,12 +396,12 @@ class Orchestrator:
                     self.log_eval_batch(eval_batch)
                 continue
 
-            await self.train_sink.add(rollout)
-            while rollout.is_batch_done and not self.stopped.is_set():
+            batch_ready = await self.train_sink.add(rollout)
+            while batch_ready and not self.stopped.is_set():
                 await self.process_one_step()
-                # Re-stamp from the sink's polling state: did another batch
-                # complete while we were processing this one?
-                rollout.is_batch_done = self.train_sink.is_batch_done()
+                # Another batch may have accumulated while we were processing
+                # this one; keep popping until the buffer is below threshold.
+                batch_ready = self.train_sink.is_batch_done()
 
     async def process_one_step(self) -> None:
         """Drive one shipping step. The train sink has done all per-rollout /

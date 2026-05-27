@@ -7,12 +7,15 @@ Owns:
   in one call acquires N permits.
 - A shared ``AsyncLimiter(config.tasks_per_minute, 60)`` if rate limiting is on.
 - The dispatch loop: pick "next work" based on ``sched_mode`` and fill capacity.
-- Per-group accumulation: completed rollouts are gathered per
-  ``(env_name, example_id)`` group; the group emits one ``Trajectory`` to ``out_q``
-  once all dispatched rollouts come back (succeeded, failed, or cancelled).
+- Emit-everything invariant: every dispatched rollout (one permit) eventually
+  reaches ``out_q`` exactly once as a ``Rollout`` — successful, env-errored,
+  empty-trajectory, task-exception, or off-policy-cancelled. Failures carry
+  ``raw["error"]`` set; the sinks decide drop / partial-train policy.
 - Off-policy cancellation: on each ``on_new_version`` from the watcher, train
-  rollouts whose ``off_policy_steps`` exceed ``max_off_policy_steps`` get cancelled.
-  Eval rollouts are exempt (snapshot at dispatch, never cancelled mid-flight).
+  rollouts whose ``off_policy_steps`` exceed ``max_off_policy_steps`` get
+  cancelled, and a synthetic "Cancelled" rollout is emitted in their place so
+  the sink can finalize the partial group. Eval rollouts are exempt (snapshot
+  at dispatch, never cancelled mid-flight).
 - Eval triggers: per-env ``policy.version % env.interval == 0`` queues an epoch.
   ``SchedMode.PREFER_EVAL`` means we only schedule eval until the queue drains;
   ``PREFER_TRAIN`` only schedules train. Both transitions are level-triggered
@@ -169,14 +172,6 @@ class RolloutDispatcher:
                 self.eval_examples[env.name] = rows
                 self.eval_intervals[env.name] = env.config.interval
 
-        # Per (env_name, eval_step) tracking: how many rollouts the dispatcher
-        # plans to emit, and how many it has either emitted or dropped. When
-        # ``emitted + dropped == expected`` for a key, the current emission
-        # gets ``is_group_complete=True`` so ``EvalSink`` knows to flush that
-        # env's epoch.
-        self.eval_expected_per_env: dict[tuple[str, int], int] = {}
-        self.eval_emitted_per_env: dict[tuple[str, int], int] = defaultdict(int)
-        self.eval_dropped_per_env: dict[tuple[str, int], int] = defaultdict(int)
         self.eval_step_envs: dict[int, set[str]] = {}  # eval_step -> set of envs that fired
 
         # First-step eval handling — mirror legacy ``eval_base_model`` / ``skip_eval_on_resume``.
@@ -324,10 +319,8 @@ class RolloutDispatcher:
         if fired_envs:
             self.switch_mode(SchedMode.PREFER_EVAL, reason=f"eval triggered for {','.join(fired_envs)} @ step={step}")
             self.eval_epochs_started += 1
-            expected_total = sum(self.eval_expected_per_env.get((name, step), 0) for name in fired_envs)
             self.logger.info(
-                f"Eval @ step={step} for env(s) {','.join(fired_envs)} "
-                f"(queued {len(self.eval_queue)} example(s); expected {expected_total} rollouts)"
+                f"Eval @ step={step} for env(s) {','.join(fired_envs)} (queued {len(self.eval_queue)} example(s))"
             )
 
     # ── eval epoch machinery ───────────────────────────────────────────────
@@ -343,11 +336,7 @@ class RolloutDispatcher:
         if fired_envs:
             self.switch_mode(SchedMode.PREFER_EVAL, reason=log_reason)
             self.eval_epochs_started += 1
-            expected_total = sum(self.eval_expected_per_env.get((name, step), 0) for name in fired_envs)
-            self.logger.info(
-                f"Eval @ step={step} ({log_reason}) — queued envs={','.join(fired_envs)}, "
-                f"{expected_total} expected rollouts"
-            )
+            self.logger.info(f"Eval @ step={step} ({log_reason}) — queued envs={','.join(fired_envs)}")
 
     def enqueue_eval_env(self, env_name: str, step: int, *, force: bool = False) -> None:
         examples = self.eval_examples.get(env_name)
@@ -355,16 +344,9 @@ class RolloutDispatcher:
             return
         if not force and step <= self.last_eval_step_per_env.get(env_name, 0):
             return
-        assert self.eval_envs is not None
-        eval_env = self.eval_envs.get(env_name)
-        group_size = eval_env.config.group_size
-        per_example_rollouts = group_size
-        added = 0
         for example in examples:
             self.eval_queue.append((env_name, example, step))
-            added += per_example_rollouts
         self.last_eval_step_per_env[env_name] = step
-        self.eval_expected_per_env[(env_name, step)] = self.eval_expected_per_env.get((env_name, step), 0) + added
         self.eval_step_envs.setdefault(step, set()).add(env_name)
 
     # ── fill ────────────────────────────────────────────────────────────────
@@ -562,159 +544,127 @@ class RolloutDispatcher:
     # ── completion handling ────────────────────────────────────────────────
 
     async def handle_completed_rollout(self, task: asyncio.Task) -> None:
+        """Emit every dispatched rollout exactly once to ``out_q``.
+
+        - Successful rollouts → emit as-is.
+        - Env-reported errors (``r["error"] is not None``) → emit as-is; the
+          sink filters them out.
+        - Empty trajectories → annotate ``r["error"] = EmptyTrajectory`` and
+          emit; sink treats them the same as any other failure.
+        - Task exceptions → synthesize ``meta.rollout_count`` error rollouts
+          and emit (a group-scored task that would have produced N rollouts
+          surfaces N error markers, so the sink's count-to-``group_size``
+          finalization still triggers).
+
+        Cancellations are handled by ``drop_group`` directly (it emits its
+        own markers before cancelling the tasks); when the cancelled tasks
+        eventually complete with ``CancelledError`` we discard.
+        """
         meta = self.inflight.pop(task, None)
         if meta is None:
-            return
+            return  # already handled by drop_group / cancel_inflight_rollouts
         self.release(meta.rollout_count)
-
         group = self.groups.get(meta.group_id)
-        if group is None:
-            # Group was dropped (off-policy cancel, etc.) — discard the result.
-            return
 
+        is_synth_exception = False
         try:
             result = task.result()
+            rollouts: list[vf.RolloutOutput] = result if isinstance(result, list) else [result]
         except asyncio.CancelledError:
             return
         except Exception as exc:
             self.logger.warning(f"Rollout task failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
-            self.errored_rollouts_by_env[meta.env_name] += meta.rollout_count
-            self.errors_by_type[type(exc).__name__] += 1
-            group.failed_rollouts += meta.rollout_count
-            await self.maybe_finalize_group(meta.group_id)
-            return
+            rollouts = [
+                self.error_rollout_output(error_type=type(exc).__name__, error_repr=repr(exc))
+                for _ in range(meta.rollout_count)
+            ]
+            is_synth_exception = True
 
-        rollouts: list[vf.RolloutOutput] = result if isinstance(result, list) else [result]
         self.total_rollouts_by_env[meta.env_name] += len(rollouts)
 
-        env_collection = self.train_envs if meta.kind == "train" else self.eval_envs
-        assert env_collection is not None
-        env = env_collection.get(meta.env_name)
-
-        valid: list[vf.RolloutOutput] = []
         for r in rollouts:
-            if r.get("error") is not None:
-                self.errored_rollouts_by_env[meta.env_name] += 1
-                self.errors_by_type[r["error"]["error"]] += 1
-                self.logger.warning(
-                    f"Rollout failed in group {meta.group_id} ({meta.env_name}) — "
-                    f"{r['error'].get('error_chain_repr', r['error'].get('error'))}"
-                )
-            elif len(r.get("trajectory") or []) == 0:
+            if r.get("error") is None and len(r.get("trajectory") or []) == 0:
+                # Empty trajectory: promote to an explicit error so the sink
+                # can filter it uniformly with other failures.
+                r["error"] = {
+                    "error": "EmptyTrajectory",
+                    "error_chain_repr": "Rollout returned with no trajectory steps",
+                    "error_chain_str": "",
+                }
                 self.empty_rollouts_by_env[meta.env_name] += 1
                 self.logger.warning(f"Empty trajectory in group {meta.group_id} ({meta.env_name})")
-            else:
-                r["env_name"] = meta.env_name
-                valid.append(r)
+            if r.get("error") is not None:
+                err_type = r["error"].get("error", "Unknown")
+                self.errored_rollouts_by_env[meta.env_name] += 1
+                self.errors_by_type[err_type] += 1
+                if not is_synth_exception:
+                    self.logger.warning(
+                        f"Rollout failed in group {meta.group_id} ({meta.env_name}) — "
+                        f"{r['error'].get('error_chain_repr', err_type)}"
+                    )
+            r["env_name"] = meta.env_name
+            await self.emit_rollout(meta, group, r)
 
-        num_failed = len(rollouts) - len(valid)
-        group.failed_rollouts += num_failed
+    async def emit_rollout(self, meta: RolloutMeta, group: GroupState | None, raw: vf.RolloutOutput) -> None:
+        """Put one ``Rollout`` on ``out_q`` and bump per-group emit count.
 
-        # Group-scoring envs: any failure means surviving rollouts carry scores
-        # computed against the (now-missing) failed ones — unsafe to keep. Drop
-        # the whole group.
-        if num_failed > 0 and env.requires_group_scoring:
-            self.dropped_groups_by_env[meta.env_name] += 1
-            self.logger.warning(f"Dropping group-scored group {meta.group_id} ({meta.env_name}) after rollout failure")
-            await self.drop_group(meta.group_id)
-            return
-
-        group.completed_rollouts.extend(valid)
-        await self.maybe_finalize_group(meta.group_id)
-
-    async def maybe_finalize_group(self, group_id: int) -> None:
-        """When every dispatched rollout for a group has come back (success or
-        failure), emit the survivors to ``out_q`` as individual ``Rollout``\\ s.
-
-        Group-level concerns (advantage computation, pre-filters) belong to
-        the sinks, not here — this method just routes individual rollouts
-        out with the correct grouping signal.
+        Pops the group from ``self.groups`` once every member has been
+        emitted, so the dispatcher's group bookkeeping stays bounded.
         """
-        group = self.groups.get(group_id)
-        if group is None:
-            return
-        if len(group.completed_rollouts) + group.failed_rollouts < group.target_rollouts:
-            return
+        example_id = -1
+        eval_step = meta.eval_step
+        policy_version = meta.policy_version
+        if group is not None:
+            ex_id = group.example.get("example_id")
+            if ex_id is not None:
+                example_id = int(ex_id)
+            eval_step = group.eval_step
+            policy_version = group.policy_version_at_start
+            group.emitted += 1
+            if group.emitted >= group.target_rollouts:
+                self.groups.pop(meta.group_id, None)
 
-        self.groups.pop(group_id, None)
-        if not group.completed_rollouts:
-            self.dropped_groups_by_env[group.env_name] += 1
-            self.logger.warning(
-                f"Dropping {group.kind} group {group_id} ({group.env_name}) — all "
-                f"{group.target_rollouts} rollouts failed"
+        await self.out_q.put(
+            Rollout(
+                kind=meta.kind,
+                env_name=meta.env_name,
+                example_id=example_id,
+                raw=raw,
+                policy_version=policy_version,
+                eval_step=eval_step,
             )
-            # For eval, account for the drop in the per-env counter so the
-            # env's epoch still flushes (or doesn't, but at least doesn't hang).
-            if group.kind == "eval" and group.eval_step is not None:
-                key = (group.env_name, group.eval_step)
-                self.eval_dropped_per_env[key] += group.target_rollouts
-            return
+        )
 
-        if group.failed_rollouts > 0:
-            self.logger.warning(
-                f"Partial {group.kind} group {group_id} ({group.env_name}) — "
-                f"{len(group.completed_rollouts)}/{group.target_rollouts} valid "
-                f"({group.failed_rollouts} failed)"
-            )
+    @staticmethod
+    def error_rollout_output(*, error_type: str, error_repr: str) -> vf.RolloutOutput:
+        """Synthesize a minimal ``vf.RolloutOutput`` carrying just an error.
 
-        example_id = group.example.get("example_id")
-        if example_id is None:
-            example_id = -1
-        example_id = int(example_id)
-
-        # Account for eval drops (dropped rollouts never get emitted but the
-        # epoch tracking still needs to know they came through).
-        if group.kind == "eval" and group.eval_step is not None and group.failed_rollouts > 0:
-            self.eval_dropped_per_env[(group.env_name, group.eval_step)] += group.failed_rollouts
-
-        await self.emit_group(group, example_id)
-
-    async def emit_group(self, group: "GroupState", example_id: int) -> None:
-        """Emit each surviving rollout to ``out_q`` with the two boundary
-        signals (``is_group_done``, ``is_batch_done``) the sinks consume.
-
-        - ``is_group_done`` is set on the last rollout of every emitted
-          ``(env, example_id)`` group — both train (GRPO group) and eval
-          (per-example group).
-        - ``is_batch_done`` is set on the last rollout of an eval epoch
-          (when ``emitted + dropped == expected`` for the ``(env, eval_step)``
-          key). Always ``False`` for train; the train sink decides batch
-          boundaries from its configured ``batch_size``.
+        Used for rollouts that never produced a real output (task exception,
+        off-policy cancellation). The sink filters anything with ``error``
+        set out of the trainable pool.
         """
-        rollouts = group.completed_rollouts
-        for i, raw in enumerate(rollouts):
-            is_last_of_emission = i == len(rollouts) - 1
-            is_group_done = is_last_of_emission
-
-            if group.kind == "eval":
-                assert group.eval_step is not None
-                key = (group.env_name, group.eval_step)
-                self.eval_emitted_per_env[key] += 1
-                expected = self.eval_expected_per_env.get(key, 0)
-                emitted = self.eval_emitted_per_env[key]
-                dropped = self.eval_dropped_per_env[key]
-                is_batch_done = is_last_of_emission and emitted + dropped >= expected
-            else:
-                is_batch_done = False
-
-            await self.out_q.put(
-                Rollout(
-                    kind=group.kind,
-                    env_name=group.env_name,
-                    example_id=example_id,
-                    raw=raw,
-                    policy_version=group.policy_version_at_start,
-                    is_group_done=is_group_done,
-                    is_batch_done=is_batch_done,
-                    eval_step=group.eval_step,
-                )
-            )
+        out: vf.RolloutOutput = vf.RolloutOutput()
+        out["error"] = {
+            "error": error_type,
+            "error_chain_repr": error_repr,
+            "error_chain_str": error_repr,
+        }
+        out["trajectory"] = []
+        out["completion"] = None
+        out["reward"] = 0.0
+        out["is_truncated"] = False
+        out["metrics"] = {}
+        out["stop_condition"] = None
+        return out
 
     async def drop_group(self, group_id: int) -> int:
-        """Cancel any remaining in-flight tasks for this group and forget it.
+        """Cancel any remaining in-flight tasks for this group and emit a
+        cancellation marker for each, so the sink can finalize the partial
+        group.
 
         Returns the number of rollouts cancelled (for off-policy metrics).
         """
+        group = self.groups.pop(group_id, None)
         tasks_to_cancel: list[asyncio.Task] = []
         cancelled = 0
         for task, meta in list(self.inflight.items()):
@@ -724,13 +674,40 @@ class RolloutDispatcher:
             self.release(meta.rollout_count)
             tasks_to_cancel.append(task)
             cancelled += meta.rollout_count
-        self.groups.pop(group_id, None)
+            # Emit a marker per rollout this task would have produced so the
+            # sink sees ``group_size`` arrivals overall and finalizes.
+            for _ in range(meta.rollout_count):
+                raw = self.error_rollout_output(error_type="Cancelled", error_repr="Off-policy cancel")
+                raw["env_name"] = meta.env_name
+                example_id = -1
+                eval_step = meta.eval_step
+                policy_version = meta.policy_version
+                if group is not None:
+                    ex_id = group.example.get("example_id")
+                    if ex_id is not None:
+                        example_id = int(ex_id)
+                    eval_step = group.eval_step
+                    policy_version = group.policy_version_at_start
+                await self.out_q.put(
+                    Rollout(
+                        kind=meta.kind,
+                        env_name=meta.env_name,
+                        example_id=example_id,
+                        raw=raw,
+                        policy_version=policy_version,
+                        eval_step=eval_step,
+                    )
+                )
         if tasks_to_cancel:
             await safe_cancel_all(tasks_to_cancel)
         return cancelled
 
     async def cancel_inflight_rollouts(self) -> None:
-        """Cancel all in-flight rollouts (used on shutdown only)."""
+        """Cancel all in-flight rollouts (used on shutdown only).
+
+        Doesn't emit markers — sinks are being torn down anyway and would
+        just discard them.
+        """
         for meta in self.inflight.values():
             self.release(meta.rollout_count)
         tasks = list(self.inflight.keys())

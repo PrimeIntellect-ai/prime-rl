@@ -6,15 +6,20 @@ trainer, doesn't compute advantages, doesn't apply filters):
 
 1. ``process_rollout(rollout)`` — no-op. Eval rollouts don't need
    trainer-bound tokenization.
-2. ``process_group(key)`` — finalize one per-example group. Moves
-   surviving rollouts into the (env, eval_step) batch bucket. Per-example
-   ``pass@k`` aggregation happens at the batch level.
-3. ``process_batch(key)`` — runs when ``is_batch_done=True`` arrives (the
-   dispatcher signals epoch completion on the last expected rollout for an
-   (env, eval_step) pair). Returns an ``EvalBatch`` holding the raw
-   rollouts. ``build_metrics(batch)`` produces the per-env W&B dict — the
-   orchestrator invokes it at log time so the metrics aren't pre-baked into
-   the result alongside the data they're derived from.
+2. ``process_group(key)`` — runs when ``group_size`` arrivals are
+   accumulated for ``(env, example_id, eval_step)``. Moves the rollouts
+   (including errored ones — eval metrics surface error rates) into the
+   ``(env, eval_step)`` batch bucket.
+3. ``process_batch(key)`` — runs when total arrivals for ``(env, eval_step)``
+   reach ``num_examples * group_size`` (full epoch). Returns an ``EvalBatch``
+   holding the raw rollouts. ``build_metrics(batch)`` produces the per-env
+   W&B dict — the orchestrator invokes it at log time so the metrics aren't
+   pre-baked into the result alongside the data they're derived from.
+
+The sink owns the boundary signals: ``add()`` returns an ``EvalBatch`` once
+the full epoch has arrived, derived purely from counting. The dispatcher
+emits every dispatched rollout (success or error) exactly once so the
+count-based finalization always fires.
 
 Filters do not apply to eval — filters are a train-only concept.
 """
@@ -37,31 +42,48 @@ class EvalSink:
 
     def __init__(self, *, eval_envs: EvalEnvs | None) -> None:
         self.eval_envs = eval_envs
-        # Per (env_name, example_id, eval_step) accumulation — finalized into
-        # the batch bucket on ``is_group_done``.
+        # Per (env_name, example_id, eval_step) accumulation — finalized
+        # into the batch bucket when arrivals reach ``group_size``.
         self.pending_groups: dict[tuple[str, int, int], list[Rollout]] = defaultdict(list)
         # Per (env_name, eval_step) accumulation — emits an ``EvalBatch``
-        # on ``is_batch_done``.
+        # when arrivals reach ``num_examples * group_size``.
         self.pending_batches: dict[tuple[str, int], list[vf.RolloutOutput]] = defaultdict(list)
+        # Per (env_name, eval_step) arrival counter — independent of bucket
+        # size because process_group moves rollouts out of pending_groups.
+        self.batch_arrivals: dict[tuple[str, int], int] = defaultdict(int)
 
     # ── ingest ────────────────────────────────────────────────────────────
 
     def add(self, rollout: Rollout) -> EvalBatch | None:
-        """Run the per-rollout level (always), per-group level (on
-        ``is_group_done``), and per-batch level (on ``is_batch_done``).
-        Returns an ``EvalBatch`` when an env's epoch is complete.
+        """Process one arrival. Runs the per-rollout step always; finalizes
+        the per-example group on the ``group_size``-th arrival for the group,
+        and the per-env epoch when total arrivals reach the expected count.
+        Returns the ``EvalBatch`` when an env's epoch is complete.
         """
         assert rollout.kind == "eval", "EvalSink only handles eval rollouts"
         assert rollout.eval_step is not None, "eval Rollout missing eval_step"
         self.process_rollout(rollout)
         gkey = (rollout.env_name, rollout.example_id, rollout.eval_step)
+        bkey = (rollout.env_name, rollout.eval_step)
         self.pending_groups[gkey].append(rollout)
-        if rollout.is_group_done:
+        self.batch_arrivals[bkey] += 1
+        if len(self.pending_groups[gkey]) >= self.group_size_for(rollout.env_name):
             self.process_group(gkey)
-        if rollout.is_batch_done:
-            bkey = (rollout.env_name, rollout.eval_step)
+        if self.batch_arrivals[bkey] >= self.expected_for(rollout.env_name):
             return self.process_batch(bkey)
         return None
+
+    # ── helpers for sink-owned boundary detection ─────────────────────────
+
+    def group_size_for(self, env_name: str) -> int:
+        assert self.eval_envs is not None
+        return self.eval_envs.get(env_name).config.group_size
+
+    def expected_for(self, env_name: str) -> int:
+        """Total rollouts the sink expects for one epoch of ``env_name``."""
+        assert self.eval_envs is not None
+        env = self.eval_envs.get(env_name)
+        return len(env.examples) * env.config.group_size
 
     # ── level 1: per-rollout (no-op for eval) ─────────────────────────────
 
@@ -87,6 +109,7 @@ class EvalSink:
     def process_batch(self, key: tuple[str, int]) -> EvalBatch:
         env_name, step = key
         rollouts = self.pending_batches.pop(key, [])
+        self.batch_arrivals.pop(key, None)
         return EvalBatch(env_name=env_name, step=step, rollouts=rollouts)
 
     def build_metrics(self, batch: EvalBatch) -> dict[str, Any]:

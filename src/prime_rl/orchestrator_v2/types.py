@@ -18,7 +18,7 @@ Sections (in dependency order, but no module here imports another v2 module):
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Literal, Protocol
 
@@ -81,17 +81,17 @@ class SchedMode(Enum):
 class Rollout:
     """The atomic unit emitted by the dispatcher — one completed rollout.
 
-    Carries two boundary signals that sinks use to drive ``process_rollout``
-    (always) / ``process_group`` (on ``is_group_done``) / ``process_batch``
-    (on ``is_batch_done`` for eval, or sink-derived for train):
+    Invariant — every rollout the dispatcher acquires a semaphore permit for
+    eventually arrives at the corresponding sink exactly once, success or
+    failure. Group/batch boundaries are sink-derived by counting arrivals up
+    to ``group_size`` (and ``num_examples * group_size`` for eval epochs);
+    the dispatcher does not stamp boundary flags because "the last rollout
+    in a group" is whichever straggler happens to finish last — not knowable
+    at dispatch time.
 
-    - ``is_group_done``: last rollout of the ``(env, example_id)`` GRPO
-      group. Set for both train (last in GRPO group) and eval (last in
-      per-example group).
-    - ``is_batch_done``: last rollout of the natural "batch" unit. Set by
-      the dispatcher for eval (last rollout of the env's epoch). Always
-      ``False`` for train — the train sink determines batch boundaries
-      itself from the configured ``batch_size``/``token_batch_size``.
+    Failures (env-reported errors, empty trajectories, task exceptions,
+    off-policy cancellations) are carried via ``raw["error"]`` rather than
+    silently dropped. Sinks check that field to decide drop / partial-train.
 
     ``policy_version`` is the snapshot at dispatch time; the train sink
     uses it for per-rollout off-policy metrics. ``eval_step`` is set only
@@ -104,8 +104,6 @@ class Rollout:
     example_id: int
     raw: vf.RolloutOutput
     policy_version: int
-    is_group_done: bool
-    is_batch_done: bool
     eval_step: int | None = None
 
 
@@ -125,19 +123,25 @@ class RolloutMeta:
 
 @dataclass
 class GroupState:
-    """Accumulator for one rollout group across N independent ``run_rollout`` tasks.
+    """Per-group scheduling state for the dispatcher.
+
+    Tracks only what's needed to keep dispatching the remaining rollouts of
+    a group and to keep them pinned to the same inference client (for prefix-
+    cache hits). Completion accumulation lives in the sink, not here — each
+    finished rollout is emitted immediately by ``handle_completed_rollout``.
 
     For group-scoring envs ``rollouts_to_schedule`` collapses to 0 after the
-    single ``run_group`` task is queued; otherwise it's decremented per rollout.
+    single ``run_group`` task is queued; otherwise it's decremented per
+    rollout. The dispatcher drops the entry from ``self.groups`` once every
+    member has been emitted.
     """
 
     kind: Kind
     env_name: str
     example: dict
     rollouts_to_schedule: int
-    target_rollouts: int  # total rollouts expected for this group
-    completed_rollouts: list[vf.RolloutOutput] = field(default_factory=list)
-    failed_rollouts: int = 0
+    target_rollouts: int  # total rollouts the group will emit to the sink
+    emitted: int = 0  # # of rollouts emitted to ``out_q`` so far
     eval_step: int | None = None
     pinned_client: vf.ClientConfig | None = None
     policy_version_at_start: int = 0
