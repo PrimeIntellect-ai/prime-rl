@@ -289,6 +289,7 @@ W&B is off by default. Enable with `--wandb`:
 ```bash
 uv run rl @ rl.toml --wandb                               # default project, random name
 uv run rl @ rl.toml --wandb.project my-proj --wandb.name run-42
+uv run rl @ rl.toml --no-wandb                            # force-disable even if the TOML enables it
 ```
 
 The trainer and orchestrator log into a **single shared W&B run**, so all metrics from both processes land in one place. Shared mode requires the W&B SDK ≥ 0.19.9 and is incompatible with `wandb.offline = true`. The legacy split (two runs suffixed `-trainer` and `-orchestrator`, gated on `wandb.shared = false`) has been removed; the `shared` field is no longer accepted.
