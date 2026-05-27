@@ -489,7 +489,12 @@ async def orchestrate(config: OrchestratorConfig):
         # Process rollouts in parallel
         results = await asyncio.gather(
             *(
-                asyncio.to_thread(interleave_rollout, r, mm_token_type_ids_mapping=mm_token_type_ids_mapping)
+                asyncio.to_thread(
+                    interleave_rollout,
+                    r,
+                    mm_token_type_ids_mapping=mm_token_type_ids_mapping,
+                    renderer=renderer,
+                )
                 for r in train_rollouts
             )
         )
