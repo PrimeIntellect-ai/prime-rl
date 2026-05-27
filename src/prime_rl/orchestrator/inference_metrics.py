@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections import deque
 
@@ -98,7 +99,20 @@ class InferenceMetricsCollector:
         self._rate_history: dict[str, deque[float]] = {}
         self._prev_counters: dict[str, tuple[float, float]] = {}
         self._prev_histograms: dict[str, tuple[float, float, float]] = {}
+        self._server_gauge_history: dict[str, dict[str, deque[float]]] = {}
+        self._server_rate_history: dict[str, dict[str, deque[float]]] = {}
+        self._server_prev_counters: dict[str, dict[str, tuple[float, float]]] = {}
+        self._server_prev_histograms: dict[str, dict[str, tuple[float, float, float]]] = {}
+        self._server_names = [self._server_name(idx, client) for idx, client in enumerate(admin_clients)]
         self._task: asyncio.Task | None = None
+
+    @staticmethod
+    def _server_name(idx: int, client: AsyncClient) -> str:
+        host = client.base_url.host or f"server_{idx}"
+        port = client.base_url.port
+        raw = f"{host}_{port}" if port is not None else host
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("_")
+        return f"server_{idx:02d}_{safe or 'unknown'}"
 
     async def start(self):
         wandb.define_metric("inference/*", step_metric="_timestamp")
@@ -132,13 +146,16 @@ class InferenceMetricsCollector:
         agg_sum_gauges: dict[str, float] = {}
         agg_counters: dict[str, float] = {}
         agg_histograms: dict[str, tuple[float, float]] = {}
+        active_servers: set[str] = set()
         n_servers = 0
 
-        for text in results:
+        for server_name, text in zip(self._server_names, results, strict=True):
             if text is None:
                 continue
+            active_servers.add(server_name)
             n_servers += 1
             gauges, counters, histograms = parse_prometheus_text(text)
+            self._update_server_histories(server_name, now, gauges, counters, histograms)
 
             for name, value in gauges.items():
                 if name in _DUAL_AGG_GAUGES:
@@ -154,6 +171,7 @@ class InferenceMetricsCollector:
                 agg_histograms[name] = (prev[0] + h_sum, prev[1] + h_count)
 
         if n_servers == 0:
+            wandb.log({**self._server_up_metrics(active_servers), "_timestamp": time.time()})
             return
 
         # Update gauge history — sum gauges
@@ -221,10 +239,102 @@ class InferenceMetricsCollector:
         for rate_name, values in self._rate_history.items():
             if values:
                 metrics[f"inference/{rate_name}"] = sum(values) / len(values)
+        self._add_cache_alias_metrics(metrics)
+        metrics.update(self._server_metrics(active_servers))
+        metrics.update(self._server_up_metrics(active_servers))
 
         if metrics:
             metrics["_timestamp"] = time.time()
             wandb.log(metrics)
+
+    def _update_server_histories(
+        self,
+        server_name: str,
+        now: float,
+        gauges: dict[str, float],
+        counters: dict[str, float],
+        histograms: dict[str, tuple[float, float]],
+    ) -> None:
+        gauge_history = self._server_gauge_history.setdefault(server_name, {})
+        rate_history = self._server_rate_history.setdefault(server_name, {})
+        prev_counters = self._server_prev_counters.setdefault(server_name, {})
+        prev_histograms = self._server_prev_histograms.setdefault(server_name, {})
+
+        for name, value in gauges.items():
+            short = name.removeprefix("vllm:")
+            if name in _DUAL_AGG_GAUGES:
+                short = f"{short}_max"
+            gauge_history.setdefault(short, deque(maxlen=WINDOW_SIZE)).append(value)
+
+        for name, value in counters.items():
+            rate_name = COUNTER_RATE_NAMES[name]
+            prev = prev_counters.get(name)
+            prev_counters[name] = (now, value)
+            if prev is None:
+                continue
+            prev_time, prev_value = prev
+            dt = now - prev_time
+            if dt <= 0:
+                continue
+            delta = value - prev_value
+            if delta < 0:
+                continue
+            rate_history.setdefault(rate_name, deque(maxlen=WINDOW_SIZE)).append(delta / dt)
+
+        for name, (h_sum, h_count) in histograms.items():
+            short = name.removeprefix("vllm:")
+            rate_name = f"{short}_avg_ms"
+            prev = prev_histograms.get(name)
+            prev_histograms[name] = (now, h_sum, h_count)
+            if prev is None:
+                continue
+            _, prev_sum, prev_count = prev
+            d_sum = h_sum - prev_sum
+            d_count = h_count - prev_count
+            if d_count < 0 or d_sum < 0:
+                continue
+            if d_count > 0:
+                rate_history.setdefault(rate_name, deque(maxlen=WINDOW_SIZE)).append((d_sum / d_count) * 1000.0)
+
+    def _server_metrics(self, active_servers: set[str]) -> dict[str, float]:
+        metrics: dict[str, float] = {}
+        for server_name, gauge_history in self._server_gauge_history.items():
+            if server_name not in active_servers:
+                continue
+            for short, values in gauge_history.items():
+                if values:
+                    metrics[f"inference/server/{server_name}/{short}"] = sum(values) / len(values)
+        for server_name, rate_history in self._server_rate_history.items():
+            if server_name not in active_servers:
+                continue
+            for rate_name, values in rate_history.items():
+                if values:
+                    metrics[f"inference/server/{server_name}/{rate_name}"] = sum(values) / len(values)
+        self._add_cache_alias_metrics(metrics)
+        return metrics
+
+    def _server_up_metrics(self, active_servers: set[str]) -> dict[str, float]:
+        return {f"inference/server/{server_name}/up": float(server_name in active_servers) for server_name in self._server_names}
+
+    @classmethod
+    def _add_cache_alias_metrics(cls, metrics: dict[str, float]) -> None:
+        for key, value in list(metrics.items()):
+            if key.endswith("/gpu_prefix_cache_hit_rate_max"):
+                prefix = key.removesuffix("gpu_prefix_cache_hit_rate_max")
+                metrics[f"{prefix}kv_cache_hit_rate_max"] = value
+            elif key.endswith("/gpu_prefix_cache_hit_rate_mean"):
+                prefix = key.removesuffix("gpu_prefix_cache_hit_rate_mean")
+                metrics[f"{prefix}kv_cache_hit_rate_mean"] = value
+            elif key.endswith("/gpu_cache_usage_perc_max"):
+                prefix = key.removesuffix("gpu_cache_usage_perc_max")
+                metrics[f"{prefix}kv_cache_left_perc_min"] = cls._cache_left(value)
+            elif key.endswith("/gpu_cache_usage_perc_mean"):
+                prefix = key.removesuffix("gpu_cache_usage_perc_mean")
+                metrics[f"{prefix}kv_cache_left_perc_mean"] = cls._cache_left(value)
+
+    @staticmethod
+    def _cache_left(usage: float) -> float:
+        return min(max(1.0 - usage, 0.0), 1.0)
 
     async def stop(self):
         if self._task is not None:
