@@ -24,7 +24,6 @@ import asyncio
 import ctypes
 import os
 import time
-from typing import Any
 
 import tomli_w
 
@@ -37,19 +36,19 @@ from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
     monkey_patch_oai_iterable_types,
 )
-from prime_rl.orchestrator.utils import get_weight_dir, set_default_executor
-from prime_rl.orchestrator.vf_utils import intercept_vf_logging
+from prime_rl.orchestrator.trajectories import offload_images_to_disk
+from prime_rl.orchestrator.utils import compute_teacher_logprobs, get_weight_dir, set_default_executor
+from prime_rl.orchestrator.vf_utils import get_seq_len, intercept_vf_logging, save_rollouts
 from prime_rl.orchestrator_v2.ckpt import Progress, setup_ckpt_manager
 from prime_rl.orchestrator_v2.dispatcher import Rollout, RolloutDispatcher
-from prime_rl.orchestrator_v2.eval_sink import EvalFlush, EvalSink
+from prime_rl.orchestrator_v2.eval_sink import EvalBatchResult, EvalSink
 from prime_rl.orchestrator_v2.log_loop import IntervalLogger
 from prime_rl.orchestrator_v2.metrics import MetricsBuilder
 from prime_rl.orchestrator_v2.policy import Policy
-from prime_rl.orchestrator_v2.postprocessor import PostProcessor
 from prime_rl.orchestrator_v2.train_sink import TrainSink
 from prime_rl.orchestrator_v2.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
-from prime_rl.transport import setup_training_batch_sender
+from prime_rl.transport import TrainingBatch, setup_training_batch_sender
 from prime_rl.utils.async_utils import safe_cancel
 from prime_rl.utils.client import init_nccl_broadcast, setup_inference_pool
 from prime_rl.utils.heartbeat import Heartbeat
@@ -120,11 +119,9 @@ class Orchestrator:
         self.dispatcher: RolloutDispatcher | None = None
         self.train_sink: TrainSink | None = None
         self.eval_sink: EvalSink | None = None
-        self.postprocessor: PostProcessor | None = None
         self.metrics: MetricsBuilder | None = None
         self.watcher: WeightWatcher | None = None
         self.log_loop: IntervalLogger | None = None
-        self.post_filters = []
 
         # Background tasks for components with their own main loop.
         self.component_tasks: list[asyncio.Task] = []
@@ -198,7 +195,7 @@ class Orchestrator:
 
         # Filters — train-only by design (eval rollouts are never filtered).
         pre_filters = setup_filters(config.pre_batch_filters, vocab_size=self.tokenizer.vocab_size)
-        self.post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size)
+        post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size)
 
         # Envs.
         self.logger.info("Loading training environments")
@@ -293,23 +290,20 @@ class Orchestrator:
             policy=self.policy,
             resume_step=self.resume_step,
         )
+        self.metrics = MetricsBuilder(config)
         self.train_sink = TrainSink(
-            batch_size=config.batch_size,
-            token_batch_size=config.token_batch_size,
-            advantage_config=config.advantage,
-            pre_filters=pre_filters,
-        )
-        self.eval_sink = EvalSink()
-        self.postprocessor = PostProcessor(
             config,
             tokenizer=self.tokenizer,
             renderer=self.renderer,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
-            sender=self.sender,
-            teacher_inference=self.teacher_inference,
-            post_filters=self.post_filters,
+            batch_size=config.batch_size,
+            token_batch_size=config.token_batch_size,
+            advantage_config=config.advantage,
+            pre_filters=pre_filters,
+            post_filters=post_filters,
+            metrics_builder=self.metrics,
         )
-        self.metrics = MetricsBuilder(config)
+        self.eval_sink = EvalSink(eval_envs=self.eval_envs)
         self.watcher = WeightWatcher(
             config,
             policy=self.policy,
@@ -380,18 +374,16 @@ class Orchestrator:
 
     async def main_loop(self) -> None:
         """The pipeline driver. Consumes ``Rollout``\\ s from the dispatcher
-        (the atomic unit), routes train vs eval to their respective sinks,
-        and reacts to the sinks' flush signals:
+        (the atomic unit) and routes train vs eval to their respective sinks.
 
-        - Train sink signals ``batch_ready`` once a GRPO group's advantages
-          are computed and pre-filtered survivors fill the batch buffer.
-          That triggers a training step (``process_one_step``).
-        - Eval sink signals ``EvalFlush`` once an env's epoch is complete.
-          That triggers per-env eval-metric logging.
+        Both sinks have the same three-level processing structure
+        (``process_rollout`` / ``process_group`` / ``process_batch``); the
+        orchestrator only sees the top-level signal:
 
-        New policy versions are signalled separately by the watcher, which
-        runs as a background task and notifies the dispatcher via the
-        observer protocol — no main-loop handling needed.
+        - ``await train_sink.add(rollout) is True`` means the train batch
+          is now ready → ``process_one_step`` does ship + metrics-log + ckpt.
+        - ``eval_sink.add(rollout)`` returns an ``EvalBatchResult`` when an
+          env's epoch is complete → ``log_eval_batch`` writes monitor + disk.
         """
         assert self.dispatcher and self.train_sink and self.eval_sink
         while not self.stopped.is_set():
@@ -401,19 +393,22 @@ class Orchestrator:
                 continue
 
             if rollout.kind == "eval":
-                flush = self.eval_sink.add(rollout)
-                if flush is not None:
-                    self.flush_eval(flush)
+                result = self.eval_sink.add(rollout)
+                if result is not None:
+                    self.log_eval_batch(result)
                 continue
 
-            self.train_sink.add(rollout)
-            while self.train_sink.batch_ready() and not self.stopped.is_set():
+            batch_ready = await self.train_sink.add(rollout)
+            while batch_ready and not self.stopped.is_set():
                 await self.process_one_step()
+                batch_ready = self.train_sink.batch_ready()
 
     async def process_one_step(self) -> None:
-        """Drive one shipping step: ckpt save → max_steps check → pop → ship
-        → barrier wait → metrics + log → step++."""
-        assert self.train_sink and self.postprocessor and self.metrics and self.dispatcher and self.monitor
+        """Drive one shipping step. The train sink has done all per-rollout /
+        per-group / per-batch processing already; the orchestrator handles the
+        I/O concerns (ship to trainer, save rollouts, monitor log, heartbeat,
+        usage reporter, ckpt save, step++)."""
+        assert self.train_sink and self.metrics and self.dispatcher and self.monitor and self.sender
         config = self.config
         step = self.progress.step
 
@@ -427,44 +422,72 @@ class Orchestrator:
         self.logger.info(f"Starting orchestrator step {step}")
         step_start = time.perf_counter()
 
-        batch = self.train_sink.pop()
-        result = await self.postprocessor.process(batch, step)
-
-        if result.n_trainable == 0:
-            # No trainable signal in this batch — drop and try again. The
-            # dispatcher keeps emitting; eventually a batch will survive.
-            # Don't advance progress.step.
-            self.logger.warning(f"Step {step}: post-batch filters dropped all {len(batch)} rollouts. Trying again.")
-            return
-        if result.n_trainable / len(batch) <= 0.1:
-            self.logger.warning(
-                f"Only {result.n_trainable}/{len(batch)} rollouts in the batch are trainable "
-                f"({result.n_trainable / len(batch):.1%}) — consider reviewing task difficulty / filter config"
-            )
-
-        await self.wait_barrier(step)
-
-        # Per-step metrics.
-        step_time = time.perf_counter() - step_start
-        to_log = self.metrics.build(
+        # Pop the next ready batch off the train sink. ``pop_batch`` runs
+        # ``process_batch`` (post-filter + samples assembly + metrics build)
+        # internally and returns the ready-to-ship + ready-to-log result.
+        tbr = self.train_sink.pop_batch(
             step=step,
-            rollouts=batch,
-            result=result,
             progress=self.progress,
             dispatcher_gauges=self.dispatcher.gauges(),
             dispatcher_drain=self.dispatcher.drain_metrics(),
-            step_time=step_time,
+            step_time=0.0,  # overwritten after barrier wait
             save_ckpt_time=save_ckpt_time,
-            pre_filter_seen=self.train_sink.pre_filter_seen,
-            pre_filter_dropped=self.train_sink.pre_filter_dropped,
-            pre_filter_dropped_by_name=dict(self.train_sink.pre_filter_dropped_by_name),
         )
-        self.monitor.log(to_log, step=step)
-        self.monitor.log_samples(batch, step=step)
+
+        if tbr.result.n_trainable == 0:
+            self.logger.warning(
+                f"Step {step}: post-batch filters dropped all {len(tbr.rollouts)} rollouts. Trying again."
+            )
+            return
+        if tbr.result.n_trainable / len(tbr.rollouts) <= 0.1:
+            self.logger.warning(
+                f"Only {tbr.result.n_trainable}/{len(tbr.rollouts)} rollouts in the batch are trainable "
+                f"({tbr.result.n_trainable / len(tbr.rollouts):.1%}) — consider reviewing task difficulty / filter config"
+            )
+
+        # Persist rollouts to disk (cheap, background thread).
+        step_path = get_step_path(get_rollout_dir(config.output_dir), step)
+        await asyncio.to_thread(
+            save_rollouts, tbr.rollouts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
+        )
+
+        # Offload base64 image bytes to disk for memory hygiene (no-op for text-only).
+        offload_start = time.perf_counter()
+        num_offloaded = offload_images_to_disk(tbr.rollouts, config.output_dir)
+        if num_offloaded:
+            self.logger.info(
+                f"Offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
+            )
+
+        # Teacher logprobs (opd only).
+        teacher_logprobs_time = 0.0
+        if config.training_mode == "opd" and self.teacher_inference is not None:
+            assert config.teacher is not None
+            t = time.perf_counter()
+            teacher_logprobs_list = await compute_teacher_logprobs(
+                clients=self.teacher_inference.train_clients,
+                model_name=config.teacher.model.name,
+                samples=tbr.samples,
+            )
+            for ex, lp in zip(tbr.samples, teacher_logprobs_list):
+                ex.teacher_logprobs = lp
+            teacher_logprobs_time = time.perf_counter() - t
+
+        await self.wait_barrier(step)
+
+        # Ship to trainer.
+        await self.sender.send(TrainingBatch(examples=tbr.samples, step=step))
+
+        # Patch in the post-barrier numbers and ship metrics.
+        step_time = time.perf_counter() - step_start
+        tbr.metrics["time/step"] = step_time
+        tbr.metrics["time/teacher_logprobs"] = teacher_logprobs_time
+        self.monitor.log(tbr.metrics, step=step)
+        self.monitor.log_samples(tbr.rollouts, step=step)
         self.monitor.log_distributions(
             distributions={
-                "rewards": [r["reward"] for r in batch],
-                "advantages": [r["advantage"] for r in batch],
+                "rewards": [r["reward"] for r in tbr.rollouts],
+                "advantages": [r["advantage"] for r in tbr.rollouts],
             },
             step=step,
         )
@@ -475,26 +498,24 @@ class Orchestrator:
                 self.usage_reporter.report_training_usage(
                     run_id=run_id,
                     step=step,
-                    tokens=result.num_prefill_tokens + result.num_decode_tokens,
+                    tokens=tbr.result.num_prefill_tokens + tbr.result.num_decode_tokens,
                 )
         if self.heart is not None:
             self.heart.beat()
 
-        # Update progress totals + counters.
-        num_rollouts = len(batch)
-        num_unique_examples = len({(r["env_name"], r["example_id"]) for r in batch})
-        from prime_rl.orchestrator.vf_utils import get_seq_len
-
-        num_tokens = sum(get_seq_len(r) for r in batch)
+        # Update progress totals.
+        num_rollouts = len(tbr.rollouts)
+        num_unique_examples = len({(r["env_name"], r["example_id"]) for r in tbr.rollouts})
+        num_tokens = sum(get_seq_len(r) for r in tbr.rollouts)
         self.progress.total_tokens += num_tokens
         self.progress.total_samples += num_rollouts
         self.progress.total_problems += num_unique_examples
 
-        reward_mean = float(sum(r["reward"] for r in batch) / max(num_rollouts, 1))
+        reward_mean = float(sum(r["reward"] for r in tbr.rollouts) / max(num_rollouts, 1))
         self.logger.success(
             f"Step {step} | Time: {step_time:.2f}s | Reward: {reward_mean:.4f} | "
             f"Seq. Length: {num_tokens / max(num_rollouts, 1):.1f} tokens/sample | "
-            f"Trainable: {result.n_trainable}/{num_rollouts} | "
+            f"Trainable: {tbr.result.n_trainable}/{num_rollouts} | "
             f"Async Level: {step - self.policy.version} | "
             f"Max. Off-Policy Level: {self.dispatcher.max_off_policy_level}"
         )
@@ -502,72 +523,33 @@ class Orchestrator:
         self.train_sink.reset_pre_filter_stats()
         self.progress.step += 1
 
-    def flush_eval(self, flush: EvalFlush) -> None:
-        """Log per-env eval metrics for one completed epoch. Pure side-effect
-        method — reads from the ``EvalFlush`` payload and writes to monitor.
-
-        No filters applied (eval is unfiltered by design); pass@k computed
-        when the env's reward set is binary.
-        """
-        from prime_rl.orchestrator.eval_utils import compute_pass_at_k
-        from prime_rl.orchestrator.vf_utils import get_seq_len, save_rollouts
-
-        env_name = flush.env_name
-        eval_step = flush.eval_step
-        rollouts = flush.rollouts
-        if not rollouts:
-            self.logger.warning(f"Eval @ step={eval_step} env={env_name}: no surviving rollouts, skipping log")
+    def log_eval_batch(self, result: EvalBatchResult) -> None:
+        """Persist + log one completed eval epoch. The metrics dict is already
+        built by ``EvalSink.process_batch``; this method just handles the
+        side effects: save_rollouts to disk, monitor.log_eval_samples,
+        monitor.log."""
+        if not result.rollouts:
+            self.logger.warning(
+                f"Eval @ step={result.eval_step} env={result.env_name}: no surviving rollouts, skipping log"
+            )
             return
 
-        rewards = [r.get("reward", 0.0) for r in rollouts]
-        lens = [get_seq_len(r) for r in rollouts]
-        no_response_rate = sum(1 for r in rollouts if not r.get("completion")) / len(rollouts)
-        truncation_rate = sum(1 for r in rollouts if r.get("is_truncated")) / len(rollouts)
-        group_size = 1
-        if self.eval_envs is not None:
-            try:
-                group_size = self.eval_envs.get(env_name).config.group_size
-            except KeyError:
-                pass
-
-        prefix = f"eval/{env_name}"
-        to_log: dict[str, Any] = {
-            "step": eval_step,
-            f"{prefix}/avg@{group_size}": float(sum(rewards) / len(rewards)),
-            f"{prefix}/reward/mean": float(sum(rewards) / len(rewards)),
-            f"{prefix}/completion_len/mean": float(sum(lens) / len(lens)),
-            f"{prefix}/completion_len/max": float(max(lens)),
-            f"{prefix}/completion_len/min": float(min(lens)),
-            f"{prefix}/is_truncated/mean": float(truncation_rate),
-            f"{prefix}/no_response/mean": float(no_response_rate),
-            f"{prefix}/n_rollouts": float(len(rollouts)),
-        }
-
-        # pass@k for binary-reward envs. We need per-example rollout groups,
-        # which we reconstruct from ``example_id``.
-        by_example: dict[int, list[float]] = {}
-        for r in rollouts:
-            by_example.setdefault(r["example_id"], []).append(float(r.get("reward", 0.0)))
-        to_log[f"{prefix}/n_examples"] = float(len(by_example))
-        unique_rewards = {float(r) for r in rewards}
-        if unique_rewards.issubset({0.0, 1.0}) and by_example:
-            pass_at_k_per_example = [compute_pass_at_k(rs) for rs in by_example.values()]
-            keys = set().union(*(d.keys() for d in pass_at_k_per_example))
-            for k in keys:
-                values = [d.get(k, 0.0) for d in pass_at_k_per_example]
-                to_log[f"{prefix}/{k}"] = float(sum(values) / len(values))
-
-        step_path = get_step_path(get_rollout_dir(self.config.output_dir), eval_step)
-        save_rollouts(rollouts, step_path / f"eval_rollouts_{env_name}.jsonl", exclude_keys={"trajectory"})
+        step_path = get_step_path(get_rollout_dir(self.config.output_dir), result.eval_step)
+        save_rollouts(
+            result.rollouts,
+            step_path / f"eval_rollouts_{result.env_name}.jsonl",
+            exclude_keys={"trajectory"},
+        )
         assert self.monitor is not None
-        self.monitor.log_eval_samples(rollouts, env_name=env_name, step=eval_step)
-        self.monitor.log(to_log, step=eval_step)
-        self.progress.last_eval_step = eval_step
+        self.monitor.log_eval_samples(result.rollouts, env_name=result.env_name, step=result.eval_step)
+        self.monitor.log(result.metrics, step=result.eval_step)
+        self.progress.last_eval_step = result.eval_step
 
+        n_examples = len({r["example_id"] for r in result.rollouts})
+        reward_mean = result.metrics.get(f"eval/{result.env_name}/reward/mean", float("nan"))
         self.logger.success(
-            f"Eval @ step={eval_step} env={env_name} | "
-            f"Reward: {to_log[f'{prefix}/reward/mean']:.4f} | "
-            f"Rollouts: {len(rollouts)} | Examples: {len(by_example)}"
+            f"Eval @ step={result.eval_step} env={result.env_name} | "
+            f"Reward: {reward_mean:.4f} | Rollouts: {len(result.rollouts)} | Examples: {n_examples}"
         )
 
     async def maybe_save_ckpt(self, step: int) -> float:

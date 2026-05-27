@@ -1,14 +1,16 @@
 """MetricsBuilder: assembles the per-step W&B metrics dict.
 
 Single responsibility. Takes the rollout cohort (post-filter annotated), the
-``ProcessResult`` from the post-processor, and a few orchestrator scalars
-(step, step_time, dispatcher gauges); returns the dict the monitor logs.
+``ProcessResult`` from the train sink's per-batch hook, and a few
+orchestrator scalars (step, step_time, dispatcher gauges); returns the dict
+the monitor logs.
 
 Pure-ish — only state is the config. No I/O, no side effects.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
@@ -17,7 +19,23 @@ import verifiers as vf
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.vf_utils import get_seq_len
 from prime_rl.orchestrator_v2.ckpt import Progress
-from prime_rl.orchestrator_v2.postprocessor import ProcessResult
+
+
+@dataclass
+class ProcessResult:
+    """Per-batch stats the metrics builder reads. Produced by
+    ``TrainSink.process_batch`` and handed back to the orchestrator (which
+    forwards it to ``MetricsBuilder.build``)."""
+
+    n_trainable: int
+    num_prefill_tokens: int
+    num_decode_tokens: int
+    rollout_prefill_lens: list[int]
+    rollout_decode_lens: list[int]
+    samples_per_rollout: list[int]
+    parallel_preprocess_time: float
+    teacher_logprobs_time: float
+    samples_shipped: int
 
 
 class MetricsBuilder:

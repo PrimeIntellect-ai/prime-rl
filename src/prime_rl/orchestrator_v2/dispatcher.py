@@ -58,19 +58,21 @@ class SchedMode(Enum):
 class Rollout:
     """The atomic unit emitted by the dispatcher — one completed rollout.
 
-    Sinks group these by their relevant grouping unit (``(env, example_id)``
-    for train, ``(env, eval_step)`` for eval) and trigger flush operations
-    on ``is_group_complete=True``.
+    Carries two boundary signals that sinks use to drive ``process_rollout``
+    (always) / ``process_group`` (on ``is_group_done``) / ``process_batch``
+    (on ``is_batch_done`` for eval, or sink-derived for train):
 
-    For train, "group complete" means the GRPO group is done — the train
-    sink computes advantages on the surviving rollouts at that point.
+    - ``is_group_done``: last rollout of the ``(env, example_id)`` GRPO
+      group. Set for both train (last in GRPO group) and eval (last in
+      per-example group).
+    - ``is_batch_done``: last rollout of the natural "batch" unit. Set by
+      the dispatcher for eval (last rollout of the env's epoch). Always
+      ``False`` for train — the train sink determines batch boundaries
+      itself from the configured ``batch_size``/``token_batch_size``.
 
-    For eval, "group complete" means the env's eval epoch has emitted (or
-    dropped) all expected rollouts — the eval sink flushes per-env metrics.
-
-    ``policy_version`` is the snapshot at dispatch time; the train sink uses
-    it for per-rollout off-policy metrics. ``eval_step`` is set only for
-    eval rollouts (the policy version at which the eval epoch was
+    ``policy_version`` is the snapshot at dispatch time; the train sink
+    uses it for per-rollout off-policy metrics. ``eval_step`` is set only
+    for eval rollouts (the policy version at which the eval epoch was
     triggered).
     """
 
@@ -79,7 +81,8 @@ class Rollout:
     example_id: int
     raw: vf.RolloutOutput
     policy_version: int
-    is_group_complete: bool
+    is_group_done: bool
+    is_batch_done: bool
     eval_step: int | None = None
 
 
@@ -744,33 +747,32 @@ class RolloutDispatcher:
         await self.emit_group(group, example_id)
 
     async def emit_group(self, group: "GroupState", example_id: int) -> None:
-        """Emit each surviving rollout to ``out_q``. The last one in the
-        emission gets ``is_group_complete=True`` so the sink finalizes:
+        """Emit each surviving rollout to ``out_q`` with the two boundary
+        signals (``is_group_done``, ``is_batch_done``) the sinks consume.
 
-        - For train, the GRPO group is complete and the sink will compute
-          advantages + apply pre-filters on the next ``add()``.
-        - For eval, the env's epoch reaches its expected count and the
-          sink will flush per-env metrics.
+        - ``is_group_done`` is set on the last rollout of every emitted
+          ``(env, example_id)`` group — both train (GRPO group) and eval
+          (per-example group).
+        - ``is_batch_done`` is set on the last rollout of an eval epoch
+          (when ``emitted + dropped == expected`` for the ``(env, eval_step)``
+          key). Always ``False`` for train; the train sink decides batch
+          boundaries from its configured ``batch_size``.
         """
         rollouts = group.completed_rollouts
         for i, raw in enumerate(rollouts):
             is_last_of_emission = i == len(rollouts) - 1
+            is_group_done = is_last_of_emission
 
-            if group.kind == "train":
-                # Train: "group" = (env, example_id). Last rollout of the GRPO
-                # group triggers sink finalization.
-                is_group_complete = is_last_of_emission
-            else:
-                # Eval: "group" = (env, eval_step). The sink flushes when the
-                # env's epoch has emitted+dropped all expected rollouts. Track
-                # cumulative emit count and flag only the very last expected.
+            if group.kind == "eval":
                 assert group.eval_step is not None
                 key = (group.env_name, group.eval_step)
                 self.eval_emitted_per_env[key] += 1
                 expected = self.eval_expected_per_env.get(key, 0)
                 emitted = self.eval_emitted_per_env[key]
                 dropped = self.eval_dropped_per_env[key]
-                is_group_complete = emitted + dropped >= expected and is_last_of_emission
+                is_batch_done = is_last_of_emission and emitted + dropped >= expected
+            else:
+                is_batch_done = False
 
             await self.out_q.put(
                 Rollout(
@@ -779,7 +781,8 @@ class RolloutDispatcher:
                     example_id=example_id,
                     raw=raw,
                     policy_version=group.policy_version_at_start,
-                    is_group_complete=is_group_complete,
+                    is_group_done=is_group_done,
+                    is_batch_done=is_batch_done,
                     eval_step=group.eval_step,
                 )
             )
