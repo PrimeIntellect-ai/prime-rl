@@ -37,7 +37,7 @@ Namespaces are one honking great idea -- let's do more of those!
 
 ## Docs
 
-- **Docs reflect `main`, not history**: `docs/` describes the current state of the codebase only. Don't mention removed/legacy fields, migration paths, or "this used to be X" anecdotes — `CHANGELOG.md` is where breaking changes get documented. When you remove or rename something, also strip any docs sentence that explains the old behavior.
+- **Docs reflect `main`, not history**: `docs/` describes the current state of the codebase only. Don't mention removed/legacy fields, migration paths, or "this used to be X" anecdotes.
 
 ## Skills
 
