@@ -516,8 +516,6 @@ class Orchestrator:
             rollouts=batch.rollouts,
             metrics=batch.metrics,
             progress=self.progress,
-            dispatcher_gauges=self.dispatcher.gauges(),
-            dispatcher_drain=self.dispatcher.drain_metrics(),
             step_time=step_time,
             save_ckpt_time=save_ckpt_time,
             teacher_logprobs_time=teacher_logprobs_time,

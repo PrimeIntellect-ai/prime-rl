@@ -31,8 +31,6 @@ class MetricsBuilder:
         rollouts: list[vf.RolloutOutput],
         metrics: TrainBatchMetrics,
         progress: Progress,
-        dispatcher_gauges: dict[str, float],
-        dispatcher_drain: dict[str, float],
         step_time: float,
         save_ckpt_time: float,
         teacher_logprobs_time: float,
@@ -172,10 +170,12 @@ class MetricsBuilder:
             for name in filter_df.columns:
                 to_log[f"filters/{env}/{name}"] = env_filter_df[name].astype(float).mean()
 
-        # Dispatcher gauges + drained counters.
-        to_log.update(dispatcher_gauges)
-        to_log.update(dispatcher_drain)
-
+        # Dispatcher gauges + drain counters DO NOT belong here. They live
+        # on the wandb ``_timestamp`` axis via the dispatcher's own
+        # ``PeriodicLogger`` so the step-axis dict only carries per-batch /
+        # step-aligned metrics. Mixing axes for the same metric key would
+        # confuse wandb (define_metric only supports one step axis per
+        # key).
         if pre_filter_seen > 0:
             to_log["pre_filters/all/dropped_rate"] = pre_filter_dropped / pre_filter_seen
             for name, count in pre_filter_dropped_by_name.items():

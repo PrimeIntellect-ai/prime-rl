@@ -115,11 +115,15 @@ class RolloutDispatcher:
         self.metrics = DispatcherMetrics()
 
         # Dispatcher-owned periodic logger. Started in ``start()``, stopped
-        # in ``stop()`` — same lifecycle as the dispatch loop itself.
+        # in ``stop()`` — same lifecycle as the dispatch loop itself. The
+        # snapshot merges instantaneous gauges with per-poll drain
+        # counters; drained() flushes (clears the drain on read), so this
+        # is the only thing that resets them. Metric keys for both are
+        # enumerated up front.
         self.periodic_logger = PeriodicLogger(
             name="dispatcher",
-            snapshot=self.gauges,
-            metric_keys=list(self.gauges().keys()),
+            snapshot=self.snapshot,
+            metric_keys=list(self.gauges().keys()) + list(DispatcherMetrics.DRAIN_KEYS),
             interval=log_interval,
             wandb_enabled=wandb_enabled,
         )
@@ -597,7 +601,7 @@ class RolloutDispatcher:
     # ── metrics ────────────────────────────────────────────────────────────
 
     def gauges(self) -> dict[str, float]:
-        """Instantaneous gauges sampled by ``IntervalLogger``. Read-only."""
+        """Instantaneous, read-only gauges sampled by the periodic logger."""
         return {
             "dispatcher/inflight_train": float(self.inflight_train_count),
             "dispatcher/inflight_eval": float(self.inflight_eval_count),
@@ -612,10 +616,11 @@ class RolloutDispatcher:
             "dispatcher/eval_epochs_started": float(self.metrics.eval_epochs_started),
         }
 
-    def drain_metrics(self) -> dict[str, float]:
-        """Per-poll drain counters (cancellations, errors, etc) — delegated
-        to ``DispatcherMetrics.drained`` which clears them on read. Also
-        merges in the inference pool's own drained metrics."""
-        out = self.metrics.drained()
-        out.update(self.inference.get_metrics())
-        return out
+    def snapshot(self) -> dict[str, float]:
+        """Single source of periodic-logger truth: gauges + drain counters.
+
+        ``DispatcherMetrics.drained`` clears its counters on read, so this
+        method is exactly what the periodic logger should call once per
+        tick — anywhere else calling it would steal the drain interval.
+        """
+        return {**self.gauges(), **self.metrics.drained()}

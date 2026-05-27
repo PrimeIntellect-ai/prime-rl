@@ -297,25 +297,29 @@ class DispatcherMetrics:
     def record_arrivals(self, env_name: str, n: int) -> None:
         self.total_rollouts_by_env[env_name] += n
 
-    def drained(self) -> dict[str, float]:
-        """Return current drain counters as wandb-shaped metrics + clear them.
+    DRAIN_KEYS: tuple[str, ...] = (
+        "dispatcher/cancelled_train_rollouts",
+        "dispatcher/cancelled_eval_rollouts",
+        "dispatcher/empty_rollouts_total",
+        "dispatcher/errored_rollouts_total",
+        "dispatcher/total_rollouts",
+    )
 
-        Gauges (live snapshots like ``inflight_*``) are reported separately by
-        the dispatcher's ``gauges()`` — those don't need reset semantics.
+    def drained(self) -> dict[str, float]:
+        """Return per-poll drain counters with a fixed key set + clear them.
+
+        Per-env / per-error-type breakdowns intentionally don't appear here
+        — the periodic logger pre-registers the wandb keys it'll emit at
+        init time, so the drain shape must be static. The step-aligned
+        ``MetricsBuilder`` covers per-env breakdowns on the step axis.
         """
         out: dict[str, float] = {
             "dispatcher/cancelled_train_rollouts": float(self.cancelled_train_rollouts),
             "dispatcher/cancelled_eval_rollouts": float(self.cancelled_eval_rollouts),
+            "dispatcher/empty_rollouts_total": float(sum(self.empty_rollouts_by_env.values())),
+            "dispatcher/errored_rollouts_total": float(sum(self.errored_rollouts_by_env.values())),
+            "dispatcher/total_rollouts": float(sum(self.total_rollouts_by_env.values())),
         }
-        for env, total in self.total_rollouts_by_env.items():
-            errored = self.errored_rollouts_by_env.get(env, 0)
-            empty = self.empty_rollouts_by_env.get(env, 0)
-            if total > 0:
-                out[f"rollouts/{env}/errored_rate"] = errored / total
-                out[f"rollouts/{env}/empty_rate"] = empty / total
-        for err_type, count in self.errors_by_type.items():
-            out[f"errors/{err_type}"] = float(count)
-
         self.cancelled_train_rollouts = 0
         self.cancelled_eval_rollouts = 0
         self.empty_rollouts_by_env.clear()
