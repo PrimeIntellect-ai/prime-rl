@@ -1,7 +1,7 @@
 """TrainSink: three-level rollout sink for the training side.
 
 Each rollout passes through three processing levels, each defined by a
-``process_*`` method on the sink:
+``process_*`` method on the sink (same shape as ``EvalSink``):
 
 1. ``process_rollout(rollout)`` — runs on every ``add()``. Eager
    tokenization (``backfill_rollout_tokens`` + ``interleave_rollout``), so
@@ -13,16 +13,16 @@ Each rollout passes through three processing levels, each defined by a
    for ``(env, example_id)``. Filters out errored rollouts (and drops the
    whole group when the env ``requires_group_scoring`` and any rollout in
    the group failed); computes advantages over survivors; runs the
-   pre-batch filter pass.
-3. ``process_batch(cohort)`` — runs when the survivor buffer reaches
-   ``batch_size`` (or ``token_batch_size`` tokens). Applies post-batch
-   filter annotations and assembles the trainer-bound ``TrainingSample``
-   list. Returns a ``TrainBatch`` (raw cohort + samples + counters).
+   pre-batch filter pass; appends survivors to ``pending_batch``.
+3. ``process_batch()`` — runs when ``pending_batch`` has enough rollouts
+   (``batch_size`` rollouts or ``token_batch_size`` tokens). Pops a cohort,
+   applies post-batch filter annotations, and assembles the trainer-bound
+   ``TrainingSample`` list. Returns a ``TrainBatch``.
 
-The sink owns the boundary signals: ``add()`` returns True iff a full
-batch is ready, and ``is_batch_done()`` re-checks after each pop. The
-dispatcher emits every dispatched rollout (success or error) exactly once
-so the count-based finalization always fires.
+``add()`` returns ``TrainBatch | None`` directly (mirrors ``EvalSink.add``);
+no separate ``pop_batch`` / ``is_batch_done`` API needed. The dispatcher
+emits every dispatched rollout (success or error) exactly once so the
+count-based finalization always fires.
 
 I/O concerns (ship to trainer, save_rollouts to disk, offload images,
 teacher_logprobs for opd, metrics build, monitor.log) live on the
@@ -81,15 +81,16 @@ class TrainSink:
         self.pre_filters = pre_filters
         self.post_filters = post_filters
         self.group_size = config.group_size
-        self.logger = get_logger()
 
         # In-progress GRPO groups keyed by (env_name, example_id). The sink
         # finalizes a group once ``len(pending_groups[key]) == group_size``
         # — works because the dispatcher emits every dispatched rollout
         # (success or error) exactly once.
         self.pending_groups: dict[tuple[str, int], list[Rollout]] = defaultdict(list)
-        # Survivors of the pre-filter pass — waiting to ship.
-        self.batch_buf: list[vf.RolloutOutput] = []
+        # Survivors of the pre-filter pass — waiting to ship. Singular
+        # because train has one batch in flight at a time (unlike eval,
+        # which can have multiple ``(env, eval_step)`` epochs in parallel).
+        self.pending_batch: list[vf.RolloutOutput] = []
 
         # Per-batch pre-filter detection counters; reset by the orchestrator
         # after each ship via ``reset_pre_filter_stats``.
@@ -99,18 +100,27 @@ class TrainSink:
 
     # ── ingest ────────────────────────────────────────────────────────────
 
-    async def add(self, rollout: Rollout) -> bool:
+    async def add(self, rollout: Rollout) -> TrainBatch | None:
         """Process one arrival. Runs the per-rollout step always; finalizes
-        the group on the ``group_size``-th arrival. Returns True iff the
-        survivor buffer has reached the batch threshold (so the orchestrator
-        should call ``pop_batch``)."""
+        the group on the ``group_size``-th arrival; returns a ``TrainBatch``
+        if that arrival brought ``pending_batch`` to the batch threshold."""
         assert rollout.kind == "train", "TrainSink only handles train rollouts"
         await self.process_rollout(rollout)
         key = (rollout.env_name, rollout.example_id)
         self.pending_groups[key].append(rollout)
         if len(self.pending_groups[key]) >= self.group_size:
             self.process_group(key)
-        return self.is_batch_done()
+        # Mirror ``EvalSink.add``: trigger ``process_batch`` once the buffer
+        # has reached the configured rollout/token threshold, otherwise
+        # return None and wait for more arrivals.
+        ready = (
+            len(self.pending_batch) >= self.batch_size
+            if self.batch_size is not None
+            else sum(get_seq_len(r) for r in self.pending_batch) >= (self.token_batch_size or 0)
+        )
+        if ready:
+            return self.process_batch()
+        return None
 
     # ── level 1: per-rollout (tokenization) ───────────────────────────────
 
@@ -142,7 +152,7 @@ class TrainSink:
         whole group when ``requires_group_scoring`` is set and any failed),
         compute advantages over survivors, propagate them onto the per-
         rollout ``TrainingSample``\\ s, then run the pre-batch filter pass.
-        Survivors (not filtered) land in ``batch_buf``.
+        Survivors (not filtered) land in ``pending_batch``.
         """
         env_name, _example_id = key
         group = self.pending_groups.pop(key, [])
@@ -156,15 +166,15 @@ class TrainSink:
         # rewards unsafe (computed relative to the missing ones). Drop.
         env = self.train_envs.get(env_name)
         if num_errored > 0 and env.requires_group_scoring:
-            self.logger.warning(
+            get_logger().warning(
                 f"Dropping group-scored train group ({env_name}) — {num_errored}/{len(all_raws)} rollouts failed"
             )
             return
         if not survivors:
-            self.logger.warning(f"Dropping train group ({env_name}) — all {len(all_raws)} rollouts failed")
+            get_logger().warning(f"Dropping train group ({env_name}) — all {len(all_raws)} rollouts failed")
             return
         if num_errored > 0:
-            self.logger.warning(
+            get_logger().warning(
                 f"Partial train group ({env_name}) — {len(survivors)}/{len(all_raws)} survived ({num_errored} failed)"
             )
 
@@ -199,44 +209,31 @@ class TrainSink:
             # Reset annotations so the post-batch filter pass starts clean.
             raw["filters"] = {}
             raw["is_filtered"] = False
-            self.batch_buf.append(raw)
+            self.pending_batch.append(raw)
 
     # ── level 3: per-batch (post-filter + samples assembly) ───────────────
 
-    def is_batch_done(self) -> bool:
-        """True iff the survivor buffer has reached ``batch_size`` rollouts
-        (or ``token_batch_size`` tokens)."""
+    def process_batch(self) -> TrainBatch:
+        """Pop a cohort off ``pending_batch`` (by rollout count when
+        ``batch_size`` is set, by token count when ``token_batch_size`` is
+        set), apply post-batch filter annotations, and assemble the trainer-
+        bound ``TrainingSample`` list from already-tokenized rollouts. Any
+        overflow stays in ``pending_batch`` for the next batch."""
         if self.batch_size is not None:
-            return len(self.batch_buf) >= self.batch_size
-        assert self.token_batch_size is not None
-        return sum(get_seq_len(r) for r in self.batch_buf) >= self.token_batch_size
+            cohort = self.pending_batch[: self.batch_size]
+            self.pending_batch = self.pending_batch[self.batch_size :]
+        else:
+            assert self.token_batch_size is not None
+            cut = 0
+            running = 0
+            for i, r in enumerate(self.pending_batch):
+                running += get_seq_len(r)
+                cut = i + 1
+                if running >= self.token_batch_size:
+                    break
+            cohort = self.pending_batch[:cut]
+            self.pending_batch = self.pending_batch[cut:]
 
-    def pop_batch(self) -> TrainBatch:
-        """Pop a batch off the survivors buffer and run ``process_batch`` on it."""
-        cohort = self.pop_cohort()
-        return self.process_batch(cohort)
-
-    def pop_cohort(self) -> list[vf.RolloutOutput]:
-        if self.batch_size is not None:
-            cohort = self.batch_buf[: self.batch_size]
-            self.batch_buf = self.batch_buf[self.batch_size :]
-            return cohort
-        assert self.token_batch_size is not None
-        cut = 0
-        running = 0
-        for i, r in enumerate(self.batch_buf):
-            running += get_seq_len(r)
-            cut = i + 1
-            if running >= self.token_batch_size:
-                break
-        cohort = self.batch_buf[:cut]
-        self.batch_buf = self.batch_buf[cut:]
-        return cohort
-
-    def process_batch(self, cohort: list[vf.RolloutOutput]) -> TrainBatch:
-        """Apply post-batch filters (annotation only) and assemble the trainer-
-        bound ``TrainingSample`` list from already-tokenized rollouts.
-        """
         if self.post_filters:
             apply_filters(self.post_filters, cohort)
         else:

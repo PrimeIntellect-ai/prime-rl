@@ -46,7 +46,7 @@ from prime_rl.orchestrator.patches import (
 from prime_rl.orchestrator.sources import EvalSource, TrainSource
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.trajectories import offload_images_to_disk
-from prime_rl.orchestrator.types import EvalBatch, Policy, Progress, Rollout, SchedMode
+from prime_rl.orchestrator.types import EvalBatch, Policy, Progress, Rollout, SchedMode, TrainBatch
 from prime_rl.orchestrator.utils import compute_teacher_logprobs, get_weight_dir, set_default_executor
 from prime_rl.orchestrator.vf_utils import get_seq_len, intercept_vf_logging, save_rollouts
 from prime_rl.orchestrator.watcher import WeightWatcher
@@ -326,7 +326,7 @@ class Orchestrator:
             pre_filters=pre_filters,
             post_filters=post_filters,
         )
-        self.eval_sink = EvalSink(eval_envs=self.eval_envs)
+        self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         self.watcher = WeightWatcher(
             config,
             policy=self.policy,
@@ -405,10 +405,10 @@ class Orchestrator:
 
         Both sinks own their own batch-boundary detection by counting
         arrivals up to ``group_size`` (and ``num_examples * group_size`` for
-        eval epochs); their ``add()`` return values signal "batch ready"
-        directly, so the orchestrator doesn't peek at any rollout flag.
+        eval epochs); both ``add()`` return a finalized batch (or ``None``)
+        directly, so the orchestrator just dispatches on the result.
         """
-        assert self.dispatcher and self.train_sink and self.eval_sink
+        assert self.dispatcher and self.train_sink
         while not self.stopped.is_set():
             try:
                 rollout: Rollout = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
@@ -416,19 +416,17 @@ class Orchestrator:
                 continue
 
             if rollout.kind == "eval":
+                assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
                 eval_batch = self.eval_sink.add(rollout)
                 if eval_batch is not None:
                     self.log_eval_batch(eval_batch)
                 continue
 
-            batch_ready = await self.train_sink.add(rollout)
-            while batch_ready and not self.stopped.is_set():
-                await self.process_one_step()
-                # Another batch may have accumulated while we were processing
-                # this one; keep popping until the buffer is below threshold.
-                batch_ready = self.train_sink.is_batch_done()
+            train_batch = await self.train_sink.add(rollout)
+            if train_batch is not None and not self.stopped.is_set():
+                await self.process_one_step(train_batch)
 
-    async def process_one_step(self) -> None:
+    async def process_one_step(self, batch: TrainBatch) -> None:
         """Drive one shipping step. The train sink has done all per-rollout /
         per-group / per-batch processing already; the orchestrator handles the
         I/O concerns (ship to trainer, save rollouts, monitor log, heartbeat,
@@ -446,11 +444,6 @@ class Orchestrator:
 
         self.logger.info(f"Starting orchestrator step {step}")
         step_start = time.perf_counter()
-
-        # Pop the next ready batch off the train sink. ``pop_batch`` returns
-        # the raw cohort + the trainer-bound samples + per-rollout counters;
-        # metrics are built at log time below with the final timings.
-        batch = self.train_sink.pop_batch()
 
         if batch.result.n_trainable == 0:
             self.logger.warning(

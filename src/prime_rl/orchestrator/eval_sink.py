@@ -39,9 +39,13 @@ from prime_rl.orchestrator.vf_utils import get_seq_len
 
 
 class EvalSink:
-    """Three-level eval sink. Constructed once, fed via ``add(rollout)``."""
+    """Three-level eval sink. Constructed once, fed via ``add(rollout)``.
 
-    def __init__(self, *, eval_envs: EvalEnvs | None) -> None:
+    Construct only when eval is configured — the orchestrator gates this on
+    ``config.eval is not None`` so ``eval_envs`` is always present here.
+    """
+
+    def __init__(self, *, eval_envs: EvalEnvs) -> None:
         self.eval_envs = eval_envs
         # Per (env_name, example_id, eval_step) accumulation — finalized
         # into the batch bucket when arrivals reach ``group_size``.
@@ -75,13 +79,11 @@ class EvalSink:
     # ── helpers for sink-owned boundary detection ─────────────────────────
 
     def group_size_for(self, env_name: str) -> int:
-        assert self.eval_envs is not None
         return self.eval_envs.get(env_name).config.group_size
 
     def batch_size_for(self, env_name: str) -> int:
         """Total rollouts the sink expects for one epoch of ``env_name``
         (= ``num_examples * group_size``)."""
-        assert self.eval_envs is not None
         env = self.eval_envs.get(env_name)
         return len(env.examples) * env.config.group_size
 
@@ -138,7 +140,7 @@ class EvalSink:
             lens = [get_seq_len(r) for r in valid]
             no_response_rate = sum(1 for r in valid if not r.get("completion")) / len(valid)
             truncation_rate = sum(1 for r in valid if r.get("is_truncated")) / len(valid)
-            group_size = self.group_size_for(env_name) if self.eval_envs is not None else 1
+            group_size = self.group_size_for(env_name)
             to_log.update(
                 {
                     f"{prefix}/avg@{group_size}": float(sum(rewards) / len(rewards)),
