@@ -3,10 +3,10 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
+from renderers import RendererConfig
 
 from prime_rl.configs.shared import (
     HeartbeatConfig,
-    RendererConfig,
     SlurmConfig,
     TrainerLogConfig,
     WandbConfig,
@@ -175,11 +175,13 @@ class SFTConfig(BaseConfig):
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
-    renderer: RendererConfig = RendererConfig()
-    """Client-side renderer configuration. Only consumed when ``use_renderer=true``."""
-
-    use_renderer: bool = False
-    """Tokenize SFT samples through the ``renderers`` library (single ``render()`` + ``message_indices`` mask) instead of the default ``build_incremental_token_mask`` path. Required for chat templates that render position-dependently (e.g. Qwen3, Qwen3.5)."""
+    renderer: RendererConfig | None = None
+    """Typed renderer config (``renderers.RendererConfig`` discriminated
+    union). When set, SFT tokenizes samples through the ``renderers``
+    library (single ``render()`` + ``message_indices`` mask) instead of
+    the default ``build_incremental_token_mask`` path. Required for chat
+    templates that render position-dependently (e.g. Qwen3, Qwen3.5).
+    ``None`` (default) uses the legacy tokenization path."""
 
     data: DataConfig = SFTDataConfig()
 
@@ -319,56 +321,10 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_renderer_vs_vlm(self):
-        if self.use_renderer and self.model.vlm is not None:
+        if self.renderer is not None and self.model.vlm is not None:
             raise ValueError(
-                "use_renderer is not supported for VLMs. The renderer tokenizes "
+                "renderer is not supported for VLMs in SFT. The renderer tokenizes "
                 "text-only message dicts client-side and cannot handle image inputs."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def validate_renderer_args(self):
-        # pool_size is orchestrator-only. An in-process renderer pool exists
-        # to amortize tokenization across concurrent rollouts in the
-        # orchestrator (many async requests render at once, HF fast
-        # tokenizers release the GIL during Rust encoding, so a pool of N
-        # tokenizer copies parallelizes well). SFT has no such concurrency:
-        # the StatefulDataLoader is constructed with num_workers=0, so the
-        # main process tokenizes one example at a time, between training
-        # steps. Across DP, each rank already owns its own renderer — an
-        # implicit pool of size world_size. Pooling within a rank gives
-        # nothing on top of that. Reject so callers don't silently set a
-        # knob that does nothing; if SFT tokenization ever becomes a
-        # bottleneck the fix is num_workers on the dataloader, not a pool.
-        if self.renderer.pool_size is not None:
-            raise ValueError(
-                f"renderer.pool_size={self.renderer.pool_size!r} is only used by the orchestrator. "
-                "SFT tokenizes synchronously (num_workers=0) and already gets one renderer per DP "
-                "rank — an in-process pool adds nothing. If tokenization is a bottleneck, raise "
-                "num_workers on the dataloader instead."
-            )
-
-        if self.use_renderer:
-            return self
-
-        renderer_args_set = []
-        if self.renderer.name != "auto":
-            renderer_args_set.append(f"renderer.name={self.renderer.name!r}")
-        if self.renderer.tool_parser is not None:
-            renderer_args_set.append(f"renderer.tool_parser={self.renderer.tool_parser!r}")
-        if self.renderer.reasoning_parser is not None:
-            renderer_args_set.append(f"renderer.reasoning_parser={self.renderer.reasoning_parser!r}")
-        if self.renderer.preserve_all_thinking:
-            renderer_args_set.append(f"renderer.preserve_all_thinking={self.renderer.preserve_all_thinking!r}")
-        if self.renderer.preserve_thinking_between_tool_calls:
-            renderer_args_set.append(
-                f"renderer.preserve_thinking_between_tool_calls={self.renderer.preserve_thinking_between_tool_calls!r}"
-            )
-
-        if renderer_args_set:
-            raise ValueError(
-                "Renderer-specific args set without use_renderer=True: "
-                f"{', '.join(renderer_args_set)}. Either enable the renderer or remove these knobs."
             )
         return self
 

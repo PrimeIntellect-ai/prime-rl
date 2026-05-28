@@ -419,11 +419,14 @@ def test_elastic_clients_preserve_renderer_model_name_when_model_name_updates():
         client_config.extra_headers_from_state = {}
         client_config.dp_rank_count = 1
 
+        from renderers import Qwen3VLRendererConfig
+
+        renderer_settings = Qwen3VLRendererConfig()
         pool = ElasticInferencePool(
             client_config=client_config,
             model_name="Qwen/Qwen3-VL-4B-Instruct",
             train_client_type="renderer",
-            renderer_name="qwen3_vl",
+            renderer_config=renderer_settings,
         )
         pool._servers = {
             "10.0.0.1": MagicMock(status="ready"),
@@ -436,7 +439,7 @@ def test_elastic_clients_preserve_renderer_model_name_when_model_name_updates():
             vf.ClientConfig(
                 client_idx=0,
                 client_type="renderer",
-                renderer="qwen3_vl",
+                renderer_config=renderer_settings,
                 renderer_model_name="Qwen/Qwen3-VL-4B-Instruct",
                 api_key_var="PRIME_API_KEY",
                 api_base_url="http://10.0.0.1:8000/v1",

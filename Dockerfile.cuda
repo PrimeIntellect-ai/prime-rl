@@ -18,11 +18,41 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
 RUN apt-get update && apt-get install -y --no-install-recommends --force-yes \
     build-essential \
+    autoconf \
+    automake \
+    libtool \
+    pkg-config \
+    ca-certificates \
     curl \
     sudo \
     git \
     ninja-build \
+    libnuma-dev \
+    libnl-3-dev \
+    libnl-route-3-dev \
+    libibverbs-dev \
+    librdmacm-dev \
     && apt-get clean autoclean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+ARG UCX_VERSION=1.19.1
+RUN git clone --depth 1 --branch v${UCX_VERSION} https://github.com/openucx/ucx.git /tmp/ucx \
+    && cd /tmp/ucx \
+    && ./autogen.sh \
+    && ./configure \
+        --prefix=/opt/ucx \
+        --enable-shared \
+        --disable-static \
+        --disable-doxygen-doc \
+        --enable-optimizations \
+        --enable-cma \
+        --enable-devel-headers \
+        --enable-mt \
+        --with-verbs \
+        --with-cuda=/usr/local/cuda \
+        --with-ze=no \
+    && make -j"$(nproc)" \
+    && make install \
+    && rm -rf /tmp/ucx
 
 # Download the latest installer
 ADD https://astral.sh/uv/install.sh /uv-installer.sh
@@ -49,7 +79,7 @@ COPY examples /app/examples
 COPY benchmarks/scripts /app/benchmarks/scripts
 
 RUN --mount=type=cache,target=/app/.cache/uv \
-    uv sync --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra envs --extra gpt-oss --group mamba-ssm --locked --no-dev
+    uv sync --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra envs --extra gpt-oss --extra modelexpress --group mamba-ssm --locked --no-dev
 
 # arm64: build flash-attn from source, fix namespace conflicts, apply workarounds
 ARG TARGETARCH
@@ -74,8 +104,12 @@ RUN apt-get update && apt-get install -y \
     net-tools \
     curl \
     vim \
+    libnuma1 \
+    libnl-3-200 \
+    libnl-route-3-200 \
     libibverbs1 \
     ibverbs-providers \
+    librdmacm1 \
     && apt-get clean autoclean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
@@ -96,6 +130,7 @@ ENV PATH="/usr/local/bin:$PATH"
 WORKDIR /app
 # Copy the application from the builder
 COPY --from=builder --chown=appuser:appuser /app /app
+COPY --from=builder /opt/ucx /opt/ucx
 
 # Copy and set up entrypoint script
 COPY --chown=appuser:appuser scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
@@ -107,6 +142,8 @@ RUN rm /app/.venv/bin/python3.12 && ln -s /usr/local/bin/python /app/.venv/bin/p
 
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"
+ENV UCX_HOME=/opt/ucx
+ENV LD_LIBRARY_PATH="/opt/ucx/lib:/opt/ucx/lib/ucx${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
 # HuggingFace Hub timeouts (defaults are 10s which causes issues on slow networks)
 ENV HF_HUB_ETAG_TIMEOUT=500

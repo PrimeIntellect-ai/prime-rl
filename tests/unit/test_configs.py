@@ -1,3 +1,4 @@
+import tomllib
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -33,9 +34,19 @@ def get_config_files() -> list[Path]:
     return config_files + example_files
 
 
+def is_eval_config(path: Path) -> bool:
+    """vf-eval TOMLs live under configs but are not prime-rl entrypoint configs."""
+    with path.open("rb") as f:
+        data = tomllib.load(f)
+    return isinstance(data.get("eval"), list)
+
+
 @pytest.mark.parametrize("config_file", get_config_files(), ids=lambda x: x.as_posix())
 def test_load_configs(config_file: Path):
     """Tests that all config files can be loaded by at least one config class."""
+    if is_eval_config(config_file):
+        pytest.skip("vf-eval TOML files are not prime-rl entrypoint configs")
+
     could_parse = []
     for config_cls in CONFIG_CLASSES:
         try:
@@ -157,18 +168,20 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
-def test_orchestrator_vlm_configs_must_disable_renderer():
-    with pytest.raises(ValidationError, match="orchestrator.use_renderer is not supported for VLMs"):
+def test_orchestrator_vlm_requires_renderer():
+    with pytest.raises(ValidationError, match="orchestrator.renderer must be set when model.vlm is set"):
         OrchestratorConfig.model_validate(
             {
                 "student": {
                     "model": {
+                        "name": "Qwen/Qwen3-VL-4B-Instruct",
                         "vlm": {
                             "vision_encoder_attr": "model.visual",
                             "language_model_attr": "model.language_model",
-                        }
+                        },
                     }
-                }
+                },
+                "renderer": None,
             }
         )
 
@@ -176,17 +189,17 @@ def test_orchestrator_vlm_configs_must_disable_renderer():
         {
             "student": {
                 "model": {
+                    "name": "Qwen/Qwen3-VL-4B-Instruct",
                     "vlm": {
                         "vision_encoder_attr": "model.visual",
                         "language_model_attr": "model.language_model",
-                    }
+                    },
                 }
             },
-            "use_renderer": False,
         }
     )
 
-    assert config.use_renderer is False
+    assert config.renderer is not None
 
 
 def test_selective_activation_checkpointing_requires_custom_impl():
@@ -200,7 +213,7 @@ def test_shared_model_name_propagates_to_subconfigs():
         {
             "model": {"name": model_name},
             "trainer": {},
-            "orchestrator": {"use_renderer": False},
+            "orchestrator": {"renderer": None},
             "inference": {},
         }
     )
@@ -217,7 +230,7 @@ def test_shared_tokenizer_propagates_when_subconfigs_unset():
             "model": {"name": "my-model"},
             "tokenizer": {"name": "my-tokenizer"},
             "trainer": {},
-            "orchestrator": {"use_renderer": False},
+            "orchestrator": {"renderer": None},
         }
     )
     assert config.trainer.tokenizer.name == "my-tokenizer"
@@ -234,7 +247,7 @@ def test_shared_and_sub_tokenizer_name_conflict_raises():
                 "model": {"name": "my-model"},
                 "tokenizer": {"name": "shared-tok"},
                 "trainer": {"tokenizer": {"name": "trainer-tok"}},
-                "orchestrator": {"use_renderer": False},
+                "orchestrator": {"renderer": None},
             }
         )
 
@@ -245,7 +258,7 @@ def test_tokenizer_name_falls_back_to_model_name_when_unset():
             "model": {"name": "my-model"},
             "tokenizer": {"trust_remote_code": True},
             "trainer": {},
-            "orchestrator": {"use_renderer": False},
+            "orchestrator": {"renderer": None},
         }
     )
     assert config.trainer.tokenizer.name == "my-model"
@@ -273,7 +286,7 @@ def test_explicit_subconfig_tokenizer_name_survives_shared_model_propagation():
             "model": {"name": "M"},
             "trainer": {},
             "orchestrator": {
-                "use_renderer": False,
+                "renderer": None,
                 "tokenizer": {"name": "explicit-orch-tok"},
             },
         }
@@ -292,7 +305,7 @@ def test_tokenizer_chat_template_mismatch_raises():
         RLConfig.model_validate(
             {
                 "trainer": {"tokenizer": {"chat_template": "A"}},
-                "orchestrator": {"use_renderer": False, "tokenizer": {"chat_template": "B"}},
+                "orchestrator": {"renderer": None, "tokenizer": {"chat_template": "B"}},
             }
         )
 
@@ -302,7 +315,7 @@ def test_shared_seq_len_propagates_to_subconfigs():
         {
             "seq_len": 4096,
             "trainer": {},
-            "orchestrator": {"use_renderer": False},
+            "orchestrator": {"renderer": None},
         }
     )
     assert config.trainer.model.seq_len == 4096
@@ -318,7 +331,7 @@ def test_shared_and_sub_seq_len_conflict_raises():
             {
                 "seq_len": 4096,
                 "trainer": {"model": {"seq_len": 8192}},
-                "orchestrator": {"use_renderer": False},
+                "orchestrator": {"renderer": None},
             }
         )
 
@@ -330,7 +343,7 @@ def test_shared_and_sub_model_name_conflict_raises():
             {
                 "model": {"name": "X"},
                 "trainer": {"model": {"name": "Y"}},
-                "orchestrator": {"use_renderer": False},
+                "orchestrator": {"renderer": None},
             }
         )
 
@@ -342,7 +355,7 @@ def test_shared_and_sub_max_steps_conflict_raises():
             {
                 "max_steps": 100,
                 "trainer": {},
-                "orchestrator": {"use_renderer": False, "max_steps": 200},
+                "orchestrator": {"renderer": None, "max_steps": 200},
             }
         )
 
@@ -357,7 +370,7 @@ def test_trainer_chat_template_cascades_to_inference():
         {
             "model": {"name": "Qwen/Qwen3-0.6B"},
             "trainer": {"tokenizer": {"chat_template": "TPL"}},
-            "orchestrator": {"use_renderer": False, "tokenizer": {"chat_template": "TPL"}},
+            "orchestrator": {"renderer": None, "tokenizer": {"chat_template": "TPL"}},
             "inference": {},
         }
     )
@@ -368,31 +381,32 @@ def test_trainer_chat_template_cascades_to_inference():
 
 
 def test_shared_wandb_fields_propagate_to_subconfigs():
-    """Every ``SharedWandbConfig`` leaf (project, entity, group, tags, offline)
-    propagates to both trainer.wandb and orchestrator.wandb, not just project
-    and offline. Regression for a miss in the inline propagator."""
+    """Every ``SharedWandbConfig`` leaf (project, entity, name, group, tags,
+    offline) propagates to both trainer.wandb and orchestrator.wandb. Regression
+    for a miss in the inline propagator."""
     config = RLConfig.model_validate(
         {
             "model": {"name": "Qwen/Qwen3-0.6B"},
             "wandb": {
                 "project": "shared-proj",
                 "entity": "shared-entity",
+                "name": "shared-name",
                 "group": "shared-group",
                 "tags": ["a", "b"],
-                "shared": False,
-                "offline": True,
+                "offline": False,
             },
             "trainer": {},
-            "orchestrator": {"use_renderer": False},
+            "orchestrator": {"renderer": None},
         }
     )
     for component in (config.trainer.wandb, config.orchestrator.wandb):
         assert component is not None
         assert component.project == "shared-proj"
         assert component.entity == "shared-entity"
+        assert component.name == "shared-name"
         assert component.group == "shared-group"
         assert component.tags == ["a", "b"]
-        assert component.offline is True
+        assert component.offline is False
 
 
 def test_empty_shared_ckpt_block_does_not_conflict_with_subconfig_ckpt():
@@ -402,7 +416,7 @@ def test_empty_shared_ckpt_block_does_not_conflict_with_subconfig_ckpt():
         {
             "ckpt": {},  # empty block, no field set
             "trainer": {"ckpt": {"interval": 50}},
-            "orchestrator": {"use_renderer": False, "ckpt": {"interval": 50}},
+            "orchestrator": {"renderer": None, "ckpt": {"interval": 50}},
         }
     )
     assert config.trainer.ckpt is not None
@@ -416,7 +430,7 @@ def test_shared_and_subconfig_disjoint_fields_coexist():
         {
             "model": {"name": "Qwen/Qwen3-0.6B"},
             "trainer": {"model": {"impl": "custom"}},
-            "orchestrator": {"use_renderer": False},
+            "orchestrator": {"renderer": None},
         }
     )
     assert config.trainer.model.name == "Qwen/Qwen3-0.6B"
@@ -433,7 +447,7 @@ def test_shared_output_dir_propagates_through_cli(tmp_path):
             "seq_len": 128,
             "model": {"name": "Qwen/Qwen3-0.6B"},
             "trainer": {},
-            "orchestrator": {"batch_size": 16, "rollouts_per_example": 1},
+            "orchestrator": {"batch_size": 16, "group_size": 1},
             "inference": {},
         },
     )
@@ -444,7 +458,7 @@ def test_shared_output_dir_propagates_through_cli(tmp_path):
 
 
 def test_orchestrator_renderer_auto_rejects_unmapped_model():
-    """use_renderer=True with renderer.name='auto' must reject models not in MODEL_RENDERER_MAP."""
+    """Default ``renderer`` (AutoRendererConfig) must reject models not in MODEL_RENDERER_MAP."""
     with pytest.raises(ValidationError, match="silently fall back to DefaultRenderer"):
         OrchestratorConfig.model_validate({"model": {"name": "not-a-real-org/not-a-real-model"}})
 
@@ -452,7 +466,7 @@ def test_orchestrator_renderer_auto_rejects_unmapped_model():
 def test_orchestrator_renderer_auto_accepts_mapped_model():
     """The default Qwen model is in MODEL_RENDERER_MAP and should validate cleanly."""
     config = OrchestratorConfig.model_validate({"model": {"name": "Qwen/Qwen3-0.6B"}})
-    assert config.use_renderer is True
+    assert config.renderer is not None
     assert config.renderer.name == "auto"
 
 
@@ -464,18 +478,19 @@ def test_orchestrator_explicit_renderer_skips_unmapped_check():
             "renderer": {"name": "qwen3"},
         }
     )
+    assert config.renderer is not None
     assert config.renderer.name == "qwen3"
 
 
-def test_orchestrator_use_renderer_false_skips_unmapped_check():
-    """use_renderer=False means the renderer client isn't used, so MODEL_RENDERER_MAP doesn't apply."""
+def test_orchestrator_renderer_none_skips_unmapped_check():
+    """renderer=None (MITO mode) means the renderer client isn't used, so MODEL_RENDERER_MAP doesn't apply."""
     config = OrchestratorConfig.model_validate(
         {
             "model": {"name": "not-a-real-org/not-a-real-model"},
-            "use_renderer": False,
+            "renderer": None,
         }
     )
-    assert config.use_renderer is False
+    assert config.renderer is None
 
 
 def test_orchestrator_explicit_default_renderer_with_unmapped_model():
@@ -486,6 +501,7 @@ def test_orchestrator_explicit_default_renderer_with_unmapped_model():
             "renderer": {"name": "default", "tool_parser": "qwen3"},
         }
     )
+    assert config.renderer is not None
     assert config.renderer.name == "default"
     assert config.renderer.tool_parser == "qwen3"
 
@@ -499,7 +515,7 @@ def test_shared_model_name_resolves_inference_parsers():
         {
             "model": {"name": "Qwen/Qwen3-Coder-30B-A3B-Instruct"},
             "trainer": {},
-            "orchestrator": {"use_renderer": False},
+            "orchestrator": {"renderer": None},
             "inference": {},
         }
     )
@@ -515,7 +531,7 @@ def test_explicit_inference_parser_wins_over_auto():
         {
             "model": {"name": "Qwen/Qwen3-Coder-30B-A3B-Instruct"},
             "trainer": {},
-            "orchestrator": {"use_renderer": False},
+            "orchestrator": {"renderer": None},
             "inference": {"model": {"tool_call_parser": "hermes"}},
         }
     )
