@@ -75,61 +75,69 @@ class DispatcherMetrics:
     since. Point-in-time gauges (mode, inflight, off-policy levels) live
     on ``RolloutDispatcher.gauges`` directly — they don't reset and
     don't belong here.
+
+    Tracks rollouts per-(kind, env) so ``drained()`` can emit both
+    kind-aggregate (``dispatcher/cancelled/train``,
+    ``dispatcher/cancelled/eval``) and per-env breakdowns
+    (``dispatcher/cancelled/<env>``) with stable keys.
     """
 
-    cancelled_train_rollouts: int = 0
-    cancelled_eval_rollouts: int = 0
-    empty_rollouts_by_env: dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    errored_rollouts_by_env: dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    errors_by_type: dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    total_rollouts_by_env: dict[str, int] = field(default_factory=lambda: defaultdict(int))
-
-    def record_cancellation(self, *, kind: Literal["train", "eval"], n: int) -> None:
-        if kind == "train":
-            self.cancelled_train_rollouts += n
-        else:
-            self.cancelled_eval_rollouts += n
-
-    def record_error(self, env_name: str, error_type: str) -> None:
-        self.errored_rollouts_by_env[env_name] += 1
-        self.errors_by_type[error_type] += 1
-
-    def record_empty(self, env_name: str) -> None:
-        self.empty_rollouts_by_env[env_name] += 1
-
-    def record_arrivals(self, env_name: str, n: int) -> None:
-        self.total_rollouts_by_env[env_name] += n
-
-    DRAIN_KEYS: tuple[str, ...] = (
-        "dispatcher/cancelled_train_rollouts",
-        "dispatcher/cancelled_eval_rollouts",
-        "dispatcher/empty_rollouts_total",
-        "dispatcher/errored_rollouts_total",
-        "dispatcher/total_rollouts",
+    cancelled_by_kind_env: dict[tuple[Literal["train", "eval"], str], int] = field(
+        default_factory=lambda: defaultdict(int)
+    )
+    errored_by_kind_env: dict[tuple[Literal["train", "eval"], str], int] = field(
+        default_factory=lambda: defaultdict(int)
     )
 
-    def drained(self) -> dict[str, float]:
-        """Return per-poll drain counters with a fixed key set + clear them.
+    def record_cancellation(self, *, kind: Literal["train", "eval"], env_name: str, n: int = 1) -> None:
+        self.cancelled_by_kind_env[(kind, env_name)] += n
 
-        Per-env / per-error-type breakdowns intentionally don't appear here
-        — the periodic logger pre-registers the wandb keys it'll emit at
-        init time, so the drain shape must be static. The step-aligned
-        ``MetricsBuilder`` covers per-env breakdowns on the step axis.
+    def record_error(self, *, kind: Literal["train", "eval"], env_name: str) -> None:
+        """Record one errored rollout. ``EmptyTrajectory`` is treated as a
+        regular error (no special bucket)."""
+        self.errored_by_kind_env[(kind, env_name)] += 1
+
+    def drained(self, *, train_envs: set[str], eval_envs: set[str]) -> dict[str, float]:
+        """Return per-poll drain counters with stable keys + clear them.
+
+        The pre-registered key set is built from the known env names
+        (passed in by the orchestrator at construction); ``drained``
+        emits all of them every tick — zero when no activity — so the
+        wandb time axis stays dense and ``define_metric`` registrations
+        line up.
         """
-        out: dict[str, float] = {
-            "dispatcher/cancelled_train_rollouts": float(self.cancelled_train_rollouts),
-            "dispatcher/cancelled_eval_rollouts": float(self.cancelled_eval_rollouts),
-            "dispatcher/empty_rollouts_total": float(sum(self.empty_rollouts_by_env.values())),
-            "dispatcher/errored_rollouts_total": float(sum(self.errored_rollouts_by_env.values())),
-            "dispatcher/total_rollouts": float(sum(self.total_rollouts_by_env.values())),
-        }
-        self.cancelled_train_rollouts = 0
-        self.cancelled_eval_rollouts = 0
-        self.empty_rollouts_by_env.clear()
-        self.errored_rollouts_by_env.clear()
-        self.errors_by_type.clear()
-        self.total_rollouts_by_env.clear()
+        out: dict[str, float] = {}
+        for kind in ("train", "eval"):
+            envs = train_envs if kind == "train" else eval_envs
+            cancelled_total = sum(self.cancelled_by_kind_env.get((kind, e), 0) for e in envs)
+            errored_total = sum(self.errored_by_kind_env.get((kind, e), 0) for e in envs)
+            out[f"dispatcher/cancelled/{kind}"] = float(cancelled_total)
+            out[f"dispatcher/errored/{kind}"] = float(errored_total)
+        for env in train_envs | eval_envs:
+            out[f"dispatcher/cancelled/{env}"] = float(
+                self.cancelled_by_kind_env.get(("train", env), 0) + self.cancelled_by_kind_env.get(("eval", env), 0)
+            )
+            out[f"dispatcher/errored/{env}"] = float(
+                self.errored_by_kind_env.get(("train", env), 0) + self.errored_by_kind_env.get(("eval", env), 0)
+            )
+        self.cancelled_by_kind_env.clear()
+        self.errored_by_kind_env.clear()
         return out
+
+    @staticmethod
+    def drain_keys(*, train_envs: set[str], eval_envs: set[str]) -> list[str]:
+        """Pre-register the full key set for the periodic logger's
+        ``wandb.define_metric`` calls."""
+        keys = [
+            "dispatcher/cancelled/train",
+            "dispatcher/cancelled/eval",
+            "dispatcher/errored/train",
+            "dispatcher/errored/eval",
+        ]
+        for env in train_envs | eval_envs:
+            keys.append(f"dispatcher/cancelled/{env}")
+            keys.append(f"dispatcher/errored/{env}")
+        return keys
 
 
 class RolloutDispatcher:
@@ -325,7 +333,6 @@ class RolloutDispatcher:
         for kind in ("train", "eval"):
             n = cancelled_by_kind[kind]
             if n:
-                self.metrics.record_cancellation(kind=kind, n=n)
                 get_logger().warning(
                     f"Cancelled {n} {kind} rollouts past max_off_policy_steps={self.max_off_policy_steps}. "
                     "Consider increasing it to avoid this."
@@ -578,22 +585,21 @@ class RolloutDispatcher:
             ]
             is_synth_exception = True
 
-        self.metrics.record_arrivals(meta.env_name, len(rollouts))
-
         for r in rollouts:
             if r.get("error") is None and len(r.get("trajectory") or []) == 0:
                 # Empty trajectory: promote to an explicit error so the sink
-                # can filter it uniformly with other failures.
+                # can filter it uniformly with other failures. Counted as a
+                # regular error (``EmptyTrajectory`` as the error type) — no
+                # separate metric.
                 r["error"] = {
                     "error": "EmptyTrajectory",
                     "error_chain_repr": "Rollout returned with no trajectory steps",
                     "error_chain_str": "",
                 }
-                self.metrics.record_empty(meta.env_name)
                 get_logger().warning(f"Empty trajectory in group {meta.group_id} ({meta.env_name})")
             if r.get("error") is not None:
                 err_type = r["error"].get("error", "Unknown")
-                self.metrics.record_error(meta.env_name, err_type)
+                self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
                 if not is_synth_exception:
                     get_logger().warning(
                         f"Rollout failed in group {meta.group_id} ({meta.env_name}) — "
@@ -740,6 +746,7 @@ class RolloutDispatcher:
                 else None
             )
             if meta_for_log is not None:
+                self.metrics.record_cancellation(kind=meta_for_log.kind, env_name=meta_for_log.env_name, n=cancelled)
                 get_logger().debug(
                     f"drain {meta_for_log.kind} | group={str(group_id)[:8]} env={meta_for_log.env_name} | "
                     f"cancelled={cancelled} (inflight={inflight_cancelled} unscheduled={unscheduled_cancelled})"
@@ -755,14 +762,10 @@ class RolloutDispatcher:
         Doesn't emit markers — sinks are being torn down anyway and would
         just discard them.
         """
-        cancelled_by_kind: dict[Kind, int] = {"train": 0, "eval": 0}
         for meta in self.inflight.values():
-            cancelled_by_kind[meta.kind] += meta.rollout_count
+            self.metrics.record_cancellation(kind=meta.kind, env_name=meta.env_name, n=meta.rollout_count)
             self.release(meta.rollout_count)
         tasks = list(self.inflight.keys())
-        for kind in ("train", "eval"):
-            if cancelled_by_kind[kind]:
-                self.metrics.record_cancellation(kind=kind, n=cancelled_by_kind[kind])
         self.inflight.clear()
         self.groups.clear()
         if tasks:
@@ -787,13 +790,12 @@ class RolloutDispatcher:
                 continue
             self.inflight.pop(task, None)
             self.release(meta.rollout_count)
+            self.metrics.record_cancellation(kind="train", env_name=meta.env_name, n=meta.rollout_count)
             cancelled += meta.rollout_count
             train_tasks.append(task)
             train_group_ids.add(meta.group_id)
         for gid in train_group_ids:
             self.groups.pop(gid, None)
-        if cancelled:
-            self.metrics.record_cancellation(kind="train", n=cancelled)
         if train_tasks:
             await safe_cancel_all(train_tasks)
         return cancelled
@@ -805,9 +807,7 @@ class RolloutDispatcher:
         return {
             "dispatcher/inflight_train": float(self.inflight_train_count),
             "dispatcher/inflight_eval": float(self.inflight_eval_count),
-            "dispatcher/inflight_permits": float(self.inflight_permits),
-            "dispatcher/available_permits": float(self.available_permits),
-            "dispatcher/queued_eval_examples": float(self.queued_eval_examples),
+            "dispatcher/queued/eval": float(self.queued_eval_examples),
             "dispatcher/mode": float(self.mode == DispatcherMode.PREFER_EVAL),
             "dispatcher/groups_in_flight": float(len(self.groups)),
             "dispatcher/off_policy_level_max": float(self.max_off_policy_level),

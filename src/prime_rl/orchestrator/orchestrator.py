@@ -447,7 +447,10 @@ class Orchestrator:
             collect=self.collect_pipeline_view,
             metric_keys=[
                 *list(self.dispatcher.gauges().keys()),
-                *list(DispatcherMetrics.DRAIN_KEYS),
+                *DispatcherMetrics.drain_keys(
+                    train_envs={e.name for e in self.train_envs},
+                    eval_envs={e.name for e in self.eval_envs} if self.eval_envs is not None else set(),
+                ),
                 *list(self.watcher.gauges().keys()),
                 "event_loop_lag/min",
                 "event_loop_lag/mean",
@@ -741,7 +744,10 @@ class Orchestrator:
         drain counters on the periodic axis.
         """
         disp_gauges = self.dispatcher.gauges()
-        disp_drain = self.dispatcher.metrics.drained()
+        disp_drain = self.dispatcher.metrics.drained(
+            train_envs={e.name for e in self.train_envs},
+            eval_envs={e.name for e in self.eval_envs} if self.eval_envs is not None else set(),
+        )
         watcher_gauges = self.watcher.gauges()
         lag_stats = EventLoopLagStats.from_monitor(self.lag_monitor)
 
