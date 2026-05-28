@@ -154,7 +154,7 @@ class LogConfig(BaseConfig):
     log_data: bool = False
     """Log the first data sample at startup."""
 
-    interval: float = Field(5.0, gt=0)
+    interval: float = Field(10.0, gt=0)
     """Interval (seconds) shared across every async component's
     ``PeriodicLogger`` — dispatcher gauges (in-flight counts, off-policy
     levels, permits availability), watcher state (policy version, weight-
