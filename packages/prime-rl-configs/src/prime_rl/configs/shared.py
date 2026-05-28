@@ -155,11 +155,7 @@ class LogConfig(BaseConfig):
     """Log the first data sample at startup."""
 
     interval: float = Field(10.0, gt=0)
-    """Interval (seconds) shared across every async component's
-    ``PeriodicLogger`` — dispatcher gauges (in-flight counts, off-policy
-    levels, permits availability), watcher state (policy version, weight-
-    update latency), and orchestrator event-loop lag all sample on this
-    cadence and emit on the wandb ``_timestamp`` axis."""
+    """Interval (seconds) for periodic logs across components."""
 
 
 class TrainerLogConfig(LogConfig):
