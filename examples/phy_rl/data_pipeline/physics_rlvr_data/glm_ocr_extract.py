@@ -135,7 +135,7 @@ def run_glm_ocr_on_images(
             generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens)
         output_text = processor.decode(
             generated_ids[0][inputs["input_ids"].shape[1] :],
-            skip_special_tokens=False,
+            skip_special_tokens=True,
         )
         outputs.append(output_text.strip())
     return outputs

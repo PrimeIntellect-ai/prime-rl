@@ -25,7 +25,7 @@ def extract_embedded_pdf_text(item: SourceManifestItem) -> ExtractedDocument:
     if pages is None:
         raise RuntimeError(
             "Embedded extraction requires PyMuPDF or pypdf. "
-            "Use --extractor glm-ocr for scanned or encoded PDFs."
+            "Use --extractor gemini for scanned or encoded PDFs."
         )
 
     blocks: list[ExtractedBlock] = []

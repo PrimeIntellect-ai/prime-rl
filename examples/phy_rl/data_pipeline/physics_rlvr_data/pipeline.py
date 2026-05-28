@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import concurrent.futures
 import csv
 import hashlib
+import os
 import re
 import urllib.parse
 import urllib.request
@@ -9,9 +11,12 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Literal
 
+from .answer_extraction import extract_answer_draft, extract_answer_key
 from .dedup import deduplicate
 from .extract_pdf import extract_embedded_pdf_text, sha256_file
 from .filters import admissibility_rejection
+from .gemini_extract import DEFAULT_MODEL as DEFAULT_GEMINI_MODEL
+from .gemini_extract import extract_with_gemini
 from .glm_ocr_extract import extract_with_glm_ocr
 from .io import ensure_parent, read_json, read_jsonl, write_json, write_jsonl
 from .policy import choose_split, validate_training_policy
@@ -27,9 +32,14 @@ from .schema import (
     problem_artifact_id,
     to_dict,
 )
+from .subproblem_curation import build_rlvr_subproblems
 
 DEFAULT_DATA_DIR = Path("examples/phy_rl/data_pipeline/data")
-Extractor = Literal["glm-ocr", "embedded", "auto"]
+Extractor = Literal["gemini", "glm-ocr", "embedded", "auto"]
+HTTP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/125 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
 
 
 class PdfLinkParser(HTMLParser):
@@ -86,7 +96,8 @@ def manifest_from_local_pdfs(pdf_root: Path, out_path: Path, source_id: str = "l
 
 
 def crawl_pdf_manifest(base_url: str, out_path: Path, source_id: str) -> int:
-    with urllib.request.urlopen(base_url, timeout=30) as response:
+    request = urllib.request.Request(base_url, headers=HTTP_HEADERS)
+    with urllib.request.urlopen(request, timeout=30) as response:
         html = response.read().decode("utf-8", errors="replace")
     parser = PdfLinkParser()
     parser.feed(html)
@@ -128,29 +139,82 @@ def download_manifest(manifest_path: Path, raw_dir: Path, out_path: Path) -> int
             continue
         target = raw_dir / _download_name(raw, url)
         ensure_parent(target)
-        urllib.request.urlretrieve(url, target)
+        _download_url(url, target)
         raw["local_path"] = str(target)
         raw["sha256"] = sha256_file(target)
         rows.append(raw)
     return write_jsonl(out_path, rows)
 
 
+def _download_url(url: str, target: Path) -> None:
+    request = urllib.request.Request(url, headers=HTTP_HEADERS)
+    with urllib.request.urlopen(request, timeout=120) as response:
+        target.write_bytes(response.read())
+
+
 def extract_manifest(
     manifest_path: Path,
     out_dir: Path,
     *,
-    extractor: Extractor = "glm-ocr",
+    extractor: Extractor = "gemini",
     vlm_work_dir: Path | None = None,
-    vlm_model: str = "zai-org/GLM-OCR",
-    vlm_prompt: str = "Text Recognition:",
+    vlm_model: str = DEFAULT_GEMINI_MODEL,
+    vlm_prompt: str = "",
     vlm_max_new_tokens: int = 8192,
     vlm_dpi: int = 180,
     vlm_max_pages: int | None = None,
+    jobs: int = 1,
+    vlm_devices: list[str] | None = None,
 ) -> int:
-    count = 0
     if vlm_work_dir is None:
         vlm_work_dir = out_dir / "_vlm_raw"
-    for raw in read_jsonl(manifest_path):
+    rows = list(read_jsonl(manifest_path))
+    if jobs > 1:
+        return _extract_manifest_parallel(
+            rows,
+            out_dir,
+            extractor=extractor,
+            vlm_work_dir=vlm_work_dir,
+            vlm_model=vlm_model,
+            vlm_prompt=vlm_prompt,
+            vlm_max_new_tokens=vlm_max_new_tokens,
+            vlm_dpi=vlm_dpi,
+            vlm_max_pages=vlm_max_pages,
+            jobs=jobs,
+            vlm_devices=vlm_devices,
+        )
+    return _extract_manifest_rows(
+        rows,
+        out_dir,
+        extractor=extractor,
+        vlm_work_dir=vlm_work_dir,
+        vlm_model=vlm_model,
+        vlm_prompt=vlm_prompt,
+        vlm_max_new_tokens=vlm_max_new_tokens,
+        vlm_dpi=vlm_dpi,
+        vlm_max_pages=vlm_max_pages,
+        cuda_device=None,
+    )
+
+
+def _extract_manifest_rows(
+    rows: list[dict[str, Any]],
+    out_dir: Path,
+    *,
+    extractor: Extractor,
+    vlm_work_dir: Path,
+    vlm_model: str,
+    vlm_prompt: str,
+    vlm_max_new_tokens: int,
+    vlm_dpi: int,
+    vlm_max_pages: int | None,
+    cuda_device: str | None,
+) -> int:
+    if cuda_device is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = cuda_device
+
+    count = 0
+    for raw in rows:
         item = SourceManifestItem(**raw)
         if not item.local_path:
             continue
@@ -173,6 +237,52 @@ def extract_manifest(
     return count
 
 
+def _extract_manifest_parallel(
+    rows: list[dict[str, Any]],
+    out_dir: Path,
+    *,
+    extractor: Extractor,
+    vlm_work_dir: Path,
+    vlm_model: str,
+    vlm_prompt: str,
+    vlm_max_new_tokens: int,
+    vlm_dpi: int,
+    vlm_max_pages: int | None,
+    jobs: int,
+    vlm_devices: list[str] | None,
+) -> int:
+    if jobs < 1:
+        raise ValueError("jobs must be >= 1")
+    if vlm_devices is None:
+        vlm_devices = [str(index) for index in range(jobs)]
+    if not vlm_devices:
+        raise ValueError("vlm_devices must contain at least one device when jobs > 1")
+
+    worker_count = min(jobs, len(vlm_devices))
+    shards = [rows[index::worker_count] for index in range(worker_count)]
+    total = 0
+    with concurrent.futures.ProcessPoolExecutor(max_workers=worker_count) as executor:
+        futures = [
+            executor.submit(
+                _extract_manifest_rows,
+                shard,
+                out_dir,
+                extractor=extractor,
+                vlm_work_dir=vlm_work_dir,
+                vlm_model=vlm_model,
+                vlm_prompt=vlm_prompt,
+                vlm_max_new_tokens=vlm_max_new_tokens,
+                vlm_dpi=vlm_dpi,
+                vlm_max_pages=vlm_max_pages,
+                cuda_device=vlm_devices[index],
+            )
+            for index, shard in enumerate(shards)
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            total += future.result()
+    return total
+
+
 def _extract_document(
     item: SourceManifestItem,
     *,
@@ -190,6 +300,17 @@ def _extract_document(
         embedded = extract_embedded_pdf_text(item)
         if not any(page.ocr_needed for page in embedded.page_classifications):
             return embedded
+        extractor = "gemini"
+    if extractor == "gemini":
+        return extract_with_gemini(
+            item,
+            vlm_work_dir,
+            model_name=vlm_model,
+            prompt=vlm_prompt or None,
+            max_output_tokens=vlm_max_new_tokens,
+            dpi=vlm_dpi,
+            max_pages=vlm_max_pages,
+        )
     elif extractor != "glm-ocr":
         raise ValueError(f"unknown extractor: {extractor}")
     return extract_with_glm_ocr(
@@ -243,6 +364,8 @@ def build_candidates(manifest_path: Path, extracted_dir: Path, out_path: Path) -
             year=year,
             requested_split=problem_item.split,
         )
+        problem_text = _curate_document_section(problem_doc["canonical_markdown"], problem_number)
+        solution_text = _curate_document_section(solution_doc["canonical_markdown"], problem_number)
         final_item = FinalItem(
             problem_id=_problem_id(problem_item),
             source=problem_item.source_id,
@@ -250,10 +373,10 @@ def build_candidates(manifest_path: Path, extracted_dir: Path, out_path: Path) -
             year=year,
             problem_number=problem_number,
             subproblem_id=None,
-            problem_text=problem_doc["canonical_markdown"],
+            problem_text=problem_text,
             shared_context="",
-            question=problem_doc["canonical_markdown"],
-            official_solution=solution_doc["canonical_markdown"],
+            question=problem_text,
+            official_solution=solution_text,
             answers=[],
             requires_diagram=False,
             language=problem_item.language,
@@ -374,6 +497,32 @@ def apply_answer_key(input_path: Path, answer_key_path: Path, out_path: Path) ->
     return write_jsonl(out_path, rows)
 
 
+def extract_answer_key_file(input_path: Path, out_path: Path, review_path: Path, min_score: int = 4) -> tuple[int, int]:
+    return extract_answer_key(input_path, out_path, review_path, min_score=min_score)
+
+
+def extract_answer_draft_file(input_path: Path, out_path: Path, audit_path: Path) -> tuple[int, int]:
+    return extract_answer_draft(input_path, out_path, audit_path)
+
+
+def build_rlvr_subproblems_file(
+    input_path: Path,
+    verified_path: Path,
+    review_path: Path,
+    rejected_path: Path,
+    min_score: int = 5,
+    judge_model: str | None = None,
+) -> tuple[int, int, int]:
+    return build_rlvr_subproblems(
+        input_path,
+        verified_path,
+        review_path,
+        rejected_path,
+        min_score=min_score,
+        judge_model=judge_model,
+    )
+
+
 def dedup_file(input_path: Path, out_path: Path, report_path: Path) -> int:
     items = [final_item_from_dict(raw) for raw in read_jsonl(input_path)]
     kept = deduplicate(items, report_path)
@@ -425,16 +574,16 @@ def infer_pdf_metadata(path: Path) -> dict[str, Any]:
         flags=re.IGNORECASE,
     )
     problem_match = re.search(
-        r"(?:problem|prob|solution|sol|p|s)[_\-\s]?(\d+[a-z]?)",
+        r"(?:problem|prob|question|solution|sol|[qps])[_\-\s]?(\d+[a-z]?)",
         text,
         flags=re.IGNORECASE,
     )
     lowered = text.lower()
     if "mark" in lowered or "scheme" in lowered:
         paper_type = "marking_scheme"
-    elif "sol" in lowered or "answer" in lowered:
+    elif re.search(r"(?:^|[_\-\s])s\d+[a-z]?(?:$|[_\-\s])", lowered) or "sol" in lowered or "answer" in lowered:
         paper_type = "solution"
-    elif "problem" in lowered or "question" in lowered:
+    elif re.search(r"(?:^|[_\-\s])q\d+[a-z]?(?:$|[_\-\s])", lowered) or "problem" in lowered or "question" in lowered:
         paper_type = "problem"
     else:
         paper_type = "unknown"
@@ -444,6 +593,32 @@ def infer_pdf_metadata(path: Path) -> dict[str, Any]:
         "problem_number": problem_match.group(1) if problem_match else None,
         "paper_type": paper_type,
     }
+
+
+def _curate_document_section(markdown: str, problem_number: str | None) -> str:
+    if not problem_number:
+        return markdown
+    start_match = _find_problem_section_start(markdown, problem_number)
+    if start_match is None:
+        return markdown
+    next_match = _find_next_problem_section_start(markdown, start_match.end())
+    end = next_match.start() if next_match else len(markdown)
+    return markdown[start_match.start() : end].strip() + "\n"
+
+
+def _find_problem_section_start(markdown: str, problem_number: str) -> re.Match[str] | None:
+    escaped = re.escape(problem_number)
+    patterns = [
+        rf"(?mi)^\s*(?:\*\*)?(?:problem|question)\s+{escaped}\b",
+        rf"(?mi)^\s*(?:\*\*)?(?:solution\s+of\s+)?(?:problem|question|task)\s+{escaped}\b",
+    ]
+    matches = [match for pattern in patterns if (match := re.search(pattern, markdown))]
+    return min(matches, key=lambda match: match.start()) if matches else None
+
+
+def _find_next_problem_section_start(markdown: str, start: int) -> re.Match[str] | None:
+    pattern = r"(?mi)^\s*(?:\*\*)?(?:problem|question|solution\s+of\s+(?:problem|question|task))\s+\d+[a-z]?\b"
+    return re.compile(pattern).search(markdown, pos=start)
 
 
 def _download_name(raw: dict[str, Any], url: str) -> Path:

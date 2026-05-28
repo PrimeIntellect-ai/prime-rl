@@ -6,11 +6,14 @@ from pathlib import Path
 from .pipeline import (
     DEFAULT_DATA_DIR,
     apply_answer_key,
+    build_rlvr_subproblems_file,
     build_candidates,
     crawl_pdf_manifest,
     dedup_file,
     download_manifest,
     export_final,
+    extract_answer_draft_file,
+    extract_answer_key_file,
     extract_manifest,
     filter_candidates,
     import_structured_jsonl,
@@ -49,13 +52,15 @@ def main() -> None:
     p = sub.add_parser("extract")
     p.add_argument("--manifest", type=Path, required=True)
     p.add_argument("--out-dir", type=Path, required=True)
-    p.add_argument("--extractor", choices=["glm-ocr", "embedded", "auto"], default="glm-ocr")
+    p.add_argument("--extractor", choices=["gemini", "glm-ocr", "embedded", "auto"], default="gemini")
     p.add_argument("--vlm-work-dir", type=Path)
-    p.add_argument("--vlm-model", default="zai-org/GLM-OCR")
-    p.add_argument("--vlm-prompt", default="Text Recognition:")
+    p.add_argument("--vlm-model", default="gemini-3.1-flash-lite")
+    p.add_argument("--vlm-prompt", default="")
     p.add_argument("--vlm-max-new-tokens", type=int, default=8192)
     p.add_argument("--vlm-dpi", type=int, default=180)
     p.add_argument("--vlm-max-pages", type=int)
+    p.add_argument("--jobs", type=int, default=1)
+    p.add_argument("--vlm-devices", help="Comma-separated CUDA device ids for parallel GLM-OCR workers")
     p.set_defaults(run=_run_extract)
 
     p = sub.add_parser("build-candidates")
@@ -82,6 +87,28 @@ def main() -> None:
     p.add_argument("--answer-key", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
     p.set_defaults(run=lambda a: _count("answer-keyed candidates", apply_answer_key(a.input, a.answer_key, a.out)))
+
+    p = sub.add_parser("extract-answer-key")
+    p.add_argument("--input", type=Path, required=True)
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--review", type=Path, required=True)
+    p.add_argument("--min-score", type=int, default=6)
+    p.set_defaults(run=_run_extract_answer_key)
+
+    p = sub.add_parser("extract-answer-draft")
+    p.add_argument("--input", type=Path, required=True)
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--audit", type=Path, required=True)
+    p.set_defaults(run=_run_extract_answer_draft)
+
+    p = sub.add_parser("build-rlvr-subproblems")
+    p.add_argument("--input", type=Path, required=True)
+    p.add_argument("--verified", type=Path, required=True)
+    p.add_argument("--review", type=Path, required=True)
+    p.add_argument("--rejected", type=Path, required=True)
+    p.add_argument("--min-score", type=int, default=3)
+    p.add_argument("--judge-model", default=None)
+    p.set_defaults(run=_run_build_rlvr_subproblems)
 
     p = sub.add_parser("dedup")
     p.add_argument("--input", type=Path, required=True)
@@ -114,6 +141,8 @@ def _run_extract(args: argparse.Namespace) -> None:
         vlm_max_new_tokens=args.vlm_max_new_tokens,
         vlm_dpi=args.vlm_dpi,
         vlm_max_pages=args.vlm_max_pages,
+        jobs=args.jobs,
+        vlm_devices=_split_csv(args.vlm_devices),
     )
     _count("documents", count)
 
@@ -128,5 +157,33 @@ def _run_filter(args: argparse.Namespace) -> None:
     print(f"verified {verified}; rejected {rejected}")
 
 
+def _run_extract_answer_key(args: argparse.Namespace) -> None:
+    accepted, review = extract_answer_key_file(args.input, args.out, args.review, args.min_score)
+    print(f"wrote {accepted} answer-key rows; wrote {review} review rows")
+
+
+def _run_extract_answer_draft(args: argparse.Namespace) -> None:
+    rows, audit = extract_answer_draft_file(args.input, args.out, args.audit)
+    print(f"wrote {rows} draft answer-key rows; wrote {audit} audit rows")
+
+
+def _run_build_rlvr_subproblems(args: argparse.Namespace) -> None:
+    verified, review, rejected = build_rlvr_subproblems_file(
+        args.input,
+        args.verified,
+        args.review,
+        args.rejected,
+        args.min_score,
+        judge_model=args.judge_model,
+    )
+    print(f"verified {verified}; review {review}; rejected {rejected}")
+
+
 def _count(name: str, count: int) -> None:
     print(f"wrote {count} {name}")
+
+
+def _split_csv(value: str | None) -> list[str] | None:
+    if value is None:
+        return None
+    return [part.strip() for part in value.split(",") if part.strip()]

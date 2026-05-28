@@ -57,6 +57,10 @@ def verify_answer(prediction: str, answer: Answer) -> bool:
         return _normalize_choice(prediction) == _normalize_choice(answer.value)
     if answer.verifier in {"set", "multi_select"} or answer.answer_type in {"set", "multi_select"}:
         return _normalize_set(prediction) == _normalize_set(answer.value)
+    if answer.verifier == "tuple" or answer.answer_type == "tuple":
+        return _normalize_tuple(prediction) == _normalize_tuple(answer.value)
+    if answer.verifier == "interval" or answer.answer_type == "interval":
+        return _normalize_interval(prediction) == _normalize_interval(answer.value)
     if answer.verifier in {"string", "string_exact"} or answer.answer_type in {"string", "string_exact"}:
         return _normalize_text(prediction) == _normalize_text(answer.value)
     return False
@@ -99,9 +103,18 @@ def _symbolic_match(prediction: str, expected: str) -> bool:
     except ImportError:
         return False
     try:
-        return bool(simplify(parse_latex(pred_text) - parse_latex(exp_text)) == 0)
+        pred_expr = _parse_symbolic_for_compare(pred_text, parse_latex)
+        exp_expr = _parse_symbolic_for_compare(exp_text, parse_latex)
+        return bool(simplify(pred_expr - exp_expr) == 0)
     except Exception:
         return False
+
+
+def _parse_symbolic_for_compare(value: str, parse_latex: object) -> object:
+    if "=" not in value:
+        return parse_latex(value)
+    left, right = value.split("=", maxsplit=1)
+    return parse_latex(left) - parse_latex(right)
 
 
 def _normalize_choice(value: str) -> str:
@@ -114,6 +127,16 @@ def _normalize_set(value: str) -> tuple[str, ...]:
     text = value.strip().strip("{}[]()")
     parts = [part.strip() for part in re.split(r"[,;]", text) if part.strip()]
     return tuple(sorted(_normalize_text(part) for part in parts))
+
+
+def _normalize_tuple(value: str) -> tuple[str, ...]:
+    text = value.strip().strip("()[]{}")
+    parts = [part.strip() for part in re.split(r"[,;]", text) if part.strip()]
+    return tuple(_normalize_text(part) for part in parts)
+
+
+def _normalize_interval(value: str) -> str:
+    return re.sub(r"\s+", "", _strip_latex_wrappers(value).lower())
 
 
 def _normalize_text(value: str) -> str:

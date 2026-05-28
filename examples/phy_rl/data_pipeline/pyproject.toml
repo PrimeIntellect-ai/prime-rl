@@ -1,12 +1,14 @@
 [project]
 name = "physics-rlvr-data-pipeline"
 version = "0.1.0"
-description = "Physics RLVR PDF curation pipeline with GLM-OCR extraction"
+description = "Physics RLVR PDF curation pipeline with Gemini OCR extraction"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "antlr4-python3-runtime==4.11.*",
     "pillow",
     "pymupdf",
     "safetensors",
+    "sympy",
     "torch",
     "torchvision",
     "transformers",
