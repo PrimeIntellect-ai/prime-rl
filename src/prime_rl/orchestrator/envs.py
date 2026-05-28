@@ -125,6 +125,7 @@ class Env:
         example: dict,
         model_name: str,
         cache_salt: str,
+        training_context: dict | None = None,
     ) -> vf.RolloutOutput:
         """Run a single rollout for an example."""
         return await self.env.run_rollout(
@@ -135,6 +136,7 @@ class Env:
             max_retries=self.config.max_retries,
             state_columns=self.state_columns,
             env_client=self.env_client,
+            training_context=training_context,
         )
 
     async def run_group(
@@ -144,6 +146,7 @@ class Env:
         model_name: str,
         group_size: int,
         cache_salt: str,
+        training_context: dict | None = None,
     ) -> list[vf.RolloutOutput]:
         """Run a group of rollouts for an example. Required for group-scoring envs."""
         return await self.env.run_group(
@@ -154,6 +157,7 @@ class Env:
             max_retries=self.config.max_retries,
             state_columns=self.state_columns,
             env_client=self.env_client,
+            training_context=training_context,
         )
 
     def shutdown(self) -> None:
