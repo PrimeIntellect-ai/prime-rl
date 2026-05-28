@@ -589,8 +589,6 @@ class Orchestrator:
             )
             return
 
-        get_logger().info(f"Starting orchestrator step {step}")
-
         if batch.metrics.n_trainable == 0:
             self.consecutive_empty_batches += 1
             get_logger().warning(
