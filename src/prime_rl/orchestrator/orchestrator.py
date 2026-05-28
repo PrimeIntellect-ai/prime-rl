@@ -784,7 +784,7 @@ class Orchestrator:
         truncation_rate = sum(1 for r in batch.rollouts if r.get("is_truncated")) / max(n_survivors, 1)
 
         head = (
-            f"Train step {step} | {format_time(step_time):>7} | Reward {reward_mean:.4f} | "
+            f"Step {step} | {format_time(step_time):>7} | Reward {reward_mean:.4f} | "
             f"Trainable {n_trainable}/{n_survivors} ({trainable_rate:.1%}) | "
             f"Turns {turns_mean:.1f} | Max Off-Policy {max_off_policy} | "
             f"Error {error_rate:.1%} | Truncation {truncation_rate:.1%}"
@@ -850,8 +850,8 @@ class Orchestrator:
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
 
         get_logger().success(
-            f"Eval step {batch.step} ({batch.env_name}) | {format_time(elapsed):>7} | "
-            f"Reward {batch.metrics.reward_mean:.4f} | "
+            f"Finished evaluating {batch.env_name} from step {batch.step} | "
+            f"{format_time(elapsed):>7} | Reward {batch.metrics.reward_mean:.4f} | "
             f"Valid {n_valid}/{n_total} ({valid_rate:.1%}) | "
             f"Turns {batch.metrics.num_turns_mean:.1f} | Max Off-Policy {max_off_policy} | "
             f"Error {error_rate:.1%} | Truncation {batch.metrics.truncation_rate:.1%}"
