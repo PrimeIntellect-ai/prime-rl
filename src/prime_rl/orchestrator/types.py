@@ -132,10 +132,14 @@ class FinishedRollout:
     exceptions, off-policy cancellations) flow through with ``raw["error"]``
     set; the sinks decide drop / partial-train policy.
 
-    ``group_id`` is the dispatcher's UUID for the dispatched group this
-    rollout belongs to. The sink uses it as the ``pending_groups`` key —
-    ``(env_name, example_id)`` isn't unique because the same example can
-    be re-sampled while an earlier group is still in flight.
+    ``rollout_id`` is a unique per-rollout UUID generated at construction —
+    the only safe key for referencing this exact rollout through its
+    lifecycle (dispatch → sink → batch → JSONL on disk). Neither
+    ``(env_name, example_id)`` nor ``group_id`` is unique: the same example
+    can be re-sampled as multiple groups, and a group contains
+    ``group_size`` rollouts. ``group_id`` is the dispatcher's UUID for the
+    group this rollout belongs to; it's how the sink groups rollouts for
+    GRPO advantages.
     """
 
     raw: vf.RolloutOutput
@@ -144,6 +148,7 @@ class FinishedRollout:
     group_id: uuid.UUID
     policy_version: int  # snapshot at dispatch
     off_policy_steps: int  # at completion
+    rollout_id: uuid.UUID = field(default_factory=uuid.uuid4)
 
     @property
     def error(self) -> dict | None:
@@ -163,6 +168,8 @@ class FinishedRollout:
         ``log_eval_samples``). Returns a shallow copy of ``raw`` with
         metadata merged in — never mutates ``self.raw``."""
         out: vf.RolloutOutput = dict(self.raw)  # type: ignore[assignment]
+        out["rollout_id"] = str(self.rollout_id)
+        out["group_id"] = str(self.group_id)
         out["env_name"] = self.env_name
         out["example_id"] = self.example_id
         out["policy_version"] = self.policy_version

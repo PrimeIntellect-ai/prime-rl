@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
@@ -133,13 +134,15 @@ def compute_advantages(
     rollouts: list["TrainRollout"],  # noqa: F821 (forward ref, imported lazily below)
     advantage_config: AdvantageConfig | None,
 ) -> None:
-    """Computes advantages from rollouts, grouped by (env_name, example_id), and
-    stores them on ``rollout.advantage``.
+    """Computes advantages from rollouts grouped by ``group_id`` and stores
+    them on ``rollout.advantage``.
 
-    ``advantage_fn`` is called once per group with the raw ``vf.RolloutOutput``\\ s
-    (so custom advantage functions keep the same input shape), so groups may
-    have varying sizes (partial-group training drops failed rollouts rather
-    than rescheduling them).
+    ``group_id`` is the only safe key — ``(env_name, example_id)`` collides
+    when the same example is re-sampled as multiple groups (small datasets,
+    multi-epoch eval). ``advantage_fn`` is called once per group with the
+    raw ``vf.RolloutOutput``\\ s (so custom advantage functions keep the
+    same input shape); groups may have varying sizes since partial-group
+    training drops failed rollouts rather than rescheduling them.
     """
     if not advantage_config:
         for rollout in rollouts:
@@ -148,11 +151,11 @@ def compute_advantages(
 
     advantage_fn = setup_advantage_fn(advantage_config)
 
-    groups_by_example: dict[tuple[str, int | str], list["TrainRollout"]] = defaultdict(list)  # noqa: F821
+    groups: dict[uuid.UUID, list["TrainRollout"]] = defaultdict(list)  # noqa: F821
     for rollout in rollouts:
-        groups_by_example[(rollout.env_name, rollout.example_id)].append(rollout)
+        groups[rollout.group_id].append(rollout)
 
-    for group in groups_by_example.values():
+    for group in groups.values():
         result = advantage_fn(AdvantageInputs(rollouts=[r.raw for r in group]))
         for rollout, advantage in zip(group, result.advantages):
             rollout.advantage = advantage
