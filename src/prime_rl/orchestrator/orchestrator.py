@@ -722,7 +722,8 @@ class Orchestrator:
         def env_breakdown(pairs: list[tuple[str, int]]) -> str:
             return "(" + ", ".join(f"{n}={v}" for n, v in pairs) + ")"
 
-        train_batch_part = f"Got {train_progress}/{train_target}"
+        train_pct = train_progress / train_target if train_target else 0.0
+        train_batch_part = f"Got {train_progress}/{train_target} ({train_pct:.1%})"
         if multi_train:
             train_batch_part += " " + env_breakdown(
                 [(e.name, train_batch_by_env.get(e.name, 0)) for e in self.train_envs]
@@ -731,7 +732,10 @@ class Orchestrator:
 
         eval_batch_part = ""
         if eval_batches:
-            eval_batch_part = " and " + ", ".join(f"{arr}/{exp} in {env}" for env, _step, arr, exp in eval_batches)
+            eval_batch_part = " and " + ", ".join(
+                f"{arr}/{exp} ({arr / exp:.1%}) in {env}" if exp else f"{arr}/0 in {env}"
+                for env, _step, arr, exp in eval_batches
+            )
 
         train_inflight_part = f"currently {inflight_train}/{self.dispatcher.max_inflight}"
         if multi_train:
