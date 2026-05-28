@@ -836,7 +836,7 @@ class Orchestrator:
                 f"Turns {env_turns:.1f} | Max Off-Policy {env_max_off_policy} | "
                 f"Error {env_error_rate:.1%} | Truncation {env_truncation:.1%}"
             )
-        get_logger().success("\n\t\t".join(lines))
+        get_logger().success("\n\t\t ".join(lines))
 
     def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch. Builds the metrics dict
