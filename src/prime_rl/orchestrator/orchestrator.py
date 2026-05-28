@@ -673,7 +673,7 @@ class Orchestrator:
         fired = self.eval_source.trigger(step)
         if not fired:
             return
-        reason = f"eval was triggered for {', '.join(fired)} at step {step}"
+        reason = f"eval was triggered at step {step}"
         self.dispatcher.switch_mode(DispatcherMode.PREFER_EVAL, reason=reason)
         # Stamp the start time per (env, step) so ``finalize_eval_batch`` can
         # report wall-clock duration of the epoch in its success log.
