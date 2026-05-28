@@ -77,7 +77,7 @@ SHUTDOWN_TIMEOUT_S = 300
 
 # Maximum number of times to attempt generating a training batch when all
 # rollouts are filtered out. After this many attempts, the orchestrator crashes
-# rather than silently skipping training steps.
+# (or early stops for zero advantages) rather than silently skipping training steps.
 MAX_EMPTY_BATCH_ATTEMPTS = 3
 
 
@@ -103,6 +103,10 @@ async def orchestrate(config: OrchestratorConfig):
     # Save configs to output directory
     config_dir = config.output_dir / "control"
     config_dir.mkdir(parents=True, exist_ok=True)
+    evicted_path = config_dir / "evicted.txt"
+    early_stopped_path = config_dir / "early_stopped.txt"
+    if early_stopped_path.exists():
+        early_stopped_path.unlink()
     with open(config_dir / "orch.toml", "wb") as f:
         tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
 
@@ -311,10 +315,10 @@ async def orchestrate(config: OrchestratorConfig):
     # Iterate over dataset in batches
     logger.info(f"Starting orchestrator loop (max_steps={config.max_steps or 'infinite'})")
     is_first_step = True
+    early_stopped = False
 
     while True:
-        # Check if this run has been evicted by the trainer
-        evicted_path = config.output_dir / "control" / "evicted.txt"
+        # Check if this run has been evicted by the trainer.
         if evicted_path.exists():
             reason = evicted_path.read_text().strip()
             raise RuntimeError(f"Run evicted by trainer: {reason}")
@@ -419,23 +423,31 @@ async def orchestrate(config: OrchestratorConfig):
                 break
 
             if attempt == MAX_EMPTY_BATCH_ATTEMPTS - 1:
-                logger.error(
-                    f"Attempt {attempt + 1}/{MAX_EMPTY_BATCH_ATTEMPTS} at step {progress.step} "
-                    f"filtered out all {num_rollouts} rollouts - crashing orchestrator"
-                )
                 reason = (
                     f"All {num_rollouts} rollouts were filtered out on "
                     f"{MAX_EMPTY_BATCH_ATTEMPTS} consecutive attempts at step {progress.step}"
                 )
-                evicted_path = config.output_dir / "control" / "evicted.txt"
-                evicted_path.parent.mkdir(parents=True, exist_ok=True)
+
+                # Check for zero advantages for early stopping
+                all_zero_advantage = len(train_rollouts) > 0 and all(r.get("advantage") == 0.0 for r in train_rollouts)
+
+                if all_zero_advantage:
+                    logger.warning(f"Early stopping: {reason}")
+                    early_stopped_path.write_text(reason)
+                    early_stopped = True
+                    break
+
                 evicted_path.write_text(reason)
+                logger.error(f"{reason} - crashing orchestrator")
                 raise RuntimeError(reason)
 
             logger.warning(
                 f"Attempt {attempt + 1}/{MAX_EMPTY_BATCH_ATTEMPTS} at step {progress.step} "
                 f"filtered out all {num_rollouts} rollouts - retrying batch generation"
             )
+
+        if early_stopped:
+            break
 
         trainable_ratio = n_trainable / num_rollouts
         if trainable_ratio <= 0.1:
@@ -792,7 +804,7 @@ async def orchestrate(config: OrchestratorConfig):
                 save_rollouts, eval_rollouts, step_path / "eval_rollouts.jsonl", exclude_keys={"trajectory"}
             )
 
-    monitor.save_final_summary()
+    monitor.save_final_summary(early_stopped=early_stopped)
 
     # Write final checkpoint
     if ckpt_manager is not None:

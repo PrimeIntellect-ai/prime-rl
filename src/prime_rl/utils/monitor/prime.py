@@ -241,13 +241,18 @@ class PrimeMonitor(Monitor):
         self._registered = True
         return run_id
 
-    def _finalize_run(self, success: bool) -> None:
-        """Mark the run as completed or failed on the platform."""
+    def _finalize_run(self, success: bool, early_stopped: bool = False) -> None:
+        """Mark the run as completed, early_stopped, or failed on the platform."""
         if not self._registered:
             return
 
-        payload: dict = {"status": "completed" if success else "failed"}
-        status_label = "completed" if success else "failed"
+        if early_stopped:
+            status_label = "early_stopped"
+        elif success:
+            status_label = "completed"
+        else:
+            status_label = "failed"
+        payload: dict = {"status": status_label}
         self.logger.info(f"Finalizing platform run {self.run_id} as {status_label}")
 
         try:
@@ -529,12 +534,12 @@ class PrimeMonitor(Monitor):
             f"Logged distributions at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
         )
 
-    def _submit_final_summary(self, summary: dict[str, Any]) -> bool:
+    def _submit_final_summary(self, summary: dict[str, Any], early_stopped: bool = False) -> bool:
         """Submit the final summary/finalize request synchronously."""
-        payload = self._sanitize_json_payload(
-            "finalize",
-            {"run_id": self.run_id, "summary": summary},
-        )
+        finalize_data: dict[str, Any] = {"run_id": self.run_id, "summary": summary}
+        if early_stopped:
+            finalize_data["status"] = "early_stopped"
+        payload = self._sanitize_json_payload("finalize", finalize_data)
 
         try:
             response = httpx.post(
@@ -556,14 +561,14 @@ class PrimeMonitor(Monitor):
 
         return True
 
-    def save_final_summary(self, filename: str = "final_summary.json") -> None:
+    def save_final_summary(self, filename: str = "final_summary.json", early_stopped: bool = False) -> None:
         """Save final summary to Prime Intellect API."""
         if not self.is_master or not self.enabled:
             return
 
         self.logger.info("Saving final summary to Prime Intellect API")
         summary = self.history[-1] if self.history else {}
-        finalized_via_summary = self._submit_final_summary(summary)
+        finalized_via_summary = self._submit_final_summary(summary, early_stopped=early_stopped)
 
         if os.getpid() != self._owner_pid:
             return
@@ -572,7 +577,7 @@ class PrimeMonitor(Monitor):
             self._finalized = True
             return
 
-        self._finalize_run(success=True)
+        self._finalize_run(success=True, early_stopped=early_stopped)
         self._finalized = True
 
     def close(self) -> None:
