@@ -621,10 +621,10 @@ class OrchestratorConfig(BaseConfig):
         RepetitionFilterConfig(enforce=False),
         ZeroAdvantageFilterConfig(enforce=False),
     ]
-    """Filters applied *before* a rollout enters the training batch buffer (orchestrator v2 only).
+    """Filters applied *before* a rollout enters the training batch buffer.
     All three filter types are registered in monitor mode by default; flip ``enforce=true`` per type
     to drop matching rollouts before they consume a slot in the batch (e.g. a zero-advantage group
-    never makes it into a training batch). The legacy orchestrator ignores this list."""
+    never makes it into a training batch)."""
 
     post_batch_filters: list[FilterConfig] = [
         GibberishFilterConfig(),
