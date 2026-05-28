@@ -125,9 +125,7 @@ class EvalSink:
 
         if valid:
             rewards = [r.reward for r in valid]
-            lens = [
-                r.raw["token_usage"]["final_input_tokens"] + r.raw["token_usage"]["final_output_tokens"] for r in valid
-            ]
+            lens = [r.raw["token_usage"]["final_output_tokens"] for r in valid]
             metrics.group_size = self.group_size_for(env_name)
             metrics.reward_mean = float(sum(rewards) / len(rewards))
             metrics.completion_len_mean = float(sum(lens) / len(lens))
@@ -150,7 +148,7 @@ class EvalSink:
                 pass_at_k_per_example = [compute_pass_at_k(rs) for rs in by_example.values()]
                 keys = set().union(*(d.keys() for d in pass_at_k_per_example))
                 for k in keys:
-                    values = [d.get(k, 0.0) for d in pass_at_k_per_example]
+                    values = [d[k] for d in pass_at_k_per_example if k in d]
                     metrics.pass_at_k[k] = float(sum(values) / len(values))
 
         return EvalBatch(env_name=env_name, step=step, rollouts=rollouts, metrics=metrics)

@@ -421,10 +421,6 @@ class RolloutDispatcher:
             client_config=client,
             eval_step=group.eval_step,
         )
-        get_logger().debug(
-            f"dispatch {group.kind} | group={str(group_id)[:8]} env={group.env_name} "
-            f"ex={group.example['example_id']} | permits={permits} v={group.policy_version_at_start}"
-        )
         return True
 
     async def acquire(self, n: int) -> None:
@@ -484,12 +480,6 @@ class RolloutDispatcher:
                         f"{r['error'].get('error_chain_repr', err_type)}"
                     )
             await self.emit_rollout(meta, group, r)
-
-        n_errored = sum(1 for r in rollouts if r.get("error") is not None)
-        get_logger().debug(
-            f"complete {meta.kind} | group={str(meta.group_id)[:8]} env={meta.env_name} | "
-            f"rollouts={len(rollouts)} errored={n_errored}"
-        )
 
     async def emit_rollout(self, meta: InflightRollout, group: GroupState | None, raw: vf.RolloutOutput) -> None:
         """Build a ``TrainRollout`` / ``EvalRollout`` and put it on ``out_q``.
