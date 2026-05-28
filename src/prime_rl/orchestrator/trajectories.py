@@ -204,7 +204,6 @@ def backfill_rollout_tokens(
 
 def _step_sft_mask(
     prompt_attribution: dict | None,
-    prompt_message_tool_names: list[str | None] | None,
     prompt_len: int,
     completion_len: int,
     sft_config: SFTConfig | None,
@@ -217,9 +216,11 @@ def _step_sft_mask(
 
     A prompt token is masked True iff:
       1. The env's SFTConfig is set and ``on_tool_outputs=True``.
-      2. The renderer attribution is populated (``prompt_attribution``
-         carries ``message_indices`` + ``is_content``, and the verifiers
-         trajectory step carries the parallel ``prompt_message_tool_names``).
+      2. The renderer attribution is populated — ``prompt_attribution``
+         carries ``message_indices``, ``is_content``, and
+         ``message_tool_names`` (all populated by every renderer's
+         ``RenderedTokens`` and serialized through the verifiers
+         env-server).
       3. The token's message index resolves to a tool-role message whose
          function name is in ``sft_config.tool_names`` (or any tool name
          when ``tool_names`` is None).
@@ -233,12 +234,16 @@ def _step_sft_mask(
     out = [False] * (prompt_len + completion_len)
     if sft_config is None or not sft_config.on_tool_outputs:
         return out
-    if prompt_attribution is None or prompt_message_tool_names is None:
+    if prompt_attribution is None:
+        return out
+
+    # prompt_attribution arrives as a dict through the verifiers env-server
+    # JSON boundary even though the renderer emits a RenderedTokens object.
+    message_tool_names = prompt_attribution.get("message_tool_names")
+    if message_tool_names is None:
         return out
 
     enabled = set(sft_config.tool_names) if sft_config.tool_names else None
-    # prompt_attribution arrives as a dict through the verifiers env-server
-    # JSON boundary even though the renderer emits a RenderedTokens object.
     message_indices = prompt_attribution["message_indices"]
     is_content = prompt_attribution["is_content"]
     # Defensive: if the renderer didn't populate is_content (DefaultRenderer
@@ -252,9 +257,9 @@ def _step_sft_mask(
         mi = message_indices[k]
         if mi < 0 or not is_content[k]:
             continue
-        if mi >= len(prompt_message_tool_names):
+        if mi >= len(message_tool_names):
             continue
-        name = prompt_message_tool_names[mi]
+        name = message_tool_names[mi]
         if name is None:
             continue
         if enabled is None or name in enabled:
@@ -289,8 +294,9 @@ def interleave_rollout(
     When ``sft_config`` is provided and ``on_tool_outputs=True``, each sample
     carries a per-token ``sft_mask`` (parallel to ``prompt_ids + completion_ids``)
     that the trainer overlays an alpha advantage onto. The mask is computed
-    per-step from the renderer's ``prompt_attribution`` + verifiers'
-    ``prompt_message_tool_names`` and extended through step merging.
+    per-step from the renderer's ``prompt_attribution`` (which carries
+    ``message_tool_names`` alongside ``message_indices`` and ``is_content``)
+    and extended through step merging.
 
     Args:
         output: vf.RolloutOutput containing trajectory data
@@ -332,7 +338,6 @@ def interleave_rollout(
             completion_ids = list(tokens["completion_ids"])
             sft_mask = _step_sft_mask(
                 prompt_attribution=tokens.get("prompt_attribution"),
-                prompt_message_tool_names=tokens.get("prompt_message_tool_names"),
                 prompt_len=len(prompt_ids),
                 completion_len=len(completion_ids),
                 sft_config=sft_config,

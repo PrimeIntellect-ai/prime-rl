@@ -1387,25 +1387,29 @@ def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
 # ---------------------------------------------------------------------------
 
 
-class _StubAttribution:
-    """Minimal stand-in for ``renderers.base.RenderedTokens`` — the helper
-    only reads ``message_indices`` and ``is_content`` off it."""
-
-    def __init__(self, message_indices: list[int], is_content: list[bool]) -> None:
-        self.message_indices = message_indices
-        self.is_content = is_content
+def _attribution(
+    message_indices: list[int],
+    is_content: list[bool],
+    message_tool_names: list[str | None] | None = None,
+) -> dict:
+    """Minimal stand-in for the serialised ``renderers.base.RenderedTokens``
+    dict that the verifiers env-server hands to ``_step_sft_mask`` — only
+    the keys the helper subscripts are populated."""
+    out: dict = {"message_indices": message_indices, "is_content": is_content}
+    if message_tool_names is not None:
+        out["message_tool_names"] = message_tool_names
+    return out
 
 
 def test_step_sft_mask_returns_all_false_when_sft_config_is_none():
     """No SFT config → no SFT mask. The helper bails before any
     attribution-shape work."""
-    attribution = _StubAttribution(
-        message_indices=[0, 0, 1, 1],
-        is_content=[False, True, False, True],
-    )
     mask = _step_sft_mask(
-        prompt_attribution=attribution,
-        prompt_message_tool_names=[None, "lookup"],
+        prompt_attribution=_attribution(
+            message_indices=[0, 0, 1, 1],
+            is_content=[False, True, False, True],
+            message_tool_names=[None, "lookup"],
+        ),
         prompt_len=4,
         completion_len=2,
         sft_config=None,
@@ -1415,13 +1419,12 @@ def test_step_sft_mask_returns_all_false_when_sft_config_is_none():
 
 def test_step_sft_mask_returns_all_false_when_on_tool_outputs_false():
     """SFT config present but disabled — same all-False fallthrough."""
-    attribution = _StubAttribution(
-        message_indices=[0, 0, 1, 1],
-        is_content=[False, True, False, True],
-    )
     mask = _step_sft_mask(
-        prompt_attribution=attribution,
-        prompt_message_tool_names=[None, "lookup"],
+        prompt_attribution=_attribution(
+            message_indices=[0, 0, 1, 1],
+            is_content=[False, True, False, True],
+            message_tool_names=[None, "lookup"],
+        ),
         prompt_len=4,
         completion_len=0,
         sft_config=SFTConfig(on_tool_outputs=False),
@@ -1434,7 +1437,6 @@ def test_step_sft_mask_returns_all_false_without_attribution():
     when SFT is enabled. Handles the renderer-disabled trajectory path."""
     mask = _step_sft_mask(
         prompt_attribution=None,
-        prompt_message_tool_names=["lookup"],
         prompt_len=4,
         completion_len=2,
         sft_config=SFTConfig(on_tool_outputs=True),
@@ -1443,15 +1445,15 @@ def test_step_sft_mask_returns_all_false_without_attribution():
 
 
 def test_step_sft_mask_returns_all_false_without_tool_names():
-    """Attribution present but no tool-name list → no mask. Defensive
-    against partial verifiers integration."""
-    attribution = _StubAttribution(
-        message_indices=[0, 0],
-        is_content=[False, True],
-    )
+    """Attribution present but no ``message_tool_names`` sub-field → no
+    mask. Defensive against older renderers that don't populate the
+    per-message tool-name list."""
     mask = _step_sft_mask(
-        prompt_attribution=attribution,
-        prompt_message_tool_names=None,
+        prompt_attribution=_attribution(
+            message_indices=[0, 0],
+            is_content=[False, True],
+            message_tool_names=None,
+        ),
         prompt_len=2,
         completion_len=0,
         sft_config=SFTConfig(on_tool_outputs=True),
@@ -1463,16 +1465,15 @@ def test_step_sft_mask_all_tools_when_filter_unset():
     """``tool_names=None`` means train on every tool. Every body token
     of every tool message gets masked True; scaffold (``is_content=False``)
     and non-tool messages stay False; completion stays uniformly False."""
-    attribution = _StubAttribution(
-        # 5 prompt tokens, 2 completion tokens.
-        # Token 0 = user-role scaffold; 1 = user body; 2-3 = tool wrap + body;
-        # 4 = tool body; completion = [F, F].
-        message_indices=[0, 0, 1, 1, 1],
-        is_content=[False, True, False, True, True],
-    )
     mask = _step_sft_mask(
-        prompt_attribution=attribution,
-        prompt_message_tool_names=[None, "lookup"],
+        prompt_attribution=_attribution(
+            # 5 prompt tokens, 2 completion tokens.
+            # Token 0 = user-role scaffold; 1 = user body; 2-3 = tool wrap + body;
+            # 4 = tool body; completion = [F, F].
+            message_indices=[0, 0, 1, 1, 1],
+            is_content=[False, True, False, True, True],
+            message_tool_names=[None, "lookup"],
+        ),
         prompt_len=5,
         completion_len=2,
         sft_config=SFTConfig(on_tool_outputs=True, tool_names=None),
@@ -1484,15 +1485,14 @@ def test_step_sft_mask_all_tools_when_filter_unset():
 def test_step_sft_mask_filters_by_tool_name():
     """``tool_names=['lookup']`` masks only the body of ``lookup`` tool
     messages; bodies of other tools (``calc``) stay False."""
-    attribution = _StubAttribution(
-        # 6 tokens: msg 0 = user (scaffold + body), msg 1 = calc tool body,
-        # msg 2 = lookup tool body.
-        message_indices=[0, 0, 1, 1, 2, 2],
-        is_content=[False, True, False, True, False, True],
-    )
     mask = _step_sft_mask(
-        prompt_attribution=attribution,
-        prompt_message_tool_names=[None, "calc", "lookup"],
+        prompt_attribution=_attribution(
+            # 6 tokens: msg 0 = user (scaffold + body), msg 1 = calc tool body,
+            # msg 2 = lookup tool body.
+            message_indices=[0, 0, 1, 1, 2, 2],
+            is_content=[False, True, False, True, False, True],
+            message_tool_names=[None, "calc", "lookup"],
+        ),
         prompt_len=6,
         completion_len=0,
         sft_config=SFTConfig(on_tool_outputs=True, tool_names=["lookup"]),
@@ -1507,14 +1507,13 @@ def test_step_sft_mask_skips_non_content_tokens():
     have ``is_content=False`` and stay masked even when the message is in
     the tool allowlist. The body/scaffold cut is the load-bearing
     invariant."""
-    attribution = _StubAttribution(
-        # All four tokens belong to a tool message; only token 2 is body.
-        message_indices=[0, 0, 0, 0],
-        is_content=[False, False, True, False],
-    )
     mask = _step_sft_mask(
-        prompt_attribution=attribution,
-        prompt_message_tool_names=["lookup"],
+        prompt_attribution=_attribution(
+            # All four tokens belong to a tool message; only token 2 is body.
+            message_indices=[0, 0, 0, 0],
+            is_content=[False, False, True, False],
+            message_tool_names=["lookup"],
+        ),
         prompt_len=4,
         completion_len=0,
         sft_config=SFTConfig(on_tool_outputs=True),
@@ -1526,13 +1525,12 @@ def test_step_sft_mask_completion_is_always_false():
     """Completion-side entries are uniformly False regardless of SFT
     config — assistant tokens never receive SFT supervision; they go
     through the normal RL advantage path."""
-    attribution = _StubAttribution(
-        message_indices=[0],
-        is_content=[True],
-    )
     mask = _step_sft_mask(
-        prompt_attribution=attribution,
-        prompt_message_tool_names=["lookup"],
+        prompt_attribution=_attribution(
+            message_indices=[0],
+            is_content=[True],
+            message_tool_names=["lookup"],
+        ),
         prompt_len=1,
         completion_len=3,
         sft_config=SFTConfig(on_tool_outputs=True),
