@@ -5,7 +5,10 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
-from prime_rl.trainer.models.conversions import register
+from prime_rl.trainer.models.conversions import (
+    COMPILE_TARGET_HF_RAW,
+    register,
+)
 
 
 def bf16_cast(src: Tensor, out: Tensor, scale_out: Tensor | None = None) -> None:
@@ -18,5 +21,17 @@ def fp32_cast(src: Tensor, out: Tensor, scale_out: Tensor | None = None) -> None
     out.copy_(src.to(torch.float32))
 
 
-register("bf16_cast", bf16_cast, requires_scale=False)
-register("fp32_cast", fp32_cast, requires_scale=False)
+register(
+    "bf16_cast",
+    bf16_cast,
+    requires_scale=False,
+    compile_target=COMPILE_TARGET_HF_RAW,
+    compile_metadata={"dtype": "bfloat16"},
+)
+register(
+    "fp32_cast",
+    fp32_cast,
+    requires_scale=False,
+    compile_target=COMPILE_TARGET_HF_RAW,
+    compile_metadata={"dtype": "float32"},
+)
