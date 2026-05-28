@@ -34,7 +34,17 @@ from typing import Iterable, Literal
 
 from modelexpress import p2p_pb2
 from modelexpress.client import MxClient
-from modelexpress.metadata.heartbeat import HeartbeatThread
+
+# HeartbeatThread moved in MX 0.4+ from ``modelexpress.heartbeat`` to
+# ``modelexpress.metadata.heartbeat`` as part of the metadata-module
+# reorganization. Tolerate both so this code works against the v0.5.2
+# image (MX 0.3.0, old path) and the newer ``kavink/nemo_rl_moe`` MX
+# (which exposes the new path). The MX-side migration tracker is in
+# ``pensieve/RL/PrimeRL/09_rfc_updates_needed.md``.
+try:
+    from modelexpress.metadata.heartbeat import HeartbeatThread  # MX 0.4+
+except ImportError:  # pragma: no cover - environment-dependent
+    from modelexpress.heartbeat import HeartbeatThread  # MX 0.3
 
 Role = Literal["trainer", "inference", "orchestrator"]
 
