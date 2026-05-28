@@ -26,6 +26,14 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with .Values.orchestrator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.orchestrator.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: prime-rl-orchestrator
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -33,7 +41,7 @@ spec:
         {{- if .Values.orchestrator.autoStart }}
         command: ["/bin/bash", "-c"]
         args:
-          - {{ .Values.orchestrator.command }}
+          - {{ .Values.orchestrator.command | quote }}
         {{- else }}
         command: ["sleep", "infinity"]
         {{- end }}
@@ -91,16 +99,29 @@ spec:
         {{- end }}
         resources:
           {{- toYaml .Values.orchestrator.resources | nindent 10 }}
-        {{- if .Values.storage.enabled }}
+        {{- if or .Values.storage.enabled .Values.orchestrator.configMap }}
         volumeMounts:
+        {{- if .Values.storage.enabled }}
         - name: shared-data
           mountPath: {{ .Values.storage.mountPath }}
         {{- end }}
-      {{- if .Values.storage.enabled }}
+        {{- if .Values.orchestrator.configMap }}
+        - name: rl-configs
+          mountPath: /configs
+        {{- end }}
+        {{- end }}
+      {{- if or .Values.storage.enabled .Values.orchestrator.configMap }}
       volumes:
+      {{- if .Values.storage.enabled }}
       - name: shared-data
         persistentVolumeClaim:
           claimName: {{ .Release.Name }}-shared-data
+      {{- end }}
+      {{- if .Values.orchestrator.configMap }}
+      - name: rl-configs
+        configMap:
+          name: {{ .Values.orchestrator.configMap }}
+      {{- end }}
       {{- end }}
 {{- end }}
 ---
@@ -132,6 +153,14 @@ spec:
       {{- if .Values.inference.runtimeClassName }}
       runtimeClassName: {{ .Values.inference.runtimeClassName }}
       {{- end }}
+      {{- with .Values.inference.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.inference.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: prime-rl-inference
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -139,7 +168,7 @@ spec:
         {{- if .Values.inference.autoStart }}
         command: ["/bin/bash", "-c"]
         args:
-          - {{ .Values.inference.command }}
+          - {{ .Values.inference.command | quote }}
         {{- else }}
         command: ["sleep", "infinity"]
         {{- end }}
@@ -261,6 +290,14 @@ spec:
       {{- if .Values.trainer.runtimeClassName }}
       runtimeClassName: {{ .Values.trainer.runtimeClassName }}
       {{- end }}
+      {{- with .Values.trainer.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.trainer.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: prime-rl-trainer
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -268,7 +305,7 @@ spec:
         {{- if .Values.trainer.autoStart }}
         command: ["/bin/bash", "-c"]
         args:
-          - {{ .Values.trainer.command }}
+          - {{ .Values.trainer.command | quote }}
         {{- else }}
         command: ["sleep", "infinity"]
         {{- end }}
