@@ -647,6 +647,39 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="before")
     @classmethod
+    def _warn_removed_buffer(cls, data: Any) -> Any:
+        """The ``[orchestrator.buffer]`` block (difficulty pools + online
+        difficulty filtering) has been removed. Drop it so old configs still
+        parse, but warn — loudly for ``online_difficulty_filtering``, since it
+        has a direct replacement."""
+        if not isinstance(data, dict) or "buffer" not in data:
+            return data
+        data = dict(data)
+        buffer = data.pop("buffer")
+        if isinstance(buffer, dict) and buffer.get("online_difficulty_filtering"):
+            warnings.warn(
+                "'[orchestrator.buffer]' has been removed and 'online_difficulty_filtering' "
+                "is now a no-op. To preserve the behavior (drop zero-advantage groups before "
+                "they enter the training batch), enforce the zero_advantage pre-batch filter:\n"
+                "    [[orchestrator.pre_batch_filters]]\n"
+                '    type = "zero_advantage"\n'
+                "    enforce = true\n"
+                "Difficulty pools (easy/hard thresholds and fractions) are removed with no "
+                "replacement.",
+                FutureWarning,
+                stacklevel=2,
+            )
+        else:
+            warnings.warn(
+                "'[orchestrator.buffer]' has been removed (difficulty pools are no longer "
+                "supported) and is being ignored. Remove it from your config.",
+                FutureWarning,
+                stacklevel=2,
+            )
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
     def fold_student_shortcuts(cls, data: Any) -> Any:
         """Accept top-level ``[orchestrator.model]`` / ``[orchestrator.client]``
         as shorthand for the student sub-config:
