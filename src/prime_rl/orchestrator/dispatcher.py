@@ -427,7 +427,7 @@ class RolloutDispatcher:
 
         Both sources expose a single ``next_example(available_permits)``
         that returns either a committed example dict (with ``env_name`` and,
-        for eval, ``_eval_step`` baked in) or ``None``. Each source owns
+        for eval, ``eval_step`` baked in) or ``None``. Each source owns
         its per-env cost lookup — group-scoring envs need ``group_size``
         permits up front, per-rollout envs only need 1.
         """
@@ -445,7 +445,7 @@ class RolloutDispatcher:
 
         env_name = example["env_name"]
         group_size = envs.get(env_name).config.group_size
-        eval_step: int | None = example.get("_eval_step") if kind == "eval" else None
+        eval_step: int | None = example.get("eval_step") if kind == "eval" else None
 
         return GroupState(
             kind=kind,
@@ -690,8 +690,8 @@ class RolloutDispatcher:
             last_meta = meta
             # Emit a marker per rollout this task would have produced so the
             # sink sees ``group_size`` arrivals overall and finalizes.
-            # ``emit_rollout`` stamps env_name / example_id / _eval_step on
-            # raw, so we just need a minimal error-shaped RolloutOutput.
+            # ``emit_rollout`` carries env_name / example_id / eval_step on
+            # the dataclass, so we just need a minimal error-shaped RolloutOutput.
             for _ in range(meta.rollout_count):
                 raw = self.error_rollout_output(error_type="Cancelled", error_repr="Off-policy cancel")
                 await self.emit_rollout(meta, group, raw)

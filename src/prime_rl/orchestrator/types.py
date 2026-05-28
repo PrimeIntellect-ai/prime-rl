@@ -165,8 +165,8 @@ class FinishedRollout:
         out: vf.RolloutOutput = dict(self.raw)  # type: ignore[assignment]
         out["env_name"] = self.env_name
         out["example_id"] = self.example_id
-        out["_policy_version"] = self.policy_version
-        out["_off_policy_steps"] = self.off_policy_steps
+        out["policy_version"] = self.policy_version
+        out["off_policy_steps"] = self.off_policy_steps
         return out
 
 
@@ -200,7 +200,7 @@ class EvalRollout(FinishedRollout):
 
     def to_dict(self) -> vf.RolloutOutput:
         out = super().to_dict()
-        out["_eval_step"] = self.eval_step
+        out["eval_step"] = self.eval_step
         return out
 
 

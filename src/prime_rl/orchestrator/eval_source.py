@@ -85,7 +85,7 @@ class EvalSource:
                 if example is None:
                     continue
                 row = dict(example)
-                row["_eval_step"] = step
+                row["eval_step"] = step
                 self.queue.append(row)
         return fired
 
