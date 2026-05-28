@@ -737,7 +737,7 @@ class Orchestrator:
                 for env, _step, arr, exp in eval_batches
             )
 
-        train_inflight_part = f"currently {inflight_train}/{self.dispatcher.max_inflight}"
+        train_inflight_part = f"currently {inflight_train}"
         if multi_train:
             train_inflight_part += " " + env_breakdown(
                 [(e.name, inflight_by_env.get(("train", e.name), 0)) for e in self.train_envs]
