@@ -537,6 +537,12 @@ class RolloutDispatcher:
         out["is_truncated"] = False
         out["metrics"] = {}
         out["stop_condition"] = None
+        out["token_usage"] = {
+            "input_tokens": 0.0,
+            "output_tokens": 0.0,
+            "final_input_tokens": 0.0,
+            "final_output_tokens": 0.0,
+        }
         return out
 
     async def drop_group(self, group_id: uuid.UUID) -> int:

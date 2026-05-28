@@ -19,7 +19,6 @@ from collections import defaultdict
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.eval_utils import compute_pass_at_k
 from prime_rl.orchestrator.types import EvalBatch, EvalBatchMetrics, EvalRollout
-from prime_rl.orchestrator.vf_utils import get_seq_len
 from prime_rl.utils.logger import get_logger
 
 
@@ -127,7 +126,9 @@ class EvalSink:
 
         if valid:
             rewards = [r.reward for r in valid]
-            lens = [get_seq_len(r.raw) for r in valid]
+            lens = [
+                r.raw["token_usage"]["final_input_tokens"] + r.raw["token_usage"]["final_output_tokens"] for r in valid
+            ]
             metrics.group_size = self.group_size_for(env_name)
             metrics.reward_mean = float(sum(rewards) / len(rewards))
             metrics.completion_len_mean = float(sum(lens) / len(lens))

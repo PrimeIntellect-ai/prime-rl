@@ -67,7 +67,7 @@ from prime_rl.orchestrator.types import (
     TrainRollout,
 )
 from prime_rl.orchestrator.utils import compute_teacher_logprobs, get_weight_dir, set_default_executor
-from prime_rl.orchestrator.vf_utils import get_seq_len, intercept_vf_logging, save_rollouts
+from prime_rl.orchestrator.vf_utils import intercept_vf_logging, save_rollouts
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
@@ -612,7 +612,10 @@ class Orchestrator:
 
         num_rollouts = len(batch.rollouts)
         num_unique_examples = len({(r.env_name, r.example_id) for r in batch.rollouts})
-        num_tokens = sum(get_seq_len(r.raw) for r in batch.rollouts)
+        num_tokens = sum(
+            r.raw["token_usage"]["final_input_tokens"] + r.raw["token_usage"]["final_output_tokens"]
+            for r in batch.rollouts
+        )
         self.progress.total_tokens += num_tokens
         self.progress.total_samples += num_rollouts
         self.progress.total_problems += num_unique_examples

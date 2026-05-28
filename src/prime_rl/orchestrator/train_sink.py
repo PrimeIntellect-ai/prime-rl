@@ -26,7 +26,6 @@ from prime_rl.orchestrator.trajectories import (
     interleave_rollout,
 )
 from prime_rl.orchestrator.types import TrainBatch, TrainBatchMetrics, TrainRollout
-from prime_rl.orchestrator.vf_utils import get_seq_len
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
@@ -108,12 +107,11 @@ class TrainSink:
         if self.batch_size is not None:
             return len(self.pending_batch) + len(in_progress_rollouts), self.batch_size, "rollouts"
         assert self.token_batch_size is not None
-        in_progress_tokens = sum(get_seq_len(r.raw) for r in in_progress_rollouts)
-        return (
-            sum(get_seq_len(r.raw) for r in self.pending_batch) + in_progress_tokens,
-            self.token_batch_size,
-            "tokens",
+        tokens = sum(
+            r.raw["token_usage"]["final_input_tokens"] + r.raw["token_usage"]["final_output_tokens"]
+            for r in self.pending_batch + in_progress_rollouts
         )
+        return tokens, self.token_batch_size, "tokens"
 
     def pending_batch_by_env(self) -> dict[str, int]:
         """Per-env breakdown of ``batch_progress()``; values sum to the
@@ -140,7 +138,11 @@ class TrainSink:
         ready = (
             len(self.pending_batch) >= self.batch_size
             if self.batch_size is not None
-            else sum(get_seq_len(r.raw) for r in self.pending_batch) >= (self.token_batch_size or 0)
+            else sum(
+                r.raw["token_usage"]["final_input_tokens"] + r.raw["token_usage"]["final_output_tokens"]
+                for r in self.pending_batch
+            )
+            >= (self.token_batch_size or 0)
         )
         if ready:
             return self.process_batch()
@@ -247,7 +249,7 @@ class TrainSink:
             cut = 0
             running = 0
             for i, r in enumerate(self.pending_batch):
-                running += get_seq_len(r.raw)
+                running += r.raw["token_usage"]["final_input_tokens"] + r.raw["token_usage"]["final_output_tokens"]
                 cut = i + 1
                 if running >= self.token_batch_size:
                     break

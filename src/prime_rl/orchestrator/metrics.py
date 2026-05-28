@@ -8,7 +8,6 @@ import pandas as pd
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.types import Progress, TrainBatchMetrics, TrainRollout
-from prime_rl.orchestrator.vf_utils import get_seq_len
 
 
 class MetricsBuilder:
@@ -33,7 +32,9 @@ class MetricsBuilder:
         existing dashboards / alerts keep working."""
         num_rollouts = len(rollouts)
         num_unique_examples = len({(r.env_name, r.example_id) for r in rollouts})
-        num_tokens = sum(get_seq_len(r.raw) for r in rollouts)
+        num_tokens = sum(
+            r.raw["token_usage"]["final_input_tokens"] + r.raw["token_usage"]["final_output_tokens"] for r in rollouts
+        )
 
         results_df = pd.DataFrame(
             {
@@ -43,7 +44,10 @@ class MetricsBuilder:
                 "is_truncated": [r.is_truncated for r in rollouts],
                 "is_filtered": [r.is_filtered for r in rollouts],
                 "stop_condition": [r.raw.get("stop_condition") for r in rollouts],
-                "seq_len": [get_seq_len(r.raw) for r in rollouts],
+                "seq_len": [
+                    r.raw["token_usage"]["final_input_tokens"] + r.raw["token_usage"]["final_output_tokens"]
+                    for r in rollouts
+                ],
                 "prefill_len": metrics.rollout_prefill_lens,
                 "decode_len": metrics.rollout_decode_lens,
                 "samples_per_rollout": metrics.samples_per_rollout,
