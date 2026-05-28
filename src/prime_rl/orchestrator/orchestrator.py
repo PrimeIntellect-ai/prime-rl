@@ -858,9 +858,7 @@ class Orchestrator:
         self.monitor.log(batch.metrics.to_wandb_dict(env_name=batch.env_name, step=batch.step), step=batch.step)
 
         n_total = batch.metrics.n_rollouts
-        n_valid = n_total - batch.metrics.n_cancelled - batch.metrics.n_errored
         error_rate = ((batch.metrics.n_cancelled + batch.metrics.n_errored) / n_total) if n_total else 0.0
-        valid_rate = (n_valid / n_total) if n_total else 0.0
         # ``Max Off-Policy`` here is the worst-case lag across the eval
         # cohort — how many weight updates the eval epoch straddled.
         max_off_policy = max((r.off_policy_steps for r in batch.rollouts), default=0)
@@ -870,7 +868,6 @@ class Orchestrator:
         get_logger().success(
             f"Evaluated {batch.env_name} (Step {batch.step}) | "
             f"{format_time(elapsed):>7} | Reward {batch.metrics.reward_mean:.4f} | "
-            f"Valid {n_valid}/{n_total} ({valid_rate:.1%}) | "
             f"Turns {batch.metrics.num_turns_mean:.1f} | Max Off-Policy {max_off_policy} | "
             f"Error {error_rate:.1%} | Truncation {batch.metrics.truncation_rate:.1%}"
         )
