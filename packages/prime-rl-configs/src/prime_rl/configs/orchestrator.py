@@ -558,10 +558,7 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 
 
 class OrchestratorExperimentalConfig(BaseConfig):
-    """Reserved for experimental orchestrator fields. Currently empty —
-    kept around so adding a new ``experimental`` toggle later doesn't
-    need to re-introduce the class + the ``OrchestratorConfig
-    .experimental`` field at the same time."""
+    pass
 
 
 class RolloutModelConfig(BaseConfig):
