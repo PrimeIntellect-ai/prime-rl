@@ -1,0 +1,24 @@
+[source.ipho_olimpicos]
+source_type = "olympiad_pdf"
+base_url = "https://ipho.olimpicos.net/"
+competitions = ["IPhO", "APhO", "EuPhO", "NBPhO", "RMPh", "WoPhO"]
+include_year_max = 2023
+frozen_test_years = [2024, 2025]
+require_solution = true
+license_status = "unknown"
+
+[source.physics_dataset]
+source_type = "structured_dataset"
+repo = "https://github.com/Zhengsh123/PHYSICS"
+include_split = "train"
+exclude_split = "test"
+license_status = "unknown"
+
+[source.olympiadbench]
+source_type = "structured_dataset"
+repo = "https://github.com/OpenBMB/OlympiadBench"
+subject = "physics"
+modality = "text"
+proof = false
+optional = true
+license_status = "unknown"

@@ -1,0 +1,5 @@
+[glm_ocr]
+model = "zai-org/GLM-OCR"
+prompt = "Text Recognition:"
+dpi = 180
+max_new_tokens = 8192

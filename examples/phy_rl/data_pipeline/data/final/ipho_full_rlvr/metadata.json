@@ -1,0 +1,9 @@
+{
+  "contract": "English text-only physics problems with deterministic verifiers.",
+  "counts": {
+    "dev": 0,
+    "frozen_test": 23,
+    "train": 510
+  },
+  "dataset_version": "physics_rlvr_v1"
+}
