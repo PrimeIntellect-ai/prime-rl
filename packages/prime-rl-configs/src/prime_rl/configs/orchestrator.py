@@ -619,11 +619,7 @@ class OrchestratorConfig(BaseConfig):
     """Maximum training steps. If None, runs indefinitely."""
 
     max_off_policy_steps: int = Field(8, ge=0)
-    """Cap on policy versions a rollout can lag the policy by before being
-    cancelled (a synthetic ``Cancelled`` rollout flows to the sink so the
-    group still finalizes — usually as a partial group). Applies to both
-    train and eval rollouts. Higher values yield better throughput at the
-    cost of off-policy noise."""
+    """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
 
     bench: bool = False
     """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""
@@ -682,44 +678,54 @@ class OrchestratorConfig(BaseConfig):
     @classmethod
     def fold_student_shortcuts(cls, data: Any) -> Any:
         """Accept top-level ``[orchestrator.model]`` / ``[orchestrator.client]``
-        as shorthand for the student sub-config:
+        as shorthand for the student sub-config. Useful for ergonomic rl configs
+        where ``[orchestrator.student.*]`` is overkill, and required for
+        pre-refactor configs that used the flat layout to keep parsing:
 
-          [orchestrator.client.*]    -> [orchestrator.student.client.*]
-          [orchestrator.model.<k>]   -> [orchestrator.student.model.<k>]
+        - [orchestrator.client.*]     -> [orchestrator.student.client.*]
+        - [orchestrator.model.<k>]    -> [orchestrator.student.model.<k>]
+          (where <k> is any ModelConfig field)
 
-        Teacher must always be configured under ``[orchestrator.teacher.*]``.
+        Teacher must always be configured under [orchestrator.teacher.*]
+        (no equivalent shortcut), because rl mode forbids a teacher and we
+        don't want the same shortcut to silently route to two different roles.
         """
         if not isinstance(data, dict):
             return data
 
         def deep_merge(dst: dict, src: dict) -> None:
+            """In-place recursive merge of ``src`` into ``dst``. ``src`` wins at the leaf."""
             for k, v in src.items():
                 if isinstance(v, dict) and isinstance(dst.get(k), dict):
                     deep_merge(dst[k], v)
                 else:
                     dst[k] = v
 
-        # [orchestrator.client] -> student.client
-        top_client = data.pop("client", None)
-        if isinstance(top_client, dict):
+        # 1. Re-nest top-level [orchestrator.client] under student.client.
+        legacy_client = data.pop("client", None)
+        if isinstance(legacy_client, dict):
             student = data.setdefault("student", {})
             if isinstance(student, dict):
-                deep_merge(student.setdefault("client", {}), top_client)
+                deep_merge(student.setdefault("client", {}), legacy_client)
             else:
-                data["client"] = top_client  # type mismatch; let pydantic surface it
+                # Mismatched types - put it back and let pydantic surface the error.
+                data["client"] = legacy_client
 
-        # [orchestrator.model] -> student
-        top_model = data.pop("model", None)
-        if top_model is not None:
+        # 2. Consolidate the legacy `model` alias into `student` so the
+        # flat-layout fix-up below sees a single target. Deep-merge with the
+        # legacy keys winning so a CLI `--model.<k>` overrides TOML `student.model.<k>`.
+        legacy_model = data.pop("model", None)
+        if legacy_model is not None:
             existing = data.get("student")
             if existing is None:
-                data["student"] = top_model
-            elif isinstance(existing, dict) and isinstance(top_model, dict):
-                deep_merge(existing, top_model)
+                data["student"] = legacy_model
+            elif isinstance(existing, dict) and isinstance(legacy_model, dict):
+                deep_merge(existing, legacy_model)
             else:
-                data["model"] = top_model
+                # Mismatched types - put it back and let pydantic surface the error.
+                data["model"] = legacy_model
 
-        # Flat ModelConfig fields under student.* -> student.model.*
+        # 3. Re-nest flat ModelConfig keys under student.model.
         model_only_keys = set(ModelConfig.model_fields)
         student = data.get("student")
         if isinstance(student, dict):
@@ -792,9 +798,10 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def _force_no_renderer_for_sft(self):
-        """SFT rolls out via the teacher's chat-completions endpoint; the
-        renderer client doesn't apply. Declared before the renderer
-        validators so they see the corrected value."""
+        """SFT rolls out via the teacher's plain chat-completions endpoint; the
+        renderer client doesn't apply. Force ``renderer=None`` so the user
+        doesn't have to remember to set it. Declared before the renderer
+        validators below so they see the corrected value."""
         if self.training_mode == "sft":
             self.renderer = None
         return self
@@ -811,7 +818,9 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_pool_size(self):
-        """``pool_size`` only applies when the renderer is enabled."""
+        """``pool_size`` is only meaningful when the renderer is enabled
+        (``renderer is not None``). Reject otherwise so callers don't
+        silently pass it and wonder why it's ignored."""
         if self.renderer is None and self.pool_size is not None:
             raise ValueError(
                 f"orchestrator.pool_size={self.pool_size!r} is set but "
@@ -822,8 +831,12 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def vlm_requires_renderer(self):
-        """VLMs (``[model.vlm]`` set) must go through a renderer — that's
-        where the processor lives + how ``mm_kwargs`` get plumbed."""
+        """VLMs (``[model.vlm]`` block set) must go through the renderer.
+
+        The renderer owns the processor per-slot, produces byte-identical
+        tokens, and ships generic ``mm_kwargs`` keyed by whatever the
+        model's forward signature expects.
+        """
         if self.student.model.vlm is not None and self.renderer is None:
             raise ValueError(
                 "orchestrator.renderer must be set when model.vlm is set. "
@@ -833,11 +846,17 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_renderer_auto_resolves(self):
-        """Surface the silent ``DefaultRenderer`` fallback at config time
-        — ``renderer.name='auto'`` for a model that isn't in
-        ``MODEL_RENDERER_MAP`` would silently fall back, which doesn't fix
-        the position-dependent chat-template bug the renderer exists to
-        solve and breaks tool-using envs."""
+        """Reject the silent DefaultRenderer fallback at config time.
+
+        When ``renderer.name='auto'`` and the model isn't in
+        ``MODEL_RENDERER_MAP``, ``create_renderer`` would fall back to
+        ``DefaultRenderer``. That fallback doesn't fix the
+        position-dependent chat-template bug the renderer client exists
+        to solve, and rejects envs that pass tools (the rollout dies
+        with "RendererPool does not support tools") unless
+        ``DefaultRendererConfig.tool_parser`` is configured. Surface at
+        config time so ``--dry-run`` reports the error.
+        """
         if self.renderer is None or self.renderer.name != "auto":
             return self
         from renderers.base import MODEL_RENDERER_MAP
