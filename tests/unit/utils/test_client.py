@@ -49,6 +49,23 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
     )
 
 
+def test_load_lora_adapter_read_timeout_can_be_overridden(monkeypatch):
+    monkeypatch.setenv("PRIME_RL_LORA_LOAD_READ_TIMEOUT_S", "180")
+    monkeypatch.setenv("PRIME_RL_LORA_LOAD_TOTAL_TIMEOUT_S", "900")
+    mock_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_client.post.return_value = mock_response
+
+    asyncio.run(load_lora_adapter([mock_client], "test-lora", Path("/test/path")))
+
+    mock_client.post.assert_called_once_with(
+        "/load_lora_adapter",
+        json={"lora_name": "test-lora", "lora_path": "/test/path"},
+        timeout=httpx.Timeout(connect=10.0, read=180.0, write=60.0, pool=10.0),
+    )
+
+
 def test_setup_clients_assigns_renderer_and_dp_rank_headers():
     from renderers import Qwen3VLRendererConfig
 

@@ -370,6 +370,17 @@ LORA_LOAD_READ_TIMEOUT_S = 30.0
 LORA_LOAD_TOTAL_TIMEOUT_S = 120.0
 
 
+def _lora_load_timeout_s(env_name: str, default: float) -> float:
+    value = os.getenv(env_name)
+    if value is None:
+        return default
+    try:
+        parsed = float(value)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
 async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
     """Make a HTTP post request to the vLLM server to load a LoRA adapter.
 
@@ -381,10 +392,15 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
     """
     logger = get_logger()
     lora_path_posix = lora_path.as_posix()
+    read_timeout_s = _lora_load_timeout_s("PRIME_RL_LORA_LOAD_READ_TIMEOUT_S", LORA_LOAD_READ_TIMEOUT_S)
+    total_timeout_s = _lora_load_timeout_s("PRIME_RL_LORA_LOAD_TOTAL_TIMEOUT_S", LORA_LOAD_TOTAL_TIMEOUT_S)
+    logger.debug(
+        f"Loading LoRA adapter {lora_name} with read_timeout={read_timeout_s}s total_timeout={total_timeout_s}s"
+    )
 
     @retry(
         retry=retry_if_exception(_is_retryable_lora_error),
-        stop=stop_after_delay(LORA_LOAD_TOTAL_TIMEOUT_S) | stop_after_attempt(10),
+        stop=stop_after_delay(total_timeout_s) | stop_after_attempt(10),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     )
@@ -393,7 +409,7 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
         response = await admin_client.post(
             "/load_lora_adapter",
             json={"lora_name": lora_name, "lora_path": lora_path_posix},
-            timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0),
+            timeout=httpx.Timeout(connect=10.0, read=read_timeout_s, write=60.0, pool=10.0),
         )
         response.raise_for_status()
 
