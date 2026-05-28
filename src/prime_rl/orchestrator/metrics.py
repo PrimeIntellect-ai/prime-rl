@@ -1,12 +1,4 @@
-"""MetricsBuilder: assembles the per-step W&B metrics dict.
-
-Single responsibility. Takes the rollout cohort (post-filter annotated), the
-``TrainBatchMetrics`` from the train sink's per-batch hook, and a few
-orchestrator scalars (step, step_time, dispatcher gauges); returns the dict
-the monitor logs.
-
-Pure-ish — only state is the config. No I/O, no side effects.
-"""
+"""MetricsBuilder: assembles the per-step W&B dict. No I/O, no side effects."""
 
 from __future__ import annotations
 
@@ -169,12 +161,8 @@ class MetricsBuilder:
             for name in filter_df.columns:
                 to_log[f"filters/{env}/{name}"] = env_filter_df[name].astype(float).mean()
 
-        # Dispatcher gauges + drain counters DO NOT belong here. They live
-        # on the wandb ``_timestamp`` axis via the dispatcher's own
-        # ``PeriodicLogger`` so the step-axis dict only carries per-batch /
-        # step-aligned metrics. Mixing axes for the same metric key would
-        # confuse wandb (define_metric only supports one step axis per
-        # key).
+        # Dispatcher / watcher gauges live on the ``_timestamp`` axis via
+        # the periodic logger — keep this dict step-axis only.
         if pre_filter_seen > 0:
             to_log["pre_filters/all/dropped_rate"] = pre_filter_dropped / pre_filter_seen
             for name, count in pre_filter_dropped_by_name.items():

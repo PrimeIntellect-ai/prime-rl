@@ -633,8 +633,8 @@ class OrchestratorConfig(BaseConfig):
     ]
     """Filters applied *after* a batch has been assembled. Each filter annotates each rollout;
     rollouts flagged by an enforcing filter are still recorded but not shipped to the trainer.
-    The legacy ``filters`` TOML/CLI key is silently renamed to ``post_batch_filters`` via a
-    ``@model_validator(mode="before")`` — see ``_alias_filters_to_post_batch_filters``."""
+    The TOML/CLI key ``filters`` is accepted as an alias for ``post_batch_filters`` (see
+    ``_alias_filters_to_post_batch_filters``)."""
 
     log: LogConfig = LogConfig()
 
@@ -709,10 +709,7 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _alias_filters_to_post_batch_filters(cls, data: Any) -> Any:
-        """Legacy TOML/CLI used ``[orchestrator.filters]`` for what is now
-        ``post_batch_filters``. Rename the key here so existing configs
-        keep parsing without forcing the runtime code to know about the
-        alias."""
+        """``filters`` is accepted as an alias for ``post_batch_filters``."""
         if isinstance(data, dict) and "filters" in data and "post_batch_filters" not in data:
             data = dict(data)
             data["post_batch_filters"] = data.pop("filters")
@@ -722,54 +719,44 @@ class OrchestratorConfig(BaseConfig):
     @classmethod
     def fold_student_shortcuts(cls, data: Any) -> Any:
         """Accept top-level ``[orchestrator.model]`` / ``[orchestrator.client]``
-        as shorthand for the student sub-config. Useful for ergonomic rl configs
-        where ``[orchestrator.student.*]`` is overkill, and required for
-        pre-refactor configs that used the flat layout to keep parsing:
+        as shorthand for the student sub-config:
 
-        - [orchestrator.client.*]     -> [orchestrator.student.client.*]
-        - [orchestrator.model.<k>]    -> [orchestrator.student.model.<k>]
-          (where <k> is any ModelConfig field)
+          [orchestrator.client.*]    -> [orchestrator.student.client.*]
+          [orchestrator.model.<k>]   -> [orchestrator.student.model.<k>]
 
-        Teacher must always be configured under [orchestrator.teacher.*]
-        (no equivalent shortcut), because rl mode forbids a teacher and we
-        don't want the same shortcut to silently route to two different roles.
+        Teacher must always be configured under ``[orchestrator.teacher.*]``.
         """
         if not isinstance(data, dict):
             return data
 
         def deep_merge(dst: dict, src: dict) -> None:
-            """In-place recursive merge of ``src`` into ``dst``. ``src`` wins at the leaf."""
             for k, v in src.items():
                 if isinstance(v, dict) and isinstance(dst.get(k), dict):
                     deep_merge(dst[k], v)
                 else:
                     dst[k] = v
 
-        # 1. Re-nest top-level [orchestrator.client] under student.client.
-        legacy_client = data.pop("client", None)
-        if isinstance(legacy_client, dict):
+        # [orchestrator.client] -> student.client
+        top_client = data.pop("client", None)
+        if isinstance(top_client, dict):
             student = data.setdefault("student", {})
             if isinstance(student, dict):
-                deep_merge(student.setdefault("client", {}), legacy_client)
+                deep_merge(student.setdefault("client", {}), top_client)
             else:
-                # Mismatched types - put it back and let pydantic surface the error.
-                data["client"] = legacy_client
+                data["client"] = top_client  # type mismatch; let pydantic surface it
 
-        # 2. Consolidate the legacy `model` alias into `student` so the
-        # flat-layout fix-up below sees a single target. Deep-merge with the
-        # legacy keys winning so a CLI `--model.<k>` overrides TOML `student.model.<k>`.
-        legacy_model = data.pop("model", None)
-        if legacy_model is not None:
+        # [orchestrator.model] -> student
+        top_model = data.pop("model", None)
+        if top_model is not None:
             existing = data.get("student")
             if existing is None:
-                data["student"] = legacy_model
-            elif isinstance(existing, dict) and isinstance(legacy_model, dict):
-                deep_merge(existing, legacy_model)
+                data["student"] = top_model
+            elif isinstance(existing, dict) and isinstance(top_model, dict):
+                deep_merge(existing, top_model)
             else:
-                # Mismatched types - put it back and let pydantic surface the error.
-                data["model"] = legacy_model
+                data["model"] = top_model
 
-        # 3. Re-nest flat ModelConfig keys under student.model.
+        # Flat ModelConfig fields under student.* -> student.model.*
         model_only_keys = set(ModelConfig.model_fields)
         student = data.get("student")
         if isinstance(student, dict):
@@ -842,10 +829,9 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def _force_no_renderer_for_sft(self):
-        """SFT rolls out via the teacher's plain chat-completions endpoint; the
-        renderer client doesn't apply. Force ``renderer=None`` so the user
-        doesn't have to remember to set it. Declared before the renderer
-        validators below so they see the corrected value."""
+        """SFT rolls out via the teacher's chat-completions endpoint; the
+        renderer client doesn't apply. Declared before the renderer
+        validators so they see the corrected value."""
         if self.training_mode == "sft":
             self.renderer = None
         return self
@@ -862,9 +848,7 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_pool_size(self):
-        """``pool_size`` is only meaningful when the renderer is enabled
-        (``renderer is not None``). Reject otherwise so callers don't
-        silently pass it and wonder why it's ignored."""
+        """``pool_size`` only applies when the renderer is enabled."""
         if self.renderer is None and self.pool_size is not None:
             raise ValueError(
                 f"orchestrator.pool_size={self.pool_size!r} is set but "
@@ -875,12 +859,8 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def vlm_requires_renderer(self):
-        """VLMs (``[model.vlm]`` block set) must go through the renderer.
-
-        The renderer owns the processor per-slot, produces byte-identical
-        tokens, and ships generic ``mm_kwargs`` keyed by whatever the
-        model's forward signature expects.
-        """
+        """VLMs (``[model.vlm]`` set) must go through a renderer — that's
+        where the processor lives + how ``mm_kwargs`` get plumbed."""
         if self.student.model.vlm is not None and self.renderer is None:
             raise ValueError(
                 "orchestrator.renderer must be set when model.vlm is set. "
@@ -890,17 +870,11 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_renderer_auto_resolves(self):
-        """Reject the silent DefaultRenderer fallback at config time.
-
-        When ``renderer.name='auto'`` and the model isn't in
-        ``MODEL_RENDERER_MAP``, ``create_renderer`` would fall back to
-        ``DefaultRenderer``. That fallback doesn't fix the
-        position-dependent chat-template bug the renderer client exists
-        to solve, and rejects envs that pass tools (the rollout dies
-        with "RendererPool does not support tools") unless
-        ``DefaultRendererConfig.tool_parser`` is configured. Surface at
-        config time so ``--dry-run`` reports the error.
-        """
+        """Surface the silent ``DefaultRenderer`` fallback at config time
+        — ``renderer.name='auto'`` for a model that isn't in
+        ``MODEL_RENDERER_MAP`` would silently fall back, which doesn't fix
+        the position-dependent chat-template bug the renderer exists to
+        solve and breaks tool-using envs."""
         if self.renderer is None or self.renderer.name != "auto":
             return self
         from renderers.base import MODEL_RENDERER_MAP

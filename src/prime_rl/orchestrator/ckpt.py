@@ -1,11 +1,5 @@
-"""Lean checkpoint manager. Persists ``Progress(step, totals…)`` only.
-
-No buffer state — the dispatcher iterates the dataset directly via the
-``TrainEnvs`` abstraction — and no difficulty pools (replaced by
-``pre_batch_filters``).
-
-Layout: ``<output_dir>/checkpoints/step_N/orchestrator/state.pt``.
-"""
+"""Checkpoint manager for ``Progress``. Layout:
+``<output_dir>/checkpoints/step_N/orchestrator/state.pt``."""
 
 from __future__ import annotations
 
@@ -22,8 +16,6 @@ from prime_rl.utils.pathing import get_ckpt_dir, get_step_path
 
 
 class CheckpointManager:
-    """Saves/loads ``Progress`` under ``<output_dir>/checkpoints/step_N/orchestrator/state.pt``."""
-
     def __init__(self, output_dir: Path, config: CheckpointConfig) -> None:
         self.config = config
         self.ckpt_dir = get_ckpt_dir(output_dir)

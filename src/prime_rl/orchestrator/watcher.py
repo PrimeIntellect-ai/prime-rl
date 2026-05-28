@@ -1,20 +1,6 @@
-"""WeightWatcher: polls the broadcast dir, advances ``Policy``, notifies observers.
-
-Standalone async task. The watcher does three things:
-
-1. Discovers the next checkpoint step from ``broadcasts/`` (or, equivalently,
-   from the NCCL-broadcast in-memory path which writes a ``NCCL_READY`` marker).
-2. Calls ``inference.update_weights(weights_path, lora_name, step)`` —
-   the inference pool's pause/resume + LoRA / NCCL handshake lives there.
-3. Mutates the shared ``Policy`` (version and, on LoRA, model_name) and walks
-   the observer list in order so each observer (dispatcher, future plugins) can
-   react synchronously (off-policy cancel, eval triggers, etc.).
-
-The watcher always stays at least one step ahead of the trainer: the trainer
-broadcasts step ``progress.step - 1``, we adopt anything fresher than what we
-already loaded. The dispatcher's barrier (``policy.version`` vs the batcher's
-step counter) keeps the in-flight lead bounded.
-"""
+"""WeightWatcher: polls the broadcast dir, advances ``Policy``, notifies
+observers (dispatcher → off-policy cancel). Standalone async task; the
+orchestrator's barrier bounds the in-flight lead."""
 
 from __future__ import annotations
 
@@ -52,8 +38,6 @@ class WeightWatcher:
         self.ckpt_step = ckpt_step
         self.poll_interval = poll_interval
 
-        # Latency metrics surfaced via ``gauges()`` to the orchestrator's
-        # ``PeriodicLogger`` (single consumer; reads once per tick).
         self.last_update_weights_time: float = 0.0
         self.last_wait_for_ckpt_time: float = 0.0
         self.update_count: int = 0
@@ -63,7 +47,6 @@ class WeightWatcher:
         self.stopped = asyncio.Event()
 
     async def start(self) -> None:
-        """Main poll loop. Runs until ``stop()`` is called."""
         self.task = asyncio.current_task()
         try:
             while not self.stopped.is_set():
@@ -81,14 +64,9 @@ class WeightWatcher:
             self.task = None
 
     def compute_next_ckpt_step(self) -> int:
-        """Next-checkpoint discovery: one step ahead of the trainer.
-
-        The orchestrator always runs one step ahead of the trainer, so we
-        must advance to at least ``policy.version + 1`` once the trainer
-        broadcasts it. We additionally adopt anything fresher the trainer
-        has already published (a fast trainer briefly running on-policy is
-        fine).
-        """
+        """Next checkpoint to adopt — at least ``policy.version`` (we stay
+        one step ahead of the trainer) plus anything fresher already
+        published in ``broadcasts/``."""
         broadcast_dir = get_broadcast_dir(self.config.output_dir)
         latest_ckpt_step = get_latest_ckpt_step(broadcast_dir) or 0
         return max(self.policy.version, latest_ckpt_step)
@@ -127,10 +105,6 @@ class WeightWatcher:
                 self.inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name
 
-            # Notify observers in registration order. Each gets the freshly
-            # installed version so they can invalidate stale work synchronously
-            # (the dispatcher uses this for off-policy cancellation + eval
-            # triggers).
             for observer in self.observers:
                 try:
                     await observer.on_new_version(next_step)

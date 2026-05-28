@@ -1,28 +1,14 @@
 """EvalSink: three-level rollout sink for eval epochs.
 
-Same processing structure as ``TrainSink`` — three ``process_*`` methods —
-but the logic at each level is different (eval doesn't tokenize for the
-trainer, doesn't compute advantages, doesn't apply filters):
+Same shape as ``TrainSink``, but no tokenization / advantages / filters:
 
-1. ``process_rollout(rollout)`` — no-op. Eval rollouts don't need
-   trainer-bound tokenization.
-2. ``process_group(key)`` — runs when ``group_size`` arrivals are
-   accumulated for ``(env, example_id, eval_step)``. Moves the rollouts
-   (including errored ones — eval metrics surface error rates) into the
-   ``(env, eval_step)`` batch bucket.
-3. ``process_batch(key)`` — runs when total arrivals for ``(env, eval_step)``
-   reach ``num_examples * group_size`` (full epoch). Returns an ``EvalBatch``
-   holding the raw rollouts and the pre-built per-env W&B metrics dict
-   (reward, completion_len, pass@k, cancelled/errored counts, ...). All
-   per-batch derivation lives here so the orchestrator's role is just to log
-   + persist.
+1. ``process_rollout`` — no-op.
+2. ``process_group`` — at ``group_size`` arrivals, move the rollouts
+   (errored ones included) into the ``(env, eval_step)`` bucket.
+3. ``process_batch`` — at ``num_examples × group_size`` arrivals, build
+   the ``EvalBatchMetrics`` and return an ``EvalBatch``.
 
-The sink owns the boundary signals: ``add()`` returns an ``EvalBatch`` once
-the full epoch has arrived, derived purely from counting. The dispatcher
-emits every dispatched rollout (success or error) exactly once so the
-count-based finalization always fires.
-
-Filters do not apply to eval — filters are a train-only concept.
+``add()`` returns ``EvalBatch | None``.
 """
 
 from __future__ import annotations
@@ -38,31 +24,18 @@ from prime_rl.utils.logger import get_logger
 
 
 class EvalSink:
-    """Three-level eval sink. Constructed once, fed via ``add(rollout)``.
-
-    Construct only when eval is configured — the orchestrator gates this on
-    ``config.eval is not None`` so ``eval_envs`` is always present here.
-    """
+    """Constructed only when eval is configured."""
 
     def __init__(self, *, eval_envs: EvalEnvs) -> None:
         self.eval_envs = eval_envs
-        # Per-group accumulation keyed by the dispatcher's group UUID.
-        # Finalized into the batch bucket when arrivals reach ``group_size``.
         self.pending_groups: dict[uuid.UUID, list[EvalRollout]] = defaultdict(list)
-        # Per (env_name, eval_step) accumulation — emits an ``EvalBatch``
-        # when ``len(bucket) >= num_examples * group_size``. ``process_group``
-        # flushes every member of a finalized group into here without
-        # filtering, so the bucket size IS the arrival count.
+        # Bucket size IS the arrival count — ``process_group`` flushes
+        # everything in without filtering.
         self.pending_batches: dict[tuple[str, int], list[EvalRollout]] = defaultdict(list)
 
-    # ── ingest ────────────────────────────────────────────────────────────
-
     def add(self, rollout: EvalRollout) -> EvalBatch | None:
-        """Process one arrival. Runs the per-rollout step always; finalizes
-        the per-example group on the ``group_size``-th arrival for the group,
-        and the per-env epoch when total arrivals reach the expected count.
-        Returns the ``EvalBatch`` when an env's epoch is complete.
-        """
+        """Process one arrival; finalize the group on the ``group_size``-th
+        arrival and the per-env epoch on the ``num_examples × group_size``-th."""
         env_name = rollout.env_name
         self.process_rollout(rollout)
         bkey = (env_name, rollout.eval_step)
@@ -73,30 +46,21 @@ class EvalSink:
             return self.process_batch(bkey)
         return None
 
-    # ── helpers for sink-owned boundary detection ─────────────────────────
-
     def group_size_for(self, env_name: str) -> int:
         return self.eval_envs.get(env_name).config.group_size
 
     def batch_size_for(self, env_name: str) -> int:
-        """Total rollouts the sink expects for one epoch of ``env_name``
-        (= ``num_examples * group_size``)."""
+        """``num_examples × group_size`` — total rollouts expected for one
+        epoch of ``env_name``."""
         env = self.eval_envs.get(env_name)
         return len(env.examples) * env.config.group_size
 
     def batch_progress(self) -> list[tuple[str, int, int, int]]:
-        """``(env_name, eval_step, arrivals_so_far, expected)`` for every
-        per-(env, eval_step) batch currently accumulating — fuel for the
-        orchestrator's pipeline log. Mirrors ``TrainSink.batch_progress``,
-        but eval can have multiple batches in parallel (one per active
-        ``(env, eval_step)``) so this returns a list.
-        ``arrivals_so_far`` counts ``pending_batches``
-        (groups already finalized this epoch) plus per-rollout partial
-        groups from non-group-scoring envs (so the counter ticks
-        per-rollout). Group-scoring envs only contribute via
-        ``pending_batches`` — their rollouts commit as a unit, so the
-        counter should jump in ``group_size`` increments. Empty list
-        when no eval is in flight."""
+        """One entry per accumulating ``(env, eval_step)`` batch:
+        ``(env_name, eval_step, arrivals_so_far, expected)``. Counts
+        ``pending_batches`` plus per-rollout partial groups from non-group-
+        scoring envs (group-scoring envs only contribute via finalized
+        ``pending_batches`` — their rollouts commit as a unit)."""
         counts: dict[tuple[str, int], int] = {bkey: len(bucket) for bkey, bucket in self.pending_batches.items()}
         for rollouts in self.pending_groups.values():
             if not rollouts:
@@ -132,9 +96,6 @@ class EvalSink:
         bucket = self.pending_batches[(env_name, eval_step)]
         bucket.extend(group)
 
-        # Per-group summary (eval). Mirrors the train side: one info line
-        # per finalized group with error / reward counts. Eval doesn't run
-        # filters, so the filter slot is always empty.
         survivors = [r for r in group if r.error is None]
         num_errored = len(group) - len(survivors)
         rewards = [r.reward for r in survivors]
@@ -144,20 +105,12 @@ class EvalSink:
             f"rollouts={len(group)} (errored={num_errored}) | reward={avg_reward:.4f}"
         )
 
-    # ── level 3: per-batch (per-env metrics) ──────────────────────────────
-
     def process_batch(self, key: tuple[str, int]) -> EvalBatch:
-        """Build the typed ``EvalBatchMetrics`` and return the finalized
-        ``EvalBatch``. The orchestrator turns metrics into the wandb dict
-        at log time via ``metrics.to_wandb_dict(env_name=…, step=…)``.
-
-        Errored rollouts (``rollout.error is not None`` — env-side failures,
-        cancellations, task exceptions) are excluded from reward / seq_len /
-        pass@k aggregation and surfaced separately as ``n_cancelled`` /
-        ``n_errored`` (an errored rollout doesn't represent a real
-        evaluation attempt and including it as reward=0 would silently bias
-        the score down).
-        """
+        """Build ``EvalBatchMetrics`` and return the finalized ``EvalBatch``.
+        Errored rollouts (env failures, cancellations, task exceptions) are
+        excluded from reward / pass@k / seq_len aggregation (including them
+        at reward=0 would bias the score down) and surfaced separately as
+        ``n_cancelled`` / ``n_errored``."""
         env_name, step = key
         rollouts = self.pending_batches.pop(key, [])
 
@@ -184,8 +137,7 @@ class EvalSink:
             metrics.no_response_rate = float(sum(1 for r in valid if not r.raw.get("completion")) / len(valid))
             metrics.num_turns_mean = float(sum(len(r.raw.get("trajectory") or []) for r in valid) / len(valid))
 
-            # pass@k: reconstruct per-example reward sets from ``example_id``,
-            # ignoring errored attempts (they don't count toward k tries).
+            # pass@k: errored attempts don't count toward k tries.
             by_example: dict[int | str, list[float]] = {}
             for r in valid:
                 by_example.setdefault(r.example_id, []).append(r.reward)

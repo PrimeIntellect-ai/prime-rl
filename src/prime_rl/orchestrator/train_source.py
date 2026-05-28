@@ -1,19 +1,7 @@
-"""TrainSource: infinite pull of training examples.
+"""TrainSource: weighted round-robin across train envs, infinite pull.
 
-Weighted round-robin across train envs (configured ``ratio`` if every env
-sets one, otherwise weight by dataset size). The dispatcher calls
-``next_example(available_permits)`` whenever it has permits free and
-``dispatcher.DispatcherMode`` is ``PREFER_TRAIN`` — there's no notion of
-a finite epoch, the source just reshuffles per-env rows when it reaches
-the end.
-
-The dispatcher still owns scheduling priority (``dispatcher.DispatcherMode``)
-and capacity (``max_inflight`` counter); this source owns the per-env
-permit cost lookup and answers "what's the next training example to
-schedule that fits in ``available_permits``?". Mirrors ``EvalSource
-.next_example`` so the dispatcher hits both sources through a single
-symmetric API.
-"""
+Weights default to configured ``ratio`` (when every env sets one) or to
+per-env dataset size. ``next_example`` reshuffles on cursor exhaustion."""
 
 from __future__ import annotations
 
@@ -23,15 +11,10 @@ from prime_rl.orchestrator.envs import TrainEnvs
 
 
 class TrainSource:
-    """Infinite source of training examples — weighted round-robin across envs.
-
-    ``next_example(available_permits)`` picks a weighted-RR env, returns
-    its next example (mutating its cursor + reshuffling on exhaustion),
-    or ``None`` when the picked env's per-call permit cost doesn't fit in
-    ``available_permits`` — the dispatch loop retries on the next
-    iteration once permits free up. Returned dicts carry ``env_name`` and
-    an ``example_id`` (the latter guaranteed by verifiers).
-    """
+    """``next_example(available_permits)`` picks a weighted-RR env and
+    returns its next example (or ``None`` when the env's per-call permit
+    cost doesn't fit — the dispatch loop retries when permits free up).
+    Returned dicts carry ``env_name`` + ``example_id``."""
 
     def __init__(self, train_envs: TrainEnvs, *, seed: int | None) -> None:
         self.rng = random.Random(seed)
@@ -41,10 +24,8 @@ class TrainSource:
 
         self.examples: dict[str, list[dict]] = {}
         self.cursors: dict[str, int] = {}
-        # Per-env permit cost for opening a fresh group. Group-scoring envs
-        # dispatch the whole group as a single task, so they need
-        # ``env.config.group_size`` permits up front; per-rollout envs
-        # dispatch one at a time and only need 1 permit to get going.
+        # Group-scoring envs reserve ``group_size`` permits up front;
+        # per-rollout envs need 1.
         self.env_costs: dict[str, int] = {}
         for env in self.envs:
             rows: list[dict] = []
@@ -62,7 +43,6 @@ class TrainSource:
         if all(r is not None for r in configured_ratios):
             self.weights: list[float] = [float(r) for r in configured_ratios]  # type: ignore[arg-type]
         else:
-            # "ratio unset → weight by num examples" natural distribution.
             self.weights = [float(len(self.examples[name])) for name in self.env_names]
 
     def next_example(self, available_permits: int) -> dict | None:

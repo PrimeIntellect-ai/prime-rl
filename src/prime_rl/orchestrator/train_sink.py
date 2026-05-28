@@ -1,32 +1,14 @@
 """TrainSink: three-level rollout sink for the training side.
 
-Each rollout passes through three processing levels, each defined by a
-``process_*`` method on the sink (same shape as ``EvalSink``):
+1. ``process_rollout`` — eager per-rollout tokenization (overlaps with
+   dispatcher producing more rollouts). Errored rollouts skip this.
+2. ``process_group`` — filters errored rollouts, computes advantages over
+   survivors, runs the pre-batch filter pass.
+3. ``process_batch`` — applies post-batch filter annotations and assembles
+   the trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch``.
 
-1. ``process_rollout(rollout)`` — runs on every ``add()``. Eager
-   tokenization (``backfill_rollout_tokens`` + ``interleave_rollout``), so
-   the heavy per-rollout CPU work overlaps with the dispatcher producing
-   more rollouts instead of stacking up at ship time. Errored rollouts
-   (``raw["error"]`` set) skip tokenization — they'll be dropped at the
-   group level.
-2. ``process_group(key)`` — runs when ``group_size`` rollouts have arrived
-   for ``(env, example_id)``. Filters out errored rollouts (and drops the
-   whole group when the env ``requires_group_scoring`` and any rollout in
-   the group failed); computes advantages over survivors; runs the
-   pre-batch filter pass; appends survivors to ``pending_batch``.
-3. ``process_batch()`` — runs when ``pending_batch`` has enough rollouts
-   (``batch_size`` rollouts or ``token_batch_size`` tokens). Pops a cohort,
-   applies post-batch filter annotations, and assembles the trainer-bound
-   ``TrainingSample`` list. Returns a ``TrainBatch``.
-
-``add()`` returns ``TrainBatch | None`` directly (mirrors ``EvalSink.add``);
-no separate ``pop_batch`` / ``is_batch_done`` API needed. The dispatcher
-emits every dispatched rollout (success or error) exactly once so the
-count-based finalization always fires.
-
-I/O concerns (ship to trainer, save_rollouts to disk, offload images,
-teacher_logprobs for opd, metrics build, monitor.log) live on the
-orchestrator.
+``add()`` returns ``TrainBatch | None``. I/O concerns (ship to trainer,
+save_rollouts, monitor.log, teacher logprobs) live on the orchestrator.
 """
 
 from __future__ import annotations
@@ -76,34 +58,25 @@ class TrainSink:
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
-        # Build the advantage function once at construction (custom funcs
-        # do an ``import_object`` — wasteful per group). ``None`` here
-        # means "trivial advantage = reward" path inside ``assign_advantages``.
+        # Built once — custom advantage funcs do an ``import_object`` and
+        # we don't want to pay that per group. ``None`` = reward-only path.
         self.advantage_fn = setup_advantage_fn(advantage_config) if advantage_config is not None else None
         self.pre_filters = pre_filters
         self.post_filters = post_filters
 
-        # In-progress GRPO groups keyed by the dispatcher's group UUID.
-        # The sink finalizes a group once arrivals reach the per-env
-        # ``group_size`` (looked up via ``group_size_for(env_name)``) —
-        # works because the dispatcher emits every dispatched rollout
-        # (success or error) exactly once. We can't key on
-        # ``(env_name, example_id)`` because the same example can be
-        # re-sampled while an earlier group is still in flight.
+        # Keyed by the dispatcher's group UUID. ``(env_name, example_id)``
+        # isn't unique — the same example can be re-sampled while an
+        # earlier group is still in flight.
         self.pending_groups: dict[uuid.UUID, list[TrainRollout]] = defaultdict(list)
-        # Survivors of the pre-filter pass — waiting to ship. Singular
-        # because train has one batch in flight at a time (unlike eval,
-        # which can have multiple ``(env, eval_step)`` epochs in parallel).
         self.pending_batch: list[TrainRollout] = []
 
-        # Per-batch pre-filter detection counters; reset by the orchestrator
-        # after each ship via ``reset_pre_filter_stats``.
+        # Reset by the orchestrator after each ship via ``reset_pre_filter_stats``.
         self.pre_filter_seen = 0
         self.pre_filter_dropped = 0
         self.pre_filter_dropped_by_name: dict[str, int] = {}
 
-        # Per-env arrival/error counters since the last ship — fuel for the
-        # per-env breakdown in the success log. Reset in ``process_batch``.
+        # Per-env arrival / error counters since the last ship; reset in
+        # ``process_batch``. Fuel for the per-env success log breakdown.
         self.arrivals_by_env: dict[str, int] = defaultdict(int)
         self.errors_by_env: dict[str, int] = defaultdict(int)
 
@@ -127,12 +100,10 @@ class TrainSink:
         return out
 
     def batch_progress(self) -> tuple[int, int, str]:
-        """``(current, target, unit)`` for the in-progress train batch — fuel
-        for the orchestrator's pipeline log. Counts ``pending_batch``
-        (post-group-finalize survivors) plus per-rollout partial groups
-        from non-group-scoring envs, so the counter ticks per-rollout as
-        the user expects (group-scoring envs jump in ``group_size``
-        increments since their rollouts only commit as a unit)."""
+        """``(current, target, unit)`` for the in-progress train batch.
+        Counts ``pending_batch`` plus per-rollout partial groups from
+        non-group-scoring envs so the counter ticks per-rollout (group-
+        scoring envs jump in ``group_size`` increments)."""
         in_progress_rollouts = [r for group in self.in_progress_groups() for r in group]
         if self.batch_size is not None:
             return len(self.pending_batch) + len(in_progress_rollouts), self.batch_size, "rollouts"
@@ -145,9 +116,8 @@ class TrainSink:
         )
 
     def pending_batch_by_env(self) -> dict[str, int]:
-        """Per-env contribution to ``batch_progress()``. Mirrors that method's
-        counting policy (pending_batch survivors + non-group-scoring partial
-        groups) so per-env values sum to the aggregate."""
+        """Per-env breakdown of ``batch_progress()``; values sum to the
+        aggregate."""
         counts: dict[str, int] = defaultdict(int)
         for r in self.pending_batch:
             counts[r.env_name] += 1
@@ -156,12 +126,9 @@ class TrainSink:
                 counts[r.env_name] += 1
         return dict(counts)
 
-    # ── ingest ────────────────────────────────────────────────────────────
-
     async def add(self, rollout: TrainRollout) -> TrainBatch | None:
-        """Process one arrival. Runs the per-rollout step always; finalizes
-        the group on the ``group_size``-th arrival; returns a ``TrainBatch``
-        if that arrival brought ``pending_batch`` to the batch threshold."""
+        """Process one arrival; finalize the group on the ``group_size``-th
+        arrival; return a ``TrainBatch`` if the batch threshold is met."""
         await self.process_rollout(rollout)
         env_name = rollout.env_name
         self.arrivals_by_env[env_name] += 1
@@ -170,9 +137,6 @@ class TrainSink:
         self.pending_groups[rollout.group_id].append(rollout)
         if len(self.pending_groups[rollout.group_id]) >= self.group_size_for(env_name):
             self.process_group(rollout.group_id)
-        # Mirror ``EvalSink.add``: trigger ``process_batch`` once the buffer
-        # has reached the configured rollout/token threshold, otherwise
-        # return None and wait for more arrivals.
         ready = (
             len(self.pending_batch) >= self.batch_size
             if self.batch_size is not None
@@ -182,15 +146,10 @@ class TrainSink:
             return self.process_batch()
         return None
 
-    # ── level 1: per-rollout (tokenization) ───────────────────────────────
-
     async def process_rollout(self, rollout: TrainRollout) -> None:
-        """Tokenize this rollout eagerly. Backfills tokens if the env didn't
-        return them (sft against external teacher APIs), then runs
-        ``interleave_rollout`` to produce one or more ``TrainingSample``\\ s
-        on ``rollout.samples``. Errored rollouts skip tokenization; they'll
-        be dropped at the group level.
-        """
+        """Tokenize the rollout eagerly. Backfills tokens if the env didn't
+        return them (SFT against external teacher APIs); errored rollouts
+        skip tokenization and get dropped at the group level."""
         if rollout.error is not None:
             return
         raw = rollout.raw
@@ -205,15 +164,10 @@ class TrainSink:
         )
         rollout.samples = samples or []
 
-    # ── level 2: per-group (filter errors + advantages + pre-filter) ──────
-
     def process_group(self, group_id: uuid.UUID) -> None:
-        """Finalize one GRPO group: filter errored rollouts (and drop the
-        whole group when ``requires_group_scoring`` is set and any failed),
-        compute advantages over survivors, propagate them onto the per-
-        rollout ``TrainingSample``\\ s, then run the pre-batch filter pass.
-        Survivors (not filtered) land in ``pending_batch``.
-        """
+        """Finalize one GRPO group: drop errored rollouts (the whole group
+        when ``requires_group_scoring`` and any failed), assign advantages,
+        run pre-batch filters, append survivors to ``pending_batch``."""
         group = self.pending_groups.pop(group_id, [])
         if not group:
             return
@@ -222,8 +176,8 @@ class TrainSink:
         survivors = [r for r in group if r.error is None]
         num_errored = len(group) - len(survivors)
 
-        # Group-scoring envs: any failure makes the surviving rollouts'
-        # rewards unsafe (computed relative to the missing ones). Drop.
+        # Group-scoring envs: any failure makes survivors' rewards unsafe
+        # (computed relative to the missing ones).
         env = self.train_envs.get(env_name)
         if num_errored > 0 and env.requires_group_scoring:
             get_logger().debug(
@@ -238,12 +192,10 @@ class TrainSink:
             )
             return
 
-        # Advantages over surviving rollouts only.
         assign_advantages(survivors, self.advantage_fn)
 
-        # Propagate advantages + reward + env to the pre-tokenized samples,
-        # so the orchestrator can just collect samples at ship time without
-        # re-walking rollouts.
+        # Propagate to the pre-tokenized samples so the orchestrator can
+        # collect samples at ship time without re-walking rollouts.
         for r in survivors:
             for sample in r.samples:
                 sample.advantage = r.advantage
@@ -251,7 +203,6 @@ class TrainSink:
                 sample.env_name = r.env_name
                 sample.training_mode = self.config.training_mode
 
-        # Pre-batch filter pass.
         if self.pre_filters:
             apply_filters(self.pre_filters, survivors)
         filtered_by_name: dict[str, int] = {}
@@ -282,14 +233,12 @@ class TrainSink:
             f"reward={avg_reward:.4f} | filters: {filter_str}"
         )
 
-    # ── level 3: per-batch (post-filter + samples assembly) ───────────────
-
     def process_batch(self) -> TrainBatch:
         """Pop a cohort off ``pending_batch`` (by rollout count when
         ``batch_size`` is set, by token count when ``token_batch_size`` is
-        set), apply post-batch filter annotations, and assemble the trainer-
-        bound ``TrainingSample`` list from already-tokenized rollouts. Any
-        overflow stays in ``pending_batch`` for the next batch."""
+        set), apply post-batch filter annotations, and assemble the
+        trainer-bound ``TrainingSample`` list. Overflow stays for the next
+        batch."""
         if self.batch_size is not None:
             cohort = self.pending_batch[: self.batch_size]
             self.pending_batch = self.pending_batch[self.batch_size :]
@@ -308,9 +257,8 @@ class TrainSink:
         if self.post_filters:
             apply_filters(self.post_filters, cohort)
 
-        # Collect tokenized samples + per-rollout stats. Samples were pre-built
-        # by ``process_rollout``; the per-group hook already set advantage/reward
-        # on each sample.
+        # Samples are pre-built by ``process_rollout``; ``process_group``
+        # already set advantage/reward on each sample.
         samples: list[TrainingSample] = []
         prefill_lens: list[int] = []
         decode_lens: list[int] = []

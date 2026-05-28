@@ -1,24 +1,7 @@
-"""PeriodicLogger: fires the orchestrator's unified pipeline view on a shared interval.
-
-The orchestrator constructs a single ``PeriodicLogger`` with a ``collect()``
-callable that returns both its human-readable console body string and its
-flat wandb metrics dict — in one call, so any drain-on-read counters fire
-exactly once per tick.
-
-The logger wakes every ``interval`` seconds and emits to:
-
-- **Console** at info-level: the body returned by ``collect()``.
-- **Wandb** on the ``_timestamp`` axis: each metric key registered at
-  construction via ``wandb.define_metric(step_metric="_timestamp")`` so it
-  goes on the wall-clock time axis, not the step axis.
-
-Lifecycle: ``start()`` when the orchestrator starts (spawns the task);
-``stop()`` on shutdown (cancels the task).
-
-When ``wandb_enabled=False`` (e.g. ``--no-wandb``), the wandb side is
-skipped and the console line still fires. No defensive try/except around
-``wandb.log`` — if wandb is enabled, it's expected to work.
-"""
+"""PeriodicLogger: orchestrator's pipeline view, fires every ``interval``
+seconds. ``collect()`` returns ``(console_body, wandb_payload)`` in one
+call so drain-on-read counters fire exactly once per tick. Wandb writes
+land on the ``_timestamp`` axis."""
 
 from __future__ import annotations
 
@@ -33,8 +16,6 @@ from prime_rl.utils.logger import get_logger
 
 
 class PeriodicLogger:
-    """``await logger.start()`` from inside the owning component."""
-
     def __init__(
         self,
         *,
@@ -51,9 +32,6 @@ class PeriodicLogger:
         self.task: asyncio.Task | None = None
         self.stopped = asyncio.Event()
 
-        # Register the wall-clock time axis for our specific metric keys up
-        # front. Only the keys we'll actually log get a ``define_metric``
-        # call — no glob patterns, no lazy registration.
         if self.wandb_enabled:
             for key in metric_keys:
                 wandb.define_metric(key, step_metric="_timestamp")

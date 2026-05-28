@@ -1,25 +1,8 @@
 """Shared dataclasses, type aliases, and protocols for the orchestrator.
 
-Data carriers and small types live here so behavioral modules (dispatcher,
-sinks, watcher, metrics, ckpt) can import without depending on each other's
-implementation modules.
-
-Sections (in dependency order; no module here imports another orchestrator
-module):
-
-- ``Policy``: the single mutable view of the current trainer weights.
-- ``Progress``: persistent counters owned by the checkpoint manager.
-- ``Kind``: dispatch primitive (the train/eval discriminator).
-- ``InflightRollout`` / ``GroupState``: the dispatcher's per-task scheduling
-  state.
-- ``FinishedRollout`` → ``TrainRollout`` / ``EvalRollout``: the atomic units
-  flowing on the dispatcher's output queue. Each wraps the raw
-  ``vf.RolloutOutput`` (env-produced data; never mutated by prime-rl) +
-  prime-rl bookkeeping on typed fields.
-- ``TrainBatch`` / ``EvalBatch`` and their ``TrainBatchMetrics`` /
-  ``EvalBatchMetrics``: per-batch payloads the sinks return to the
-  orchestrator.
-- ``VersionObserver``: the watcher → dispatcher notification interface.
+Data carriers only — no behavior. Behavioral modules (dispatcher, sinks,
+watcher, metrics, ckpt) import from here so they don't depend on each
+other's implementation modules.
 """
 
 from __future__ import annotations
@@ -37,13 +20,8 @@ from prime_rl.transport import TrainingSample
 
 @dataclass
 class Policy:
-    """Mutable shared view of the current policy.
-
-    The ``WeightWatcher`` writes ``version`` (and ``model_name`` after a LoRA
-    swap) when a new checkpoint becomes available; the ``RolloutDispatcher``
-    and all in-flight rollout meta read these fields at dispatch time. Passed
-    by reference — never copied — so observers see new versions immediately.
-    """
+    """Mutable shared view of the current policy. Passed by reference so
+    observers (dispatcher, sinks) see new versions immediately."""
 
     version: int = 0
     model_name: str = ""
@@ -51,17 +29,10 @@ class Policy:
 
 @dataclass
 class Progress:
-    """Persistent counters for the orchestrator.
-
-    ``step`` is the trainer-aligned step (== ``policy.version`` after every
-    successful weight update).
-
-    ``last_eval_step_by_env`` records, per eval env name, the highest
-    ``step`` at which an eval epoch has been triggered. The
-    ``EvalSource`` reads + writes this dict so that on resume from a
-    checkpoint, we don't re-fire evals that already ran pre-checkpoint
-    (interval-aligned envs would otherwise duplicate at the resume step).
-    """
+    """Persistent counters. ``step`` is the trainer-aligned step.
+    ``last_eval_step_by_env`` records the highest step at which each eval
+    env was triggered — read + written by ``EvalSource`` so resumes don't
+    re-fire evals that already ran pre-checkpoint."""
 
     step: int = 0
     total_tokens: int = 0
@@ -70,20 +41,15 @@ class Progress:
     last_eval_step_by_env: dict[str, int] = field(default_factory=dict)
 
 
-# ── dispatcher primitives ─────────────────────────────────────────────────
-
-
 Kind = Literal["train", "eval"]
 
 
 @dataclass
 class InflightRollout:
     """Per-task scheduling state held by the dispatcher while a rollout (or
-    a group of rollouts, for group-scoring envs) is being generated.
-
-    One entry per in-flight ``run_rollout`` / ``run_group`` task.
-    Translates into one or more ``FinishedRollout``\\ s on completion.
-    """
+    a group, for group-scoring envs) is being generated. One entry per
+    in-flight ``run_rollout`` / ``run_group`` task; translates into one or
+    more ``FinishedRollout``\\ s on completion."""
 
     kind: Kind
     env_name: str
@@ -91,61 +57,42 @@ class InflightRollout:
     policy_version: int
     rollout_count: int  # number of inflight permits this task holds
     client_config: vf.ClientConfig | None = None
-    off_policy_steps: int = 0  # incremented on every ``on_new_version``
+    off_policy_steps: int = 0  # bumped by ``on_new_version``
     eval_step: int | None = None
 
 
 @dataclass
 class GroupState:
-    """Per-group scheduling state for the dispatcher.
-
-    Tracks only what's needed to keep dispatching the remaining rollouts of
-    a group and to keep them pinned to the same inference client (for prefix-
-    cache hits). Completion accumulation lives in the sink, not here — each
-    finished rollout is emitted immediately by ``handle_completed_rollout``.
-
-    For group-scoring envs ``rollouts_to_schedule`` collapses to 0 after the
-    single ``run_group`` task is queued; otherwise it's decremented per
-    rollout. The dispatcher drops the entry from ``self.groups`` once every
-    member has been emitted.
-    """
+    """Per-group scheduling state in the dispatcher. Completion accumulation
+    happens in the sink — the dispatcher only tracks what's needed to keep
+    dispatching the remaining rollouts + pin them to the same client (for
+    prefix-cache hits)."""
 
     kind: Kind
     env_name: str
     example: dict
     rollouts_to_schedule: int
     target_rollouts: int  # total rollouts the group will emit to the sink
-    emitted: int = 0  # # of rollouts emitted to ``out_q`` so far
+    emitted: int = 0
     eval_step: int | None = None
     pinned_client: vf.ClientConfig | None = None
     policy_version_at_start: int = 0
 
 
-# ── finished rollouts (what the dispatcher emits) ─────────────────────────
-
-
 @dataclass
 class FinishedRollout:
     """A completed rollout the sink receives. ``raw`` is the env's untouched
-    ``vf.RolloutOutput``; prime-rl bookkeeping lives on typed fields directly
-    on this dataclass (not stamped into ``raw``). Discriminate ``train`` vs
-    ``eval`` by ``isinstance(r, TrainRollout)`` / ``isinstance(r, EvalRollout)``.
+    ``vf.RolloutOutput``; prime-rl metadata lives on typed fields. Train vs
+    eval is discriminated by ``isinstance(r, TrainRollout)`` /
+    ``isinstance(r, EvalRollout)``.
 
-    Invariant — every rollout the dispatcher acquires an inflight permit for
-    eventually arrives at the corresponding sink exactly once, success or
-    failure. Failures (env-reported errors, empty trajectories, task
-    exceptions, off-policy cancellations) flow through with ``raw["error"]``
-    set; the sinks decide drop / partial-train policy.
+    Failures (env errors, empty trajectories, task exceptions, off-policy
+    cancellations) flow through with ``raw["error"]`` set; the sinks decide
+    drop / partial-train policy.
 
-    ``rollout_id`` is a unique per-rollout UUID generated at construction —
-    the only safe key for referencing this exact rollout through its
-    lifecycle (dispatch → sink → batch → JSONL on disk). Neither
-    ``(env_name, example_id)`` nor ``group_id`` is unique: the same example
-    can be re-sampled as multiple groups, and a group contains
-    ``group_size`` rollouts. ``group_id`` is the dispatcher's UUID for the
-    group this rollout belongs to; it's how the sink groups rollouts for
-    GRPO advantages.
-    """
+    ``rollout_id`` is the only safe key for tracing one rollout through its
+    lifecycle — ``(env_name, example_id)`` collides on re-sampling and
+    ``group_id`` covers a whole group."""
 
     raw: vf.RolloutOutput
     env_name: str
@@ -168,10 +115,9 @@ class FinishedRollout:
         return bool(self.raw.get("is_truncated", False))
 
     def to_dict(self) -> vf.RolloutOutput:
-        """Materialize ``raw`` + prime-rl metadata into a single dict for I/O
-        boundaries (``save_rollouts``, ``monitor.log_samples`` /
-        ``log_eval_samples``). Returns a shallow copy of ``raw`` with
-        metadata merged in — never mutates ``self.raw``."""
+        """``raw`` + metadata merged into a single dict for I/O
+        (``save_rollouts``, ``monitor.log_samples`` / ``log_eval_samples``).
+        Returns a shallow copy; never mutates ``self.raw``."""
         out: vf.RolloutOutput = dict(self.raw)  # type: ignore[assignment]
         out["rollout_id"] = str(self.rollout_id)
         out["group_id"] = str(self.group_id)
@@ -184,10 +130,9 @@ class FinishedRollout:
 
 @dataclass
 class TrainRollout(FinishedRollout):
-    """Train-side rollout. Train-only fields are populated by ``TrainSink``:
-    ``samples`` in ``process_rollout`` (after tokenization), ``advantage`` +
-    ``is_filtered`` + ``filter_results`` in ``process_group`` /
-    ``process_batch``."""
+    """Train-only fields populated by ``TrainSink``: ``samples`` in
+    ``process_rollout``, ``advantage`` / ``is_filtered`` / ``filter_results``
+    in ``process_group`` / ``process_batch``."""
 
     samples: list[TrainingSample] = field(default_factory=list)
     advantage: float | None = None
@@ -205,8 +150,8 @@ class TrainRollout(FinishedRollout):
 
 @dataclass
 class EvalRollout(FinishedRollout):
-    """Eval-side rollout. Carries ``eval_step`` (the policy version at which
-    the eval epoch was triggered — the bucket key the sink groups by)."""
+    """``eval_step`` is the policy version at which the epoch was triggered
+    — the bucket key the sink groups by."""
 
     eval_step: int = 0
 
@@ -216,16 +161,11 @@ class EvalRollout(FinishedRollout):
         return out
 
 
-# ── sink payloads ─────────────────────────────────────────────────────────
-
-
 @dataclass
 class TrainBatchMetrics:
-    """Per-batch counters/aggregates that ``TrainSink.process_batch``
-    extracts from the rollout cohort. The orchestrator passes this to
-    ``MetricsBuilder.build`` (along with post-barrier timing scalars) to
-    assemble the wandb dict — keeps the heavy per-rollout walk out of the
-    log-time critical path."""
+    """Per-batch aggregates that ``TrainSink.process_batch`` extracts from
+    the cohort; the orchestrator hands this to ``MetricsBuilder.build``
+    along with post-barrier timing scalars."""
 
     n_trainable: int
     num_prefill_tokens: int
@@ -234,28 +174,18 @@ class TrainBatchMetrics:
     rollout_decode_lens: list[int]
     samples_per_rollout: list[int]
     samples_shipped: int
-    # Per-env arrival/error counts accumulated by the sink between ships.
-    # Errored rollouts are dropped at the group level (they don't reach
-    # ``TrainBatch.rollouts``), so we need a separate counter to surface
-    # the per-batch error rate in the success log.
+    # Errored rollouts are dropped at the group level (don't reach
+    # ``TrainBatch.rollouts``), so these counters surface the per-batch
+    # error rate in the success log.
     arrivals_by_env: dict[str, int] = field(default_factory=dict)
     errors_by_env: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
 class TrainBatch:
-    """One training batch ready to ship.
-
-    - ``samples`` is the trainer-bound payload (post-filter survivors only)
-      that goes to ``sender.send``.
-    - ``rollouts`` is the full cohort (including post-filter dropouts) kept
-      for orchestrator-side I/O (``save_rollouts``, ``log_samples``,
-      ``log_distributions``, ``offload_images_to_disk``) and as input to
-      ``MetricsBuilder``.
-    - ``metrics`` is the extracted per-batch counter view (no derived wandb
-      dict here — that's the orchestrator's job at log time once it knows
-      step_time / teacher_logprobs_time / save_ckpt_time).
-    """
+    """- ``samples``: trainer-bound payload (post-filter survivors only).
+    - ``rollouts``: full cohort kept for orchestrator-side I/O and metrics.
+    - ``metrics``: typed counter view; wandb dict assembled at log time."""
 
     rollouts: list[TrainRollout]
     samples: list[TrainingSample]
@@ -264,15 +194,13 @@ class TrainBatch:
 
 @dataclass
 class EvalBatchMetrics:
-    """Per-batch typed metrics built by ``EvalSink.process_batch``. Final
-    wandb dict is derived via ``to_wandb_dict`` at log time, keeping the
-    dataclass typed while still preserving wandb-friendly keys downstream."""
+    """Typed per-batch metrics built by ``EvalSink.process_batch``. Final
+    wandb dict derived via ``to_wandb_dict`` at log time."""
 
     n_rollouts: int
     n_cancelled: int
     n_errored: int
     valid_rate: float
-    # Survivor-derived. Zeros when no valid rollouts (all errored).
     n_examples: int = 0
     group_size: int = 1
     reward_mean: float = 0.0
@@ -309,11 +237,9 @@ class EvalBatchMetrics:
 
 @dataclass
 class EvalBatch:
-    """One env's eval epoch. ``rollouts`` is the raw cohort kept for
-    ``save_rollouts`` + ``monitor.log_eval_samples``; ``metrics`` is the
-    typed per-env metrics view built by ``EvalSink.process_batch``. The
-    orchestrator turns ``metrics`` into the wandb dict at log time via
-    ``metrics.to_wandb_dict(env_name=…, step=…)``."""
+    """One env's eval epoch. ``rollouts`` is the raw cohort for save / log;
+    ``metrics`` is the typed per-env view built by
+    ``EvalSink.process_batch``."""
 
     env_name: str
     step: int
@@ -321,16 +247,9 @@ class EvalBatch:
     metrics: EvalBatchMetrics
 
 
-# ── watcher → observer interface ──────────────────────────────────────────
-
-
 class VersionObserver(Protocol):
-    """Notified after each successful policy update.
-
-    The watcher walks the observer list synchronously in registration order
-    *after* mutating ``Policy``. Observers see the freshly-installed version
-    immediately and can use the call to invalidate caches, cancel stale
-    in-flight work, or trigger evals.
-    """
+    """Notified after each successful policy update. Walked synchronously
+    by the watcher *after* mutating ``Policy``, so observers see the new
+    version immediately."""
 
     async def on_new_version(self, step: int) -> None: ...
