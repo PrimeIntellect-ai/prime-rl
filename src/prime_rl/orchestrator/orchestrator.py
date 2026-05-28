@@ -99,6 +99,11 @@ monkey_patch_chat_completion_logprobs()
 # wedges (env-server ZMQ recv, vLLM admin aclose, etc).
 SHUTDOWN_TIMEOUT_S = 300
 
+# Abort the run after this many consecutive train batches drop all rollouts
+# to post-batch filters — almost always a misconfigured filter or a
+# pathological homogeneous-reward dataset. Better to fail loudly than spin.
+MAX_CONSECUTIVE_EMPTY_BATCHES = 10
+
 
 class Orchestrator:
     """``await Orchestrator(config).start()`` to run.
@@ -122,6 +127,7 @@ class Orchestrator:
     stopped: asyncio.Event
     draining: bool
     last_batch_at: float | None
+    consecutive_empty_batches: int
     eval_triggered_at: dict[tuple[str, int], float]
     ckpt_manager: CheckpointManager | None
     component_tasks: list[asyncio.Task]
@@ -188,6 +194,10 @@ class Orchestrator:
         # ``maybe_trigger_eval`` and popped by ``finalize_eval_batch`` so the
         # eval success log can report wall-clock epoch duration.
         self.eval_triggered_at = {}
+        # Counter for consecutive train batches that dropped all rollouts
+        # to filters — abort after the threshold to avoid spinning forever
+        # on a misconfigured filter / homogeneous-reward dataset.
+        self.consecutive_empty_batches = 0
         self.component_tasks = []
 
         # Genuinely-optional attributes default to None here; ``setup()``
@@ -379,7 +389,14 @@ class Orchestrator:
         # are gated on ``eval_envs is None`` and never touch the source.
         self.train_source = TrainSource(self.train_envs, seed=42)
         self.eval_source: EvalSource | None = (
-            EvalSource(self.eval_envs, config.eval) if config.eval is not None and self.eval_envs is not None else None
+            EvalSource(
+                self.eval_envs,
+                config.eval,
+                last_eval_step_by_env=self.progress.last_eval_step_by_env,
+                is_resumed=self.resume_step is not None,
+            )
+            if config.eval is not None and self.eval_envs is not None
+            else None
         )
 
         assert config.max_inflight_rollouts is not None, "max_inflight_rollouts must be resolved before dispatcher init"
@@ -575,10 +592,18 @@ class Orchestrator:
         get_logger().info(f"Starting orchestrator step {step}")
 
         if batch.metrics.n_trainable == 0:
+            self.consecutive_empty_batches += 1
             get_logger().warning(
-                f"Step {step}: post-batch filters dropped all {len(batch.rollouts)} rollouts. Trying again."
+                f"Step {step}: post-batch filters dropped all {len(batch.rollouts)} rollouts "
+                f"(consecutive empty batches: {self.consecutive_empty_batches}/{MAX_CONSECUTIVE_EMPTY_BATCHES})"
             )
+            if self.consecutive_empty_batches >= MAX_CONSECUTIVE_EMPTY_BATCHES:
+                raise RuntimeError(
+                    f"{self.consecutive_empty_batches} consecutive zero-trainable batches — "
+                    "check filter config (pre_batch_filters / post_batch_filters) or task difficulty."
+                )
             return
+        self.consecutive_empty_batches = 0
         if batch.metrics.n_trainable / len(batch.rollouts) <= 0.1:
             get_logger().warning(
                 f"Only {batch.metrics.n_trainable}/{len(batch.rollouts)} rollouts in the batch are trainable "

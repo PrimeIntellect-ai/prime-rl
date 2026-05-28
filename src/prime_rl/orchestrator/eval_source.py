@@ -28,9 +28,21 @@ from prime_rl.orchestrator.envs import EvalEnvs
 class EvalSource:
     """Finite-per-epoch source of eval examples."""
 
-    def __init__(self, eval_envs: EvalEnvs, eval_config: EvalConfig) -> None:
+    def __init__(
+        self,
+        eval_envs: EvalEnvs,
+        eval_config: EvalConfig,
+        *,
+        last_eval_step_by_env: dict[str, int],
+        is_resumed: bool = False,
+    ) -> None:
         self.eval_envs = eval_envs
         self.eval_config = eval_config
+        # Shared reference with ``Progress.last_eval_step_by_env`` — we
+        # mutate it on every fire so the orchestrator's next checkpoint
+        # save persists the new step. On resume, the orchestrator hands
+        # us back the loaded dict.
+        self.last_eval_step_by_env = last_eval_step_by_env
 
         self.examples_by_env: dict[str, list[dict]] = {}
         self.intervals: dict[str, int] = {}
@@ -44,34 +56,44 @@ class EvalSource:
             self.intervals[env.name] = env.config.interval
 
         # Pending eval examples in FIFO order, each carrying ``env_name`` +
-        # ``_eval_step`` baked in. ``trigger`` round-robins across fired
+        # ``eval_step`` baked in. ``trigger`` round-robins across fired
         # envs at example granularity, copying each row fresh so the same
         # row can be enqueued at multiple eval steps over the run without
         # aliasing.
         self.queue: deque[dict] = deque()
 
-        # The first ``trigger`` call (orchestrator startup) fires every
-        # env unconditionally — the startup eval evaluates whatever model
-        # state we begin from (base model or resumed checkpoint) before
-        # any train rollouts. ``eval.skip_first_step`` gates this one
-        # call; subsequent calls use the usual ``% interval`` gating.
-        self.first_trigger = True
+        # ``first_trigger`` controls the startup-eval semantics: on a
+        # fresh start (``is_resumed=False``) the first ``trigger()`` call
+        # fires every env unconditionally (subject to ``skip_first_step``).
+        # On a resume we skip the startup eval entirely so the user
+        # doesn't get a duplicate baseline eval at the resume step.
+        self.first_trigger = not is_resumed
 
     # ── trigger ────────────────────────────────────────────────────────────
 
     def trigger(self, step: int) -> list[str]:
         """Fire eligible envs for ``step`` and return their names.
 
-        First call (startup): fire every env, unless ``skip_first_step``
-        is True. Subsequent calls: fire each env iff ``step % interval ==
-        0``. Caller (``Orchestrator``) only ever invokes this with
-        monotonically increasing ``step`` values, so no double-fire guard
-        is needed.
+        First call on a fresh start (not a resume): fire every env, unless
+        ``skip_first_step`` is True. Subsequent calls: fire each env iff
+        ``step % interval == 0``. Per-env duplicate guard:
+        ``last_eval_step_by_env`` records every fire and skips re-firing
+        the same env at the same (or earlier) step, which would otherwise
+        happen on resume when ``progress.step`` aligns with the env's
+        interval. Caller (``Orchestrator``) only ever invokes this with
+        monotonically increasing ``step`` values.
         """
         is_first, self.first_trigger = self.first_trigger, False
         if is_first and self.eval_config.skip_first_step:
             return []
-        fired = [name for name, interval in self.intervals.items() if is_first or step % interval == 0]
+        fired: list[str] = []
+        for name, interval in self.intervals.items():
+            last = self.last_eval_step_by_env.get(name, -1)
+            if step <= last:
+                continue  # already fired at >= this step pre-resume
+            if is_first or step % interval == 0:
+                fired.append(name)
+                self.last_eval_step_by_env[name] = step
         # Round-robin enqueue across fired envs (A₁, B₁, A₂, B₂, …) so the
         # dispatcher rotates through them at example granularity instead of
         # draining all of A before starting B. ``try_schedule``'s "continue

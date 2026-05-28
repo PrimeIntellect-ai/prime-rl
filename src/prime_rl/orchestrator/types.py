@@ -54,15 +54,20 @@ class Progress:
     """Persistent counters for the orchestrator.
 
     ``step`` is the trainer-aligned step (== ``policy.version`` after every
-    successful weight update). The eval boundary is a strict function of
-    ``step`` + ``eval.interval`` + ``skip_first_step``,
-    so we don't track a separate ``last_eval_step``.
+    successful weight update).
+
+    ``last_eval_step_by_env`` records, per eval env name, the highest
+    ``step`` at which an eval epoch has been triggered. The
+    ``EvalSource`` reads + writes this dict so that on resume from a
+    checkpoint, we don't re-fire evals that already ran pre-checkpoint
+    (interval-aligned envs would otherwise duplicate at the resume step).
     """
 
     step: int = 0
     total_tokens: int = 0
     total_samples: int = 0
     total_problems: int = 0
+    last_eval_step_by_env: dict[str, int] = field(default_factory=dict)
 
 
 # ── dispatcher primitives ─────────────────────────────────────────────────

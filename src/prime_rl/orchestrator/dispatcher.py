@@ -703,19 +703,47 @@ class RolloutDispatcher:
         # already emits ``meta.rollout_count == group_size`` markers).
         # Without this, the sink's per-group arrival count never reaches
         # ``target_rollouts`` and the per-epoch ``EvalBatch`` never fires.
+        #
+        # ``last_meta`` may be ``None`` if the only inflight task for this
+        # group naturally completed between ``on_new_version``'s snapshot
+        # and us reaching it in ``stale_groups`` iteration (multi-group
+        # staleness race). In that case we synthesize a minimal
+        # ``InflightRollout`` from the group state — we still owe the sink
+        # the unscheduled markers.
         unscheduled_cancelled = 0
-        if group is not None and last_meta is not None and group.rollouts_to_schedule > 0:
+        if group is not None and group.rollouts_to_schedule > 0:
+            fallback_meta = last_meta or InflightRollout(
+                kind=group.kind,
+                env_name=group.env_name,
+                group_id=group_id,
+                policy_version=group.policy_version_at_start,
+                rollout_count=1,
+                eval_step=group.eval_step,
+            )
             unscheduled_cancelled = group.rollouts_to_schedule
             for _ in range(unscheduled_cancelled):
                 raw = self.error_rollout_output(error_type="Cancelled", error_repr="Off-policy cancel")
-                await self.emit_rollout(last_meta, group, raw)
+                await self.emit_rollout(fallback_meta, group, raw)
 
         cancelled = inflight_cancelled + unscheduled_cancelled
-        if cancelled > 0 and last_meta is not None:
-            get_logger().debug(
-                f"drain {last_meta.kind} | group={str(group_id)[:8]} env={last_meta.env_name} | "
-                f"cancelled={cancelled} (inflight={inflight_cancelled} unscheduled={unscheduled_cancelled})"
+        if cancelled > 0:
+            meta_for_log = last_meta or (
+                InflightRollout(
+                    kind=group.kind,
+                    env_name=group.env_name,
+                    group_id=group_id,
+                    policy_version=group.policy_version_at_start if group else 0,
+                    rollout_count=1,
+                    eval_step=group.eval_step,
+                )
+                if group is not None
+                else None
             )
+            if meta_for_log is not None:
+                get_logger().debug(
+                    f"drain {meta_for_log.kind} | group={str(group_id)[:8]} env={meta_for_log.env_name} | "
+                    f"cancelled={cancelled} (inflight={inflight_cancelled} unscheduled={unscheduled_cancelled})"
+                )
 
         if tasks_to_cancel:
             await safe_cancel_all(tasks_to_cancel)
