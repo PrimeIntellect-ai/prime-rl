@@ -9,6 +9,7 @@ def setup_vllm_env(config: InferenceConfig):
 
     # spawn is more robust in vLLM nightlies and Qwen3-VL (fork can deadlock with multithreaded processes)
     os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+    os.environ["VLLM_USE_DEEP_GEMM"] = "1" if config.use_deep_gemm else "0"
 
     if config.enable_lora:
         os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
