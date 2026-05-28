@@ -868,7 +868,7 @@ class Orchestrator:
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
 
         get_logger().success(
-            f"Finished evaluating {batch.env_name} from step {batch.step} | "
+            f"Evaluated {batch.env_name} (Step {batch.step}) | "
             f"{format_time(elapsed):>7} | Reward {batch.metrics.reward_mean:.4f} | "
             f"Valid {n_valid}/{n_total} ({valid_rate:.1%}) | "
             f"Turns {batch.metrics.num_turns_mean:.1f} | Max Off-Policy {max_off_policy} | "
