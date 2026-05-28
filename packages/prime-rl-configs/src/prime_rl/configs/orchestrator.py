@@ -386,9 +386,6 @@ class EvalConfig(BaseConfig):
             )
         return self
 
-    cancel_inflight_rollouts_on_eval: bool = False
-    """Cancel in-flight training rollouts before starting online evals. Avoids congestion (no training + eval rollouts at the same time) at the cost of slower training steps as the pipeline has to refill after each eval."""
-
 
 class CheckpointConfig(BaseConfig):
     interval: int | None = Field(None, ge=1)
@@ -408,38 +405,6 @@ class CheckpointConfig(BaseConfig):
 
     skip_progress: bool = False
     """Skip loading the progress from checkpoint."""
-
-    skip_buffer: bool = False
-    """Skip loading the buffer from checkpoint."""
-
-
-class BufferConfig(BaseConfig):
-    seed: int | None = None
-    """Random seed for the buffer. When set, sampling from the buffer is deterministic."""
-
-    easy_threshold: float | None = None
-    """Average-reward threshold above which a problem is classified ``easy``."""
-
-    hard_threshold: float | None = None
-    """Average-reward threshold below which a problem is classified ``hard``."""
-
-    easy_fraction: float = Field(0.0, ge=0, le=1)
-    """Fraction of easy problems to convert to ``normal`` when resuming or starting training. Only problems with difficulty ``normal`` are sampled."""
-
-    hard_fraction: float = Field(0.0, ge=0, le=1)
-    """Fraction of hard problems to convert to ``normal`` when resuming or starting training. Only problems with difficulty ``normal`` are sampled."""
-
-    online_difficulty_filtering: bool = False
-    """Filter rollouts based on difficulty. When True, rollouts with average reward 0.0 or 1.0 are not added to the buffer."""
-
-    hash_keys: list[str] = Field(["env_name", "prompt"], min_length=1)
-    """Keys used to compute example hashes. Used to match examples from buffer checkpoints and determine buffer resume behavior."""
-
-    @model_validator(mode="after")
-    def validate_thresholds(self):
-        if self.easy_threshold is not None and self.hard_threshold is not None:
-            assert self.easy_threshold > self.hard_threshold, "easy_threshold must be greater than hard_threshold."
-        return self
 
 
 class TokensLengthPenaltyConfig(BaseConfig):
@@ -611,8 +576,6 @@ class OrchestratorConfig(BaseConfig):
 
     eval: EvalConfig | None = None
     """Evaluation configuration."""
-
-    buffer: BufferConfig = BufferConfig()
 
     advantage: AdvantageConfig | None = DefaultAdvantageConfig()
 
