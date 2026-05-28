@@ -959,12 +959,7 @@ class OrchestratorConfig(BaseConfig):
         if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.group_size:
             raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")
 
-        # Propagate the top-level ``group_size`` into each train env that
-        # didn't set its own — mirrors how ``EvalConfig`` resolves per-env
-        # ``group_size`` from its group-level default, so the dispatcher /
-        # sink / source can read ``env.config.group_size`` uniformly for
-        # both kinds. Existing TOMLs with a single top-level ``group_size``
-        # keep working unchanged.
+        # Propagate the top-level ``group_size`` into each train env that didn't set its own.
         for env_cfg in self.train.env:
             if "group_size" not in env_cfg.model_fields_set:
                 env_cfg.group_size = self.group_size
