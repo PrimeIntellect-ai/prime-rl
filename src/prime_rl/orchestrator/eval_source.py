@@ -97,9 +97,6 @@ class EvalSource:
         Returns ``None`` when the queue is empty or the head requires more
         permits than available (head stays put — the dispatch loop will
         retry on the next iteration once permits free up).
-
-        Mirrors ``TrainSource.next_example``: one call commits, no
-        separate peek/pop pair.
         """
         if not self.queue:
             return None
