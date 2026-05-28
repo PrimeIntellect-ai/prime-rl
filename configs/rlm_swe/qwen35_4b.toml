@@ -1,24 +1,19 @@
-output_dir = "/beegfs/outputs/rlm-swe-qwen3-4b-thinking"
-max_steps = 1000
+output_dir = "/beegfs/mika/rlm-swe-qwen35-4b"
+max_steps = 100
 seq_len = 65536
 
 [slurm]
-job_name = "rlm-swe-qwen3-4b-thinking"
+job_name = "rlm-swe-qwen35-4b"
 project_dir = "."
-pre_run_command = "srun bash -c 'pkill -9 -f torchrun; pkill -9 -f vllm; true'"
+pre_run_command = "prime sandbox delete --label rlm-swe-qwen35-4b -y --plain || true"
 
 [deployment]
-type = "multi_node"
-num_train_nodes = 1
-num_infer_nodes = 1
-gpus_per_node = 8
-
-[log]
-level = "debug"
+num_train_gpus = 4
+num_infer_gpus = 4
 
 [wandb]
-project = "rlm-swe"
-name = "qwen3-4b-thinking"
+project = "rlm-swe-debug"
+name = "qwen35-4b"
 
 [weight_broadcast]
 type = "nccl"
@@ -29,7 +24,7 @@ keep_last = 1
 resume_step = -1
 
 [model]
-name = "Qwen/Qwen3-4B-Thinking-2507"
+name = "Qwen/Qwen3.5-4B"
 
 # --- Trainer ---
 
@@ -37,21 +32,19 @@ name = "Qwen/Qwen3-4B-Thinking-2507"
 
 [trainer.model]
 cp = 2
+cp_style = "ulysses"
 
 [trainer.model.ac]
 freq = 1
 
 [trainer.model.compile]
 
-[trainer.optim]
-type = "adamw"
-lr = 1e-6
-
 # --- Orchestrator ---
 
 [orchestrator]
 batch_size = 256
 group_size = 8
+max_inflight_rollouts = 512
 max_off_policy_steps = 16
 
 [orchestrator.train.sampling]
@@ -59,36 +52,26 @@ temperature = 1.0
 
 [[orchestrator.train.env]]
 id = "rlm_swe"
-name = "rlm-swe-default"
-num_workers = 8
+name = "rlm-swe-r2e"
+num_workers = 4
 
 [orchestrator.train.env.args]
-max_turns = 200
-timeout_seconds = 3600
-poll_interval = 5
-rlm_ref = "f466fccb6bc682092c88edf2b344951d7cbbd000"
-labels = ["rlm-swe-qwen3-4b-thinking"]
+labels = ["rlm-swe-qwen35-4b"]
 
 [orchestrator.prime_monitor]
 
 [orchestrator.eval]
-interval = 50
-skip_first_step = false
+interval = 20
 
 [[orchestrator.eval.env]]
 id = "rlm_swe"
-name = "swebench-verified-quick"
+name = "rlm-swe-swebench-verified-quick"
 num_workers = 4
-num_examples = -1
 
 [orchestrator.eval.env.args]
 task_type = "swebench"
 dataset_name = "PrimeIntellect/SWE-Bench-Verified-Quick"
-max_turns = 200
-timeout_seconds = 2700
-poll_interval = 5
-rlm_ref = "f466fccb6bc682092c88edf2b344951d7cbbd000"
-labels = ["rlm-swe-qwen3-4b-thinking"]
+labels = ["rlm-swe-qwen35-4b"]
 
 # --- Inference ---
 
@@ -97,7 +80,6 @@ gpu_memory_utilization = 0.85
 
 [inference.model]
 max_model_len = 65536
-tool_call_parser = "hermes"
 
 [inference.parallel]
-dp = 8
+dp = 4

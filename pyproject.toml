@@ -84,6 +84,7 @@ envs = [
     "opencode-science",
     "opencode-swe",
     "reverse-text",
+    "rlm-swe",
     "science-env",
     "simpleqa-verified",
     "tau2-bench",
@@ -158,6 +159,7 @@ members = [
     "deps/research-environments/environments/opencode_math",
     "deps/research-environments/environments/opencode_science",
     "deps/research-environments/environments/opencode_swe",
+    "deps/research-environments/environments/rlm_swe",
     "deps/research-environments/environments/science_env",
     "deps/research-environments/environments/simpleqa_verified",
     "deps/research-environments/environments/tau2_bench",
@@ -243,6 +245,7 @@ opencode-math = { workspace = true }
 opencode-science = { workspace = true }
 opencode-swe = { workspace = true }
 reverse-text = { workspace = true }
+rlm-swe = { workspace = true }
 science-env = { workspace = true }
 simpleqa-verified = { workspace = true }
 tau2-bench = { workspace = true }
