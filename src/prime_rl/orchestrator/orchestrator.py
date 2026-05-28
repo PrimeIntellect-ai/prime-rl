@@ -56,7 +56,6 @@ from prime_rl.orchestrator.patches import (
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
-from prime_rl.orchestrator.trajectories import offload_images_to_disk
 from prime_rl.orchestrator.types import (
     EvalBatch,
     EvalRollout,
@@ -66,8 +65,14 @@ from prime_rl.orchestrator.types import (
     TrainBatch,
     TrainRollout,
 )
-from prime_rl.orchestrator.utils import compute_teacher_logprobs, get_weight_dir, set_default_executor
-from prime_rl.orchestrator.vf_utils import intercept_vf_logging, save_rollouts
+from prime_rl.orchestrator.utils import (
+    compute_teacher_logprobs,
+    get_weight_dir,
+    intercept_vf_logging,
+    save_rollouts,
+    set_default_executor,
+    setup_student_inference_pool,
+)
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
@@ -90,24 +95,17 @@ monkey_patch_chat_completion_logprobs()
 
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
-# shutdown wedges (env-server ZMQ recv, vLLM admin aclose, etc).
+# shutdown wedges (env-server ZMQ recv, vLLM admin aclose, etc)
 SHUTDOWN_TIMEOUT_S = 300
 
 # Abort after this many consecutive train batches drop all rollouts to
 # post-batch filters — usually a misconfigured filter or homogeneous-reward
-# dataset; fail loudly instead of spinning.
+# dataset; fail loudly instead of spinning
 MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 
 
 class Orchestrator:
-    """``await Orchestrator(config).start()`` to run.
-
-    ``stop()`` from outside (or the orchestrator self-stops when the train
-    sink has driven ``progress.step`` to ``max_steps``). Cleanup happens at
-    the tail of ``start()``.
-    """
-
-    # Set in ``__init__``.
+    # Set in ``__init__``
     config: OrchestratorConfig
     progress: Progress
     policy: Policy
@@ -119,7 +117,7 @@ class Orchestrator:
     ckpt_manager: CheckpointManager | None
     component_tasks: list[asyncio.Task]
 
-    # Always set by ``setup()``.
+    # Always set by ``setup()``
     tokenizer: PreTrainedTokenizer
     student_inference: InferencePool
     monitor: Monitor
@@ -133,7 +131,7 @@ class Orchestrator:
     lag_monitor: EventLoopLagMonitor
     periodic_logger: PeriodicLogger
 
-    # Set by ``setup()`` only when relevant config is present.
+    # Set by ``setup()`` only when relevant config is present
     renderer: Renderer | None
     mm_token_type_ids_mapping: dict[int, int] | None
     teacher_inference: InferencePool | None
@@ -151,7 +149,7 @@ class Orchestrator:
         self.config = config
         setup_logger(config.log.level, json_logging=config.log.json_logging)
         # Silence in-process ``verifiers.*`` library noise but keep
-        # ``verifiers.serve`` (env-server lifecycle) through our handler.
+        # ``verifiers.serve`` (env-server lifecycle) through our handler
         logging.getLogger("verifiers").setLevel(logging.CRITICAL + 1)
         intercept_vf_logging(logger="verifiers.serve", level="WARN")
         get_logger().info(f"Starting orchestrator ({config.training_mode})")
@@ -164,18 +162,18 @@ class Orchestrator:
         self.policy = Policy(version=0, model_name="")
         self.stopped = asyncio.Event()
         # True after the final train step ships — pipeline winds down without
-        # scheduling new train rollouts.
+        # scheduling new train rollouts
         self.draining = False
         # Previous ``TrainBatch`` arrival timestamp; reset every ship so
-        # ``step_time`` in the success log is real sink-to-sink cycle time.
+        # ``step_time`` in the success log is real sink-to-sink cycle time
         self.last_batch_at = None
-        # Trigger timestamps so eval success logs can report epoch duration.
+        # Trigger timestamps so eval success logs can report epoch duration
         self.eval_triggered_at = {}
         self.consecutive_empty_batches = 0
         self.component_tasks = []
 
         # Optional attributes — ``setup()`` populates them when the relevant
-        # config is present.
+        # config is present
         self.renderer = None
         self.mm_token_type_ids_mapping = None
         self.teacher_inference = None
@@ -197,7 +195,7 @@ class Orchestrator:
         config = self.config
         set_default_executor()
 
-        # Persist the resolved config alongside the run.
+        # Persist the resolved config alongside the run
         config_dir = config.output_dir / "control"
         config_dir.mkdir(parents=True, exist_ok=True)
         with open(config_dir / "orch.toml", "wb") as f:
@@ -212,7 +210,7 @@ class Orchestrator:
         get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
         self.tokenizer = setup_tokenizer(config.tokenizer)
 
-        # Student inference pool.
+        # Student inference pool
         get_logger().info(
             f"Initializing student inference pool (base_url={', '.join(config.student.client.base_url)}, "
             f"model={config.student.model.name})"
@@ -255,7 +253,7 @@ class Orchestrator:
         if usage_base_url and usage_api_key:
             self.usage_reporter = UsageReporter()
 
-        # Filters apply to train rollouts only.
+        # Filters apply to train rollouts only
         pre_filters = setup_filters(config.pre_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="pre-batch")
         post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="post-batch")
 
@@ -291,7 +289,7 @@ class Orchestrator:
             else:
                 self.resume_step = config.ckpt.resume_step
 
-        # Resume below may bump ``policy.version`` and the LoRA model name.
+        # Resume below may bump ``policy.version`` and the LoRA model name
         self.policy.model_name = self.student_inference.model_name
 
         get_logger().info("Waiting for student inference pool to be ready")
@@ -343,7 +341,7 @@ class Orchestrator:
             get_logger().info("Training from scratch")
 
         # SFT generates rollouts via the teacher (the student is trained on
-        # the teacher's outputs); RL / OPD generate via the student.
+        # the teacher's outputs); RL / OPD generate via the student
         if config.training_mode == "sft":
             assert self.teacher_inference is not None, "sft mode requires teacher inference"
             rollout_inference = self.teacher_inference
@@ -400,7 +398,7 @@ class Orchestrator:
             ckpt_step=self.progress.step,
         )
         # Single periodic logger for the whole pipeline. It's the only
-        # consumer of ``dispatcher.metrics.drained()`` (which clears on read).
+        # consumer of ``dispatcher.metrics.drained()`` (which clears on read)
         self.lag_monitor = EventLoopLagMonitor()
         self.periodic_logger = PeriodicLogger(
             name="Pipeline",
@@ -435,7 +433,7 @@ class Orchestrator:
         # Spawn background loops (dispatcher schedules, watcher polls). The
         # pipeline ``main_loop`` runs inline in this task; the single
         # ``PeriodicLogger`` polls dispatcher / watcher / sinks / lag
-        # monitor each ``log.interval`` seconds for the pipeline-view log.
+        # monitor each ``log.interval`` seconds for the pipeline-view log
         self.lag_task = asyncio.create_task(self.lag_monitor.run(), name="event_loop_lag")
         await self.periodic_logger.start()
         self.component_tasks = [
@@ -444,10 +442,10 @@ class Orchestrator:
         ]
 
         # Default step-0 base-model eval — fires before any train rollouts
-        # unless ``eval.skip_first_step=True`` (or this is a resume).
+        # unless ``eval.skip_first_step=True`` (or this is a resume)
         self.maybe_trigger_eval(self.progress.step)
 
-        # Anchor step-time clock so step 0 measures startup → first batch.
+        # Anchor step-time clock so step 0 measures startup → first batch
         self.last_batch_at = time.perf_counter()
 
         try:
@@ -458,17 +456,12 @@ class Orchestrator:
             if self.ckpt_manager is not None:
                 get_logger().info("Writing final checkpoint")
                 self.ckpt_manager.save(self.progress, step=self.progress.step)
-            await self.shutdown()
+            await self.stop()
             get_logger().success("Orchestrator finished.")
             try:
                 ctypes.CDLL("libc.so.6").malloc_trim(0)
             except Exception as e:
                 get_logger().debug(f"malloc_trim(0) failed: {e}")
-
-    async def stop(self) -> None:
-        """Signal a graceful shutdown. ``start()`` observes it on its next
-        ``main_loop`` iteration and drives the rest of the teardown."""
-        self.stopped.set()
 
     async def main_loop(self) -> None:
         """Consume ``FinishedRollout``\\ s from the dispatcher and route them
@@ -495,7 +488,7 @@ class Orchestrator:
             assert isinstance(rollout, TrainRollout)
             train_batch = await self.train_sink.add(rollout)
             # In drain mode any late-arriving train batch is dropped — we
-            # don't want to ship past ``max_steps``.
+            # don't want to ship past ``max_steps``
             if train_batch is not None and not self.draining and not self.stopped.is_set():
                 await self.finalize_train_batch(train_batch)
 
@@ -509,7 +502,7 @@ class Orchestrator:
 
         # Sink-to-sink cycle time — the actual time between batches, not
         # including the orchestrator's ship I/O (overlapped with the
-        # dispatcher producing the next batch).
+        # dispatcher producing the next batch)
         now = time.perf_counter()
         step_time = (now - self.last_batch_at) if self.last_batch_at is not None else 0.0
         self.last_batch_at = now
@@ -546,20 +539,12 @@ class Orchestrator:
             )
 
         # Materialize at the I/O boundary so prime-rl metadata travels with
-        # the raw vf payload on disk + in wandb sample tables.
+        # the raw vf payload on disk + in wandb sample tables
         rollout_dicts = [r.to_dict() for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(config.output_dir), step)
         await asyncio.to_thread(
             save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
         )
-
-        # Offload base64 image bytes to disk for memory hygiene (no-op for text-only).
-        offload_start = time.perf_counter()
-        num_offloaded = offload_images_to_disk([r.raw for r in batch.rollouts], config.output_dir)
-        if num_offloaded:
-            get_logger().info(
-                f"Offloaded {num_offloaded} unique images to disk in {format_time(time.perf_counter() - offload_start)}"
-            )
 
         teacher_logprobs_time = 0.0  # opd only
         if config.training_mode == "opd" and self.teacher_inference is not None:
@@ -662,48 +647,41 @@ class Orchestrator:
         inflight_by_env = self.dispatcher.inflight_by_env
         inflight_train = self.dispatcher.inflight_train_count
         inflight_eval = self.dispatcher.inflight_eval_count
-        train_progress, train_target, _train_unit = self.train_sink.batch_progress()
+        train_batch, train_target, _train_unit = self.train_sink.batch_progress()
+        train_buffered = self.train_sink.buffered_count()
         train_batch_by_env = self.train_sink.pending_batch_by_env()
         eval_batches = self.eval_sink.batch_progress() if self.eval_sink is not None else []
         multi_train = len(self.train_envs) > 1
         multi_eval = self.eval_envs is not None and len(self.eval_envs) > 1
 
-        def env_breakdown(pairs: list[tuple[str, int]]) -> str:
-            return "(" + ", ".join(f"{n}={v}" for n, v in pairs) + ")"
-
-        train_pct = train_progress / train_target if train_target else 0.0
-        train_batch_part = f"Got {train_progress}/{train_target} ({train_pct:.1%})"
+        # Train batch: finalized-group survivors only (0→target). Partial-group
+        # arrivals are surfaced as a separate ``(+N buffered)`` addendum
+        train_pct = train_batch / train_target if train_target else 0.0
+        train_batch_part = f"Train batch {train_batch}/{train_target} ({train_pct:.1%})"
         if multi_train:
-            train_batch_part += " " + env_breakdown(
-                [(e.name, train_batch_by_env.get(e.name, 0)) for e in self.train_envs]
-            )
-        train_batch_part += " rollouts in training batch"
+            pairs = [(e.name, train_batch_by_env.get(e.name, 0)) for e in self.train_envs]
+            train_batch_part += " (" + ", ".join(f"{n}={v}" for n, v in pairs) + ")"
+        if train_buffered:
+            train_batch_part += f" (+{train_buffered} buffered)"
 
         eval_batch_part = ""
-        if eval_batches:
-            eval_batch_part = " and " + ", ".join(
-                f"{arr}/{exp} ({arr / exp:.1%}) in {env}" if exp else f"{arr}/0 in {env}"
-                for env, _step, arr, exp in eval_batches
-            )
+        for env, _step, eb, exp, _ebuf in eval_batches:
+            eval_pct = eb / exp if exp else 0.0
+            eval_batch_part += f" | {env} {eb}/{exp} ({eval_pct:.1%})"
 
-        train_inflight_part = f"currently {inflight_train}"
-        if multi_train:
-            train_inflight_part += " " + env_breakdown(
-                [(e.name, inflight_by_env.get(("train", e.name), 0)) for e in self.train_envs]
-            )
-        train_inflight_part += " inflight train rollouts"
+        # Unified inflight tail: total, then train/eval split, then per-env
+        # (only when more than one env of a kind makes the split ambiguous)
+        inflight_part = (
+            f"{inflight_train + inflight_eval} inflight rollouts (train={inflight_train}, eval={inflight_eval}"
+        )
+        if multi_train or multi_eval:
+            env_pairs = [(e.name, inflight_by_env.get(("train", e.name), 0)) for e in self.train_envs]
+            if self.eval_envs is not None:
+                env_pairs += [(e.name, inflight_by_env.get(("eval", e.name), 0)) for e in self.eval_envs]
+            inflight_part += " | " + ", ".join(f"{n}={v}" for n, v in env_pairs)
+        inflight_part += ")"
 
-        eval_inflight_part = ""
-        if inflight_eval > 0 or eval_batches:
-            eval_inflight_part = f" and {inflight_eval}"
-            if multi_eval:
-                assert self.eval_envs is not None
-                eval_inflight_part += " " + env_breakdown(
-                    [(e.name, inflight_by_env.get(("eval", e.name), 0)) for e in self.eval_envs]
-                )
-            eval_inflight_part += " eval rollouts"
-
-        body = train_batch_part + eval_batch_part + "; " + train_inflight_part + eval_inflight_part
+        body = train_batch_part + eval_batch_part + "; " + inflight_part
 
         payload: dict[str, float] = {**disp_gauges, **disp_drain, **watcher_gauges}
         if lag_stats.n > 0:
@@ -785,8 +763,6 @@ class Orchestrator:
 
         n_total = batch.metrics.n_rollouts
         error_rate = ((batch.metrics.n_cancelled + batch.metrics.n_errored) / n_total) if n_total else 0.0
-        # ``Max Off-Policy`` here is the worst-case lag across the eval
-        # cohort — how many weight updates the eval epoch straddled.
         max_off_policy = max((r.off_policy_steps for r in batch.rollouts), default=0)
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
@@ -835,12 +811,12 @@ class Orchestrator:
                 next_warn = elapsed + 60.0
             await asyncio.sleep(0.1)
 
-    async def shutdown(self) -> None:
-        """Bounded best-effort cleanup. Has a global timeout so a wedged
-        peer can't keep the process alive forever — training artifacts are
-        already persisted before this is reached."""
+    async def stop(self) -> None:
+        """Bounded best-effort teardown of all components. Has a global
+        timeout so a wedged peer can't keep the process alive forever —
+        training artifacts are already persisted before this is reached."""
 
-        async def do_shutdown() -> None:
+        async def teardown() -> None:
             if self.sender is not None:
                 self.sender.close()
             if self.dispatcher is not None:
@@ -868,7 +844,7 @@ class Orchestrator:
             if self.usage_reporter is not None:
                 self.usage_reporter.close()
 
-        task = asyncio.create_task(do_shutdown())
+        task = asyncio.create_task(teardown())
         _, pending = await asyncio.wait({task}, timeout=SHUTDOWN_TIMEOUT_S)
         if pending:
             get_logger().warning(
@@ -885,39 +861,6 @@ async def run_orchestrator(config: OrchestratorConfig) -> None:
     on exit (success or crash); keeps that out of the class.
     """
     await Orchestrator(config).start()
-
-
-async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer):
-    """Build the student inference pool + matching renderer. Returns
-    ``(renderer | None, inference_pool)``; ``renderer`` is ``None`` on the
-    MITO path (``config.renderer is None``)."""
-    from renderers.base import create_renderer
-
-    client_config = config.student.client
-    model_name = config.student.model.name
-
-    if config.renderer is not None:
-        renderer = create_renderer(tokenizer, config.renderer)
-        get_logger().info(f"Initialized {type(renderer).__name__} for {model_name}")
-        inference_pool = await setup_inference_pool(
-            client_config,
-            model_name=model_name,
-            train_client_type="renderer",
-            eval_client_type="openai_chat_completions",
-            renderer_config=config.renderer,
-            pool_size=config.pool_size,
-        )
-        get_logger().info("Using direct renderer rollout client")
-        return renderer, inference_pool
-
-    get_logger().info("Using MITO (openai_chat_completions) for rollouts")
-    inference_pool = await setup_inference_pool(
-        client_config,
-        model_name=model_name,
-        train_client_type="openai_chat_completions",
-        eval_client_type="openai_chat_completions",
-    )
-    return None, inference_pool
 
 
 def main() -> None:

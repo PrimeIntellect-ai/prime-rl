@@ -74,7 +74,7 @@ class WeightWatcher:
     async def apply_policy_update(self, next_step: int) -> None:
         async with self.update_lock:
             if next_step <= self.ckpt_step:
-                # Another caller raced us — bail without re-applying.
+                # Another caller raced us — bail without re-applying
                 return
 
             broadcast_dir = get_broadcast_dir(self.config.output_dir)

@@ -149,12 +149,12 @@ class RolloutDispatcher:
         self.inflight: dict[asyncio.Task, InflightRollout] = {}
         self.groups: dict[uuid.UUID, GroupState] = {}
 
-        # Bounded so the dispatcher backpressures on a slow sink.
+        # Bounded so the dispatcher backpressures on a slow sink
         self.out_q: asyncio.Queue[FinishedRollout] = asyncio.Queue(maxsize=max(8, self.max_inflight))
 
         self.mode: DispatcherMode = DispatcherMode.PREFER_TRAIN
         # Set by the orchestrator after the final train step; pipeline then
-        # winds down without scheduling new train rollouts.
+        # winds down without scheduling new train rollouts
         self.train_scheduling_disabled: bool = False
         self.metrics = DispatcherMetrics()
 
@@ -224,7 +224,7 @@ class RolloutDispatcher:
                 await self.fill_inflight()
                 if not self.inflight:
                     # No work — sleep briefly. Eval triggers from the
-                    # orchestrator wake the next iteration via a mode flip.
+                    # orchestrator wake the next iteration via a mode flip
                     try:
                         await asyncio.wait_for(self.stopped.wait(), timeout=0.1)
                     except asyncio.TimeoutError:
@@ -281,7 +281,7 @@ class RolloutDispatcher:
 
             if self.mode == DispatcherMode.PREFER_EVAL:
                 # PREFER_EVAL is only entered when the orchestrator triggers
-                # eval, which requires ``eval_source`` to be configured.
+                # eval, which requires ``eval_source`` to be configured
                 assert self.eval_source is not None
                 eval_has_work = bool(self.eval_source) or any(
                     g.kind == "eval" and g.rollouts_to_schedule > 0 for g in self.groups.values()
@@ -289,7 +289,7 @@ class RolloutDispatcher:
                 if not eval_has_work:
                     # Eval source + all eval groups fully dispatched. Flip
                     # to PREFER_TRAIN so any remaining permits go to train
-                    # while the in-flight eval tail completes naturally.
+                    # while the in-flight eval tail completes naturally
                     self.switch_mode(DispatcherMode.PREFER_TRAIN, reason="the eval queue drained")
                     continue
                 scheduled = await self.try_schedule("eval")
@@ -367,7 +367,7 @@ class RolloutDispatcher:
         ready, no permits). Returns True after issuing one task — the caller
         loops to keep scheduling.
         """
-        # Pin a single client per group to keep prefix-cache hits.
+        # Pin a single client per group to keep prefix-cache hits
         if group.pinned_client is None:
             load = Counter(
                 client_identity(m.client_config) for m in self.inflight.values() if m.client_config is not None
@@ -464,7 +464,7 @@ class RolloutDispatcher:
         for r in rollouts:
             if r.get("error") is None and len(r.get("trajectory") or []) == 0:
                 # Empty trajectory: promote to an explicit error so the sink
-                # treats it like any other failure.
+                # treats it like any other failure
                 r["error"] = {
                     "error": "EmptyTrajectory",
                     "error_chain_repr": "Rollout returned with no trajectory steps",
@@ -558,11 +558,11 @@ class RolloutDispatcher:
 
         # For non-group-scoring envs, the group may have rollouts that
         # were never dispatched (``rollouts_to_schedule > 0``). Emit
-        # markers for those too so the sink hits ``target_rollouts``.
+        # markers for those too so the sink hits ``target_rollouts``
         #
         # ``last_meta`` can be ``None`` if the only inflight task for this
         # group completed naturally between ``on_new_version``'s snapshot
-        # and us reaching it — synthesize a stand-in from the group state.
+        # and us reaching it — synthesize a stand-in from the group state
         unscheduled_cancelled = 0
         if group is not None and group.rollouts_to_schedule > 0:
             fallback_meta = last_meta or InflightRollout(

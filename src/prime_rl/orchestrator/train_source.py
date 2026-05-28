@@ -25,7 +25,7 @@ class TrainSource:
         self.examples: dict[str, list[dict]] = {}
         self.cursors: dict[str, int] = {}
         # Group-scoring envs reserve ``group_size`` permits up front;
-        # per-rollout envs need 1.
+        # per-rollout envs need 1
         self.env_costs: dict[str, int] = {}
         for env in self.envs:
             rows: list[dict] = []

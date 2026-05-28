@@ -18,7 +18,7 @@ from prime_rl.configs.orchestrator import (
     TokensLengthPenaltyConfig,
     TurnsLengthPenaltyConfig,
 )
-from prime_rl.orchestrator.vf_utils import get_model_completion_len, get_num_turns, get_tool_response_len
+from prime_rl.orchestrator.utils import get_model_completion_len, get_tool_response_len
 from prime_rl.utils.utils import import_object
 
 
@@ -68,7 +68,7 @@ def default_advantage_fn(
         )
         return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs).tolist())
     if isinstance(length_penalty, TurnsLengthPenaltyConfig):
-        costs = torch.tensor([get_num_turns(r) for r in inputs.rollouts], dtype=rewards.dtype)
+        costs = torch.tensor([len(r["trajectory"]) for r in inputs.rollouts], dtype=rewards.dtype)
         return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs).tolist())
 
     return AdvantageOutputs(advantages=(rewards - rewards.mean()).tolist())

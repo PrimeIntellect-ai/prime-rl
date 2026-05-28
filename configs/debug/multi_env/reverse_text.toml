@@ -20,11 +20,11 @@ name = "qwen3"
 
 [[orchestrator.train.env]]
 id = "reverse-text"
-name = "reverse-text-1"
+name = "reverse-text-train-1"
 
 [[orchestrator.train.env]]
 id = "reverse-text"
-name = "reverse-text-2"
+name = "reverse-text-train-2"
 
 # -- multi eval envs --
 
@@ -35,11 +35,11 @@ group_size = 4
 
 [[orchestrator.eval.env]]
 id = "reverse-text"
-name = "reverse-text-1"
+name = "reverse-text-eval-1"
 
 [[orchestrator.eval.env]]
 id = "reverse-text"
-name = "reverse-text-2"
+name = "reverse-text-eval-2"
 interval = 5
 
 [trainer.optim]

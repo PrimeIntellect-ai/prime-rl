@@ -28,7 +28,7 @@ class EvalSource:
         self.eval_envs = eval_envs
         self.eval_config = eval_config
         # Shared reference with ``Progress.last_eval_step_by_env``; mutated
-        # on every fire so the next checkpoint persists the new step.
+        # on every fire so the next checkpoint persists the new step
         self.last_eval_step_by_env = last_eval_step_by_env
 
         self.examples_by_env: dict[str, list[dict]] = {}
@@ -45,7 +45,7 @@ class EvalSource:
         self.queue: deque[dict] = deque()
 
         # On resume we skip the startup eval; on fresh start the first
-        # trigger fires every env (subject to ``skip_first_step``).
+        # trigger fires every env (subject to ``skip_first_step``)
         self.first_trigger = not is_resumed
 
     def trigger(self, step: int) -> list[str]:
@@ -66,7 +66,7 @@ class EvalSource:
         # Round-robin across fired envs (A₁, B₁, A₂, B₂, …) so the
         # dispatcher rotates at example granularity. ``try_schedule``'s
         # continue-group branch still keeps each example's group_size
-        # rollouts back-to-back, so per-example prefix-cache locality holds.
+        # rollouts back-to-back, so per-example prefix-cache locality holds
         iters = [iter(self.examples_by_env[name]) for name in fired]
         for round_examples in zip_longest(*iters):
             for example in round_examples:

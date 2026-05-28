@@ -29,7 +29,7 @@ class EvalSink:
         self.eval_envs = eval_envs
         self.pending_groups: dict[uuid.UUID, list[EvalRollout]] = defaultdict(list)
         # Bucket size IS the arrival count — ``process_group`` flushes
-        # everything in without filtering.
+        # everything in without filtering
         self.pending_batches: dict[tuple[str, int], list[EvalRollout]] = defaultdict(list)
 
     def add(self, rollout: EvalRollout) -> EvalBatch | None:
@@ -54,13 +54,13 @@ class EvalSink:
         env = self.eval_envs.get(env_name)
         return len(env.examples) * env.config.group_size
 
-    def batch_progress(self) -> list[tuple[str, int, int, int]]:
+    def batch_progress(self) -> list[tuple[str, int, int, int, int]]:
         """One entry per accumulating ``(env, eval_step)`` batch:
-        ``(env_name, eval_step, arrivals_so_far, expected)``. Counts
-        ``pending_batches`` plus per-rollout partial groups from non-group-
-        scoring envs (group-scoring envs only contribute via finalized
-        ``pending_batches`` — their rollouts commit as a unit)."""
-        counts: dict[tuple[str, int], int] = {bkey: len(bucket) for bkey, bucket in self.pending_batches.items()}
+        ``(env_name, eval_step, batch_count, expected, buffered)``.
+        ``batch_count`` is finalized-group survivors in ``pending_batches``;
+        ``buffered`` is partial-group arrivals from non-group-scoring envs."""
+        batch_counts: dict[tuple[str, int], int] = {bkey: len(bucket) for bkey, bucket in self.pending_batches.items()}
+        buffered: dict[tuple[str, int], int] = {}
         for rollouts in self.pending_groups.values():
             if not rollouts:
                 continue
@@ -68,10 +68,16 @@ class EvalSink:
             if self.eval_envs.get(env_name).requires_group_scoring:
                 continue
             bkey = (env_name, rollouts[0].eval_step)
-            counts[bkey] = counts.get(bkey, 0) + len(rollouts)
+            buffered[bkey] = buffered.get(bkey, 0) + len(rollouts)
         return [
-            (env_name, eval_step, count, self.batch_size_for(env_name))
-            for (env_name, eval_step), count in counts.items()
+            (
+                env_name,
+                eval_step,
+                batch_counts.get((env_name, eval_step), 0),
+                self.batch_size_for(env_name),
+                buffered.get((env_name, eval_step), 0),
+            )
+            for (env_name, eval_step) in set(batch_counts) | set(buffered)
         ]
 
     # ── level 1: per-rollout (no-op for eval) ─────────────────────────────
@@ -100,7 +106,7 @@ class EvalSink:
         rewards = [r.reward for r in survivors]
         avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
         get_logger().debug(
-            f"Group | env={env_name} example_id={example_id} eval_step={eval_step} | "
+            f"Finished group | env={env_name} example_id={example_id} eval_step={eval_step} | "
             f"rollouts={len(group)} (errored={num_errored}) | reward={avg_reward:.4f}"
         )
 
@@ -138,7 +144,7 @@ class EvalSink:
             metrics.num_turns_min = float(min(num_turns))
             metrics.num_turns_max = float(max(num_turns))
 
-            # pass@k: errored attempts don't count toward k tries.
+            # pass@k: errored attempts don't count toward k tries
             by_example: dict[int | str, list[float]] = {}
             for r in valid:
                 by_example.setdefault(r.example_id, []).append(r.reward)
