@@ -47,10 +47,6 @@ class CheckpointManager:
         # Save buffer
         buffer.save(ckpt_path / "buffer")
 
-        # Save RAE state (multi-agent advantage path). Round-trip the
-        # baselines dict + momentum so resumed runs see the same EMA history
-        # — re-instantiating from scratch would reset the variance reduction
-        # SPIRAL Alg.1 was designed to compound across steps.
         if rae_state is not None:
             with open(ckpt_path / "rae_state.pt", "wb") as f:
                 torch.save({"baselines": rae_state.baselines, "momentum": rae_state.momentum}, f)
@@ -85,17 +81,12 @@ class CheckpointManager:
         else:
             buffer.load(ckpt_path / "buffer")
 
-        # Load RAE state in-place if requested. Missing file means the
-        # checkpoint predates the multi-agent path — fail loud rather than
-        # silently starting with a cold baseline; the operator should be
-        # explicit about whether they want to discard EMA history.
         if rae_state is not None:
             rae_path = ckpt_path / "rae_state.pt"
             if not rae_path.exists():
                 raise FileNotFoundError(
-                    f"RAE state not found at {rae_path} but multi-agent path "
-                    "is active. Either resume from a checkpoint that includes "
-                    "rae_state.pt, or start fresh (omit --ckpt.resume_step)."
+                    f"RAE state not found at {rae_path} but multi-agent path is active. "
+                    "Either resume from a checkpoint that includes rae_state.pt, or start fresh."
                 )
             with open(rae_path, "rb") as f:
                 snap = torch.load(f, weights_only=False)
@@ -104,13 +95,7 @@ class CheckpointManager:
 
         self.logger.debug(f"Orchestrator checkpoint loaded in {time.perf_counter() - start_time:.2f} seconds")
 
-    def load(
-        self,
-        progress: Progress,
-        buffer: Buffer,
-        step: int,
-        rae_state: RAEState | None = None,
-    ) -> None:
+    def load(self, progress: Progress, buffer: Buffer, step: int, rae_state: RAEState | None = None) -> None:
         """Loads a checkpoint from a given path."""
         ckpt_path = self.get_ckpt_path(step)
         if not ckpt_path.exists():

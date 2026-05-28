@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import gc
 import json
 import pickle
@@ -7,7 +9,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 import torch
@@ -18,7 +20,6 @@ from rich.table import Table
 from rich.text import Text
 from torch import Tensor, nn
 from torch.distributed.tensor import DTensor
-from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
@@ -26,6 +27,9 @@ from prime_rl.utils.pathing import get_ckpt_dir
 from prime_rl.utils.utils import format_num, format_time, get_step_path
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
+
+if TYPE_CHECKING:
+    from transformers.tokenization_utils import PreTrainedTokenizer
 
 
 class GarbageCollection:
@@ -352,10 +356,16 @@ class Tensors(defaultdict):
     def compute_stats(self) -> dict[str, float | int]:
         """Synchronize the tensor statistic across all ranks for each key and compute relevant statistics."""
 
+        local_keys = list(self.keys())
+        gathered_keys: list[list[str] | None] = [None] * dist.get_world_size()
+        dist.all_gather_object(gathered_keys, local_keys)
+        keys = sorted({key for rank_keys in gathered_keys if rank_keys is not None for key in rank_keys})
+
         metrics = {}
-        for key in list(self.keys()):
+        for key in keys:
             # All-gather tensors across steps and ranks (get global distribution)
-            tensors = torch.cat(self.pop(key), dim=0).to("cuda")
+            values = self.pop(key, [])
+            tensors = torch.cat(values, dim=0).to("cuda") if values else torch.empty(0, device="cuda")
             assert tensors.ndim == 1, "Can only aggregate 1D tensors"
             tensors = flexible_all_gather(tensors)
             assert tensors.ndim == 1, "Can only aggregate 1D tensors"
@@ -382,6 +392,11 @@ class Tensors(defaultdict):
         return metrics
 
 
+def _is_env_tensor_stat(key: str, allowed_stats: set[str]) -> bool:
+    parts = key.split("/")
+    return len(parts) >= 3 and parts[-1] in allowed_stats
+
+
 def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) -> dict[str, float | int]:
     """Drop noisy per-token distribution keys before sending RL trainer stats to W&B."""
     skip_prefixes = ("trainer_probs/", "inference_probs/")
@@ -389,6 +404,8 @@ def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) ->
         "is_masked/",
         "is_masked_low/",
         "is_masked_high/",
+        "masked_advantage_positive/",
+        "masked_advantage_negative/",
         "mismatch_kl/",
         "masked_mismatch_kl/",
         "unmasked_mismatch_kl/",
@@ -400,9 +417,12 @@ def filter_rl_trainer_tensor_stats_for_wandb(metrics: dict[str, float | int]) ->
             continue
         if any(k.startswith(p) for p in skip_prefixes):
             continue
-        if k.startswith("entropy/") and k != "entropy/mean":
+        if k.startswith("entropy/") and not _is_env_tensor_stat(k, {"mean", "std", "max"}):
             continue
         if any(k.startswith(p) for p in mean_max_only_prefixes):
+            if _is_env_tensor_stat(k, {"mean", "std", "max"}):
+                out[k] = v
+                continue
             if not (k.endswith("/mean") or k.endswith("/max")):
                 continue
         out[k] = v
@@ -434,12 +454,18 @@ class MemoryProfiler:
         self.step_num += 1
 
 
-def maybe_clean(path: Path, step: int, async_level: int, interval_to_keep: int | None) -> None:
+def maybe_clean(path: Path, step: int, interval_to_keep: int | None) -> None:
+    """Delete the broadcast dir from 2 trainer steps ago.
+
+    With a 1-step async barrier, the orchestrator at trainer step ``step`` is still consuming the
+    ckpt from ``step - 1``; ``step - 2`` is therefore safe to remove unless it falls on a
+    checkpoint interval that we want to preserve.
+    """
     logger = get_logger()
-    step = max(step - (async_level + 1), 0)  # Consider deleting async_level + 1 steps ago
-    candidate_path_to_delete = get_step_path(path, step)
-    keep = bool(interval_to_keep and step % interval_to_keep == 0)
-    logger.debug(f"Considering deleting path {candidate_path_to_delete}")
-    if not keep:
-        logger.debug(f"Removing path {candidate_path_to_delete}")
-        shutil.rmtree(candidate_path_to_delete, ignore_errors=True)
+    candidate_step = max(step - 2, 0)
+    candidate_path = get_step_path(path, candidate_step)
+    if interval_to_keep and candidate_step % interval_to_keep == 0:
+        logger.debug(f"Keeping path {candidate_path} (on ckpt interval)")
+        return
+    logger.debug(f"Removing path {candidate_path}")
+    shutil.rmtree(candidate_path, ignore_errors=True)

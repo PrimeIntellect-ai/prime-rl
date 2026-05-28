@@ -1,9 +1,9 @@
 [project]
 name = "prime-rl"
-version = "0.4.0"
+version = "0.5.0"
 description = "Async RL Training at Scale"
 readme = "README.md"
-requires-python = "~=3.12.0"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "prime-rl-configs",
     "beartype>=0.21.0",
@@ -18,7 +18,7 @@ dependencies = [
     "torchaudio",
     "torchdata>=0.11.0",
     "transformers",
-    "vllm>=0.20.2",
+    "vllm>=0.21.0",
     "wandb>=0.26.1",
     "ring-flash-attn>=0.1.8",
     "prime>=0.6.4",
@@ -26,7 +26,7 @@ dependencies = [
     "aiolimiter>=1.2.1",
     "tenacity>=8.2.0",
     "openai>=1.106.1",
-    "anthropic>=0.45.0",
+    "orjson>=3.11.0",
     "rich>=14.0.0",
     "setproctitle>=1.3.0",
     "uvloop>=0.21.0",
@@ -37,16 +37,16 @@ dependencies = [
     "tilelang>=0.1.8",
     "flash-linear-attention",
     "nvidia-ml-py>=12.575.51",
+    "pybase64>=1.4.2",
 ]
 
 [project.scripts]
 rl = "prime_rl.entrypoints.rl:main"
 sft = "prime_rl.entrypoints.sft:main"
 inference = "prime_rl.entrypoints.inference:main"
-trainer = "prime_rl.trainer.rl.train:main"
-orchestrator = "prime_rl.orchestrator.orchestrator:main"
+trainer = "prime_rl.entrypoints.trainer:main"
+orchestrator = "prime_rl.entrypoints.orchestrator:main"
 env-server = "prime_rl.orchestrator.env_server.env_server:main"
-baseline-eval = "prime_rl.baselines.cli:main"
 
 [project.entry-points."vllm.general_plugins"]
 prime_rl = "prime_rl.inference.patches:transformers_v5_compat"
@@ -58,36 +58,56 @@ flash-attn = [
 flash-attn-3 = ["flash_attn_3"]
 
 flash-attn-cute = [
-    "flash-attn-4",
+    "flash-attn-4[cu13]>=4.0.0b14",
 ]
 envs = [
-    "reverse-text",
+    "aime2024 ; python_version < '3.13'",
+    "aime2025 ; python_version < '3.13'",
     "alphabet-sort",
-    "wiki-search",
-    "math-python",
-    "math-env",
     "code-env",
-    "science-env",
+    "color-codeword ; python_version < '3.13'",
+    "deepdive",
+    "general-agent",
+    "gpqa",
+    "gpqa-consultancy",
+    "gpqa-debate",
+    "gpqa-rlvr",
+    "hle",
+    "ifeval",
+    "livecodebench",
     "logic-env",
-    "color-codeword",
-    "math500",
-    "aime2024",
-    "aime2025",
-    "mini_swe_agent_plus",
-    "deepdive"
+    "math-env",
+    "math-python",
+    "math500 ; python_version < '3.13'",
+    "mini-swe-agent-plus",
+    "mini-swe-agent-plus-rlm",
+    "mmlu-pro",
+    "opencode-cp",
+    "opencode-deepdive",
+    "opencode-math",
+    "opencode-science",
+    "opencode-swe",
+    "reverse-text",
+    "science-env",
+    "simpleqa-verified",
+    "tau2-bench",
+    "wiki-search",
 ]
 disagg = [
-    "deep-ep ; platform_machine == 'x86_64'",
-    "deep-gemm ; platform_machine == 'x86_64'",
+    "deep-ep ; platform_machine == 'x86_64' and python_version < '3.13'",
+    "deep-gemm ; platform_machine == 'x86_64' and python_version < '3.13'",
     "nixl",
-    "nixl-cu12 ; platform_machine == 'x86_64'",
+    "nixl-cu12 ; platform_machine == 'x86_64' and python_version < '3.13'",
     "vllm-router ; platform_machine == 'x86_64'",
 ]
 gpt-oss = [
     "kernels",
 ]
+modelexpress = [
+    "modelexpress==0.3.0",
+]
 quack = [
-    "quack-kernels>=0.3.3",
+    "quack-kernels>=0.4.1",
 ]
 all = [
     "prime-rl[flash-attn]",
@@ -106,12 +126,45 @@ dev = [
     "ipywidgets>=8.1.7",
     "pre-commit>=4.2.0",
     "pytest>=8.4.1",
+    "pytest-asyncio>=0.23",
     "ruff>=0.12.1",
 ]
 
 
 [tool.uv.workspace]
-members = ["packages/*"]
+members = [
+    "packages/prime-rl-configs",
+    "deps/pydantic-config",
+    "deps/verifiers",
+    "deps/renderers",
+    "deps/verifiers/environments/alphabet_sort",
+    "deps/verifiers/environments/math_python",
+    "deps/verifiers/environments/reverse_text",
+    "deps/verifiers/environments/wiki_search",
+    "deps/verifiers/environments/gpqa_debate",
+    "deps/verifiers/environments/gpqa_consultancy",
+    "deps/verifiers/environments/gpqa_rlvr",
+    "deps/research-environments/environments/code_env",
+    "deps/research-environments/environments/deepdive",
+    "deps/research-environments/environments/general_agent",
+    "deps/research-environments/environments/gpqa",
+    "deps/research-environments/environments/hle",
+    "deps/research-environments/environments/ifeval",
+    "deps/research-environments/environments/livecodebench",
+    "deps/research-environments/environments/logic_env",
+    "deps/research-environments/environments/math_env",
+    "deps/research-environments/environments/mini_swe_agent_plus",
+    "deps/research-environments/environments/mini_swe_agent_plus_rlm",
+    "deps/research-environments/environments/mmlu_pro",
+    "deps/research-environments/environments/opencode_cp",
+    "deps/research-environments/environments/opencode_deepdive",
+    "deps/research-environments/environments/opencode_math",
+    "deps/research-environments/environments/opencode_science",
+    "deps/research-environments/environments/opencode_swe",
+    "deps/research-environments/environments/science_env",
+    "deps/research-environments/environments/simpleqa_verified",
+    "deps/research-environments/environments/tau2_bench",
+]
 
 [tool.uv]
 exclude-newer = "7 days"
@@ -121,104 +174,133 @@ environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
     "sys_platform == 'linux' and platform_machine == 'aarch64'",
 ]
+# Verifiers' legacy RL extra pins the old demo trainer runtime
+# (torch 2.8 / vLLM 0.10). Keep that branch lockable, but do not let it
+# co-resolve with PrimeRL's torch 2.11 / vLLM 0.21 runtime or renderers.
+conflicts = [
+    [
+        { package = "prime-rl" },
+        { package = "verifiers", extra = "rl" },
+    ],
+    [
+        { package = "renderers" },
+        { package = "verifiers", extra = "rl" },
+    ],
+    [
+        { package = "renderers", group = "dev" },
+        { package = "verifiers", extra = "rl" },
+    ],
+]
 # Override torch's pinned cuDNN to fix Conv3d performance regression (torch 2.9 + cuDNN 9.8-9.14)
 # See: https://github.com/pytorch/pytorch/issues/166122
 override-dependencies = [
-    "nvidia-cudnn-cu13>=9.15",
-    "nvidia-cutlass-dsl>=4.4.2",
+    "nvidia-cudnn-cu13>=9.19",
+    "nvidia-cutlass-dsl>=4.4.1",
     "transformers>=5.1.0.dev0",
+    "torch==2.11.0",
+    # sentencepiece 0.2.1 emits CPython SWIG deprecation warnings during
+    # Transformers Gemma4 imports; 0.2.0 keeps the same tokenizer API clean.
+    "sentencepiece==0.2.0",
+    "openenv-core",
+]
+
+# ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
+# compatible with protobuf 6. prime-sandboxes requires protobuf>=6.31.1; keep
+# this capped to the validated protobuf major.
+[[tool.uv.dependency-metadata]]
+name = "modelexpress"
+version = "0.3.0"
+requires-dist = [
+    "grpcio>=1.66.2",
+    "huggingface_hub>=0.20.0",
+    "nixl[cu12]",
+    "numpy>=1.24.0",
+    "protobuf>=5.27.0,<7.0.0",
+    "pydantic>=2.0.0",
+    "torch>=2.6.0",
 ]
 
 [tool.uv.exclude-newer-package]
 # we want latest vllm, remove next patch
 vllm = false
+tokenspeed-mla = false
+fastokens = false
 flash_attn_3 = false
-# Self-vendored packages on our primeintellect index
-reverse-text = false
-alphabet-sort = false
-wiki-search = false
-math-python = false
-math-env = false
-code-env = false
-science-env = false
-logic-env = false
-color-codeword = false
-math500 = false
-aime2024 = false
-aime2025 = false
-deepdive = false
-mini_swe_agent_plus = false
+flash-attn-4 = false
 # PrimeIntellect-published on PyPI (trusted publisher)
 prime = false
 prime-sandboxes = false
 prime-tunnel = false
 prime-evals = false
 # Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
-verifiers = false
-renderers = false
 vllm-router = false
 dion = false
-pydantic-config = false
 deep-ep = false
 deep-gemm = false
 nixl-cu12 = false
 
 [tool.uv.sources]
 prime-rl-configs = { workspace = true }
-torch = { index = "pytorch-cu130" }
-torchvision = { index = "pytorch-cu130" }
-torchaudio = { index = "pytorch-cu130" }
-verifiers = { git = "https://github.com/joanvelja/verifiers.git", rev = "38ff43e3" }
-renderers = { git = "https://github.com/joanvelja/renderers.git", rev = "cce74eb" }
+verifiers = { workspace = true }
+renderers = { workspace = true }
+aime2024 = { path = "deps/research-environments/environments/aime2024", editable = true, marker = "python_version < '3.13'" }
+aime2025 = { path = "deps/research-environments/environments/aime2025", editable = true, marker = "python_version < '3.13'" }
+alphabet-sort = { workspace = true }
+code-env = { workspace = true }
+color-codeword = { path = "deps/research-environments/environments/color_codeword", editable = true, marker = "python_version < '3.13'" }
+deepdive = { workspace = true }
+general-agent = { workspace = true }
+gpqa = { workspace = true }
+gpqa-consultancy = { workspace = true }
+gpqa-debate = { workspace = true }
+gpqa-rlvr = { workspace = true }
+hle = { workspace = true }
+ifeval = { workspace = true }
+livecodebench = { workspace = true }
+logic-env = { workspace = true }
+math-env = { workspace = true }
+math-python = { workspace = true }
+math500 = { path = "deps/research-environments/environments/math500", editable = true, marker = "python_version < '3.13'" }
+mini-swe-agent-plus = { workspace = true }
+mini-swe-agent-plus-rlm = { workspace = true }
+mmlu-pro = { workspace = true }
+opencode-cp = { workspace = true }
+opencode-deepdive = { workspace = true }
+opencode-math = { workspace = true }
+opencode-science = { workspace = true }
+opencode-swe = { workspace = true }
+reverse-text = { workspace = true }
+science-env = { workspace = true }
+simpleqa-verified = { workspace = true }
+tau2-bench = { workspace = true }
+wiki-search = { workspace = true }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "c1c3424" }
-flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "96bd151" }
-flash-attn = { git = "https://github.com/Dao-AILab/flash-attention.git", rev = "060c918" }
-pydantic-config = { git = "https://github.com/samsja/pydantic_config.git", branch = "main" }
-vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.22/vllm_router-0.1.22-cp38-abi3-manylinux_2_28_x86_64.whl" }
-vllm = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2-cp38-abi3-manylinux_2_35_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.20.2/vllm-0.20.2-cp38-abi3-manylinux_2_35_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+flash-attn = [
+    { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.4/flash_attn-2.8.3+cu128torch2.11-cp312-cp312-linux_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version < '3.13'" },
+    { git = "https://github.com/Dao-AILab/flash-attention.git", rev = "060c918", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" },
 ]
-reverse-text = { index = "primeintellect" }
-alphabet-sort = { index = "primeintellect" }
-wiki-search = { index = "primeintellect" }
-math-python = { index = "primeintellect" }
-math-env = { index = "primeintellect" }
-code-env = { index = "primeintellect" }
-science-env = { index = "primeintellect" }
-logic-env = { index = "primeintellect" }
-color-codeword = { index = "primeintellect" }
-math500 = { index = "primeintellect" }
-aime2024 = { index = "primeintellect" }
-aime2025 = { index = "primeintellect" }
-deepdive = { index = "primeintellect" }
-mini_swe_agent_plus = { index = "primeintellect" }
-deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }
-deep-gemm = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }
-nixl-cu12 = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
+prime-pydantic-config = { workspace = true }
+vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.25/vllm_router-0.1.25-cp38-abi3-manylinux_2_28_x86_64.whl" }
+deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl", marker = "python_version < '3.13'" }
+deep-gemm = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl", marker = "python_version < '3.13'" }
+nixl-cu12 = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl", marker = "python_version < '3.13'" }
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
 flash_attn_3 = { index = "pytorch-cu130-test" }
 
 [tool.uv.extra-build-dependencies]
-flash-attn = [{ requirement = "torch", match-runtime = true }]
+flash-attn = ["torch", "setuptools"]
 flash-attn-3 = [{ requirement = "torch", match-runtime = true }]
 mamba-ssm = [{ requirement = "torch", match-runtime = true }]
 
 [tool.uv.extra-build-variables]
-flash-attn = { FLASH_ATTENTION_FORCE_BUILD = "TRUE", MAX_JOBS = "32", NVCC_THREADS = "4" }
-
-[[tool.uv.index]]
-name = "primeintellect"
-url = "https://hub.primeintellect.ai/primeintellect/simple/"
-explicit = true
+flash-attn = { FLASH_ATTENTION_FORCE_BUILD = "TRUE", MAX_JOBS = "4", NVCC_THREADS = "2" }
 
 [[tool.uv.index]]
 name = "pytorch-cu130"
 url = "https://download.pytorch.org/whl/cu130"
 explicit = true
-
 
 [[tool.uv.index]]
 name = "pytorch-cu130-test"
@@ -237,6 +319,7 @@ known-first-party = ["prime_rl"]
 
 [tool.ruff]
 line-length = 120
+extend-exclude = ["deps"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers"

@@ -95,3 +95,7 @@ id = "aime2025"
 
 [inference.parallel]
 tp = 8
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"

@@ -14,6 +14,7 @@ from transformers.utils import TransformersKwargs, can_return_tuple
 from transformers.utils.deprecation import deprecate_kwarg
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.fp8 import quantize_to_fp8_blockwise
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig, SDPAAttention
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import MLP, MLPConfig
@@ -78,6 +79,56 @@ def _sliding_window_mask(q_len: int, k_len: int, window: int, device: torch.devi
     allowed = (key_positions <= query_positions) & (key_positions >= query_positions - window + 1)
     mask = torch.full((q_len, k_len), torch.finfo(torch.float32).min, device=device)
     return mask.masked_fill(allowed, 0.0)
+
+
+def _add_maybe_fp8(out: dict[str, Tensor], name: str, tensor: Tensor, quantize_fp8: bool) -> None:
+    if quantize_fp8 and tensor.ndim == 2:
+        fp8_weight, scale = quantize_to_fp8_blockwise(tensor)
+        out[name] = fp8_weight
+        out[name.removesuffix(".weight") + ".weight_scale_inv"] = scale
+        return
+    out[name] = tensor
+
+
+def _convert_olmo3_layer_to_vllm_kernel(
+    state_dict: dict[str, Tensor],
+    layer_idx: int,
+    quantize_fp8: bool = False,
+) -> dict[str, Tensor]:
+    out: dict[str, Tensor] = {}
+    prefix = f"model.layers.{layer_idx}"
+
+    for name in [
+        f"{prefix}.self_attn.q_norm.weight",
+        f"{prefix}.self_attn.k_norm.weight",
+        f"{prefix}.post_attention_layernorm.weight",
+        f"{prefix}.post_feedforward_layernorm.weight",
+    ]:
+        if name in state_dict:
+            out[name] = state_dict[name]
+
+    q_key = f"{prefix}.self_attn.q_proj.weight"
+    k_key = f"{prefix}.self_attn.k_proj.weight"
+    v_key = f"{prefix}.self_attn.v_proj.weight"
+    if q_key in state_dict and k_key in state_dict and v_key in state_dict:
+        qkv = torch.cat([state_dict[q_key], state_dict[k_key], state_dict[v_key]], dim=0)
+        _add_maybe_fp8(out, f"{prefix}.self_attn.qkv_proj.weight", qkv, quantize_fp8)
+
+    o_key = f"{prefix}.self_attn.o_proj.weight"
+    if o_key in state_dict:
+        _add_maybe_fp8(out, o_key, state_dict[o_key], quantize_fp8)
+
+    gate_key = f"{prefix}.mlp.gate_proj.weight"
+    up_key = f"{prefix}.mlp.up_proj.weight"
+    if gate_key in state_dict and up_key in state_dict:
+        gate_up = torch.cat([state_dict[gate_key], state_dict[up_key]], dim=0)
+        _add_maybe_fp8(out, f"{prefix}.mlp.gate_up_proj.weight", gate_up, quantize_fp8)
+
+    down_key = f"{prefix}.mlp.down_proj.weight"
+    if down_key in state_dict:
+        _add_maybe_fp8(out, down_key, state_dict[down_key], quantize_fp8)
+
+    return out
 
 
 class Olmo3SDPAAttention(SDPAAttention):
@@ -247,6 +298,12 @@ class Olmo3PreTrainedModel(PreTrainedModelPrimeRL):
     def convert_layer_to_prime(cls, state_dict: dict[str, Tensor], layer_idx: int) -> dict[str, Tensor]:
         return state_dict
 
+    @classmethod
+    def convert_layer_to_vllm_kernel(
+        cls, state_dict: dict[str, Tensor], layer_idx: int, quantize_fp8: bool = False
+    ) -> dict[str, Tensor]:
+        return _convert_olmo3_layer_to_vllm_kernel(state_dict, layer_idx, quantize_fp8=quantize_fp8)
+
 
 class Olmo3Model(Olmo3PreTrainedModel):
     def __init__(self, config: Olmo3Config):
@@ -370,9 +427,12 @@ class Olmo3ForCausalLM(Olmo3PreTrainedModel, GenerationMixin):
         )
 
     def init_buffers_post_meta(self):
-        rotary_emb = self.model.rotary_emb
-        inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(rotary_emb.config, rotary_emb.inv_freq.device)
-        rotary_emb.inv_freq.copy_(inv_freq)
+        for rotary_emb in self.model.rotary_embs.values():
+            inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(
+                rotary_emb.config, rotary_emb.inv_freq.device
+            )
+            rotary_emb.inv_freq.copy_(inv_freq)
+            rotary_emb.original_inv_freq = rotary_emb.inv_freq
 
 
 __all__ = ["Olmo3ForCausalLM", "Olmo3Model", "Olmo3PreTrainedModel"]

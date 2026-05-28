@@ -24,12 +24,10 @@ from prime_rl.orchestrator.member_generation import (
 )
 from prime_rl.orchestrator.vf_utils import get_completion_len
 from prime_rl.utils.logger import ProgressTracker, get_logger
+from prime_rl.utils.monitor import get_monitor
+from prime_rl.utils.utils import capitalize
 
 REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
-
-
-def _capitalize(s: str) -> str:
-    return s[:1].upper() + s[1:]
 
 
 class Env:
@@ -66,7 +64,7 @@ class Env:
 
     @property
     def is_multi_agent(self) -> bool:
-        return self.env.is_multi_agent
+        return bool(getattr(self.env, "is_multi_agent", False))
 
     async def start(
         self,
@@ -117,13 +115,14 @@ class Env:
         return address
 
     def _sampling_args_with_salt(self, cache_salt: str) -> dict:
-        """Thread cache_salt through the shared sampling_args. vLLM prefix-cache
-        invalidation lives in extra_body; verifiers' endpoint-aware OpenAI
-        client strips vLLM-only keys when talking to strict OpenAI endpoints
-        (opponent/judge), so cache_salt stays local to the learner call."""
         sampling_args = {**self.sampling_args}
         extra_body = {**sampling_args.get("extra_body", {}), "cache_salt": cache_salt}
         sampling_args["extra_body"] = extra_body
+        return sampling_args
+
+    def _fixed_member_sampling_args(self) -> dict:
+        sampling_args = {**self.sampling_args}
+        sampling_args.pop("extra_body", None)
         return sampling_args
 
     def multi_agent_members(self) -> list[str]:
@@ -151,9 +150,18 @@ class Env:
             default_client=client,
             default_model=model_name,
             learner_sampling_args=self._sampling_args_with_salt(cache_salt),
-            fixed_sampling_args=self.sampling_args,
+            fixed_sampling_args=self._fixed_member_sampling_args(),
             dispatch_id=dispatch_id,
         )
+
+    @property
+    def state_columns(self) -> list[str]:
+        """Required columns plus any extras configured on the env, deduped (required first)."""
+        merged: list[str] = []
+        for col in (*REQUIRED_STATE_COLUMNS, *self.config.state_columns):
+            if col not in merged:
+                merged.append(col)
+        return merged
 
     async def run_rollout(
         self,
@@ -171,7 +179,7 @@ class Env:
             model=model_name,
             sampling_args=self._sampling_args_with_salt(cache_salt),
             max_retries=self.config.max_retries,
-            state_columns=REQUIRED_STATE_COLUMNS,
+            state_columns=self.state_columns,
             env_client=self.env_client,
             generation=generation,
         )
@@ -184,19 +192,19 @@ class Env:
         client: vf.ClientConfig,
         example: dict,
         model_name: str,
-        rollouts_per_example: int,
+        group_size: int,
         cache_salt: str,
         generation: vf.GenerationPlan | None = None,
         dispatch_ids: list[str] | None = None,
     ) -> list[vf.RolloutOutput]:
         """Run a group of rollouts for an example. Required for group-scoring envs."""
         outputs = await self.env.run_group(
-            [vf.RolloutInput(**example) for _ in range(rollouts_per_example)],
+            [vf.RolloutInput(**example) for _ in range(group_size)],
             client=client,
             model=model_name,
             sampling_args=self._sampling_args_with_salt(cache_salt),
             max_retries=self.config.max_retries,
-            state_columns=REQUIRED_STATE_COLUMNS,
+            state_columns=self.state_columns,
             env_client=self.env_client,
             generation=generation,
         )
@@ -244,9 +252,9 @@ class EvalEnv(Env):
         eval_clients: Sequence[vf.ClientConfig] | None = None,
     ) -> list[vf.RolloutOutput]:
         num_examples = len(self.examples)
-        rollouts_per_example = self.config.rollouts_per_example
-        get_logger().info(f"Evaluating {self.name} ({num_examples=}, {rollouts_per_example=})")
-        total_rollouts = num_examples * rollouts_per_example
+        group_size = self.config.group_size
+        get_logger().info(f"Evaluating {self.name} ({num_examples=}, {group_size=})")
+        total_rollouts = num_examples * group_size
         pbar = ProgressTracker(total=total_rollouts, desc=f"Evaluating {self.name}")
         eval_start = time.perf_counter()
         active_multi_agent = (
@@ -272,7 +280,7 @@ class EvalEnv(Env):
         def release_client(client: vf.ClientConfig, cost: int) -> None:
             if max_concurrent_rollouts_per_client is None:
                 return
-            identity = (client.api_base_url, client.extra_headers.get("X-data-parallel-rank"))
+            identity = client_identity(client)
             client_load[identity] -= cost
             if client_load[identity] <= 0:
                 del client_load[identity]
@@ -280,11 +288,11 @@ class EvalEnv(Env):
         if self.requires_group_scoring:
 
             async def run_with_progress(example: dict) -> list[vf.RolloutOutput] | None:
-                """Run rollouts_per_example rollouts as a scored group for one example."""
-                client = await acquire_client(rollouts_per_example)
+                """Run group_size rollouts as a scored group for one example."""
+                client = await acquire_client(group_size)
                 try:
                     dispatch_ids = [
-                        f"eval:{step}:{self.name}:{example['example_id']}:{idx}" for idx in range(rollouts_per_example)
+                        f"eval:{step}:{self.name}:{example['example_id']}:{idx}" for idx in range(group_size)
                     ]
                     generation = (
                         [
@@ -304,22 +312,22 @@ class EvalEnv(Env):
                         client=client,
                         example=example,
                         model_name=model_name,
-                        rollouts_per_example=rollouts_per_example,
+                        group_size=group_size,
                         cache_salt=cache_salt,
                         generation=generation,
-                        dispatch_ids=dispatch_ids,
+                        dispatch_ids=dispatch_ids if active_multi_agent is not None else None,
                     )
-                    pbar.update(rollouts_per_example)
+                    pbar.update(group_size)
                     return outputs
                 except Exception as e:
                     get_logger().warning(f"Group failed: {e}")
-                    pbar.update(rollouts_per_example)
+                    pbar.update(group_size)
                     return None
                 finally:
-                    release_client(client, rollouts_per_example)
+                    release_client(client, group_size)
 
             jobs = self.examples
-            cost_per_job = rollouts_per_example
+            cost_per_job = group_size
 
         else:
 
@@ -346,7 +354,7 @@ class EvalEnv(Env):
                         model_name=model_name,
                         cache_salt=cache_salt,
                         generation=generation,
-                        dispatch_id=dispatch_id,
+                        dispatch_id=dispatch_id if active_multi_agent is not None else None,
                     )
                     pbar.update(1)
                     return [output]
@@ -357,17 +365,17 @@ class EvalEnv(Env):
                 finally:
                     release_client(client, 1)
 
-            jobs = [(example, rollout_idx) for example in self.examples for rollout_idx in range(rollouts_per_example)]
+            jobs = [(example, rollout_idx) for example in self.examples for rollout_idx in range(group_size)]
             cost_per_job = 1
 
         try:
             if max_concurrent_rollouts_per_client is None:
-                results = await asyncio.gather(*(run_with_progress(example) for example in jobs))
+                results = await asyncio.gather(*(run_with_progress(job) for job in jobs))
             else:
                 if not eval_client_pool:
                     raise RuntimeError("Eval dynamic refill requires at least one eval client")
 
-                eval_jobs: asyncio.Queue[tuple[dict, int] | dict | None] = asyncio.Queue()
+                eval_jobs: asyncio.Queue[dict | tuple[dict, int] | None] = asyncio.Queue()
                 worker_count = min(
                     len(jobs),
                     max(1, (len(eval_client_pool) * max_concurrent_rollouts_per_client) // cost_per_job),
@@ -410,8 +418,6 @@ class EvalEnv(Env):
 
         if not successful_outputs:
             get_logger().warning(f"All rollouts failed for {self.name}, skipping logging metrics")
-            from prime_rl.utils.monitor import get_monitor
-
             get_monitor().log(
                 {
                     f"eval/{self.name}/failed_rollouts": failed_count / total_rollouts,
@@ -423,8 +429,6 @@ class EvalEnv(Env):
             return []
 
         # Log metrics
-        from prime_rl.utils.monitor import get_monitor
-
         monitor = get_monitor()
 
         rows = [
@@ -452,13 +456,11 @@ class EvalEnv(Env):
             pass_at_k = None
             get_logger().warning("Skipping computing pass@k rates because the task rewards appear to be non-binary")
 
-        message = (
-            f"Evaluated {self.name} in {eval_time:.2f}s (Avg@{rollouts_per_example}={results_df.reward.mean():.4f}"
-        )
+        message = f"Evaluated {self.name} in {eval_time:.2f}s (Avg@{group_size}={results_df.reward.mean():.4f}"
         if could_be_binary:
             assert pass_at_k is not None
             for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
-                message += f", {_capitalize(str(pass_rate))}: {pass_rate_score:.4f}"
+                message += f", {capitalize(str(pass_rate))}: {pass_rate_score:.4f}"
 
         message += (
             f", No-response: {results_df.no_response.mean() * 100:.1f}%"
@@ -468,7 +470,7 @@ class EvalEnv(Env):
         get_logger().success(message)
 
         eval_metrics = {
-            f"avg@{rollouts_per_example}": float(results_df.reward.mean()),
+            f"avg@{group_size}": float(results_df.reward.mean()),
             "no_response/mean": float(results_df.no_response.mean()),
             "no_response/count": int(results_df.no_response.sum()),
             "completion_len/mean": results_df.completion_len.mean().item(),
@@ -482,7 +484,8 @@ class EvalEnv(Env):
             assert pass_at_k is not None
             eval_metrics.update(pd.Series(pass_at_k.mean()).to_dict())
         eval_metrics = {f"eval/{self.name}/{key}": v for key, v in eval_metrics.items()}
-        eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step})
+        eval_metrics["progress/ckpt_step"] = ckpt_step
+        eval_metrics["step"] = step
         monitor.log(eval_metrics, step=step)
         monitor.log_eval_samples(successful_outputs, env_name=self.name, step=step)
 

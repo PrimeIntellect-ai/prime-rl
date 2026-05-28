@@ -1,10 +1,7 @@
-# RLVR (single-agent) GPQA — vanilla GRPO + boxed-answer rubric.
+# GPQA single-agent RLVR control for the debate/consultancy comparison.
 #
-# Status: requires the env package `gpqa-rlvr` to exist in verifiers.
-# Sketch in environments/gpqa_rlvr/ (see this PR's accompanying patch).
-# Until then, pip install the local env: uv pip install -e ../verifiers/environments/gpqa_rlvr
-#
-# Launch: uv run rl @ configs/gpqa_rlvr/rl.toml
+# Requires the gpqa-rlvr environment from joanvelja/verifiers:
+#   uv pip install -e ../verifiers/environments/gpqa_rlvr
 
 max_steps = 500
 seq_len = 4096
@@ -17,8 +14,13 @@ name = "qwen3-4b-gpqa-rlvr"
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [orchestrator]
+training_mode = "rl"
 batch_size = 256
-rollouts_per_example = 8
+group_size = 8
+
+[orchestrator.renderer]
+name = "auto"
+preserve_all_thinking = true
 
 [orchestrator.train.sampling]
 temperature = 1.0
@@ -29,12 +31,9 @@ id = "gpqa-rlvr"
 name = "gpqa-rlvr"
 args = { subset = "gpqa_diamond" }
 
-# [orchestrator.advantage] omitted → DefaultAdvantageConfig (group-mean baseline)
-# [orchestrator.multi_agent] omitted → inert (no MA detection at startup)
-
 [orchestrator.buffer]
-easy_threshold = 1.0   # drop trivially-solved problems
-hard_threshold = 0.0   # drop unsolvable problems
+easy_threshold = 1.0
+hard_threshold = 0.0
 
 [orchestrator.eval]
 interval = 50
@@ -42,11 +41,11 @@ interval = 50
 [[orchestrator.eval.env]]
 id = "gpqa-rlvr"
 name = "gpqa-rlvr-eval"
-num_examples = 198     # gpqa_diamond size
-rollouts_per_example = 4
+num_examples = 198
+group_size = 4
 args = { subset = "gpqa_diamond" }
 
-[trainer] # Default trainer config (DPPO+KL loss)
+[trainer]
 
 [inference]
 gpu_memory_utilization = 0.85

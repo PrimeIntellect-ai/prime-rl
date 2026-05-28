@@ -7,6 +7,7 @@ import torch.nn as nn
 from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.trainer.models.layers.lora import MultiLoRALinear, MultiLoRAModule
 from prime_rl.trainer.models.layers.lora.multi_moe import (
+    MultiLoRAGemma4TextExperts,
     MultiLoRAGptOssGroupedExperts,
     MultiLoRAGroupedExperts,
     MultiLoRANonGatedGroupedExperts,
@@ -14,6 +15,10 @@ from prime_rl.trainer.models.layers.lora.multi_moe import (
 from prime_rl.trainer.models.layers.moe import GptOssGroupedExperts, GroupedExperts, NonGatedGroupedExperts
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.utils.logger import get_logger
+
+
+def _is_gemma4_text_experts(module: nn.Module) -> bool:
+    return type(module).__name__ == "Gemma4TextExperts" and type(module).__module__.endswith(".gemma4.modeling_gemma4")
 
 
 def strip_lora_from_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
@@ -79,7 +84,9 @@ def _find_target_modules(model: nn.Module, target_patterns: List[str]) -> List[s
 
     for name, module in model.named_modules():
         # Check if module is Linear or one of the supported expert classes
-        if not isinstance(module, (nn.Linear, GroupedExperts, NonGatedGroupedExperts, GptOssGroupedExperts)):
+        if not isinstance(module, (nn.Linear, GroupedExperts, NonGatedGroupedExperts, GptOssGroupedExperts)) and not (
+            _is_gemma4_text_experts(module)
+        ):
             continue
 
         for pattern in target_patterns:
@@ -204,10 +211,20 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
                 alpha=config.alpha,
                 dropout=config.dropout,
             )
+        # Handle HF Gemma4TextExperts (3D gate_up + down expert tensors)
+        elif _is_gemma4_text_experts(base_module):
+            lora_module = MultiLoRAGemma4TextExperts(
+                base_layer=base_module,
+                rank=config.rank,
+                n_adapters=n_loras,
+                alpha=config.alpha,
+                dropout=config.dropout,
+            )
         else:
             logger.warning(
                 f"Module {module_name} is type {type(base_module).__name__}, "
-                f"expected nn.Linear, GroupedExperts, NonGatedGroupedExperts, or GptOssGroupedExperts. Skipping."
+                "expected nn.Linear, GroupedExperts, NonGatedGroupedExperts, "
+                "GptOssGroupedExperts, or Gemma4TextExperts. Skipping."
             )
             continue
 

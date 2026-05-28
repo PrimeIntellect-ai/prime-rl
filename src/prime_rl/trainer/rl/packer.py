@@ -1,11 +1,15 @@
+from __future__ import annotations
+
 import os
 import shutil
 import threading
 import time
 from abc import ABC, abstractmethod
 from collections import deque
+from typing import TYPE_CHECKING
 
-from transformers.tokenization_utils import PreTrainedTokenizer
+if TYPE_CHECKING:
+    from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.batch import prepare_batch
 from prime_rl.trainer.runs import get_multi_run_manager

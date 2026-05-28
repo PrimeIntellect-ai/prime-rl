@@ -267,7 +267,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
             self.logger.debug(f"Inference workers ready for NCCL broadcast (run {idx})")
 
     def _sync_trainer_ranks(self) -> None:
-        """Keep non-master ranks out of broadcast prep until master has inference ready."""
+        """Keep non-master ranks out of broadcast prep until master has notified inference."""
         if self.world.world_size <= 1:
             return
         if not dist.is_available() or not dist.is_initialized():

@@ -9,8 +9,9 @@ import verifiers as vf
 from aiolimiter import AsyncLimiter
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.buffer import Buffer, ExampleKey
+from prime_rl.orchestrator.buffer import Buffer
 from prime_rl.orchestrator.envs import TrainEnvs
+from prime_rl.orchestrator.multi_agent_advantage import fan_out_trainable_for_multi_agent
 from prime_rl.orchestrator.vf_utils import get_seq_len
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.client import InferencePool
@@ -32,8 +33,6 @@ class InflightRequest:
     env_name: str
     group_id: int | None = None
     rollout_count: int = 1
-    # Dispatch round the request belongs to (see GroupState.current_round).
-    round_id: int = 0
 
 
 @dataclass
@@ -44,21 +43,7 @@ class GroupState:
     rollouts_to_schedule: int
     completed_rollouts: list[vf.RolloutOutput] = field(default_factory=list)
     pinned_client: vf.ClientConfig | None = None
-    # Number of dispatch rounds in which at least one rollout returned errored
-    # or empty trajectories. Compared against
-    # config.max_error_reschedule_attempts to decide when to drop a
-    # permanently-stuck group. Counts rounds, not rollouts: a failed round in
-    # an individual-scoring env that happens to dispatch N rollouts at once
-    # still only counts as 1.
-    failed_attempts: int = 0
-    # Round id assigned to newly-dispatched rollouts. Advances after a failure
-    # is counted so the resulting reschedule starts a new round.
-    current_round: int = 0
-    # Highest round already counted as failed; used to dedupe failures from
-    # multiple rollouts in the same round.
-    last_failed_round: int = -1
-    # Dispatch ids are Prime-RL-owned ids used for train-one member selection
-    # before Verifiers creates trajectory_id.
+    failed_rollouts: int = 0
     next_dispatch_index: int = 0
 
 
@@ -76,15 +61,13 @@ class Scheduler:
     def __init__(
         self,
         train_envs: TrainEnvs,
-        inference_pool: InferencePool,
+        student_inference: InferencePool,
+        teacher_inference: InferencePool | None,
         buffer: Buffer,
         config: OrchestratorConfig,
         max_inflight_rollouts: int,
-        max_async_level: int,
         max_off_policy_steps: int,
-        strict_async_level: bool,
         tasks_per_minute: int | None,
-        enable_policy_updates: bool = True,
         lora_name: str | None = None,
     ):
         self.logger = get_logger()
@@ -97,18 +80,24 @@ class Scheduler:
         self.config = config
         self.batch_size = config.batch_size
         self.token_batch_size = config.token_batch_size
-        self.rollouts_per_example = config.rollouts_per_example
+        self.group_size = config.group_size
         self.max_inflight_rollouts = max_inflight_rollouts
-        self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
-        self.strict_async_level = strict_async_level
-        self.enable_policy_updates = enable_policy_updates
         self.lora_name = lora_name
-        self.model_name = self.config.model.name
         self.json_logging = config.log.json_logging
 
-        # Inference pool - used for admin operations (adapter sync) and metrics
-        self.inference_pool = inference_pool
+        # student_inference is the weight-sync target. teacher_inference is set
+        # in opd (for logprobs) and sft (for rollouts). rollout_inference is
+        # whichever pool serves train rollouts for this mode.
+        self.student_inference = student_inference
+        self.teacher_inference = teacher_inference
+        if config.training_mode == "sft":
+            assert teacher_inference is not None
+            self.rollout_inference = teacher_inference
+        else:
+            self.rollout_inference = student_inference
+        # model_name is the name to send on rollout requests - matches the rollout pool
+        self.model_name = self.rollout_inference.model_name
 
         group_scoring_envs = [env.name for env in train_envs if env.requires_group_scoring]
         if group_scoring_envs:
@@ -131,6 +120,7 @@ class Scheduler:
         self.cancelled_rollouts_count = 0
         self.empty_rollouts_by_env: dict[str, int] = defaultdict(int)
         self.errored_rollouts_by_env: dict[str, int] = defaultdict(int)
+        self.errors_by_type: dict[str, int] = defaultdict(int)
         self.total_rollouts_by_env: dict[str, int] = defaultdict(int)
         self.dropped_groups_by_env: dict[str, int] = defaultdict(int)
         self.last_batch_generation_time = 0.0
@@ -147,10 +137,31 @@ class Scheduler:
         assert self.batch_size is not None
         return self.batch_size
 
+    def _batch_progress_units(self, rollouts: list[vf.RolloutOutput]) -> list[vf.RolloutOutput]:
+        multi_agent = getattr(self.config, "multi_agent", None)
+        if multi_agent is None or not multi_agent.enabled:
+            return rollouts
+
+        multi_agent_rollouts: list[vf.RolloutOutput] = []
+        single_agent_rollouts: list[vf.RolloutOutput] = []
+        for rollout in rollouts:
+            env = self.train_envs.get(rollout["env_name"])
+            if getattr(env, "is_multi_agent", False):
+                multi_agent_rollouts.append(rollout)
+            else:
+                single_agent_rollouts.append(rollout)
+
+        if not multi_agent_rollouts:
+            return rollouts
+
+        training_units, _ = fan_out_trainable_for_multi_agent(multi_agent_rollouts, multi_agent)
+        return [*single_agent_rollouts, *training_units]
+
     def get_batch_progress_increment(self, rollouts: list[vf.RolloutOutput]) -> int:
+        progress_units = self._batch_progress_units(rollouts)
         if self.uses_token_batching:
-            return sum(get_seq_len(rollout) for rollout in rollouts)
-        return len(rollouts)
+            return sum(get_seq_len(unit) for unit in progress_units)
+        return len(progress_units)
 
     def finalize_batch_rollouts(self, rollouts: list[vf.RolloutOutput]) -> list[vf.RolloutOutput]:
         if self.batch_size is None:
@@ -178,17 +189,17 @@ class Scheduler:
         Uses (api_base_url, dp_rank) as identity rather than client_idx so that
         load tracking survives elastic pool refreshes (which reassign indices).
         """
-        clients = self.inference_pool.train_clients
+        clients = self.rollout_inference.train_clients
         while not clients:
             await asyncio.sleep(1)
-            clients = self.inference_pool.train_clients
+            clients = self.rollout_inference.train_clients
         inflight = Counter(self._client_identity(info.client_config) for info in self.inflight_requests.values())
         return min(clients, key=lambda c: inflight[self._client_identity(c)])
 
     def _next_dispatch_ids(self, group: GroupState, group_id: int, count: int) -> list[str]:
         start = group.next_dispatch_index
         group.next_dispatch_index += count
-        return [f"{self.step}:{group_id}:{group.current_round}:{start + idx}" for idx in range(count)]
+        return [f"{self.step}:{group_id}:{start + idx}" for idx in range(count)]
 
     def _compile_generation(
         self,
@@ -198,7 +209,7 @@ class Scheduler:
         cache_salt: str,
         dispatch_id: str,
     ) -> vf.MemberGenerationPlan | None:
-        if not self.config.multi_agent.enabled or not env.is_multi_agent:
+        if not self.config.multi_agent.enabled or not getattr(env, "is_multi_agent", False):
             return None
         return env.compile_generation(
             self.config.multi_agent,
@@ -260,9 +271,9 @@ class Scheduler:
                     client=client_config,
                     example=group.example,
                     model_name=self.model_name,
-                    rollouts_per_example=rollout_count,
+                    group_size=rollout_count,
                     cache_salt=cache_salt,
-                    generation=generation if any(g is not None for g in generation) else None,
+                    generation=generation if any(plan is not None for plan in generation) else None,
                     dispatch_ids=dispatch_ids,
                 )
             )
@@ -292,7 +303,6 @@ class Scheduler:
             env_name=env_name,
             group_id=group_id,
             rollout_count=rollout_count,
-            round_id=group.current_round,
         )
 
     @property
@@ -304,32 +314,7 @@ class Scheduler:
         pending = sum(g.rollouts_to_schedule for g in self.groups.values())
         return self.inflight_rollout_count + pending
 
-    def _active_example_keys(self) -> set[ExampleKey]:
-        return {(group.example["env_name"], group.example["example_id"]) for group in self.groups.values()}
-
-    def _sample_batch_example(self, batch_example_keys: set[ExampleKey]) -> dict | None:
-        try:
-            return self.buffer.sample_examples(n=1, exclude_keys=batch_example_keys)[0]
-        except ValueError as exc:
-            if str(exc) != "No environments left with examples.":
-                raise
-
-        active_example_keys = self._active_example_keys()
-        if batch_example_keys <= active_example_keys:
-            return None
-
-        self.logger.warning(
-            "Exhausted unique examples while filling this batch; allowing repeats for completed examples."
-        )
-        batch_example_keys.intersection_update(active_example_keys)
-        try:
-            return self.buffer.sample_examples(n=1, exclude_keys=batch_example_keys)[0]
-        except ValueError as exc:
-            if str(exc) == "No environments left with examples.":
-                return None
-            raise
-
-    async def _schedule_next_request(self, batch_example_keys: set[ExampleKey] | None = None) -> bool:
+    async def _schedule_next_request(self) -> bool:
         remaining_capacity = self.max_inflight_rollouts - self.inflight_rollout_count
 
         if remaining_capacity <= 0:
@@ -344,24 +329,18 @@ class Scheduler:
                 await self.schedule_rollout(group_id=group_id)
                 return True
 
-        if remaining_capacity < self.rollouts_per_example:
+        if remaining_capacity < self.group_size:
             return False
 
-        if batch_example_keys is None:
-            batch_example_keys = self._active_example_keys()
-
-        example = self._sample_batch_example(batch_example_keys)
-        if example is None:
-            return False
-        batch_example_keys.add((example["env_name"], example["example_id"]))
+        example = self.buffer.sample_examples(n=1)[0]
         group_id = self.next_group_id
         self.next_group_id += 1
-        self.groups[group_id] = GroupState(example=example, rollouts_to_schedule=self.rollouts_per_example)
+        self.groups[group_id] = GroupState(example=example, rollouts_to_schedule=self.group_size)
         await self.schedule_rollout(group_id=group_id)
         return True
 
-    async def _fill_inflight_requests(self, batch_example_keys: set[ExampleKey] | None = None) -> None:
-        while await self._schedule_next_request(batch_example_keys=batch_example_keys):
+    async def _fill_inflight_requests(self) -> None:
+        while await self._schedule_next_request():
             pass
 
     async def update_policy_loop(self):
@@ -371,18 +350,20 @@ class Scheduler:
             await asyncio.sleep(1)
 
     def _compute_next_ckpt_step(self) -> int:
+        # The orchestrator always runs one step ahead of the trainer, so we must advance to at
+        # least step - 1. We additionally adopt anything fresher the trainer has already
+        # broadcast (so a fast trainer briefly running on-policy is fine). ``latest_ckpt_step``
+        # is non-negative so it also clamps a self.step == 0 startup.
         latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
-        async_away_ckpt_step = max(self.step - self.max_async_level, 0)
-        if self.strict_async_level:
-            return async_away_ckpt_step
-        return max(async_away_ckpt_step, latest_ckpt_step)
+        return max(self.step - 1, latest_ckpt_step)
 
     async def _apply_policy_update(self, next_ckpt_step: int) -> None:
-        async_away_ckpt_step = max(self.step - self.max_async_level, 0)
-        if next_ckpt_step == async_away_ckpt_step:
+        # If we're advancing to step - 1, the trainer hasn't broadcast it yet (otherwise
+        # we would've picked something newer); block until the file lands.
+        if next_ckpt_step == max(self.step - 1, 0):
             self.logger.info(
-                f"Orchestrator paused: waiting for trainer process to complete checkpoint {next_ckpt_step} "
-                f"(>{self.max_async_level} step(s) ahead). Training is progressing normally."
+                f"Orchestrator paused: waiting for trainer to broadcast checkpoint {next_ckpt_step} "
+                f"(orchestrator is one step ahead). Training is progressing normally."
             )
             self.checkpoint_ready.clear()
             wait_for_ckpt_start_time = time.perf_counter()
@@ -398,14 +379,18 @@ class Scheduler:
 
         update_weights_start_time = time.perf_counter()
         weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
-        await self.inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
+        await self.student_inference.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
         self.update_weights_time = time.perf_counter() - update_weights_start_time
         self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
         self.ckpt_step = next_ckpt_step
         if self.lora_name is not None:
-            self.model_name = self.lora_name
-            self.inference_pool.update_model_name(self.model_name)
+            self.student_inference.update_model_name(self.lora_name)
+            # Only redirect rollout requests to the new LoRA when rollouts come from
+            # student inference (rl/opd). In sft, rollouts go to the teacher and
+            # the student's LoRA name is irrelevant to them.
+            if self.rollout_inference is self.student_inference:
+                self.model_name = self.lora_name
 
         self.checkpoint_ready.set()
         await self._update_off_policy()
@@ -428,11 +413,6 @@ class Scheduler:
 
     async def maybe_update_policy(self):
         """Updates the policy to the latest available checkpoint. Aborts rollout requests that are older than the max retention steps."""
-        if not self.enable_policy_updates:
-            self.ckpt_step = self.step
-            self.checkpoint_ready.set()
-            return
-
         while True:
             next_ckpt_step = self._compute_next_ckpt_step()
             if next_ckpt_step <= self.ckpt_step:
@@ -469,21 +449,31 @@ class Scheduler:
             )
 
     async def generate_batch(self, step: int) -> list[vf.RolloutOutput]:
-        """Continuously generate a batch using the caller-selected policy snapshot."""
+        """Continuously generates a batch of rollouts."""
+        self.step = step
+
+        # Cancel the previous update policy task to avoid concurrent updates
+        if self.update_policy_task is not None:
+            await safe_cancel(self.update_policy_task)
+
+        # Manually check the async barrier before starting the step, then re-create the update policy loop
+        # This ensures the orchestrator stays at most one step ahead of the trainer, while still
+        # listening for policy updates mid-step.
+        await self.maybe_update_policy()
+        self.update_policy_task = asyncio.create_task(self.update_policy_loop())
+
         batch_start_time = time.perf_counter()
 
         self.logger.debug("Starting to generate batch rollouts")
 
-        batch_target = self.batch_target
         batch_rollouts: list[vf.RolloutOutput] = []
-        batch_example_keys = self._active_example_keys()
         batch_progress = 0
         pbar = ProgressTracker(
-            total=batch_target, desc="Generating rollouts (train)", json_logging=self.json_logging, step=step
+            total=self.batch_target, desc="Generating rollouts (train)", json_logging=self.json_logging, step=step
         )
 
-        while batch_progress < batch_target:
-            await self._fill_inflight_requests(batch_example_keys=batch_example_keys)
+        while batch_progress < self.batch_target:
+            await self._fill_inflight_requests()
             inflight_tasks = list(self.inflight_requests.keys())
 
             finished_tasks, _ = await asyncio.wait(
@@ -493,7 +483,7 @@ class Scheduler:
             await self.checkpoint_ready.wait()
 
             for finished_task in finished_tasks:
-                if batch_progress >= batch_target:
+                if batch_progress >= self.batch_target:
                     break
 
                 rollout_info = self.inflight_requests.pop(finished_task, None)
@@ -508,124 +498,91 @@ class Scheduler:
                     if group is None:
                         continue
 
-                    env = self.train_envs.get(env_name)
                     result = finished_task.result()
                     rollouts: list[vf.RolloutOutput] = result if isinstance(result, list) else [result]
                     self.total_rollouts_by_env[env_name] += len(rollouts)
 
-                    # Check for empty/errored rollouts and reschedule
-                    valid_rollouts = []
-                    has_failures = False
-                    last_failure_reason: str | None = None
+                    # Partition rollouts into valid vs failed and tally per-rollout
+                    # error metrics. Tally every failure (group-scoring envs return
+                    # N rollouts per task) so error-rate metrics aren't deflated.
+                    env = self.train_envs.get(env_name)
+                    valid_rollouts: list[vf.RolloutOutput] = []
                     for rollout in rollouts:
                         if rollout["error"] is not None:
                             self.errored_rollouts_by_env[env_name] += 1
-                            has_failures = True
-                            last_failure_reason = rollout["error"]["error_chain_repr"]
+                            self.errors_by_type[rollout["error"]["error"]] += 1
                             self.logger.warning(
-                                f"Rollout error in group {group_id} ({env_name}), re-scheduling "
-                                f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete): "
-                                f"{last_failure_reason}"
+                                f"Rollout failed in group {group_id} ({env_name}) - "
+                                f"{rollout['error']['error_chain_repr']}"
                             )
                         elif len(rollout["trajectory"]) == 0:
                             self.empty_rollouts_by_env[env_name] += 1
-                            has_failures = True
-                            last_failure_reason = "empty trajectory"
-                            self.logger.warning(
-                                f"Empty trajectory in group {group_id} ({env_name}), re-scheduling "
-                                f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete)"
-                            )
+                            self.logger.warning(f"Empty trajectory in group {group_id} ({env_name})")
                         else:
                             rollout["env_name"] = env_name
-                            rollout["group_id"] = group_id
                             valid_rollouts.append(rollout)
 
-                    if has_failures:
-                        # Dedupe failures within the same dispatch round: an
-                        # individual-scoring env dispatches N rollouts at once,
-                        # so a single failed round can produce up to N failed
-                        # tasks. We only count the round once.
-                        if rollout_info.round_id > group.last_failed_round:
-                            group.failed_attempts += 1
-                            group.last_failed_round = rollout_info.round_id
-                            group.current_round = rollout_info.round_id + 1
-                        max_attempts = self.config.max_error_reschedule_attempts
-                        if max_attempts is not None and group.failed_attempts >= max_attempts:
-                            # Permanently-stuck group: drop it from this step and let the
-                            # rest of the batch proceed. Avoids a single bad example (e.g.
-                            # an agent rollout whose sandbox poll keeps timing out)
-                            # blocking step progress forever.
-                            self.dropped_groups_by_env[env_name] += 1
-                            self.logger.warning(
-                                f"Dropping group {group_id} ({env_name}) after {group.failed_attempts} "
-                                f"failed dispatch rounds ({len(group.completed_rollouts)}/{self.rollouts_per_example} "
-                                f"complete). Last failure: {last_failure_reason}. Set "
-                                f"orchestrator.max_error_reschedule_attempts higher (or to None) "
-                                f"to retry more aggressively."
-                            )
-                            await self.drop_group(group_id)
-                            continue
+                    num_failed = len(rollouts) - len(valid_rollouts)
+                    group.failed_rollouts += num_failed
 
-                    if has_failures and env.requires_group_scoring:
-                        # Group scoring requires all rollouts — discard partial results, reschedule full group
-                        group.completed_rollouts.clear()
-                        group.rollouts_to_schedule = self.rollouts_per_example
+                    # Group-scoring envs compute scores over all N rollouts
+                    # together; the surviving rollouts carry scores computed against
+                    # the (now-missing) failed ones, so partial salvage is unsafe.
+                    # Drop the whole group on any failure.
+                    if num_failed > 0 and env.requires_group_scoring:
+                        self.dropped_groups_by_env[env_name] += 1
+                        self.logger.warning(
+                            f"Dropping group-scored group {group_id} ({env_name}) after rollout failure"
+                        )
+                        await self.drop_group(group_id)
                         continue
 
-                    # For individual scoring, reschedule only the failed ones
-                    group.rollouts_to_schedule += len(rollouts) - len(valid_rollouts)
                     group.completed_rollouts.extend(valid_rollouts)
-                    if len(group.completed_rollouts) < self.rollouts_per_example:
+
+                    # Wait until every dispatched rollout has come back (succeeded
+                    # or failed) before finalizing. The group may finalize as a
+                    # partial group (< group_size) when some rollouts
+                    # errored - downstream advantage computation groups by
+                    # (env_name, example_id), so variable-size groups are fine.
+                    if len(group.completed_rollouts) + group.failed_rollouts < self.group_size:
                         continue
+
+                    if not group.completed_rollouts:
+                        self.dropped_groups_by_env[env_name] += 1
+                        self.logger.warning(
+                            f"Dropping group {group_id} ({env_name}) - all {self.group_size} rollouts failed"
+                        )
+                        self.groups.pop(group_id, None)
+                        continue
+
+                    if group.failed_rollouts > 0:
+                        self.logger.warning(
+                            f"Partial group {group_id} ({env_name}) - "
+                            f"{len(group.completed_rollouts)}/{self.group_size} valid "
+                            f"({group.failed_rollouts} failed)"
+                        )
+
                     completed_rollouts = self.groups.pop(group_id).completed_rollouts
 
                 except asyncio.CancelledError:
                     if group_id is not None:
                         await self.drop_group(group_id)
                     continue
-                except (TimeoutError, vf.InfraError, vf.InvalidModelResponseError) as e:
-                    # The env server client raises built-in TimeoutError on
-                    # request/recovery timeouts. Those stalls should follow
-                    # the same drop-and-refill path as other transient
-                    # infrastructure/model-response failures, while real bugs
-                    # still propagate loud.
-                    self.logger.warning(f"Retryable rollout error in group {group_id}: {e!r}; dropping group")
-                    if group_id is not None:
-                        await self.drop_group(group_id)
-                    continue
 
                 self.buffer.update(completed_rollouts)
-                accepted_rollouts = self.buffer.sample_rollouts(n=self.rollouts_per_example)
+                accepted_rollouts = self.buffer.sample_rollouts(n=len(completed_rollouts))
 
                 batch_rollouts.extend(accepted_rollouts)
                 progress_increment = self.get_batch_progress_increment(accepted_rollouts)
                 batch_progress += progress_increment
                 pbar.update(progress_increment)
 
-        await self._fill_inflight_requests(batch_example_keys=self._active_example_keys())
+        await self._fill_inflight_requests()
 
         batch_rollouts = self.finalize_batch_rollouts(batch_rollouts)
         pbar.close()
         self.last_batch_generation_time = time.perf_counter() - batch_start_time
         return batch_rollouts
-
-    async def sync_policy_for_step(self, step: int) -> None:
-        """Synchronize to the policy checkpoint required before starting a step."""
-        self.step = step
-
-        if not self.enable_policy_updates:
-            self.ckpt_step = step
-            self.checkpoint_ready.set()
-            return
-
-        # Cancel the previous update policy task to avoid concurrent updates.
-        if self.update_policy_task is not None:
-            await safe_cancel(self.update_policy_task)
-
-        # Manually check the async barrier before starting the step, then
-        # re-create the update policy loop so mid-step policy updates still run.
-        await self.maybe_update_policy()
-        self.update_policy_task = asyncio.create_task(self.update_policy_loop())
 
     async def stop(self) -> None:
         await self.cancel_inflight_rollouts()
@@ -634,14 +591,6 @@ class Scheduler:
             self.update_policy_task = None
         if self.inflight_policy_update_task is not None:
             await safe_cancel(self.inflight_policy_update_task)
-            self.inflight_policy_update_task = None
-
-    async def pause_policy_updates(self) -> None:
-        if self.update_policy_task is not None:
-            await safe_cancel(self.update_policy_task)
-            self.update_policy_task = None
-        if self.inflight_policy_update_task is not None:
-            await self.inflight_policy_update_task
             self.inflight_policy_update_task = None
 
     @property
@@ -683,6 +632,8 @@ class Scheduler:
             metrics[f"errored_rollouts/{env_name}"] = self.errored_rollouts_by_env.get(env_name, 0) / env_total
         for env_name, count in self.dropped_groups_by_env.items():
             metrics[f"dropped_groups/{env_name}"] = count
+        for error_type, count in self.errors_by_type.items():
+            metrics[f"error/{error_type}/count"] = count
         by_env: dict[str, list[int]] = {}
         for info in self.inflight_requests.values():
             by_env.setdefault(info.env_name, []).append(info.off_policy_steps)
@@ -692,10 +643,11 @@ class Scheduler:
         self.cancelled_rollouts_count = 0
         self.empty_rollouts_by_env.clear()
         self.errored_rollouts_by_env.clear()
+        self.errors_by_type.clear()
         self.total_rollouts_by_env.clear()
         self.dropped_groups_by_env.clear()
 
-        # Add inference pool metrics (e.g. elastic pool server counts)
-        metrics.update(self.inference_pool.get_metrics())
+        # Add train pool metrics (e.g. elastic pool server counts)
+        metrics.update(self.rollout_inference.get_metrics())
 
         return metrics

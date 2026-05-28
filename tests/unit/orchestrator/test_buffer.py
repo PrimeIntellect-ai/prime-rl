@@ -236,7 +236,7 @@ def test_zero_advantage_filter_flags_uniform_reward_groups_without_pool_eviction
     assert len(candidates) == 6
 
     # Compute advantages and apply ZeroAdvantageFilter
-    compute_advantages(candidates, 3, DefaultAdvantageConfig())
+    compute_advantages(candidates, DefaultAdvantageConfig())
     apply_filters([ZeroAdvantageFilter(name="zero_advantage", enforce=True)], candidates)
 
     # The middle rollout in [0.0, 0.5, 1.0] has exactly baseline reward and is

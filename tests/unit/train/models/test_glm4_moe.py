@@ -12,23 +12,24 @@ pytestmark = [pytest.mark.gpu]
 
 
 def get_model_pairs() -> tuple[HFGlm4MoeForCausalLM, PrimeRLGlm4MoeForCausalLM]:
-    hf_config = Glm4MoeConfig(
-        hidden_size=1024,
-        intermediate_size=2048,
-        max_position_embeddings=4096,
-        moe_intermediate_size=256,
-        norm_topk_prob=True,
-        num_attention_heads=16,
-        num_key_value_heads=4,
-        n_routed_experts=16,
-        num_experts_per_tok=4,
-        n_shared_experts=1,
-        num_hidden_layers=3,
-        rope_theta=1000000.0,
-        first_k_dense_replace=1,
-        partial_rotary_factor=0.5,
-        use_grouped_mm=False,
-    )
+    with pytest.warns(UserWarning, match="not using grouped mm for moe is very slow"):
+        hf_config = Glm4MoeConfig(
+            hidden_size=1024,
+            intermediate_size=2048,
+            max_position_embeddings=4096,
+            moe_intermediate_size=256,
+            norm_topk_prob=True,
+            num_attention_heads=16,
+            num_key_value_heads=4,
+            n_routed_experts=16,
+            num_experts_per_tok=4,
+            n_shared_experts=1,
+            num_hidden_layers=3,
+            rope_theta=1000000.0,
+            first_k_dense_replace=1,
+            partial_rotary_factor=0.5,
+            use_grouped_mm=False,
+        )
     # TODO: We should test this path because it's the most performant
     # But the grad seems to be off in attn because of precision
     # hf_config._attn_implementation = "flash_attention_2"

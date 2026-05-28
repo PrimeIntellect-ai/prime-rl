@@ -1,23 +1,8 @@
-# Consultancy GPQA — single agent argues for an ASSIGNED answer to a
-# weak LLM judge. Reward: judge agrees with assigned answer.
+# GPQA consultancy baseline. One consultant argues for an assigned answer to a
+# fixed judge embedded in the environment/rubric.
 #
-# This is the Khan-et-al-2024 protocol ("Debating with More Persuasive
-# LLMs Leads to More Truthful Answers", §3.2): one consultant gets
-# randomly assigned an answer to defend (correct or incorrect, balanced
-# across episodes). Trains adversarial argumentation; on its own, known
-# to be WORSE than debate at finding truth — useful as a baseline to
-# isolate the contribution of dual-debater dynamics.
-#
-# Status: requires the env package `gpqa-consultancy` to exist in
-# verifiers. Sketch in environments/gpqa_consultancy/ (see this PR's
-# accompanying patch).
-#
-# Pre-flight:
+# Requires the gpqa-consultancy environment from joanvelja/verifiers:
 #   uv pip install -e ../verifiers/environments/gpqa_consultancy
-#   export HF_TOKEN=...                 # GPQA is gated
-#   export OPENAI_API_KEY=...           # for the judge
-#
-# Launch: uv run rl @ configs/gpqa_consultancy/rl.toml
 
 max_steps = 200
 seq_len = 4096
@@ -29,9 +14,17 @@ name = "qwen3-4b-consultancy-mom09"
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
+[ckpt]
+interval = 25
+
 [orchestrator]
+training_mode = "rl"
 batch_size = 256
-rollouts_per_example = 8
+group_size = 8
+
+[orchestrator.renderer]
+name = "auto"
+preserve_all_thinking = true
 
 [orchestrator.train.sampling]
 temperature = 1.0
@@ -41,23 +34,13 @@ max_completion_tokens = 1024
 id = "gpqa-consultancy"
 name = "gpqa-consultancy"
 args = { subset = "gpqa_diamond", judge_model = "gpt-4.1-mini", assignment_balance = 0.5 }
-# assignment_balance: P(consultant gets assigned the correct answer).
-# 0.5 = 50/50, the canonical Khan setup. 1.0 reduces to "RLVR with LLM
-# judge"; 0.0 is pure adversarial-fooling training (sycophancy speedrun).
 
-# Single-agent training path: the consultant is the only trainable role,
-# the judge is a fixed scoring component embedded in the rubric (not an MA
-# participant). [advantage] defaults to GRPO group-mean baseline; no
-# [multi_agent] block since fan-out doesn't apply.
 [orchestrator.advantage]
 type = "default"
 
 [orchestrator.buffer]
 easy_threshold = 1.0
 hard_threshold = 0.0
-
-[ckpt]
-interval = 25
 
 [orchestrator.eval]
 interval = 25
@@ -66,18 +49,13 @@ interval = 25
 id = "gpqa-consultancy"
 name = "gpqa-consultancy-eval"
 num_examples = 64
-rollouts_per_example = 4
+group_size = 4
 args = { subset = "gpqa_diamond", judge_model = "gpt-4.1-mini", assignment_balance = 0.5 }
-
-# Compare against the gpqa-rlvr config: identical training shape, only
-# difference is whether the reward signal comes from a verifier (RLVR)
-# or a judge (consultancy). Useful A/B for measuring judge-quality
-# limits on RL signal.
 
 [trainer]
 
 [trainer.optim]
-lr = 5e-6                  # judge-noise + assignment-randomness ⇒ noisier gradients
+lr = 5e-6
 
 [inference]
 gpu_memory_utilization = 0.85

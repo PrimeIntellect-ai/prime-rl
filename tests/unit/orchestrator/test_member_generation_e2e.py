@@ -63,9 +63,7 @@ class _EvalMonitor:
 
 
 def _stub_eval_monitor(monkeypatch: pytest.MonkeyPatch) -> None:
-    module = types.ModuleType("prime_rl.utils.monitor")
-    module.get_monitor = lambda: _EvalMonitor()
-    monkeypatch.setitem(sys.modules, "prime_rl.utils.monitor", module)
+    monkeypatch.setattr("prime_rl.orchestrator.envs.get_monitor", lambda: _EvalMonitor())
 
 
 class _FakeSingleAgentEval(EvalEnv):
@@ -75,7 +73,7 @@ class _FakeSingleAgentEval(EvalEnv):
             (),
             {
                 "resolved_name": "single-eval",
-                "rollouts_per_example": 1,
+                "group_size": 1,
                 "max_concurrent_rollouts_per_client": None,
             },
         )()
@@ -399,9 +397,13 @@ async def _run_prime_env_server_member_generation_smoke(monkeypatch: pytest.Monk
     models_by_member = {
         step["extras"]["member_id"]: step["extras"]["generation"]["model"] for step in output["trajectory"]
     }
+    generation_by_member = {step["extras"]["member_id"]: step["extras"]["generation"] for step in output["trajectory"]}
     assert models_by_member[selected] == "learner-model"
     assert models_by_member[frozen] == "opponent-model"
     assert models_by_member["judge"] == "judge-model"
+    assert generation_by_member[selected]["sampling_args"]["extra_body"] == {"cache_salt": "7"}
+    assert generation_by_member[frozen]["sampling_args"]["temperature"] == 0.0
+    assert generation_by_member["judge"]["sampling_args"]["max_completion_tokens"] == 12
 
     seen = {(record["member_id"], record["model"]) for record in server.records}
     assert (selected, "learner-model") in seen
@@ -410,9 +412,4 @@ async def _run_prime_env_server_member_generation_smoke(monkeypatch: pytest.Monk
 
     member_rollouts = vf.rollout_to_member_rollouts(output)
     by_member = {rollout["member_id"]: rollout for rollout in member_rollouts}
-    assert by_member[selected]["model"] == "learner-model"
-    assert by_member[selected]["sampling_args"]["extra_body"] == {"cache_salt": "7"}
-    assert by_member[frozen]["model"] == "opponent-model"
-    assert by_member[frozen]["sampling_args"]["temperature"] == 0.0
-    assert by_member["judge"]["model"] == "judge-model"
-    assert by_member["judge"]["sampling_args"]["max_completion_tokens"] == 12
+    assert set(by_member) == {selected, frozen, "judge"}

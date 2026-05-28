@@ -26,12 +26,16 @@ from pathlib import Path
 ORCHESTRATOR_SRC = Path(__file__).resolve().parents[3] / "src" / "prime_rl" / "orchestrator" / "orchestrator.py"
 
 
-def _orchestrate_fn() -> ast.AsyncFunctionDef:
+def _async_fn(name: str) -> ast.AsyncFunctionDef:
     tree = ast.parse(ORCHESTRATOR_SRC.read_text())
     for node in ast.walk(tree):
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "orchestrate":
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == name:
             return node
-    raise AssertionError("`async def orchestrate` not found in orchestrator.py")
+    raise AssertionError(f"`async def {name}` not found in orchestrator.py")
+
+
+def _orchestrate_fn() -> ast.AsyncFunctionDef:
+    return _async_fn("orchestrate")
 
 
 def _assert_assigned_before_first_use(fn: ast.AsyncFunctionDef, name: str) -> None:
@@ -103,3 +107,45 @@ def test_all_ckpt_saves_pass_rae_state_kwarg():
 
 def test_all_ckpt_loads_pass_rae_state_kwarg():
     _assert_all_calls_pass_kwarg(_orchestrate_fn(), "ckpt_manager", "load", "rae_state")
+
+
+def test_rollout_persistence_keeps_dump_trajectory_gate():
+    fn = _async_fn("persist_rollouts_and_debate_metrics")
+    assert any(arg.arg == "dump_trajectory" for arg in fn.args.kwonlyargs)
+
+    save_calls = [
+        node
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and node.args
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "save_rollouts"
+    ]
+    assert len(save_calls) == 1
+    exclude_kw = next((kw for kw in save_calls[0].keywords if kw.arg == "exclude_keys"), None)
+    assert exclude_kw is not None
+    value = exclude_kw.value
+    assert isinstance(value, ast.IfExp)
+    assert isinstance(value.test, ast.Name) and value.test.id == "dump_trajectory"
+    assert isinstance(value.body, ast.Constant) and value.body.value is None
+    assert isinstance(value.orelse, ast.Set)
+    assert [elt.value for elt in value.orelse.elts if isinstance(elt, ast.Constant)] == ["trajectory"]
+
+
+def test_orchestrate_passes_dump_trajectory_to_rollout_persistence():
+    calls = [
+        node
+        for node in ast.walk(_orchestrate_fn())
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "persist_rollouts_and_debate_metrics"
+    ]
+    assert calls
+    missing = [
+        node.lineno
+        for node in calls
+        if not any(
+            kw.arg == "dump_trajectory" and ast.unparse(kw.value) == "config.dump_trajectory" for kw in node.keywords
+        )
+    ]
+    assert not missing

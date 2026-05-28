@@ -1,6 +1,10 @@
-from pathlib import Path
+from __future__ import annotations
 
-from transformers.tokenization_utils import PreTrainedTokenizer
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.shared import PrimeMonitorConfig, WandbWithExtrasConfig
 from prime_rl.utils.config import BaseConfig

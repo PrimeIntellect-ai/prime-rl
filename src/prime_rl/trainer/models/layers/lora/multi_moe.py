@@ -1,4 +1,5 @@
 import math
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
@@ -14,6 +15,9 @@ from prime_rl.trainer.models.layers.moe import (
     _gpt_oss_apply_gate,
     relu2,
 )
+
+if TYPE_CHECKING:
+    from transformers.models.gemma4.modeling_gemma4 import Gemma4TextExperts
 
 
 def _run_lora_grouped_mm(
@@ -1071,4 +1075,203 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
             f"n_adapters={self.n_adapters}, num_experts={self.num_experts}, "
             f"alpha={self.alpha}, dropout={self.lora_dropout}, "
             f"use_grouped_mm={self.use_grouped_mm})"
+        )
+
+
+class MultiLoRAGemma4TextExperts(MultiLoRAModule):
+    """Gemma4TextExperts + multi-LoRA for HF's 3D expert tensors."""
+
+    def __init__(
+        self,
+        base_layer: "Gemma4TextExperts",
+        rank: int,
+        n_adapters: int,
+        alpha: float = 32.0,
+        dropout: float = 0.0,
+    ):
+        super().__init__(base_layer)
+        if rank <= 0 or n_adapters <= 0:
+            raise ValueError("rank and n_adapters must be > 0")
+
+        self.num_experts = base_layer.num_experts
+        self.hidden_size = base_layer.hidden_dim
+        self.intermediate_size = base_layer.intermediate_dim
+        self.gate_up_out = 2 * self.intermediate_size
+        self.rank = rank
+        self.n_adapters = n_adapters
+        self.alpha = alpha
+        self.lora_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
+
+        self._lora_num_tokens = get_lora_num_tokens()
+        self._scaling_factors = get_multilora_scaling()
+
+        self.gate_up_lora_A = nn.ParameterList(
+            [
+                nn.Parameter(
+                    torch.empty(
+                        self.num_experts,
+                        rank,
+                        self.hidden_size,
+                        device=base_layer.gate_up_proj.device,
+                        dtype=base_layer.gate_up_proj.dtype,
+                    )
+                )
+                for _ in range(n_adapters)
+            ]
+        )
+        self.gate_up_lora_B = nn.ParameterList(
+            [
+                nn.Parameter(
+                    torch.empty(
+                        self.num_experts,
+                        self.gate_up_out,
+                        rank,
+                        device=base_layer.gate_up_proj.device,
+                        dtype=base_layer.gate_up_proj.dtype,
+                    )
+                )
+                for _ in range(n_adapters)
+            ]
+        )
+        self.down_lora_A = nn.ParameterList(
+            [
+                nn.Parameter(
+                    torch.empty(
+                        self.num_experts,
+                        rank,
+                        self.intermediate_size,
+                        device=base_layer.down_proj.device,
+                        dtype=base_layer.down_proj.dtype,
+                    )
+                )
+                for _ in range(n_adapters)
+            ]
+        )
+        self.down_lora_B = nn.ParameterList(
+            [
+                nn.Parameter(
+                    torch.empty(
+                        self.num_experts,
+                        self.hidden_size,
+                        rank,
+                        device=base_layer.down_proj.device,
+                        dtype=base_layer.down_proj.dtype,
+                    )
+                )
+                for _ in range(n_adapters)
+            ]
+        )
+
+        self.reset_parameters()
+
+    def reset_parameters(self, index: int | None = None) -> None:
+        if index is None:
+            for i in range(self.n_adapters):
+                self.reset_parameters(i)
+            return
+
+        nn.init.kaiming_uniform_(self.gate_up_lora_A[index], a=math.sqrt(5))
+        nn.init.zeros_(self.gate_up_lora_B[index])
+        nn.init.kaiming_uniform_(self.down_lora_A[index], a=math.sqrt(5))
+        nn.init.zeros_(self.down_lora_B[index])
+
+    def named_parameters_for_adapter(self, idx: int) -> list[tuple[str, nn.Parameter]]:
+        return [
+            ("gate_up_lora_A", self.gate_up_lora_A[idx]),
+            ("gate_up_lora_B", self.gate_up_lora_B[idx]),
+            ("down_lora_A", self.down_lora_A[idx]),
+            ("down_lora_B", self.down_lora_B[idx]),
+        ]
+
+    def get_lora_param_counts(self) -> tuple[int, int]:
+        adapter_params = (
+            self.gate_up_lora_A[0].numel()
+            + self.gate_up_lora_B[0].numel()
+            + self.down_lora_A[0].numel()
+            + self.down_lora_B[0].numel()
+        )
+        adapted_params = self.base_layer.gate_up_proj.numel() + self.base_layer.down_proj.numel()
+        return adapter_params, adapted_params
+
+    def state_dict_for_adapter(self, idx: int) -> dict[str, torch.Tensor]:
+        detached_gu_a = self.gate_up_lora_A[idx].detach()
+        detached_gu_b = self.gate_up_lora_B[idx].detach()
+        detached_d_a = self.down_lora_A[idx].detach()
+        detached_d_b = self.down_lora_B[idx].detach()
+
+        if isinstance(detached_gu_a, DTensor):
+            detached_gu_a = detached_gu_a.full_tensor()
+            detached_gu_b = detached_gu_b.full_tensor()
+            detached_d_a = detached_d_a.full_tensor()
+            detached_d_b = detached_d_b.full_tensor()
+
+        gu_a_flat = detached_gu_a.reshape(self.num_experts * self.rank, self.hidden_size).clone()
+        d_a_flat = detached_d_a.reshape(self.num_experts * self.rank, self.intermediate_size).clone()
+        gu_b_flat = detached_gu_b.permute(1, 2, 0).contiguous().reshape(self.gate_up_out, self.rank * self.num_experts)
+        d_b_flat = detached_d_b.permute(1, 2, 0).contiguous().reshape(self.hidden_size, self.rank * self.num_experts)
+
+        return {
+            "base_layer.lora_A.weight": gu_a_flat,
+            "base_layer.lora_B.weight": gu_b_flat,
+            "lora_A.weight": d_a_flat,
+            "lora_B.weight": d_b_flat,
+        }
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        top_k_index: torch.Tensor,
+        top_k_weights: torch.Tensor,
+    ) -> torch.Tensor:
+        adapter_idx = self._lora_num_tokens.argmax().item()
+        gu_a = self.gate_up_lora_A[adapter_idx]
+        gu_b = self.gate_up_lora_B[adapter_idx]
+        d_a = self.down_lora_A[adapter_idx]
+        d_b = self.down_lora_B[adapter_idx]
+        scaling = self._scaling_factors[adapter_idx].item()
+
+        base_gu = self.base_layer.gate_up_proj
+        base_d = self.base_layer.down_proj
+        if isinstance(base_gu, DTensor):
+            base_gu = base_gu.to_local()
+            base_d = base_d.to_local()
+            gu_a = gu_a.to_local()
+            gu_b = gu_b.to_local()
+            d_a = d_a.to_local()
+            d_b = d_b.to_local()
+
+        final_hidden_states = torch.zeros_like(hidden_states)
+        with torch.no_grad():
+            expert_mask = torch.nn.functional.one_hot(top_k_index, num_classes=self.num_experts)
+            expert_mask = expert_mask.permute(2, 1, 0)
+            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+
+        lora_hidden_states = self.lora_dropout(hidden_states)
+        for expert_idx_tensor in expert_hit:
+            expert_idx = expert_idx_tensor[0]
+            top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
+            current_state = hidden_states[token_idx]
+            current_lora_state = lora_hidden_states[token_idx]
+
+            gate_up_base = F.linear(current_state, base_gu[expert_idx])
+            gate_up_lora = F.linear(F.linear(current_lora_state, gu_a[expert_idx]), gu_b[expert_idx])
+            gate_up = gate_up_base + scaling * gate_up_lora
+
+            gate, up = gate_up.chunk(2, dim=-1)
+            current_hidden_states = self.base_layer.act_fn(gate) * up
+
+            down_base = F.linear(current_hidden_states, base_d[expert_idx])
+            down_lora_input = self.lora_dropout(current_hidden_states)
+            down_lora = F.linear(F.linear(down_lora_input, d_a[expert_idx]), d_b[expert_idx])
+            current_hidden_states = down_base + scaling * down_lora
+            current_hidden_states = current_hidden_states * top_k_weights[token_idx, top_k_pos, None]
+            final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))
+
+        return final_hidden_states
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}(base={self.base_layer}, rank={self.rank}, "
+            f"n_adapters={self.n_adapters}, num_experts={self.num_experts}, "
+            f"alpha={self.alpha}, dropout={self.lora_dropout})"
         )

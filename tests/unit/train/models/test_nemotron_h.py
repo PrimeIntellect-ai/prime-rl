@@ -1,19 +1,40 @@
+import warnings
+from contextlib import contextmanager
+
 import pytest
 import torch
-from transformers.models.nemotron_h.configuration_nemotron_h import NemotronHConfig as HFNemotronHConfig
-from transformers.models.nemotron_h.modeling_nemotron_h import (
-    NemotronHAttention,
-)
-from transformers.models.nemotron_h.modeling_nemotron_h import (
-    NemotronHForCausalLM as HFNemotronHForCausalLM,
-)
 
+import prime_rl._compat  # noqa: F401
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
 from prime_rl.trainer.models.nemotron_h.modeling_nemotron_h import NemotronHAttentionLayer
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
+
+
+def _load_hf_nemotron():
+    from transformers.models.nemotron_h.configuration_nemotron_h import NemotronHConfig as HFNemotronHConfig
+    from transformers.models.nemotron_h.modeling_nemotron_h import (
+        NemotronHAttention,
+    )
+    from transformers.models.nemotron_h.modeling_nemotron_h import (
+        NemotronHForCausalLM as HFNemotronHForCausalLM,
+    )
+
+    return HFNemotronHConfig, HFNemotronHForCausalLM, NemotronHAttention
+
+
+@contextmanager
+def _ignore_hf_nemotron_input_embeds_warning():
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="`input_embeds` is deprecated and will be removed in version 5\\.6\\.0 for `create_causal_mask`\\. Use `inputs_embeds` instead\\.",
+            category=FutureWarning,
+        )
+        yield
+
 
 # Shared small-model hyperparams (satisfy mamba_expand * hidden_size == mamba_num_heads * mamba_head_dim)
 _BASE = dict(
@@ -46,6 +67,8 @@ _BASE = dict(
 
 def get_model_pairs():
     """Create an HF model and a PrimeRL model with shared weights."""
+    HFNemotronHConfig, HFNemotronHForCausalLM, _ = _load_hf_nemotron()
+
     hf_config = HFNemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
     hf_config._attn_implementation = "sdpa"
 
@@ -73,11 +96,12 @@ def get_model_pairs():
 
 def test_nemotron_h_mamba_moe_only():
     """Test Mamba and MoE layers produce identical outputs (attention bypassed)."""
+    _, _, HFNemotronHAttention = _load_hf_nemotron()
     hf_model, prime_model = get_model_pairs()
 
     # Bypass attention layers in both models so only Mamba+MoE are exercised
     for layer in hf_model.model.layers:
-        if isinstance(layer.mixer, NemotronHAttention):
+        if isinstance(layer.mixer, HFNemotronHAttention):
             layer.forward = lambda hidden_states, **kwargs: hidden_states
 
     for layer in prime_model.model.layers:
@@ -89,7 +113,8 @@ def test_nemotron_h_mamba_moe_only():
         input_ids = torch.randint(0, 256, (1, 32))
         position_ids = torch.arange(0, 32).unsqueeze(0)
 
-    hf_output = hf_model(input_ids, position_ids=position_ids)
+    with _ignore_hf_nemotron_input_embeds_warning():
+        hf_output = hf_model(input_ids, position_ids=position_ids)
     prime_output = prime_model(input_ids, position_ids=position_ids)
     hf_output.logits.sum().backward()
     prime_output["logits"].sum().backward()
@@ -105,6 +130,8 @@ def test_nemotron_h_mamba_moe_only():
 @pytest.mark.xfail(reason="HF NemotronH now uses fused expert tensors; convert_to_hf produces individual expert format")
 def test_nemotron_h_reverse():
     """Test reverse: PrimeRL weights loaded into HF model produce identical outputs."""
+    HFNemotronHConfig, HFNemotronHForCausalLM, HFNemotronHAttention = _load_hf_nemotron()
+
     prime_config = NemotronHConfig(
         **_BASE,
         layers_block_type=["mamba", "moe", "attention", "moe"],
@@ -133,7 +160,7 @@ def test_nemotron_h_reverse():
 
     # Bypass attention to isolate Mamba+MoE matching
     for layer in hf_model.model.layers:
-        if isinstance(layer.mixer, NemotronHAttention):
+        if isinstance(layer.mixer, HFNemotronHAttention):
             layer.forward = lambda hidden_states, **kwargs: hidden_states
     for layer in prime_model.model.layers:
         if isinstance(layer, NemotronHAttentionLayer):
@@ -143,7 +170,8 @@ def test_nemotron_h_reverse():
         input_ids = torch.randint(0, 256, (1, 32))
         position_ids = torch.arange(0, 32).unsqueeze(0)
 
-    hf_output = hf_model(input_ids, position_ids=position_ids)
+    with _ignore_hf_nemotron_input_embeds_warning():
+        hf_output = hf_model(input_ids, position_ids=position_ids)
     prime_output = prime_model(input_ids, position_ids=position_ids)
 
     logits_diff = prime_output["logits"] - hf_output.logits
@@ -160,7 +188,8 @@ def test_nemotron_h():
         input_ids = torch.randint(0, 256, (1, 32))
         position_ids = torch.arange(0, 32).unsqueeze(0)
 
-    hf_output = hf_model(input_ids, position_ids=position_ids)
+    with _ignore_hf_nemotron_input_embeds_warning():
+        hf_output = hf_model(input_ids, position_ids=position_ids)
     prime_output = prime_model(input_ids, position_ids=position_ids)
     # Slightly larger tolerance due to different SDPA attention implementations
     logits_diff = prime_output["logits"] - hf_output.logits

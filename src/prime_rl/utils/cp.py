@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-# ruff: noqa: I001 — `prime_rl._compat` must run before `ring_flash_attn`.
-
+import importlib
 from typing import Literal
 
 import torch
@@ -12,13 +11,6 @@ import torch.nn as nn
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 
 CPStyle = Literal["ring", "ulysses"]
-
-
-def _update_ring_flash_attn_params(cu_seqlens: torch.Tensor, cp_group: dist.ProcessGroup) -> None:
-    import prime_rl._compat  # noqa: F401
-    from ring_flash_attn import update_ring_flash_attn_params
-
-    update_ring_flash_attn_params(cu_seqlens, cp_group)
 
 
 def _has_linear_attn_layer(model: nn.Module) -> bool:
@@ -210,7 +202,12 @@ def setup_cp_params(
     cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
 
     if cp_style == "ring":
-        _update_ring_flash_attn_params(cu_seqlens, cp_group)
+        # `ring_flash_attn` imports FlashAttention at module import time; keep it
+        # out of CPU-only import paths and fail only when ring CP is requested.
+        importlib.import_module("prime_rl._compat")
+        from ring_flash_attn import update_ring_flash_attn_params
+
+        update_ring_flash_attn_params(cu_seqlens, cp_group)
     elif cp_style == "ulysses":
         # Delayed import: ulysses_attn lives under trainer.models, which imports
         # back into prime_rl.utils — top-level import would deadlock at startup.

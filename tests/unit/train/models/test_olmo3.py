@@ -60,11 +60,63 @@ def _model_pair(attn_impl: str = "sdpa") -> tuple[HFOlmo3ForCausalLM, PrimeRLOlm
     return hf_model, prime_model
 
 
+def _build_prime_layer_state(config: Olmo3Config, layer_idx: int = 0) -> dict[str, torch.Tensor]:
+    prefix = f"model.layers.{layer_idx}"
+    head_dim = config.hidden_size // config.num_attention_heads
+    kv_dim = config.num_key_value_heads * head_dim
+    return {
+        f"{prefix}.self_attn.q_proj.weight": torch.randn(config.hidden_size, config.hidden_size),
+        f"{prefix}.self_attn.k_proj.weight": torch.randn(kv_dim, config.hidden_size),
+        f"{prefix}.self_attn.v_proj.weight": torch.randn(kv_dim, config.hidden_size),
+        f"{prefix}.self_attn.o_proj.weight": torch.randn(config.hidden_size, config.hidden_size),
+        f"{prefix}.self_attn.q_norm.weight": torch.randn(config.hidden_size),
+        f"{prefix}.self_attn.k_norm.weight": torch.randn(kv_dim),
+        f"{prefix}.post_attention_layernorm.weight": torch.randn(config.hidden_size),
+        f"{prefix}.post_feedforward_layernorm.weight": torch.randn(config.hidden_size),
+        f"{prefix}.mlp.gate_proj.weight": torch.randn(config.intermediate_size, config.hidden_size),
+        f"{prefix}.mlp.up_proj.weight": torch.randn(config.intermediate_size, config.hidden_size),
+        f"{prefix}.mlp.down_proj.weight": torch.randn(config.hidden_size, config.intermediate_size),
+    }
+
+
 def test_olmo3_custom_impl_registered() -> None:
     config = _tiny_config()
 
     assert supports_custom_impl(config)
     assert isinstance(AutoModelForCausalLMPrimeRL.from_config(config), PrimeRLOlmo3ForCausalLM)
+
+
+def test_olmo3_convert_layer_to_vllm_kernel_packs_dense_weights() -> None:
+    config = _tiny_config()
+    state = _build_prime_layer_state(config)
+
+    out = PrimeRLOlmo3ForCausalLM.convert_layer_to_vllm_kernel(state, layer_idx=0, quantize_fp8=False)
+
+    assert "model.layers.0.self_attn.qkv_proj.weight" in out
+    assert out["model.layers.0.self_attn.qkv_proj.weight"].shape == (config.hidden_size * 3, config.hidden_size)
+    assert "model.layers.0.self_attn.q_proj.weight" not in out
+    assert "model.layers.0.self_attn.k_proj.weight" not in out
+    assert "model.layers.0.self_attn.v_proj.weight" not in out
+    assert out["model.layers.0.mlp.gate_up_proj.weight"].shape == (config.intermediate_size * 2, config.hidden_size)
+    assert "model.layers.0.mlp.gate_proj.weight" not in out
+    assert "model.layers.0.mlp.up_proj.weight" not in out
+    assert out["model.layers.0.self_attn.q_norm.weight"].shape == (config.hidden_size,)
+    assert out["model.layers.0.self_attn.k_norm.weight"].shape == (config.hidden_size,)
+
+
+def test_olmo3_convert_layer_to_vllm_kernel_quantizes_dense_weights() -> None:
+    config = _tiny_config()
+    state = _build_prime_layer_state(config)
+
+    out = PrimeRLOlmo3ForCausalLM.convert_layer_to_vllm_kernel(state, layer_idx=0, quantize_fp8=True)
+
+    assert out["model.layers.0.self_attn.qkv_proj.weight"].dtype == torch.float8_e4m3fn
+    assert out["model.layers.0.self_attn.qkv_proj.weight_scale_inv"].dtype == torch.float32
+    assert out["model.layers.0.self_attn.o_proj.weight"].dtype == torch.float8_e4m3fn
+    assert out["model.layers.0.mlp.gate_up_proj.weight"].dtype == torch.float8_e4m3fn
+    assert out["model.layers.0.mlp.gate_up_proj.weight_scale_inv"].dtype == torch.float32
+    assert out["model.layers.0.mlp.down_proj.weight"].dtype == torch.float8_e4m3fn
+    assert out["model.layers.0.self_attn.q_norm.weight"].dtype == torch.float32
 
 
 def test_olmo3_custom_impl_uses_full_yarn_and_sliding_default_from_real_config_shape() -> None:

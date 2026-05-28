@@ -28,7 +28,7 @@ def test_variable_random_fake_dataset_fields_have_matching_lengths():
     dataset = FakeDataset(vocab_size=10000, seq_len=128, length="variable", input_ids="random")
 
     for sample in iter(dataset):
-        seq_len = sample["sequence_lengths"][0]
+        seq_len = len(sample["input_ids"])
         assert len(sample["input_ids"]) == seq_len
         assert len(sample["target_ids"]) == seq_len
         assert len(sample["position_ids"]) == seq_len

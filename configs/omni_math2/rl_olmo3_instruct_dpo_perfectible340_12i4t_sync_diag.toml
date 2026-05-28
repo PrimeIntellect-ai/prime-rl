@@ -1,6 +1,4 @@
 max_steps = 100
-max_async_level = 1
-seq_len = 16384
 output_dir = "outputs/omni_math2_rlvr_canary/20260522_instruct_perfectible340_bufferon_zeroadv_on_cacheoff_sync_12i4t_bs512_100step"
 
 [log]
@@ -81,6 +79,7 @@ kl_tau = 0.0
 importance_ratio_clip = 2.0
 
 [orchestrator]
+seq_len = 16384
 batch_size = 512
 max_inflight_rollouts = 512
 rollouts_per_example = 8
@@ -89,7 +88,9 @@ filters = [{ type = "zero_advantage", enforce = true }]
 
 [orchestrator.advantage]
 type = "default"
-length_shaping = true
+
+[orchestrator.advantage.length_penalty]
+type = "tokens"
 
 [orchestrator.train]
 num_workers = 12

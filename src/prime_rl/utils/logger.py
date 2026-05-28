@@ -39,7 +39,11 @@ def build_log_entry(record) -> dict:
         "function": record["function"],
         "line": record["line"],
     }
-    if record["exception"] is not None:
+    # extra["traceback"] is set by traceback_patcher when enqueue=True (loguru
+    # drops the traceback object during pickling, so it must be pre-formatted).
+    if extra.get("traceback"):
+        log_entry["exception"] = extra.pop("traceback")
+    elif record["exception"] is not None:
         exc = record["exception"]
         log_entry["exception"] = "".join(traceback.format_exception(exc.type, exc.value, exc.traceback))
     # Extract tag from extra if present (used by workers to identify themselves)
@@ -50,6 +54,12 @@ def build_log_entry(record) -> dict:
         if extra:
             log_entry["extra"] = extra
     return log_entry
+
+
+def traceback_patcher(record) -> None:
+    exc = record["exception"]
+    if exc is not None and exc.traceback is not None:
+        record["extra"]["traceback"] = "".join(traceback.format_exception(exc.type, exc.value, exc.traceback))
 
 
 def json_sink(message) -> None:
@@ -118,6 +128,10 @@ def setup_logger(
     from loguru._logger import Core as _Core
     from loguru._logger import Logger as _Logger
 
+    # enqueue=True drops the traceback during pickling, so pre-format it here
+    # while the live traceback is still attached.
+    patchers = [traceback_patcher] if json_logging else []
+
     logger = _Logger(
         core=_Core(),
         exception=None,
@@ -127,7 +141,7 @@ def setup_logger(
         colors=False,
         raw=False,
         capture=True,
-        patchers=[],
+        patchers=patchers,
         extra={},
     )
 

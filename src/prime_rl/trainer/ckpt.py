@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import bisect
 import gc
 import shutil
@@ -5,7 +7,7 @@ import time
 import warnings
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from torch import Tensor, nn
@@ -18,7 +20,6 @@ from torch.nn import Module
 from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
 from torchdata.stateful_dataloader import StatefulDataLoader
-from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.trainer import CheckpointConfig, LoRAConfig, WeightCheckpointConfig
 from prime_rl.trainer.lora import has_lora_layers, save_lora_config
@@ -32,6 +33,9 @@ from prime_rl.trainer.weights import (
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import get_all_ckpt_steps, get_ckpt_dir, get_step_path, get_weights_dir
+
+if TYPE_CHECKING:
+    from transformers.tokenization_utils import PreTrainedTokenizer
 
 
 def _try_rmtree(path: Path, logger) -> None:

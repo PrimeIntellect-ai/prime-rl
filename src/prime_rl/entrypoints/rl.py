@@ -12,23 +12,18 @@ from threading import Event, Thread
 import pynvml
 import tomli_w
 
-import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive import
 from prime_rl.configs.rl import GpuLayoutDeploymentConfig, RLConfig
-from prime_rl.trainer.model import pre_download_model
 from prime_rl.utils.config import cli, find_package_resource
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
     format_log_message,
     get_ckpt_dir,
+    get_log_dir,
     resolve_latest_ckpt_step,
     validate_output_dir,
 )
 from prime_rl.utils.process import cleanup_processes, cleanup_threads, monitor_process, set_proc_title
-from prime_rl.utils.utils import (
-    get_free_port,
-    get_log_dir,
-)
 
 RL_TOML = "rl.toml"
 RL_SBATCH = "rl.sbatch"
@@ -36,7 +31,6 @@ RL_SBATCH = "rl.sbatch"
 TRAINER_TOML = "trainer.toml"
 ORCHESTRATOR_TOML = "orchestrator.toml"
 INFERENCE_TOML = "inference.toml"
-TEACHER_INFERENCE_TOML = "teacher_inference.toml"
 GPU_LAYOUT_SCRIPT = "gpu_layout_rl.sh"
 _GPU_LAYOUT_CPU_MARGIN = 16
 _GPU_LAYOUT_MEM_MARGIN_MB = 16_384
@@ -75,11 +69,6 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
         with open(output_dir / INFERENCE_TOML, "wb") as f:
             tomli_w.dump(config.inference.model_dump(exclude=exclude_inference, exclude_none=True, mode="json"), f)
 
-    teacher_inference = getattr(config, "teacher_inference", None)
-    if teacher_inference is not None:
-        with open(output_dir / TEACHER_INFERENCE_TOML, "wb") as f:
-            tomli_w.dump(teacher_inference.model_dump(exclude_none=True, mode="json"), f)
-
 
 def _gpu_layout_inference_servers(deployment: GpuLayoutDeploymentConfig) -> list[dict[str, int]]:
     servers: list[dict[str, int]] = []
@@ -98,15 +87,11 @@ def _gpu_layout_inference_servers(deployment: GpuLayoutDeploymentConfig) -> list
     return servers
 
 
-def _gpu_layout_template_vars(
-    config: RLConfig,
-    config_dir: Path,
-) -> dict:
+def _gpu_layout_template_vars(config: RLConfig, config_dir: Path) -> dict:
     assert config.deployment.type == "gpu_layout"
     deployment = config.deployment
     trainer_node_idx = deployment.trainer_node_indices[0]
     trainer_gpu_ids = deployment.nodes[trainer_node_idx].trainer
-    inference_servers = _gpu_layout_inference_servers(deployment)
 
     return {
         "project_dir": (config.slurm.project_dir if config.slurm is not None else Path.cwd()).resolve(),
@@ -118,13 +103,12 @@ def _gpu_layout_template_vars(
         "gpu_layout_mem_margin_mb": _GPU_LAYOUT_MEM_MARGIN_MB,
         "num_nodes": deployment.num_nodes,
         "gpus_per_node": deployment.gpus_per_node,
-        "inference_servers": inference_servers,
+        "inference_servers": _gpu_layout_inference_servers(deployment),
         "trainer_node_idx": trainer_node_idx,
         "trainer_gpu_ids": ",".join(map(str, trainer_gpu_ids)),
         "trainer_gpu_count": len(trainer_gpu_ids),
         "master_port": int(os.environ.get("MASTER_PORT", "29500")),
         "use_nccl_broadcast": config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
-        "wandb_shared": config.wandb is not None and config.wandb.shared,
         "ranks_filter": ",".join(map(str, config.trainer.log.ranks_filter)),
     }
 
@@ -133,41 +117,15 @@ def write_gpu_layout_script(config: RLConfig, config_dir: Path, script_path: Pat
     """Write the executable launcher script for gpu_layout deployments."""
     from jinja2 import Environment, FileSystemLoader
 
-    # prime_rl is a PEP-420 namespace package on the joanvelja/main layout, so
-    # prime_rl.__file__ is None. Resolve templates via the shared helper, which
-    # walks prime_rl.__path__. Required here (we render now), so fail loud.
     templates_dir = find_package_resource("templates")
     if templates_dir is None:
-        raise RuntimeError(
-            "prime_rl 'templates' resource not found on any prime_rl.__path__ entry; "
-            "cannot render the gpu_layout launcher (is prime-rl installed, not just prime-rl-configs?)"
-        )
+        raise RuntimeError("prime_rl templates resource not found; cannot render gpu_layout launcher.")
     env = Environment(loader=FileSystemLoader(templates_dir), keep_trailing_newline=True)
     template = env.get_template("gpu_layout_rl.sh.j2")
     script = template.render(**_gpu_layout_template_vars(config, config_dir))
     script_path.parent.mkdir(parents=True, exist_ok=True)
     script_path.write_text(script)
     script_path.chmod(0o755)
-
-
-def check_gpus_available(gpu_ids: list[int]) -> None:
-    """Raise error if there are existing processes on the specified GPUs."""
-    pynvml.nvmlInit()
-
-    occupied = []
-    for gpu_id in gpu_ids:
-        handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_id)
-        processes = pynvml.nvmlDeviceGetComputeRunningProcesses(handle)
-        if processes:
-            pids = [p.pid for p in processes]
-            occupied.append((gpu_id, pids))
-
-    if occupied:
-        msg = "Existing processes found on GPUs:\n"
-        for gpu_id, pids in occupied:
-            msg += f"  GPU {gpu_id}: PIDs {pids}\n"
-        msg += "Kill these processes or use different GPUs."
-        raise RuntimeError(msg)
 
 
 def rl_local(config: RLConfig):
@@ -192,11 +150,8 @@ def rl_local(config: RLConfig):
     infer_local_gpu_ids = list(range(gpu_offset, gpu_offset + num_infer_gpus))
     gpu_offset += num_infer_gpus
     trainer_local_gpu_ids = list(range(gpu_offset, gpu_offset + config.deployment.num_train_gpus))
-    gpu_offset += config.deployment.num_train_gpus
-    num_teacher_gpus = config.deployment.num_teacher_gpus or 0
-    teacher_local_gpu_ids = list(range(gpu_offset, gpu_offset + num_teacher_gpus)) if num_teacher_gpus > 0 else []
 
-    total_requested_gpus = num_infer_gpus + config.deployment.num_train_gpus + num_teacher_gpus
+    total_requested_gpus = num_infer_gpus + config.deployment.num_train_gpus
     physical_gpu_ids = get_physical_gpu_ids()
     if total_requested_gpus > len(physical_gpu_ids):
         raise ValueError(
@@ -208,33 +163,30 @@ def rl_local(config: RLConfig):
 
     infer_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in infer_local_gpu_ids]
     trainer_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in trainer_local_gpu_ids]
-    teacher_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in teacher_local_gpu_ids]
 
     start_command = sys.argv
     logger.info("Starting RL run")
     logger.debug(f"RL start command: {' '.join(start_command)}")
 
-    # Build shared W&B env vars for subprocesses
-    wandb_shared_env: dict[str, str] = {}
-    if config.wandb and config.wandb.shared:
-        wandb_shared_env["WANDB_SHARED_MODE"] = "1"
-        wandb_shared_env["WANDB_SHARED_RUN_ID"] = os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex)
-
-    # Check for existing processes on GPUs
-    all_gpu_ids = list(set(infer_gpu_ids + trainer_gpu_ids + teacher_gpu_ids))
-    check_gpus_available(all_gpu_ids)
+    # Build shared W&B env vars for subprocesses. Shared mode is always on for
+    # the rl entrypoint — trainer and orchestrator log to a single W&B run.
+    # The monitor short-circuits when WANDB_MODE=disabled/offline is also set.
+    wandb_shared_env: dict[str, str] = {
+        "WANDB_SHARED_MODE": "1",
+        "WANDB_SHARED_RUN_ID": os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex),
+    }
 
     # Validate client port matches inference server port
-    if config.inference is not None and not config.orchestrator.client.is_elastic:
+    if config.inference is not None and not config.orchestrator.student.client.is_elastic:
         from urllib.parse import urlparse
 
-        base_url = config.orchestrator.client.base_url[0]
+        base_url = config.orchestrator.student.client.base_url[0]
         parsed = urlparse(base_url)
         client_port = parsed.port
         expected_port = config.inference.server.port
         if client_port != expected_port:
             raise ValueError(
-                f"orchestrator.client.base_url port ({client_port}) does not match "
+                f"orchestrator.student.client.base_url port ({client_port}) does not match "
                 f"inference.server.port ({expected_port}). "
                 f"Update the base_url to use port {expected_port} to match the inference server."
             )
@@ -287,55 +239,26 @@ def rl_local(config: RLConfig):
             monitor_thread.start()
             monitor_threads.append(monitor_thread)
         else:
-            if config.orchestrator.teacher_rollout_model is None:
-                logger.warning(
-                    "No inference config specified, skipping starting inference server. Make sure your inference server is running."
-                )
-            else:
-                logger.info(
-                    "No inference config specified, using orchestrator.teacher_rollout_model for rollout generation."
-                )
-
-        # Optionally, start teacher inference process
-        if config.teacher_inference:
-            if not teacher_gpu_ids:
-                raise ValueError(
-                    "teacher_inference is configured but deployment.num_teacher_gpus is not set. "
-                    "Either set deployment.num_teacher_gpus to start a teacher inference server, "
-                    "or omit teacher_inference and configure orchestrator.teacher_model to use an existing server."
-                )
-
-            teacher_inference_cmd = ["inference", "@", (config_dir / TEACHER_INFERENCE_TOML).as_posix()]
-            logger.info(f"Starting teacher inference process on GPU(s) {' '.join(map(str, teacher_gpu_ids))}")
-            logger.debug(f"Teacher inference start command: {' '.join(teacher_inference_cmd)}")
-            with open(log_dir / "teacher_inference.log", "w") as log_file:
-                teacher_inference_process = Popen(
-                    teacher_inference_cmd,
-                    env={
-                        **os.environ,
-                        "CUDA_VISIBLE_DEVICES": ",".join(map(str, teacher_gpu_ids)),
-                    },
-                    stdout=log_file,
-                    stderr=log_file,
-                )
-            processes.append(teacher_inference_process)
-
-            # Start monitoring thread
-            stop_event = Event()
-            stop_events["teacher_inference"] = stop_event
-            monitor_thread = Thread(
-                target=monitor_process,
-                args=(teacher_inference_process, stop_event, error_queue, "teacher_inference"),
-                daemon=True,
-            )
-            monitor_thread.start()
-            monitor_threads.append(monitor_thread)
-        elif (
-            config.trainer.loss.type == "default" and config.trainer.loss.teacher_tau > 0
-        ) or config.orchestrator.teacher_model:
             logger.warning(
-                "No teacher_inference config specified, skipping starting teacher inference server. "
-                "Is your teacher inference server running? Make sure orchestrator.teacher_model is configured."
+                "No [inference] block configured - the student inference server will not be started here. "
+                "All training modes (rl/opd/sft) require a student inference pool for evals + weight sync; "
+                "make sure one is running at orchestrator.student.client.base_url "
+                f"({', '.join(config.orchestrator.student.client.base_url)}), otherwise the orchestrator "
+                "will hang waiting for it."
+            )
+            if config.trainer.model.lora is not None:
+                logger.warning(
+                    "LoRA training is enabled with an external student inference pool. Start that pool with "
+                    f"--enable-lora and --max-lora-rank {config.trainer.model.lora.rank}, or adapter loads "
+                    "will fail at weight sync."
+                )
+
+        if config.orchestrator.teacher:
+            logger.info(
+                "orchestrator.teacher is configured - the rl entrypoint does not start teacher inference "
+                "servers. Make sure your teacher endpoint at "
+                f"{', '.join(config.orchestrator.teacher.client.base_url)} is running before the "
+                "orchestrator starts, otherwise rollouts will hang."
             )
 
         # Start orchestrator process
@@ -374,6 +297,8 @@ def rl_local(config: RLConfig):
         monitor_threads.append(monitor_thread)
 
         # Start training process
+        from prime_rl.utils.utils import get_free_port
+
         trainer_cmd = [
             "torchrun",
             "--role=trainer",
@@ -421,10 +346,10 @@ def rl_local(config: RLConfig):
         monitor_threads.append(monitor_thread)
 
         # Monitor all processes for failures
-        logger.success("Startup complete. Showing trainer logs...")
+        logger.success("Startup complete. Showing orchestrator logs...")
 
         tail_process = Popen(
-            f"tail -F '{log_dir / 'trainer.log'}' | sed -u 's/^\\[[a-zA-Z]*[0-9]*\\]://'",
+            f"tail -F '{log_dir / 'orchestrator.log'}'",
             shell=True,
         )
         processes.append(tail_process)
@@ -484,8 +409,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
     template = env.get_template(config.slurm.template_path.name)
 
     if config.deployment.type == "gpu_layout":
-        assert config.slurm is not None
-        assert config.slurm.template_path is not None
         write_gpu_layout_script(config, config_dir, config.output_dir / GPU_LAYOUT_SCRIPT)
         nodelist = config.slurm.nodelist
         if nodelist is None and config.deployment.hosts is not None:
@@ -536,7 +459,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             if config.inference.kv_cache_offload
             else 0,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
-            wandb_shared=config.wandb is not None and config.wandb.shared,
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
         )
     else:
@@ -550,7 +472,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             num_infer_nodes=config.deployment.total_infer_nodes,
             nodes_per_infer_replica=config.deployment.num_infer_nodes,
             num_infer_replicas=config.deployment.num_infer_replicas,
-            num_teacher_nodes=config.deployment.num_teacher_nodes,
             gpus_per_node=config.deployment.gpus_per_node,
             router_port=getattr(config.inference.deployment, "router_port", 8000) if config.inference else 8000,
             backend_port=getattr(config.inference.deployment, "backend_port", 8100) if config.inference else 8100,
@@ -560,7 +481,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             dp_per_node=(config.deployment.gpus_per_node // config.inference.parallel.tp) if config.inference else 1,
             kv_offload=config.inference is not None and config.inference.kv_cache_offload is not None,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
-            wandb_shared=config.wandb is not None and config.wandb.shared,
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
         )
 
@@ -603,7 +523,7 @@ def rl_slurm(config: RLConfig):
         if config.deployment.type == "gpu_layout":
             has_infer = True
             num_train_nodes = 1
-            num_infer_nodes = config.deployment.num_nodes
+            num_infer_nodes = 1
         else:
             has_infer = config.deployment.num_infer_nodes > 0
             num_train_nodes = config.deployment.num_train_nodes
@@ -617,7 +537,7 @@ def rl_slurm(config: RLConfig):
             train_env_names=train_env_names,
             eval_env_names=eval_env_names,
             num_train_nodes=num_train_nodes,
-            num_infer_nodes=1 if config.deployment.type == "gpu_layout" else num_infer_nodes,
+            num_infer_nodes=num_infer_nodes,
         )
         if config.deployment.type == "gpu_layout":
             log_message += f"\n   All servers:     tail -F {log_dir}/inference/server_*.log"
@@ -640,7 +560,7 @@ def rl_slurm(config: RLConfig):
 
 
 def _select_gpu_layout_hosts(deployment: GpuLayoutDeploymentConfig) -> list[str]:
-    """Select hosts for gpu_layout: explicit hosts if configured, else from SLURM_JOB_NODELIST."""
+    """Select hosts for gpu_layout: explicit hosts if configured, else the exact Slurm allocation."""
     if deployment.hosts is not None:
         return deployment.hosts
 
@@ -662,29 +582,25 @@ def _select_gpu_layout_hosts(deployment: GpuLayoutDeploymentConfig) -> list[str]
             f"gpu_layout needs {deployment.num_nodes} hosts, but allocation exposes {len(hosts)}: {hosts}. "
             "Set deployment.hosts explicitly to select the intended lane."
         )
-    selected = hosts
-    logger = get_logger()
-    logger.info(f"gpu_layout hosts: {selected}")
-    return selected
+    return hosts
 
 
 def _gpu_layout_step_resources(host: str) -> tuple[int, int]:
-    """Per-step (--cpus-per-task, --mem MB) for the gpu_layout srun, derived
-    from the node's PHYSICAL resources minus a margin. Uses scontrol node facts
-    (path-independent) rather than SLURM_*_PER_NODE, which are request-scoped
-    and differ between an salloc step and an exclusive sbatch job."""
+    """Derive per-step CPU and memory requests from physical node resources minus a margin."""
     result = subprocess.run(["scontrol", "show", "node", host, "-o"], capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"Failed to query node resources for {host}: {result.stderr.strip()}")
+
     cpu_tot: int | None = None
     real_mem_mb: int | None = None
-    for tok in result.stdout.split():
-        if tok.startswith("CPUTot="):
-            cpu_tot = int(tok.split("=", 1)[1])
-        elif tok.startswith("RealMemory="):
-            real_mem_mb = int(tok.split("=", 1)[1])
+    for token in result.stdout.split():
+        if token.startswith("CPUTot="):
+            cpu_tot = int(token.split("=", 1)[1])
+        elif token.startswith("RealMemory="):
+            real_mem_mb = int(token.split("=", 1)[1])
     if cpu_tot is None or real_mem_mb is None:
         raise RuntimeError(f"Could not parse CPUTot/RealMemory from scontrol for {host}: {result.stdout.strip()}")
+
     cpus_per_task = cpu_tot - _GPU_LAYOUT_CPU_MARGIN
     mem_mb = real_mem_mb - _GPU_LAYOUT_MEM_MARGIN_MB
     if cpus_per_task < 1 or mem_mb < 1024:
@@ -697,7 +613,8 @@ def rl_gpu_layout_allocation(config: RLConfig):
     assert config.deployment.type == "gpu_layout"
 
     logger = setup_logger(
-        config.log.level or os.environ.get("PRIME_LOG_LEVEL", "info"), json_logging=config.log.json_logging
+        config.log.level or os.environ.get("PRIME_LOG_LEVEL", "info"),
+        json_logging=config.log.json_logging,
     )
 
     config_dir = config.output_dir / "configs"
@@ -716,6 +633,7 @@ def rl_gpu_layout_allocation(config: RLConfig):
     srun_cmd = [
         "srun",
         f"--jobid={slurm_job_id}",
+        "--overlap",
         "--exact",
         f"--nodes={config.deployment.num_nodes}",
         "--ntasks-per-node=1",
@@ -771,6 +689,8 @@ def rl(config: RLConfig):
         clean_future_steps(config.output_dir, -1)
 
     if not config.dry_run:
+        from prime_rl.trainer.model import pre_download_model
+
         pre_download_model(config.trainer.model.name)
 
     if config.slurm is not None:

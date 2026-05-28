@@ -6,7 +6,7 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [orchestrator]
 batch_size = 128
-rollouts_per_example = 16
+group_size = 16
 
 # -- train envs --
 
@@ -36,13 +36,13 @@ max_completion_tokens = 512
 id = "reverse-text"
 name = "eval-default"
 num_examples = 32
-rollouts_per_example = 4
+group_size = 4
 
 [[orchestrator.eval.env]]
 id = "reverse-text"
 name = "eval-custom"
 num_examples = 16
-rollouts_per_example = 2
+group_size = 2
 interval = 10
 
 [orchestrator.eval.env.sampling]
@@ -53,3 +53,7 @@ temperature = 0.5
 lr = 3e-6
 
 [inference] # Default inference config
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"

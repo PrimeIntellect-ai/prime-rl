@@ -1,10 +1,4 @@
-"""Role-conditioned Advantage Estimation (RAE / SPIRAL).
-
-Separate from the GRPO advantage path (advantage.py) — different computation
-model (per-sample with metadata vs. [P,N] tensor), different state lifecycle.
-The orchestrator multi-agent path calls compute_rae_advantages instead of
-compute_advantages. Both coexist.
-"""
+"""Role-conditioned advantage estimation for multi-agent training."""
 
 from __future__ import annotations
 
@@ -14,25 +8,17 @@ from dataclasses import dataclass, field
 from verifiers import rollout_to_member_rollouts
 from verifiers.types import MemberRollout
 
+from prime_rl.configs.multi_agent import MultiAgentConfig
+from prime_rl.orchestrator.member_generation import is_trainable_member as is_bound_trainable_member
+
 MemberTrainability = Callable[[Mapping, str], bool]
 
 RAEKey = tuple[str, int | str, str]
-"""(env_name, example_id, member_id). ``env_name`` partitions the baseline
-store across environments — otherwise two envs with overlapping example_ids
-would contaminate each other's baselines.
-``example_id`` is int|str to match MemberRollout (HuggingFace UID-style ids
-like \"mmlu_0001\" propagate verbatim end-to-end). ``member_id`` is the single
-participant label after the verifiers α-cut (role_id was deleted as a
-redundant duplicate label)."""
 
 
 @dataclass
 class RAEState:
-    """Persistent EMA baselines keyed by (env_name, example_id, member_id).
-
-    Cold start: missing keys default to 0.0 baseline, so the first
-    advantage for a new (env, example, member) tuple equals the raw reward.
-    """
+    """Persistent EMA baselines keyed by (env_name, example_id, member_id)."""
 
     baselines: dict[RAEKey, float] = field(default_factory=dict)
     momentum: float = 0.9
@@ -47,23 +33,13 @@ def fan_out_for_multi_agent(
     *,
     is_trainable_member: MemberTrainability | None = None,
 ) -> tuple[list[MemberRollout], list[list[int]]]:
-    """Project episode-level rollouts to per-member training units.
-
-    Returns ``(training_units, rollout_to_unit_idxs)``. The latter maps each
-    input rollout index to the indices of its member units in
-    ``training_units`` — the orchestrator uses it to fold per-unit token
-    counts back to per-rollout metric rows (results_df is per-episode).
-
-    ``is_trainable_member`` is a runtime-owned predicate keyed by
-    ``(rollout, member_id)``. Verifiers provides protocol member ids; Prime-RL
-    decides which of those members map to trainable policy parameters.
-    """
+    """Project episode rollouts to per-member training units."""
     training_units: list[MemberRollout] = []
     rollout_to_unit_idxs: list[list[int]] = []
     for rollout in rollouts:
         members = rollout_to_member_rollouts(rollout)
         if is_trainable_member is not None:
-            members = [m for m in members if is_trainable_member(rollout, m["member_id"])]
+            members = [member for member in members if is_trainable_member(rollout, member["member_id"])]
         env_name = rollout.get("env_name")
         if env_name is not None:
             if not isinstance(env_name, str):
@@ -75,38 +51,42 @@ def fan_out_for_multi_agent(
     return training_units, rollout_to_unit_idxs
 
 
-def _rae_key(mr: Mapping) -> RAEKey:
-    env_name = mr.get("env_name")
+def fan_out_trainable_for_multi_agent(
+    rollouts: list[Mapping],
+    config: MultiAgentConfig,
+) -> tuple[list[MemberRollout], list[list[int]]]:
+    """Project episode rollouts to the member rows that can enter training."""
+    return fan_out_for_multi_agent(
+        rollouts,
+        is_trainable_member=lambda rollout, member_id: is_bound_trainable_member(config, rollout, member_id),
+    )
+
+
+def _rae_key(member_rollout: Mapping) -> RAEKey:
+    env_name = member_rollout.get("env_name")
     if env_name is None:
-        env_name = mr["task"]
+        env_name = member_rollout["task"]
     if not isinstance(env_name, str):
         raise TypeError(
             "RAE baseline identity requires a string env_name; "
             f"got {type(env_name).__name__} from member rollout identity fields"
         )
-    return (env_name, mr["example_id"], mr["member_id"])
+    return (env_name, member_rollout["example_id"], member_rollout["member_id"])
 
 
 def compute_rae_advantages(
     member_rollouts: list[MemberRollout],
     state: RAEState,
 ) -> list[float]:
-    """Compute per-member advantages and update EMA baselines per SPIRAL Alg.1.
+    """Compute per-member advantages and update EMA baselines.
 
-    For each rollout in order:
-      b[(env_name, example_id, member_id)] ← α·b + (1-α)·R   (Alg.1, line 20)
-      A(τ) = R(τ) - b[(env_name, example_id, member_id)]     (Alg.1, line 21)
-
-    Update-then-subtract, per-trajectory. Within-batch order matters when
-    multiple rollouts share a key — the recursion is the point. Each
-    trajectory's advantage uses the baseline that has just absorbed its
-    own reward; downstream trajectories then see a baseline weighted toward
-    their predecessors' rewards.
+    SPIRAL Alg.1 updates the baseline first, then subtracts that updated
+    baseline from the same rollout's reward.
     """
     advantages: list[float] = []
-    for mr in member_rollouts:
-        reward = mr["reward"]
-        key = _rae_key(mr)
+    for member_rollout in member_rollouts:
+        reward = member_rollout["reward"]
+        key = _rae_key(member_rollout)
         state.update(key, reward)
         advantages.append(reward - state.baselines[key])
     return advantages

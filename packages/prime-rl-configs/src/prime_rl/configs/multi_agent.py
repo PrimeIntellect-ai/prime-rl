@@ -4,6 +4,7 @@ import hashlib
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator, model_validator
+from renderers import RendererConfig
 
 from prime_rl.utils.config import BaseConfig
 
@@ -38,6 +39,18 @@ class FixedMemberTargetConfig(BaseConfig):
         dict[str, str],
         Field(description="Static HTTP headers for this target."),
     ] = Field(default_factory=dict)
+    renderer: Annotated[
+        RendererConfig | None,
+        Field(description="Renderer config used when request_mode = 'renderer'."),
+    ] = None
+    renderer_model_name: Annotated[
+        str | None,
+        Field(description="Tokenizer model override for renderer-backed fixed targets."),
+    ] = None
+    renderer_pool_size: Annotated[
+        int | None,
+        Field(ge=1, description="Renderer pool size for renderer-backed fixed targets."),
+    ] = None
     timeout: Annotated[float, Field(description="Request timeout in seconds.")] = 1200.0
     connect_timeout: Annotated[
         float,
@@ -62,6 +75,14 @@ class FixedMemberTargetConfig(BaseConfig):
             raise ValueError("fixed target base_url entries must be non-empty strings")
         return base_url
 
+    @model_validator(mode="after")
+    def validate_renderer_fields(self):
+        if self.request_mode == "renderer":
+            return self
+        if self.renderer is not None or self.renderer_model_name is not None or self.renderer_pool_size is not None:
+            raise ValueError("fixed target renderer fields require request_mode = 'renderer'")
+        return self
+
 
 class TrainOneConfig(BaseConfig):
     """Train the policy in exactly one member role per rollout."""
@@ -77,7 +98,7 @@ class TrainOneConfig(BaseConfig):
     unselected: Annotated[
         str,
         Field(
-            description=("Fixed target used by train_one candidates not selected as the learner role for this rollout.")
+            description="Fixed target used by train_one candidates not selected as the learner role for this rollout."
         ),
     ]
 
@@ -118,8 +139,7 @@ class MultiAgentConfig(BaseConfig):
                 fixed_members[member] = target_name
 
         if self.train_one is not None:
-            missing = self.train_one.unselected not in self.fixed
-            if missing:
+            if self.train_one.unselected not in self.fixed:
                 raise ValueError("multi_agent.train_one.unselected must name an entry in multi_agent.fixed")
             overlap = sorted(set(self.train_one.members) & set(fixed_members))
             if overlap:

@@ -1,0 +1,40 @@
+output_dir = "outputs/stress-matrix/olmo3-alphabet-sort-2x4"
+clean_output_dir = true
+max_steps = 10
+seq_len = 2048
+
+[model]
+name = "allenai/Olmo-3-7B-Instruct-DPO"
+
+[deployment]
+type = "gpu_layout"
+gpus_per_node = 4
+inference_port_start = 8210
+hosts = ["nid010338", "nid010339"]
+
+[[deployment.nodes]]
+trainer = [0, 1, 2, 3]
+
+[[deployment.nodes]]
+inference = [0, 1, 2, 3]
+
+[trainer.model]
+impl = "custom"
+
+[orchestrator]
+batch_size = 8
+group_size = 2
+oversampling_factor = 1.0
+pool_size = 4
+
+[orchestrator.renderer]
+name = "olmo3"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 256
+
+[inference]
+gpu_memory_utilization = 0.75
+
+[inference.model]
+max_model_len = 2048

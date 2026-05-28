@@ -3,6 +3,12 @@
 #SBATCH --job-name={{ job_name }}
 #SBATCH --nodes={{ num_nodes }}
 #SBATCH --ntasks-per-node=1
+{%- if cpus_per_task %}
+#SBATCH --cpus-per-task={{ cpus_per_task }}
+{%- endif %}
+{%- if mem %}
+#SBATCH --mem={{ mem }}
+{%- endif %}
 #SBATCH --gres=gpu:{{ gpus_per_node }}
 #SBATCH --partition={{ partition }}
 {%- if account %}
@@ -21,14 +27,13 @@
 #SBATCH --output={{ output_dir }}/job_%j.log
 #SBATCH --error={{ output_dir }}/job_%j.log
 
+set -e
+
 {% if pre_run_command %}
 # Pre-run command
 {{ pre_run_command }}
 {% endif %}
 
-# Per-step CPU/mem from the first allocated node's PHYSICAL resources minus a
-# margin (consistent with rl_gpu_layout_allocation). scontrol node facts are
-# path-independent; SLURM_*_PER_NODE are request-scoped and unreliable here.
 _first_host=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n1)
 _node_info=$(scontrol show node "$_first_host" -o)
 _cpu_tot=$(echo "$_node_info" | tr ' ' '\n' | sed -n 's/^CPUTot=//p')
@@ -44,10 +49,6 @@ if [ "$GPU_LAYOUT_CPB" -lt 1 ] || [ "$GPU_LAYOUT_MEMB" -lt 1024 ]; then
     exit 1
 fi
 
-# Single srun step. --kill-on-bad-exit=1 propagates a component failure on any
-# node to the whole step; on clean completion the launcher's TRAINING_COMPLETE
-# flag makes every task exit 0 so srun (and thus this job) returns 0. The job's
-# State therefore reflects the run: COMPLETED on success, FAILED on failure.
 srun --exact --ntasks-per-node=1 \
     --cpus-per-task="$GPU_LAYOUT_CPB" \
     --mem="${GPU_LAYOUT_MEMB}M" \

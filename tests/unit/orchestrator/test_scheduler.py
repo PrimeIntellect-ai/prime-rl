@@ -1,23 +1,20 @@
 import asyncio
-from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import verifiers as vf
 
-from prime_rl.configs.multi_agent import FixedMemberTargetConfig, MultiAgentConfig
+from prime_rl.configs.multi_agent import FixedMemberTargetConfig, MultiAgentConfig, TrainOneConfig, stable_train_member
 from prime_rl.orchestrator.scheduler import GroupState, InflightRequest, Scheduler
 from prime_rl.utils.async_utils import safe_cancel
 
 
 def make_scheduler() -> Scheduler:
     scheduler = Scheduler.__new__(Scheduler)
-    scheduler.max_async_level = 1
-    scheduler.strict_async_level = False
     scheduler.step = 9
     scheduler.ckpt_step = 7
-    scheduler.config = SimpleNamespace(output_dir=Path("/tmp/prime-rl-test"))
+    scheduler.config = SimpleNamespace(output_dir=Path("/tmp/prime-rl-test"), multi_agent=MultiAgentConfig())
     scheduler.logger = MagicMock()
     scheduler.checkpoint_ready = asyncio.Event()
     scheduler.checkpoint_ready.set()
@@ -32,7 +29,7 @@ def make_scheduler() -> Scheduler:
     scheduler.policy_update_lock = asyncio.Lock()
     scheduler.inflight_policy_update_task = None
     scheduler.update_policy_task = None
-    scheduler.enable_policy_updates = True
+    scheduler.rate_limiter = None
     return scheduler
 
 
@@ -104,10 +101,11 @@ def test_maybe_update_policy_reuses_inflight_update_after_cancellation():
             started.set()
             await release.wait()
 
-        scheduler.inference_pool = SimpleNamespace(
+        scheduler.student_inference = SimpleNamespace(
             update_weights=update_weights,
             update_model_name=MagicMock(),
         )
+        scheduler.rollout_inference = scheduler.student_inference
         scheduler._update_off_policy = AsyncMock()
 
         with (
@@ -144,10 +142,11 @@ def test_stop_cancels_inflight_policy_update_task():
             finally:
                 cancelled.set()
 
-        scheduler.inference_pool = SimpleNamespace(
+        scheduler.student_inference = SimpleNamespace(
             update_weights=update_weights,
             update_model_name=MagicMock(),
         )
+        scheduler.rollout_inference = scheduler.student_inference
         scheduler._update_off_policy = AsyncMock()
 
         with (
@@ -178,92 +177,199 @@ def test_client_identity_distinguishes_base_url_and_dp_rank():
     assert Scheduler._client_identity(client_a) != Scheduler._client_identity(client_b)
 
 
-def test_scheduler_excludes_examples_already_reserved_for_current_batch():
+def test_lora_policy_update_in_sft_keeps_teacher_model_name():
+    """In sft mode, train_pool is the teacher. LoRA updates the student inference
+    pool but must not change scheduler.model_name (which is what gets sent to the
+    teacher endpoint on each rollout request)."""
+
     async def run() -> None:
-        scheduler = Scheduler.__new__(Scheduler)
-        scheduler.max_inflight_rollouts = 64
-        scheduler.rollouts_per_example = 8
-        scheduler.inflight_requests = {}
-        scheduler.groups = {}
-        scheduler.next_group_id = 0
+        scheduler = make_scheduler()
+        scheduler.model_name = "teacher-model"
+        scheduler.lora_name = "student-lora"
 
-        examples = [{"env_name": "env", "example_id": i} for i in range(4)]
-        seen_exclusions = []
+        student_inference = SimpleNamespace(
+            update_weights=AsyncMock(),
+            update_model_name=MagicMock(),
+        )
+        teacher_inference = SimpleNamespace()
+        scheduler.student_inference = student_inference
+        scheduler.rollout_inference = teacher_inference  # sft: train_pool != student_inference
+        scheduler._update_off_policy = AsyncMock()
 
-        def sample_examples(n: int, exclude_keys=None):
-            assert n == 1
-            excluded = set(exclude_keys or ())
-            seen_exclusions.append(set(excluded))
-            for example in examples:
-                key = (example["env_name"], example["example_id"])
-                if key not in excluded:
-                    return [example]
-            raise AssertionError("test ran out of examples")
+        with (
+            patch("prime_rl.orchestrator.scheduler.get_latest_ckpt_step", return_value=8),
+            patch("prime_rl.orchestrator.scheduler.wait_for_path", new=AsyncMock()),
+        ):
+            await scheduler.maybe_update_policy()
 
-        async def schedule_rollout(group_id: int) -> None:
-            scheduler.groups[group_id].rollouts_to_schedule = 0
-
-        scheduler.buffer = SimpleNamespace(sample_examples=sample_examples)
-        scheduler.schedule_rollout = schedule_rollout
-
-        batch_keys = set()
-        assert await scheduler._schedule_next_request(batch_keys)
-        assert await scheduler._schedule_next_request(batch_keys)
-        assert await scheduler._schedule_next_request(batch_keys)
-
-        assert [group.example["example_id"] for group in scheduler.groups.values()] == [0, 1, 2]
-        assert seen_exclusions == [
-            set(),
-            {("env", 0)},
-            {("env", 0), ("env", 1)},
-        ]
+        student_inference.update_weights.assert_awaited_once()
+        student_inference.update_model_name.assert_called_once_with("student-lora")
+        assert scheduler.model_name == "teacher-model"
 
     asyncio.run(run())
 
 
-def test_scheduler_releases_completed_batch_keys_after_unique_pool_exhausted():
+def test_lora_policy_update_in_rl_updates_model_name():
+    """In rl/opd mode, train_pool is the student. LoRA updates redirect rollout
+    requests to the new LoRA name."""
+
     async def run() -> None:
-        scheduler = Scheduler.__new__(Scheduler)
-        scheduler.max_inflight_rollouts = 16
-        scheduler.rollouts_per_example = 8
-        scheduler.inflight_requests = {}
+        scheduler = make_scheduler()
+        scheduler.model_name = "student-model"
+        scheduler.lora_name = "student-lora"
+
+        student_inference = SimpleNamespace(
+            update_weights=AsyncMock(),
+            update_model_name=MagicMock(),
+        )
+        scheduler.student_inference = student_inference
+        scheduler.rollout_inference = student_inference  # rl/opd: same pool
+        scheduler._update_off_policy = AsyncMock()
+
+        with (
+            patch("prime_rl.orchestrator.scheduler.get_latest_ckpt_step", return_value=8),
+            patch("prime_rl.orchestrator.scheduler.wait_for_path", new=AsyncMock()),
+        ):
+            await scheduler.maybe_update_policy()
+
+        student_inference.update_weights.assert_awaited_once()
+        student_inference.update_model_name.assert_called_once_with("student-lora")
+        assert scheduler.model_name == "student-lora"
+
+    asyncio.run(run())
+
+
+def test_schedule_rollout_uses_train_pool():
+    """schedule_rollout dispatches to train_pool's clients with train_pool's model name."""
+
+    async def run() -> None:
+        scheduler = make_scheduler()
+        scheduler.model_name = "teacher-model"
+        teacher_client = vf.ClientConfig(api_base_url="http://teacher.example/v1")
+        env = SimpleNamespace(
+            requires_group_scoring=False,
+            run_rollout=AsyncMock(return_value=[]),
+        )
+        scheduler.rollout_inference = SimpleNamespace(train_clients=[teacher_client])
+        scheduler.train_envs = SimpleNamespace(get=MagicMock(return_value=env))
         scheduler.groups = {
-            0: GroupState(example={"env_name": "env", "example_id": 0}, rollouts_to_schedule=0),
+            0: GroupState(
+                example={"env_name": "math", "example_id": "ex-1"},
+                rollouts_to_schedule=1,
+            )
         }
-        scheduler.next_group_id = 1
-        scheduler.logger = MagicMock()
 
-        examples = [{"env_name": "env", "example_id": i} for i in range(2)]
-        seen_exclusions = []
+        await scheduler.schedule_rollout(group_id=0)
+        await asyncio.gather(*scheduler.inflight_requests)
 
-        def sample_examples(n: int, exclude_keys=None):
-            assert n == 1
-            excluded = set(exclude_keys or ())
-            seen_exclusions.append(set(excluded))
-            for example in examples:
-                key = (example["env_name"], example["example_id"])
-                if key not in excluded:
-                    return [example]
-            raise ValueError("No environments left with examples.")
-
-        async def schedule_rollout(group_id: int) -> None:
-            scheduler.groups[group_id].rollouts_to_schedule = 0
-
-        scheduler.buffer = SimpleNamespace(sample_examples=sample_examples)
-        scheduler.schedule_rollout = schedule_rollout
-
-        batch_keys = {("env", 0), ("env", 1)}
-        assert await scheduler._schedule_next_request(batch_keys)
-
-        assert scheduler.groups[1].example["example_id"] == 1
-        assert seen_exclusions == [
-            {("env", 0), ("env", 1)},
-            {("env", 0)},
-        ]
-        assert batch_keys == {("env", 0), ("env", 1)}
-        scheduler.logger.warning.assert_called_once()
+        env.run_rollout.assert_awaited_once_with(
+            client=teacher_client,
+            example={"env_name": "math", "example_id": "ex-1"},
+            model_name="teacher-model",
+            cache_salt="7",
+            generation=None,
+            dispatch_id="9:0:0",
+        )
+        assert scheduler.groups[0].pinned_client is teacher_client
 
     asyncio.run(run())
+
+
+def test_token_batch_progress_uses_trainable_member_units_for_multi_agent():
+    scheduler = make_scheduler()
+    scheduler.token_batch_size = 100
+    scheduler.config.multi_agent = MultiAgentConfig(
+        train_one=TrainOneConfig(members=["debater_a", "debater_b"], unselected="opponent"),
+        fixed={
+            "opponent": FixedMemberTargetConfig(
+                model="opponent-model",
+                base_url=["http://opponent/v1"],
+            )
+        },
+    )
+    scheduler.train_envs = SimpleNamespace(
+        get=MagicMock(return_value=SimpleNamespace(is_multi_agent=True)),
+    )
+    rollout = vf.RolloutOutput(
+        example_id="ex-1",
+        env_name="debate",
+        task="debate",
+        sampling_args={},
+        trajectory_id="episode-1",
+        multi_agent_dispatch_id="dispatch-a",
+        trajectory=[
+            {
+                "extras": {"member_id": "debater_a"},
+                "tokens": {"prompt_ids": [1] * 7, "completion_ids": [1] * 3},
+            },
+            {
+                "extras": {"member_id": "debater_b"},
+                "tokens": {"prompt_ids": [1] * 11, "completion_ids": [1] * 5},
+            },
+        ],
+        mar_score={
+            "members": [
+                {"member_id": "debater_a", "reward": 1.0},
+                {"member_id": "debater_b", "reward": -1.0},
+            ],
+            "episode_scalar": 1.0,
+        },
+        error=None,
+    )
+
+    increment = scheduler.get_batch_progress_increment([rollout])
+
+    selected = stable_train_member(["debater_a", "debater_b"], seed=0, dispatch_id="dispatch-a")
+    assert increment == {"debater_a": 10, "debater_b": 16}[selected]
+    assert increment != 26
+
+
+def test_sample_batch_progress_uses_trainable_member_units_for_multi_agent():
+    scheduler = make_scheduler()
+    scheduler.batch_size = 2
+    scheduler.token_batch_size = None
+    scheduler.config.multi_agent = MultiAgentConfig(
+        fixed={
+            "judge": FixedMemberTargetConfig(
+                members=["judge"],
+                model="judge-model",
+                base_url=["http://judge/v1"],
+            )
+        }
+    )
+    scheduler.train_envs = SimpleNamespace(
+        get=MagicMock(return_value=SimpleNamespace(is_multi_agent=True)),
+    )
+    rollout = vf.RolloutOutput(
+        example_id="ex-1",
+        env_name="debate",
+        task="debate",
+        sampling_args={},
+        trajectory_id="episode-1",
+        trajectory=[
+            {
+                "extras": {"member_id": "debater_a"},
+                "tokens": {"prompt_ids": [1] * 7, "completion_ids": [1] * 3},
+            },
+            {
+                "extras": {"member_id": "debater_b"},
+                "tokens": {"prompt_ids": [1] * 11, "completion_ids": [1] * 5},
+            },
+        ],
+        mar_score={
+            "members": [
+                {"member_id": "debater_a", "reward": 1.0},
+                {"member_id": "debater_b", "reward": -1.0},
+            ],
+            "episode_scalar": 1.0,
+        },
+        error=None,
+    )
+
+    increment = scheduler.get_batch_progress_increment([rollout])
+
+    assert increment == 2
+    assert increment != len([rollout])
 
 
 def test_compile_generation_ignores_single_agent_env_with_global_config():
@@ -328,123 +434,50 @@ def test_compile_generation_routes_multi_agent_env_with_global_config():
     )
 
 
-def test_pause_policy_updates_cancels_poller_and_waits_for_inflight_update():
+def test_schedule_group_rollout_passes_generation_per_dispatch_id():
     async def run() -> None:
         scheduler = make_scheduler()
-        poller_cancelled = asyncio.Event()
-        update_finished = asyncio.Event()
-
-        async def policy_poller() -> None:
-            try:
-                await asyncio.Future()
-            finally:
-                poller_cancelled.set()
-
-        async def inflight_update() -> None:
-            await asyncio.sleep(0)
-            update_finished.set()
-
-        scheduler.update_policy_task = asyncio.create_task(policy_poller())
-        scheduler.inflight_policy_update_task = asyncio.create_task(inflight_update())
-
-        await asyncio.sleep(0)
-        await scheduler.pause_policy_updates()
-
-        assert poller_cancelled.is_set()
-        assert update_finished.is_set()
-        assert scheduler.update_policy_task is None
-        assert scheduler.inflight_policy_update_task is None
-
-    asyncio.run(run())
-
-
-def test_sync_policy_for_step_waits_for_checkpoint_before_batch_generation():
-    async def run() -> None:
-        scheduler = make_scheduler()
-        applied_steps: list[int] = []
-
-        async def update_weights(weight_dir, lora_name=None, step=0) -> None:
-            applied_steps.append(step)
-
-        scheduler.inference_pool = SimpleNamespace(
-            update_weights=update_weights,
-            update_model_name=MagicMock(),
+        scheduler.config.multi_agent = MultiAgentConfig(
+            fixed={
+                "judge": FixedMemberTargetConfig(
+                    members=["judge"],
+                    model="judge-model",
+                    base_url=["http://judge/v1"],
+                )
+            }
         )
-        scheduler._update_off_policy = AsyncMock()
-
-        with (
-            patch("prime_rl.orchestrator.scheduler.get_latest_ckpt_step", return_value=0),
-            patch("prime_rl.orchestrator.scheduler.wait_for_path", new=AsyncMock()),
-        ):
-            await scheduler.sync_policy_for_step(11)
-
-        assert applied_steps == [10]
-        assert scheduler.step == 11
-        assert scheduler.ckpt_step == 10
-        assert scheduler.update_policy_task is not None
-
-        await scheduler.stop()
-
-    asyncio.run(run())
-
-
-def test_generate_batch_drops_timeout_error_and_continues():
-    async def run() -> None:
-        scheduler = make_scheduler()
-        scheduler.enable_policy_updates = False
-        scheduler.batch_size = 1
-        scheduler.token_batch_size = None
-        scheduler.rollouts_per_example = 1
-        scheduler.json_logging = True
-        scheduler.empty_rollouts_by_env = defaultdict(int)
-        scheduler.errored_rollouts_by_env = defaultdict(int)
-        scheduler.total_rollouts_by_env = defaultdict(int)
-        scheduler.deferred_group_scoring_tasks = set()
-        scheduler._fill_inflight_requests = AsyncMock()
-        scheduler.buffer = MagicMock()
-        scheduler.inference_pool = SimpleNamespace(get_metrics=lambda: {})
-        scheduler.train_envs = SimpleNamespace(get=lambda _name: SimpleNamespace(requires_group_scoring=False))
-
-        client = SimpleNamespace(api_base_url="http://test", extra_headers={})
-        success_rollout = {
-            "task": "debate",
-            "trajectory": [{"tokens": None}],
-            "error": None,
-        }
-
-        async def raise_timeout():
-            raise TimeoutError("Environment timeout for run_group request after 30s")
-
-        async def return_rollout():
-            await asyncio.sleep(0.01)
-            return success_rollout
-
-        timeout_task = asyncio.create_task(raise_timeout())
-        success_task = asyncio.create_task(return_rollout())
-
+        client = vf.ClientConfig(api_base_url="http://learner.example/v1")
+        generations = [vf.MemberGenerationPlan(), vf.MemberGenerationPlan()]
+        env = SimpleNamespace(
+            is_multi_agent=True,
+            requires_group_scoring=True,
+            compile_generation=MagicMock(side_effect=generations),
+            run_group=AsyncMock(return_value=[]),
+        )
+        scheduler.rollout_inference = SimpleNamespace(train_clients=[client])
+        scheduler.train_envs = SimpleNamespace(get=MagicMock(return_value=env))
         scheduler.groups = {
-            1: GroupState(example={"env_name": "debate", "example_id": 1}, rollouts_to_schedule=0),
-            2: GroupState(example={"env_name": "debate", "example_id": 2}, rollouts_to_schedule=0),
+            0: GroupState(
+                example={"env_name": "math", "example_id": "ex-1"},
+                rollouts_to_schedule=2,
+            )
         }
-        scheduler.inflight_requests = {
-            timeout_task: InflightRequest(off_policy_steps=0, client_config=client, env_name="debate", group_id=1),
-            success_task: InflightRequest(off_policy_steps=0, client_config=client, env_name="debate", group_id=2),
-        }
-        scheduler.buffer.sample_rollouts.return_value = [success_rollout]
-        scheduler.sync_policy_for_step = AsyncMock(side_effect=AssertionError("generate_batch must not resync policy"))
 
-        with patch("prime_rl.orchestrator.scheduler.ProgressTracker") as progress_tracker:
-            progress_tracker.return_value = SimpleNamespace(update=MagicMock(), close=MagicMock())
-            batch = await scheduler.generate_batch(step=3)
+        await scheduler.schedule_rollout(group_id=0)
+        await asyncio.gather(*scheduler.inflight_requests)
 
-        scheduler.sync_policy_for_step.assert_not_called()
-        assert batch == [success_rollout]
-        assert 1 not in scheduler.groups
-        assert 2 not in scheduler.groups
-        scheduler.buffer.update.assert_called_once_with([success_rollout])
-        assert any(
-            "Retryable rollout error in group 1" in str(call) and "TimeoutError" in str(call)
-            for call in scheduler.logger.warning.call_args_list
+        assert [call.kwargs["dispatch_id"] for call in env.compile_generation.mock_calls] == [
+            "9:0:0",
+            "9:0:1",
+        ]
+        env.run_group.assert_awaited_once_with(
+            client=client,
+            example={"env_name": "math", "example_id": "ex-1"},
+            model_name="test-model",
+            group_size=2,
+            cache_salt="7",
+            generation=generations,
+            dispatch_ids=["9:0:0", "9:0:1"],
         )
 
     asyncio.run(run())

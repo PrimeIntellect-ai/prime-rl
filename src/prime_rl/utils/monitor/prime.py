@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import io
 import json
@@ -7,14 +9,16 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Thread
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import pyarrow as pa
 import pyarrow.parquet as pq
 import verifiers as vf
 from prime_cli.core.config import Config as PrimeConfig
-from transformers.tokenization_utils import PreTrainedTokenizer
+
+if TYPE_CHECKING:
+    from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.shared import PrimeMonitorConfig
 from prime_rl.utils.config import BaseConfig
@@ -134,7 +138,6 @@ class PrimeMonitor(Monitor):
             return
 
         assert config is not None
-        self.logger.info(f"Initializing {self.__class__.__name__} ({config})")
 
         api_key = os.getenv(config.api_key_var)
         if api_key is None:

@@ -1,23 +1,11 @@
-# Debate (self-play) GPQA — both debaters are the learner; judge is a
-# smaller Qwen via OpenRouter (qwen/qwen-2.5-7b-instruct).
+# GPQA debate self-play. Both debaters use the learner policy; the judge is a
+# fixed OpenAI-compatible chat target.
 #
-# Status: works today. The `gpqa-debate` env exists in verifiers
-# (environments/gpqa_debate/). Symmetric self-play leaves truth_member unset:
-# member rewards come from judge decisions, while ground-truth correctness is
-# diagnostic-only.
-#
-# Reward: SPIRAL zero-sum (winner +1, loser -1, judge 0, tie 0).
-# Advantage: per-(task, example_id, member_id) EMA baseline.
-#
-# Pre-flight:
+# Requires the gpqa-debate environment from joanvelja/verifiers:
 #   uv pip install -e ../verifiers/environments/gpqa_debate
-#   export HF_TOKEN=...           # GPQA is gated
-#   export OPENROUTER_API_KEY=... # for qwen-2.5-7b judge
-#
-# Launch: uv run rl @ configs/gpqa_debate/rl_selfplay.toml
 
 max_steps = 200
-seq_len = 8192       # debate transcripts grow
+seq_len = 8192
 
 [wandb]
 project = "gpqa-debate"
@@ -26,36 +14,33 @@ name = "qwen3-4b-selfplay-qwen7b-judge"
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
+[ckpt]
+interval = 25
+
 [orchestrator]
+training_mode = "rl"
 batch_size = 128
-rollouts_per_example = 4
-oversampling_factor = 1.5  # drop degenerate transcripts (judge-tie or non-parsable)
-use_token_client = false
-use_renderer = true        # debaters use renderer; fixed judge below uses chat.
-# Persist full per-step I/O (each role's input + output, per turn) to
-# outputs/<run>/rollouts/<step>/{train,eval}_rollouts.jsonl. Disk cost:
-# ~MB/rollout × 128 × 200 steps ≈ tens of GB. Worth it for audit.
-dump_trajectory = true
+group_size = 4
+oversampling_factor = 1.5
+
+[orchestrator.renderer]
+name = "auto"
+preserve_all_thinking = true
 
 [orchestrator.train.sampling]
-temperature = 1.0          # SPIRAL spec
-# 8192 per-turn cap: previous 1024 truncated 79% of rollouts before the
-# closing <answer>X</answer> tag, hiding mind-changes in the rebuttal turn
-# (extraction_failed for ~22% of debater-a outputs in the smoke v7 run).
+temperature = 1.0
 max_completion_tokens = 8192
 
 [[orchestrator.train.env]]
 id = "gpqa-debate"
 name = "gpqa-debate-selfplay"
-# no assigned truth side → scalar reward is inert; train on member rewards
 args = { prompts_ref = "selfplay", subset = "gpqa_diamond" }
-# no fixed debater target → both debaters use the orchestrator's learner model
 
-[orchestrator.advantage]   # ← MA marker: SPIRAL Alg.1 EMA-per-(task,ex,member_id)
+[orchestrator.advantage]
 type = "ema_per_member"
 momentum = 0.9
 
-[orchestrator.multi_agent.fixed.judge] # runtime binding, orthogonal to advantage
+[orchestrator.multi_agent.fixed.judge]
 members = ["judge"]
 model = "qwen/qwen-2.5-7b-instruct"
 base_url = ["https://openrouter.ai/api/v1"]
@@ -64,12 +49,6 @@ request_mode = "chat"
 sampling = { temperature = 0.0, max_completion_tokens = 1024 }
 
 [orchestrator.buffer]
-# Keep debate curriculum unfiltered initially. Difficulty filtering would use
-# rollout-level reward, and any correctness-derived scalar would leak ground
-# truth into training via example sampling. Correctness belongs in metrics only.
-
-[ckpt]
-interval = 25              # rae_state.pt round-trips with progress + buffer
 
 [orchestrator.eval]
 interval = 25
@@ -78,13 +57,13 @@ interval = 25
 id = "gpqa-debate"
 name = "gpqa-debate-eval"
 num_examples = 32
-rollouts_per_example = 2
+group_size = 2
 args = { prompts_ref = "selfplay", subset = "gpqa_diamond" }
 
-[trainer] # Default trainer config (DPPO+KL loss)
+[trainer]
 
 [trainer.optim]
-lr = 5e-6                  # smaller than RLVR; debate gradients have higher variance
+lr = 5e-6
 
 [inference]
 gpu_memory_utilization = 0.85

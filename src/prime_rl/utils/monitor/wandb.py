@@ -1,14 +1,19 @@
+from __future__ import annotations
+
 import json
 import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import verifiers as vf
 import wandb
-from transformers.tokenization_utils import PreTrainedTokenizer
 from wandb.errors import CommError
+from wandb.sdk.mailbox.mailbox_handle import ServerResponseError
+
+if TYPE_CHECKING:
+    from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.shared import WandbConfig, WandbWithExtrasConfig
 from prime_rl.utils.chat_template import deserialize_tool_calls
@@ -44,10 +49,12 @@ class WandbMonitor(Monitor):
             return
 
         assert config is not None
-        self.logger.info(f"Initializing {self.__class__.__name__} ({config})")
         self._maybe_overwrite_wandb_command()
 
-        shared_mode = os.environ.get("WANDB_SHARED_MODE") == "1"
+        # WANDB_MODE=disabled/offline takes precedence over shared mode — shared mode
+        # requires a server connection and can't work offline.
+        _wandb_mode = os.environ.get("WANDB_MODE")
+        shared_mode = os.environ.get("WANDB_SHARED_MODE") == "1" and _wandb_mode not in ("disabled", "offline")
         if shared_mode:
             run_id = os.environ.get("WANDB_SHARED_RUN_ID")
             label = os.environ.get("WANDB_SHARED_LABEL")
@@ -58,22 +65,21 @@ class WandbMonitor(Monitor):
                 x_primary=primary,
                 x_update_finish_state=primary,
             )
-            self.logger.info(
-                f"Using shared W&B mode ({label=}, {primary=}). "
-                "This is an experimental feature. Disable with --wandb.shared False"
-            )
+            self.logger.info(f"Using shared W&B mode ({label=}, {primary=})")
         else:
             run_id = None
             primary = False
-            settings = wandb.Settings(
-                mode="offline" if config.offline else "online",
-            )
+            mode = os.environ.get("WANDB_MODE", "offline" if config.offline else "online")
+            settings = wandb.Settings(mode=mode)
+
+        retryable_errors = (CommError, ServerResponseError) if shared_mode else (CommError,)
 
         def init_wandb(max_retries: int):
             for attempt in range(max_retries):
                 try:
                     return wandb.init(
                         id=run_id,
+                        resume="allow" if run_id else None,
                         project=config.project,
                         entity=config.entity,
                         name=config.name,
@@ -83,7 +89,7 @@ class WandbMonitor(Monitor):
                         config=run_config.model_dump() if run_config else None,
                         settings=settings,
                     )
-                except CommError as e:
+                except retryable_errors as e:
                     if attempt + 1 == max_retries:
                         raise
                     if shared_mode and not primary:
@@ -93,6 +99,11 @@ class WandbMonitor(Monitor):
                     else:
                         msg = f"Transient W&B init error ({e}) - retrying in 10s ({attempt + 1}/{max_retries})"
                     self.logger.info(msg)
+                    # A failed wandb.init leaves the run_id registered in the local
+                    # wandb-core StreamMux, causing the next attempt to fail with
+                    # "run ID ... is in use". Tear down the service so the retry
+                    # starts from a clean state.
+                    wandb.teardown()
                     time.sleep(10)
 
         # Non-primary processes in shared mode wait for the primary to create the run.

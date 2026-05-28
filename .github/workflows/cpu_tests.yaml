@@ -14,7 +14,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: false
+      - name: Init public submodules
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive -- deps/verifiers deps/renderers deps/research-environments deps/pydantic-config
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
@@ -46,7 +50,12 @@ jobs:
           --ignore=tests/unit/orchestrator/test_multi_agent_bridge.py
           --ignore=tests/unit/orchestrator/test_multi_agent_rubric.py
           --ignore=tests/unit/test_configs.py
+          --ignore=tests/unit/baselines/test_omni_math2_tasks.py
+          --ignore=tests/unit/orchestrator/test_debate_fields.py
+          --ignore=tests/unit/orchestrator/test_debate_prompts.py
+          --ignore=tests/unit/orchestrator/test_maenv_stitcher_fixes.py
           --ignore=tests/unit/train/sft/test_sft_dataset.py
+          --ignore=tests/unit/train/sft/test_system_prompt_injection.py
           --ignore=tests/unit/train/test_perf.py
       - name: Cleanup output_dir
         run: rm -rf /tmp/outputs

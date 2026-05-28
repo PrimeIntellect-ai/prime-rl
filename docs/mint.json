@@ -4,18 +4,13 @@
         {
             "group": "PRIME-RL",
             "pages": [
-                "index",
-                "entrypoints",
-                "configs",
-                "environments",
-                "async",
-                "logging",
-                "multi_run_manager",
-                "checkpointing",
-                "benchmarking",
-                "deployment",
-                "kubernetes",
-                "troubleshooting"
+                "overview",
+                "configuration",
+                "training",
+                "scaling",
+                "algorithms",
+                "advanced",
+                "development"
             ]
         }
     ]

@@ -1,16 +1,47 @@
+import warnings
+from contextlib import contextmanager
+
 import pytest
 import torch
 from transformers import AutoConfig
-from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
-    Qwen3_5MoeForConditionalGeneration as HFQwen3_5MoeVLM,
-)
 
 from prime_rl.trainer.model import can_reinit_empty_buffers
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
+
+
+@contextmanager
+def _ignore_torch_compile_import_warning():
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="`torch\\.jit\\.script_method` is deprecated\\. Please switch to `torch\\.compile` or `torch\\.export`\\.",
+            category=DeprecationWarning,
+        )
+        warnings.filterwarnings(
+            "ignore",
+            message="Flash Attention is not installed\\. Please install it via `pip install flash-attn --no-build-isolation`",
+            category=ImportWarning,
+        )
+        yield
+
+
+def _force_torch_gated_delta_rule(model: torch.nn.Module) -> None:
+    with _ignore_torch_compile_import_warning():
+        from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import (
+            torch_chunk_gated_delta_rule as _torch_chunk_gated_delta_rule,
+        )
+
+    def torch_chunk_gated_delta_rule(*args, cu_seqlens=None, cp_context=None, **kwargs):
+        if cu_seqlens is not None or cp_context is not None:
+            raise ValueError("Qwen3.5 pure-PyTorch GDN test fallback does not cover packed or CP paths")
+        return _torch_chunk_gated_delta_rule(*args, **kwargs)
+
+    for module in model.modules():
+        if hasattr(module, "_chunk_gated_delta_rule"):
+            module._chunk_gated_delta_rule = torch_chunk_gated_delta_rule
 
 
 def _tiny_vlm_config():
@@ -64,10 +95,14 @@ def _make_image_inputs(config, device="cuda", dtype=torch.float32):
 
 def test_vlm_forward():
     """Custom VLM produces logits for both text-only and multimodal inputs."""
+    with _ignore_torch_compile_import_warning():
+        from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM
+
     config = _tiny_vlm_config()
     with torch.device("cuda"), default_dtype(torch.float32):
         model = Qwen3_5MoeForCausalLM(config)
     inject_prime_lm_head(model)
+    _force_torch_gated_delta_rule(model)
 
     vocab = config.text_config.vocab_size
 
@@ -89,10 +124,14 @@ def test_vlm_forward():
 
 def test_vlm_backward():
     """Gradients flow through both vision scatter and text model."""
+    with _ignore_torch_compile_import_warning():
+        from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM
+
     config = _tiny_vlm_config()
     with torch.device("cuda"), default_dtype(torch.float32):
         model = Qwen3_5MoeForCausalLM(config)
     inject_prime_lm_head(model)
+    _force_torch_gated_delta_rule(model)
 
     pixel_values, image_grid_thw, n_img_tokens = _make_image_inputs(config)
     text_part = torch.randint(0, 200, (1, 10), device="cuda")
@@ -112,6 +151,13 @@ def test_vlm_weight_load_from_hf():
     Text model numerical match is already validated by test_qwen3_5_moe.py::test_qwen3_5_moe.
     This test verifies that VLM weight conversion + loading produces a working model.
     """
+    with _ignore_torch_compile_import_warning():
+        from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
+            Qwen3_5MoeForConditionalGeneration as HFQwen3_5MoeVLM,
+        )
+
+        from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM
+
     config = _tiny_vlm_config()
     with torch.device("cuda"), default_dtype(torch.float32):
         hf_model = HFQwen3_5MoeVLM._from_config(config)
@@ -139,6 +185,13 @@ def test_vlm_weight_load_from_hf():
 
 def test_vlm_weight_roundtrip():
     """HF -> PrimeRL -> HF weight conversion is lossless (vision keys untouched, text keys converted)."""
+    with _ignore_torch_compile_import_warning():
+        from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
+            Qwen3_5MoeForConditionalGeneration as HFQwen3_5MoeVLM,
+        )
+
+        from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM
+
     config = _tiny_vlm_config()
     with torch.device("cuda"), default_dtype(torch.float32):
         hf_model = HFQwen3_5MoeVLM._from_config(config)
@@ -172,10 +225,14 @@ def test_vlm_weight_roundtrip():
 
 def test_vlm_router_replay():
     """routed_experts bypasses router computation in VLM multimodal forward."""
+    with _ignore_torch_compile_import_warning():
+        from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM
+
     config = _tiny_vlm_config()
     with torch.device("cuda"), default_dtype(torch.float32):
         model = Qwen3_5MoeForCausalLM(config)
     inject_prime_lm_head(model)
+    _force_torch_gated_delta_rule(model)
 
     vocab = config.text_config.vocab_size
     pixel_values, image_grid_thw, n_img_tokens = _make_image_inputs(config)
@@ -199,6 +256,9 @@ def test_vlm_router_replay():
 
 def test_vlm_meta_device_and_buffer_reinit():
     """Model can be created on meta device and buffers reinitialized."""
+    with _ignore_torch_compile_import_warning():
+        from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM
+
     config = _tiny_vlm_config()
     with torch.device("meta"):
         model = Qwen3_5MoeForCausalLM.from_config(config)

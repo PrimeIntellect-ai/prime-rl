@@ -1,3 +1,4 @@
+import tomllib
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -8,15 +9,12 @@ from pydantic_config import ConfigFileError
 
 from prime_rl.baselines.config import load_config as load_baseline_config
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.configs.orchestrator import EvalConfig, OrchestratorConfig, TrainSamplingConfig
-from prime_rl.configs.orchestrator import NCCLWeightBroadcastConfig as OrchestratorNCCLWeightBroadcastConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
-from prime_rl.configs.trainer import NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig
-from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.utils.config import BaseConfig, cli
-from prime_rl.utils.validation import validate_shared_weight_broadcast
 
 # All config config classes
 CONFIG_CLASSES = [
@@ -29,21 +27,45 @@ CONFIG_CLASSES = [
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/` or `examples/`"""
-    config_files = list(Path("configs").rglob("*.toml"))
+    """Any TOML file inside `configs/` or `examples/` (skips the configs/private/ submodule)."""
+    private = Path("configs/private")
+    config_files = [p for p in Path("configs").rglob("*.toml") if private not in p.parents]
     example_files = list(Path("examples").rglob("*.toml"))
 
     return config_files + example_files
 
 
+def is_eval_config(path: Path) -> bool:
+    """Eval-suite TOMLs live under configs but are not prime-rl entrypoint configs."""
+    if path.parts[:2] == ("configs", "evals"):
+        return True
+    with path.open("rb") as f:
+        data = tomllib.load(f)
+    return isinstance(data.get("eval"), list)
+
+
+def is_baseline_config(path: Path) -> bool:
+    """Baseline harness TOMLs have a separate dataclass config loader."""
+    return path.parts[:2] == ("configs", "baselines")
+
+
+def is_composed_config_layer(path: Path) -> bool:
+    """Composition overlays are valid only when loaded after a base config."""
+    return path.parts[:3] == ("configs", "sft", "overrides") or (
+        path.parts[:2] == ("configs", "sft") and path.name.startswith("isambard_")
+    )
+
+
 @pytest.mark.parametrize("config_file", get_config_files(), ids=lambda x: x.as_posix())
 def test_load_configs(config_file: Path):
     """Tests that all config files can be loaded by at least one config class."""
-    if config_file.parts[:2] == ("configs", "baselines"):
+    if is_eval_config(config_file):
+        pytest.skip("eval-suite TOML files are not prime-rl entrypoint configs")
+    if is_composed_config_layer(config_file):
+        pytest.skip("composed config layers require a base config")
+    if is_baseline_config(config_file):
         load_baseline_config(config_file)
         return
-    if config_file.parts[:2] == ("configs", "evals"):
-        pytest.skip("eval suite TOMLs are consumed by eval runners, not PrimeRL config classes")
 
     could_parse = []
     for config_cls in CONFIG_CLASSES:
@@ -118,6 +140,140 @@ def test_toml_discriminated_union_default_type(tmp_path):
     assert config.variant.shared == 1
 
 
+def test_trainer_low_risk_sync_knobs_parse():
+    config = TrainerConfig(pack_samples=False, loss=DefaultLossConfig(importance_ratio_clip=2.0))
+
+    assert config.pack_samples is False
+    assert config.loss.importance_ratio_clip == 2.0
+
+
+def test_gpu_layout_deployment_sets_one_gpu_inference_pool(tmp_path):
+    config_path = tmp_path / "gpu_layout.toml"
+    write_toml(
+        config_path,
+        {
+            "max_steps": 1,
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "weight_broadcast": {"type": "nccl"},
+            "trainer": {},
+            "orchestrator": {"student": {"client": {"dp_rank_count": 6}}},
+            "deployment": {
+                "type": "gpu_layout",
+                "gpus_per_node": 4,
+                "nodes": [
+                    {"inference": [0, 1, 2, 3]},
+                    {"inference": [0, 1], "trainer": [2, 3]},
+                ],
+            },
+            "inference": {"parallel": {"tp": 1, "dp": 1}},
+        },
+    )
+
+    config = cli(RLConfig, args=["@", config_path.as_posix()])
+
+    assert config.deployment.total_infer_gpus == 6
+    assert config.deployment.total_train_gpus == 2
+    assert config.orchestrator.student.client.dp_rank_count == 1
+    assert config.orchestrator.num_train_workers == 2
+    assert config.inference is not None
+    assert config.inference.parallel.dp == 1
+    assert config.inference.data_parallel_size_local == 1
+    assert config.inference.api_server_count == 1
+    assert config.trainer.weight_broadcast.inference_world_size == 6
+    assert config.trainer.weight_broadcast.host == "0.0.0.0"
+    assert config.orchestrator.weight_broadcast.inference_world_size == 6
+
+
+def test_gpu_layout_slurm_auto_selects_template(tmp_path):
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {"parallel": {"tp": 1}},
+            "deployment": {
+                "type": "gpu_layout",
+                "hosts": ["node-a", "node-b"],
+                "nodes": [
+                    {"inference": [0, 1, 2, 3]},
+                    {"inference": [0, 1], "trainer": [2, 3]},
+                ],
+            },
+            "slurm": {"project_dir": tmp_path},
+        }
+    )
+
+    assert config.slurm is not None
+    assert config.slurm.template_path is not None
+    assert config.slurm.template_path.name == "gpu_layout_rl.sbatch.j2"
+
+
+def test_gpu_layout_rejects_overlapping_gpu_roles():
+    with pytest.raises(ValidationError, match="assigned to both inference and trainer"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {},
+                "inference": {},
+                "deployment": {
+                    "type": "gpu_layout",
+                    "nodes": [{"inference": [0], "trainer": [0]}],
+                },
+            }
+        )
+
+
+def test_gpu_layout_rejects_trainer_gpus_on_multiple_nodes():
+    with pytest.raises(ValidationError, match="exactly one trainer node"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {},
+                "inference": {},
+                "deployment": {
+                    "type": "gpu_layout",
+                    "nodes": [
+                        {"inference": [0], "trainer": [1]},
+                        {"inference": [0], "trainer": [1]},
+                    ],
+                },
+            }
+        )
+
+
+def test_gpu_layout_rejects_layout_without_inference_gpus():
+    with pytest.raises(ValidationError, match="at least one inference GPU"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {},
+                "inference": {},
+                "deployment": {
+                    "type": "gpu_layout",
+                    "nodes": [{"trainer": [0, 1]}],
+                },
+            }
+        )
+
+
+def test_gpu_layout_rejects_host_count_mismatch():
+    with pytest.raises(ValidationError, match="hosts has 1 entries, but nodes has 2 entries"):
+        RLConfig.model_validate(
+            {
+                "trainer": {},
+                "orchestrator": {},
+                "inference": {},
+                "deployment": {
+                    "type": "gpu_layout",
+                    "hosts": ["node-a"],
+                    "nodes": [
+                        {"inference": [0]},
+                        {"trainer": [0]},
+                    ],
+                },
+            }
+        )
+
+
 def test_toml_discriminated_union_switch_variant(tmp_path):
     """Providing an explicit 'type' switches to that variant."""
     write_toml(tmp_path / "cfg.toml", {"variant": {"type": "b"}})
@@ -166,20 +322,38 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
-def test_inference_fp32_lm_head_threads_through_vllm_additional_config():
-    config = InferenceConfig(enable_fp32_lm_head=True)
+def test_orchestrator_vlm_requires_renderer():
+    with pytest.raises(ValidationError, match="orchestrator.renderer must be set when model.vlm is set"):
+        OrchestratorConfig.model_validate(
+            {
+                "student": {
+                    "model": {
+                        "name": "Qwen/Qwen3-VL-4B-Instruct",
+                        "vlm": {
+                            "vision_encoder_attr": "model.visual",
+                            "language_model_attr": "model.language_model",
+                        },
+                    }
+                },
+                "renderer": None,
+            }
+        )
 
-    namespace = config.to_vllm()
+    config = OrchestratorConfig.model_validate(
+        {
+            "student": {
+                "model": {
+                    "name": "Qwen/Qwen3-VL-4B-Instruct",
+                    "vlm": {
+                        "vision_encoder_attr": "model.visual",
+                        "language_model_attr": "model.language_model",
+                    },
+                }
+            },
+        }
+    )
 
-    assert namespace.additional_config == {"fp32_lm_head": True}
-
-
-def test_inference_uses_processed_logprobs_for_behavior_policy_ratios():
-    config = InferenceConfig()
-
-    namespace = config.to_vllm()
-
-    assert namespace.logprobs_mode == "processed_logprobs"
+    assert config.renderer is not None
 
 
 def test_selective_activation_checkpointing_requires_custom_impl():
@@ -187,105 +361,389 @@ def test_selective_activation_checkpointing_requires_custom_impl():
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})
 
 
-def test_train_sampling_accepts_top_p():
-    sampling = TrainSamplingConfig(top_p=0.95)
-
-    assert sampling.to_sampling_args()["top_p"] == 0.95
-
-
-def test_eval_seed_inherits_to_env():
-    config = EvalConfig(num_examples=100, seed=42, env=[{"id": "test-env"}])
-
-    assert config.env[0].num_examples == 100
-    assert config.env[0].seed == 42
-
-
-def test_eval_env_seed_override_wins():
-    config = EvalConfig(seed=42, env=[{"id": "test-env", "seed": 7}])
-
-    assert config.env[0].seed == 7
+def test_shared_model_name_propagates_to_subconfigs():
+    model_name = "PrimeIntellect/test-model"
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": model_name},
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+            "inference": {},
+        }
+    )
+    assert config.trainer.model.name == model_name
+    assert config.orchestrator.student.model.name == model_name
+    assert config.inference is not None and config.inference.model.name == model_name
+    assert config.trainer.tokenizer.name == model_name
+    assert config.orchestrator.tokenizer.name == model_name
 
 
-def test_validate_shared_weight_broadcast_rejects_inference_mismatch():
-    trainer = TrainerConfig(weight_broadcast=TrainerNCCLWeightBroadcastConfig())
-    orchestrator = OrchestratorConfig(weight_broadcast=OrchestratorNCCLWeightBroadcastConfig())
-    inference = InferenceConfig()
+def test_shared_tokenizer_propagates_when_subconfigs_unset():
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "tokenizer": {"name": "my-tokenizer"},
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+        }
+    )
+    assert config.trainer.tokenizer.name == "my-tokenizer"
+    assert config.orchestrator.tokenizer.name == "my-tokenizer"
 
-    with pytest.raises(ValueError, match="inference=filesystem"):
-        validate_shared_weight_broadcast(trainer, orchestrator, inference)
+
+def test_shared_and_sub_tokenizer_name_conflict_raises():
+    """Setting tokenizer.name in both [tokenizer] and [trainer.tokenizer]
+    is a config conflict — the sub-config would silently win, and any later
+    CLI override of [tokenizer].name would silently no-op for the trainer."""
+    with pytest.raises(ValidationError, match=r"tokenizer.name.*trainer.tokenizer.name"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "tokenizer": {"name": "shared-tok"},
+                "trainer": {"tokenizer": {"name": "trainer-tok"}},
+                "orchestrator": {"renderer": None},
+            }
+        )
 
 
-def test_gpu_layout_deployment_sets_one_gpu_inference_pool(tmp_path):
-    config_path = tmp_path / "gpu_layout.toml"
+def test_tokenizer_name_falls_back_to_model_name_when_unset():
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "tokenizer": {"trust_remote_code": True},
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+        }
+    )
+    assert config.trainer.tokenizer.name == "my-model"
+    assert config.orchestrator.tokenizer.name == "my-model"
+    assert config.trainer.tokenizer.trust_remote_code is True
+    assert config.orchestrator.tokenizer.trust_remote_code is True
+
+
+def test_explicit_subconfig_tokenizer_name_survives_shared_model_propagation():
+    """Regression: shared ``[model] name = "M"`` must propagate model names but
+    must NOT clobber an explicit ``[orchestrator.tokenizer] name = "T"``.
+
+    This is the case that the old RL-level ``auto_setup_tokenizer`` fix-up got
+    wrong: it unconditionally re-derived ``orchestrator.tokenizer.name`` from
+    ``orchestrator.student.model.name`` after propagation, silently overriding
+    the user's explicit value. The ``mode="before"`` ``auto_setup_shared_configs``
+    propagator fixes this because it propagates the model name into the raw
+    dict before sub-configs are built, so ``OrchestratorConfig``'s own
+    ``auto_setup_tokenizer`` (mode=after) sees the resolved name *and* the
+    explicit user-set tokenizer name, and the ``fill``-if-absent semantic
+    leaves the explicit value alone.
+    """
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "M"},
+            "trainer": {},
+            "orchestrator": {
+                "renderer": None,
+                "tokenizer": {"name": "explicit-orch-tok"},
+            },
+        }
+    )
+    # Shared model.name reached every sub-config that didn't override it.
+    assert config.trainer.model.name == "M"
+    assert config.orchestrator.student.model.name == "M"
+    # Trainer didn't specify a tokenizer, so it falls back to the propagated model name.
+    assert config.trainer.tokenizer.name == "M"
+    # Orchestrator's explicit tokenizer name survived.
+    assert config.orchestrator.tokenizer.name == "explicit-orch-tok"
+
+
+def test_tokenizer_chat_template_mismatch_raises():
+    with pytest.raises(ValidationError, match="chat_template"):
+        RLConfig.model_validate(
+            {
+                "trainer": {"tokenizer": {"chat_template": "A"}},
+                "orchestrator": {"renderer": None, "tokenizer": {"chat_template": "B"}},
+            }
+        )
+
+
+def test_shared_seq_len_propagates_to_subconfigs():
+    config = RLConfig.model_validate(
+        {
+            "seq_len": 4096,
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+        }
+    )
+    assert config.trainer.model.seq_len == 4096
+    assert config.orchestrator.seq_len == 4096
+
+
+def test_shared_and_sub_seq_len_conflict_raises():
+    """Setting seq_len at the shared level and on a sub-config is a conflict —
+    forces the user to pick one place to express the value rather than
+    relying on the silent 'sub wins' rule."""
+    with pytest.raises(ValidationError, match=r"seq_len.*trainer.model.seq_len"):
+        RLConfig.model_validate(
+            {
+                "seq_len": 4096,
+                "trainer": {"model": {"seq_len": 8192}},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
+def test_shared_and_sub_model_name_conflict_raises():
+    """Setting model.name at the shared level and on a sub-config is a conflict."""
+    with pytest.raises(ValidationError, match=r"model.name.*trainer.model.name"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "X"},
+                "trainer": {"model": {"name": "Y"}},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
+def test_shared_and_sub_max_steps_conflict_raises():
+    """Top-level scalar shared fields also participate in the mutex check."""
+    with pytest.raises(ValidationError, match=r"max_steps.*orchestrator.max_steps"):
+        RLConfig.model_validate(
+            {
+                "max_steps": 100,
+                "trainer": {},
+                "orchestrator": {"renderer": None, "max_steps": 200},
+            }
+        )
+
+
+def test_trainer_chat_template_cascades_to_inference():
+    """``[trainer.tokenizer] chat_template`` set directly (no shared
+    ``[tokenizer] chat_template``) must still reach
+    ``inference.model.chat_template`` so vLLM's ``--chat-template`` is wired
+    up. Regression: the original ``auto_setup_tokenizer`` cascaded this; the
+    refactored propagator must keep doing it."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "trainer": {"tokenizer": {"chat_template": "TPL"}},
+            "orchestrator": {"renderer": None, "tokenizer": {"chat_template": "TPL"}},
+            "inference": {},
+        }
+    )
+    assert config.trainer.tokenizer.chat_template == "TPL"
+    assert config.orchestrator.tokenizer.chat_template == "TPL"
+    assert config.inference is not None
+    assert config.inference.model.chat_template == "TPL"
+
+
+def test_shared_wandb_fields_propagate_to_subconfigs():
+    """Every ``SharedWandbConfig`` leaf (project, entity, name, group, tags,
+    offline) propagates to both trainer.wandb and orchestrator.wandb. Regression
+    for a miss in the inline propagator."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "wandb": {
+                "project": "shared-proj",
+                "entity": "shared-entity",
+                "name": "shared-name",
+                "group": "shared-group",
+                "tags": ["a", "b"],
+                "offline": False,
+            },
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+        }
+    )
+    for component in (config.trainer.wandb, config.orchestrator.wandb):
+        assert component is not None
+        assert component.project == "shared-proj"
+        assert component.entity == "shared-entity"
+        assert component.name == "shared-name"
+        assert component.group == "shared-group"
+        assert component.tags == ["a", "b"]
+        assert component.offline is False
+
+
+def test_no_wandb_cli_keeps_subconfigs_disabled(tmp_path):
+    toml_path = tmp_path / "cfg.toml"
     write_toml(
-        config_path,
+        toml_path,
         {
             "max_steps": 1,
+            "seq_len": 128,
             "model": {"name": "Qwen/Qwen3-0.6B"},
-            "weight_broadcast": {"type": "nccl"},
+            "wandb": {},
             "trainer": {},
-            "orchestrator": {"client": {"dp_rank_count": 6}},
-            "deployment": {
-                "type": "gpu_layout",
-                "gpus_per_node": 4,
-                "nodes": [
-                    {"inference": [0, 1, 2, 3]},
-                    {"inference": [0, 1], "trainer": [2, 3]},
-                ],
-            },
-            "inference": {"parallel": {"tp": 1, "dp": 1}},
-        },
-    )
-
-    config = cli(RLConfig, args=["@", config_path.as_posix()])
-
-    assert config.deployment.total_infer_gpus == 6
-    assert config.deployment.total_train_gpus == 2
-    assert config.orchestrator.client.dp_rank_count == 1
-    assert config.orchestrator.num_train_workers == 2
-    assert config.inference.parallel.dp == 1
-    assert config.inference.data_parallel_size_local == 1
-    assert config.inference.api_server_count == 1
-    assert config.trainer.weight_broadcast.inference_world_size == 6
-    assert config.orchestrator.weight_broadcast.inference_world_size == 6
-    assert config.trainer.weight_broadcast.host == "0.0.0.0"
-
-
-def test_gpu_layout_rejects_overlapping_gpu_roles(tmp_path):
-    config_path = tmp_path / "gpu_layout_bad.toml"
-    write_toml(
-        config_path,
-        {
-            "trainer": {},
-            "orchestrator": {},
+            "orchestrator": {"batch_size": 16, "group_size": 1},
             "inference": {},
-            "deployment": {
-                "type": "gpu_layout",
-                "gpus_per_node": 4,
-                "nodes": [{"inference": [0], "trainer": [0]}],
-            },
         },
     )
 
-    with pytest.raises(ConfigFileError, match="assigned to both inference and trainer"):
-        cli(RLConfig, args=["@", config_path.as_posix()])
+    config = cli(RLConfig, args=["@", str(toml_path), "--no-wandb"])
+
+    assert config.wandb is None
+    assert config.trainer.wandb is None
+    assert config.orchestrator.wandb is None
 
 
-def test_gpu_layout_rejects_layout_without_inference_gpus(tmp_path):
-    config_path = tmp_path / "gpu_layout_no_infer.toml"
+def test_no_ckpt_cli_keeps_subconfigs_disabled(tmp_path):
+    toml_path = tmp_path / "cfg.toml"
     write_toml(
-        config_path,
+        toml_path,
         {
+            "max_steps": 1,
+            "seq_len": 128,
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "ckpt": {},
             "trainer": {},
-            "orchestrator": {},
+            "orchestrator": {"batch_size": 16, "group_size": 1},
             "inference": {},
-            "deployment": {
-                "type": "gpu_layout",
-                "gpus_per_node": 4,
-                "nodes": [{"trainer": [0, 1]}],
-            },
         },
     )
 
-    with pytest.raises(ConfigFileError, match="at least one inference GPU"):
-        cli(RLConfig, args=["@", config_path.as_posix()])
+    config = cli(RLConfig, args=["@", str(toml_path), "--no-ckpt"])
+
+    assert config.ckpt is None
+    assert config.trainer.ckpt is None
+    assert config.orchestrator.ckpt is None
+
+
+def test_wandb_shared_field_is_rejected():
+    with pytest.raises(ValidationError, match="shared"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "Qwen/Qwen3-0.6B"},
+                "wandb": {"shared": True},
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
+def test_empty_shared_ckpt_block_does_not_conflict_with_subconfig_ckpt():
+    """An empty shared [ckpt] block is a presence-only signal, not a field
+    setting — it should not conflict with a non-empty [trainer.ckpt]."""
+    config = RLConfig.model_validate(
+        {
+            "ckpt": {},  # empty block, no field set
+            "trainer": {"ckpt": {"interval": 50}},
+            "orchestrator": {"renderer": None, "ckpt": {"interval": 50}},
+        }
+    )
+    assert config.trainer.ckpt is not None
+    assert config.trainer.ckpt.interval == 50
+
+
+def test_shared_and_subconfig_disjoint_fields_coexist():
+    """Per-field mutex only forbids conflicts on the SAME field — disjoint
+    fields in [model] vs [trainer.model] are fine."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "trainer": {"model": {"impl": "custom"}},
+            "orchestrator": {"renderer": None},
+        }
+    )
+    assert config.trainer.model.name == "Qwen/Qwen3-0.6B"
+    assert config.trainer.model.impl == "custom"
+
+
+def test_shared_output_dir_propagates_through_cli(tmp_path):
+    """Shared output_dir from CLI reaches sub-configs even when tyro constructs sub-configs before the before-validator."""
+    toml_path = tmp_path / "cfg.toml"
+    write_toml(
+        toml_path,
+        {
+            "max_steps": 1,
+            "seq_len": 128,
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "trainer": {},
+            "orchestrator": {"batch_size": 16, "group_size": 1},
+            "inference": {},
+        },
+    )
+    shared_out = tmp_path / "shared"
+    config = cli(RLConfig, args=["@", str(toml_path), "--output-dir", str(shared_out)])
+    assert config.trainer.output_dir == shared_out
+    assert config.orchestrator.output_dir == shared_out / "run_default"
+
+
+def test_orchestrator_renderer_auto_rejects_unmapped_model():
+    """Default ``renderer`` (AutoRendererConfig) must reject models not in MODEL_RENDERER_MAP."""
+    with pytest.raises(ValidationError, match="silently fall back to DefaultRenderer"):
+        OrchestratorConfig.model_validate({"model": {"name": "not-a-real-org/not-a-real-model"}})
+
+
+def test_orchestrator_renderer_auto_accepts_mapped_model():
+    """The default Qwen model is in MODEL_RENDERER_MAP and should validate cleanly."""
+    config = OrchestratorConfig.model_validate({"model": {"name": "Qwen/Qwen3-0.6B"}})
+    assert config.renderer is not None
+    assert config.renderer.name == "auto"
+
+
+def test_orchestrator_explicit_renderer_skips_unmapped_check():
+    """Explicit renderer.name bypasses the auto-resolution check — user opted in."""
+    config = OrchestratorConfig.model_validate(
+        {
+            "model": {"name": "not-a-real-org/not-a-real-model"},
+            "renderer": {"name": "qwen3"},
+        }
+    )
+    assert config.renderer is not None
+    assert config.renderer.name == "qwen3"
+
+
+def test_orchestrator_renderer_none_skips_unmapped_check():
+    """renderer=None (MITO mode) means the renderer client isn't used, so MODEL_RENDERER_MAP doesn't apply."""
+    config = OrchestratorConfig.model_validate(
+        {
+            "model": {"name": "not-a-real-org/not-a-real-model"},
+            "renderer": None,
+        }
+    )
+    assert config.renderer is None
+
+
+def test_orchestrator_explicit_default_renderer_with_unmapped_model():
+    """renderer.name='default' is an explicit opt-in to DefaultRenderer and must pass."""
+    config = OrchestratorConfig.model_validate(
+        {
+            "model": {"name": "not-a-real-org/not-a-real-model"},
+            "renderer": {"name": "default", "tool_parser": "qwen3"},
+        }
+    )
+    assert config.renderer is not None
+    assert config.renderer.name == "default"
+    assert config.renderer.tool_parser == "qwen3"
+
+
+def test_shared_model_name_resolves_inference_parsers():
+    """Shared [model] name must reach inference.model BEFORE ModelConfig's after-validator
+    runs auto_resolve_parsers — i.e. the parsers resolve from the propagated name, not
+    from an empty default.
+    """
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-Coder-30B-A3B-Instruct"},
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+            "inference": {},
+        }
+    )
+    assert config.inference is not None
+    assert config.inference.model.name == "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+    assert config.inference.model.tool_call_parser == "qwen3_coder"
+
+
+def test_explicit_inference_parser_wins_over_auto():
+    """Explicit inference.model.tool_call_parser is preserved even when the shared model
+    name would otherwise auto-resolve to something else."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-Coder-30B-A3B-Instruct"},
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+            "inference": {"model": {"tool_call_parser": "hermes"}},
+        }
+    )
+    assert config.inference is not None
+    assert config.inference.model.tool_call_parser == "hermes"

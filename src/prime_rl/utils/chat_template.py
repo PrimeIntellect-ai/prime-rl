@@ -1,7 +1,10 @@
-import json
-from typing import Any, Callable
+from __future__ import annotations
 
-from transformers.tokenization_utils import PreTrainedTokenizer
+import json
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from transformers.tokenization_utils import PreTrainedTokenizer
 
 
 class IncrementalTokenizationError(ValueError):

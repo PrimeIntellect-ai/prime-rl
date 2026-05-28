@@ -1,16 +1,61 @@
+import warnings
+from contextlib import contextmanager
+
 import pytest
 import torch
-from transformers import Qwen3_5MoeForCausalLM as HFQwen3_5MoeForCausalLM
 
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeConfig
-from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM as PrimeRLQwen3_5MoeForCausalLM
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu]
 
 
+@contextmanager
+def _ignore_torch_compile_import_warning():
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="`torch\\.jit\\.script_method` is deprecated\\. Please switch to `torch\\.compile` or `torch\\.export`\\.",
+            category=DeprecationWarning,
+        )
+        warnings.filterwarnings(
+            "ignore",
+            message="Flash Attention is not installed\\. Please install it via `pip install flash-attn --no-build-isolation`",
+            category=ImportWarning,
+        )
+        yield
+
+
+def _force_torch_gated_delta_rule(*models: torch.nn.Module) -> None:
+    with _ignore_torch_compile_import_warning():
+        from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
+            torch_chunk_gated_delta_rule as hf_torch_chunk_gated_delta_rule,
+        )
+
+        from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import (
+            torch_chunk_gated_delta_rule as _prime_torch_chunk_gated_delta_rule,
+        )
+
+    def prime_torch_chunk_gated_delta_rule(*args, cu_seqlens=None, cp_context=None, **kwargs):
+        if cu_seqlens is not None or cp_context is not None:
+            raise ValueError("Qwen3.5 pure-PyTorch GDN test fallback does not cover packed or CP paths")
+        return _prime_torch_chunk_gated_delta_rule(*args, **kwargs)
+
+    for model in models:
+        for module in model.modules():
+            if hasattr(module, "chunk_gated_delta_rule"):
+                module.chunk_gated_delta_rule = hf_torch_chunk_gated_delta_rule
+            if hasattr(module, "_chunk_gated_delta_rule"):
+                module._chunk_gated_delta_rule = prime_torch_chunk_gated_delta_rule
+
+
 def get_model_pairs():
+    with _ignore_torch_compile_import_warning():
+        from transformers import Qwen3_5MoeForCausalLM as HFQwen3_5MoeForCausalLM
+
+        from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM as PrimeRLQwen3_5MoeForCausalLM
+
     config = Qwen3_5MoeConfig(
         vocab_size=256,
         hidden_size=256,
@@ -42,6 +87,7 @@ def get_model_pairs():
         prime_model.load_state_dict(state_dict)
     inject_prime_lm_head(prime_model, chunk_size=None)
     assert set(prime_state_keys) - set(state_dict.keys()) == set()
+    _force_torch_gated_delta_rule(hf_model, prime_model)
     return hf_model, prime_model
 
 
@@ -67,6 +113,8 @@ def test_qwen3_5_moe():
 
 def test_qwen3_5_moe_roundtrip():
     """Verify HF → PrimeRL → HF weight conversion is lossless at the state_dict level."""
+    from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM as PrimeRLQwen3_5MoeForCausalLM
+
     hf_model, prime_model = get_model_pairs()
 
     # Get original HF state_dict and the PrimeRL-converted version
@@ -117,18 +165,25 @@ def test_qwen3_5_moe_cp_patching():
     """Verify substitute_ring_attn patches Qwen3_5MoeGatedFlashAttention._compute_attention."""
     from unittest.mock import MagicMock
 
-    from prime_rl.trainer.models.layers.attn import substitute_ring_attn
+    pytest.importorskip("ring_flash_attn", reason="ring-flash-attn requires FlashAttention 2")
+
+    from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoeFlashAttention
+    from prime_rl.trainer.models.layers.attn import FlashAttention, substitute_ring_attn
     from prime_rl.trainer.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeGatedFlashAttention
 
-    original_method = Qwen3_5MoeGatedFlashAttention._compute_attention
-
-    mock_group = MagicMock()
-    substitute_ring_attn(process_group=mock_group, heads_k_stride=1)
-
-    assert Qwen3_5MoeGatedFlashAttention._compute_attention is not original_method
-
-    # Restore to avoid polluting other tests
-    Qwen3_5MoeGatedFlashAttention._compute_attention = original_method
+    # substitute_ring_attn rewrites _compute_attention on all three classes;
+    # snapshot every one so the patch can't leak into later tests via the
+    # untouched siblings.
+    originals = {
+        cls: cls._compute_attention for cls in (FlashAttention, AfmoeFlashAttention, Qwen3_5MoeGatedFlashAttention)
+    }
+    try:
+        mock_group = MagicMock()
+        substitute_ring_attn(process_group=mock_group, heads_k_stride=1)
+        assert Qwen3_5MoeGatedFlashAttention._compute_attention is not originals[Qwen3_5MoeGatedFlashAttention]
+    finally:
+        for cls, method in originals.items():
+            cls._compute_attention = method
 
 
 if __name__ == "__main__":

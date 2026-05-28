@@ -7,7 +7,7 @@ from prime_rl.inference.patches import (
     monkey_patch_minimax_m2_for_lora,
     monkey_patch_no_moe_lora,
     monkey_patch_skip_lora_module_warnings,
-    monkey_patch_topk_topp_noncontiguous_logits,
+    patch_gemma4_moe_lora_support,
 )
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,8 @@ monkey_patch_LRUCacheWorkerLoRAManager()
 monkey_patch_skip_lora_module_warnings()
 # Monkeypatch MiniMaxM2 MoE gate dtype and adapter key mapping for LoRA compatibility
 monkey_patch_minimax_m2_for_lora()
+# vLLM 0.21 has Gemma4 MoE layers but not the LoRA protocol methods.
+patch_gemma4_moe_lora_support()
 # Disable LoRA on MoE layers so vLLM picks better kernels (e.g. TRTLLMFlashInfer on Blackwell)
 if os.environ.get("PRIME_NO_MOE_LORA") == "1":
     logger.info("PRIME_NO_MOE_LORA=1: disabling LoRA on MoE layers")
@@ -28,6 +30,3 @@ else:
 
 # Install fp32 lm_head patch; self-gates on additional_config["fp32_lm_head"] at call time
 monkey_patch_fp32_lm_head()
-
-# Keep vLLM's native Triton top-k/top-p sampler safe for sliced fp32 logits.
-monkey_patch_topk_topp_noncontiguous_logits()

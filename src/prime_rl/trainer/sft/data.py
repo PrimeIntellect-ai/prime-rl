@@ -1,18 +1,18 @@
+from __future__ import annotations
+
 import json
-import math
-import random
 import uuid
 from collections import defaultdict
-from typing import Literal, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict, cast
 
 import torch
 from datasets import Dataset, interleave_datasets, load_dataset
 from jaxtyping import Bool, Int
+from renderers.base import Renderer, build_training_sample
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
-from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTDataConfig
 from prime_rl.trainer.world import get_world
@@ -28,113 +28,8 @@ from prime_rl.utils.sequence_packing import build_cu_seqlens
 
 STACKING_DATASET_BUCKET_TIMEOUT = 10
 
-# Profile definitions: map HF config names → dimension weights for system prompt sampling.
-# Each profile assigns importance weights to prompt dimensions (tags).
-SYSTEM_PROMPT_PROFILES: dict[str, dict[str, float]] = {
-    "chat": {"natural": 2.0, "pragmatic": 1.0},
-    "math": {"analytic": 2.0, "calibrated": 1.0},
-    "coding-bare": {"concise": 2.0, "literal": 1.0},
-    "coding-explained": {"explanatory": 2.0, "pragmatic": 1.0},
-    "precise-short": {"literal": 2.0, "concise": 1.0},
-    "science": {"analytic": 1.0, "explanatory": 1.0},
-}
-
-# Map HF config (subset) names to profiles.
-SUBSET_TO_PROFILE: dict[str, str] = {
-    "wildchat": "chat",
-    "openassistant": "chat",
-    "tulu-3-persona-math": "math",
-    "openmathinstruct-2": "math",
-    "tulu-3-persona-algebra": "math",
-    "dolci-python-algo": "coding-bare",
-    "evol-codealpaca": "coding-explained",
-    "dolci-precise-if": "precise-short",
-    "flan": "precise-short",
-    "tablegpt": "precise-short",
-    "dolci-openthoughts-sci": "science",
-    "sciriff": "science",
-}
-
-# Smoothing constant for profile weights to ensure non-zero probability for all prompts.
-_PROFILE_EPSILON = 0.01
-
-
-class SystemPromptSampler:
-    """Loads a pool of tagged system prompts and samples from it using profile-weighted distributions.
-
-    `pool_path` accepts either:
-      - A local file path to `system_prompts_final.json` (expects a sibling
-        `system_prompts_expanded.json` for tags); or
-      - A HuggingFace Hub dataset repo ID (e.g. `joanvelja/sft-system-prompts-v1`)
-        containing `system_prompts_final.json` + `system_prompts_expanded.json`.
-
-    A string is treated as a local path if the file exists on disk, otherwise it
-    is treated as an HF repo ID.
-    """
-
-    _FINAL_FILENAME = "system_prompts_final.json"
-    _EXPANDED_FILENAME = "system_prompts_expanded.json"
-
-    def __init__(self, pool_path: str):
-        final_path, expanded_path = self._resolve_paths(pool_path)
-
-        with open(final_path) as f:
-            self.prompts: list[str] = json.load(f)
-        if not self.prompts:
-            raise ValueError(f"System prompt pool at {pool_path} is empty")
-
-        # Try loading the expanded file for tags (covers all prompts, not just seeds).
-        # Fall back to uniform tagging if unavailable.
-        self.tags_per_prompt: list[list[str]] = []
-        try:
-            with open(expanded_path) as f:
-                raw = json.load(f)
-            # Handle both formats: list-of-dicts or {"prompts": list-of-dicts}
-            if isinstance(raw, dict):
-                raw = raw.get("prompts", [])
-            prompt_to_tags = {item["prompt"]: item.get("tags", []) for item in raw}
-            for prompt in self.prompts:
-                self.tags_per_prompt.append(prompt_to_tags.get(prompt, []))
-        except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError):
-            self.tags_per_prompt = [[] for _ in self.prompts]
-
-    @classmethod
-    def _resolve_paths(cls, pool_path: str) -> tuple[str, str]:
-        """Return (final_path, expanded_path) as local filesystem paths.
-
-        Downloads from HF Hub if `pool_path` looks like a repo ID.
-        """
-        from pathlib import Path
-
-        p = Path(pool_path)
-        if p.is_file():
-            final_path = str(p)
-            expanded_path = pool_path.replace("_final.json", "_expanded.json")
-            return final_path, expanded_path
-
-        # Treat as HF Hub dataset repo ID (e.g. "joanvelja/sft-system-prompts-v1")
-        from huggingface_hub import hf_hub_download
-
-        final_path = hf_hub_download(repo_id=pool_path, filename=cls._FINAL_FILENAME, repo_type="dataset")
-        expanded_path = hf_hub_download(repo_id=pool_path, filename=cls._EXPANDED_FILENAME, repo_type="dataset")
-        return final_path, expanded_path
-
-    def sample(self, profile_name: str | None, seed: int) -> str:
-        """Sample a system prompt using profile-weighted distribution with deterministic seed."""
-        rng = random.Random(seed)
-
-        if profile_name is None or profile_name not in SYSTEM_PROMPT_PROFILES:
-            # Uniform sampling when no profile matches
-            return rng.choice(self.prompts)
-
-        dim_weights = SYSTEM_PROMPT_PROFILES[profile_name]
-        weights = []
-        for tags in self.tags_per_prompt:
-            score = sum(dim_weights.get(tag, 0.0) for tag in tags)
-            weights.append(_PROFILE_EPSILON + math.exp(score))
-
-        # Weighted sample
-        return rng.choices(self.prompts, weights=weights, k=1)[0]
+if TYPE_CHECKING:
+    from transformers.tokenization_utils import PreTrainedTokenizer
 
 
 class Sample(TypedDict):
@@ -150,7 +45,6 @@ class Batch(TypedDict):
     position_ids: Int[Tensor, "batch seq"]
     target_ids: Int[Tensor, "batch seq"]
     loss_mask: Bool[Tensor, "batch seq"]
-    sequence_lengths: NotRequired[Int[Tensor, "num_sequences"]]
     cu_seqlens: NotRequired[Int[Tensor, "num_sequences_plus_one"]]
     max_seqlen: NotRequired[int]
 
@@ -210,11 +104,10 @@ class FakeDataset(StatefulIterableDataset):
                 continue
 
             seq_len = int(torch.randint(1, self.seq_len, (1,)).item()) if self.length == "variable" else self.seq_len
-            token_count = seq_len + 1
             input_ids = (
-                [self.step - 1] * token_count
+                [self.step - 1] * (seq_len + 1)
                 if self.input_ids == "increasing"
-                else torch.randint(0, self.vocab_size, (token_count,)).long().tolist()
+                else torch.randint(0, self.vocab_size, (seq_len + 1,)).long().tolist()
             )
             position_ids = list(range(seq_len))
             loss_mask = [True] * seq_len
@@ -223,7 +116,6 @@ class FakeDataset(StatefulIterableDataset):
                 "target_ids": input_ids[1:],
                 "position_ids": position_ids,
                 "loss_mask": loss_mask,
-                "sequence_lengths": [seq_len],
             }
             self.num_samples["fake"] += 1
             self.num_tokens["fake"] += len(input_ids)
@@ -244,7 +136,7 @@ class SFTDataset(StatefulIterableDataset):
         loss_mask_config: LossMaskConfig = LossMaskConfig(),
         max_examples: int | None = None,
         max_epochs: int | None = None,
-        system_prompt_sampler: SystemPromptSampler | None = None,
+        renderer: Renderer | None = None,
     ):
         super().__init__()
         self.logger = get_logger()
@@ -257,7 +149,8 @@ class SFTDataset(StatefulIterableDataset):
         self.loss_mask_config = loss_mask_config
         self.max_examples = max_examples
         self.max_epochs = max_epochs
-        self.system_prompt_sampler = system_prompt_sampler
+        self.renderer = renderer
+        self._warned_chat_template_kwargs = False
 
         if self.tokenizer is None:
             self.logger.warning("No tokenizer provided, will not process examples")
@@ -307,25 +200,32 @@ class SFTDataset(StatefulIterableDataset):
 
         messages = resolve_messages(example)
 
-        # Multi-turn filter: skip samples with >2 messages (before injection)
-        if self.system_prompt_sampler is not None and len(messages) > 2:
-            self.logger.debug(
-                f"Skipping multi-turn example {example.get('__index', '')} "
-                f"({len(messages)} messages) — system prompt injection requires single-turn"
-            )
-            return None
-
-        # System prompt injection: prepend a profile-weighted system prompt
-        if self.system_prompt_sampler is not None:
-            subset = example.get("__subset")
-            profile = SUBSET_TO_PROFILE.get(subset) if subset else None
-            sample_index = example.get("__index", 0)
-            prompt = self.system_prompt_sampler.sample(profile, seed=self.seed + sample_index)
-            messages = [{"role": "system", "content": prompt}] + messages
-
         # Parse available tools, if present - assumes OAI format
         # Reference: https://platform.openai.com/docs/guides/function-calling#function-tool-example
-        tools = json.loads(example.get("tools") or "[]")
+        # Accepts either `tools` or `tool_defs` (the verifiers rollout format),
+        # as either a JSON-encoded string of a list or a list of dicts. Tools
+        # arriving in the verifiers shape are converted to OAI form so any
+        # downstream chat template can consume them.
+        raw_tools = example.get("tools", example.get("tool_defs"))
+        if not raw_tools:
+            tools = []
+        else:
+            if isinstance(raw_tools, str):
+                raw_tools = json.loads(raw_tools)
+            tools = [
+                t
+                if isinstance(t, dict) and t.get("type") == "function" and "function" in t
+                else {
+                    "type": "function",
+                    "function": {
+                        "name": t.get("name"),
+                        "description": t.get("description"),
+                        "parameters": t.get("parameters"),
+                        **({} if t.get("strict") is None else {"strict": t["strict"]}),
+                    },
+                }
+                for t in raw_tools
+            ]
 
         def should_mask(message: dict) -> bool:
             assert "role" in message, "Message must have a role"
@@ -341,18 +241,35 @@ class SFTDataset(StatefulIterableDataset):
                 case _:
                     raise ValueError(f"Invalid message role: {message['role']}")
 
-        try:
-            input_ids, loss_mask = build_incremental_token_mask(
-                self.tokenizer,
+        if self.renderer is not None:
+            if example.get("chat_template_kwargs") and not self._warned_chat_template_kwargs:
+                self.logger.warning(
+                    "Example carries chat_template_kwargs but a renderer is configured; "
+                    "renderers don't forward chat_template_kwargs (model-specific "
+                    "renderers bake their template behavior in). These kwargs will "
+                    "be ignored. Further warnings suppressed for this dataset."
+                )
+                self._warned_chat_template_kwargs = True
+
+            input_ids, loss_mask = build_training_sample(
+                self.renderer,
                 messages,
                 role_to_mask=should_mask,
                 tools=tools,
-                chat_template_kwargs=example.get("chat_template_kwargs", {}),
-                collapse_consecutive_tool_messages=True,
             )
-        except IncrementalTokenizationError as e:
-            self.logger.warning(f"Skipping example {example.get('__index', '')}: {e}")
-            return None
+        else:
+            try:
+                input_ids, loss_mask = build_incremental_token_mask(
+                    self.tokenizer,
+                    messages,
+                    role_to_mask=should_mask,
+                    tools=tools,
+                    chat_template_kwargs=example.get("chat_template_kwargs", {}),
+                    collapse_consecutive_tool_messages=True,
+                )
+            except IncrementalTokenizationError as e:
+                self.logger.warning(f"Skipping example {example.get('__index', '')}: {e}")
+                return None
 
         # If EOS token is not found, manually append it
         if not self.tokenizer.eos_token_id in input_ids:
@@ -385,7 +302,6 @@ class SFTDataset(StatefulIterableDataset):
             "target_ids": target_ids,
             "loss_mask": loss_mask,
             "position_ids": list(range(len(input_ids))),
-            "sequence_lengths": [len(input_ids)],
         }
 
     def __iter__(self):
@@ -442,73 +358,48 @@ class CatDataset(StatefulIterableDataset):
         self.logger = get_logger()
         self.dataset = dataset
         self.seq_len = seq_len
-        self.carry: dict[str, list] = defaultdict(list)
-        self.carry_sequence_lengths: list[int] = []
 
     def state_dict(self) -> dict:
-        state = {"dataset": self.dataset.state_dict()}
-        if any(self.carry.values()) or self.carry_sequence_lengths:
-            state["carry"] = dict(self.carry)
-            state["carry_sequence_lengths"] = self.carry_sequence_lengths
-        return state
+        return {"dataset": self.dataset.state_dict()}
 
     def load_state_dict(self, state_dict: dict):
         self.dataset.load_state_dict(state_dict["dataset"])
-        self.carry = defaultdict(list, state_dict.get("carry", {}))
-        self.carry_sequence_lengths = list(state_dict.get("carry_sequence_lengths", []))
-
-    @staticmethod
-    def _split_sequence_lengths(sequence_lengths: list[int], cutoff: int) -> tuple[list[int], list[int]]:
-        emitted, carry = [], []
-        remaining = cutoff
-        for idx, length in enumerate(sequence_lengths):
-            if remaining >= length:
-                emitted.append(length)
-                remaining -= length
-                continue
-            if remaining > 0:
-                emitted.append(remaining)
-            tail = length - remaining
-            if tail > 0:
-                carry.append(tail)
-            carry.extend(sequence_lengths[idx + 1 :])
-            break
-        return emitted, carry
 
     def __iter__(self):
-        packed_samples = defaultdict(list, self.carry)
-        sequence_lengths = list(self.carry_sequence_lengths)
-        seq_len = sum(sequence_lengths)
+        packed_samples, seq_len = defaultdict(list), 0
         for sample in self.dataset:
-            sample_sequence_lengths = sample.get("sequence_lengths", [len(sample["input_ids"])])
-            # Add sample to packed samples
-            for key, value in sample.items():
-                if key == "sequence_lengths":
-                    continue
-                assert isinstance(value, list), f"Value for key {key} must be a list"
-                packed_samples[key].extend(value)
-
-            # Update sequence length
-            seq_len += len(sample["input_ids"])
-            sequence_lengths.extend(sample_sequence_lengths)
-
-            while seq_len >= self.seq_len:
-                emitted = {}
-                carry = {}
-                for key, value in packed_samples.items():
+            sample_offset = 0
+            sample_len = len(sample["input_ids"])
+            while sample_offset < sample_len:
+                chunk_len = min(self.seq_len - seq_len, sample_len - sample_offset)
+                for key, value in sample.items():
                     assert isinstance(value, list), f"Value for key {key} must be a list"
-                    emitted[key] = value[: self.seq_len]
-                    carry[key] = value[self.seq_len :]
+                    if key == "sequence_lengths":
+                        packed_samples[key].extend(_slice_sequence_lengths(value, sample_offset, chunk_len))
+                    else:
+                        packed_samples[key].extend(value[sample_offset : sample_offset + chunk_len])
 
-                emitted_lengths, carry_lengths = self._split_sequence_lengths(sequence_lengths, self.seq_len)
-                emitted["sequence_lengths"] = emitted_lengths
+                seq_len += chunk_len
+                sample_offset += chunk_len
+                if seq_len == self.seq_len:
+                    yield packed_samples
+                    packed_samples, seq_len = defaultdict(list), 0
 
-                self.carry = defaultdict(list, carry)
-                self.carry_sequence_lengths = carry_lengths
-                packed_samples = self.carry
-                sequence_lengths = self.carry_sequence_lengths
-                seq_len = sum(sequence_lengths)
-                yield emitted
+
+def _slice_sequence_lengths(sequence_lengths: list[int], start: int, length: int) -> list[int]:
+    end = start + length
+    sliced = []
+    seq_start = 0
+    for seq_len in sequence_lengths:
+        seq_end = seq_start + seq_len
+        overlap_start = max(start, seq_start)
+        overlap_end = min(end, seq_end)
+        if overlap_start < overlap_end:
+            sliced.append(overlap_end - overlap_start)
+        if seq_end >= end:
+            break
+        seq_start = seq_end
+    return sliced
 
 
 class StackDataset(StatefulIterableDataset):
@@ -596,10 +487,8 @@ class StackDataset(StatefulIterableDataset):
 
                 packed_samples = defaultdict(list)
                 num_samples, num_tokens, num_trainable_tokens, num_pad_tokens = 0, 0, 0, 0
-                sequence_lengths = []
                 for bucket_item in self.buckets[bucket_idx]:
                     num_samples += 1
-                    sequence_lengths.append(len(bucket_item["input_ids"]))
                     for key, value in bucket_item.items():
                         pad_tokens = [0] * (self.bucket_sizes[bucket_idx] - len(value))
                         if key == "loss_mask":
@@ -607,7 +496,6 @@ class StackDataset(StatefulIterableDataset):
                             num_trainable_tokens += sum(value)
                             num_pad_tokens += len(pad_tokens)
                         packed_samples[key].append(value + pad_tokens)
-                packed_samples["sequence_lengths"] = sequence_lengths
                 reason = "bucket is full" if is_full else "because bucket timed out"
                 reason += " and " if is_full and hit_timeout else ""
                 reason += "bucket timed out" if hit_timeout else ""
@@ -624,26 +512,28 @@ class StackDataset(StatefulIterableDataset):
 
 
 def stack_collate(samples: list[Sample]) -> Batch:
-    sample = samples[0]
     return {
-        "input_ids": torch.tensor(sample["input_ids"], dtype=torch.long, device="cuda"),
-        "position_ids": torch.tensor(sample["position_ids"], dtype=torch.long, device="cuda"),
-        "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool, device="cuda"),
-        "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long, device="cuda"),
-        "sequence_lengths": torch.tensor(sample["sequence_lengths"], dtype=torch.int32, device="cuda"),
+        "input_ids": torch.tensor(samples[0]["input_ids"], dtype=torch.long, device="cuda"),
+        "position_ids": torch.tensor(samples[0]["position_ids"], dtype=torch.long, device="cuda"),
+        "loss_mask": torch.tensor(samples[0]["loss_mask"], dtype=torch.bool, device="cuda"),
+        "target_ids": torch.tensor(samples[0]["target_ids"], dtype=torch.long, device="cuda"),
     }
 
 
 def cat_collate(samples: list[Sample]) -> Batch:
-    sample = samples[0]
-    sequence_lengths = sample.get("sequence_lengths", [len(sample["input_ids"])])
-    cu_seqlens, max_seqlen = build_cu_seqlens(sequence_lengths, device=torch.device("cuda"))
+    input_ids = torch.stack([torch.tensor(sample["input_ids"]) for sample in samples], dim=0).long().to("cuda")
+    position_ids = torch.stack([torch.tensor(sample["position_ids"]) for sample in samples], dim=0).long().to("cuda")
+    loss_mask = torch.stack([torch.tensor(sample["loss_mask"]) for sample in samples], dim=0).bool().to("cuda")
+    target_ids = torch.stack([torch.tensor(sample["target_ids"]) for sample in samples], dim=0).long().to("cuda")
+    sequence_lengths = [
+        length for sample in samples for length in sample.get("sequence_lengths", [len(sample["input_ids"])])
+    ]
+    cu_seqlens, max_seqlen = build_cu_seqlens(sequence_lengths, device=input_ids.device)
     return {
-        "input_ids": torch.tensor(sample["input_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
-        "position_ids": torch.tensor(sample["position_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
-        "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool, device="cuda").unsqueeze(0),
-        "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
-        "sequence_lengths": torch.tensor(sequence_lengths, dtype=torch.int32, device="cuda"),
+        "input_ids": input_ids,
+        "position_ids": position_ids,
+        "loss_mask": loss_mask,
+        "target_ids": target_ids,
         "cu_seqlens": cu_seqlens,
         "max_seqlen": max_seqlen,
     }
@@ -724,6 +614,7 @@ def setup_dataset(
     *,
     max_epochs: int | None = None,
     raw_dataset: Dataset | None = None,
+    renderer: Renderer | None = None,
 ) -> StatefulIterableDataset:
     if config.type == "fake":
         return FakeDataset(
@@ -732,7 +623,6 @@ def setup_dataset(
     elif config.type == "sft":
         if raw_dataset is None:
             raw_dataset = load_sft_dataset(config)
-        sampler = SystemPromptSampler(config.system_prompt_pool_path) if config.system_prompt_pool_path else None
         return SFTDataset(
             raw_dataset,
             tokenizer,
@@ -742,7 +632,7 @@ def setup_dataset(
             loss_mask_config=config.loss_mask,
             non_dp_size=non_dp_size,
             max_epochs=max_epochs,
-            system_prompt_sampler=sampler,
+            renderer=renderer,
         )
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")

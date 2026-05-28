@@ -1,6 +1,4 @@
 max_steps = 100
-max_async_level = 1
-seq_len = 16384
 output_dir = "outputs/omni_math2_rlvr_canary/reinforce_half_kl_token"
 
 [log]
@@ -64,6 +62,7 @@ import_path = "prime_rl.trainer.rl.loss.reinforce_loss_fn"
 kwargs = { adv_tau = 1.0, kl_tau = 0.005, kl_level = "token" }
 
 [orchestrator]
+seq_len = 16384
 token_batch_size = 524288
 max_inflight_rollouts = 768
 rollouts_per_example = 8

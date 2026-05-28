@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
+from prime_rl.configs.orchestrator import EvalEnvConfig, TrainSamplingConfig
 from prime_rl.orchestrator.envs import EvalEnv
 
 
@@ -20,6 +21,11 @@ class _FakeEvalEnv(EvalEnv):
     @property
     def requires_group_scoring(self) -> bool:
         return False
+
+
+class _FakeDataset:
+    def to_list(self) -> list[dict]:
+        return [{"example_id": "0"}]
 
 
 def _rollout(example_id: str) -> dict:
@@ -38,13 +44,36 @@ def _rollout(example_id: str) -> dict:
     }
 
 
+def test_eval_env_uses_config_seed_for_eval_dataset():
+    env = SimpleNamespace(calls=[])
+
+    def get_eval_dataset(n=-1, seed=None):
+        env.calls.append((n, seed))
+        return _FakeDataset()
+
+    env.get_eval_dataset = get_eval_dataset
+
+    with patch("prime_rl.orchestrator.envs.vf.load_environment", return_value=env):
+        _FakeEvalEnv(EvalEnvConfig(id="fake", num_examples=3, seed=42))
+
+    assert env.calls == [(3, 42)]
+
+
+def test_train_sampling_top_p_reaches_sampling_args():
+    sampling_args = TrainSamplingConfig(top_p=0.95).to_sampling_args()
+
+    assert sampling_args["top_p"] == 0.95
+
+
 def test_eval_dynamic_refill_reuses_fast_client_without_exceeding_window():
     async def run() -> None:
         env = _FakeEvalEnv.__new__(_FakeEvalEnv)
         env.config = SimpleNamespace(
             resolved_name="fake-eval",
-            rollouts_per_example=1,
+            group_size=1,
             max_concurrent_rollouts_per_client=1,
+            state_columns=[],
+            max_retries=3,
         )
         env.examples = [{"id": str(i), "example_id": str(i)} for i in range(8)]
 
@@ -69,7 +98,7 @@ def test_eval_dynamic_refill_reuses_fast_client_without_exceeding_window():
 
         env.run_rollout = run_rollout
 
-        with patch("prime_rl.utils.monitor.get_monitor", return_value=_FakeMonitor()):
+        with patch("prime_rl.orchestrator.envs.get_monitor", return_value=_FakeMonitor()):
             outputs = await env.evaluate(
                 model_name="model",
                 get_client=unexpected_get_client,
@@ -92,8 +121,10 @@ def test_eval_dynamic_refill_requires_explicit_eval_clients():
         env = _FakeEvalEnv.__new__(_FakeEvalEnv)
         env.config = SimpleNamespace(
             resolved_name="fake-eval",
-            rollouts_per_example=1,
+            group_size=1,
             max_concurrent_rollouts_per_client=1,
+            state_columns=[],
+            max_retries=3,
         )
         env.examples = [{"id": "0", "example_id": "0"}]
 
@@ -105,7 +136,7 @@ def test_eval_dynamic_refill_requires_explicit_eval_clients():
 
         env.run_rollout = run_rollout
 
-        with patch("prime_rl.utils.monitor.get_monitor", return_value=_FakeMonitor()):
+        with patch("prime_rl.orchestrator.envs.get_monitor", return_value=_FakeMonitor()):
             with pytest.raises(RuntimeError, match="requires at least one eval client"):
                 await env.evaluate(
                     model_name="model",

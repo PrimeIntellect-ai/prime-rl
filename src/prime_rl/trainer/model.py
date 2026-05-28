@@ -1,10 +1,13 @@
+from __future__ import annotations
+
 import logging
 import os
+import platform
 import shutil
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 # Disable transformers hub kernel interception by default. The `kernels` package, when installed,
 # causes transformers to auto-replace modules (e.g. mamba-ssm) with hub kernel versions that may
@@ -14,10 +17,16 @@ os.environ.setdefault("USE_HUB_KERNELS", "NO")
 import torch
 import torch._dynamo
 import torch.nn as nn
-from beartype import beartype as typechecker
 from filelock import FileLock
 from huggingface_hub import snapshot_download
-from jaxtyping import Float, Int, jaxtyped
+from jaxtyping import Int
+from renderers.hf_compat import (
+    load_config as load_transformers_config,
+)
+from renderers.hf_compat import (
+    load_direct_fast_tokenizer,
+    should_use_direct_fast_tokenizer,
+)
 from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
@@ -25,10 +34,11 @@ from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.tensor.parallel import parallelize_module
-from torchtitan.distributed.expert_parallel import ExpertParallel
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig, PretrainedConfig
-from transformers.tokenization_utils import PreTrainedTokenizer
+from transformers import AutoModelForCausalLM, GenerationConfig, PretrainedConfig
 from transformers.utils.import_utils import is_flash_attn_3_available
+
+if TYPE_CHECKING:
+    from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.trainer import ActivationCheckpointConfig, CompileConfig, ModelConfig, TokenizerConfig
 from prime_rl.trainer.distributed import DeepEPExpertParallel
@@ -56,7 +66,6 @@ from prime_rl.trainer.weights import (
     save_state_dict,
 )
 from prime_rl.trainer.world import get_world
-from prime_rl.utils.hf_config import patch_transformers_config_rope_numeric_types
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 from prime_rl.utils.utils import format_time
@@ -93,14 +102,6 @@ def _ensure_converted_snapshot(
     *,
     is_master: bool,
 ) -> Path:
-    """Create a converted checkpoint cache without exposing partial writes.
-
-    Multiple training jobs can start from the same HF snapshot concurrently.
-    The converted ``prime``/``hf`` directory is a shared cache, so publishing it
-    before all shards and the index are present lets another job load a partial
-    checkpoint. Serialize writers with a lock and publish via same-directory
-    rename after key validation.
-    """
     logger = get_logger()
     target_path = source_path / converted_dir_name
     marker_path = target_path / CONVERTED_SNAPSHOT_COMPLETE
@@ -475,6 +476,7 @@ def get_load_balance_stats(
     model: nn.Module, reset_stats: bool = True, try_to_avoid_padding_experts: bool = True
 ) -> dict[str, Tensor | None]:
     per_layer_max_vio = []
+    per_layer_routing_confidence = []
     language_model = get_language_model(model)
     for transformer_block in language_model.layers:
         # This is necessary for models that have mixed dense layers
@@ -482,16 +484,25 @@ def get_load_balance_stats(
         if block_mlp is None or not hasattr(block_mlp, "tokens_per_expert"):
             continue
         tokens_per_expert: torch.Tensor = block_mlp.tokens_per_expert
+        num_routed_tokens = tokens_per_expert.sum() / block_mlp.router.top_k
         if try_to_avoid_padding_experts:
             tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[block_mlp.router.top_k :]
         balanced_load = tokens_per_expert.mean()
         max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
-        per_layer_max_vio.append(max_vio.item())
+        per_layer_max_vio.append(max_vio.detach())
+
+        routing_confidence = block_mlp.routing_confidence_sum / num_routed_tokens
+        per_layer_routing_confidence.append(routing_confidence.detach())
+
         if reset_stats:
             block_mlp.tokens_per_expert.zero_()
+            block_mlp.routing_confidence_sum.zero_()
     if len(per_layer_max_vio) == 0:
-        return {"max_vio": None}
-    return {"max_vio": torch.tensor(per_layer_max_vio, device=torch.device("cuda"))}
+        return {"max_vio": None, "routing_confidence": None}
+    return {
+        "max_vio": torch.stack(per_layer_max_vio),
+        "routing_confidence": torch.stack(per_layer_routing_confidence),
+    }
 
 
 def get_model(
@@ -509,15 +520,23 @@ def get_model(
         _patch_qwen3_5_moe_conversion_mapping()
         _patch_qwen3_5_linear_attn_varlen()
 
-    patch_transformers_config_rope_numeric_types()
     model_config = cast(
         PretrainedConfig,
-        AutoConfig.from_pretrained(
+        load_transformers_config(
             config.name, attn_implementation=config.attn, trust_remote_code=config.trust_remote_code
         ),
     )
     model_config.use_cache = False
+    model_config.dtype = dtype
     is_vlm_arch = is_vlm_architecture(model_config)
+    if getattr(model_config, "model_type", None) == "gemma4" and not is_vlm_training:
+        # Gemma4 text-only RL trains adapters for the language model that vLLM
+        # can load back under model.language_model. E2B/E4B configs declare
+        # extra modality towers whose weights are not part of the text
+        # checkpoint path; skip those towers unless multimodal training is
+        # explicitly requested.
+        model_config.vision_config = None
+        model_config.audio_config = None
 
     if is_vlm_training:
         logger.info(f"Detected vision-language model: {config.name}")
@@ -526,11 +545,13 @@ def get_model(
                 "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
             )
 
-    # GPT-OSS only supports FlashAttention via kernels-community/vllm-flash-attn3, which requires Hopper (SM 90).
-    # On other architectures (e.g. Blackwell), users must fall back to eager attention.
+    # GPT-OSS supports HF's sink-aware attention through FA4 or the vLLM FA3 hub kernel.
+    # The hub kernel currently ships x86_64 builds only, so aarch64 GH200 uses local FA4.
     HOPPER_MAJOR = 9
     if getattr(model_config, "model_type", "") == "gpt_oss":
-        if config.attn != "eager":
+        if config.attn == "fa4":
+            model_config._attn_implementation = "flash_attention_4"
+        elif config.attn != "eager":
             major, minor = torch.cuda.get_device_capability()
             if major != HOPPER_MAJOR:
                 raise ValueError(
@@ -538,10 +559,9 @@ def get_model(
                     f"The only flash attention kernel supported by GPT-OSS (kernels-community/vllm-flash-attn3) is Hopper-only. "
                     f'Set [trainer.model] attn = "eager" in your config.'
                 )
-        # Enable hub kernels for GPT-OSS (disabled by default to avoid interfering with other models).
-        import transformers.integrations.hub_kernels as _hub_kernels
-
-        _hub_kernels._kernels_enabled = True
+            if platform.machine() == "aarch64":
+                model_config._attn_implementation = "flash_attention_4"
+                logger.info("Using local FlashAttention 4 for GPT-OSS on aarch64")
 
     # Fallback Qwen3.5 patch detection from loaded config model_type
     if getattr(model_config, "model_type", "").startswith("qwen3_5_moe"):
@@ -554,6 +574,11 @@ def get_model(
             subconfig.use_cache = False
     model_config.use_grouped_mm = config.moe_use_grouped_mm
     model_config.fp8 = config.fp8
+
+    if config.index_cache is not None:
+        model_config.use_index_cache = True
+        model_config.index_topk_freq = config.index_cache.topk_freq
+        model_config.index_topk_pattern = config.index_cache.topk_pattern
 
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
     # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
@@ -649,8 +674,17 @@ def get_model(
 
 def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
     logger = get_logger()
-    patch_transformers_config_rope_numeric_types()
-    tokenizer = AutoTokenizer.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
+    tokenizer_config = load_transformers_config(config.name, trust_remote_code=config.trust_remote_code)
+    tokenizer_kwargs = {
+        "trust_remote_code": config.trust_remote_code,
+        "config": tokenizer_config,
+    }
+    if should_use_direct_fast_tokenizer(config.name):
+        tokenizer = load_direct_fast_tokenizer(config.name, **tokenizer_kwargs)
+    else:
+        from transformers import AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(config.name, **tokenizer_kwargs)
     if config.chat_template is not None:
         path = Path(config.chat_template)
         if path.is_file():
@@ -730,7 +764,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             reshard_after_forward=False,
         )
     else:
-        get_logger().warning("Model uses tied word embeddings, so skipping the last-layer no-reshard optimization.")
+        get_logger().info("Model uses tied word embeddings, so skipping the last-layer no-reshard optimization.")
 
     fully_shard(
         model,
@@ -1023,6 +1057,8 @@ def apply_ep(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims)
         block_mlp = getattr(transformer_block, "mlp", None)
         if block_mlp is not None and isinstance(block_mlp, (MoE, LatentMoE)):
             if config.ep_comm_backend == "torch":
+                from torchtitan.distributed.expert_parallel import ExpertParallel
+
                 parallelize_plan = ExpertParallel()
             else:
                 parallelize_plan = DeepEPExpertParallel()
@@ -1092,7 +1128,7 @@ def setup_model(
 ) -> nn.Module:
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
         raise ValueError(
-            "Flash attention 3 is only supported if the flash_attn_3 package is installed. Install with `uv sync --extra flash-attn-3`."
+            "Flash attention 3 is only supported if the flash_attn_3 package is installed. Install with `uv pip install 'flash-attn-3 @ git+https://github.com/Dao-AILab/flash-attention.git@main#subdirectory=hopper' --no-build-isolation`"
         )
 
     if config.attn == "fa4":
@@ -1182,37 +1218,20 @@ def setup_model(
     return model
 
 
-def _get_qwen3_vl_mm_token_type_ids(model: nn.Module, input_ids: Tensor) -> Tensor | None:
-    config = getattr(model, "config", None)
-    if getattr(config, "model_type", None) != "qwen3_vl":
-        return None
-
-    mm_token_type_ids = torch.zeros_like(input_ids)
-
-    image_token_id = getattr(config, "image_token_id", None)
-    if image_token_id is not None:
-        mm_token_type_ids = mm_token_type_ids.masked_fill(input_ids == image_token_id, 1)
-
-    video_token_id = getattr(config, "video_token_id", None)
-    if video_token_id is not None:
-        mm_token_type_ids = mm_token_type_ids.masked_fill(input_ids == video_token_id, 2)
-
-    return mm_token_type_ids
-
-
-@jaxtyped(typechecker=typechecker)
 def forward(
     model: nn.Module,
     input_ids: Int[Tensor, "batch seq"],
     position_ids: Int[Tensor, "batch seq"],
-    cu_seqlens: Int[Tensor, "num_sequences_plus_one"] | None = None,
-    max_seqlen: int | None = None,
     labels: Int[Tensor, "batch seq"] | None = None,
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
-    # Multimodal fields (Qwen3-VL)
-    pixel_values: Float[Tensor, "num_patches patch_dim"] | None = None,
-    image_grid_thw: Int[Tensor, "num_images 3"] | None = None,
+    # Generic multimodal kwargs (e.g. {"pixel_values": ...,
+    # "image_grid_thw": ...} for Qwen3-VL; just {"pixel_values": ...}
+    # for Gemma3). Passed straight through to ``model(**kwargs)`` so
+    # the model's HF forward signature is the schema. ``mm_token_type_ids``
+    # is split out because it's prime-rl-computed (from token ids),
+    # not a renderer/processor output.
+    mm_kwargs: dict[str, Tensor] | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
 ) -> PrimeLmOutput:
     # Build kwargs for model forward
@@ -1222,20 +1241,21 @@ def forward(
         "temperature": temperature,
     }
 
-    # For multimodal (VLM), don't pass position_ids - let the model compute MRoPE internally
-    # using image_grid_thw. Qwen3-VL only computes proper MRoPE when position_ids is None.
-    if pixel_values is not None:
-        assert image_grid_thw is not None, "pixel_values requires image_grid_thw for MRoPE computation"
-        kwargs["pixel_values"] = pixel_values
-        kwargs["image_grid_thw"] = image_grid_thw
-        mm_token_type_ids = _get_qwen3_vl_mm_token_type_ids(model, input_ids)
+    if mm_kwargs:
+        # Forward the per-model multimodal tensors verbatim, plus the
+        # renderer-supplied ``mm_token_type_ids`` (renderer owns the
+        # token→modality mapping via ``mm_token_type_id_map``).
+        kwargs.update(mm_kwargs)
         if mm_token_type_ids is not None:
             kwargs["mm_token_type_ids"] = mm_token_type_ids
+        # ``position_ids`` for MRoPE families: Qwen3-VL's HF forward
+        # recomputes 3D positions from ``image_grid_thw`` and breaks if
+        # given the trainer's pre-computed 1D ``position_ids``. Detect
+        # via the mm_kwargs shape so we don't enumerate model_types.
+        if "image_grid_thw" not in mm_kwargs:
+            kwargs["position_ids"] = position_ids
     else:
         kwargs["position_ids"] = position_ids
-        if cu_seqlens is not None:
-            kwargs["cu_seqlens"] = cu_seqlens
-            kwargs["max_seqlen"] = max_seqlen
 
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts
