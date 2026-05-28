@@ -8,8 +8,9 @@ project_dir = "."
 pre_run_command = "prime sandbox delete --label rlm-swe-qwen35-4b -y --plain || true"
 
 [deployment]
-num_train_gpus = 4
-num_infer_gpus = 4
+type = "multi_node"
+num_train_nodes = 1
+num_infer_nodes = 1
 
 [wandb]
 project = "rlm-swe-debug"
@@ -82,4 +83,4 @@ gpu_memory_utilization = 0.85
 max_model_len = 65536
 
 [inference.parallel]
-dp = 4
+dp = 8
