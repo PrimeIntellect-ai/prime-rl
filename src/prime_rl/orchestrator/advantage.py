@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import uuid
-from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
@@ -46,7 +44,7 @@ Expected signature:
         ...
 
 The function receives a single group and returns a list of advantages with one
-entry per rollout. `compute_advantages` calls it once per group.
+entry per rollout. `assign_advantages` calls it on one already-grouped cohort.
 """
 
 
@@ -130,32 +128,22 @@ def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
     return advantage_fn
 
 
-def compute_advantages(
-    rollouts: list["TrainRollout"],  # noqa: F821 (forward ref, imported lazily below)
-    advantage_config: AdvantageConfig | None,
+def assign_advantages(
+    rollouts: list["TrainRollout"],  # noqa: F821 (forward ref)
+    advantage_fn: AdvantageFn | None,
 ) -> None:
-    """Computes advantages from rollouts grouped by ``group_id`` and stores
-    them on ``rollout.advantage``.
+    """Compute and assign advantages for one finished group of rollouts.
 
-    ``group_id`` is the only safe key — ``(env_name, example_id)`` collides
-    when the same example is re-sampled as multiple groups (small datasets,
-    multi-epoch eval). ``advantage_fn`` is called once per group with the
-    raw ``vf.RolloutOutput``\\ s (so custom advantage functions keep the
-    same input shape); groups may have varying sizes since partial-group
-    training drops failed rollouts rather than rescheduling them.
+    Caller (``TrainSink.process_group``) hands in a single group's
+    post-error-filter survivors, so no grouping logic is needed here.
+    ``advantage_fn=None`` is the trivial case (advantage = reward).
+    Custom advantage functions still receive the raw ``vf.RolloutOutput``\\ s
+    via ``AdvantageInputs.rollouts`` — public API unchanged.
     """
-    if not advantage_config:
+    if advantage_fn is None:
         for rollout in rollouts:
             rollout.advantage = rollout.reward
         return
-
-    advantage_fn = setup_advantage_fn(advantage_config)
-
-    groups: dict[uuid.UUID, list["TrainRollout"]] = defaultdict(list)  # noqa: F821
-    for rollout in rollouts:
-        groups[rollout.group_id].append(rollout)
-
-    for group in groups.values():
-        result = advantage_fn(AdvantageInputs(rollouts=[r.raw for r in group]))
-        for rollout, advantage in zip(group, result.advantages):
-            rollout.advantage = advantage
+    result = advantage_fn(AdvantageInputs(rollouts=[r.raw for r in rollouts]))
+    for rollout, advantage in zip(rollouts, result.advantages):
+        rollout.advantage = advantage
