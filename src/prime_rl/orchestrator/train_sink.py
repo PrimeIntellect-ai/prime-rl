@@ -195,7 +195,10 @@ class TrainSink:
         if needs_backfill:
             await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
         samples = await asyncio.to_thread(
-            interleave_rollout, raw, mm_token_type_ids_mapping=self.mm_token_type_ids_mapping
+            interleave_rollout,
+            raw,
+            mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
+            env_name=rollout.env_name,
         )
         rollout.samples = samples or []
 

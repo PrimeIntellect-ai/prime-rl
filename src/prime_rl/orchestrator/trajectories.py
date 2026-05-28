@@ -204,6 +204,8 @@ def backfill_rollout_tokens(
 def interleave_rollout(
     output: vf.RolloutOutput,
     mm_token_type_ids_mapping: dict[int, int] | None = None,
+    *,
+    env_name: str = "",
 ) -> list[TrainingSample] | None:
     """
     Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
@@ -296,7 +298,7 @@ def interleave_rollout(
             completion_temperatures=[temperature] * len(completion_ids),
             teacher_logprobs=None,
             advantage=None,
-            env_name=output["env_name"],
+            env_name=env_name,
             mm_token_type_ids=None,
             routed_experts=None,  # deferred — finalized at end of interleave_rollout
         )
