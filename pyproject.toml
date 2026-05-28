@@ -209,6 +209,8 @@ prime = false
 # overrides this locally but the override doesn't propagate to the
 # workspace; mirror it here.
 fastokens = false
+# forth-lang env pins verifiers>=0.1.15.dev9 (published 2026-05-26).
+verifiers = false
 prime-sandboxes = false
 prime-tunnel = false
 prime-evals = false
