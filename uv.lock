@@ -20,11 +20,12 @@ exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
 vllm = false
+verifiers = false
 vllm-router = false
-dion = false
 tokenspeed-mla = false
-fastokens = false
+dion = false
 nixl-cu12 = false
+fastokens = false
 deep-ep = false
 flash-attn-3 = false
 prime-sandboxes = false
