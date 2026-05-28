@@ -9,7 +9,8 @@ name = "hendrycks-math-sanity"
 name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 
 [orchestrator]
-batch_size = 512
+batch_size = 256
+max_inflight_rollouts = 512
 group_size = 8
 
 [[orchestrator.train.env]]
