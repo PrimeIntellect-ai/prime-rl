@@ -1,6 +1,7 @@
 [submodule "verifiers"]
 	path = deps/verifiers
 	url = git@github.com:PrimeIntellect-ai/verifiers.git
+	branch = sebastian/prompt-tool-names-2026-05-19
 [submodule "renderers"]
 	path = deps/renderers
 	url = git@github.com:PrimeIntellect-ai/renderers.git

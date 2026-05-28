@@ -345,6 +345,20 @@ def setup_packer(
 ) -> BasePacker:
     multi_run_manager = get_multi_run_manager()
     if multi_run_manager.max_runs == 1:
-        return SinglePacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)
+        return SinglePacker(
+            dp_world_size,
+            seq_len,
+            pad_to_multiple_of,
+            tokenizer,
+            transport_config,
+            start_step,
+        )
     else:
-        return MultiPacker(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, transport_config, start_step)
+        return MultiPacker(
+            dp_world_size,
+            seq_len,
+            pad_to_multiple_of,
+            tokenizer,
+            transport_config,
+            start_step,
+        )

@@ -56,6 +56,19 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # taus), sft uses sft_loss_fn. Stamped by the orchestrator from training_mode.
     training_mode: TrainingMode = "rl"
 
+    # Per-token SFT-on-tool-body mask (parallel to prompt_ids + completion_ids).
+    # True on tool body tokens whose tool name matches the env's SFTConfig.tool_names
+    # filter (and is_content per the renderer attribution). None when the env has
+    # no SFTConfig or SFTConfig.on_tool_outputs is False. Distinct from
+    # ``training_mode='sft'`` above: that switches the whole sample to the SFT
+    # loss function; this is a per-token overlay co-existing with the RL loss
+    # in default_loss_fn.
+    sft_mask: list[bool] | None = None
+    # Per-env constant advantage applied to SFT-mask positions in
+    # ``prepare_sample``. None when ``sft_mask`` is None. The per-token
+    # weight is just ``alpha`` (no per-rollout normalization).
+    sft_alpha: float | None = None
+
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A batch of training examples with metadata for transport."""
@@ -89,3 +102,8 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # sft → sft loss). All samples packed into a micro batch share the same mode.
     training_mode: TrainingMode = "rl"
     rewards: list[float] | None = None
+
+    # Per-token SFT-on-tool-body mask (parallel to input_ids). Survives packing
+    # and padding identical to ``loss_mask`` — see ``trainer/batch.py`` for the
+    # overlay logic. None when no sample in this micro-batch carried an SFT mask.
+    sft_mask: list[bool] | None = None

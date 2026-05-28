@@ -15,7 +15,7 @@ conflicts = [[
 ]]
 
 [options]
-exclude-newer = "2026-05-20T23:46:33.916255464Z"
+exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -23,7 +23,7 @@ vllm = false
 vllm-router = false
 dion = false
 tokenspeed-mla = false
-prime = false
+fastokens = false
 nixl-cu12 = false
 deep-ep = false
 flash-attn-3 = false
@@ -31,7 +31,7 @@ prime-sandboxes = false
 prime-tunnel = false
 deep-gemm = false
 prime-evals = false
-fastokens = false
+prime = false
 
 [manifest]
 members = [

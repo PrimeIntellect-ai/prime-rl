@@ -53,9 +53,17 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     """
     Prepare a problem for sequence packing training.
     Tokenize and prepare tensors.
+
+    When ``training_example`` carries an ``sft_mask`` + ``sft_alpha`` (the
+    SFT-on-tool-body overlay), the masked prompt-side tool body tokens get
+    their advantage overwritten to ``sft_alpha`` and are flipped into
+    ``loss_mask=True``. ``default_loss_fn`` then bypasses the IS-ratio
+    and KL on SFT positions, leaving ``alpha × log p_θ`` as the SFT
+    policy-gradient contribution — pure cross-entropy in the SFT
+    direction.
     """
     input_ids = training_example.prompt_ids + training_example.completion_ids
-    loss_mask = training_example.prompt_mask + training_example.completion_mask
+    loss_mask = list(training_example.prompt_mask) + list(training_example.completion_mask)
     inference_logprobs = [0.0] * len(training_example.prompt_ids) + training_example.completion_logprobs
     advantages = [training_example.advantage] * len(input_ids)
     reward = training_example.reward if training_example.reward is not None else float("nan")
@@ -64,6 +72,18 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     mm_token_type_ids = training_example.mm_token_type_ids
     assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
     env_names = [training_example.env_name] * len(input_ids)
+    sft_mask = list(training_example.sft_mask) if training_example.sft_mask is not None else None
+
+    # SFT-on-tool-body overlay: set advantage = alpha on SFT-mask positions
+    # and flip them into the loss mask. ``default_loss_fn`` then bypasses
+    # IS-ratio and KL on those positions, leaving alpha × log p_θ as the
+    # SFT contribution.
+    if sft_mask is not None and training_example.sft_alpha is not None:
+        alpha = training_example.sft_alpha
+        for k in range(len(input_ids)):
+            if sft_mask[k]:
+                advantages[k] = alpha
+                loss_mask[k] = True
 
     # Per-token temperatures: prompt tokens use first completion temp (masked out anyway)
     # Default to 1.0 if completion is empty (e.g., model generated only tool calls with no text)
@@ -92,6 +112,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:seq_len]
         env_names = env_names[:seq_len]
+        if sft_mask is not None:
+            sft_mask = sft_mask[:seq_len]
 
     assert (
         len(input_ids)
@@ -104,6 +126,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     ), (
         f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}, rewards: {len(rewards)}, temperatures: {len(temperatures)}"
     )
+    if sft_mask is not None:
+        assert len(sft_mask) == len(input_ids), f"sft_mask: {len(sft_mask)}, input_ids: {len(input_ids)}"
     if teacher_logprobs is not None:
         assert len(teacher_logprobs) == len(input_ids), f"teacher_logprobs: {len(teacher_logprobs)}"
 
@@ -133,6 +157,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         env_names=env_names,
         mm_kwargs=training_example.mm_kwargs,
         training_mode=training_example.training_mode,
+        sft_mask=sft_mask,
     )
 
 
@@ -177,6 +202,15 @@ def packed_samples_into_micro_bs(
                 and bin_content.training_mode == sample.training_mode
             ):
                 existing_len = len(bin_content.input_ids)
+                # NOTE: extend ``sft_mask`` BEFORE ``input_ids`` so the all-False
+                # backfill (when this is the first SFT sample in the bin) is sized
+                # off ``existing_len`` — the bin's pre-extension length.
+                if sample.sft_mask is not None:
+                    if bin_content.sft_mask is None:
+                        bin_content.sft_mask = [False] * existing_len
+                    bin_content.sft_mask.extend(sample.sft_mask)
+                elif bin_content.sft_mask is not None:
+                    bin_content.sft_mask.extend([False] * len(sample.input_ids))
                 bin_content.input_ids.extend(sample.input_ids)
                 bin_content.loss_mask.extend(sample.loss_mask)
                 bin_content.advantages.extend(sample.advantages)
@@ -254,6 +288,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
         micro_batch.mm_token_type_ids.extend([0] * padding_size)
     if micro_batch.routed_experts is not None:
         _pad_routed_experts(micro_batch, padding_size)
+    if micro_batch.sft_mask is not None:
+        micro_batch.sft_mask.extend([False] * padding_size)
     micro_batch.env_names.extend([""] * padding_size)
 
     return micro_batch
@@ -264,6 +300,8 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy = copy.deepcopy(source)
     dummy.advantages = [0.0] * len(dummy.input_ids)
     dummy.loss_mask = [False] * len(dummy.input_ids)
+    if dummy.sft_mask is not None:
+        dummy.sft_mask = [False] * len(dummy.input_ids)
     return dummy
 
 

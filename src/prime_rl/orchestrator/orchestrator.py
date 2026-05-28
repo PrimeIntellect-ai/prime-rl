@@ -487,12 +487,17 @@ async def orchestrate(config: OrchestratorConfig):
             )
 
         # Process rollouts in parallel
-        results = await asyncio.gather(
-            *(
-                asyncio.to_thread(interleave_rollout, r, mm_token_type_ids_mapping=mm_token_type_ids_mapping)
-                for r in train_rollouts
+        def process_rollout(rollout: vf.RolloutOutput) -> list[TrainingSample] | None:
+            # Resolve per-env SFT config so interleave_rollout can build the
+            # per-token SFT-on-tool-body mask in-line.
+            env_sft_config = train_envs.get(rollout["env_name"]).config.sft
+            return interleave_rollout(
+                rollout,
+                mm_token_type_ids_mapping=mm_token_type_ids_mapping,
+                sft_config=env_sft_config,
             )
-        )
+
+        results = await asyncio.gather(*(asyncio.to_thread(process_rollout, r) for r in train_rollouts))
 
         # Collect results and assign advantages. Metrics are computed over all
         # rollouts; only non-filtered samples are sent to the trainer.
@@ -508,11 +513,18 @@ async def orchestrate(config: OrchestratorConfig):
             if samples is None:
                 samples = []
             rollout_samples_per_rollout.append(len(samples))
+            env_sft_config = train_envs.get(rollout["env_name"]).config.sft
             for sample in samples:
                 sample.advantage = rollout["advantage"]
                 sample.reward = rollout["reward"]
                 sample.env_name = rollout["env_name"]
                 sample.training_mode = config.training_mode
+                # Per-env SFT-on-tool-body advantage. ``sft_mask`` was populated
+                # by interleave_rollout when the env opted in; we attach the
+                # alpha here so prepare_sample sets advantage = alpha on those
+                # positions and the trainer's default_loss_fn picks it up.
+                if env_sft_config is not None and env_sft_config.on_tool_outputs and sample.sft_mask is not None:
+                    sample.sft_alpha = env_sft_config.alpha
                 sample_decode_tokens = sum(sample.completion_mask)
                 sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens
                 rollout_decode_tokens += sample_decode_tokens
