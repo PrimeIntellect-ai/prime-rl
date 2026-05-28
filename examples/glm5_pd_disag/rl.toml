@@ -81,11 +81,6 @@ args = { dataset_name="PrimeIntellect/SWE-Bench-Verified-Quick", max_turns = 200
 type = "gibberish"
 enforce = true
 
-[orchestrator.buffer]
-easy_threshold = 1.0
-hard_threshold = 0.0
-seed = 42
-
 [inference]
 enable_expert_parallel = true
 # we need <0.85 bc glm5 layers are too large for 0.85

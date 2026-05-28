@@ -121,7 +121,6 @@ class EvalSink:
             n_rollouts=n_total,
             n_cancelled=n_cancelled,
             n_errored=n_errored,
-            valid_rate=float(len(valid) / max(n_total, 1)),
         )
 
         if valid:
@@ -136,7 +135,10 @@ class EvalSink:
             metrics.completion_len_min = float(min(lens))
             metrics.truncation_rate = float(sum(1 for r in valid if r.is_truncated) / len(valid))
             metrics.no_response_rate = float(sum(1 for r in valid if not r.raw.get("completion")) / len(valid))
-            metrics.num_turns_mean = float(sum(len(r.raw.get("trajectory") or []) for r in valid) / len(valid))
+            num_turns = [len(r.raw.get("trajectory") or []) for r in valid]
+            metrics.num_turns_mean = float(sum(num_turns) / len(num_turns))
+            metrics.num_turns_min = float(min(num_turns))
+            metrics.num_turns_max = float(max(num_turns))
 
             # pass@k: errored attempts don't count toward k tries.
             by_example: dict[int | str, list[float]] = {}

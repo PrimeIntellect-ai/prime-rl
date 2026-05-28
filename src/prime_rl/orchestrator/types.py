@@ -159,7 +159,6 @@ class EvalBatchMetrics:
     n_rollouts: int
     n_cancelled: int
     n_errored: int
-    valid_rate: float
     n_examples: int = 0
     group_size: int = 1
     reward_mean: float = 0.0
@@ -169,26 +168,27 @@ class EvalBatchMetrics:
     truncation_rate: float = 0.0
     no_response_rate: float = 0.0
     num_turns_mean: float = 0.0
+    num_turns_min: float = 0.0
+    num_turns_max: float = 0.0
     pass_at_k: dict[str, float] = field(default_factory=dict)
 
     def to_wandb_dict(self, *, env_name: str, step: int) -> dict[str, float]:
         prefix = f"eval/{env_name}"
         out: dict[str, float] = {
             "step": float(step),
-            f"{prefix}/n_rollouts": float(self.n_rollouts),
             f"{prefix}/cancelled_count": float(self.n_cancelled),
             f"{prefix}/errored_count": float(self.n_errored),
-            f"{prefix}/valid_rate": self.valid_rate,
         }
         if self.n_examples > 0:
-            out[f"{prefix}/n_examples"] = float(self.n_examples)
-            out[f"{prefix}/reward/mean"] = self.reward_mean
+            out[f"{prefix}/avg@{self.group_size}"] = self.reward_mean
             out[f"{prefix}/completion_len/mean"] = self.completion_len_mean
             out[f"{prefix}/completion_len/max"] = self.completion_len_max
             out[f"{prefix}/completion_len/min"] = self.completion_len_min
             out[f"{prefix}/is_truncated/mean"] = self.truncation_rate
             out[f"{prefix}/no_response/mean"] = self.no_response_rate
             out[f"{prefix}/num_turns/mean"] = self.num_turns_mean
+            out[f"{prefix}/num_turns/min"] = self.num_turns_min
+            out[f"{prefix}/num_turns/max"] = self.num_turns_max
             for k, v in self.pass_at_k.items():
                 out[f"{prefix}/{k}"] = v
         return out
