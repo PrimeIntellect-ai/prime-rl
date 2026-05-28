@@ -13,10 +13,9 @@ from __future__ import annotations
 from typing import Any
 
 import pandas as pd
-import verifiers as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.types import Progress, TrainBatchMetrics
+from prime_rl.orchestrator.types import Progress, TrainBatchMetrics, TrainRollout
 from prime_rl.orchestrator.vf_utils import get_seq_len
 
 
@@ -28,7 +27,7 @@ class MetricsBuilder:
         self,
         *,
         step: int,
-        rollouts: list[vf.RolloutOutput],
+        rollouts: list[TrainRollout],
         metrics: TrainBatchMetrics,
         progress: Progress,
         step_time: float,
@@ -41,26 +40,26 @@ class MetricsBuilder:
         """Builds the per-step W&B dict. Stable metric names so
         existing dashboards / alerts keep working."""
         num_rollouts = len(rollouts)
-        num_unique_examples = len({(r["env_name"], r["example_id"]) for r in rollouts})
-        num_tokens = sum(get_seq_len(r) for r in rollouts)
+        num_unique_examples = len({(r.env_name, r.example_id) for r in rollouts})
+        num_tokens = sum(get_seq_len(r.raw) for r in rollouts)
 
         results_df = pd.DataFrame(
             {
-                "example_id": [r["example_id"] for r in rollouts],
-                "env_name": [r["env_name"] for r in rollouts],
-                "reward": [r["reward"] for r in rollouts],
-                "is_truncated": [r["is_truncated"] for r in rollouts],
-                "is_filtered": [r.get("is_filtered", False) for r in rollouts],
-                "stop_condition": [r.get("stop_condition") for r in rollouts],
-                "seq_len": [get_seq_len(r) for r in rollouts],
+                "example_id": [r.example_id for r in rollouts],
+                "env_name": [r.env_name for r in rollouts],
+                "reward": [r.reward for r in rollouts],
+                "is_truncated": [r.is_truncated for r in rollouts],
+                "is_filtered": [r.is_filtered for r in rollouts],
+                "stop_condition": [r.raw.get("stop_condition") for r in rollouts],
+                "seq_len": [get_seq_len(r.raw) for r in rollouts],
                 "prefill_len": metrics.rollout_prefill_lens,
                 "decode_len": metrics.rollout_decode_lens,
                 "samples_per_rollout": metrics.samples_per_rollout,
-                "num_turns": [len(r["trajectory"]) for r in rollouts],
+                "num_turns": [len(r.raw["trajectory"]) for r in rollouts],
             }
         )
-        metrics_df = pd.DataFrame([(r.get("metrics") or {}) for r in rollouts])
-        filter_df = pd.DataFrame([(r.get("filters") or {}) for r in rollouts])
+        metrics_df = pd.DataFrame([(r.raw.get("metrics") or {}) for r in rollouts])
+        filter_df = pd.DataFrame([r.filter_results for r in rollouts])
         timing_df = self.timing_df(rollouts)
 
         def compute_solve_rates(df):
@@ -184,17 +183,17 @@ class MetricsBuilder:
         return to_log
 
     @staticmethod
-    def timing_df(rollouts: list[vf.RolloutOutput]) -> pd.DataFrame:
+    def timing_df(rollouts: list[TrainRollout]) -> pd.DataFrame:
         return pd.DataFrame(
             [
                 {
-                    "total": r["timing"]["total"],
-                    "setup": r["timing"]["setup"]["duration"],
-                    "generation": r["timing"]["generation"]["duration"],
-                    "model": r["timing"]["model"]["duration"],
-                    "env": r["timing"]["env"]["duration"],
-                    "scoring": r["timing"]["scoring"]["duration"],
-                    "overhead": r["timing"]["overhead"],
+                    "total": r.raw["timing"]["total"],
+                    "setup": r.raw["timing"]["setup"]["duration"],
+                    "generation": r.raw["timing"]["generation"]["duration"],
+                    "model": r.raw["timing"]["model"]["duration"],
+                    "env": r.raw["timing"]["env"]["duration"],
+                    "scoring": r.raw["timing"]["scoring"]["duration"],
+                    "overhead": r.raw["timing"]["overhead"],
                 }
                 for r in rollouts
             ]

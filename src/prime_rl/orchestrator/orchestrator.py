@@ -6,7 +6,7 @@ shared state (policy, progress, ckpt, monitor) and drives the pipeline loop.
 Components are deliberately single-purpose and only know about the deps they
 need:
 
-- ``RolloutDispatcher`` schedules rollouts and emits ``Rollout``\\ s on its queue.
+- ``RolloutDispatcher`` schedules rollouts and emits ``TrainRollout`` / ``EvalRollout`` on its queue.
 - ``TrainSink`` ingests train rollouts (tokenize → advantages + pre-filter →
   post-filter), exposes ``pop_batch`` returning a ``TrainBatch``.
 - ``EvalSink`` ingests eval rollouts, exposes ``add`` returning a finalized
@@ -62,7 +62,15 @@ from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.trajectories import offload_images_to_disk
-from prime_rl.orchestrator.types import EvalBatch, Policy, Progress, Rollout, TrainBatch
+from prime_rl.orchestrator.types import (
+    EvalBatch,
+    EvalRollout,
+    FinishedRollout,
+    Policy,
+    Progress,
+    TrainBatch,
+    TrainRollout,
+)
 from prime_rl.orchestrator.utils import compute_teacher_logprobs, get_weight_dir, set_default_executor
 from prime_rl.orchestrator.vf_utils import get_seq_len, intercept_vf_logging, save_rollouts
 from prime_rl.orchestrator.watcher import WeightWatcher
@@ -492,7 +500,7 @@ class Orchestrator:
     # ── pipeline ──────────────────────────────────────────────────────────
 
     async def main_loop(self) -> None:
-        """The pipeline driver. Consumes ``Rollout``\\ s from the dispatcher
+        """The pipeline driver. Consumes ``FinishedRollout``\\ s from the dispatcher
         (the atomic unit) and routes train vs eval to their respective sinks.
 
         Both sinks own their own batch-boundary detection by counting
@@ -512,17 +520,18 @@ class Orchestrator:
                 break
 
             try:
-                rollout: Rollout = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
+                rollout: FinishedRollout = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 continue
 
-            if rollout.kind == "eval":
+            if isinstance(rollout, EvalRollout):
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
                 eval_batch = self.eval_sink.add(rollout)
                 if eval_batch is not None:
                     self.finalize_eval_batch(eval_batch)
                 continue
 
+            assert isinstance(rollout, TrainRollout)
             train_batch = await self.train_sink.add(rollout)
             # Skip training when draining — any leftover train rollouts that
             # still complete after the final step just get accumulated and
@@ -576,15 +585,18 @@ class Orchestrator:
                 f"({batch.metrics.n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
             )
 
-        # Persist rollouts to disk (cheap, background thread).
+        # Persist rollouts to disk (cheap, background thread). Materialize
+        # to dict at the I/O boundary so prime-rl metadata travels with the
+        # raw vf payload.
+        rollout_dicts = [r.to_dict() for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(config.output_dir), step)
         await asyncio.to_thread(
-            save_rollouts, batch.rollouts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
+            save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
         )
 
         # Offload base64 image bytes to disk for memory hygiene (no-op for text-only).
         offload_start = time.perf_counter()
-        num_offloaded = offload_images_to_disk(batch.rollouts, config.output_dir)
+        num_offloaded = offload_images_to_disk([r.raw for r in batch.rollouts], config.output_dir)
         if num_offloaded:
             get_logger().info(
                 f"Offloaded {num_offloaded} unique images to disk in {format_time(time.perf_counter() - offload_start)}"
@@ -625,11 +637,11 @@ class Orchestrator:
             pre_filter_dropped_by_name=dict(self.train_sink.pre_filter_dropped_by_name),
         )
         self.monitor.log(metrics, step=step)
-        self.monitor.log_samples(batch.rollouts, step=step)
+        self.monitor.log_samples(rollout_dicts, step=step)
         self.monitor.log_distributions(
             distributions={
-                "rewards": [r["reward"] for r in batch.rollouts],
-                "advantages": [r["advantage"] for r in batch.rollouts],
+                "rewards": [r.reward for r in batch.rollouts],
+                "advantages": [r.advantage for r in batch.rollouts if r.advantage is not None],
             },
             step=step,
         )
@@ -647,8 +659,8 @@ class Orchestrator:
 
         # Update progress totals.
         num_rollouts = len(batch.rollouts)
-        num_unique_examples = len({(r["env_name"], r["example_id"]) for r in batch.rollouts})
-        num_tokens = sum(get_seq_len(r) for r in batch.rollouts)
+        num_unique_examples = len({(r.env_name, r.example_id) for r in batch.rollouts})
+        num_tokens = sum(get_seq_len(r.raw) for r in batch.rollouts)
         self.progress.total_tokens += num_tokens
         self.progress.total_samples += num_rollouts
         self.progress.total_problems += num_unique_examples
@@ -783,10 +795,10 @@ class Orchestrator:
         n_trainable = batch.metrics.n_trainable
         error_rate = (n_errors_total / n_arrivals_total) if n_arrivals_total else 0.0
         trainable_rate = (n_trainable / n_survivors) if n_survivors else 0.0
-        reward_mean = sum(r["reward"] for r in batch.rollouts) / max(n_survivors, 1)
-        max_off_policy = max((int(r.get("_off_policy_steps", 0)) for r in batch.rollouts), default=0)
-        turns_mean = sum(len(r.get("trajectory") or []) for r in batch.rollouts) / max(n_survivors, 1)
-        truncation_rate = sum(1 for r in batch.rollouts if r.get("is_truncated")) / max(n_survivors, 1)
+        reward_mean = sum(r.reward for r in batch.rollouts) / max(n_survivors, 1)
+        max_off_policy = max((r.off_policy_steps for r in batch.rollouts), default=0)
+        turns_mean = sum(len(r.raw.get("trajectory") or []) for r in batch.rollouts) / max(n_survivors, 1)
+        truncation_rate = sum(1 for r in batch.rollouts if r.is_truncated) / max(n_survivors, 1)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {reward_mean:.4f} | "
@@ -802,23 +814,23 @@ class Orchestrator:
         # so the ``╰─`` indented content visually aligns under the
         # headline (two tabs ≈ 16 cols, matching the ``HH:MM:SS LEVEL ``
         # log prefix width).
-        env_names = sorted(set(batch.metrics.arrivals_by_env) | {r["env_name"] for r in batch.rollouts})
+        env_names = sorted(set(batch.metrics.arrivals_by_env) | {r.env_name for r in batch.rollouts})
         name_width = max(len(n) for n in env_names) if env_names else 0
         lines = [head]
         for env_name in env_names:
-            env_rollouts = [r for r in batch.rollouts if r["env_name"] == env_name]
+            env_rollouts = [r for r in batch.rollouts if r.env_name == env_name]
             n_env_arrivals = batch.metrics.arrivals_by_env.get(env_name, 0)
             n_env_errors = batch.metrics.errors_by_env.get(env_name, 0)
             ratio = (n_env_arrivals / n_arrivals_total) if n_arrivals_total else 0.0
             env_error_rate = (n_env_errors / n_env_arrivals) if n_env_arrivals else 0.0
-            env_reward = (sum(r["reward"] for r in env_rollouts) / len(env_rollouts)) if env_rollouts else 0.0
-            env_max_off_policy = max((int(r.get("_off_policy_steps", 0)) for r in env_rollouts), default=0)
+            env_reward = (sum(r.reward for r in env_rollouts) / len(env_rollouts)) if env_rollouts else 0.0
+            env_max_off_policy = max((r.off_policy_steps for r in env_rollouts), default=0)
             env_turns = (
-                sum(len(r.get("trajectory") or []) for r in env_rollouts) / len(env_rollouts) if env_rollouts else 0.0
+                sum(len(r.raw.get("trajectory") or []) for r in env_rollouts) / len(env_rollouts)
+                if env_rollouts
+                else 0.0
             )
-            env_truncation = (
-                sum(1 for r in env_rollouts if r.get("is_truncated")) / len(env_rollouts) if env_rollouts else 0.0
-            )
+            env_truncation = sum(1 for r in env_rollouts if r.is_truncated) / len(env_rollouts) if env_rollouts else 0.0
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_reward:.4f} | "
                 f"Turns {env_turns:.1f} | Max Off-Policy {env_max_off_policy} | "
@@ -835,13 +847,14 @@ class Orchestrator:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no surviving rollouts, skipping log")
             return
 
+        rollout_dicts = [r.to_dict() for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(self.config.output_dir), batch.step)
         save_rollouts(
-            batch.rollouts,
+            rollout_dicts,
             step_path / f"eval_rollouts_{batch.env_name}.jsonl",
             exclude_keys={"trajectory"},
         )
-        self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
+        self.monitor.log_eval_samples(rollout_dicts, env_name=batch.env_name, step=batch.step)
         self.monitor.log(batch.metrics.to_wandb_dict(env_name=batch.env_name, step=batch.step), step=batch.step)
 
         n_total = batch.metrics.n_rollouts
@@ -850,7 +863,7 @@ class Orchestrator:
         valid_rate = (n_valid / n_total) if n_total else 0.0
         # ``Max Off-Policy`` here is the worst-case lag across the eval
         # cohort — how many weight updates the eval epoch straddled.
-        max_off_policy = max((int(r.get("_off_policy_steps", 0)) for r in batch.rollouts), default=0)
+        max_off_policy = max((r.off_policy_steps for r in batch.rollouts), default=0)
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
 

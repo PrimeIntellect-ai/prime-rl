@@ -6,14 +6,17 @@ When enforce=True, detected rollouts are skipped entirely during training and
 are not sent to the trainer. Reward is kept as-is for baseline calculation.
 """
 
+from __future__ import annotations
+
 import math
 from dataclasses import dataclass
-from typing import Protocol
-
-import verifiers as vf
+from typing import TYPE_CHECKING, Protocol
 
 from prime_rl.configs.orchestrator import FilterConfig
 from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.types import TrainRollout
 
 
 @dataclass
@@ -26,7 +29,7 @@ class RolloutFilter(Protocol):
     name: str
     enforce: bool
 
-    def check(self, rollout: vf.RolloutOutput) -> FilterResult: ...
+    def check(self, rollout: "TrainRollout") -> FilterResult: ...
 
 
 @dataclass
@@ -46,9 +49,9 @@ class GibberishFilter:
     logprob_threshold: float
     enforce: bool = False
 
-    def check(self, rollout: vf.RolloutOutput) -> FilterResult:
+    def check(self, rollout: "TrainRollout") -> FilterResult:
         global_idx = 0
-        for step in rollout["trajectory"]:
+        for step in rollout.raw["trajectory"]:
             tokens = step["tokens"]
             if tokens is None:
                 continue
@@ -76,10 +79,10 @@ class RepetitionFilter:
     logprob_threshold: float
     enforce: bool = False
 
-    def check(self, rollout: vf.RolloutOutput) -> FilterResult:
+    def check(self, rollout: "TrainRollout") -> FilterResult:
         consecutive = 0
         global_idx = 0
-        for step in rollout["trajectory"]:
+        for step in rollout.raw["trajectory"]:
             tokens = step["tokens"]
             if tokens is None:
                 continue
@@ -96,18 +99,14 @@ class RepetitionFilter:
 
 @dataclass
 class ZeroAdvantageFilter:
-    """Flags rollouts with zero advantage.
-
-    This filter is applied after advantages are computed and checks if the
-    rollout's advantage field is zero.
-    """
+    """Flags rollouts whose computed advantage is zero (e.g. all rollouts in a
+    GRPO group earned the same reward, so the centered advantage collapses)."""
 
     name: str
     enforce: bool = True
 
-    def check(self, rollout: vf.RolloutOutput) -> FilterResult:
-        advantage = rollout.get("advantage")
-        if advantage is not None and advantage == 0.0:
+    def check(self, rollout: "TrainRollout") -> FilterResult:
+        if rollout.advantage is not None and rollout.advantage == 0.0:
             return FilterResult(detected=True)
         return FilterResult(detected=False)
 
@@ -148,18 +147,18 @@ def setup_filters(configs: list[FilterConfig], vocab_size: int, *, kind: str) ->
     return filters
 
 
-def apply_filters(filters: list[RolloutFilter], rollouts: list[vf.RolloutOutput]) -> None:
-    """Flag rollouts in-place with per-filter detection and drop decision.
+def apply_filters(filters: list[RolloutFilter], rollouts: list["TrainRollout"]) -> None:  # noqa: F821 (forward ref)
+    """Flag ``TrainRollout``\\ s in place with per-filter detection + drop decision.
 
-    Each rollout gets a `filters` dict with per-filter detection booleans and
-    an `is_filtered` bool that is True iff an enforcing filter detected it.
-    First matching filter wins per rollout (no double-counting). Reward and
-    trajectory tokens are left untouched so the rollout can still contribute
-    to baseline calculations and metric aggregation.
+    Each rollout's ``filter_results`` dict records per-filter detection bools;
+    ``is_filtered`` is True iff an enforcing filter detected it. First matching
+    filter wins per rollout (no double-counting). Reward and trajectory tokens
+    are left untouched so the rollout can still contribute to baseline
+    calculations and metric aggregation.
     """
     for rollout in rollouts:
-        rollout["filters"] = {f.name: False for f in filters}
-        rollout["is_filtered"] = False
+        rollout.filter_results = {f.name: False for f in filters}
+        rollout.is_filtered = False
 
     if not filters:
         return
@@ -168,7 +167,7 @@ def apply_filters(filters: list[RolloutFilter], rollouts: list[vf.RolloutOutput]
         for filt in filters:
             result = filt.check(rollout)
             if result.detected:
-                rollout["filters"][filt.name] = True
+                rollout.filter_results[filt.name] = True
                 if filt.enforce:
-                    rollout["is_filtered"] = True
+                    rollout.is_filtered = True
                 break

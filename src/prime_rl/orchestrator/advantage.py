@@ -1,11 +1,16 @@
+from __future__ import annotations
+
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import torch
 import verifiers as vf
 from jaxtyping import Float
 from torch import Tensor
+
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.types import TrainRollout
 
 from prime_rl.configs.orchestrator import (
     AdvantageConfig,
@@ -125,27 +130,29 @@ def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
 
 
 def compute_advantages(
-    rollouts: list[vf.RolloutOutput],
+    rollouts: list["TrainRollout"],  # noqa: F821 (forward ref, imported lazily below)
     advantage_config: AdvantageConfig | None,
 ) -> None:
     """Computes advantages from rollouts, grouped by (env_name, example_id), and
-    stores them in-place on the rollouts.
+    stores them on ``rollout.advantage``.
 
-    `advantage_fn` is called once per group, so groups may have varying sizes
-    (partial-group training drops failed rollouts rather than rescheduling them).
+    ``advantage_fn`` is called once per group with the raw ``vf.RolloutOutput``\\ s
+    (so custom advantage functions keep the same input shape), so groups may
+    have varying sizes (partial-group training drops failed rollouts rather
+    than rescheduling them).
     """
     if not advantage_config:
         for rollout in rollouts:
-            rollout["advantage"] = rollout["reward"]
+            rollout.advantage = rollout.reward
         return
 
     advantage_fn = setup_advantage_fn(advantage_config)
 
-    groups_by_example: dict[tuple[str, int], list[vf.RolloutOutput]] = defaultdict(list)
+    groups_by_example: dict[tuple[str, int | str], list["TrainRollout"]] = defaultdict(list)  # noqa: F821
     for rollout in rollouts:
-        groups_by_example[(rollout["env_name"], rollout["example_id"])].append(rollout)
+        groups_by_example[(rollout.env_name, rollout.example_id)].append(rollout)
 
     for group in groups_by_example.values():
-        result = advantage_fn(AdvantageInputs(rollouts=group))
+        result = advantage_fn(AdvantageInputs(rollouts=[r.raw for r in group]))
         for rollout, advantage in zip(group, result.advantages):
-            rollout["advantage"] = advantage
+            rollout.advantage = advantage

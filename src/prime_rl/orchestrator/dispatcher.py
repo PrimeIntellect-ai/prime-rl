@@ -10,9 +10,10 @@ Owns:
 - A shared ``AsyncLimiter(config.tasks_per_minute, 60)`` if rate limiting is on.
 - The dispatch loop: pick "next work" based on ``self.mode`` and fill capacity.
 - Emit-everything invariant: every dispatched rollout (one permit) eventually
-  reaches ``out_q`` exactly once as a ``Rollout`` — successful, env-errored,
-  empty-trajectory, task-exception, or off-policy-cancelled. Failures carry
-  ``raw["error"]`` set; the sinks decide drop / partial-train policy.
+  reaches ``out_q`` exactly once as a ``TrainRollout`` / ``EvalRollout`` —
+  successful, env-errored, empty-trajectory, task-exception, or off-policy-
+  cancelled. Failures carry ``raw["error"]`` set; the sinks decide drop /
+  partial-train policy.
 - Off-policy cancellation: on each ``on_new_version`` from the watcher, train
   rollouts whose ``off_policy_steps`` exceed ``max_off_policy_steps`` get
   cancelled, and a synthetic "Cancelled" rollout is emitted in their place so
@@ -40,7 +41,15 @@ from aiolimiter import AsyncLimiter
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.train_source import TrainSource
-from prime_rl.orchestrator.types import GroupState, Kind, Policy, Rollout, RolloutMeta
+from prime_rl.orchestrator.types import (
+    EvalRollout,
+    FinishedRollout,
+    GroupState,
+    InflightRollout,
+    Kind,
+    Policy,
+    TrainRollout,
+)
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.client import InferencePool, client_identity
 from prime_rl.utils.logger import get_logger
@@ -173,11 +182,11 @@ class RolloutDispatcher:
 
         # In-flight tracking. Group IDs are UUIDs so dispatcher restarts /
         # resumed runs don't accidentally collide on a stale counter.
-        self.inflight: dict[asyncio.Task, RolloutMeta] = {}
+        self.inflight: dict[asyncio.Task, InflightRollout] = {}
         self.groups: dict[uuid.UUID, GroupState] = {}
 
         # Output queue. Bounded so the dispatcher backpressures on a slow sink.
-        self.out_q: asyncio.Queue[Rollout] = asyncio.Queue(maxsize=max(8, self.max_inflight))
+        self.out_q: asyncio.Queue[FinishedRollout] = asyncio.Queue(maxsize=max(8, self.max_inflight))
 
         # Scheduling priority.
         self.mode: DispatcherMode = DispatcherMode.PREFER_TRAIN
@@ -501,7 +510,7 @@ class RolloutDispatcher:
                 )
             )
 
-        self.inflight[task] = RolloutMeta(
+        self.inflight[task] = InflightRollout(
             kind=group.kind,
             env_name=group.env_name,
             group_id=group_id,
@@ -598,41 +607,43 @@ class RolloutDispatcher:
             f"rollouts={len(rollouts)} errored={n_errored}"
         )
 
-    async def emit_rollout(self, meta: RolloutMeta, group: GroupState | None, raw: vf.RolloutOutput) -> None:
-        """Put one ``Rollout`` on ``out_q`` and bump per-group emit count.
+    async def emit_rollout(self, meta: InflightRollout, group: GroupState | None, raw: vf.RolloutOutput) -> None:
+        """Build a ``TrainRollout`` / ``EvalRollout`` for one finished rollout
+        and put it on ``out_q``.
 
         Pops the group from ``self.groups`` once every member has been
         emitted, so the dispatcher's group bookkeeping stays bounded.
-        Stamps ``env_name`` / ``example_id`` / ``_eval_step`` on ``raw`` so
-        the sink can read them off without duplicating fields on the
-        ``Rollout`` dataclass. ``example_id`` is guaranteed by verifiers
-        on every dataset row + ``RolloutOutput``; we stamp it from the
-        group's example so synthetic error/cancellation rollouts carry it
-        too (a no-op overwrite for real rollouts).
+        Metadata (env_name, example_id, policy_version, off_policy_steps,
+        eval_step) lives on the dataclass; ``raw`` is the env's untouched
+        ``vf.RolloutOutput`` (or a synthetic error marker for cancellations
+        / task exceptions).
         """
         eval_step = meta.eval_step
         policy_version = meta.policy_version
+        example_id = raw.get("example_id")
         if group is not None:
             eval_step = group.eval_step
             policy_version = group.policy_version_at_start
-            raw["example_id"] = group.example["example_id"]
+            example_id = group.example["example_id"]
             group.emitted += 1
             if group.emitted >= group.target_rollouts:
                 self.groups.pop(meta.group_id, None)
 
-        raw["env_name"] = meta.env_name
-        raw["_off_policy_steps"] = meta.off_policy_steps
-        if eval_step is not None:
-            raw["_eval_step"] = eval_step
-
-        await self.out_q.put(
-            Rollout(
-                kind=meta.kind,
-                group_id=meta.group_id,
-                raw=raw,
-                policy_version=policy_version,
-            )
+        common = dict(
+            raw=raw,
+            env_name=meta.env_name,
+            example_id=example_id if example_id is not None else -1,
+            group_id=meta.group_id,
+            policy_version=policy_version,
+            off_policy_steps=meta.off_policy_steps,
         )
+        rollout: FinishedRollout
+        if meta.kind == "train":
+            rollout = TrainRollout(**common)
+        else:
+            assert eval_step is not None, "eval rollout missing eval_step"
+            rollout = EvalRollout(**common, eval_step=eval_step)
+        await self.out_q.put(rollout)
 
     @staticmethod
     def error_rollout_output(*, error_type: str, error_repr: str) -> vf.RolloutOutput:
@@ -668,7 +679,7 @@ class RolloutDispatcher:
         group = self.groups.pop(group_id, None)
         tasks_to_cancel: list[asyncio.Task] = []
         inflight_cancelled = 0
-        last_meta: RolloutMeta | None = None
+        last_meta: InflightRollout | None = None
         for task, meta in list(self.inflight.items()):
             if meta.group_id != group_id:
                 continue

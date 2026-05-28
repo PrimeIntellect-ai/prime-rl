@@ -10,8 +10,12 @@ module):
 - ``Policy``: the single mutable view of the current trainer weights.
 - ``Progress``: persistent counters owned by the checkpoint manager.
 - ``Kind``: dispatch primitive (the train/eval discriminator).
-- ``Rollout`` / ``RolloutMeta`` / ``GroupState``: the dispatcher's in-flight
-  bookkeeping + the atomic unit flowing on its output queue.
+- ``InflightRollout`` / ``GroupState``: the dispatcher's per-task scheduling
+  state.
+- ``FinishedRollout`` → ``TrainRollout`` / ``EvalRollout``: the atomic units
+  flowing on the dispatcher's output queue. Each wraps the raw
+  ``vf.RolloutOutput`` (env-produced data; never mutated by prime-rl) +
+  prime-rl bookkeeping on typed fields.
 - ``TrainBatch`` / ``EvalBatch`` and their ``TrainBatchMetrics`` /
   ``EvalBatchMetrics``: per-batch payloads the sinks return to the
   orchestrator.
@@ -68,44 +72,13 @@ Kind = Literal["train", "eval"]
 
 
 @dataclass
-class Rollout:
-    """The atomic unit emitted by the dispatcher — one completed rollout.
+class InflightRollout:
+    """Per-task scheduling state held by the dispatcher while a rollout (or
+    a group of rollouts, for group-scoring envs) is being generated.
 
-    Invariant — every rollout the dispatcher acquires an inflight permit for
-    eventually arrives at the corresponding sink exactly once, success or
-    failure. Group/batch boundaries are sink-derived by counting arrivals up
-    to ``group_size`` (and ``num_examples * group_size`` for eval epochs);
-    the dispatcher does not stamp boundary flags because "the last rollout
-    in a group" is whichever straggler happens to finish last — not knowable
-    at dispatch time.
-
-    Failures (env-reported errors, empty trajectories, task exceptions,
-    off-policy cancellations) are carried via ``raw["error"]`` rather than
-    silently dropped. Sinks check that field to decide drop / partial-train.
-
-    ``group_id`` is the dispatcher's UUID for the dispatched group this
-    rollout belongs to. The sink uses it as the ``pending_groups`` key —
-    ``(env_name, example_id)`` isn't unique because the same example can
-    be re-sampled while an earlier group is still in flight, especially on
-    small datasets. ``env_name`` / ``example_id`` are still available on
-    ``raw["env_name"]`` and ``raw["example_id"]`` for logging / aggregation.
-
-    ``policy_version`` is the snapshot at dispatch time; the train sink
-    uses it for per-rollout off-policy metrics. For eval rollouts, the
-    dispatcher also stamps ``raw["_eval_step"]`` with the policy version at
-    which the eval epoch was triggered (used by the eval sink to bucket
-    groups into epochs).
+    One entry per in-flight ``run_rollout`` / ``run_group`` task.
+    Translates into one or more ``FinishedRollout``\\ s on completion.
     """
-
-    kind: Kind
-    group_id: uuid.UUID
-    raw: vf.RolloutOutput
-    policy_version: int
-
-
-@dataclass
-class RolloutMeta:
-    """Per-task bookkeeping. One entry per in-flight ``run_rollout`` / ``run_group``."""
 
     kind: Kind
     env_name: str
@@ -113,7 +86,7 @@ class RolloutMeta:
     policy_version: int
     rollout_count: int  # number of inflight permits this task holds
     client_config: vf.ClientConfig | None = None
-    off_policy_steps: int = 0  # incremented on every ``on_new_version``; train only
+    off_policy_steps: int = 0  # incremented on every ``on_new_version``
     eval_step: int | None = None
 
 
@@ -141,6 +114,94 @@ class GroupState:
     eval_step: int | None = None
     pinned_client: vf.ClientConfig | None = None
     policy_version_at_start: int = 0
+
+
+# ── finished rollouts (what the dispatcher emits) ─────────────────────────
+
+
+@dataclass
+class FinishedRollout:
+    """A completed rollout the sink receives. ``raw`` is the env's untouched
+    ``vf.RolloutOutput``; prime-rl bookkeeping lives on typed fields directly
+    on this dataclass (not stamped into ``raw``). Discriminate ``train`` vs
+    ``eval`` by ``isinstance(r, TrainRollout)`` / ``isinstance(r, EvalRollout)``.
+
+    Invariant — every rollout the dispatcher acquires an inflight permit for
+    eventually arrives at the corresponding sink exactly once, success or
+    failure. Failures (env-reported errors, empty trajectories, task
+    exceptions, off-policy cancellations) flow through with ``raw["error"]``
+    set; the sinks decide drop / partial-train policy.
+
+    ``group_id`` is the dispatcher's UUID for the dispatched group this
+    rollout belongs to. The sink uses it as the ``pending_groups`` key —
+    ``(env_name, example_id)`` isn't unique because the same example can
+    be re-sampled while an earlier group is still in flight.
+    """
+
+    raw: vf.RolloutOutput
+    env_name: str
+    example_id: int | str
+    group_id: uuid.UUID
+    policy_version: int  # snapshot at dispatch
+    off_policy_steps: int  # at completion
+
+    @property
+    def error(self) -> dict | None:
+        return self.raw.get("error")
+
+    @property
+    def reward(self) -> float:
+        return float(self.raw.get("reward", 0.0))
+
+    @property
+    def is_truncated(self) -> bool:
+        return bool(self.raw.get("is_truncated", False))
+
+    def to_dict(self) -> vf.RolloutOutput:
+        """Materialize ``raw`` + prime-rl metadata into a single dict for I/O
+        boundaries (``save_rollouts``, ``monitor.log_samples`` /
+        ``log_eval_samples``). Returns a shallow copy of ``raw`` with
+        metadata merged in — never mutates ``self.raw``."""
+        out: vf.RolloutOutput = dict(self.raw)  # type: ignore[assignment]
+        out["env_name"] = self.env_name
+        out["example_id"] = self.example_id
+        out["_policy_version"] = self.policy_version
+        out["_off_policy_steps"] = self.off_policy_steps
+        return out
+
+
+@dataclass
+class TrainRollout(FinishedRollout):
+    """Train-side rollout. Train-only fields are populated by ``TrainSink``:
+    ``samples`` in ``process_rollout`` (after tokenization), ``advantage`` +
+    ``is_filtered`` + ``filter_results`` in ``process_group`` /
+    ``process_batch``."""
+
+    samples: list[TrainingSample] = field(default_factory=list)
+    advantage: float | None = None
+    is_filtered: bool = False
+    filter_results: dict[str, bool] = field(default_factory=dict)
+
+    def to_dict(self) -> vf.RolloutOutput:
+        out = super().to_dict()
+        if self.advantage is not None:
+            out["advantage"] = self.advantage
+        out["is_filtered"] = self.is_filtered
+        out["filters"] = dict(self.filter_results)
+        return out
+
+
+@dataclass
+class EvalRollout(FinishedRollout):
+    """Eval-side rollout. Carries ``eval_step`` (the policy version at which
+    the eval epoch was triggered — the bucket key the sink groups by)."""
+
+    eval_step: int = 0
+
+    def to_dict(self) -> vf.RolloutOutput:
+        out = super().to_dict()
+        out["_eval_step"] = self.eval_step
+        return out
 
 
 # ── sink payloads ─────────────────────────────────────────────────────────
@@ -184,7 +245,7 @@ class TrainBatch:
       step_time / teacher_logprobs_time / save_ckpt_time).
     """
 
-    rollouts: list[vf.RolloutOutput]
+    rollouts: list[TrainRollout]
     samples: list[TrainingSample]
     metrics: TrainBatchMetrics
 
@@ -244,7 +305,7 @@ class EvalBatch:
 
     env_name: str
     step: int
-    rollouts: list[vf.RolloutOutput]
+    rollouts: list[EvalRollout]
     metrics: EvalBatchMetrics
 
 
