@@ -113,13 +113,6 @@ class Orchestrator:
     the tail of ``start()``.
     """
 
-    # ── attribute schema ──────────────────────────────────────────────
-    # Class-level annotations so pyright sees ``self.dispatcher`` etc. as
-    # non-Optional at call sites. The required attributes are guaranteed
-    # to be set in ``setup()`` (which ``start()`` calls before anything
-    # touches them); pre-setup access raises ``AttributeError``, which is
-    # the right runtime behavior given the contract.
-
     # Set in ``__init__``.
     config: OrchestratorConfig
     progress: Progress
