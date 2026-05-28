@@ -1,6 +1,6 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from renderers import Qwen3VLRendererConfig
 
@@ -20,12 +20,11 @@ def test_setup_student_inference_pool_uses_renderer_when_enabled():
             renderer=renderer_settings,
             pool_size=None,
         )
-        logger = MagicMock()
         renderer = object()
         inference_pool = object()
 
         with (
-            patch("prime_rl.orchestrator.orchestrator.create_renderer", return_value=renderer) as create_renderer_mock,
+            patch("renderers.base.create_renderer", return_value=renderer) as create_renderer_mock,
             patch(
                 "prime_rl.orchestrator.orchestrator.setup_inference_pool",
                 new=AsyncMock(return_value=inference_pool),
@@ -34,7 +33,6 @@ def test_setup_student_inference_pool_uses_renderer_when_enabled():
             returned_renderer, returned_pool = await setup_student_inference_pool(
                 config=config,
                 tokenizer=tokenizer,
-                logger=logger,
             )
 
         assert returned_renderer is renderer
@@ -66,11 +64,10 @@ def test_setup_student_inference_pool_defaults_to_mito():
                 model=SimpleNamespace(name="student-model"),
             ),
         )
-        logger = MagicMock()
         inference_pool = object()
 
         with (
-            patch("prime_rl.orchestrator.orchestrator.create_renderer") as create_renderer_mock,
+            patch("renderers.base.create_renderer") as create_renderer_mock,
             patch(
                 "prime_rl.orchestrator.orchestrator.setup_inference_pool",
                 new=AsyncMock(return_value=inference_pool),
@@ -79,7 +76,6 @@ def test_setup_student_inference_pool_defaults_to_mito():
             renderer, returned_pool = await setup_student_inference_pool(
                 config=config,
                 tokenizer=tokenizer,
-                logger=logger,
             )
 
         assert renderer is None

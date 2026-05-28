@@ -1,4 +1,5 @@
 import math
+import uuid
 
 import pytest
 
@@ -11,10 +12,11 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.orchestrator.advantage import (
     AdvantageInputs,
     AdvantageOutputs,
-    compute_advantages,
+    assign_advantages,
     default_advantage_fn,
     setup_advantage_fn,
 )
+from prime_rl.orchestrator.types import TrainRollout
 
 
 def _make_rollout(
@@ -247,104 +249,45 @@ def test_efficiency_turns_penalty():
     assert result.advantages == pytest.approx([0.625, 0.125, -0.875, 0.125], abs=1e-6)
 
 
-def test_compute_advantages_with_config():
-    rewards = [1.0, 0.5, 0.8, 0.2, 0.9, 0.1]
-    lengths = [10, 12, 8, 15, 11, 9]
-    rollouts = [_make_rollout(r, l, example_id=i // 3) for i, (r, l) in enumerate(zip(rewards, lengths))]
-
-    compute_advantages(rollouts, advantage_config=DefaultAdvantageConfig())
-
-    advantages = [r["advantage"] for r in rollouts]
-    assert len(advantages) == 6
-    assert sum(advantages[:3]) == pytest.approx(0.0, abs=1e-5)
-    assert sum(advantages[3:]) == pytest.approx(0.0, abs=1e-5)
-
-
-def test_compute_advantages_no_cross_group_leakage():
-    """Per-problem grouping: each problem must be centered against its own mean, in-order.
-
-    Two problems with very different reward scales — cross-group leakage would pull the
-    small-scale group's advantages toward the large-scale group's mean (and vice versa).
-    Distinct positional values also catch ordering bugs in the group→flat round-trip.
-    """
-    rewards = [10.0, 20.0, 30.0, 0.0, 0.1, 0.2]
-    rollouts = [_make_rollout(r, example_id=i // 3) for i, r in enumerate(rewards)]
-
-    compute_advantages(rollouts, advantage_config=DefaultAdvantageConfig())
-
-    advantages = [r["advantage"] for r in rollouts]
-    assert advantages == pytest.approx([-10.0, 0.0, 10.0, -0.1, 0.0, 0.1], abs=1e-5)
-
-
-def test_compute_advantages_without_config():
-    rewards = [1.0, 0.5, 0.8]
-    lengths = [10, 12, 8]
-    rollouts = [_make_rollout(r, l) for r, l in zip(rewards, lengths)]
-
-    compute_advantages(rollouts, advantage_config=None)
-
-    advantages = [r["advantage"] for r in rollouts]
-    assert advantages == rewards
-
-
-def test_compute_advantages_partial_groups():
-    """Partial groups (size < group_size) are advantaged against their own mean.
-
-    Two groups of different sizes must round-trip cleanly: each group's advantages
-    must sum to zero and not leak into the other.
-    """
-    # Group A (example_id=0): 4 rollouts. Group B (example_id=1): 2 rollouts.
-    rollouts = [
-        _make_rollout(1.0, example_id=0),
-        _make_rollout(0.0, example_id=0),
-        _make_rollout(1.0, example_id=0),
-        _make_rollout(0.0, example_id=0),
-        _make_rollout(0.3, example_id=1),
-        _make_rollout(0.7, example_id=1),
+def _train_rollouts(rewards: list[float]) -> list[TrainRollout]:
+    """Wrap a list of rewards into ``TrainRollout``\\ s sharing a single
+    ``group_id`` — ``assign_advantages`` works on one group at a time
+    (the sink groups by ``group_id`` upstream)."""
+    gid = uuid.uuid4()
+    return [
+        TrainRollout(
+            raw={"reward": r, "trajectory": []},
+            env_name="test",
+            example_id=0,
+            group_id=gid,
+            policy_version=0,
+            off_policy_steps=0,
+        )
+        for r in rewards
     ]
 
-    compute_advantages(rollouts, advantage_config=DefaultAdvantageConfig())
 
-    advantages = [r["advantage"] for r in rollouts]
-    # Group A: mean=0.5, advantages=[0.5, -0.5, 0.5, -0.5]
-    assert advantages[:4] == pytest.approx([0.5, -0.5, 0.5, -0.5], abs=1e-5)
-    # Group B: mean=0.5, advantages=[-0.2, 0.2]
-    assert advantages[4:] == pytest.approx([-0.2, 0.2], abs=1e-5)
-
-
-def test_compute_advantages_singleton_group_gets_zero_advantage():
-    """A group of size 1 has reward == mean, so its advantage is 0 (filterable downstream)."""
-    rollouts = [
-        _make_rollout(0.5, example_id=0),
-        _make_rollout(0.8, example_id=0),
-        _make_rollout(0.3, example_id=1),  # singleton group
-    ]
-
-    compute_advantages(rollouts, advantage_config=DefaultAdvantageConfig())
-
-    advantages = [r["advantage"] for r in rollouts]
-    # Group 0: mean=0.65, advantages=[-0.15, 0.15]
-    assert advantages[:2] == pytest.approx([-0.15, 0.15], abs=1e-5)
-    # Group 1 (singleton): advantage=0
-    assert advantages[2] == pytest.approx(0.0, abs=1e-5)
+def test_assign_advantages_writes_field():
+    rollouts = _train_rollouts([1.0, 0.5, 0.8])
+    fn = setup_advantage_fn(DefaultAdvantageConfig())
+    assign_advantages(rollouts, fn)
+    advs = [r.advantage for r in rollouts]
+    assert sum(advs) == pytest.approx(0.0, abs=1e-6)
 
 
-def test_compute_advantages_disambiguates_example_id_across_envs():
-    """example_id=0 in env A and example_id=0 in env B must not be grouped together."""
-    rollouts = [
-        _make_rollout(1.0, env_name="env_a", example_id=0),
-        _make_rollout(0.0, env_name="env_a", example_id=0),
-        _make_rollout(100.0, env_name="env_b", example_id=0),
-        _make_rollout(200.0, env_name="env_b", example_id=0),
-    ]
+def test_assign_advantages_without_fn_is_reward():
+    """``advantage_fn=None`` falls back to ``advantage = reward``."""
+    rollouts = _train_rollouts([1.0, 0.5, 0.8])
+    assign_advantages(rollouts, None)
+    assert [r.advantage for r in rollouts] == [1.0, 0.5, 0.8]
 
-    compute_advantages(rollouts, advantage_config=DefaultAdvantageConfig())
 
-    advantages = [r["advantage"] for r in rollouts]
-    # env_a group: mean=0.5, advantages=[0.5, -0.5]
-    assert advantages[:2] == pytest.approx([0.5, -0.5], abs=1e-5)
-    # env_b group: mean=150, advantages=[-50, 50]
-    assert advantages[2:] == pytest.approx([-50.0, 50.0], abs=1e-5)
+def test_assign_advantages_singleton_group_is_zero():
+    """A group of size 1 has reward == mean, so its advantage is 0."""
+    rollouts = _train_rollouts([0.7])
+    fn = setup_advantage_fn(DefaultAdvantageConfig())
+    assign_advantages(rollouts, fn)
+    assert rollouts[0].advantage == pytest.approx(0.0, abs=1e-6)
 
 
 def test_setup_advantage_fn_with_custom_config():

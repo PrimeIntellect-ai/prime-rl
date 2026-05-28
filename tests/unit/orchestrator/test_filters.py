@@ -1,4 +1,5 @@
 import math
+import uuid
 
 from prime_rl.configs.orchestrator import GibberishFilterConfig, RepetitionFilterConfig
 from prime_rl.orchestrator.filters import (
@@ -8,10 +9,19 @@ from prime_rl.orchestrator.filters import (
     setup_filter,
     setup_filters,
 )
+from prime_rl.orchestrator.types import TrainRollout
 
 
-def _make_rollout(completion_ids, completion_logprobs, reward=1.0, multi_step=False):
-    """Create a minimal rollout dict matching the verifiers RolloutOutput structure."""
+def _make_rollout(
+    completion_ids: list[int],
+    completion_logprobs: list[float],
+    *,
+    reward: float = 1.0,
+    multi_step: bool = False,
+) -> TrainRollout:
+    """Build a ``TrainRollout`` with a minimal ``vf.RolloutOutput``-shaped
+    raw payload — enough for the filters to inspect ``trajectory`` /
+    ``stop_condition`` / etc."""
     if multi_step:
         mid = len(completion_ids) // 2
         trajectory = [
@@ -40,12 +50,20 @@ def _make_rollout(completion_ids, completion_logprobs, reward=1.0, multi_step=Fa
                 }
             }
         ]
-    return {
+    raw = {
         "trajectory": trajectory,
         "reward": reward,
         "stop_condition": None,
         "metrics": {},
     }
+    return TrainRollout(
+        raw=raw,
+        env_name="test",
+        example_id=0,
+        group_id=uuid.uuid4(),
+        policy_version=0,
+        off_policy_steps=0,
+    )
 
 
 def _make_gibberish_filter(vocab_size=128_000, token_id_threshold=100_000, logprob_offset=2.0, enforce=False):
@@ -229,12 +247,12 @@ def test_apply_filters_enforced_flags_rollout():
 
     apply_filters([gibberish_filter], [rollout])
 
-    assert rollout["reward"] == 1.0
-    assert rollout["trajectory"][0]["tokens"]["completion_ids"] == [120_000]
-    assert rollout["trajectory"][0]["tokens"]["completion_mask"] == [1]
-    assert rollout["stop_condition"] is None
-    assert rollout["filters"] == {"gibberish": True}
-    assert rollout["is_filtered"] is True
+    assert rollout.reward == 1.0
+    assert rollout.raw["trajectory"][0]["tokens"]["completion_ids"] == [120_000]
+    assert rollout.raw["trajectory"][0]["tokens"]["completion_mask"] == [1]
+    assert rollout.raw["stop_condition"] is None
+    assert rollout.filter_results == {"gibberish": True}
+    assert rollout.is_filtered is True
 
 
 def test_apply_filters_preserves_clean_rollouts():
@@ -248,12 +266,12 @@ def test_apply_filters_preserves_clean_rollouts():
 
     apply_filters([gibberish_filter], [rollout])
 
-    assert rollout["reward"] == 1.0
-    assert rollout["trajectory"][0]["tokens"]["completion_ids"] == [50, 60, 70]
-    assert all(m == 1 for m in rollout["trajectory"][0]["tokens"]["completion_mask"])
-    assert rollout["stop_condition"] is None
-    assert rollout["filters"] == {"gibberish": False}
-    assert rollout["is_filtered"] is False
+    assert rollout.reward == 1.0
+    assert rollout.raw["trajectory"][0]["tokens"]["completion_ids"] == [50, 60, 70]
+    assert all(m == 1 for m in rollout.raw["trajectory"][0]["tokens"]["completion_mask"])
+    assert rollout.raw["stop_condition"] is None
+    assert rollout.filter_results == {"gibberish": False}
+    assert rollout.is_filtered is False
 
 
 def test_apply_filters_first_filter_wins():
@@ -268,9 +286,9 @@ def test_apply_filters_first_filter_wins():
 
     apply_filters([gibberish_filter, repetition_filter], [rollout])
 
-    assert rollout["stop_condition"] is None
-    assert rollout["filters"] == {"gibberish": True, "repetition": False}
-    assert rollout["is_filtered"] is True
+    assert rollout.raw["stop_condition"] is None
+    assert rollout.filter_results == {"gibberish": True, "repetition": False}
+    assert rollout.is_filtered is True
 
 
 def test_apply_filters_empty_list():
@@ -279,9 +297,9 @@ def test_apply_filters_empty_list():
         completion_logprobs=[-1.0, -1.0, -1.0],
     )
     apply_filters([], [rollout])
-    assert rollout["filters"] == {}
-    assert rollout["is_filtered"] is False
-    assert rollout["reward"] == 1.0
+    assert rollout.filter_results == {}
+    assert rollout.is_filtered is False
+    assert rollout.reward == 1.0
 
 
 def test_apply_filters_mixed_batch():
@@ -294,10 +312,10 @@ def test_apply_filters_mixed_batch():
 
     apply_filters([gibberish_filter], [clean, dirty])
 
-    assert clean["reward"] == 1.0
-    assert dirty["reward"] == 1.0
-    assert clean["is_filtered"] is False
-    assert dirty["is_filtered"] is True
+    assert clean.reward == 1.0
+    assert dirty.reward == 1.0
+    assert clean.is_filtered is False
+    assert dirty.is_filtered is True
 
 
 def test_apply_filters_enforced_preserves_rollout_tokens():
@@ -311,14 +329,14 @@ def test_apply_filters_enforced_preserves_rollout_tokens():
 
     apply_filters([gibberish_filter], [rollout])
 
-    assert rollout["trajectory"][0]["tokens"]["completion_ids"] == [10, 120_000, 30]
-    assert rollout["trajectory"][0]["tokens"]["completion_logprobs"] == [
+    assert rollout.raw["trajectory"][0]["tokens"]["completion_ids"] == [10, 120_000, 30]
+    assert rollout.raw["trajectory"][0]["tokens"]["completion_logprobs"] == [
         -1.0,
         gibberish_filter.logprob_threshold - 1.0,
         -0.5,
     ]
-    assert rollout["trajectory"][0]["tokens"]["completion_mask"] == [1, 1, 1]
-    assert rollout["is_filtered"] is True
+    assert rollout.raw["trajectory"][0]["tokens"]["completion_mask"] == [1, 1, 1]
+    assert rollout.is_filtered is True
 
 
 def test_apply_filters_preserves_existing_stop_condition():
@@ -329,12 +347,12 @@ def test_apply_filters_preserves_existing_stop_condition():
         completion_logprobs=[gibberish_filter.logprob_threshold - 1.0],
         reward=1.0,
     )
-    rollout["stop_condition"] = "generation_truncated"
+    rollout.raw["stop_condition"] = "generation_truncated"
 
     apply_filters([gibberish_filter], [rollout])
 
-    assert rollout["stop_condition"] == "generation_truncated"
-    assert rollout["is_filtered"] is True
+    assert rollout.raw["stop_condition"] == "generation_truncated"
+    assert rollout.is_filtered is True
 
 
 # --- apply_filters tests (monitor-only, enforce=False) ---
@@ -351,11 +369,11 @@ def test_apply_filters_monitor_only_tracks_detection():
 
     apply_filters([gibberish_filter], [rollout])
 
-    assert rollout["reward"] == 1.0
-    assert all(m == 1 for m in rollout["trajectory"][0]["tokens"]["completion_mask"])
-    assert rollout["stop_condition"] is None
-    assert rollout["filters"] == {"gibberish": True}
-    assert rollout["is_filtered"] is False
+    assert rollout.reward == 1.0
+    assert all(m == 1 for m in rollout.raw["trajectory"][0]["tokens"]["completion_mask"])
+    assert rollout.raw["stop_condition"] is None
+    assert rollout.filter_results == {"gibberish": True}
+    assert rollout.is_filtered is False
 
 
 def test_apply_filters_monitor_only_mixed_batch():
@@ -368,7 +386,7 @@ def test_apply_filters_monitor_only_mixed_batch():
 
     apply_filters([gibberish_filter], [clean, dirty])
 
-    assert clean["reward"] == 1.0
-    assert dirty["reward"] == 1.0
-    assert clean["is_filtered"] is False
-    assert dirty["is_filtered"] is False
+    assert clean.reward == 1.0
+    assert dirty.reward == 1.0
+    assert clean.is_filtered is False
+    assert dirty.is_filtered is False

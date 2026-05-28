@@ -15,7 +15,7 @@ _interleave_rollout = interleave_rollout
 
 
 def interleave_rollout(output, *args, **kwargs):
-    output.setdefault("env_name", "test-env")
+    kwargs.setdefault("env_name", output.get("env_name", "test-env"))
     return _interleave_rollout(output, *args, **kwargs)
 
 
