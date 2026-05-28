@@ -368,10 +368,6 @@ class EvalConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_non_empty_envs(self):
-        # Keeps the invariant that ``EvalConfig is not None`` ⇒ ``len(env) > 0``.
-        # The orchestrator constructs ``EvalEnvs`` / ``EvalSource`` only when
-        # ``config.eval is not None``, so a zero-env eval block would create
-        # an ``EvalEnvs`` of size 0 with nothing to schedule — silent failure.
         if not self.env:
             raise ValueError(
                 "EvalConfig must define at least one env. Either drop the "
