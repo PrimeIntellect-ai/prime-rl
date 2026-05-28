@@ -692,10 +692,11 @@ class Orchestrator:
 
         Single-line console body in the form:
 
-            Currently {train_inflight}/{max} [(env=N, …)] inflight train
-            rollouts[ and {eval_inflight} [(env=N, …)] eval rollouts];
-            got {train_batch}/{batch_size} [(env=N, …)] rollouts in
-            training batch[ and {epoch_n}/{epoch_target} in {env}, …]
+            Got {train_batch}/{batch_size} [(env=N, …)] rollouts in
+            training batch[ and {epoch_n}/{epoch_target} in {env}, …];
+            currently {train_inflight}/{max} [(env=N, …)] inflight
+            train rollouts[ and {eval_inflight} [(env=N, …)] eval
+            rollouts]
 
         Per-env ``(env=N, …)`` breakdowns only appear when there's more
         than one train env (or eval env). The eval halves are dropped
@@ -721,7 +722,18 @@ class Orchestrator:
         def env_breakdown(pairs: list[tuple[str, int]]) -> str:
             return "(" + ", ".join(f"{n}={v}" for n, v in pairs) + ")"
 
-        train_inflight_part = f"Currently {inflight_train}/{self.dispatcher.max_inflight}"
+        train_batch_part = f"Got {train_progress}/{train_target}"
+        if multi_train:
+            train_batch_part += " " + env_breakdown(
+                [(e.name, train_batch_by_env.get(e.name, 0)) for e in self.train_envs]
+            )
+        train_batch_part += " rollouts in training batch"
+
+        eval_batch_part = ""
+        if eval_batches:
+            eval_batch_part = " and " + ", ".join(f"{arr}/{exp} in {env}" for env, _step, arr, exp in eval_batches)
+
+        train_inflight_part = f"currently {inflight_train}/{self.dispatcher.max_inflight}"
         if multi_train:
             train_inflight_part += " " + env_breakdown(
                 [(e.name, inflight_by_env.get(("train", e.name), 0)) for e in self.train_envs]
@@ -738,18 +750,7 @@ class Orchestrator:
                 )
             eval_inflight_part += " eval rollouts"
 
-        train_batch_part = f"got {train_progress}/{train_target}"
-        if multi_train:
-            train_batch_part += " " + env_breakdown(
-                [(e.name, train_batch_by_env.get(e.name, 0)) for e in self.train_envs]
-            )
-        train_batch_part += " rollouts in training batch"
-
-        eval_batch_part = ""
-        if eval_batches:
-            eval_batch_part = " and " + ", ".join(f"{arr}/{exp} in {env}" for env, _step, arr, exp in eval_batches)
-
-        body = train_inflight_part + eval_inflight_part + "; " + train_batch_part + eval_batch_part
+        body = train_batch_part + eval_batch_part + "; " + train_inflight_part + eval_inflight_part
 
         payload: dict[str, float] = {**disp_gauges, **disp_drain, **watcher_gauges}
         if lag_stats.n > 0:
