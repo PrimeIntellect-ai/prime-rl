@@ -20,9 +20,11 @@ from prime_rl.utils.logger import get_logger
 
 logger = get_logger()
 from prime_rl.inference.patches import (
+    monkey_patch_chat_replay_diagnostics,
     monkey_patch_harmony_stop_token_propagation,
     monkey_patch_load_lora_adapter,
     monkey_patch_tokenize_params_validation,
+    monkey_patch_vllm_nan_trace,
     monkey_patch_vllm_padded_input_scrub,
 )
 
@@ -38,6 +40,10 @@ monkey_patch_tokenize_params_validation()
 # NOTE: Optional mitigation for vLLM padded decode inputs until the native fix
 # is available in our pinned runtime.
 monkey_patch_vllm_padded_input_scrub()
+# NOTE: Optional replay capture for elusive non-finite chat responses.
+monkey_patch_chat_replay_diagnostics()
+# NOTE: Optional vLLM internal tracing for batch-state non-finite repros.
+monkey_patch_vllm_nan_trace()
 
 logger = init_logger("vllm.entrypoints.openai.api_server")
 

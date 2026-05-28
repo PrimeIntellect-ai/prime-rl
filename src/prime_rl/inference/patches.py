@@ -21,6 +21,7 @@ def transformers_v5_compat():
     monkey_patch_dp_engine_core_pause_resume_deadlock()
     monkey_patch_vllm_layerwise_reload_alias_buffers()
     monkey_patch_vllm_padded_input_scrub()
+    monkey_patch_vllm_nan_trace()
     monkey_patch_return_routed_experts_with_nixl_connector()
 
 
@@ -98,6 +99,187 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
 
     reload_layerwise._copy_and_restore_kernel_tensors = _copy_and_restore_kernel_tensors
     logger.warning("Enabled vLLM layerwise reload alias-buffer patch.")
+
+
+def monkey_patch_chat_replay_diagnostics():
+    """Capture replayable chat + engine inputs when a chat response contains NaN.
+
+    The old NaN repro branch only captured raw /v1/chat/completions bodies.
+    That is not enough for batch-state bugs: chat rendering, server-side
+    max_tokens defaults, LoRA choice, and the active decode cohort can all
+    affect reproduction. This patch records both the raw chat request and the
+    rendered token prompt/sampling params passed to the vLLM engine, then dumps
+    them when a non-finite chat response is about to hit JSON serialization.
+    """
+    from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
+    from vllm.entrypoints.openai.engine.serving import OpenAIServing
+    from vllm.logger import init_logger
+
+    from prime_rl.inference.vllm.chat_replay_diagnostics import (
+        complete_generation,
+        dump_chat_nonfinite_response,
+        enabled as chat_replay_diag_enabled,
+        exit_after_dump as chat_replay_exit_after_dump,
+        fail_fast as chat_replay_fail_fast,
+        model_dump,
+        nonfinite_paths,
+        record_engine_request,
+        record_request_output,
+        request_snapshot_for_object,
+        snapshot_chat_request,
+    )
+
+    logger = init_logger(__name__)
+
+    if not getattr(OpenAIServing._log_inputs, "_prime_rl_chat_replay_diag", False):
+        original_log_inputs = OpenAIServing._log_inputs
+
+        def _patched_log_inputs(self, request_id, inputs, params, lora_request):
+            if chat_replay_diag_enabled():
+                try:
+                    record_engine_request(
+                        self,
+                        request_id=request_id,
+                        inputs=inputs,
+                        params=params,
+                        lora_request=lora_request,
+                    )
+                except Exception:
+                    logger.exception("Failed to record chat replay engine input for %s", request_id)
+            return original_log_inputs(self, request_id, inputs, params, lora_request)
+
+        _patched_log_inputs._prime_rl_chat_replay_diag = True
+        OpenAIServing._log_inputs = _patched_log_inputs
+
+    if not getattr(OpenAIServingChat.chat_completion_full_generator, "_prime_rl_chat_replay_diag", False):
+        original_chat_completion_full_generator = OpenAIServingChat.chat_completion_full_generator
+
+        async def _patched_chat_completion_full_generator(
+            self,
+            request,
+            result_generator,
+            request_id,
+            model_name,
+            conversation,
+            tokenizer,
+            request_metadata,
+            reasoning_parser=None,
+        ):
+            if not chat_replay_diag_enabled():
+                return await original_chat_completion_full_generator(
+                    self,
+                    request,
+                    result_generator,
+                    request_id,
+                    model_name,
+                    conversation,
+                    tokenizer,
+                    request_metadata,
+                    reasoning_parser,
+                )
+
+            async def _recording_generator():
+                async for result in result_generator:
+                    record_request_output(request_id, result)
+                    yield result
+
+            try:
+                response = await original_chat_completion_full_generator(
+                    self,
+                    request,
+                    _recording_generator(),
+                    request_id,
+                    model_name,
+                    conversation,
+                    tokenizer,
+                    request_metadata,
+                    reasoning_parser,
+                )
+            except BaseException as exc:
+                complete_generation(request_id, error=exc)
+                raise
+
+            response_payload = model_dump(response)
+            complete_generation(request_id, response_payload=response_payload)
+            return response
+
+        _patched_chat_completion_full_generator._prime_rl_chat_replay_diag = True
+        OpenAIServingChat.chat_completion_full_generator = _patched_chat_completion_full_generator
+
+    if getattr(OpenAIServingChat.create_chat_completion, "_prime_rl_chat_replay_diag", False):
+        return
+
+    original_create_chat_completion = OpenAIServingChat.create_chat_completion
+
+    async def _patched_create_chat_completion(self, request, raw_request=None):
+        if not chat_replay_diag_enabled():
+            return await original_create_chat_completion(self, request, raw_request)
+
+        request_snapshot = await snapshot_chat_request(
+            endpoint="/v1/chat/completions",
+            parsed_request=request,
+            raw_request=raw_request,
+        )
+        try:
+            response = await original_create_chat_completion(self, request, raw_request)
+        except BaseException as exc:
+            await dump_chat_nonfinite_response(
+                endpoint="/v1/chat/completions",
+                request_snapshot=request_snapshot,
+                response_payload={},
+                exception=exc,
+            )
+            raise
+
+        try:
+            response_payload = model_dump(response)
+        except Exception as exc:
+            dump_path = await dump_chat_nonfinite_response(
+                endpoint="/v1/chat/completions",
+                request_snapshot=request_snapshot_for_object(request) or request_snapshot,
+                response_payload={"response_repr": repr(response)},
+                exception=exc,
+            )
+            if dump_path is not None and chat_replay_fail_fast():
+                raise RuntimeError(
+                    f"Prime-RL chat replay diagnostics captured non-finite response at {dump_path}"
+                ) from exc
+            if dump_path is not None and chat_replay_exit_after_dump():
+                import os
+
+                os._exit(86)
+            raise
+        if nonfinite_paths(response_payload):
+            dump_path = await dump_chat_nonfinite_response(
+                endpoint="/v1/chat/completions",
+                request_snapshot=request_snapshot_for_object(request) or request_snapshot,
+                response_payload=response_payload,
+            )
+            if dump_path is not None and chat_replay_fail_fast():
+                raise RuntimeError(f"Prime-RL chat replay diagnostics captured non-finite response at {dump_path}")
+            if dump_path is not None and chat_replay_exit_after_dump():
+                import os
+
+                os._exit(86)
+        return response
+
+    _patched_create_chat_completion._prime_rl_chat_replay_diag = True
+    OpenAIServingChat.create_chat_completion = _patched_create_chat_completion
+    logger.warning("Enabled chat replay diagnostics patch.")
+
+
+def monkey_patch_vllm_nan_trace():
+    """Install env-gated vLLM internal traces in server and worker processes."""
+    from vllm.logger import init_logger
+
+    logger = init_logger(__name__)
+    try:
+        from prime_rl.inference.vllm_nan_trace import install_vllm_nan_trace
+    except Exception:
+        logger.exception("Failed to import vLLM NaN trace patch")
+        return
+
+    install_vllm_nan_trace()
 
 
 @triton.jit
