@@ -137,13 +137,7 @@ def setup_filter(config: FilterConfig, vocab_size: int) -> RolloutFilter:
 
 
 def setup_filters(configs: list[FilterConfig], vocab_size: int, *, kind: str) -> list[RolloutFilter]:
-    """Create RolloutFilters from a list of filter configs.
-
-    ``kind`` is included in the setup log (e.g. ``"pre-batch"`` /
-    ``"post-batch"``) so the two passes are visibly distinct in startup
-    logs — both run with the same filter machinery but at different
-    points in the sink pipeline.
-    """
+    """Create RolloutFilters from a list of filter configs."""
     filters = [setup_filter(config, vocab_size) for config in configs]
     if filters:
         get_logger().info(f"Configured {len(filters)} {kind} rollout filter(s):")
