@@ -66,6 +66,7 @@ envs = [
     "code-env",
     "color-codeword",
     "deepdive",
+    "general-agent",
     "gpqa",
     "hle",
     "ifeval",
@@ -98,6 +99,9 @@ disagg = [
 gpt-oss = [
     "kernels",
 ]
+modelexpress = [
+    "modelexpress==0.3.0",
+]
 quack = [
     "quack-kernels>=0.4.1",
 ]
@@ -118,6 +122,7 @@ dev = [
     "ipywidgets>=8.1.7",
     "pre-commit>=4.2.0",
     "pytest>=8.4.1",
+    "pytest-asyncio>=0.23",
     "ruff>=0.12.1",
 ]
 
@@ -137,6 +142,7 @@ members = [
     "deps/research-environments/environments/code_env",
     "deps/research-environments/environments/color_codeword",
     "deps/research-environments/environments/deepdive",
+    "deps/research-environments/environments/general_agent",
     "deps/research-environments/environments/gpqa",
     "deps/research-environments/environments/hle",
     "deps/research-environments/environments/ifeval",
@@ -175,6 +181,22 @@ override-dependencies = [
     "openenv-core",
 ]
 
+# ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
+# compatible with protobuf 6. prime-sandboxes requires protobuf>=6.31.1; keep
+# this capped to the validated protobuf major.
+[[tool.uv.dependency-metadata]]
+name = "modelexpress"
+version = "0.3.0"
+requires-dist = [
+    "grpcio>=1.66.2",
+    "huggingface_hub>=0.20.0",
+    "nixl[cu12]",
+    "numpy>=1.24.0",
+    "protobuf>=5.27.0,<7.0.0",
+    "pydantic>=2.0.0",
+    "torch>=2.6.0",
+]
+
 [tool.uv.exclude-newer-package]
 # we want latest vllm, remove next patch
 vllm = false
@@ -203,6 +225,7 @@ alphabet-sort = { workspace = true }
 code-env = { workspace = true }
 color-codeword = { workspace = true }
 deepdive = { workspace = true }
+general-agent = { workspace = true }
 gpqa = { workspace = true }
 hle = { workspace = true }
 ifeval = { workspace = true }
@@ -232,9 +255,9 @@ dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "c1c3424" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "96bd151" }
 prime-pydantic-config = { workspace = true }
-vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.25/vllm_router-0.1.25-cp38-abi3-manylinux_2_28_x86_64.whl" }
+vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" }
 vllm = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.21.0+cu129.r42434.pr39568.a106aa6-cp38-abi3-manylinux_2_24_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.21.0+cu129.r42434.pr39568.a106aa6-cp38-abi3-manylinux_2_34_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/vllm-project/vllm/releases/download/v0.21.0/vllm-0.21.0+cu129-cp38-abi3-manylinux_2_34_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" }

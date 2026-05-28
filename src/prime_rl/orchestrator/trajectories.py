@@ -164,7 +164,7 @@ def _tokenize_step_with_renderer(
     return build_trajectory_step(renderer, prompt, completion, tools=tools)
 
 
-def pretokenize_rollout_trajectory(
+def backfill_rollout_tokens(
     output: vf.RolloutOutput,
     tokenizer: PreTrainedTokenizer,
     renderer=None,
@@ -174,6 +174,9 @@ def pretokenize_rollout_trajectory(
     When a renderer is provided, uses it for tokenization (faster, deterministic).
     Otherwise falls back to the tokenizer + apply_chat_template path.
     """
+    if all(step["tokens"] is not None for step in output["trajectory"]):
+        return True
+
     logger = get_logger()
     tools = _convert_tools_to_oai_format(output.get("tool_defs", []))
 
@@ -241,19 +244,22 @@ def interleave_rollout(
         if tokens is not None:
             routed_experts_payload = tokens.get("routed_experts")
             routed_experts = None
+            routed_experts_start = None
             if routed_experts_payload is not None:
                 decoded_routed_experts = pybase64.b64decode_as_bytearray(routed_experts_payload["data"])
                 routed_experts = np.frombuffer(decoded_routed_experts, dtype=np.uint8).reshape(
                     routed_experts_payload["shape"]
                 )
+                routed_experts_start = routed_experts_payload["start"]
 
             return {
                 "prompt_ids": list(tokens["prompt_ids"]),
-                "prompt_mask": [bool(i) for i in tokens["prompt_mask"]],
+                "prompt_mask": list(map(bool, tokens["prompt_mask"])),
                 "completion_ids": list(tokens["completion_ids"]),
-                "completion_mask": [bool(i) for i in tokens["completion_mask"]],
+                "completion_mask": list(map(bool, tokens["completion_mask"])),
                 "completion_logprobs": list(tokens["completion_logprobs"]),
                 "routed_experts": routed_experts,
+                "routed_experts_start": routed_experts_start,
                 # Renderer-emitted multimodal sidecar (placeholders + per-item
                 # processed tensors). Populated when the rollout went through
                 # a multimodal-aware renderer (e.g. Qwen3VLRenderer); absent
@@ -271,31 +277,28 @@ def interleave_rollout(
             return None
         prepared_steps.append(prepared)
 
-    def make_sample(tokens: dict[str, Any]) -> TrainingSample:
+    # Deferred routed_experts state per sample: O(N) chunk list concatenated
+    # once at finalize, replacing the prior O(N²) per-extension unpack/repack.
+    sample_routed_state: dict[int, dict[str, Any]] = {}
+    routed_prefix_states: dict[int, list[tuple[list[int], list[int], dict[str, Any]]]] = {}
+
+    # Track (prefix_tokens, sample, step_indices) per active sample. step_indices
+    # is the explicit list of prepared_steps positions merged into this sample —
+    # non-contiguous when other agents' steps interleave.
+    active_samples: list[tuple[list[int], TrainingSample, list[int]]] = []
+
+    def make_sample(tokens: dict[str, Any], step_idx: int) -> TrainingSample:
         """Create a new TrainingSample from a trajectory step."""
         if has_error:
             completion_mask = [False] * len(tokens["completion_mask"])
         else:
-            completion_mask = [bool(i) for i in tokens["completion_mask"]]
+            completion_mask = list(tokens["completion_mask"])
         completion_ids = list(tokens["completion_ids"])
-
-        routed_experts = align_routed_experts(
-            tokens.get("routed_experts"),
-            len(tokens["prompt_ids"]) + len(tokens["completion_ids"]),
-        )
-        packed_routed_experts = None
-        if routed_experts is not None:
-            routed_experts = np.ascontiguousarray(routed_experts)
-            packed_routed_experts = RoutedExperts(
-                data=routed_experts.tobytes(),
-                shape=list(routed_experts.shape),
-                dtype=str(routed_experts.dtype),
-            )
 
         prompt_ids = list(tokens["prompt_ids"])
         sample = TrainingSample(
             prompt_ids=prompt_ids,
-            prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
+            prompt_mask=list(tokens["prompt_mask"]),
             completion_ids=completion_ids,
             completion_mask=completion_mask,
             completion_logprobs=list(tokens["completion_logprobs"]),
@@ -304,16 +307,66 @@ def interleave_rollout(
             advantage=None,
             env_name=output["env_name"],
             mm_token_type_ids=None,
-            routed_experts=packed_routed_experts,
+            routed_experts=None,  # deferred — finalized at end of interleave_rollout
         )
-        return sample, routed_experts
+        # Initialize routed-experts state for this sample. First chunk is the
+        # raw step routed_experts (no pad, no copy). running_len is the
+        # cumulative count across chunks; tracked so the boundary fix-up at
+        # each extension is a no-op append rather than a destructive write.
+        step_routed = tokens.get("routed_experts")
+        if step_routed is not None:
+            routed_start = tokens["routed_experts_start"]
+            assert routed_start is not None, f"Missing routed_experts_start for step {step_idx}"
+            chunks: list[np.ndarray] = []
+            running_len = 0
+            if routed_start > 0:
+                source_len = routed_start + 1
+                assert source_len in routed_prefix_states, (
+                    f"Missing routed prefix state for step {step_idx}: "
+                    f"routed_start={routed_start}, prompt_len={len(tokens['prompt_ids'])}"
+                )
+                source_state = None
+                for prompt_ids, completion_ids, candidate_state in routed_prefix_states[source_len]:
+                    prompt_len = len(prompt_ids)
+                    if (
+                        tokens["prompt_ids"][:prompt_len] == prompt_ids
+                        and tokens["prompt_ids"][prompt_len:source_len] == completion_ids
+                    ):
+                        source_state = candidate_state
+                        break
+                assert source_state is not None, (
+                    f"No matching routed prefix for step {step_idx}: "
+                    f"routed_start={routed_start}, prompt_len={len(tokens['prompt_ids'])}"
+                )
+                assert source_state["running_len"] >= routed_start, (
+                    f"Routed prefix too short for step {step_idx}: "
+                    f"running_len={source_state['running_len']}, routed_start={routed_start}"
+                )
+                remaining = routed_start
+                for chunk in source_state["chunks"]:
+                    if remaining == 0:
+                        break
+                    take = min(remaining, int(chunk.shape[0]))
+                    chunks.append(chunk[:take])
+                    remaining -= take
+                assert remaining == 0, (
+                    f"Could not reconstruct routed prefix for step {step_idx}: "
+                    f"remaining={remaining}, routed_start={routed_start}"
+                )
+                running_len = routed_start
+            chunks.append(step_routed)
+            running_len += int(step_routed.shape[0])
+            sample_routed_state[id(sample)] = {
+                "chunks": chunks,
+                "running_len": running_len,
+            }
+        return sample
 
     def extend_sample(
         sample: TrainingSample,
-        sample_routed_experts: np.ndarray | None,
         prefix_len: int,
         step_idx: int,
-    ) -> np.ndarray | None:
+    ) -> None:
         """Extend an existing sample with a new trajectory step (extension property holds)."""
         tokens = prepared_steps[step_idx]
 
@@ -330,61 +383,88 @@ def interleave_rollout(
         if has_error:
             sample.completion_mask.extend([False] * len(tokens["completion_mask"]))
         else:
-            sample.completion_mask.extend(bool(i) for i in tokens["completion_mask"])
+            sample.completion_mask.extend(tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
         sample.completion_temperatures.extend([temperature] * len(completion_ids))
 
-        if tokens.get("routed_experts") is not None and sample_routed_experts is not None:
-            step_routed = tokens["routed_experts"]
-            # The previous step's last routing entry was zero-padded by align_routed_experts
-            # (vLLM only captures num_tokens-1 routings per request). This step actually
-            # processed that boundary token as part of its prompt, so replace the zero-fill
-            # with the real routing decision before appending new entries.
-            if prefix_len > 0 and prefix_len <= step_routed.shape[0]:
-                sample_routed_experts[prefix_len - 1] = step_routed[prefix_len - 1]
-            sample_routed_experts = np.concatenate((sample_routed_experts, step_routed[prefix_len:]), axis=0)
-            expected_len = len(sample.prompt_ids) + len(sample.completion_ids)
-            sample_routed_experts = align_routed_experts(sample_routed_experts, expected_len)
-            sample_routed_experts = np.ascontiguousarray(sample_routed_experts)
-            packed_routed_experts = RoutedExperts(
-                data=sample_routed_experts.tobytes(),
-                shape=list(sample_routed_experts.shape),
-                dtype=str(sample_routed_experts.dtype),
+        step_routed = tokens.get("routed_experts")
+        state = sample_routed_state.get(id(sample))
+        if state is not None:
+            assert step_routed is not None, f"Missing routed experts for routed sample extension at step {step_idx}"
+        if step_routed is not None:
+            assert state is not None, f"Unexpected routed experts for unrouted sample at step {step_idx}"
+            assert tokens["routed_experts_start"] == prefix_len - 1, (
+                f"Routed experts delta start mismatch at step {step_idx}: "
+                f"start={tokens['routed_experts_start']}, expected={prefix_len - 1}, prefix_len={prefix_len}"
             )
-            sample.routed_experts = packed_routed_experts
-        return sample_routed_experts
-
-    # Track (prefix_tokens, sample, step_indices) per active sample. step_indices
-    # is the explicit list of prepared_steps positions merged into this sample —
-    # non-contiguous when other agents' steps interleave.
-    active_samples: list[tuple[list[int], TrainingSample, list[int], np.ndarray | None]] = []
+            # Delta payloads start at prefix_len - 1. Row 0 fills the boundary
+            # token missing from the previous request; the rest is the new suffix.
+            if prefix_len > 0:
+                boundary_chunk = step_routed[:1]
+                state["chunks"].append(boundary_chunk)
+                state["running_len"] += 1
+                step_routed = step_routed[1:]
+            new_chunk = step_routed
+            state["chunks"].append(new_chunk)
+            state["running_len"] += int(new_chunk.shape[0])
 
     first_tokens = prepared_steps[0]
     first_prefix = first_tokens["prompt_ids"] + first_tokens["completion_ids"]
-    first_sample, first_routed_experts = make_sample(first_tokens)
-    active_samples.append((first_prefix, first_sample, [0], first_routed_experts))
+    first_sample = make_sample(first_tokens, step_idx=0)
+    active_samples.append((first_prefix, first_sample, [0]))
+    first_routed_state = sample_routed_state.get(id(first_sample))
+    if first_routed_state is not None:
+        routed_prefix_states.setdefault(len(first_prefix), []).append(
+            (first_tokens["prompt_ids"], first_tokens["completion_ids"], first_routed_state)
+        )
 
     for step_idx, _step in enumerate(trajectory[1:], start=1):
         tokens = prepared_steps[step_idx]
         step_prompt_ids = tokens["prompt_ids"]
 
-        # Check if this step extends ANY active prefix
+        # Pick the *longest* matching active prefix. With compaction/rollback,
+        # one active sample's prefix can be a strict prefix of another (e.g. a
+        # later sample re-generated tokens that overlap an earlier sample's
+        # prefix). Both would satisfy the slice check; the shorter would
+        # silently absorb the longer sample's generated tokens as user input.
         matched_idx = None
-        for idx, (prefix_tokens, _, _, _) in enumerate(active_samples):
-            if step_prompt_ids[: len(prefix_tokens)] == prefix_tokens:
-                matched_idx = idx
-                break
+        matched_len = -1
+        matching_prefix_lens: list[int] = []
+        for idx, (prefix_tokens, _, _) in enumerate(active_samples):
+            pl = len(prefix_tokens)
+            if step_prompt_ids[:pl] == prefix_tokens:
+                matching_prefix_lens.append(pl)
+                if pl > matched_len:
+                    matched_idx = idx
+                    matched_len = pl
+
+        if len(matching_prefix_lens) > 1:
+            # Ambiguous extension: rare, but reachable via compaction/rollback
+            # where a new sample's prefix happens to start with an older
+            # sample's prefix. Longest-match is the correct choice; surface
+            # the ambiguity so we can audit if it shows up in real rollouts.
+            logger.warning(
+                f"Ambiguous prefix match at step {step_idx} for example {output['example_id']}: "
+                f"{len(matching_prefix_lens)} of {len(active_samples)} active prefixes match "
+                f"(lens={sorted(matching_prefix_lens)}, step_prompt_len={len(step_prompt_ids)}). "
+                f"Extending the longest (len={matched_len})."
+            )
 
         if matched_idx is not None:
             # Extension holds - merge into matched sample
-            prefix_tokens, sample, step_indices, sample_routed_experts = active_samples[matched_idx]
-            sample_routed_experts = extend_sample(sample, sample_routed_experts, len(prefix_tokens), step_idx=step_idx)
+            prefix_tokens, sample, step_indices = active_samples[matched_idx]
+            extend_sample(sample, len(prefix_tokens), step_idx=step_idx)
+            new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
             active_samples[matched_idx] = (
-                tokens["prompt_ids"] + tokens["completion_ids"],
+                new_prefix,
                 sample,
                 step_indices + [step_idx],
-                sample_routed_experts,
             )
+            routed_state = sample_routed_state.get(id(sample))
+            if routed_state is not None:
+                routed_prefix_states.setdefault(len(new_prefix), []).append(
+                    (tokens["prompt_ids"], tokens["completion_ids"], routed_state)
+                )
         else:
             # No prefix matches - start a new sample
             logger.debug(
@@ -392,8 +472,34 @@ def interleave_rollout(
                 f"Starting new sample (active_prefixes={len(active_samples)}, step_prompt_len={len(step_prompt_ids)})."
             )
             new_prefix = tokens["prompt_ids"] + tokens["completion_ids"]
-            sample, routed_experts = make_sample(tokens)
-            active_samples.append((new_prefix, sample, [step_idx], routed_experts))
+            sample = make_sample(tokens, step_idx=step_idx)
+            active_samples.append((new_prefix, sample, [step_idx]))
+            routed_state = sample_routed_state.get(id(sample))
+            if routed_state is not None:
+                routed_prefix_states.setdefault(len(new_prefix), []).append(
+                    (tokens["prompt_ids"], tokens["completion_ids"], routed_state)
+                )
+
+    # Finalize routed_experts for each sample. One concat per sample (O(N) byte
+    # work) replaces the previous per-step unpack/concat/repack (O(N²)). The
+    # boundary entries between steps were already inserted as one-entry chunks
+    # during extend_sample, so a straight concat is correct.
+    for _, sample, _ in active_samples:
+        state = sample_routed_state.get(id(sample))
+        if state is None:
+            continue
+        chunks = state["chunks"]
+        if not chunks:
+            continue
+        combined = np.concatenate(chunks, axis=0) if len(chunks) > 1 else np.ascontiguousarray(chunks[0])
+        expected_len = len(sample.prompt_ids) + len(sample.completion_ids)
+        combined = align_routed_experts(combined, expected_len)
+        combined = np.ascontiguousarray(combined)
+        sample.routed_experts = RoutedExperts(
+            data=combined.tobytes(),
+            shape=list(combined.shape),
+            dtype=str(combined.dtype),
+        )
 
     # Attach images by concatenating mm_items across every step the
     # sample covers. verifiers' ``state_to_output`` ships per-step
@@ -402,7 +508,7 @@ def interleave_rollout(
     # reading the last step alone would miss every earlier-turn image.
     # Concat in step order recovers the per-sample cumulative set;
     # deduping again here would drop legitimate duplicate placeholders.
-    for _, sample, step_indices, _ in active_samples:
+    for _, sample, step_indices in active_samples:
         renderer_mm = _union_step_mm_data(prepared_steps, step_indices)
         if renderer_mm is not None:
             mm_kwargs = _pack_mm_kwargs_from_renderer(renderer_mm)
@@ -417,7 +523,7 @@ def interleave_rollout(
                         for token_id in sample.prompt_ids + sample.completion_ids
                     ]
 
-    return [sample for _, sample, _, _ in active_samples]
+    return [sample for _, sample, _ in active_samples]
 
 
 def _union_step_mm_data(

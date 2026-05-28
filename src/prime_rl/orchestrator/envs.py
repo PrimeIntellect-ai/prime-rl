@@ -186,7 +186,6 @@ class EvalEnv(Env):
         self,
         model_name: str,
         get_client: Callable[[], Awaitable[vf.ClientConfig]],
-        ckpt_step: int,
         step: int,
         cache_salt: str,
     ) -> list[vf.RolloutOutput]:
@@ -256,7 +255,6 @@ class EvalEnv(Env):
             get_monitor().log(
                 {
                     f"eval/{self.name}/failed_rollouts": failed_count / total_rollouts,
-                    "progress/ckpt_step": ckpt_step,
                     "step": step,
                 },
                 step=step,
@@ -319,7 +317,7 @@ class EvalEnv(Env):
             assert pass_at_k is not None
             eval_metrics.update(pd.Series(pass_at_k.mean()).to_dict())
         eval_metrics = {f"eval/{self.name}/{key}": v for key, v in eval_metrics.items()}
-        eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step})
+        eval_metrics["step"] = step
         monitor.log(eval_metrics, step=step)
         monitor.log_eval_samples(successful_outputs, env_name=self.name, step=step)
 

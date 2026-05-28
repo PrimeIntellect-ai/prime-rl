@@ -1,32 +1,6 @@
 import numpy as np
 
 
-def compute_eval_ckpt_step(
-    ckpt_step: int,
-    prev_ckpt_step: int,
-    last_eval_step: int,
-    interval: int,
-    eval_base_model: bool = True,
-) -> int | None:
-    """Determine which checkpoint step (if any) should trigger an eval.
-
-    Handles the case where ckpt_step jumps over interval boundaries by finding
-    the highest interval-aligned step in (prev_ckpt_step, ckpt_step].
-
-    Returns the interval step to eval at, or None if no eval should run.
-    """
-    if ckpt_step <= prev_ckpt_step:
-        return None
-    highest_interval_step = (ckpt_step // interval) * interval
-    if highest_interval_step > prev_ckpt_step and highest_interval_step > last_eval_step:
-        if highest_interval_step == 0:
-            if ckpt_step == 0 and eval_base_model:
-                return 0
-        else:
-            return highest_interval_step
-    return None
-
-
 def _pass_at_k(n: int, c: int, k: int) -> float:
     """Unbiased estimator of pass@k (Chen et al., 2021).
 

@@ -61,10 +61,7 @@ class WandbMonitor(Monitor):
                 x_primary=primary,
                 x_update_finish_state=primary,
             )
-            self.logger.info(
-                f"Using shared W&B mode ({label=}, {primary=}). "
-                "This is an experimental feature. Disable with --wandb.shared False"
-            )
+            self.logger.info(f"Using shared W&B mode ({label=}, {primary=})")
         else:
             run_id = None
             primary = False

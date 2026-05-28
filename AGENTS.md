@@ -35,6 +35,10 @@ Namespaces are one honking great idea -- let's do more of those!
 - **Git dependency pins**: when pinning git dependencies in `pyproject.toml`, always use a small (7-char) commit hash for the `rev` field.
 - **Never edit `.venv/`**: the local virtual env is read-only. Edits there are silently overwritten by the next `uv sync` and don't propagate to teammates or CI. Reading files under `.venv/` to understand library behavior is fine; writing is not. To fix a dependency issue, update `pyproject.toml` (pin a fork via 7-char commit hash if needed), vendor the code into `src/`, or patch upstream.
 
+## Docs
+
+- **Docs reflect `main`, not history**: `docs/` describes the current state of the codebase only. Don't mention removed/legacy fields, migration paths, or "this used to be X" anecdotes.
+
 ## Skills
 
 Skills live in `skills/` and are symlinked to `.claude/skills/`. They teach agents how to handle specific workflows (e.g. starting the inference server, writing configs). When you make changes to the codebase, check if any skills need to be updated to stay accurate.
@@ -50,11 +54,10 @@ Write tests as plain functions with pytest fixtures. Don't use class-based tests
 
 ## Git
 
-- **Branch prefixes**: use the following prefixes for branches: `feat/`, `fix/`, `chore/`
+- **Branch prefixes**: use `feat/`, `fix/`, `chore/`; use `exp/` for experiment branches (configs, run summaries, pins, notes).
 
 ## GitHub
 
 - **Draft PRs**: always create PRs as drafts (`gh pr create --draft`) to avoid triggering CI unnecessarily.
 - **Pull requests**: do not include a "test plan" section in PR descriptions unless you actually ran tests to verify the changes or the user explicitly asked for one.
 - **Keep PR descriptions in sync**: every time you push commits to a PR, also update the PR description (`gh pr edit <num> --body-file ...`) so it reflects the current state of the branch — not just what was true when the PR was opened. Preserve any auto-generated blocks (e.g. `<!-- CURSOR_SUMMARY -->`).
-
