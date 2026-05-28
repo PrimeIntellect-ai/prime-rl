@@ -222,7 +222,6 @@ class EvalBatchMetrics:
         }
         if self.n_examples > 0:
             out[f"{prefix}/n_examples"] = float(self.n_examples)
-            out[f"{prefix}/avg@{self.group_size}"] = self.reward_mean
             out[f"{prefix}/reward/mean"] = self.reward_mean
             out[f"{prefix}/completion_len/mean"] = self.completion_len_mean
             out[f"{prefix}/completion_len/max"] = self.completion_len_max

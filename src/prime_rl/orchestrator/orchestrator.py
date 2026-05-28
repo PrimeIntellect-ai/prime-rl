@@ -690,16 +690,19 @@ class Orchestrator:
     def collect_pipeline_view(self) -> tuple[str, dict[str, float]]:
         """Unified pipeline view for the orchestrator's ``PeriodicLogger``.
 
-        Console body — headline carries the aggregate (total inflight +
-        current train-batch fill, plus single-eval epoch progress when an
-        eval is the only one accumulating). Per-env ``╰─`` rows appear
-        only when there's more than one train env (or more than one eval
-        env) — for single-env runs the aggregate already is the per-env
-        view.
+        Single-line console body in the form:
 
-        Wandb payload: all the dispatcher / watcher / event-loop gauges
-        and drain counters from the periodic axis — existing
-        ``_timestamp``-axis dashboards keep working.
+            Currently {train_inflight}/{max} [(env=N, …)] inflight train
+            rollouts[ and {eval_inflight} [(env=N, …)] eval rollouts];
+            got {train_batch}/{batch_size} [(env=N, …)] rollouts in
+            training batch[ and {epoch_n}/{epoch_target} in {env}, …]
+
+        Per-env ``(env=N, …)`` breakdowns only appear when there's more
+        than one train env (or eval env). The eval halves are dropped
+        entirely when no eval is currently accumulating.
+
+        Wandb payload: dispatcher / watcher / event-loop gauges and
+        drain counters on the periodic axis.
         """
         disp_gauges = self.dispatcher.gauges()
         disp_drain = self.dispatcher.metrics.drained()
@@ -709,41 +712,44 @@ class Orchestrator:
         inflight_by_env = self.dispatcher.inflight_by_env
         inflight_train = self.dispatcher.inflight_train_count
         inflight_eval = self.dispatcher.inflight_eval_count
-        inflight_total = inflight_train + inflight_eval
-        train_progress, train_target, train_unit = self.train_sink.batch_progress()
+        train_progress, train_target, _train_unit = self.train_sink.batch_progress()
         train_batch_by_env = self.train_sink.pending_batch_by_env()
-        eval_epochs = self.eval_sink.batch_progress() if self.eval_sink is not None else []
+        eval_batches = self.eval_sink.batch_progress() if self.eval_sink is not None else []
         multi_train = len(self.train_envs) > 1
         multi_eval = self.eval_envs is not None and len(self.eval_envs) > 1
 
-        head = (
-            f"inflight {inflight_total}/{self.dispatcher.max_inflight} "
-            f"(train={inflight_train}, eval={inflight_eval}) | "
-            f"train batch {train_progress}/{train_target} {train_unit}"
-        )
-        # Single-eval-env case: bake the active epoch's progress into the
-        # headline. Multi-eval is handled by the per-env rows below.
-        if not multi_eval and len(eval_epochs) == 1:
-            env_name, eval_step, arrivals, expected = eval_epochs[0]
-            head += f" | eval {env_name}@{eval_step} batch={arrivals}/{expected}"
+        def env_breakdown(pairs: list[tuple[str, int]]) -> str:
+            return "(" + ", ".join(f"{n}={v}" for n, v in pairs) + ")"
 
-        lines = [head]
+        train_inflight_part = f"Currently {inflight_train}/{self.dispatcher.max_inflight}"
         if multi_train:
-            for env in self.train_envs:
-                lines.append(
-                    f"╰─ train {env.name} | "
-                    f"inflight={inflight_by_env.get(('train', env.name), 0)} "
-                    f"batch={train_batch_by_env.get(env.name, 0)}"
-                )
-        if multi_eval:
-            for env_name, eval_step, arrivals, expected in eval_epochs:
-                lines.append(
-                    f"╰─ eval {env_name}@{eval_step} | "
-                    f"inflight={inflight_by_env.get(('eval', env_name), 0)} "
-                    f"batch={arrivals}/{expected}"
-                )
+            train_inflight_part += " " + env_breakdown(
+                [(e.name, inflight_by_env.get(("train", e.name), 0)) for e in self.train_envs]
+            )
+        train_inflight_part += " inflight train rollouts"
 
-        body = lines[0] if len(lines) == 1 else lines[0] + "\n\t\t" + "\n\t\t".join(lines[1:])
+        eval_inflight_part = ""
+        if inflight_eval > 0 or eval_batches:
+            eval_inflight_part = f" and {inflight_eval}"
+            if multi_eval:
+                assert self.eval_envs is not None
+                eval_inflight_part += " " + env_breakdown(
+                    [(e.name, inflight_by_env.get(("eval", e.name), 0)) for e in self.eval_envs]
+                )
+            eval_inflight_part += " eval rollouts"
+
+        train_batch_part = f"got {train_progress}/{train_target}"
+        if multi_train:
+            train_batch_part += " " + env_breakdown(
+                [(e.name, train_batch_by_env.get(e.name, 0)) for e in self.train_envs]
+            )
+        train_batch_part += " rollouts in training batch"
+
+        eval_batch_part = ""
+        if eval_batches:
+            eval_batch_part = " and " + ", ".join(f"{arr}/{exp} in {env}" for env, _step, arr, exp in eval_batches)
+
+        body = train_inflight_part + eval_inflight_part + "; " + train_batch_part + eval_batch_part
 
         payload: dict[str, float] = {**disp_gauges, **disp_drain, **watcher_gauges}
         if lag_stats.n > 0:
