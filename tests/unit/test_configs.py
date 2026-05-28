@@ -196,6 +196,7 @@ def test_orchestrator_vlm_requires_renderer():
                     },
                 }
             },
+            "use_renderer": True,
         }
     )
 
@@ -459,12 +460,14 @@ def test_shared_output_dir_propagates_through_cli(tmp_path):
 def test_orchestrator_renderer_auto_rejects_unmapped_model():
     """use_renderer=True with renderer.name='auto' must reject models not in MODEL_RENDERER_MAP."""
     with pytest.raises(ValidationError, match="silently fall back to DefaultRenderer"):
-        OrchestratorConfig.model_validate({"model": {"name": "not-a-real-org/not-a-real-model"}})
+        OrchestratorConfig.model_validate(
+            {"model": {"name": "not-a-real-org/not-a-real-model"}, "use_renderer": True}
+        )
 
 
 def test_orchestrator_renderer_auto_accepts_mapped_model():
     """The default Qwen model is in MODEL_RENDERER_MAP and should validate cleanly."""
-    config = OrchestratorConfig.model_validate({"model": {"name": "Qwen/Qwen3-0.6B"}})
+    config = OrchestratorConfig.model_validate({"model": {"name": "Qwen/Qwen3-0.6B"}, "use_renderer": True})
     assert config.use_renderer is True
     assert config.renderer.name == "auto"
 

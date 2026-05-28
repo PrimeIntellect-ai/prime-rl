@@ -647,8 +647,8 @@ class OrchestratorConfig(BaseConfig):
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
 
-    use_renderer: bool = True
-    """Use the renderer-backed TITO client (client-side tokenization via the ``renderers`` package, served by ``/v1/generate``). When True, the ``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) applies. Default for both text-only and VLM rollouts; VLMs require it. False falls back to MITO (``openai_chat_completions``)."""
+    use_renderer: bool = False
+    """Use the renderer-backed TITO client (client-side tokenization via the ``renderers`` package, served by ``/v1/generate``). When True, the ``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) applies. VLMs require it. False (default) falls back to MITO (``openai_chat_completions``)."""
 
     env_install_prerelease: bool = False
     """Allow pre-release versions when installing environments (e.g. ``verifiers>=0.1.12.dev5``). Passes ``--prerelease`` to ``prime env install``."""
