@@ -55,8 +55,12 @@ echo "MASTER_PORT=${MASTER_PORT}"
 [ -f $PROJECT_DIR/.env ] && source $PROJECT_DIR/.env
 source $PROJECT_DIR/.venv/bin/activate
 
-# Install environment as local package
-cd $PROJECT_DIR && uv sync --all-extras --inexact --no-install-project
+# Install environment as local package.
+# Exclude workspace members the orchestrator subprocess imports from
+# (prime-rl-configs + its prime-pydantic-config dep) so concurrent fan-out
+# doesn't race on the shared beegfs .venv. Extends the May-26
+# --no-install-project fix.
+cd $PROJECT_DIR && uv sync --all-extras --inexact --no-install-project --no-install-package prime-rl-configs --no-install-package prime-pydantic-config
 
 
 {% if pre_run_command %}
