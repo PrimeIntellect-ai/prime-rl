@@ -3,7 +3,9 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, model_serializer, model_validator
+from pydantic_core.core_schema import SerializerFunctionWrapHandler
+from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -12,7 +14,6 @@ from prime_rl.configs.shared import (
     HeartbeatConfig,
     LogConfig,
     PrimeMonitorConfig,
-    RendererConfig,
     TransportConfig,
     WandbWithExtrasConfig,
 )
@@ -45,19 +46,10 @@ class TrainSamplingConfig(BaseConfig):
     temperature: float = Field(1.0, ge=0)
     """Sampling temperature."""
 
-    repetition_penalty: float = Field(1.0, ge=0)
-    """Repetition penalty. Values > 1.0 discourage repetition, < 1.0 encourage it, 1.0 disables."""
-
     max_completion_tokens: int | None = Field(
         None, validation_alias=AliasChoices("max_completion_tokens", "max_tokens")
     )
     """Maximum output tokens per turn. If None, generates until max context length or EOS."""
-
-    min_tokens: int = Field(0, ge=0)
-    """Minimum output tokens per sequence."""
-
-    seed: int | None = None
-    """Random seed for sampling. If None, no seeding is used."""
 
     # Strictly speaking, extra_body is not a sampling parameter, but it is the
     # easiest way to pass arbitrary extra parameters to the server via verifiers
@@ -66,7 +58,6 @@ class TrainSamplingConfig(BaseConfig):
 
     def to_sampling_args(self) -> dict[str, Any]:
         """Convert to OAI-compatible sampling args dict, omitting None values."""
-        # Top-level OAI params
         args: dict[str, Any] = {
             "temperature": self.temperature,
             "top_p": 1.0,
@@ -74,17 +65,9 @@ class TrainSamplingConfig(BaseConfig):
         }
         if self.max_completion_tokens is not None:
             args["max_completion_tokens"] = self.max_completion_tokens
-        if self.seed is not None:
-            args["seed"] = self.seed
 
-        # vLLM extra_body params
-        extra_body = dict(self.extra_body)
-        if self.min_tokens > 0:
-            extra_body["min_tokens"] = self.min_tokens
-        if self.repetition_penalty != 1.0:
-            extra_body["repetition_penalty"] = self.repetition_penalty
-        if extra_body:
-            args["extra_body"] = extra_body
+        if self.extra_body:
+            args["extra_body"] = dict(self.extra_body)
 
         return args
 
@@ -105,9 +88,6 @@ class EvalSamplingConfig(BaseConfig):
     temperature: float | None = Field(None, ge=0)
     """Sampling temperature. None defers to the inference server default."""
 
-    repetition_penalty: float | None = Field(None, ge=0)
-    """Repetition penalty. None defers to the inference server default."""
-
     top_p: float | None = None
     """Nucleus sampling threshold. None defers to the inference server default."""
 
@@ -122,14 +102,8 @@ class EvalSamplingConfig(BaseConfig):
     )
     """Maximum output tokens per turn. None defers to the inference server default."""
 
-    min_tokens: int | None = Field(None, ge=0)
-    """Minimum output tokens per sequence. None defers to the inference server default."""
-
     reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = None
     """Reasoning effort constraint for reasoning models."""
-
-    seed: int | None = None
-    """Random seed for sampling. None means no seeding."""
 
     extra_body: dict[str, Any] = {}
     """Extra body parameters forwarded to the inference server."""
@@ -145,18 +119,12 @@ class EvalSamplingConfig(BaseConfig):
             args["max_completion_tokens"] = self.max_completion_tokens
         if self.reasoning_effort is not None:
             args["reasoning_effort"] = self.reasoning_effort
-        if self.seed is not None:
-            args["seed"] = self.seed
 
         extra_body = dict(self.extra_body)
         if self.top_k is not None:
             extra_body["top_k"] = self.top_k
         if self.min_p is not None:
             extra_body["min_p"] = self.min_p
-        if self.min_tokens is not None:
-            extra_body["min_tokens"] = self.min_tokens
-        if self.repetition_penalty is not None:
-            extra_body["repetition_penalty"] = self.repetition_penalty
         if extra_body:
             args["extra_body"] = extra_body
 
@@ -607,8 +575,30 @@ class OrchestratorConfig(BaseConfig):
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
-    renderer: RendererConfig = RendererConfig()
-    """Client-side renderer configuration. Only consumed when ``use_renderer=true``."""
+    renderer: RendererConfig | None = AutoRendererConfig()
+    """Typed renderer config (``renderers.RendererConfig`` discriminated
+    union). Defaults to ``"auto"``, which resolves from
+    ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. ``None``
+    opts into MITO (``openai_chat_completions``); SFT mode forces this."""
+
+    pool_size: int | None = Field(None, ge=1)
+    """Number of renderer slots shared across concurrent rollouts. Bump
+    for long multi-turn prompts where client-side jinja tokenization
+    serializes. Only meaningful when ``renderer`` is not ``None``."""
+
+    @model_serializer(mode="wrap")
+    def _preserve_mito_renderer(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """Emit ``renderer = "None"`` (string) when MITO so
+        ``model_dump(exclude_none=True)`` round-trips: dumped TOML has
+        ``renderer = "None"``, and on reload
+        ``BaseConfig._none_str_to_none`` coerces it back to ``None``.
+        Without this, a MITO orchestrator config saved to
+        ``control/orch.toml`` would lose the renderer key entirely and
+        reload as the default ``AutoRendererConfig()`` (TITO)."""
+        result = handler(self)
+        if self.renderer is None:
+            result["renderer"] = "None"
+        return result
 
     optim: OptimizerConfig = OptimizerConfig()
     """Per-run optimizer configuration for multi-run training."""
@@ -631,6 +621,9 @@ class OrchestratorConfig(BaseConfig):
 
     collect_inference_metrics: bool = True
     """Collect inference-server metrics (requires wandb)."""
+
+    inference_metrics_roles: list[Literal["prefill", "decode"]] | None = None
+    """Role for each student admin client when collecting P/D inference metrics."""
 
     ckpt: CheckpointConfig | None = None
     """Checkpoint configuration."""
@@ -675,23 +668,14 @@ class OrchestratorConfig(BaseConfig):
     max_off_policy_steps: int = Field(8, ge=0)
     """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
 
-    max_async_level: int = Field(1, ge=0)
-    """Maximum steps inference can be ahead of training. ``0`` degenerates to synchronous on-policy RL; ``≥1`` overlaps training and inference."""
-
-    strict_async_level: bool = False
-    """Strictly enforce ``max_async_level``. When True, the rollout policy is always exactly ``max_async_level`` steps ahead of training. When False, any policy within ``max_async_level`` steps is allowed (always uses the latest available policy)."""
-
     bench: bool = False
-    """Benchmark mode. Sets ``max_steps`` to 5, ``max_async_level`` to ~∞, and disables W&B."""
+    """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""
 
     seed: int | None = 42
     """Random seed for the orchestrator."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
-
-    use_renderer: bool = True
-    """Use the renderer-backed TITO client (client-side tokenization via the ``renderers`` package, served by ``/v1/generate``). When True, the ``[orchestrator.renderer]`` block (name / tool_parser / reasoning_parser / pool_size) applies. Default for both text-only and VLM rollouts; VLMs require it. False falls back to MITO (``openai_chat_completions``)."""
 
     env_install_prerelease: bool = False
     """Allow pre-release versions when installing environments (e.g. ``verifiers>=0.1.12.dev5``). Passes ``--prerelease`` to ``prime env install``."""
@@ -820,11 +804,11 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def _force_no_renderer_for_sft(self):
         """SFT rolls out via the teacher's plain chat-completions endpoint; the
-        renderer client doesn't apply. Force use_renderer=False so the user
+        renderer client doesn't apply. Force ``renderer=None`` so the user
         doesn't have to remember to set it. Declared before the renderer
         validators below so they see the corrected value."""
         if self.training_mode == "sft":
-            self.use_renderer = False
+            self.renderer = None
         return self
 
     @model_validator(mode="after")
@@ -838,33 +822,15 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_renderer_args(self):
-        """``[orchestrator.renderer]`` knobs are only meaningful when
-        ``use_renderer=True``. Reject otherwise so callers don't silently
-        pass them and wonder why they're ignored."""
-        if self.use_renderer:
-            return self
-
-        renderer_args_set = []
-        if self.renderer.name != "auto":
-            renderer_args_set.append(f"renderer.name={self.renderer.name!r}")
-        if self.renderer.tool_parser is not None:
-            renderer_args_set.append(f"renderer.tool_parser={self.renderer.tool_parser!r}")
-        if self.renderer.reasoning_parser is not None:
-            renderer_args_set.append(f"renderer.reasoning_parser={self.renderer.reasoning_parser!r}")
-        if self.renderer.pool_size is not None:
-            renderer_args_set.append(f"renderer.pool_size={self.renderer.pool_size!r}")
-        if self.renderer.preserve_all_thinking:
-            renderer_args_set.append(f"renderer.preserve_all_thinking={self.renderer.preserve_all_thinking!r}")
-        if self.renderer.preserve_thinking_between_tool_calls:
-            renderer_args_set.append(
-                f"renderer.preserve_thinking_between_tool_calls={self.renderer.preserve_thinking_between_tool_calls!r}"
-            )
-
-        if renderer_args_set:
+    def validate_pool_size(self):
+        """``pool_size`` is only meaningful when the renderer is enabled
+        (``renderer is not None``). Reject otherwise so callers don't
+        silently pass it and wonder why it's ignored."""
+        if self.renderer is None and self.pool_size is not None:
             raise ValueError(
-                "Renderer-specific args set without orchestrator.use_renderer=True: "
-                f"{', '.join(renderer_args_set)}. Either enable the renderer client or remove these knobs."
+                f"orchestrator.pool_size={self.pool_size!r} is set but "
+                "orchestrator.renderer is None (MITO mode). Either configure a renderer "
+                "or remove pool_size."
             )
         return self
 
@@ -876,9 +842,9 @@ class OrchestratorConfig(BaseConfig):
         tokens, and ships generic ``mm_kwargs`` keyed by whatever the
         model's forward signature expects.
         """
-        if self.student.model.vlm is not None and not self.use_renderer:
+        if self.student.model.vlm is not None and self.renderer is None:
             raise ValueError(
-                "orchestrator.use_renderer must be true when model.vlm is set. "
+                "orchestrator.renderer must be set when model.vlm is set. "
                 "VLMs must go through a renderer (e.g. Qwen3VLRenderer) that owns the processor."
             )
         return self
@@ -887,16 +853,16 @@ class OrchestratorConfig(BaseConfig):
     def validate_renderer_auto_resolves(self):
         """Reject the silent DefaultRenderer fallback at config time.
 
-        When ``use_renderer=True`` with ``renderer.name='auto'`` and the
-        model isn't in ``MODEL_RENDERER_MAP``, ``create_renderer`` would
-        fall back to ``DefaultRenderer``. That fallback doesn't fix the
-        position-dependent chat-template bug the renderer client exists to
-        solve, and rejects envs that pass tools (the rollout dies with
-        "RendererPool does not support tools") unless
-        ``renderer.tool_parser`` is configured. Surface at config time so
-        ``--dry-run`` reports the error.
+        When ``renderer.name='auto'`` and the model isn't in
+        ``MODEL_RENDERER_MAP``, ``create_renderer`` would fall back to
+        ``DefaultRenderer``. That fallback doesn't fix the
+        position-dependent chat-template bug the renderer client exists
+        to solve, and rejects envs that pass tools (the rollout dies
+        with "RendererPool does not support tools") unless
+        ``DefaultRendererConfig.tool_parser`` is configured. Surface at
+        config time so ``--dry-run`` reports the error.
         """
-        if not self.use_renderer or self.renderer.name != "auto":
+        if self.renderer is None or self.renderer.name != "auto":
             return self
         from renderers.base import MODEL_RENDERER_MAP
 
@@ -904,27 +870,20 @@ class OrchestratorConfig(BaseConfig):
         if model_id in MODEL_RENDERER_MAP:
             return self
         raise ValueError(
-            f"orchestrator.use_renderer=True with renderer.name='auto' but "
+            f"orchestrator.renderer.name='auto' but "
             f"{model_id!r} is not in renderers.base.MODEL_RENDERER_MAP, so it "
             f"would silently fall back to DefaultRenderer. Pick one: "
             f"(a) [orchestrator.renderer] name='default' — for fine-tunes / "
             f"vendored mirrors with custom chat templates (DefaultRenderer "
-            f"calls apply_chat_template); pair with tool_parser=<name> if "
-            f"the env uses tools. "
+            f"calls apply_chat_template); set tool_parser=<name> if the env "
+            f"uses tools. "
             f"(b) [orchestrator.renderer] name=<model-specific renderer> — "
             f"if {model_id!r} is template-identical to a mapped family "
             f"(and ideally also add it upstream to "
             f"renderers.base.MODEL_RENDERER_MAP). "
-            f"(c) orchestrator.use_renderer=false — opt out of the renderer "
-            f"client entirely."
+            f"(c) orchestrator.renderer='none' — opt out of the renderer "
+            f"client entirely (MITO)."
         )
-
-    @model_validator(mode="after")
-    def nccl_max_async_level(self):
-        if self.weight_broadcast.type == "nccl":
-            if not self.max_async_level == 1:
-                raise ValueError("max_async_level must be 1 for NCCL broadcast")
-        return self
 
     @model_validator(mode="after")
     def resolve_batching(self):
@@ -973,7 +932,6 @@ class OrchestratorConfig(BaseConfig):
     def auto_setup_bench(self):
         if self.bench:
             self.max_steps = 4  # Run for 1 warmup step + 3 evaluation steps
-            self.max_async_level = int(1e9)  # Never wait for RL weight checkpoints
 
             # Disable evaluation
             self.eval = None

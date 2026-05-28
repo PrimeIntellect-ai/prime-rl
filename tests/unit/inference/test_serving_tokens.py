@@ -73,7 +73,7 @@ def test_serialize_routed_experts_uses_compact_raw_payload():
 
 
 def test_generate_response_post_process_replaces_upstream_routed_experts():
-    compact_routed_experts = {"data": "AQID", "shape": [1, 1, 3]}
+    compact_routed_experts = {"data": "AQID", "shape": [1, 1, 3], "start": 0}
     capture = _GenerateRoutedExpertsCapture(_empty_request_outputs())
     capture.routed_experts[0] = compact_routed_experts
     response = GenerateResponse(

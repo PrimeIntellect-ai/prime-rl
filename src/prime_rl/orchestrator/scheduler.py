@@ -64,9 +64,7 @@ class Scheduler:
         buffer: Buffer,
         config: OrchestratorConfig,
         max_inflight_rollouts: int,
-        max_async_level: int,
         max_off_policy_steps: int,
-        strict_async_level: bool,
         tasks_per_minute: int | None,
         lora_name: str | None = None,
     ):
@@ -82,9 +80,7 @@ class Scheduler:
         self.token_batch_size = config.token_batch_size
         self.group_size = config.group_size
         self.max_inflight_rollouts = max_inflight_rollouts
-        self.max_async_level = max_async_level
         self.max_off_policy_steps = max_off_policy_steps
-        self.strict_async_level = strict_async_level
         self.lora_name = lora_name
         self.json_logging = config.log.json_logging
 
@@ -287,18 +283,20 @@ class Scheduler:
             await asyncio.sleep(1)
 
     def _compute_next_ckpt_step(self) -> int:
+        # The orchestrator always runs one step ahead of the trainer, so we must advance to at
+        # least step - 1. We additionally adopt anything fresher the trainer has already
+        # broadcast (so a fast trainer briefly running on-policy is fine). ``latest_ckpt_step``
+        # is non-negative so it also clamps a self.step == 0 startup.
         latest_ckpt_step = get_latest_ckpt_step(get_broadcast_dir(self.config.output_dir)) or 0
-        async_away_ckpt_step = max(self.step - self.max_async_level, 0)
-        if self.strict_async_level:
-            return async_away_ckpt_step
-        return max(async_away_ckpt_step, latest_ckpt_step)
+        return max(self.step - 1, latest_ckpt_step)
 
     async def _apply_policy_update(self, next_ckpt_step: int) -> None:
-        async_away_ckpt_step = max(self.step - self.max_async_level, 0)
-        if next_ckpt_step == async_away_ckpt_step:
+        # If we're advancing to step - 1, the trainer hasn't broadcast it yet (otherwise
+        # we would've picked something newer); block until the file lands.
+        if next_ckpt_step == max(self.step - 1, 0):
             self.logger.info(
-                f"Orchestrator paused: waiting for trainer process to complete checkpoint {next_ckpt_step} "
-                f"(>{self.max_async_level} step(s) ahead). Training is progressing normally."
+                f"Orchestrator paused: waiting for trainer to broadcast checkpoint {next_ckpt_step} "
+                f"(orchestrator is one step ahead). Training is progressing normally."
             )
             self.checkpoint_ready.clear()
             wait_for_ckpt_start_time = time.perf_counter()
@@ -392,7 +390,8 @@ class Scheduler:
             await safe_cancel(self.update_policy_task)
 
         # Manually check the async barrier before starting the step, then re-create the update policy loop
-        # This ensures that we respect max_async_level, while still listening for policy updates mid-step
+        # This ensures the orchestrator stays at most one step ahead of the trainer, while still
+        # listening for policy updates mid-step.
         await self.maybe_update_policy()
         self.update_policy_task = asyncio.create_task(self.update_policy_loop())
 
