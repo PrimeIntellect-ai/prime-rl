@@ -248,20 +248,13 @@ class ProgressTracker:
 
 
 def format_time(seconds: float) -> str:
-    """Human-readable wall-clock duration for console log lines.
-
-    Buckets:
-
-    - ``<1s``    → ``"50ms"``
-    - ``<60s``   → ``"12.3s"`` (1-decimal seconds)
-    - ``<1h``    → ``"1m 13s"`` (whole seconds — the minute prefix
-      already conveys the magnitude; sub-second precision here is noise)
-    - ``<1d``    → ``"2h 5m"``
-    - ``≥1d``    → ``"1d 3h"``
-
-    Same shape as ``verifiers.utils.logging_utils.print_time`` but with
-    1-decimal seconds under the 1-minute mark — keeps short step times
-    legible without falling back to whole-second rounding.
+    """
+    Format a time in seconds to a human-readable format:
+    - >1d -> Xd Yh
+    - >1h -> Xh Ym
+    - >1m -> Xm Ys
+    - <1s -> Xms
+    - Else: Xs
     """
     if seconds < 1:
         return f"{seconds * 1000:.0f}ms"
