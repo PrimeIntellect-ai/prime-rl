@@ -12,11 +12,9 @@ from datasets import Dataset, interleave_datasets, load_dataset
 from jaxtyping import Bool, Int
 from renderers.base import (
     MultiModalData,
+    PlaceholderRange,
     Renderer,
     build_training_sample,
-)
-from renderers.base import (
-    is_multimodal as is_multimodal_renderer,
 )
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
@@ -246,7 +244,6 @@ class SFTDataset(StatefulIterableDataset):
         self.max_epochs = max_epochs
         self.renderer = renderer
         self._warned_chat_template_kwargs = False
-        self.is_multimodal = renderer is not None and is_multimodal_renderer(renderer)
 
         if self.tokenizer is None:
             self.logger.warning("No tokenizer provided, will not process examples")
@@ -576,7 +573,7 @@ class StackDataset(StatefulIterableDataset):
             if sample.get("mm_kwargs") is not None:
                 # Multimodal samples bypass bucketing.
                 self.step += 1
-                yield {**sample, "_solo": True}
+                yield sample
                 continue
 
             # Truncate sample if it's longer than max area
