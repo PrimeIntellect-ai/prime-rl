@@ -84,4 +84,4 @@ gpu_memory_utilization = 0.85
 max_model_len = 65536
 
 [inference.parallel]
-dp = 16
+dp = 8
