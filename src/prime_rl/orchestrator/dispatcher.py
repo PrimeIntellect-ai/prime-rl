@@ -125,6 +125,7 @@ class RolloutDispatcher:
         train_source: TrainSource,
         eval_source: EvalSource | None,
         inference: InferencePool,
+        eval_inference: InferencePool,
         policy: Policy,
         max_inflight_rollouts: int,
         tasks_per_minute: float | None,
@@ -134,7 +135,10 @@ class RolloutDispatcher:
         self.policy = policy
         self.train_envs = train_envs
         self.eval_envs = eval_envs
+        # Train rollouts go to ``inference`` (the teacher in SFT mode);
+        # eval always evaluates the student, so it uses ``eval_inference``.
         self.inference = inference
+        self.eval_inference = eval_inference
         self.train_source = train_source
         self.eval_source = eval_source
         self.training_mode = training_mode
@@ -162,9 +166,10 @@ class RolloutDispatcher:
         self.task: asyncio.Task | None = None
 
     @property
-    def model_name(self) -> str:
-        """In SFT mode the policy is irrelevant — rollouts go to the teacher
-        pool, so use its model name. Otherwise follow the live policy."""
+    def train_model_name(self) -> str:
+        """Model name for *train* rollouts. In SFT mode train data comes from
+        the teacher pool, so use its model name; otherwise the live student
+        policy. (Eval always uses ``policy.model_name`` — the student.)"""
         if self.training_mode == "sft":
             return self.inference.model_name
         return self.policy.model_name
@@ -367,12 +372,19 @@ class RolloutDispatcher:
         ready, no permits). Returns True after issuing one task — the caller
         loops to keep scheduling.
         """
+        # Train rollouts use the rollout pool (teacher in SFT); eval always
+        # evaluates the student, so it uses the student pool + policy name.
+        if group.kind == "eval":
+            pool, model_name = self.eval_inference, self.policy.model_name
+        else:
+            pool, model_name = self.inference, self.train_model_name
+
         # Pin a single client per group to keep prefix-cache hits
         if group.pinned_client is None:
             load = Counter(
                 client_identity(m.client_config) for m in self.inflight.values() if m.client_config is not None
             )
-            client = await self.inference.select_train_client(load)
+            client = await pool.select_train_client(load)
             if group_id not in self.groups:
                 return False
             group.pinned_client = client
@@ -384,7 +396,6 @@ class RolloutDispatcher:
             return False
         env = env_collection.get(group.env_name)
         cache_salt = str(group.policy_version_at_start)
-        model_name = self.model_name
 
         if env.requires_group_scoring:
             permits = group.rollouts_to_schedule

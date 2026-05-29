@@ -369,6 +369,7 @@ class Orchestrator:
             train_source=self.train_source,
             eval_source=self.eval_source,
             inference=rollout_inference,
+            eval_inference=self.student_inference,
             policy=self.policy,
             max_inflight_rollouts=config.max_inflight_rollouts,
             tasks_per_minute=config.tasks_per_minute,
@@ -793,8 +794,11 @@ class Orchestrator:
             return 0.0
         if step <= 0:
             return 0.0
-        is_last_step = self.config.max_steps is not None and step == self.config.max_steps - 1
-        if is_last_step:
+        # Skip the last shipped step *and* the drain-entry step (step ==
+        # max_steps, which never ships): both defer to the final save in
+        # ``start()``, so an interval boundary at max_steps doesn't double-save.
+        near_end = self.config.max_steps is not None and step >= self.config.max_steps - 1
+        if near_end:
             return 0.0
         if step % self.config.ckpt.interval != 0:
             return 0.0
