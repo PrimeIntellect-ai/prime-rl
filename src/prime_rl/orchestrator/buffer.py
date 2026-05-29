@@ -73,7 +73,7 @@ class _EnvBuffer:
             example = self.examples.pop(example_id)
             target = self.easy_examples if pool == "easy" else self.hard_examples
             target.append(example)
-            max_fraction = self.config.max_easy_fraction if pool == "easy" else self.config.max_hard_fraction
+            max_fraction = self.config.max_easy_pool_fraction if pool == "easy" else self.config.max_hard_pool_fraction
             self._recycle_overflow(target, max_fraction)
 
         self.num_examples_per_step[pool] += 1
