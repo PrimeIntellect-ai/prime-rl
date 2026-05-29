@@ -372,8 +372,10 @@ class RolloutDispatcher:
         ready, no permits). Returns True after issuing one task — the caller
         loops to keep scheduling.
         """
-        # Train rollouts use the rollout pool (teacher in SFT); eval always
-        # evaluates the student, so it uses the student pool + policy name.
+        # Train rollouts use the rollout pool (teacher in SFT) via the
+        # renderer/token train client. Eval always evaluates the student and
+        # goes through the eval client (chat-completions) — the same path the
+        # legacy orchestrator used, so eval scores stay comparable.
         if group.kind == "eval":
             pool, model_name = self.eval_inference, self.policy.model_name
         else:
@@ -381,10 +383,13 @@ class RolloutDispatcher:
 
         # Pin a single client per group to keep prefix-cache hits
         if group.pinned_client is None:
-            load = Counter(
-                client_identity(m.client_config) for m in self.inflight.values() if m.client_config is not None
-            )
-            client = await pool.select_train_client(load)
+            if group.kind == "eval":
+                client = await pool.get_eval_client()
+            else:
+                load = Counter(
+                    client_identity(m.client_config) for m in self.inflight.values() if m.client_config is not None
+                )
+                client = await pool.select_train_client(load)
             if group_id not in self.groups:
                 return False
             group.pinned_client = client
