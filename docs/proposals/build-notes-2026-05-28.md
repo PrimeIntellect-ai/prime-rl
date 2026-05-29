@@ -155,3 +155,79 @@ These are the four edits queued in [`pensieve/RL/PrimeRL/09_rfc_updates_needed.m
 - **Send a one-line PR to upstream `Dockerfile.cuda`** adding `--extra disagg` (or `--extra all`). Tiny patch, unblocks every other team trying to bake `nixl_mx` mode into an image.
 - **MX side: roll the server with the `SourceIdentity` round-trip fix** (proto change committed but not deployed). After that, the `__mx_v2_meta__` sidecar transport workaround can be dropped from `MxV2TrainingPublisher` (it's already filtered before NIXL register via [PR #295](https://github.com/ai-dynamo/modelexpress/pull/295)).
 - **`pull_one(name)` semantic on MX** — inspired by vLLM PR #43375's RDT contract. Would let MX expose Ray-like per-tensor elasticity without abandoning the trainer-side compile model. ~50 LOC; not on the critical path but a clean addition for the post-Phase-4 work.
+
+## 8. Strategic update — vLLM published native RL APIs (2026-05-28)
+
+Same day as this doc, the vLLM team published [Native RL APIs in vLLM](https://vllm.ai/blog/2026-05-28-native-rl-apis), announcing a standardized `WeightTransferEngine` abstract base + four-phase lifecycle (`init_weight_transfer_engine` / `start_weight_update` / `update_weights` / `finish_weight_update`) and a pluggable `WeightTransferEngineFactory.register_engine(...)` extension point. Existing built-in backends: NCCL (packed broadcast), IPC (CUDA shared mem). PR [#43375](https://github.com/vllm-project/vllm/pull/43375) (Anyscale "RDT") plugs Ray Direct Transport into the same factory.
+
+Three things this changes about our post-PR-#2389 plan:
+
+### 8.1 Phase 2 + Phase 3 + Phase 4 have a clean upstream form: `MxWeightTransferEngine`
+
+The native API gives us a standard surface to plug MX into vLLM. The upstream-friendly shape of all our follow-up work is a single adapter class:
+
+```python
+class MxWeightTransferEngine(WeightTransferEngine):
+    init_info_cls = MxInitInfo            # mx_server_url, model_name, worker_rank, ...
+    update_info_cls = MxUpdateInfo        # version, compile_target_filter, target_tp_layout, ...
+
+    def init_transfer_engine(self, init_info: MxInitInfo):
+        self._receiver = MxV2RefitReceiver(...)
+
+    def receive_weights(self, update_info, load_weights):
+        plan = self._receiver.discover_v2_sources_for_slice(    # Phase 4
+            model_name=update_info.model_name,
+            target_layout=update_info.target_tp_layout,
+            compile_target_filter=update_info.compile_target_filter,   # Phase 3b
+            required_compile_metadata=update_info.required_compile_metadata,
+        )
+        for name, tensor in self._receiver.receive_via_plan(plan):     # Phase 4 stitch
+            load_weights([(name, tensor)])
+
+    @classmethod
+    def trainer_send_weights(cls, iterator, trainer_args):
+        # wraps MxV2TrainingPublisher.add_tensor(compile_target=..., compile_metadata=...) + .publish()
+        ...
+```
+
+Registers via `WeightTransferEngineFactory.register_engine("mx_nixl", MxWeightTransferEngine)`. Estimated ~150-200 LOC adapter on top of the MX clients we already have.
+
+The in-tree `MxRendezvous` reimplementation in PR #2389 + the `worker_extension_cls` injection in `inference/vllm/worker/nixl_mx.py` both **become unnecessary once this lands upstream**. The native API is the integration seam they were emulating; our adapter consumes it directly.
+
+### 8.2 Matej is acknowledged in the blog — coordination needed before pushing Phase 2 upstream
+
+The blog credits *"Prime-RL team (especially Matej Sirovatka) and Junjie Zhang for helping to validate and debug the RL APIs with large-scale runs"*. Matej is actively involved in the design.
+
+This affects the trajectory of [draft PR #1](https://github.com/KavinKrishnan/prime-rl/pull/1) (Phase 2). The semantic fix it ships is correct regardless of which integration path prime-rl converges on, but the *form* differs:
+
+- **If Matej is mid-flight on a native-APIs rewrite of `nixl_mx`**: our Phase 2 PR retargets to that path (becomes part of the `MxWeightTransferEngine` adapter rather than landing in the in-tree `MxRendezvous` class).
+- **If Matej hasn't started**: Phase 2 lands as-is, the rewrite happens later as a separate PR.
+
+Either way, ask Matej first.
+
+### 8.3 Validation in the blog is at DPEP32 across 16 nodes — Phase 4 becomes load-bearing
+
+The blog reports Prime-RL validated `zai-org/GLM-5.1-FP8` in P/D-disaggregated deployment across **16× 8xH200 nodes** (2 replicas of 4P+4D, both **DPEP32**) for 100+ steps with stable KL mismatch and upward RL curve. **256 GPUs total at DPEP32**.
+
+At this scale, mixed-TP / mixed-EP is the common case (trainer TP/EP layout almost never matches inference TP/EP layout), and Phase 4's `discover_v2_sources_for_slice` + multi-source `receive_via_plan` is the difference between "works" and "doesn't". This validates Phase 4's design direction and sets the next cluster validation target after kavin (DP=4).
+
+### 8.4 Two async-RL features the blog ships that we don't yet match
+
+| Feature | What | Our position |
+|---|---|---|
+| `pause_generation(mode="keep")` | Pause in-flight requests *without* aborting or waiting; resume from the partial-token state | Today we wait for rollouts to complete before refit. Adopting `keep` mode is the unlock for truly async RL. Queue as a follow-up after Phase 2 lands. |
+| Two-phase pause/resume for DPEP | `EngineCore`-level pause state + periodic all-reduce coordination to prevent deadlocks in wide-DP deployments | Not applicable at DP=4 (kavin cluster). Mandatory once we scale to DPEP16+. Track for the next scale-up. |
+
+The blog also mentions a *"new K8s-native weight transfer engine"* and *"sharding-aware, RDMA-native weight transfer in a generic way"* as ongoing work in the vLLM RL community — both of which describe what MX already is. If MX isn't already the implementation they're referring to, reach out to Robert Shaw (acknowledged as organizing RL-related efforts) to coordinate.
+
+### 8.5 Updated follow-up list — was four items, now seven
+
+| # | Item | Effort |
+|---|---|---|
+| 1 | Validate v0.7.1 end-to-end on kavin (pending — image just deployed) | hours of soak |
+| 2 | Send a one-line PR to upstream `Dockerfile.cuda` adding `--extra disagg` | <30 min |
+| 3 | Roll the MX server with the `SourceIdentity` round-trip fix; deprecate the `__mx_v2_meta__` sidecar transport | ~1 day |
+| 4 | Implement `pull_one(name)` semantic on MX for Ray/RDT-style per-tensor elasticity | ~50 LOC |
+| 5 | **NEW**: Sketch + implement `MxWeightTransferEngine` as the upstream-PR form of Phase 2/3/4 | 150-200 LOC adapter |
+| 6 | **NEW**: Adopt `pause_generation(mode="keep")` in prime-rl orchestrator for true async RL | ~50 LOC + tests |
+| 7 | **NEW**: Coordinate with Matej + Robert Shaw + the vLLM RL roadmap on the K8s-native weight transfer engine. Either contribute MX as the canonical implementation or converge with whoever's already building it. | meeting + scoping |
