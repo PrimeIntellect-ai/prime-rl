@@ -152,6 +152,40 @@ def test_buffer_no_filtering_by_default(dummy_envs, make_rollouts):
     assert len(buffer.rollout_buffer) == 10
 
 
+def _master_all_tasks(buffer: Buffer) -> None:
+    """Mark every currently-normal task as easy in each env (simulates a policy acing them)."""
+    for eb in buffer.env_buffers.values():
+        for example_id in list(eb.examples):
+            eb.update_pools(example_id, avg_reward=1.0)
+
+
+def test_buffer_drain_without_cap_raises(dummy_envs):
+    """Reproduces the drain bug: with caps disabled, mastering all tasks empties normal and sampling crashes."""
+    buffer = Buffer(dummy_envs, BufferConfig(easy_threshold=0.9, max_easy_fraction=1.0, max_hard_fraction=1.0))
+
+    _master_all_tasks(buffer)
+
+    assert get_normal_count(buffer) == 0
+    with pytest.raises(ValueError, match="No environments left with examples"):
+        buffer.sample_examples(1)
+
+
+def test_buffer_cap_recycles_and_never_drains(dummy_envs):
+    """The cap recycles mastered tasks back to normal, so the buffer never drains and sampling keeps working."""
+    buffer = Buffer(dummy_envs, BufferConfig(easy_threshold=0.9))  # default caps: 0.5
+    cap = round(5 * 0.5)  # per-env easy pool cap
+
+    # Repeatedly ace every task; without recycling normal would empty within one pass.
+    for _ in range(20):
+        _master_all_tasks(buffer)
+        for eb in buffer.env_buffers.values():
+            assert len(eb.easy_examples) <= cap
+            assert eb.num_normal >= 5 - cap
+
+    assert get_normal_count(buffer) > 0
+    assert len(buffer.sample_examples(4)) == 4
+
+
 def test_buffer_save_load_with_conversion(dummy_envs, make_rollouts, tmp_path):
     """Easy/hard problems are partially converted to normal on load."""
     buffer = Buffer(dummy_envs, BufferConfig(easy_threshold=1.0, hard_threshold=0.0))

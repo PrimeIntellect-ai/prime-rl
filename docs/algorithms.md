@@ -198,12 +198,16 @@ Difficulty pools gradually retire problems the model has solved or never solves.
 - `buffer.hard_threshold` — at or below this, the problem moves into the `hard` pool and is no longer sampled.
 - Otherwise the problem stays in `normal` and remains in the sampling rotation.
 
+Each pool is capped at a share of the env's own problems: `buffer.max_easy_fraction` / `buffer.max_hard_fraction`. When a pool exceeds its cap, the oldest member is recycled back into `normal`, so `normal` can never fully drain (which would otherwise crash sampling) and stale problems get re-tested under the evolving policy. The caps only bite when a pool grows large relative to the env's size — large task sets are essentially unaffected. Set a fraction to `1.0` to disable that pool's cap.
+
 Pool assignments persist across checkpoints (`easy_examples.jsonl` / `hard_examples.jsonl` under each step's orchestrator checkpoint). When you resume — or want to broaden the curriculum mid-run — `buffer.easy_fraction` / `buffer.hard_fraction` randomly lift that fraction of pooled problems back into `normal` so they re-enter sampling.
 
 ```toml
 [orchestrator.buffer]
 easy_threshold = 0.95
 hard_threshold = 0.05
+max_easy_fraction = 0.5   # cap on the easy pool; oldest is recycled to normal past this
+max_hard_fraction = 0.5   # cap on the hard pool; oldest is recycled to normal past this
 easy_fraction = 0.0   # default; bump on resume to bring some easy problems back
 hard_fraction = 0.0   # default; bump on resume to bring some hard problems back
 ```

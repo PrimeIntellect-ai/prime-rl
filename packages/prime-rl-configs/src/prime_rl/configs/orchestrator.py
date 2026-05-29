@@ -386,6 +386,12 @@ class BufferConfig(BaseConfig):
     hard_fraction: float = Field(0.0, ge=0, le=1)
     """Fraction of hard problems to convert to ``normal`` when resuming or starting training. Only problems with difficulty ``normal`` are sampled."""
 
+    max_easy_fraction: float = Field(0.5, ge=0, le=1)
+    """Max share of an env's tasks allowed to sit in the easy pool. When exceeded, the oldest easy task is recycled back to normal. Set to 1.0 to disable the cap."""
+
+    max_hard_fraction: float = Field(0.5, ge=0, le=1)
+    """Max share of an env's tasks allowed to sit in the hard pool. When exceeded, the oldest hard task is recycled back to normal. Set to 1.0 to disable the cap."""
+
     online_difficulty_filtering: bool = False
     """Filter rollouts based on difficulty. When True, rollouts with average reward 0.0 or 1.0 are not added to the buffer."""
 
