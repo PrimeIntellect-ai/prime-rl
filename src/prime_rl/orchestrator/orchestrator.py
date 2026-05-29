@@ -448,16 +448,28 @@ class Orchestrator:
         # Anchor step-time clock so step 0 measures startup → first batch
         self.last_batch_at = time.perf_counter()
 
+        # ``clean_exit`` stays False if ``main_loop`` raises (signal-driven
+        # CancelledError, KeyboardInterrupt, or a real error), so the teardown
+        # logs a forced-cleanup warning instead of a clean-exit success.
+        clean_exit = False
         try:
             await self.main_loop()
+            clean_exit = True
         finally:
-            get_logger().success(f"Orchestrator step loop done in {format_time(time.perf_counter() - start_time)}")
+            elapsed = format_time(time.perf_counter() - start_time)
+            if clean_exit:
+                get_logger().success(f"Orchestrator step loop done in {elapsed}")
+            else:
+                get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
             self.monitor.save_final_summary()
             if self.ckpt_manager is not None:
                 get_logger().info("Writing final checkpoint")
                 self.ckpt_manager.save(self.progress, step=self.progress.step)
             await self.stop()
-            get_logger().success("Orchestrator finished.")
+            if clean_exit:
+                get_logger().success("Orchestrator finished.")
+            else:
+                get_logger().warning("Orchestrator cleanup complete (forced).")
             try:
                 ctypes.CDLL("libc.so.6").malloc_trim(0)
             except Exception as e:
