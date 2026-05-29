@@ -6,6 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
 
+import numpy as np
 import torch
 from datasets import Dataset, interleave_datasets, load_dataset
 from jaxtyping import Bool, Int
@@ -149,8 +150,9 @@ def _flatten_mm_items(
     for items in mm_items.values():
         for item in items:
             for k, v in item.items():
-                if not isinstance(v, Tensor):
+                if not isinstance(v, (np.ndarray, Tensor)):
                     continue
+                v = torch.as_tensor(v)
                 if k in out:
                     out[k] = torch.cat([out[k], v], dim=0)
                 else:

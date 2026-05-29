@@ -264,30 +264,24 @@ def train(config: SFTConfig):
 
         token_count = loss_mask.sum(dtype=torch.int64)
 
-        # Pull multimodal kwargs through to the model's HF forward. ``forward()``
-        # on main accepts ``pixel_values`` / ``image_grid_thw`` explicitly; we
-        # extract them by name from the model-agnostic mm_kwargs dict the
-        # renderer produced. When ``forward()`` is generalized to accept a
-        # ``mm_kwargs: dict`` (PR #2473), this collapses to ``**mm_kwargs``.
         mm_kwargs = micro_batch.get("mm_kwargs")
-        forward_mm: dict = {}
-        if mm_kwargs:
-            if "pixel_values" in mm_kwargs:
-                forward_mm["pixel_values"] = mm_kwargs["pixel_values"]
-            if "image_grid_thw" in mm_kwargs:
-                forward_mm["image_grid_thw"] = mm_kwargs["image_grid_thw"]
         mm_type_ids = micro_batch.get("mm_token_type_ids")
-        if mm_type_ids is not None:
-            forward_mm["mm_token_type_ids"] = mm_type_ids
 
         with maybe_activation_offloading(config.model.ac_offloading):
             if config.loss_impl in ("liger_fused", "quack_fused"):
                 masked_target_ids = target_ids.clone()
                 masked_target_ids[~loss_mask] = FUSED_CE_IGNORE_INDEX
-                out = forward(model, input_ids, position_ids, labels=masked_target_ids, **forward_mm)
+                out = forward(
+                    model,
+                    input_ids,
+                    position_ids,
+                    labels=masked_target_ids,
+                    mm_kwargs=mm_kwargs,
+                    mm_token_type_ids=mm_type_ids,
+                )
                 loss_sum = out["loss"] * token_count
             else:
-                out = forward(model, input_ids, position_ids, **forward_mm)
+                out = forward(model, input_ids, position_ids, mm_kwargs=mm_kwargs, mm_token_type_ids=mm_type_ids)
                 logits = out["logits"]
                 B, L, V = logits.shape
                 token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
