@@ -1,3 +1,4 @@
+import hashlib
 import json
 import subprocess
 import tempfile
@@ -365,9 +366,11 @@ class SFTDataset(StatefulIterableDataset):
             # cut is pulled back so it never splits an <|image_pad|> run, and
             # mm_items / mm_token_type_ids are sliced in lockstep so surviving
             # placeholders stay 1-to-1 with surviving pixel buffers. Budget is
-            # seq_len + 1 because the causal shift below drops one token.
+            # seq_len (not seq_len + 1): it leaves room for both the causal shift
+            # below and a possibly re-appended EOS, so these un-packed VLM samples
+            # stay within seq_len.
             if mm is not None:
-                budget = self.seq_len + 1
+                budget = self.seq_len
                 if len(input_ids) > budget:
                     cut = _find_image_safe_cut(budget, mm)
                     self.logger.debug(
@@ -664,15 +667,29 @@ def stack_collate(samples: list[Sample]) -> Batch:
     sample = samples[0]
     mm_kwargs = _move_mm_kwargs_to_cuda(sample.get("mm_kwargs"))
     mm_type_ids = sample.get("mm_token_type_ids")
+    if mm_kwargs is not None:
+        # Multimodal samples are emitted solo by StackDataset with 1-D fields; add
+        # the batch dim the bucketed text path gets from its list-of-lists so the
+        # trainer receives [batch, seq] like everywhere else.
+        return {
+            "input_ids": torch.tensor(sample["input_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
+            "position_ids": torch.tensor(sample["position_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
+            "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool, device="cuda").unsqueeze(0),
+            "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long, device="cuda").unsqueeze(0),
+            "mm_kwargs": mm_kwargs,
+            "mm_token_type_ids": (
+                torch.tensor(mm_type_ids, dtype=torch.long, device="cuda").unsqueeze(0)
+                if mm_type_ids is not None
+                else None
+            ),
+        }
     return {
         "input_ids": torch.tensor(sample["input_ids"], dtype=torch.long, device="cuda"),
         "position_ids": torch.tensor(sample["position_ids"], dtype=torch.long, device="cuda"),
         "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool, device="cuda"),
         "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long, device="cuda"),
-        "mm_kwargs": mm_kwargs,
-        "mm_token_type_ids": (
-            torch.tensor(mm_type_ids, dtype=torch.long, device="cuda") if mm_type_ids is not None else None
-        ),
+        "mm_kwargs": None,
+        "mm_token_type_ids": None,
     }
 
 
@@ -745,16 +762,20 @@ def setup_and_interleave_datasets(
     return dataset
 
 
-def _normalize_oai_record(record: dict) -> dict:
+def _normalize_oai_record(record: dict, multimodal: bool = False) -> dict:
     """Coerce variable JSON shapes to forms PyArrow's JSON loader can handle.
 
     PyArrow infers schemas across rows and crashes on shape drift:
-    - ``messages[].content`` may be string or list of blocks → wrap strings in
-      ``[{"type": "text", "text": content}]``.
+    - ``messages[].content`` may be string or list of blocks. For multimodal
+      data we wrap strings in ``[{"type": "text", "text": content}]`` so the
+      column unifies with image-block content. Text-only data keeps string
+      content untouched, so the legacy tokenizer / chat-template path (which
+      expects strings) is unaffected.
     - ``messages[].tool_calls[].function.arguments`` and the ``tools`` array
-      both carry per-row schemas (browser-agent action params, tool-specific
-      JSON schemas, etc.) that Arrow can't represent → stringify to canonical
-      OAI JSON form. Renderers accept either.
+      both carry per-row schemas (action params, tool-specific JSON schemas,
+      etc.) that Arrow can't represent → stringify to canonical OAI JSON form
+      (``deserialize_tool_calls`` reverses this downstream). Renderers accept
+      either.
     """
     new_record = dict(record)
 
@@ -767,7 +788,7 @@ def _normalize_oai_record(record: dict) -> dict:
                 continue
             m = dict(m)
             content = m.get("content")
-            if isinstance(content, str):
+            if multimodal and isinstance(content, str):
                 m["content"] = [{"type": "text", "text": content}]
             tool_calls = m.get("tool_calls")
             if isinstance(tool_calls, list):
@@ -796,7 +817,7 @@ def _stringify_tool_call_args(tool_call: Any) -> Any:
     return tc
 
 
-def _resolve_local_data_files(data_files: list[str] | None) -> list[str] | None:
+def _resolve_local_data_files(data_files: list[str] | None, multimodal: bool = False) -> list[str] | None:
     """Materialize local files HF datasets can ingest.
 
     Two transforms applied side-by-side under ``$TMPDIR``:
@@ -808,31 +829,40 @@ def _resolve_local_data_files(data_files: list[str] | None) -> list[str] | None:
     Both steps stream line-by-line — no full-file load into memory — so large
     full datasets go through the same path as smaller samples.
 
-    Only the global-rank-0 process performs the work; other ranks wait on a
-    barrier and then read the materialized files. Without this gate, parallel
-    ranks racing to write the same TMPDIR path produced byte-interleaved
-    output that PyArrow rejected with "Missing closing quotation mark".
+    The temp filename embeds a digest of the source's absolute path, mtime,
+    size, and the ``multimodal`` flag, so same-basename files from different
+    directories (or a changed/stale source) never collide on or silently reuse
+    a previous run's materialized output.
+
+    Each node materializes into its own (node-local) ``$TMPDIR``, so only the
+    local-rank-0 process on each node performs the work; a global barrier then
+    syncs all ranks. Gating per-node (not on global rank 0 alone) means ranks
+    on other nodes find their files instead of waiting on a path that was only
+    written on node 0. The gate also avoids parallel ranks racing to write the
+    same path (byte-interleaved output PyArrow rejects).
     """
     if not data_files:
         return data_files
-    is_rank_zero = not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
+    is_writer = not torch.distributed.is_initialized() or get_world().local_rank == 0
     resolved: list[str] = []
     for path in data_files:
         p = Path(path)
-        if p.suffix == ".zst":
-            tmp = Path(tempfile.gettempdir()) / (p.stem + ".prime_rl_normalized.jsonl")
-            if is_rank_zero and (not tmp.exists() or tmp.stat().st_size == 0):
-                get_logger().info(f"Decompressing + normalizing {p} → {tmp}")
-                decompressed = Path(tempfile.gettempdir()) / (p.stem + ".prime_rl_raw")
-                if not decompressed.exists() or decompressed.stat().st_size == 0:
-                    subprocess.run(["zstd", "-d", "-f", "-o", str(decompressed), str(p)], check=True)
-                _normalize_jsonl(decompressed, tmp)
-            resolved.append(str(tmp))
-        elif p.suffix == ".jsonl":
-            tmp = Path(tempfile.gettempdir()) / (p.stem + ".prime_rl_normalized.jsonl")
-            if is_rank_zero and (not tmp.exists() or tmp.stat().st_size == 0):
-                get_logger().info(f"Normalizing {p} → {tmp}")
-                _normalize_jsonl(p, tmp)
+        if p.suffix in (".zst", ".jsonl"):
+            stat = p.stat()
+            digest = hashlib.sha1(
+                f"{p.resolve()}:{stat.st_mtime_ns}:{stat.st_size}:{multimodal}".encode()
+            ).hexdigest()[:12]
+            tmp = Path(tempfile.gettempdir()) / f"{p.stem}.{digest}.prime_rl_normalized.jsonl"
+            if is_writer and (not tmp.exists() or tmp.stat().st_size == 0):
+                if p.suffix == ".zst":
+                    get_logger().info(f"Decompressing + normalizing {p} → {tmp}")
+                    decompressed = Path(tempfile.gettempdir()) / f"{p.stem}.{digest}.prime_rl_raw"
+                    if not decompressed.exists() or decompressed.stat().st_size == 0:
+                        subprocess.run(["zstd", "-d", "-f", "-o", str(decompressed), str(p)], check=True)
+                    _normalize_jsonl(decompressed, tmp, multimodal=multimodal)
+                else:
+                    get_logger().info(f"Normalizing {p} → {tmp}")
+                    _normalize_jsonl(p, tmp, multimodal=multimodal)
             resolved.append(str(tmp))
         else:
             resolved.append(str(p))
@@ -841,21 +871,21 @@ def _resolve_local_data_files(data_files: list[str] | None) -> list[str] | None:
     return resolved
 
 
-def _normalize_jsonl(src: Path, dst: Path) -> None:
+def _normalize_jsonl(src: Path, dst: Path, multimodal: bool = False) -> None:
     """Stream-rewrite ``src`` JSONL to ``dst`` with uniform OAI message shape."""
     with src.open("r") as f_in, dst.open("w") as f_out:
         for line in f_in:
             if not line.strip():
                 continue
-            record = _normalize_oai_record(json.loads(line))
+            record = _normalize_oai_record(json.loads(line), multimodal=multimodal)
             f_out.write(json.dumps(record))
             f_out.write("\n")
 
 
-def load_sft_dataset(config: SFTDataConfig) -> Dataset:
+def load_sft_dataset(config: SFTDataConfig, multimodal: bool = False) -> Dataset:
     """Load and interleave the raw HF dataset. This is the expensive I/O step."""
     logger = get_logger()
-    data_files = _resolve_local_data_files(config.data_files)
+    data_files = _resolve_local_data_files(config.data_files, multimodal=multimodal)
     if config.subsets is None and config.splits is None:
         return setup_and_interleave_datasets(
             dataset_name=config.name,
@@ -912,7 +942,7 @@ def setup_dataset(
         )
     elif config.type == "sft":
         if raw_dataset is None:
-            raw_dataset = load_sft_dataset(config)
+            raw_dataset = load_sft_dataset(config, multimodal=renderer is not None)
         return SFTDataset(
             raw_dataset,
             tokenizer,
