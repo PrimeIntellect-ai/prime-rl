@@ -324,26 +324,8 @@ srun --kill-on-bad-exit=1 bash -c '
 wait -n
 EXIT_CODE=$?
 echo "[$(hostname)] component exited with code $EXIT_CODE - terminating remaining processes"
-REMAINING_PIDS=$(jobs -p)
-for pid in $REMAINING_PIDS; do
+for pid in $(jobs -p); do
     kill -TERM $pid 2>/dev/null || true
 done
-{%- if cleanup_grace_period %}
-# Give in-flight work a bounded window to flush after SIGTERM before we
-# force-kill and release the allocation. The wait ends early as soon as every
-# process exits, so this is only an upper bound.
-GRACE_DEADLINE=$((SECONDS + {{ cleanup_grace_period }}))
-for pid in $REMAINING_PIDS; do
-    while kill -0 $pid 2>/dev/null && [ "$SECONDS" -lt "$GRACE_DEADLINE" ]; do
-        sleep 5
-    done
-done
-for pid in $REMAINING_PIDS; do
-    if kill -0 $pid 2>/dev/null; then
-        echo "[$(hostname)] process $pid still alive after {{ cleanup_grace_period }}s grace period - force-killing"
-        kill -KILL $pid 2>/dev/null || true
-    fi
-done
-{%- endif %}
 exit $EXIT_CODE
 '

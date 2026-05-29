@@ -36,7 +36,7 @@ class SlurmConfig(BaseConfig):
     """Shell command to run on the head node after cd, .env sourcing, and venv activation. Useful for cleanup like ``sudo pkill -f vllm``; wrap with ``srun bash -c '...'`` to fan out to all nodes."""
 
     cleanup_grace_period: int = Field(3600, ge=0)
-    """Seconds to wait for processes to exit during teardown. When a component exits (completion, crash, or SIGTERM), the job sends SIGTERM to the remaining processes and then waits up to this long for them to exit before force-killing (SIGKILL) and releasing the allocation. Gives in-flight work — notably trainer checkpoint writes — a bounded window to flush. The wait ends as soon as all processes exit, so this is only an upper bound. Set to 0 for an immediate force-kill. Should fit inside ``time`` so the job is not reaped mid-grace."""
+    """Seconds to keep the allocation alive when a multi-node RL job is torn down by a *non-zero* exit (crash, SIGTERM, wall-time), giving in-flight work — notably trainer checkpoint writes — time to flush. The failing node stays alive and signals nothing for this window, which both lets a local checkpoint finish and prevents ``srun --kill-on-bad-exit`` from reaping checkpointing trainers on peer nodes before they flush; teardown then proceeds. Clean (zero-exit) completion is unaffected and tears down immediately. This is a fixed wait, so pick a value that comfortably covers a checkpoint write. Set to 0 to tear down immediately on failure. Should fit inside ``time`` so the job is not reaped mid-grace."""
 
     @property
     def template_vars(self) -> dict:
