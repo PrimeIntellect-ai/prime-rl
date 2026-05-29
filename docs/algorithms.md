@@ -206,9 +206,9 @@ Pool assignments persist across checkpoints (`easy_examples.jsonl` / `hard_examp
 [orchestrator.buffer]
 easy_threshold = 0.95
 hard_threshold = 0.05
-max_easy_fraction = 0.5   # cap on the easy pool; oldest is recycled to normal past this
-max_hard_fraction = 0.4   # cap on the hard pool; oldest is recycled to normal past this
-# max_easy_fraction + max_hard_fraction must be < 1.0 (config validation enforces this)
+max_easy_fraction = 0.5
+max_hard_fraction = 0.4
+# max_easy_fraction + max_hard_fraction must be < 1.0
 easy_fraction = 0.0   # default; bump on resume to bring some easy problems back
 hard_fraction = 0.0   # default; bump on resume to bring some hard problems back
 ```

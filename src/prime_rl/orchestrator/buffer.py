@@ -111,11 +111,9 @@ class _EnvBuffer:
         return "normal"
 
     def _recycle_overflow(self, pool: list[dict], max_fraction: float) -> None:
-        """Recycle oldest sidelined tasks back to normal until the pool is within its cap.
-
-        floor (not round) is intentional: together with the BufferConfig constraint
-        max_easy + max_hard < 1, it guarantees at least one task always stays in normal.
-        """
+        """Recycle oldest sidelined tasks back to normal until the pool is within its cap."""
+        # floor (not round) is intentional: together with the BufferConfig constraint
+        # max_easy + max_hard < 1, it guarantees at least one task always stays in normal.
         max_size = math.floor(self.num_total * max_fraction)
         while len(pool) > max_size:
             example = pool.pop(0)
