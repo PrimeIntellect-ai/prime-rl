@@ -199,13 +199,12 @@ def test_kl_with_fused_lm_head():
     with torch.no_grad():
         vanilla_out = model(input_ids)
     vanilla_logits = vanilla_out["logits"]
-    temperature = torch.ones(1, 16, device="cuda")
-    vanilla_logprobs = selective_log_softmax(vanilla_logits / temperature.unsqueeze(-1), labels)
+    vanilla_logprobs = selective_log_softmax(vanilla_logits, labels)
 
     # Now switch to fused head and compare
     inject_prime_lm_head(model, chunk_size=16)
     with torch.no_grad():
-        fused_out = model(input_ids, labels=labels, temperature=temperature)
+        fused_out = model(input_ids, labels=labels)
     fused_logprobs = fused_out["logprobs"]
 
     diff = (vanilla_logprobs - fused_logprobs).abs().max()

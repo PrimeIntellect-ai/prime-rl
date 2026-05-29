@@ -47,12 +47,12 @@ class FusedOutputLinear(torch.nn.Linear):
         temperature: Tensor | None = None,
     ) -> PrimeLmOutput:
         assert labels is not None, "FusedOutputLinear requires labels for chunked logprob computation"
-        assert temperature is not None, "FusedOutputLinear requires per-token temperatures"
 
         b, s, h = hidden_states.shape
         hidden_states = hidden_states.reshape(b * s, h).contiguous()
         labels = labels.reshape(b * s).contiguous()
-        inv_t = 1.0 / temperature.reshape(b * s).contiguous()  # [N]
+        # Keep temperature in the signature for model-forward compatibility; trainer policy logprobs stay raw.
+        inv_t = torch.ones((b * s,), device=hidden_states.device, dtype=torch.float32)
 
         logprobs, entropy = _SequenceChunkedLogProbEntropyFn.apply(
             hidden_states, self.weight, labels, inv_t, self.chunk_size
@@ -70,7 +70,7 @@ class VanillaOutputLinear(torch.nn.Linear):
     def forward(
         self, hidden_states: torch.Tensor, labels: torch.Tensor | None = None, temperature: Tensor | None = None
     ) -> PrimeLmOutput:
-        # VanillaOutputLinear just returns logits - temperature scaling is done externally in train.py
+        # VanillaOutputLinear just returns logits; trainer logprobs are computed from raw logits.
         return PrimeLmOutput(logits=super().forward(hidden_states))
 
 
@@ -277,7 +277,7 @@ def inject_prime_lm_head(
     Inject a PrimeRL LM head into a model.
 
     This replaces the model's lm_head and overrides the forward method to use labels
-    and temperature for chunked loss computation.
+    for chunked loss computation.
 
     Args:
         model: The model to wrap.
@@ -343,7 +343,7 @@ def inject_prime_lm_head(
 
 
 def _patch_model_forward(model: nn.Module) -> None:
-    # Patch the forward method to use the new lm_head with labels and temperature
+    # Patch the forward method to use the new lm_head with labels.
     def new_forward(
         self: nn.Module,
         input_ids: torch.Tensor | None = None,

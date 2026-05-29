@@ -408,8 +408,8 @@ class InferenceConfig(BaseConfig):
             value = rgetattr(self, config_key.replace("-", "_"))
             rsetattr(namespace, vllm_key, value)
 
-        # Set `logprobs_mode` to `processed_logprobs` by default
-        rsetattr(namespace, "logprobs_mode", "processed_logprobs")
+        # Train against raw model logprobs; sampling controls only affect token selection.
+        rsetattr(namespace, "logprobs_mode", "raw_logprobs")
 
         if self.kv_cache_offload is not None:
             rsetattr(

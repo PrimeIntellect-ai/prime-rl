@@ -25,12 +25,12 @@ class GemmaFusedOutputLinear(torch.nn.Linear):
         temperature: Tensor | None = None,
     ) -> PrimeLmOutput:
         assert labels is not None, "GemmaFusedOutputLinear requires labels for chunked logprob computation"
-        assert temperature is not None, "GemmaFusedOutputLinear requires per-token temperatures"
 
         b, s, h = hidden_states.shape
         hidden_states = hidden_states.reshape(b * s, h).contiguous()
         labels = labels.reshape(b * s).contiguous()
-        inv_t = 1.0 / temperature.reshape(b * s).contiguous()  # [N]
+        # Keep temperature in the signature for model-forward compatibility; trainer policy logprobs stay raw.
+        inv_t = torch.ones((b * s,), device=hidden_states.device, dtype=torch.float32)
 
         logprobs, entropy = _GemmaChunkedLogProbEntropyFn.apply(
             hidden_states, self.weight, labels, inv_t, self.chunk_size, self.softcap
