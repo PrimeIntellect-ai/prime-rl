@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .pipeline import (
     DEFAULT_DATA_DIR,
+    OLYMPIAD_COMPETITIONS,
     apply_answer_key,
     build_rlvr_subproblems_file,
     build_candidates,
@@ -18,6 +19,7 @@ from .pipeline import (
     filter_candidates,
     import_structured_jsonl,
     init_layout,
+    canonical_competition,
     manifest_from_local_pdfs,
     write_validation_report,
 )
@@ -35,13 +37,19 @@ def main() -> None:
     p.add_argument("--pdf-root", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--source-id", default="local_pdf")
-    p.set_defaults(run=lambda a: _count("manifest rows", manifest_from_local_pdfs(a.pdf_root, a.out, a.source_id)))
+    p.add_argument("--competitions", help="Comma-separated competition allowlist")
+    p.add_argument("--include-year-max", type=int)
+    p.add_argument("--require-solution", action="store_true")
+    p.set_defaults(run=_run_manifest_local)
 
     p = sub.add_parser("crawl")
     p.add_argument("--base-url", required=True)
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--source-id", default="ipho_olimpicos")
-    p.set_defaults(run=lambda a: _count("crawled PDF rows", crawl_pdf_manifest(a.base_url, a.out, a.source_id)))
+    p.add_argument("--competitions", help="Comma-separated competition allowlist")
+    p.add_argument("--include-year-max", type=int)
+    p.add_argument("--require-solution", action="store_true")
+    p.set_defaults(run=_run_crawl)
 
     p = sub.add_parser("download")
     p.add_argument("--manifest", type=Path, required=True)
@@ -147,6 +155,30 @@ def _run_extract(args: argparse.Namespace) -> None:
     _count("documents", count)
 
 
+def _run_manifest_local(args: argparse.Namespace) -> None:
+    count = manifest_from_local_pdfs(
+        args.pdf_root,
+        args.out,
+        args.source_id,
+        competitions=_competition_set(args.competitions),
+        include_year_max=args.include_year_max,
+        require_solution=args.require_solution,
+    )
+    _count("manifest rows", count)
+
+
+def _run_crawl(args: argparse.Namespace) -> None:
+    count = crawl_pdf_manifest(
+        args.base_url,
+        args.out,
+        args.source_id,
+        competitions=_competition_set(args.competitions),
+        include_year_max=args.include_year_max,
+        require_solution=args.require_solution,
+    )
+    _count("crawled PDF rows", count)
+
+
 def _run_init(args: argparse.Namespace) -> None:
     init_layout(args.data_dir)
     print(f"initialized {args.data_dir}")
@@ -187,3 +219,14 @@ def _split_csv(value: str | None) -> list[str] | None:
     if value is None:
         return None
     return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _competition_set(value: str | None) -> set[str] | None:
+    competitions = _split_csv(value)
+    if competitions is None:
+        return None
+    normalized = {canonical_competition(competition) for competition in competitions}
+    unknown = sorted(normalized - OLYMPIAD_COMPETITIONS)
+    if unknown:
+        raise ValueError(f"unknown competitions: {', '.join(unknown)}")
+    return normalized

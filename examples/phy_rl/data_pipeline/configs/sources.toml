@@ -1,9 +1,61 @@
 [source.ipho_olimpicos]
 source_type = "olympiad_pdf"
 base_url = "https://ipho.olimpicos.net/"
-competitions = ["IPhO", "APhO", "EuPhO", "NBPhO", "RMPh", "WoPhO"]
+competitions = ["IPhO"]
 include_year_max = 2023
 frozen_test_years = [2024, 2025]
+require_solution = true
+license_status = "unknown"
+
+[source.apho_olimpicos]
+source_type = "olympiad_pdf"
+base_url = "https://apho.olimpicos.net/"
+competitions = ["APhO"]
+include_year_max = 2023
+frozen_test_years = [2024, 2025]
+require_solution = true
+license_status = "unknown"
+
+[source.eupho_olimpicos]
+source_type = "olympiad_pdf"
+base_url = "https://eupho.olimpicos.net/"
+competitions = ["EuPhO"]
+include_year_max = 2023
+frozen_test_years = [2024, 2025]
+require_solution = true
+license_status = "unknown"
+
+[source.nbpho_olimpicos]
+source_type = "olympiad_pdf"
+base_url = "https://nbpho.olimpicos.net/"
+competitions = ["NBPhO"]
+include_year_max = 2023
+frozen_test_years = [2024, 2025]
+require_solution = true
+license_status = "unknown"
+
+[source.rmph_olimpicos]
+source_type = "olympiad_pdf"
+base_url = "https://rmph.olimpicos.net/"
+competitions = ["RMPh"]
+include_year_max = 2023
+frozen_test_years = [2024, 2025]
+require_solution = true
+license_status = "unknown"
+
+[source.wopho_olimpicos]
+source_type = "olympiad_pdf"
+base_url = "https://wopho.olimpicos.net/"
+competitions = ["WoPhO"]
+include_year_max = 2023
+frozen_test_years = [2024, 2025]
+require_solution = true
+license_status = "unknown"
+
+[source.local_extended_olympiad_pdfs]
+source_type = "olympiad_pdf"
+competitions = ["PanPhO", "PanMechanics"]
+include_year_max = 2023
 require_solution = true
 license_status = "unknown"
 

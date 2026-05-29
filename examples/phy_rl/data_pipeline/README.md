@@ -24,7 +24,18 @@ uv run --project examples/phy_rl/data_pipeline physics-rlvr-data init
 uv run --project examples/phy_rl/data_pipeline physics-rlvr-data manifest-local \
   --pdf-root /path/to/pdfs \
   --out examples/phy_rl/data_pipeline/data/manifest.jsonl \
-  --source-id ipho_olimpicos
+  --source-id local_olympiad_pdfs \
+  --competitions IPhO,APhO,EuPhO,NBPhO,RMPh,WoPhO,PanPhO,PanMechanics \
+  --include-year-max 2023 \
+  --require-solution
+
+uv run --project examples/phy_rl/data_pipeline physics-rlvr-data crawl \
+  --base-url https://apho.olimpicos.net/ \
+  --out examples/phy_rl/data_pipeline/data/manifest_apho.jsonl \
+  --source-id apho_olimpicos \
+  --competitions APhO \
+  --include-year-max 2023 \
+  --require-solution
 
 GEMINI_API_KEY=... \
 uv run --project examples/phy_rl/data_pipeline physics-rlvr-data extract \
@@ -82,6 +93,10 @@ or unsupported rows stay in `subproblems_review.jsonl`.
 The pipeline never invents labels. A candidate is rejected until it has explicit
 answers and deterministic verifier metadata, either from a structured source or
 an answer-key JSONL.
+
+Use `--include-year-max 2023` for training crawls and local manifests. Use
+`--require-solution` for Olympiad PDFs so only problem PDFs with matching
+solution or marking-scheme PDFs are queued for extraction.
 
 For P1-style RLVR data, each admitted item should have a structured
 question/solution/answer schema: answer values are split from units, multi-part

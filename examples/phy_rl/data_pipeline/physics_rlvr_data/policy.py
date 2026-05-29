@@ -12,6 +12,8 @@ FROZEN_COMPETITIONS = {
     "APhO",
     "EuPhO",
     "NBPhO",
+    "RMPh",
+    "WoPhO",
     "PanPhO",
     "PanMechanics",
     "F=MA",

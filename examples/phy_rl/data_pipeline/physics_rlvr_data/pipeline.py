@@ -36,6 +36,35 @@ from .subproblem_curation import build_rlvr_subproblems
 
 DEFAULT_DATA_DIR = Path("examples/phy_rl/data_pipeline/data")
 Extractor = Literal["gemini", "glm-ocr", "embedded", "auto"]
+OLYMPIAD_COMPETITIONS = {
+    "IPhO",
+    "APhO",
+    "EuPhO",
+    "NBPhO",
+    "RMPh",
+    "WoPhO",
+    "PanPhO",
+    "PanMechanics",
+    "HiPhO",
+    "F=MA",
+}
+COMPETITION_ALIASES = {
+    "ipho": "IPhO",
+    "apho": "APhO",
+    "eupho": "EuPhO",
+    "nbpho": "NBPhO",
+    "rmph": "RMPh",
+    "wopho": "WoPhO",
+    "panpho": "PanPhO",
+    "pan_pho": "PanPhO",
+    "panmechanics": "PanMechanics",
+    "pan_mechanics": "PanMechanics",
+    "panmech": "PanMechanics",
+    "pan_mech": "PanMechanics",
+    "hipho": "HiPhO",
+    "f=ma": "F=MA",
+    "fma": "F=MA",
+}
 HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/125 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -70,10 +99,20 @@ def init_layout(data_dir: Path = DEFAULT_DATA_DIR) -> None:
         (data_dir / relative).mkdir(parents=True, exist_ok=True)
 
 
-def manifest_from_local_pdfs(pdf_root: Path, out_path: Path, source_id: str = "local_pdf") -> int:
+def manifest_from_local_pdfs(
+    pdf_root: Path,
+    out_path: Path,
+    source_id: str = "local_pdf",
+    *,
+    competitions: set[str] | None = None,
+    include_year_max: int | None = None,
+    require_solution: bool = False,
+) -> int:
     rows = []
     for path in sorted(pdf_root.rglob("*.pdf")):
         metadata = infer_pdf_metadata(path)
+        if not _metadata_allowed(metadata, competitions, include_year_max):
+            continue
         split = choose_split(
             source=source_id,
             competition=metadata["competition"],
@@ -92,10 +131,20 @@ def manifest_from_local_pdfs(pdf_root: Path, out_path: Path, source_id: str = "l
             split=split,
         )
         rows.append(to_dict(item))
+    if require_solution:
+        rows = _filter_rows_with_solutions(rows)
     return write_jsonl(out_path, rows)
 
 
-def crawl_pdf_manifest(base_url: str, out_path: Path, source_id: str) -> int:
+def crawl_pdf_manifest(
+    base_url: str,
+    out_path: Path,
+    source_id: str,
+    *,
+    competitions: set[str] | None = None,
+    include_year_max: int | None = None,
+    require_solution: bool = False,
+) -> int:
     request = urllib.request.Request(base_url, headers=HTTP_HEADERS)
     with urllib.request.urlopen(request, timeout=30) as response:
         html = response.read().decode("utf-8", errors="replace")
@@ -106,6 +155,8 @@ def crawl_pdf_manifest(base_url: str, out_path: Path, source_id: str) -> int:
     for href in sorted(set(parser.links)):
         url = urllib.parse.urljoin(base_url, href)
         metadata = infer_pdf_metadata(Path(urllib.parse.urlparse(url).path))
+        if not _metadata_allowed(metadata, competitions, include_year_max):
+            continue
         split = choose_split(
             source=source_id,
             competition=metadata["competition"],
@@ -127,6 +178,8 @@ def crawl_pdf_manifest(base_url: str, out_path: Path, source_id: str) -> int:
                 )
             )
         )
+    if require_solution:
+        rows = _filter_rows_with_solutions(rows)
     return write_jsonl(out_path, rows)
 
 
@@ -569,15 +622,13 @@ def infer_pdf_metadata(path: Path) -> dict[str, Any]:
     text = " ".join([*path.parts, path.stem]).replace("_", " ")
     year_match = re.search(r"(19|20)\d{2}", text)
     competition_match = re.search(
-        r"(?<![A-Za-z0-9])(IPhO|APhO|EuPhO|NBPhO|RMPh|WoPhO|HiPhO|PanPhO|PanMechanics|F=MA)(?![A-Za-z0-9])",
+        r"(?<![A-Za-z0-9])"
+        r"(IPhO|APhO|EuPhO|NBPhO|RMPh|WoPhO|HiPhO|Pan\s*PhO|Pan\s*Mechanics|Pan\s*Mech|F\s*=?\s*MA)"
+        r"(?![A-Za-z0-9])",
         text,
         flags=re.IGNORECASE,
     )
-    problem_match = re.search(
-        r"(?:problem|prob|question|solution|sol|[qps])[_\-\s]?(\d+[a-z]?)",
-        text,
-        flags=re.IGNORECASE,
-    )
+    problem_match = _infer_problem_number(text)
     lowered = text.lower()
     if "mark" in lowered or "scheme" in lowered:
         paper_type = "marking_scheme"
@@ -587,12 +638,61 @@ def infer_pdf_metadata(path: Path) -> dict[str, Any]:
         paper_type = "problem"
     else:
         paper_type = "unknown"
+    competition = canonical_competition(competition_match.group(1)) if competition_match else "unknown"
     return {
-        "competition": competition_match.group(1) if competition_match else "unknown",
+        "competition": competition,
         "year": int(year_match.group(0)) if year_match else None,
-        "problem_number": problem_match.group(1) if problem_match else None,
+        "problem_number": problem_match,
         "paper_type": paper_type,
     }
+
+
+def _infer_problem_number(text: str) -> str | None:
+    patterns = [
+        r"(?<![A-Za-z0-9])[qps][_\-\s]?(\d+[a-z]?)(?![A-Za-z0-9])",
+        r"(?:problem|prob|question|solution|sol)[_\-\s]?(\d+[a-z]?)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _metadata_allowed(
+    metadata: dict[str, Any],
+    competitions: set[str] | None,
+    include_year_max: int | None,
+) -> bool:
+    if competitions is not None and metadata["competition"] not in competitions:
+        return False
+    if include_year_max is None:
+        return True
+    year = metadata["year"]
+    return year is not None and year <= include_year_max
+
+
+def _filter_rows_with_solutions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, int | None, str | None], set[str]] = {}
+    for row in rows:
+        key = (row["competition"], row["year"], row.get("problem_number"))
+        grouped.setdefault(key, set()).add(row["paper_type"])
+
+    verifiable_keys = {
+        key
+        for key, paper_types in grouped.items()
+        if "problem" in paper_types and paper_types.intersection({"solution", "marking_scheme"})
+    }
+    return [
+        row
+        for row in rows
+        if (row["competition"], row["year"], row.get("problem_number")) in verifiable_keys
+    ]
+
+
+def canonical_competition(raw: str) -> str:
+    key = re.sub(r"[^a-z0-9=]+", "_", raw.strip().lower()).strip("_")
+    return COMPETITION_ALIASES.get(key, raw)
 
 
 def _curate_document_section(markdown: str, problem_number: str | None) -> str:

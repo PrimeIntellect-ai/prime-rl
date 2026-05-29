@@ -22,7 +22,10 @@ Typical PDF flow:
 uv run --project examples/phy_rl/data_pipeline physics-rlvr-data manifest-local \
   --pdf-root /path/to/pdfs \
   --out examples/phy_rl/data_pipeline/data/manifest.jsonl \
-  --source-id ipho_olimpicos
+  --source-id local_olympiad_pdfs \
+  --competitions IPhO,APhO,EuPhO,NBPhO,RMPh,WoPhO,PanPhO,PanMechanics \
+  --include-year-max 2023 \
+  --require-solution
 
 GEMINI_API_KEY=... \
 uv run --project examples/phy_rl/data_pipeline physics-rlvr-data extract \
@@ -71,6 +74,10 @@ uv run --project examples/phy_rl/data_pipeline physics-rlvr-data extract \
 - Use `gemini` for real PDF extraction; use `embedded` only as a diagnostic.
 - `ipho.olimpicos.net` requires browser-like HTTP headers for crawl/download;
   keep the pipeline HTTP helper in use instead of raw default urllib requests.
+- Crawl each Olimpicos mirror with its own source id and competition allowlist
+  (`ipho_olimpicos`, `apho_olimpicos`, `eupho_olimpicos`, `nbpho_olimpicos`,
+  `rmph_olimpicos`, `wopho_olimpicos`). Use `--include-year-max 2023` and
+  `--require-solution` for training manifests.
 - IPhO filenames use `Q1`/`S1` conventions; metadata inference must preserve
   `paper_type` and `problem_number` from those names before building candidates.
 - Gemini OCR requires `GEMINI_API_KEY` in the environment. Never write API keys
@@ -87,5 +94,8 @@ uv run --project examples/phy_rl/data_pipeline physics-rlvr-data extract \
   rule-verifiable answers. Split units into the `unit` field and represent
   multi-part answers as separate answer entries.
 - Do not admit an item without explicit answer metadata and a deterministic verifier.
+- PanPhO and PanMechanics are recognized for local/future PDF manifests, but
+  only admit them when there are official problem PDFs plus matching solutions
+  or marking schemes and the year is <= 2023.
 - Keep 2024-2025 Olympiad items and HiPhO out of train.
 - Keep rejected rows and audit reports.
