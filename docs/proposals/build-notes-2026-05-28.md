@@ -1,7 +1,12 @@
 # Build notes — Phase-2 + Phase-3 source-baked image (2026-05-28)
 
-> **Companion to**: [`docs/proposals/post-pr2389-kernel-compile-plan.md`](./post-pr2389-kernel-compile-plan.md)
-> **Status**: empirical findings from baking Phase 2 (rendezvous fixes) + Phase 3 (conversion-registry extensions) into an ARM64 GB200 image and running it against the live `kavin` namespace. Updates the RFC's framing where the build experience contradicted assumptions in the original RFC.
+> **Related docs in this directory**:
+> - [`post-pr2389-status-and-plan.md`](./post-pr2389-status-and-plan.md) — executive summary of where things stand + failure-class → fix mapping
+> - [`post-pr2389-kernel-compile-plan.md`](./post-pr2389-kernel-compile-plan.md) — the full RFC with phase-by-phase design rationale
+>
+> This doc is the operational findings: how the source-baked image was built, what broke, what we learned, and how the upstream vLLM native RL APIs reframe everything.
+
+**Status**: empirical findings from baking Phase 2 (rendezvous fixes) + Phase 3 (conversion-registry extensions) into an ARM64 GB200 image and running it against a live GB200 cluster. Updates the RFC's framing where the build experience contradicted assumptions in the original RFC.
 
 This document captures **what we learned producing a usable image** containing the two follow-up PRs ([phase-2 rendezvous fixes](https://github.com/KavinKrishnan/prime-rl/pull/1) and [conversion-registry extensions](https://github.com/KavinKrishnan/prime-rl/pull/2)) on top of PR #2389 (HEAD `79ea824d8`). The unit tests for both PRs were already green; this doc records the cluster + image surface area that the unit tests don't cover.
 

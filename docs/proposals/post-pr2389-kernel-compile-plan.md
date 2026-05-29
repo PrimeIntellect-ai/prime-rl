@@ -1,5 +1,11 @@
 # Post-PR-#2389 plan: kernel-compile separation, mixed-TP, and MX client adoption
 
+> **Related docs in this directory**:
+> - [`post-pr2389-status-and-plan.md`](./post-pr2389-status-and-plan.md) — executive summary of where things stand + failure-class → fix mapping
+> - [`build-notes-2026-05-28.md`](./build-notes-2026-05-28.md) — image-build experience, cluster observations, vLLM native RL APIs reframing
+>
+> This doc is the deep-dive RFC with full phase-by-phase design rationale.
+
 **Status**: Planning doc. Branch `kavink/post-2389-kernel-compile-plan` (NVIDIA-authored, off PR [#2389](https://github.com/PrimeIntellect-ai/prime-rl/pull/2389) HEAD `79ea824d8`).
 **Premise**: This plan is what we propose to build on top of `nixl_mx` once #2389 merges to `main`. It (a) graduates the in-tree `MxRendezvous` reimplementation onto NVIDIA's published ModelExpress clients, (b) introduces a compile-target registry to fix the trainer-side cutlass-pinning issue surfaced during #2389's FP8 cast-pipeline iteration, and (c) extends the v2 shape registry to handle mixed-TP / sharded-source transfers. **None of this fights the #2389 data plane** — the `Slot` / `TransportPlan` / `NixlAgentWrapper` / `classic_cuda_pool` stack stays untouched. We extend the rendezvous and metadata surfaces only.
 
