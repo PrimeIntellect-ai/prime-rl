@@ -203,20 +203,6 @@ async def orchestrate(config: OrchestratorConfig):
             env.sampling_args.pop("logprobs", None)
     logger.info(f"Loaded {len(train_envs)} training environment(s) ({', '.join(train_envs.names)})")
 
-    # Env workers (spawned by ``*.start`` → ``Env._spawn``, localhost subprocesses
-    # that inherit this process's ``os.environ``) offload screenshot base64 to
-    # disk during the live rollout to keep their RSS flat. Point them at this
-    # run's assets dir — the same one ``offload_images_to_disk`` writes to — so
-    # images land directly where the trainer reads them (no post-rollout copy)
-    # and are cleaned up with the run. ``setdefault`` lets an explicit
-    # ``VF_RENDERER_IMAGE_OFFLOAD_DIR`` override win.
-    # Absolute path: the env worker turns this into ``file://`` image URLs, and a
-    # relative path makes a malformed URI the renderer can't load.
-    os.environ.setdefault(
-        "VF_RENDERER_IMAGE_OFFLOAD_DIR",
-        str((config.output_dir / "assets" / "images").resolve()),
-    )
-
     await train_envs.start(
         log_dir=get_log_dir(config.output_dir.parent) / "envs" / "train",
         log_level=config.log.vf_level,
@@ -776,9 +762,14 @@ async def orchestrate(config: OrchestratorConfig):
         progress.step += 1
         is_first_step = False
 
-        # Free large per-step objects to prevent memory accumulation
-        del train_rollouts, train_examples, training_batch
-        del results_df, metrics_df
+        # Free large per-step objects to prevent memory accumulation. ``results``
+        # is load-bearing for multimodal runs: it holds every sample's
+        # ``mm_kwargs`` (full pixel byte-copies), and it references the same
+        # sample objects as ``train_examples``/``training_batch`` — so deleting
+        # only those leaves the pixels pinned and the malloc_trim below cannot
+        # reclaim them until ``results`` is rebound a step later.
+        del train_rollouts, train_examples, training_batch, results, samples
+        del results_df, metrics_df, filter_df, timing_df
         gc.collect()
         # Return free glibc heap pages to the OS. numpy/pandas allocate array data
         # via malloc (outside Python's allocator), so gc.collect() alone doesn't
