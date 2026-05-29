@@ -100,7 +100,10 @@ class Env:
             ),
             daemon=False,
         )
-        process.start()
+        from verifiers.utils.native_threads import scoped_native_thread_limits
+
+        with scoped_native_thread_limits():
+            process.start()
         self._env_server_process = process
         return address
 

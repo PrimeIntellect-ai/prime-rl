@@ -200,19 +200,24 @@ def rl_local(config: RLConfig):
         ]
         logger.info("Starting orchestrator process")
         logger.debug(f"Orchestrator start command: {' '.join(orchestrator_cmd)}")
+        from verifiers.utils.native_threads import native_thread_limited_env
+
+        orchestrator_env = native_thread_limited_env(
+            {
+                **os.environ,
+                **wandb_shared_env,
+                "WANDB_SHARED_LABEL": "orchestrator",
+                "LOGURU_FORCE_COLORS": "1",
+                "WANDB_PROGRAM": "uv run rl",
+                "WANDB_ARGS": json.dumps(start_command),
+            }
+        )
         with open(log_dir / "orchestrator.log", "w") as log_file:
             orchestrator_process = Popen(
                 orchestrator_cmd,
                 stdout=log_file,
                 stderr=log_file,
-                env={
-                    **os.environ,
-                    **wandb_shared_env,
-                    "WANDB_SHARED_LABEL": "orchestrator",
-                    "LOGURU_FORCE_COLORS": "1",
-                    "WANDB_PROGRAM": "uv run rl",
-                    "WANDB_ARGS": json.dumps(start_command),
-                },
+                env=orchestrator_env,
             )
         processes.append(orchestrator_process)
 
