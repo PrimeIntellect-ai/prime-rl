@@ -1,3 +1,4 @@
+import math
 import random
 from unittest.mock import MagicMock
 
@@ -159,21 +160,25 @@ def _master_all_tasks(buffer: Buffer) -> None:
             eb.update_pools(example_id, avg_reward=1.0)
 
 
-def test_buffer_drain_without_cap_raises(dummy_envs):
-    """Reproduces the drain bug: with caps disabled, mastering all tasks empties normal and sampling crashes."""
-    buffer = Buffer(dummy_envs, BufferConfig(easy_threshold=0.9, max_easy_fraction=1.0, max_hard_fraction=1.0))
+def test_buffer_config_rejects_uncapped_pools():
+    """Config rejects max_easy + max_hard >= 1.0 — the constraint that makes the normal-pool floor hard."""
+    from pydantic import ValidationError
 
-    _master_all_tasks(buffer)
+    with pytest.raises(ValidationError, match="max_easy_fraction.*max_hard_fraction"):
+        BufferConfig(max_easy_fraction=0.6, max_hard_fraction=0.6)
 
-    assert get_normal_count(buffer) == 0
-    with pytest.raises(ValueError, match="No environments left with examples"):
-        buffer.sample_examples(1)
+    with pytest.raises(ValidationError, match="max_easy_fraction.*max_hard_fraction"):
+        BufferConfig(max_easy_fraction=0.5, max_hard_fraction=0.5)
+
+    # Exactly at the boundary (sum == 1.0) is also rejected.
+    with pytest.raises(ValidationError, match="max_easy_fraction.*max_hard_fraction"):
+        BufferConfig(max_easy_fraction=0.7, max_hard_fraction=0.3)
 
 
 def test_buffer_cap_recycles_and_never_drains(dummy_envs):
     """The cap recycles mastered tasks back to normal, so the buffer never drains and sampling keeps working."""
-    buffer = Buffer(dummy_envs, BufferConfig(easy_threshold=0.9))  # default caps: 0.5
-    cap = round(5 * 0.5)  # per-env easy pool cap
+    buffer = Buffer(dummy_envs, BufferConfig(easy_threshold=0.9))  # default max_easy_fraction=0.5
+    cap = math.floor(5 * 0.5)  # per-env easy pool cap: floor(N * max_easy_fraction)
 
     # Repeatedly ace every task; without recycling normal would empty within one pass.
     for _ in range(20):

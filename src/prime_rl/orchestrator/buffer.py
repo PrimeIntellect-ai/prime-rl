@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import random
 from collections import defaultdict
 from functools import partial
@@ -112,11 +113,10 @@ class _EnvBuffer:
     def _recycle_overflow(self, pool: list[dict], max_fraction: float) -> None:
         """Recycle oldest sidelined tasks back to normal until the pool is within its cap.
 
-        Bounds each sidelined pool at a share of the env's tasks, so normal can never drain
-        to empty no matter how the reward evolves. Recycling oldest-first also re-tests stale
-        tasks under the current policy instead of exiling them on one noisy measurement.
+        floor (not round) is intentional: together with the BufferConfig constraint
+        max_easy + max_hard < 1, it guarantees at least one task always stays in normal.
         """
-        max_size = round(self.num_total * max_fraction)
+        max_size = math.floor(self.num_total * max_fraction)
         while len(pool) > max_size:
             example = pool.pop(0)
             self.examples[example["example_id"]] = example
