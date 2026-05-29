@@ -35,8 +35,8 @@ class SlurmConfig(BaseConfig):
     pre_run_command: str | None = None
     """Shell command to run on the head node after cd, .env sourcing, and venv activation. Useful for cleanup like ``sudo pkill -f vllm``; wrap with ``srun bash -c '...'`` to fan out to all nodes."""
 
-    cleanup_grace_period_seconds: int = Field(3600, ge=0)
-    """When a component exits (completion, crash, or SIGTERM), the job sends SIGTERM to the remaining processes and then waits up to this many seconds for them to exit before force-killing (SIGKILL) and releasing the allocation. Gives in-flight work — notably trainer checkpoint writes — a bounded window to flush. The wait ends as soon as all processes exit, so this is only an upper bound. Set to 0 for an immediate force-kill. Should fit inside ``time`` so the job is not reaped mid-grace."""
+    cleanup_grace_period: int = Field(3600, ge=0)
+    """Seconds to wait for processes to exit during teardown. When a component exits (completion, crash, or SIGTERM), the job sends SIGTERM to the remaining processes and then waits up to this long for them to exit before force-killing (SIGKILL) and releasing the allocation. Gives in-flight work — notably trainer checkpoint writes — a bounded window to flush. The wait ends as soon as all processes exit, so this is only an upper bound. Set to 0 for an immediate force-kill. Should fit inside ``time`` so the job is not reaped mid-grace."""
 
     @property
     def template_vars(self) -> dict:
@@ -50,7 +50,7 @@ class SlurmConfig(BaseConfig):
             "account": self.account,
             "time": self.time,
             "pre_run_command": self.pre_run_command,
-            "cleanup_grace_period_seconds": self.cleanup_grace_period_seconds,
+            "cleanup_grace_period": self.cleanup_grace_period,
         }
 
     @model_validator(mode="after")
