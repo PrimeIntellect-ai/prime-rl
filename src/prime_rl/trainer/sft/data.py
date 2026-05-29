@@ -408,8 +408,11 @@ class SFTDataset(StatefulIterableDataset):
         target_ids = input_ids.copy()[1:]
         loss_mask = loss_mask[1:]
         input_ids = input_ids[:-1]
+        # mm_token_type_ids flags the modality of each *input* token, so it must
+        # mirror input_ids ([:-1]); slicing [1:] would shift every modality
+        # label one token left relative to the tokens it describes.
         if mm_token_type_ids is not None:
-            mm_token_type_ids = mm_token_type_ids[1:]
+            mm_token_type_ids = mm_token_type_ids[:-1]
 
         if sum(loss_mask[: self.seq_len]) == 0:
             self.logger.warning(
