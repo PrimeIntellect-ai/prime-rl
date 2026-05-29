@@ -32,7 +32,7 @@ name = "Qwen/Qwen3.5-4B"
 [trainer]
 
 [trainer.model]
-cp = 2
+cp = 4
 cp_style = "ulysses"
 
 [trainer.model.ac]
