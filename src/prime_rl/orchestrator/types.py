@@ -22,15 +22,12 @@ class Policy:
 
 @dataclass
 class Progress:
-    """Persistent counters; ``step`` is the trainer-aligned step.
-    ``last_eval_step_by_env`` is read/written by ``EvalSource`` to suppress
-    duplicate eval epochs on resume."""
+    """Persistent counters; ``step`` is the trainer-aligned step."""
 
     step: int = 0
     total_tokens: int = 0
     total_samples: int = 0
     total_problems: int = 0
-    last_eval_step_by_env: dict[str, int] = field(default_factory=dict)
 
 
 Kind = Literal["train", "eval"]

@@ -353,7 +353,6 @@ class Orchestrator:
             EvalSource(
                 self.eval_envs,
                 config.eval,
-                last_eval_step_by_env=self.progress.last_eval_step_by_env,
                 is_resumed=self.resume_step is not None,
             )
             if config.eval is not None and self.eval_envs is not None

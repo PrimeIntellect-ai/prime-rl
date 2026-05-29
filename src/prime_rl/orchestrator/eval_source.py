@@ -22,14 +22,10 @@ class EvalSource:
         eval_envs: EvalEnvs,
         eval_config: EvalConfig,
         *,
-        last_eval_step_by_env: dict[str, int],
         is_resumed: bool = False,
     ) -> None:
         self.eval_envs = eval_envs
         self.eval_config = eval_config
-        # Shared reference with ``Progress.last_eval_step_by_env``; mutated
-        # on every fire so the next checkpoint persists the new step
-        self.last_eval_step_by_env = last_eval_step_by_env
 
         self.examples_by_env: dict[str, list[dict]] = {}
         self.intervals: dict[str, int] = {}
@@ -49,20 +45,15 @@ class EvalSource:
         self.first_trigger = not is_resumed
 
     def trigger(self, step: int) -> list[str]:
-        """Fire eligible envs for ``step`` and return their names. The
-        per-env duplicate guard (``last_eval_step_by_env``) skips re-firing
-        on resume when ``progress.step`` aligns with an env's interval."""
+        """Fire eligible envs for ``step`` and return their names. On resume
+        ``first_trigger`` is False, so the startup/base eval doesn't re-run."""
         is_first, self.first_trigger = self.first_trigger, False
         if is_first and self.eval_config.skip_first_step:
             return []
         fired: list[str] = []
         for name, interval in self.intervals.items():
-            last = self.last_eval_step_by_env.get(name, -1)
-            if step <= last:
-                continue
             if is_first or step % interval == 0:
                 fired.append(name)
-                self.last_eval_step_by_env[name] = step
         # Round-robin across fired envs (A₁, B₁, A₂, B₂, …) so the
         # dispatcher rotates at example granularity. ``try_schedule``'s
         # continue-group branch still keeps each example's group_size

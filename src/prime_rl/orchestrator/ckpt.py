@@ -1,5 +1,5 @@
 """Checkpoint manager for ``Progress``. Layout:
-``<output_dir>/checkpoints/step_N/orchestrator/state.pt``."""
+``<output_dir>/checkpoints/step_N/orchestrator/progress.pt``."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ class CheckpointManager:
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.mkdir(parents=True, exist_ok=True)
         start = time.perf_counter()
-        with open(ckpt_path / "state.pt", "wb") as f:
+        with open(ckpt_path / "progress.pt", "wb") as f:
             torch.save({"progress": progress}, f)
         get_logger().debug(
             f"Orchestrator checkpoint saved to {ckpt_path} in {format_time(time.perf_counter() - start)}"
@@ -35,7 +35,7 @@ class CheckpointManager:
 
     def load(self, progress: Progress, step: int) -> None:
         ckpt_path = self.get_ckpt_path(step)
-        state_file = ckpt_path / "state.pt"
+        state_file = ckpt_path / "progress.pt"
         if not state_file.exists():
             raise FileNotFoundError(f"Orchestrator checkpoint not found at {state_file}")
         get_logger().debug(f"Loading checkpoint from {state_file}")
