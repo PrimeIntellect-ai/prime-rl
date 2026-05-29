@@ -203,6 +203,18 @@ async def orchestrate(config: OrchestratorConfig):
             env.sampling_args.pop("logprobs", None)
     logger.info(f"Loaded {len(train_envs)} training environment(s) ({', '.join(train_envs.names)})")
 
+    # Env workers (spawned by ``*.start`` → ``Env._spawn``, localhost subprocesses
+    # that inherit this process's ``os.environ``) offload screenshot base64 to
+    # disk during the live rollout to keep their RSS flat. Point them at this
+    # run's assets dir — the same one ``offload_images_to_disk`` writes to — so
+    # images land directly where the trainer reads them (no post-rollout copy)
+    # and are cleaned up with the run. ``setdefault`` lets an explicit
+    # ``VF_RENDERER_IMAGE_OFFLOAD_DIR`` override win.
+    os.environ.setdefault(
+        "VF_RENDERER_IMAGE_OFFLOAD_DIR",
+        str(config.output_dir / "assets" / "images"),
+    )
+
     await train_envs.start(
         log_dir=get_log_dir(config.output_dir.parent) / "envs" / "train",
         log_level=config.log.vf_level,
@@ -486,18 +498,23 @@ async def orchestrate(config: OrchestratorConfig):
                 )
             )
 
-        # Process rollouts in parallel
-        results = await asyncio.gather(
-            *(
-                asyncio.to_thread(
+        # Process rollouts in parallel, but bound how many materialize multimodal
+        # pixels at once: each in-flight VLM rollout transiently holds live pixel
+        # tensors + packing copies, so an unbounded fan-out stacks that overhead
+        # across the whole batch. The semaphore caps the transient peak; it does
+        # not change text-only runs (no pixels to materialize).
+        interleave_sem = asyncio.Semaphore(config.mm_materialize_concurrency)
+
+        async def _interleave_bounded(rollout: vf.RolloutOutput):
+            async with interleave_sem:
+                return await asyncio.to_thread(
                     interleave_rollout,
-                    r,
+                    rollout,
                     mm_token_type_ids_mapping=mm_token_type_ids_mapping,
                     renderer=renderer,
                 )
-                for r in train_rollouts
-            )
-        )
+
+        results = await asyncio.gather(*(_interleave_bounded(r) for r in train_rollouts))
 
         # Collect results and assign advantages. Metrics are computed over all
         # rollouts; only non-filtered samples are sent to the trainer.

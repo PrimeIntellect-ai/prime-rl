@@ -664,6 +664,9 @@ class OrchestratorConfig(BaseConfig):
     max_off_policy_steps: int = Field(8, ge=0)
     """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
 
+    mm_materialize_concurrency: int = Field(4, ge=1)
+    """Max rollouts whose multimodal pixels are reconstructed concurrently when converting rollouts to training samples. Bounds the transient build-time memory spike for VLM batches (each in-flight rollout holds live pixel tensors + packing copies). No effect on text-only runs."""
+
     bench: bool = False
     """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""
 

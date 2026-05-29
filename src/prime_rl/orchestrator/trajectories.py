@@ -423,29 +423,37 @@ def interleave_rollout(
     # reading the last step alone would miss every earlier-turn image.
     # Concat in step order recovers the per-sample cumulative set;
     # deduping again here would drop legitimate duplicate placeholders.
-    for _, sample, step_indices in active_samples:
-        renderer_mm = _union_step_mm_data(prepared_steps, step_indices)
-        if renderer_mm is not None:
-            # The env worker ships descriptor-only mm_data (no pixel_values) to
-            # keep its memory flat. Re-derive the pixels here from the offloaded
-            # images referenced in this sample's messages, matched by content
-            # hash with a grid_thw assert. ``renderer`` is the multimodal pool
-            # used for rollouts; absent (or already-pixel-bearing in-process
-            # tests) → pass through unchanged.
-            if renderer is not None and _mm_needs_pixels(renderer_mm):
-                window_messages = _window_image_messages(trajectory, step_indices)
-                renderer_mm = _reconstruct_mm_pixels(renderer, renderer_mm, window_messages)
-            mm_kwargs = _pack_mm_kwargs_from_renderer(renderer_mm)
-            if mm_kwargs is not None:
-                sample.mm_kwargs = mm_kwargs
-                # ``mm_token_type_ids``: 1 for image-placeholder tokens, 2
-                # for video, 0 otherwise. Renderer-supplied via
-                # ``mm_token_type_id_map`` (single source of truth).
-                if mm_token_type_ids_mapping is not None:
-                    sample.mm_token_type_ids = [
-                        mm_token_type_ids_mapping.get(token_id, 0)
-                        for token_id in sample.prompt_ids + sample.completion_ids
-                    ]
+    #
+    # Skip pixel materialization for filtered rollouts: their samples are
+    # dropped before the trainer (the orchestrator collect loop only appends
+    # ``not is_filtered`` samples), so re-deriving their pixels is pure waste.
+    # The token bookkeeping above is kept — metrics are computed over all
+    # rollouts. ``is_filtered`` is absent for standalone callers (tests), which
+    # default to materializing.
+    if not output.get("is_filtered", False):
+        for _, sample, step_indices in active_samples:
+            renderer_mm = _union_step_mm_data(prepared_steps, step_indices)
+            if renderer_mm is not None:
+                # The env worker ships descriptor-only mm_data (no pixel_values)
+                # to keep its memory flat. Re-derive the pixels here from the
+                # offloaded images referenced in this sample's messages, matched
+                # by content hash with a grid_thw assert. ``renderer`` is the
+                # multimodal pool used for rollouts; absent (or already
+                # pixel-bearing in-process tests) → pass through unchanged.
+                if renderer is not None and _mm_needs_pixels(renderer_mm):
+                    window_messages = _window_image_messages(trajectory, step_indices)
+                    renderer_mm = _reconstruct_mm_pixels(renderer, renderer_mm, window_messages)
+                mm_kwargs = _pack_mm_kwargs_from_renderer(renderer_mm)
+                if mm_kwargs is not None:
+                    sample.mm_kwargs = mm_kwargs
+                    # ``mm_token_type_ids``: 1 for image-placeholder tokens, 2
+                    # for video, 0 otherwise. Renderer-supplied via
+                    # ``mm_token_type_id_map`` (single source of truth).
+                    if mm_token_type_ids_mapping is not None:
+                        sample.mm_token_type_ids = [
+                            mm_token_type_ids_mapping.get(token_id, 0)
+                            for token_id in sample.prompt_ids + sample.completion_ids
+                        ]
 
     return [sample for _, sample, _ in active_samples]
 
@@ -599,15 +607,40 @@ def _pack_mm_kwargs_from_renderer(mm_data: Any) -> "dict[str, Any] | None":
 _FILE_URL_PREFIX = "file://"
 
 
+_MEDIA_TYPE_EXT = {"jpeg": ".jpg", "jpg": ".jpg", "png": ".png", "webp": ".webp", "gif": ".gif"}
+
+
+def _media_type_ext(media_type: str) -> str:
+    subtype = media_type.split("/", 1)[-1].split(";", 1)[0].strip().lower()
+    return _MEDIA_TYPE_EXT.get(subtype, ".img")
+
+
+def _is_under(path: Path, parent: Path) -> bool:
+    """True if ``path`` lives directly in (or below) ``parent``."""
+    try:
+        path, parent = path.resolve(), parent.resolve()
+    except OSError:
+        pass
+    return parent == path.parent or parent in path.parents
+
+
 def offload_images_to_disk(rollouts: list[vf.RolloutOutput], output_dir: Path) -> int:
-    """Replace base64 image data in rollout trajectories with file paths on disk.
+    """Normalize trajectory prompt images to ``file://`` paths under the run dir.
 
-    Scans all trajectory step prompts for data:image URLs, writes the decoded
-    image bytes to ``{output_dir}/assets/images/{hash}.png``, and replaces the
-    URL in-place with ``file://{path}``.  Deduplicates by content hash so each
-    unique image is written only once.
+    Scans all trajectory step prompts for image URLs and rewrites them in place:
 
-    Returns the number of unique images written to disk.
+    - ``data:image/...;base64,...`` → decode, write to
+      ``{output_dir}/assets/images/{sha256(decoded)[:16]}{ext}``, rewrite to
+      ``file://``.
+    - ``file://...`` already under ``{output_dir}/assets/images`` → left as-is
+      (the env worker offloaded it there during the live rollout).
+    - ``file://...`` elsewhere (e.g. a shared image cache the env worker wrote
+      to) → copied into the run's assets dir by content hash and rewritten, so
+      the rollout is self-contained for the trainer.
+
+    Content-addressed by ``sha256(decoded_bytes)``, matching the env-worker live
+    offload, so an image offloaded during the rollout is recognized and never
+    re-decoded or duplicated. Returns the number of unique images written here.
     """
     images_dir = output_dir / "assets" / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
@@ -624,18 +657,42 @@ def offload_images_to_disk(rollouts: list[vf.RolloutOutput], output_dir: Path) -
                 if not isinstance(content, list):
                     continue
                 for item in content:
-                    if item.get("type") != "image_url":
+                    if not isinstance(item, dict) or item.get("type") != "image_url":
                         continue
-                    url = item.get("image_url", {}).get("url", "")
-                    if not url.startswith("data:image"):
+                    image_url = item.get("image_url")
+                    if not isinstance(image_url, dict):
                         continue
-                    b64_data = url.split(",", 1)[1]
-                    content_hash = hashlib.sha256(b64_data.encode()).hexdigest()[:16]
-                    path = images_dir / f"{content_hash}.png"
+                    url = image_url.get("url", "")
+                    if not isinstance(url, str):
+                        continue
+
+                    if url.startswith("data:image"):
+                        header, _, b64_data = url.partition(",")
+                        if not b64_data:
+                            continue
+                        try:
+                            raw = base64.b64decode(b64_data)
+                        except Exception:
+                            continue
+                        ext = _media_type_ext(header[len("data:") :])
+                    elif url.startswith(_FILE_URL_PREFIX):
+                        src = Path(url[len(_FILE_URL_PREFIX) :])
+                        if _is_under(src, images_dir):
+                            continue  # already in the run's assets dir
+                        try:
+                            raw = src.read_bytes()
+                        except OSError:
+                            continue
+                        ext = src.suffix or ".img"
+                    else:
+                        continue
+
+                    content_hash = hashlib.sha256(raw).hexdigest()[:16]
+                    path = images_dir / f"{content_hash}{ext}"
                     if content_hash not in written:
                         if not path.exists():
-                            path.write_bytes(base64.b64decode(b64_data))
+                            path.write_bytes(raw)
                         written.add(content_hash)
-                    item["image_url"]["url"] = f"{_FILE_URL_PREFIX}{path}"
+                    image_url["url"] = f"{_FILE_URL_PREFIX}{path}"
 
     return len(written)

@@ -1,3 +1,5 @@
+import base64
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -9,6 +11,7 @@ from prime_rl.orchestrator.trajectories import (
     _deserialize_tool_calls,
     align_routed_experts,
     interleave_rollout,
+    offload_images_to_disk,
 )
 
 _interleave_rollout = interleave_rollout
@@ -1117,3 +1120,124 @@ def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
     assert _decode_mm_thw(sample) == [[1, 2, 3], [1, 4, 4]]
     # mm_token_type_ids: image at token 2, video at token 5, rest 0.
     assert sample.mm_token_type_ids == [0, 1, 0, 0, 2, 0, 0]
+
+
+def test_interleave_rollout_skips_pixel_materialization_for_filtered_rollout():
+    """A filtered rollout's samples are dropped before the trainer, so
+    ``interleave_rollout`` must skip the expensive pixel reconstruction — the
+    sample is still produced (for metrics) but carries no mm_kwargs."""
+    import torch as _torch
+    from renderers.base import MultiModalData, PlaceholderRange
+
+    mm = MultiModalData(
+        mm_hashes={"image": ["h1"]},
+        mm_placeholders={"image": [PlaceholderRange(offset=1, length=1)]},
+        mm_items={
+            "image": [
+                {
+                    "pixel_values": _torch.tensor([[1.0, 2.0]], dtype=_torch.float32),
+                    "image_grid_thw": _torch.tensor([[1, 2, 3]], dtype=_torch.int64),
+                }
+            ]
+        },
+    )
+    output = vf.RolloutOutput(
+        example_id=1,
+        is_filtered=True,
+        trajectory=[
+            vf.TrajectoryStep(
+                prompt=[{"role": "user", "content": "Turn 1"}],
+                completion=[{"role": "assistant", "content": "Response 1"}],
+                response=MagicMock(),
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2],
+                    prompt_mask=[0, 0],
+                    completion_ids=[3, 4],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.1, -0.2],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                    multi_modal_data=mm,
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            ),
+        ],
+        sampling_args={"temperature": 1.0},
+        error=None,
+    )
+
+    rollouts = interleave_rollout(output, mm_token_type_ids_mapping={2: 1})
+
+    # Sample still produced (token bookkeeping for metrics) ...
+    assert rollouts is not None and len(rollouts) == 1
+    # ... but no pixels materialized/packed, since it won't reach the trainer.
+    assert rollouts[0].mm_kwargs is None
+    assert rollouts[0].mm_token_type_ids is None
+
+
+# ── offload_images_to_disk: data URIs + file:// normalization ─────────
+
+
+def _image_rollout(url: str) -> dict:
+    """Minimal rollout whose single step prompt carries one image part."""
+    return {
+        "trajectory": [{"prompt": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}]}]
+    }
+
+
+def _step_image_url(rollout: dict) -> str:
+    return rollout["trajectory"][0]["prompt"][0]["content"][0]["image_url"]["url"]
+
+
+def test_offload_data_uri_writes_decoded_bytes(tmp_path):
+    raw = b"jpeg-bytes-abc"
+    uri = "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
+    rollout = _image_rollout(uri)
+
+    n = offload_images_to_disk([rollout], tmp_path)
+
+    assert n == 1
+    url = _step_image_url(rollout)
+    assert url.startswith("file://") and url.endswith(".jpg")
+    path = Path(url[len("file://") :])
+    assert path.parent == (tmp_path / "assets" / "images")
+    # The file holds the *decoded* bytes (content-addressed), not the base64.
+    assert path.read_bytes() == raw
+
+
+def test_offload_leaves_file_url_already_in_assets(tmp_path):
+    images_dir = tmp_path / "assets" / "images"
+    images_dir.mkdir(parents=True)
+    existing = images_dir / "deadbeefdeadbeef.jpg"
+    existing.write_bytes(b"already-here")
+    url = f"file://{existing}"
+    rollout = _image_rollout(url)
+
+    n = offload_images_to_disk([rollout], tmp_path)
+
+    assert n == 0  # nothing copied
+    assert _step_image_url(rollout) == url  # url untouched
+
+
+def test_offload_copies_foreign_file_url_into_assets(tmp_path):
+    # The env worker offloaded to a shared cache outside this run's dir.
+    cache = tmp_path / "renderer-image-cache"
+    cache.mkdir()
+    raw = b"png-bytes-from-cache"
+    src = cache / "abc123.png"
+    src.write_bytes(raw)
+    out_dir = tmp_path / "run"
+    rollout = _image_rollout(f"file://{src}")
+
+    n = offload_images_to_disk([rollout], out_dir)
+
+    assert n == 1
+    url = _step_image_url(rollout)
+    new_path = Path(url[len("file://") :])
+    assert new_path.parent == (out_dir / "assets" / "images")
+    assert new_path.suffix == ".png"
+    assert new_path.read_bytes() == raw
