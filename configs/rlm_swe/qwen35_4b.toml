@@ -10,7 +10,8 @@ pre_run_command = "prime sandbox delete --label rlm-swe-qwen35-4b -y --plain || 
 [deployment]
 type = "multi_node"
 num_train_nodes = 1
-num_infer_nodes = 2
+num_infer_nodes = 1
+num_infer_replicas = 2
 
 [wandb]
 project = "rlm-swe-debug"
