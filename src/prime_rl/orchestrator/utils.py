@@ -4,13 +4,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from itertools import cycle
 from pathlib import Path
-from typing import Any
 
 import orjson
-import pandas as pd
 import verifiers as vf
-from rich.console import Console
-from rich.table import Table
 from verifiers.utils.client_utils import setup_openai_client
 from verifiers.utils.save_utils import make_serializable
 
@@ -19,7 +15,6 @@ from prime_rl.transport import TrainingSample
 from prime_rl.utils.client import setup_inference_pool
 from prime_rl.utils.logger import InterceptHandler, get_logger
 from prime_rl.utils.utils import (
-    format_time,
     get_broadcast_dir,
     get_ckpt_dir,
     get_step_path,
@@ -99,56 +94,6 @@ def set_default_executor(max_workers: int = 64) -> None:
     """Scale the default asyncio thread pool so asyncio.to_thread has enough capacity."""
     get_logger().info(f"Setting default executor to ThreadPoolExecutor(max_workers={max_workers})")
     asyncio.get_event_loop().set_default_executor(ThreadPoolExecutor(max_workers=max_workers))
-
-
-def print_benchmark(history: dict[str, list[Any]]) -> None:
-    """
-    Print benchmark results as rich table. Shows formatted step time values.
-    First N rows show the per-step values, and the last row shows the mean,
-    std, min, and max values.
-    """
-    history.pop("step")
-    assert all(len(v) for v in history.values()), "All metrics must have logged the same number of steps"
-
-    # Turn metric history into pd.DataFrame
-    df = pd.DataFrame(dict(history.items()))
-    columns = {
-        "time/step": "Step Time",
-    }
-    df = df.rename(columns=columns)
-    df = df[list(columns.values())]
-    df = df.iloc[1:]  # Exclude first row
-
-    # Setup console
-    console = Console()
-    table = Table(title="Benchmark")
-
-    # Add columns
-    table.add_column("Step", justify="right")
-    for col in df.columns:
-        table.add_column(col, justify="center", style="magenta")
-
-    # Add formatted rows
-    formatted_df = pd.DataFrame(columns=df.columns)
-    formatted_df["Step Time"] = df["Step Time"].apply(format_time)
-    for step, row in formatted_df.iterrows():
-        table.add_row(*([str(step)] + [str(x) for x in row]))
-
-    # Separator
-    num_table_columns = 1 + len(df.columns)
-    table.add_row(*([""] * num_table_columns))
-
-    # Add row for formatted, aggregated statistics
-    mean_df = df.describe().loc[["mean", "std", "min", "max"], :]
-    formatted_mean_df = pd.DataFrame(columns=mean_df.columns)
-    formatted_mean_df["Step Time"] = mean_df["Step Time"].apply(format_time)
-    mean_row = ["Overall"] + formatted_mean_df.T.apply(
-        lambda row: f"{row['mean']} ± {row['std']} [{row['min']}, {row['max']}]", axis=1
-    ).tolist()
-    table.add_row(*mean_row)
-
-    # Display table
-    console.print(table)
 
 
 async def compute_teacher_logprobs(
