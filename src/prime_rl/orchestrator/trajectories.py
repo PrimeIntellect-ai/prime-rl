@@ -642,7 +642,9 @@ def offload_images_to_disk(rollouts: list[vf.RolloutOutput], output_dir: Path) -
     offload, so an image offloaded during the rollout is recognized and never
     re-decoded or duplicated. Returns the number of unique images written here.
     """
-    images_dir = output_dir / "assets" / "images"
+    # Absolute: paths become ``file://`` URLs; a relative path yields a malformed
+    # URI (``file://rel/...``) that the renderer can't load.
+    images_dir = (output_dir / "assets" / "images").resolve()
     images_dir.mkdir(parents=True, exist_ok=True)
 
     written: set[str] = set()

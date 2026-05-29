@@ -210,9 +210,11 @@ async def orchestrate(config: OrchestratorConfig):
     # images land directly where the trainer reads them (no post-rollout copy)
     # and are cleaned up with the run. ``setdefault`` lets an explicit
     # ``VF_RENDERER_IMAGE_OFFLOAD_DIR`` override win.
+    # Absolute path: the env worker turns this into ``file://`` image URLs, and a
+    # relative path makes a malformed URI the renderer can't load.
     os.environ.setdefault(
         "VF_RENDERER_IMAGE_OFFLOAD_DIR",
-        str(config.output_dir / "assets" / "images"),
+        str((config.output_dir / "assets" / "images").resolve()),
     )
 
     await train_envs.start(
