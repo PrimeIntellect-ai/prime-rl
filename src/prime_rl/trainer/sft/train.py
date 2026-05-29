@@ -29,8 +29,9 @@ from prime_rl.trainer.model import (
     forward,
     get_load_balance_stats,
     is_tt_moe_model,
-    setup_tokenizer,
     setup_model,
+    setup_processor,
+    setup_tokenizer,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
@@ -158,6 +159,7 @@ def train(config: SFTConfig):
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
+    processor = setup_processor(config.tokenizer)
 
     renderer = None
     if config.renderer is not None:
@@ -170,7 +172,14 @@ def train(config: SFTConfig):
                 "Either use a model with a hand-coded renderer (see renderers.base.MODEL_RENDERER_MAP), "
                 "set [renderer] name=<hand-coded renderer> explicitly, or remove the [renderer] block."
             )
-        logger.info(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
+        # Attach the multimodal processor so the renderer can render image
+        # content parts. Renderers without a processor slot ignore this.
+        if processor is not None and hasattr(renderer, "_processor"):
+            renderer._processor = processor
+        logger.info(
+            f"Initialized {type(renderer).__name__} for {config.tokenizer.name} "
+            f"(multimodal_processor={processor is not None})"
+        )
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -255,14 +264,30 @@ def train(config: SFTConfig):
 
         token_count = loss_mask.sum(dtype=torch.int64)
 
+        # Pull multimodal kwargs through to the model's HF forward. ``forward()``
+        # on main accepts ``pixel_values`` / ``image_grid_thw`` explicitly; we
+        # extract them by name from the model-agnostic mm_kwargs dict the
+        # renderer produced. When ``forward()`` is generalized to accept a
+        # ``mm_kwargs: dict`` (PR #2473), this collapses to ``**mm_kwargs``.
+        mm_kwargs = micro_batch.get("mm_kwargs")
+        forward_mm: dict = {}
+        if mm_kwargs:
+            if "pixel_values" in mm_kwargs:
+                forward_mm["pixel_values"] = mm_kwargs["pixel_values"]
+            if "image_grid_thw" in mm_kwargs:
+                forward_mm["image_grid_thw"] = mm_kwargs["image_grid_thw"]
+        mm_type_ids = micro_batch.get("mm_token_type_ids")
+        if mm_type_ids is not None:
+            forward_mm["mm_token_type_ids"] = mm_type_ids
+
         with maybe_activation_offloading(config.model.ac_offloading):
             if config.loss_impl in ("liger_fused", "quack_fused"):
                 masked_target_ids = target_ids.clone()
                 masked_target_ids[~loss_mask] = FUSED_CE_IGNORE_INDEX
-                out = forward(model, input_ids, position_ids, labels=masked_target_ids)
+                out = forward(model, input_ids, position_ids, labels=masked_target_ids, **forward_mm)
                 loss_sum = out["loss"] * token_count
             else:
-                out = forward(model, input_ids, position_ids)
+                out = forward(model, input_ids, position_ids, **forward_mm)
                 logits = out["logits"]
                 B, L, V = logits.shape
                 token_loss = ce_loss(logits.view(-1, V), target_ids.view(-1)).view(B, L)
