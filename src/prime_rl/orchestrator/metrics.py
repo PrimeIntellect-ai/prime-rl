@@ -31,13 +31,14 @@ class MetricsBuilder:
         """Builds the per-step W&B dict. Stable metric names so
         existing dashboards / alerts keep working."""
         num_rollouts = len(rollouts)
-        num_unique_examples = len({(r.env_name, r.example_id) for r in rollouts})
+        num_unique_examples = len({r.group_id for r in rollouts})
         num_tokens = sum(
             r.raw["token_usage"]["final_input_tokens"] + r.raw["token_usage"]["final_output_tokens"] for r in rollouts
         )
 
         results_df = pd.DataFrame(
             {
+                "group_id": [r.group_id for r in rollouts],
                 "example_id": [r.example_id for r in rollouts],
                 "env_name": [r.env_name for r in rollouts],
                 "reward": [r.reward for r in rollouts],
@@ -58,13 +59,19 @@ class MetricsBuilder:
         filter_df = pd.DataFrame([r.filter_results for r in rollouts])
         timing_df = self.timing_df(rollouts)
 
+        # Each group's full-solve threshold is its own env's group_size (envs
+        # can override the top-level group_size).
+        env_group_size = {env.resolved_name: env.group_size for env in self.config.train.env}
+
         def compute_solve_rates(df):
-            reward_per_problem = df.groupby(["env_name", "example_id"]).reward.sum()
+            grouped = df.groupby("group_id")
+            reward_per_problem = grouped.reward.sum()
             solve_none = (reward_per_problem == 0).mean()
-            solve_all = (reward_per_problem == self.config.group_size).mean()
+            expected = grouped.env_name.first().map(env_group_size)
+            solve_all = (reward_per_problem == expected).mean()
             return solve_none, solve_all, 1 - solve_none - solve_all
 
-        by_example = results_df.groupby(["env_name", "example_id"])
+        by_example = results_df.groupby("group_id")
         solve_none, solve_all, effective_batch_size = compute_solve_rates(results_df)
 
         to_log: dict[str, Any] = {
@@ -102,7 +109,7 @@ class MetricsBuilder:
             "num_turns/all/min": by_example.num_turns.mean().min(),
             **{
                 f"timing/all/{key}/{stat}": getattr(
-                    timing_df[key].groupby([results_df.env_name, results_df.example_id]).mean(),
+                    timing_df[key].groupby(results_df.group_id).mean(),
                     stat,
                 )()
                 for key in timing_df.columns
@@ -133,7 +140,7 @@ class MetricsBuilder:
             "num_turns",
         ]
         for env, env_df in results_df.groupby("env_name"):
-            env_by_example = env_df.groupby("example_id")
+            env_by_example = env_df.groupby("group_id")
             for col in per_env_columns:
                 to_log[f"{col}/{env}/mean"] = env_by_example[col].mean().mean()
                 to_log[f"{col}/{env}/max"] = env_by_example[col].mean().max()
@@ -141,7 +148,7 @@ class MetricsBuilder:
                     to_log[f"{col}/{env}/min"] = env_by_example[col].mean().min()
             env_timing_df = timing_df.loc[env_df.index]
             for key in timing_df.columns:
-                per_example = env_timing_df.groupby(env_df["example_id"])[key].mean()
+                per_example = env_timing_df.groupby(env_df["group_id"])[key].mean()
                 to_log[f"timing/{env}/{key}/mean"] = per_example.mean()
                 to_log[f"timing/{env}/{key}/max"] = per_example.max()
                 to_log[f"timing/{env}/{key}/min"] = per_example.min()
@@ -159,7 +166,7 @@ class MetricsBuilder:
                 to_log[f"stop_condition/{env}/{sc}"] = rate
             env_metrics_df = metrics_df.loc[env_df.index] if not metrics_df.empty else metrics_df
             for metric in metrics_df.columns:
-                to_log[f"metrics/{env}/{metric}"] = env_metrics_df.groupby(env_df["example_id"])[metric].mean().mean()
+                to_log[f"metrics/{env}/{metric}"] = env_metrics_df.groupby(env_df["group_id"])[metric].mean().mean()
             to_log[f"filters/{env}/is_filtered"] = env_df.is_filtered.astype(float).mean()
             env_filter_df = filter_df.loc[env_df.index] if not filter_df.empty else filter_df
             for name in filter_df.columns:

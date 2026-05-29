@@ -609,7 +609,7 @@ class Orchestrator:
             self.heart.beat()
 
         num_rollouts = len(batch.rollouts)
-        num_unique_examples = len({(r.env_name, r.example_id) for r in batch.rollouts})
+        num_unique_examples = len({r.group_id for r in batch.rollouts})
         num_tokens = sum(
             r.raw["token_usage"]["final_input_tokens"] + r.raw["token_usage"]["final_output_tokens"]
             for r in batch.rollouts
