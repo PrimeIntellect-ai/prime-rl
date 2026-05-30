@@ -49,6 +49,11 @@ group_size = 8
 max_inflight_rollouts = 512
 max_off_policy_steps = 16
 
+# Disable thinking for the Qwen3.5 renderer (text-only SWE; no <think> traces).
+[orchestrator.renderer]
+name = "qwen3.5"
+enable_thinking = false
+
 [orchestrator.train.sampling]
 temperature = 1.0
 
