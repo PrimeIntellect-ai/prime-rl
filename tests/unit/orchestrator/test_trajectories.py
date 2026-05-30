@@ -5,6 +5,8 @@ import pybase64
 import pytest
 import verifiers as vf
 
+from pydantic import ValidationError
+
 from prime_rl.configs.orchestrator import (
     AssistantRoleEchoConfig,
     EchoConfig,
@@ -1427,21 +1429,14 @@ def test_step_echo_alpha_returns_all_none_when_echo_config_is_none():
     assert alpha == [None] * 6
 
 
-def test_step_echo_alpha_returns_all_none_when_all_roles_disabled():
-    """An ``EchoConfig`` with every role set to None (note: ``tool`` defaults
-    on, so this requires explicitly disabling it) → all-None array."""
-    alpha = _step_echo_alpha(
-        prompt_attribution=_attribution(
-            message_indices=[0, 0, 1, 1],
-            is_content=[False, True, False, True],
-            message_roles=["user", "tool"],
-            message_tool_names=[None, "lookup"],
-        ),
-        prompt_len=4,
-        completion_len=0,
-        echo_config=EchoConfig(tool=None),
-    )
-    assert alpha == [None] * 4
+def test_echo_config_requires_at_least_one_role():
+    """``EchoConfig`` with every role set to None is meaningless — the
+    validator rejects it. The caller should omit ``[echo]`` entirely to
+    disable echo for the env."""
+    with pytest.raises(ValidationError, match="at least one role"):
+        EchoConfig()
+    with pytest.raises(ValidationError, match="at least one role"):
+        EchoConfig(system=None, user=None, assistant=None, tool=None)
 
 
 def test_step_echo_alpha_no_prompt_attribution_still_marks_assistant_completion():
@@ -1461,12 +1456,14 @@ def test_step_echo_alpha_no_prompt_attribution_still_marks_assistant_completion(
 
 def test_step_echo_alpha_no_prompt_attribution_no_completion_echo():
     """With no attribution AND no assistant-role echo, the result is uniformly
-    None even when ``tool`` is on by default."""
+    None — prompt-side requires attribution to resolve roles, completion-side
+    only fires when assistant echo is enabled."""
     alpha = _step_echo_alpha(
         prompt_attribution=None,
         prompt_len=4,
         completion_len=2,
-        echo_config=EchoConfig(),  # tool on by default, assistant off
+        # Tool echo enabled but no attribution to resolve roles against.
+        echo_config=EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5)),
     )
     assert alpha == [None] * 6
 
@@ -1483,7 +1480,7 @@ def test_step_echo_alpha_returns_all_none_without_message_roles():
         ),
         prompt_len=2,
         completion_len=0,
-        echo_config=EchoConfig(),  # tool on by default
+        echo_config=EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5)),
     )
     assert alpha == [None, None]
 

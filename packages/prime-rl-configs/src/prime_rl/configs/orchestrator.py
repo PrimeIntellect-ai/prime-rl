@@ -215,8 +215,10 @@ class SystemRoleEchoConfig(BaseConfig):
     training and the model has to absorb the original behavior into its weights.
     """
 
-    alpha: float = 1.0
-    """Per-token advantage on system-message content positions (positive = SFT direction)."""
+    alpha: float = 0.0
+    """Per-token advantage on system-message content positions. Default 0.0
+    means the role is "selected but inert" — set explicitly to a positive
+    value to actually contribute gradient."""
 
 
 class UserRoleEchoConfig(BaseConfig):
@@ -227,8 +229,9 @@ class UserRoleEchoConfig(BaseConfig):
     user-like turns conditional on the prior conversation.
     """
 
-    alpha: float = 1.0
-    """Per-token advantage on user-message content positions."""
+    alpha: float = 0.0
+    """Per-token advantage on user-message content positions. Default 0.0
+    means inert; set explicitly to a positive value to contribute gradient."""
 
 
 class AssistantRoleEchoConfig(BaseConfig):
@@ -246,8 +249,9 @@ class AssistantRoleEchoConfig(BaseConfig):
     still apply to the current completion.
     """
 
-    alpha: float = 1.0
-    """Per-token advantage on assistant-message positions. Use 0.0 to kill RL on assistant tokens."""
+    alpha: float = 0.0
+    """Per-token advantage on assistant-message positions. The default 0.0 is
+    the canonical "kill RL on assistant tokens" value — see class docstring."""
 
 
 class ToolRoleEchoConfig(BaseConfig):
@@ -261,8 +265,9 @@ class ToolRoleEchoConfig(BaseConfig):
     Restrict to specific tool functions via ``tool_names``; defaults to all tools.
     """
 
-    alpha: float = 1.0
-    """Per-token advantage on tool-message content positions (positive = SFT direction)."""
+    alpha: float = 0.0
+    """Per-token advantage on tool-message content positions. Default 0.0
+    means inert; set explicitly to a positive value to contribute gradient."""
 
     tool_names: list[str] | None = None
     """Restrict echo to these tool function names; None = all tools."""
@@ -281,19 +286,23 @@ class EchoConfig(BaseConfig):
     - Per-role-specific fields stay scoped (e.g. ``tool_names`` lives on
       :class:`ToolRoleEchoConfig` only).
 
-    **Defaults — important.** ``tool`` is ON by default with ``alpha=1.0``
-    and all tools enabled; the other three roles are OFF. Writing
-    ``[orchestrator.train.env.echo]`` with no sub-blocks gives you tool echo
-    "for free". To disable tool echo while enabling others, explicitly set
-    ``tool=None`` (only possible via Python config, not TOML — TOML can't
-    write None values).
+    **Defaults are loud — opt-in across the board.** Every role defaults to
+    ``None`` (disabled) and every per-role ``alpha`` defaults to ``0.0``. The
+    user has to explicitly:
 
-    **Mask construction.** The per-token echo mask + alpha array is built
-    from the renderer's ``prompt_attribution`` (``message_roles``,
-    ``message_indices``, ``message_tool_names``, ``is_content``). Only
-    content tokens — message-body bytes — get the overlay; template scaffold
-    (role-tag wraps, ``<|tool_response>`` specials, etc.) is excluded by
-    construction.
+      1. Pick at least one role sub-block (validator enforces this — see
+         :meth:`require_at_least_one_role`).
+      2. Set a non-zero ``alpha`` on it, otherwise echo runs but with zero
+         gradient contribution (effectively a no-op).
+
+    To disable echo entirely, omit the ``[orchestrator.train.env.echo]``
+    block — the outer ``TrainEnvConfig.echo`` defaults to ``None``.
+
+    **Mask construction.** The per-token echo alpha array is built from the
+    renderer's ``prompt_attribution`` (``message_roles``, ``message_indices``,
+    ``message_tool_names``, ``is_content``). Only content tokens — message-body
+    bytes — get the overlay; template scaffold (role-tag wraps,
+    ``<|tool_response>`` specials, etc.) is excluded by construction.
 
     **Wire format.** Each ``TrainingSample`` carries a per-token alpha array
     ``echo_alpha: list[float | None]`` parallel to ``prompt_ids +
@@ -303,24 +312,41 @@ class EchoConfig(BaseConfig):
     encoding (None / float zero / float nonzero) is required because
     ``alpha=0`` is a legitimate "kill the gradient" value distinct from "not
     echoed."
-
     """
 
     system: SystemRoleEchoConfig | None = None
-    """System-message echo (default: disabled)."""
+    """System-message echo (default: disabled). Set to a
+    :class:`SystemRoleEchoConfig` block to enable."""
 
     user: UserRoleEchoConfig | None = None
-    """User-message echo (default: disabled)."""
+    """User-message echo (default: disabled). Set to a
+    :class:`UserRoleEchoConfig` block to enable."""
 
     assistant: AssistantRoleEchoConfig | None = None
     """Assistant-message echo (default: disabled). The only role echo that
-    overrides RL gradients on the current completion — set ``alpha=0`` here to
-    kill the RL contribution on assistant tokens entirely."""
+    overrides RL gradients on the current completion — the canonical use is
+    enabling this with ``alpha=0`` to kill the RL contribution on assistant
+    tokens entirely (pure-SFT-no-RL ablations)."""
 
-    tool: ToolRoleEchoConfig | None = ToolRoleEchoConfig()
-    """Tool-message echo (default: enabled with ``alpha=1.0`` and all tools).
-    Set to ``None`` to disable tool echo explicitly (only possible via Python
-    config — TOML can't represent None)."""
+    tool: ToolRoleEchoConfig | None = None
+    """Tool-message echo (default: disabled). Set to a
+    :class:`ToolRoleEchoConfig` block to enable."""
+
+    @model_validator(mode="after")
+    def require_at_least_one_role(self) -> "EchoConfig":
+        """At least one of ``system``, ``user``, ``assistant``, ``tool`` must
+        be set (non-None). An ``EchoConfig`` block with every role disabled
+        is meaningless — the caller probably meant to omit
+        ``[orchestrator.train.env.echo]`` entirely (which sets
+        ``TrainEnvConfig.echo = None`` and disables the whole feature)."""
+        if all(getattr(self, role) is None for role in ("system", "user", "assistant", "tool")):
+            raise ValueError(
+                "EchoConfig requires at least one role to be enabled. Set "
+                "`system`, `user`, `assistant`, or `tool` to a per-role config "
+                "block — or omit the [orchestrator.train.env.echo] block "
+                "entirely to disable echo for this env."
+            )
+        return self
 
 
 class TrainEnvConfig(EnvConfig):
