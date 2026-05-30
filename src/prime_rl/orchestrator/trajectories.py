@@ -9,7 +9,7 @@ import torch
 import verifiers as vf
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.orchestrator import SFTConfig
+from prime_rl.configs.orchestrator import EchoConfig
 from prime_rl.transport import RoutedExperts, TrainingSample
 from prime_rl.utils.chat_template import (
     common_prefix_len,
@@ -202,75 +202,119 @@ def backfill_rollout_tokens(
     return True
 
 
-def _step_sft_mask(
+def _step_echo_alpha(
     prompt_attribution: dict | None,
     prompt_len: int,
     completion_len: int,
-    sft_config: SFTConfig | None,
-) -> list[bool]:
-    """Per-token SFT mask for one trajectory step.
+    echo_config: EchoConfig | None,
+) -> list[float | None]:
+    """Per-token echo alpha for one trajectory step.
 
-    Length = prompt_len + completion_len. Completion-side entries are
-    uniformly False (assistant tokens never receive SFT supervision;
-    the policy gradient handles them via the normal RL advantage).
+    Length = ``prompt_len + completion_len``. Each entry is either:
+      - ``None``: this position is NOT echoed (RL gradient applies normally)
+      - ``float``: this position IS echoed at this alpha (overrides the RL
+        advantage and flips loss_mask=True in ``prepare_sample``)
 
-    A prompt token is masked True iff:
-      1. The env's SFTConfig is set and ``on_tool_outputs=True``.
-      2. The renderer attribution is populated — ``prompt_attribution``
-         carries ``message_indices``, ``is_content``, and
-         ``message_tool_names`` (all populated by every renderer's
-         ``RenderedTokens`` and serialized through the verifiers
-         env-server).
-      3. The token's message index resolves to a tool-role message whose
-         function name is in ``sft_config.tool_names`` (or any tool name
-         when ``tool_names`` is None).
-      4. The token is message-body bytes (``is_content`` from the renderer's
-         body/scaffold cut) — not template scaffold like ``<|tool_response>``.
+    Three-state encoding because ``alpha=0`` is a legitimate "kill the RL
+    gradient" value (assistant-role use case) distinct from "not echoed".
 
-    Returns all-False when any precondition fails: SFT disabled, missing
-    attribution, missing names, or non-renderer client rollout. Callers
-    treat all-False as "no SFT for this step" without branching.
+    Prompt-side positions are resolved by joining
+    ``message_indices[k] → message_roles[mi]`` to look up the role's
+    per-role echo config (system / user / assistant / tool); ``is_content[k]``
+    excludes template scaffold (role-tag wraps, ``<|tool_response>`` specials).
+    Tool positions additionally filter by ``tool_names`` matching
+    ``message_tool_names[mi]``.
+
+    Completion-side positions are ALWAYS assistant-role (the model's emission)
+    so they're marked when ``echo_config.assistant`` is enabled, regardless of
+    ``is_content`` (which is prompt-side-only).
+
+    Returns all-None when any precondition fails: echo disabled (config is
+    None or all roles disabled), missing attribution, missing roles/content,
+    or non-renderer client rollout. Callers treat all-None as "no echo for
+    this step" without branching.
     """
-    out = [False] * (prompt_len + completion_len)
-    if sft_config is None or not sft_config.on_tool_outputs:
+    out: list[float | None] = [None] * (prompt_len + completion_len)
+    if echo_config is None:
         return out
+
+    # Completion-side first (independent of prompt_attribution — the completion
+    # is always assistant-role by construction). When assistant echo is enabled,
+    # every completion position carries that alpha.
+    if echo_config.assistant is not None:
+        assistant_alpha = echo_config.assistant.alpha
+        for k in range(prompt_len, prompt_len + completion_len):
+            out[k] = assistant_alpha
+
+    # Prompt-side requires the renderer attribution.
     if prompt_attribution is None:
         return out
 
     # prompt_attribution arrives as a dict through the verifiers env-server
     # JSON boundary even though the renderer emits a RenderedTokens object.
-    message_tool_names = prompt_attribution.get("message_tool_names")
-    if message_tool_names is None:
+    message_roles = prompt_attribution.get("message_roles")
+    if message_roles is None:
         return out
 
-    enabled = set(sft_config.tool_names) if sft_config.tool_names else None
-    message_indices = prompt_attribution["message_indices"]
-    is_content = prompt_attribution["is_content"]
+    message_indices = prompt_attribution.get("message_indices")
+    is_content = prompt_attribution.get("is_content")
     # Defensive: if the renderer didn't populate is_content (DefaultRenderer
-    # leaves it empty), we can't tell body from scaffold — bail to all-False.
+    # leaves it empty) or sizes don't match, we can't tell body from scaffold —
+    # bail to the completion-side-only mask.
     if not is_content or len(is_content) != prompt_len:
         return out
-    if len(message_indices) != prompt_len:
+    if not message_indices or len(message_indices) != prompt_len:
         return out
+
+    # Resolve per-role alphas once.
+    system_alpha = echo_config.system.alpha if echo_config.system is not None else None
+    user_alpha = echo_config.user.alpha if echo_config.user is not None else None
+    assistant_alpha_prompt = (
+        echo_config.assistant.alpha if echo_config.assistant is not None else None
+    )
+    tool_role_config = echo_config.tool
+    tool_alpha = tool_role_config.alpha if tool_role_config is not None else None
+    enabled_tools = (
+        set(tool_role_config.tool_names)
+        if tool_role_config is not None and tool_role_config.tool_names
+        else None
+    )
+
+    # Tool-role check needs the per-message function name; safe-get since
+    # message_tool_names may be absent on non-tool-aware renderers.
+    message_tool_names = prompt_attribution.get("message_tool_names") or []
 
     for k in range(prompt_len):
         mi = message_indices[k]
         if mi < 0 or not is_content[k]:
             continue
-        if mi >= len(message_tool_names):
+        if mi >= len(message_roles):
             continue
-        name = message_tool_names[mi]
-        if name is None:
-            continue
-        if enabled is None or name in enabled:
-            out[k] = True
+        role = message_roles[mi]
+        if role == "system":
+            if system_alpha is not None:
+                out[k] = system_alpha
+        elif role == "user":
+            if user_alpha is not None:
+                out[k] = user_alpha
+        elif role == "assistant":
+            if assistant_alpha_prompt is not None:
+                out[k] = assistant_alpha_prompt
+        elif role == "tool":
+            if tool_alpha is None:
+                continue
+            # Per-tool-name filter: enabled_tools=None means "all tools".
+            name = message_tool_names[mi] if mi < len(message_tool_names) else None
+            if enabled_tools is None or (name is not None and name in enabled_tools):
+                out[k] = tool_alpha
+        # Unknown roles silently skipped.
     return out
 
 
 def interleave_rollout(
     output: vf.RolloutOutput,
     mm_token_type_ids_mapping: dict[int, int] | None = None,
-    sft_config: SFTConfig | None = None,
+    echo_config: EchoConfig | None = None,
 ) -> list[TrainingSample] | None:
     """
     Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
@@ -291,20 +335,19 @@ def interleave_rollout(
     per-image processed tensors inline on ``multi_modal_data``; the last
     merged step's sidecar covers every image in the sample.
 
-    When ``sft_config`` is provided and ``on_tool_outputs=True``, each sample
-    carries a per-token ``sft_mask`` (parallel to ``prompt_ids + completion_ids``)
-    that the trainer overlays an alpha advantage onto. The mask is computed
-    per-step from the renderer's ``prompt_attribution`` (which carries
-    ``message_tool_names`` alongside ``message_indices`` and ``is_content``)
-    and extended through step merging.
+    When ``echo_config`` is provided, each sample carries a per-token
+    ``echo_alpha`` array (``list[float | None]`` parallel to
+    ``prompt_ids + completion_ids``) that the trainer overlays per-token alpha
+    advantages onto. The array is computed per-step from the renderer's
+    ``prompt_attribution`` (``message_roles``, ``message_indices``,
+    ``is_content``, ``message_tool_names``) and extended through step merging.
 
     Args:
         output: vf.RolloutOutput containing trajectory data
         mm_token_type_ids_mapping: Maps prompt-token ids to mm_token_type_ids
             (1 = image, 2 = video, 0 otherwise). Renderer-supplied.
-        sft_config: Per-env SFT-on-tool-body config (None when SFT is disabled
-            for this env). Caller resolves it from
-            ``train_envs.get(env_name).config.sft``.
+        echo_config: Per-env echo config (None when echo is disabled for this
+            env). Caller resolves it from ``train_envs.get(env_name).config.echo``.
     """
     logger = get_logger()
 
@@ -337,11 +380,11 @@ def interleave_rollout(
 
             prompt_ids = list(tokens["prompt_ids"])
             completion_ids = list(tokens["completion_ids"])
-            sft_mask = _step_sft_mask(
+            echo_alpha = _step_echo_alpha(
                 prompt_attribution=tokens.get("prompt_attribution"),
                 prompt_len=len(prompt_ids),
                 completion_len=len(completion_ids),
-                sft_config=sft_config,
+                echo_config=echo_config,
             )
             return {
                 "prompt_ids": prompt_ids,
@@ -356,7 +399,7 @@ def interleave_rollout(
                 # a multimodal-aware renderer (e.g. Qwen3VLRenderer); absent
                 # for text-only rollouts.
                 "multi_modal_data": tokens.get("multi_modal_data"),
-                "sft_mask": sft_mask,
+                "echo_alpha": echo_alpha,
             }
 
         logger.warning(f"Missing rollout tokens for example {output['example_id']} step {step_idx}.")
@@ -388,12 +431,16 @@ def interleave_rollout(
         completion_ids = list(tokens["completion_ids"])
 
         prompt_ids = list(tokens["prompt_ids"])
-        # ``sft_mask`` was computed per-step against the env's SFTConfig.
-        # When SFT is disabled (sft_config is None or on_tool_outputs=False)
-        # the helper returns an all-False list; carry None on the sample in
-        # that case to keep the transport payload lean.
-        step_sft_mask = tokens.get("sft_mask")
-        sample_sft_mask = list(step_sft_mask) if step_sft_mask and any(step_sft_mask) else None
+        # ``echo_alpha`` was computed per-step against the env's EchoConfig.
+        # When echo is disabled (echo_config is None or no role enabled) the
+        # helper returns an all-None list; carry None on the sample in that
+        # case to keep the transport payload lean.
+        step_echo_alpha = tokens.get("echo_alpha")
+        sample_echo_alpha = (
+            list(step_echo_alpha)
+            if step_echo_alpha and any(a is not None for a in step_echo_alpha)
+            else None
+        )
         sample = TrainingSample(
             prompt_ids=prompt_ids,
             prompt_mask=list(tokens["prompt_mask"]),
@@ -406,7 +453,7 @@ def interleave_rollout(
             env_name=output["env_name"],
             mm_token_type_ids=None,
             routed_experts=None,  # deferred — finalized at end of interleave_rollout
-            sft_mask=sample_sft_mask,
+            echo_alpha=sample_echo_alpha,
         )
         # Initialize routed-experts state for this sample. First chunk is the
         # raw step routed_experts (no pad, no copy). running_len is the
@@ -484,23 +531,26 @@ def interleave_rollout(
             sample.completion_mask.extend(tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
 
-        # Extend the SFT mask in lockstep: the new prompt tail (mask=False on
-        # completion_mask) may contain tool-body tokens from the env_response;
-        # the new completion (assistant emission) is uniformly False.
-        step_sft_mask = tokens.get("sft_mask")
-        if step_sft_mask is not None:
+        # Extend the echo_alpha array in lockstep: the new prompt tail (its
+        # completion_mask is False here, but content tokens may carry tool/
+        # user/system echo) AND the new completion (assistant emission, which
+        # carries assistant-role echo when enabled).
+        step_echo_alpha = tokens.get("echo_alpha")
+        if step_echo_alpha is not None:
             step_prompt_len = len(tokens["prompt_ids"])
-            new_prompt_sft = step_sft_mask[prefix_len:step_prompt_len]
-            new_completion_sft = [False] * len(completion_ids)
-            extension = new_prompt_sft + new_completion_sft
-            if any(extension) or sample.sft_mask is not None:
-                # Materialize a previously-None mask only when there's actually
-                # SFT signal to record. Length must align with the existing
+            # Both prompt-tail and completion bits come from the step's
+            # per-position echo_alpha (the helper handles both sides).
+            new_prompt_echo = step_echo_alpha[prefix_len:step_prompt_len]
+            new_completion_echo = step_echo_alpha[step_prompt_len:]
+            extension = new_prompt_echo + new_completion_echo
+            if any(a is not None for a in extension) or sample.echo_alpha is not None:
+                # Materialize a previously-None array only when there's actually
+                # echo signal to record. Length must align with the existing
                 # prompt + completion at this point in the merge.
-                if sample.sft_mask is None:
+                if sample.echo_alpha is None:
                     existing_len = len(sample.prompt_ids) + len(sample.completion_ids) - len(extension)
-                    sample.sft_mask = [False] * existing_len
-                sample.sft_mask.extend(extension)
+                    sample.echo_alpha = [None] * existing_len
+                sample.echo_alpha.extend(extension)
 
         step_routed = tokens.get("routed_experts")
         state = sample_routed_state.get(id(sample))

@@ -488,13 +488,13 @@ async def orchestrate(config: OrchestratorConfig):
 
         # Process rollouts in parallel
         def process_rollout(rollout: vf.RolloutOutput) -> list[TrainingSample] | None:
-            # Resolve per-env SFT config so interleave_rollout can build the
-            # per-token SFT-on-tool-body mask in-line.
-            env_sft_config = train_envs.get(rollout["env_name"]).config.sft
+            # Resolve per-env echo config so interleave_rollout can build the
+            # per-token echo_alpha array in-line.
+            env_echo_config = train_envs.get(rollout["env_name"]).config.echo
             return interleave_rollout(
                 rollout,
                 mm_token_type_ids_mapping=mm_token_type_ids_mapping,
-                sft_config=env_sft_config,
+                echo_config=env_echo_config,
             )
 
         results = await asyncio.gather(*(asyncio.to_thread(process_rollout, r) for r in train_rollouts))
@@ -515,22 +515,19 @@ async def orchestrate(config: OrchestratorConfig):
             rollout_samples_per_rollout.append(len(samples))
             env_name = rollout["env_name"]
             env = train_envs.get(env_name)
-            env_sft_config = env.config.sft
             # Single env-wide temperature per rollout — fan out across each
             # sample's completion tokens here (interleave leaves it empty).
             temperature = env.sampling_args["temperature"]
+            # Per-env echo overlay (sample.echo_alpha) is already baked in by
+            # interleave_rollout — no per-sample stamping needed here. The
+            # trainer's prepare_sample reads echo_alpha to set advantage and
+            # flip loss_mask on echo positions.
             for sample in samples:
                 sample.advantage = rollout["advantage"]
                 sample.reward = rollout["reward"]
                 sample.env_name = env_name
                 sample.training_mode = config.training_mode
                 sample.completion_temperatures = [temperature] * len(sample.completion_ids)
-                # Per-env SFT-on-tool-body advantage. ``sft_mask`` was populated
-                # by interleave_rollout when the env opted in; we attach the
-                # alpha here so prepare_sample sets advantage = alpha on those
-                # positions and the trainer's default_loss_fn picks it up.
-                if env_sft_config is not None and env_sft_config.on_tool_outputs and sample.sft_mask is not None:
-                    sample.sft_alpha = env_sft_config.alpha
                 sample_decode_tokens = sum(sample.completion_mask)
                 sample_prefill_tokens = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode_tokens
                 rollout_decode_tokens += sample_decode_tokens

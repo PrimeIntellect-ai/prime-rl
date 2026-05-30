@@ -5,10 +5,16 @@ import pybase64
 import pytest
 import verifiers as vf
 
-from prime_rl.configs.orchestrator import SFTConfig
+from prime_rl.configs.orchestrator import (
+    AssistantRoleEchoConfig,
+    EchoConfig,
+    SystemRoleEchoConfig,
+    ToolRoleEchoConfig,
+    UserRoleEchoConfig,
+)
 from prime_rl.orchestrator.trajectories import (
     _deserialize_tool_calls,
-    _step_sft_mask,
+    _step_echo_alpha,
     align_routed_experts,
     interleave_rollout,
 )
@@ -1383,156 +1389,263 @@ def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
 
 
 # ---------------------------------------------------------------------------
-# SFT-on-tool-body mask construction
+# Per-role echo_alpha construction
 # ---------------------------------------------------------------------------
 
 
 def _attribution(
     message_indices: list[int],
     is_content: list[bool],
+    message_roles: list[str] | None = None,
     message_tool_names: list[str | None] | None = None,
 ) -> dict:
     """Minimal stand-in for the serialised ``renderers.base.RenderedTokens``
-    dict that the verifiers env-server hands to ``_step_sft_mask`` — only
+    dict that the verifiers env-server hands to ``_step_echo_alpha`` — only
     the keys the helper subscripts are populated."""
     out: dict = {"message_indices": message_indices, "is_content": is_content}
+    if message_roles is not None:
+        out["message_roles"] = message_roles
     if message_tool_names is not None:
         out["message_tool_names"] = message_tool_names
     return out
 
 
-def test_step_sft_mask_returns_all_false_when_sft_config_is_none():
-    """No SFT config → no SFT mask. The helper bails before any
+def test_step_echo_alpha_returns_all_none_when_echo_config_is_none():
+    """No echo config → all-None array. The helper bails before any
     attribution-shape work."""
-    mask = _step_sft_mask(
+    alpha = _step_echo_alpha(
         prompt_attribution=_attribution(
             message_indices=[0, 0, 1, 1],
             is_content=[False, True, False, True],
+            message_roles=["user", "tool"],
             message_tool_names=[None, "lookup"],
         ),
         prompt_len=4,
         completion_len=2,
-        sft_config=None,
+        echo_config=None,
     )
-    assert mask == [False] * 6
+    assert alpha == [None] * 6
 
 
-def test_step_sft_mask_returns_all_false_when_on_tool_outputs_false():
-    """SFT config present but disabled — same all-False fallthrough."""
-    mask = _step_sft_mask(
+def test_step_echo_alpha_returns_all_none_when_all_roles_disabled():
+    """An ``EchoConfig`` with every role set to None (note: ``tool`` defaults
+    on, so this requires explicitly disabling it) → all-None array."""
+    alpha = _step_echo_alpha(
         prompt_attribution=_attribution(
             message_indices=[0, 0, 1, 1],
             is_content=[False, True, False, True],
+            message_roles=["user", "tool"],
             message_tool_names=[None, "lookup"],
         ),
         prompt_len=4,
         completion_len=0,
-        sft_config=SFTConfig(on_tool_outputs=False),
+        echo_config=EchoConfig(tool=None),
     )
-    assert mask == [False] * 4
+    assert alpha == [None] * 4
 
 
-def test_step_sft_mask_returns_all_false_without_attribution():
-    """Non-renderer client rollouts have no attribution → no mask, even
-    when SFT is enabled. Handles the renderer-disabled trajectory path."""
-    mask = _step_sft_mask(
+def test_step_echo_alpha_no_prompt_attribution_still_marks_assistant_completion():
+    """Non-renderer client rollouts have no attribution → can't mark
+    prompt-side. But completion-side assistant echo is independent of
+    attribution (the completion is always assistant-role by construction)."""
+    alpha = _step_echo_alpha(
         prompt_attribution=None,
         prompt_len=4,
         completion_len=2,
-        sft_config=SFTConfig(on_tool_outputs=True),
+        echo_config=EchoConfig(assistant=AssistantRoleEchoConfig(alpha=0.3)),
     )
-    assert mask == [False] * 6
+    # Prompt-side stays None (no attribution to drive masking), completion
+    # bears assistant alpha throughout.
+    assert alpha == [None, None, None, None, 0.3, 0.3]
 
 
-def test_step_sft_mask_returns_all_false_without_tool_names():
-    """Attribution present but no ``message_tool_names`` sub-field → no
-    mask. Defensive against older renderers that don't populate the
-    per-message tool-name list."""
-    mask = _step_sft_mask(
+def test_step_echo_alpha_no_prompt_attribution_no_completion_echo():
+    """With no attribution AND no assistant-role echo, the result is uniformly
+    None even when ``tool`` is on by default."""
+    alpha = _step_echo_alpha(
+        prompt_attribution=None,
+        prompt_len=4,
+        completion_len=2,
+        echo_config=EchoConfig(),  # tool on by default, assistant off
+    )
+    assert alpha == [None] * 6
+
+
+def test_step_echo_alpha_returns_all_none_without_message_roles():
+    """Attribution present but no ``message_roles`` sub-field → no per-role
+    resolution possible; only completion-side assistant echo can fire."""
+    alpha = _step_echo_alpha(
         prompt_attribution=_attribution(
             message_indices=[0, 0],
             is_content=[False, True],
-            message_tool_names=None,
+            message_roles=None,
+            message_tool_names=["lookup"],
         ),
         prompt_len=2,
         completion_len=0,
-        sft_config=SFTConfig(on_tool_outputs=True),
+        echo_config=EchoConfig(),  # tool on by default
     )
-    assert mask == [False, False]
+    assert alpha == [None, None]
 
 
-def test_step_sft_mask_all_tools_when_filter_unset():
-    """``tool_names=None`` means train on every tool. Every body token
-    of every tool message gets masked True; scaffold (``is_content=False``)
-    and non-tool messages stay False; completion stays uniformly False."""
-    mask = _step_sft_mask(
+def test_step_echo_alpha_tool_role_default_all_tools():
+    """``ToolRoleEchoConfig`` with ``tool_names=None`` means echo every tool's
+    body. Scaffold (``is_content=False``) and non-tool messages stay None;
+    completion stays None (no assistant-role echo configured)."""
+    alpha = _step_echo_alpha(
         prompt_attribution=_attribution(
             # 5 prompt tokens, 2 completion tokens.
-            # Token 0 = user-role scaffold; 1 = user body; 2-3 = tool wrap + body;
-            # 4 = tool body; completion = [F, F].
+            # Token 0 = user-role scaffold; 1 = user body; 2 = tool wrap;
+            # 3-4 = tool body; completion = [None, None].
             message_indices=[0, 0, 1, 1, 1],
             is_content=[False, True, False, True, True],
+            message_roles=["user", "tool"],
             message_tool_names=[None, "lookup"],
         ),
         prompt_len=5,
         completion_len=2,
-        sft_config=SFTConfig(on_tool_outputs=True, tool_names=None),
+        echo_config=EchoConfig(tool=ToolRoleEchoConfig(alpha=0.7, tool_names=None)),
     )
-    # Tool body tokens (indices 3, 4) masked True; everything else False.
-    assert mask == [False, False, False, True, True, False, False]
+    # Tool body tokens (indices 3, 4) get alpha; everything else None.
+    assert alpha == [None, None, None, 0.7, 0.7, None, None]
 
 
-def test_step_sft_mask_filters_by_tool_name():
-    """``tool_names=['lookup']`` masks only the body of ``lookup`` tool
-    messages; bodies of other tools (``calc``) stay False."""
-    mask = _step_sft_mask(
+def test_step_echo_alpha_tool_role_name_filter():
+    """``ToolRoleEchoConfig.tool_names=['lookup']`` masks only the body of
+    ``lookup`` tool messages; ``calc`` tool stays None."""
+    alpha = _step_echo_alpha(
         prompt_attribution=_attribution(
-            # 6 tokens: msg 0 = user (scaffold + body), msg 1 = calc tool body,
-            # msg 2 = lookup tool body.
+            # 6 tokens: msg 0 = user, msg 1 = calc tool, msg 2 = lookup tool.
             message_indices=[0, 0, 1, 1, 2, 2],
             is_content=[False, True, False, True, False, True],
+            message_roles=["user", "tool", "tool"],
             message_tool_names=[None, "calc", "lookup"],
         ),
         prompt_len=6,
         completion_len=0,
-        sft_config=SFTConfig(on_tool_outputs=True, tool_names=["lookup"]),
+        echo_config=EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5, tool_names=["lookup"])),
     )
-    # Only the lookup body token (idx 5) is True; calc body (idx 3) stays False
-    # because it's not in the allowlist.
-    assert mask == [False, False, False, False, False, True]
+    # Only the lookup body (idx 5) gets alpha; calc body (idx 3) stays None.
+    assert alpha == [None, None, None, None, None, 0.5]
 
 
-def test_step_sft_mask_skips_non_content_tokens():
-    """Scaffold tokens inside a tool message (e.g., ``<|tool_response>``)
-    have ``is_content=False`` and stay masked even when the message is in
-    the tool allowlist. The body/scaffold cut is the load-bearing
-    invariant."""
-    mask = _step_sft_mask(
+def test_step_echo_alpha_skips_non_content_tokens():
+    """Scaffold tokens inside a tool message (``is_content=False``) stay
+    None even when the message is in the tool allowlist. The body/scaffold
+    cut is the load-bearing invariant."""
+    alpha = _step_echo_alpha(
         prompt_attribution=_attribution(
             # All four tokens belong to a tool message; only token 2 is body.
             message_indices=[0, 0, 0, 0],
             is_content=[False, False, True, False],
+            message_roles=["tool"],
             message_tool_names=["lookup"],
         ),
         prompt_len=4,
         completion_len=0,
-        sft_config=SFTConfig(on_tool_outputs=True),
+        echo_config=EchoConfig(tool=ToolRoleEchoConfig(alpha=0.4)),
     )
-    assert mask == [False, False, True, False]
+    assert alpha == [None, None, 0.4, None]
 
 
-def test_step_sft_mask_completion_is_always_false():
-    """Completion-side entries are uniformly False regardless of SFT
-    config — assistant tokens never receive SFT supervision; they go
-    through the normal RL advantage path."""
-    mask = _step_sft_mask(
+def test_step_echo_alpha_user_role():
+    """``UserRoleEchoConfig`` marks the body of user-role messages.
+    System/tool/assistant roles stay None unless their own role configs are
+    set."""
+    alpha = _step_echo_alpha(
+        prompt_attribution=_attribution(
+            # 4 tokens: msg 0 = user (wrap + body), msg 1 = tool (wrap + body).
+            message_indices=[0, 0, 1, 1],
+            is_content=[False, True, False, True],
+            message_roles=["user", "tool"],
+            message_tool_names=[None, "lookup"],
+        ),
+        prompt_len=4,
+        completion_len=0,
+        echo_config=EchoConfig(user=UserRoleEchoConfig(alpha=0.2), tool=None),
+    )
+    # User body (idx 1) gets alpha; tool body (idx 3) stays None (tool=None).
+    assert alpha == [None, 0.2, None, None]
+
+
+def test_step_echo_alpha_system_role():
+    """``SystemRoleEchoConfig`` marks the body of system-role messages —
+    e.g. for progressive-compression curricula where the model has to
+    internalize the system prompt over training."""
+    alpha = _step_echo_alpha(
+        prompt_attribution=_attribution(
+            # 3 tokens: msg 0 = system (wrap + body + body).
+            message_indices=[0, 0, 0],
+            is_content=[False, True, True],
+            message_roles=["system"],
+        ),
+        prompt_len=3,
+        completion_len=0,
+        echo_config=EchoConfig(system=SystemRoleEchoConfig(alpha=0.1), tool=None),
+    )
+    assert alpha == [None, 0.1, 0.1]
+
+
+def test_step_echo_alpha_assistant_role_prompt_and_completion():
+    """``AssistantRoleEchoConfig`` marks BOTH prompt-side assistant messages
+    (prior turns in multi-turn rollouts) AND the current step's completion.
+    Completion-side marking is independent of ``is_content`` (which is
+    prompt-side-only)."""
+    alpha = _step_echo_alpha(
+        prompt_attribution=_attribution(
+            # 4 tokens: msg 0 = user (wrap + body), msg 1 = assistant (wrap + body).
+            message_indices=[0, 0, 1, 1],
+            is_content=[False, True, False, True],
+            message_roles=["user", "assistant"],
+        ),
+        prompt_len=4,
+        completion_len=3,
+        echo_config=EchoConfig(assistant=AssistantRoleEchoConfig(alpha=0.8), tool=None),
+    )
+    # Prompt-side assistant body (idx 3) gets alpha; all 3 completion tokens
+    # get alpha (current step's assistant emission).
+    assert alpha == [None, None, None, 0.8, 0.8, 0.8, 0.8]
+
+
+def test_step_echo_alpha_assistant_zero_kills_rl():
+    """The canonical alpha=0 use case: explicit ``AssistantRoleEchoConfig(alpha=0.0)``
+    overrides the RL gradient on assistant tokens by setting per-token alpha
+    to 0 (advantage=0, loss_mask=True in prepare_sample → zero gradient).
+    Distinct from "not echoed" because the position still gets the overlay
+    treatment in the loss function."""
+    alpha = _step_echo_alpha(
         prompt_attribution=_attribution(
             message_indices=[0],
             is_content=[True],
-            message_tool_names=["lookup"],
+            message_roles=["user"],
         ),
         prompt_len=1,
-        completion_len=3,
-        sft_config=SFTConfig(on_tool_outputs=True),
+        completion_len=2,
+        echo_config=EchoConfig(assistant=AssistantRoleEchoConfig(alpha=0.0), tool=None),
     )
-    assert mask == [True, False, False, False]
+    # Completion positions carry alpha=0.0 — distinct from None.
+    assert alpha == [None, 0.0, 0.0]
+
+
+def test_step_echo_alpha_per_role_alphas_differ():
+    """Each role's per-role config carries its own ``alpha`` — different
+    roles can carry different weights in the same rollout."""
+    alpha = _step_echo_alpha(
+        prompt_attribution=_attribution(
+            # msg 0 = user, msg 1 = tool, msg 2 = system.
+            message_indices=[0, 1, 2],
+            is_content=[True, True, True],
+            message_roles=["user", "tool", "system"],
+            message_tool_names=[None, "lookup", None],
+        ),
+        prompt_len=3,
+        completion_len=2,
+        echo_config=EchoConfig(
+            user=UserRoleEchoConfig(alpha=0.1),
+            tool=ToolRoleEchoConfig(alpha=0.5),
+            system=SystemRoleEchoConfig(alpha=0.05),
+            assistant=AssistantRoleEchoConfig(alpha=0.9),
+        ),
+    )
+    # Prompt: user=0.1, tool=0.5, system=0.05. Completion: assistant=0.9.
+    assert alpha == [0.1, 0.5, 0.05, 0.9, 0.9]

@@ -56,18 +56,25 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # taus), sft uses sft_loss_fn. Stamped by the orchestrator from training_mode.
     training_mode: TrainingMode = "rl"
 
-    # Per-token SFT-on-tool-body mask (parallel to prompt_ids + completion_ids).
-    # True on tool body tokens whose tool name matches the env's SFTConfig.tool_names
-    # filter (and is_content per the renderer attribution). None when the env has
-    # no SFTConfig or SFTConfig.on_tool_outputs is False. Distinct from
-    # ``training_mode='sft'`` above: that switches the whole sample to the SFT
-    # loss function; this is a per-token overlay co-existing with the RL loss
-    # in default_loss_fn.
-    sft_mask: list[bool] | None = None
-    # Per-env constant advantage applied to SFT-mask positions in
-    # ``prepare_sample``. None when ``sft_mask`` is None. The per-token
-    # weight is just ``alpha`` (no per-rollout normalization).
-    sft_alpha: float | None = None
+    # Per-token echo alpha (parallel to prompt_ids + completion_ids).
+    # Three-state encoding:
+    #   - None (whole field):     env opted out of echo entirely (no overlay)
+    #   - None per-token:         this position is NOT echoed; the RL gradient
+    #                             (or prompt-mask exclusion) applies as usual
+    #   - float per-token:        this position IS echoed at this alpha; in
+    #                             ``prepare_sample`` the per-token alpha
+    #                             overwrites the RL advantage AND flips
+    #                             loss_mask=True, making it a pure
+    #                             cross-entropy contribution
+    # Built by ``_step_echo_alpha`` from the renderer's prompt_attribution
+    # (message_roles, message_indices, is_content, message_tool_names) and
+    # the env's ``EchoConfig`` per-role sub-configs. The three-state encoding
+    # is required because ``alpha=0`` is a legitimate "kill the RL gradient"
+    # value (the assistant-role use case), distinct from "not echoed at all".
+    # Distinct from ``training_mode='sft'`` above: that switches the whole
+    # sample to the SFT loss function; this is a per-token overlay co-existing
+    # with the RL loss in default_loss_fn.
+    echo_alpha: list[float | None] | None = None
 
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
