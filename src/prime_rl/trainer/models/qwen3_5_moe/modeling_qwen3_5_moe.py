@@ -822,6 +822,16 @@ class Qwen3_5MoeVLMModel(nn.Module):
     def set_input_embeddings(self, value):
         self.language_model.embed_tokens = value
 
+    def _dummy_vision_inputs(self, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+        """Smallest valid vision input: a single merged token (grid [1, m, m])."""
+        vcfg = self.config.vision_config
+        m = vcfg.spatial_merge_size
+        num_patches = m * m
+        patch_dim = vcfg.in_channels * vcfg.temporal_patch_size * vcfg.patch_size * vcfg.patch_size
+        pixel_values = torch.zeros(num_patches, patch_dim, device=device, dtype=self.visual.dtype)
+        grid_thw = torch.tensor([[1, m, m]], dtype=torch.long, device=device)
+        return pixel_values, grid_thw
+
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -835,11 +845,22 @@ class Qwen3_5MoeVLMModel(nn.Module):
         if inputs_embeds is None:
             inputs_embeds = self.language_model.embed_tokens(input_ids)
 
-        if pixel_values is not None:
+        # Always run the vision encoder for collective symmetry: under FSDP + EP
+        # all ranks share one process group, so every rank must issue the vision
+        # encoder's all-gathers in the same order each step. A text-only micro-batch
+        # would otherwise skip them and desync the collectives, deadlocking the run.
+        # The encoder is frozen, so the dummy pass produces no gradients/backward
+        # collectives; we discard its embeds by skipping the masked_scatter.
+        has_images = pixel_values is not None
+        if has_images:
             pixel_values = pixel_values.type(self.visual.dtype)
-            vision_output = self.visual(pixel_values, grid_thw=image_grid_thw, return_dict=True)
-            image_embeds = vision_output.pooler_output.to(inputs_embeds.device, inputs_embeds.dtype)
+        else:
+            pixel_values, image_grid_thw = self._dummy_vision_inputs(inputs_embeds.device)
 
+        vision_output = self.visual(pixel_values, grid_thw=image_grid_thw, return_dict=True)
+        image_embeds = vision_output.pooler_output.to(inputs_embeds.device, inputs_embeds.dtype)
+
+        if has_images:
             image_mask = input_ids == self.config.image_token_id
             image_mask = image_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
             inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
