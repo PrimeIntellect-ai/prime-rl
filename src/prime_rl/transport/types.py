@@ -103,7 +103,11 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     training_mode: TrainingMode = "rl"
     rewards: list[float] | None = None
 
-    # Per-token SFT-on-tool-body mask (parallel to input_ids). Survives packing
-    # and padding identical to ``loss_mask`` — see ``trainer/batch.py`` for the
-    # overlay logic. None when no sample in this micro-batch carried an SFT mask.
-    sft_mask: list[bool] | None = None
+    # Per-token echo mask (parallel to input_ids): True where the token is an
+    # echo position (per-role cross-entropy overlay, see ``EchoConfig``).
+    # Survives packing and padding identical to ``loss_mask``. None when no
+    # sample in this micro-batch carried any echo positions. Used by the loss
+    # function to skip the trust-region clip and zero out the IS-ratio on echo
+    # positions (the off-policy correction concept doesn't apply to tokens the
+    # model didn't sample).
+    echo_mask: list[bool] | None = None

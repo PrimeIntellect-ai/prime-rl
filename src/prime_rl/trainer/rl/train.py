@@ -471,9 +471,9 @@ def train(config: TrainerConfig):
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
-            sft_mask_batch = micro_batch.get("sft_mask")
-            sft_mask_split = (
-                sft_mask_batch.to("cuda").squeeze().split(response_lengths) if sft_mask_batch is not None else None
+            echo_mask_batch = micro_batch.get("echo_mask")
+            echo_mask_split = (
+                echo_mask_batch.to("cuda").squeeze().split(response_lengths) if echo_mask_batch is not None else None
             )
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
@@ -486,7 +486,7 @@ def train(config: TrainerConfig):
                 loss_fns=loss_fns,
                 loss_scale=loss_scale,
                 training_mode=micro_batch["training_mode"],
-                sft_mask=sft_mask_split,
+                echo_mask=echo_mask_split,
             )
 
             # Backward pass

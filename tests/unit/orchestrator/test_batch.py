@@ -137,7 +137,7 @@ def test_prepare_sample_sft_overlay(make_training_example):
     assert micro_batch.advantages[3] == 1.0
     # SFT prompt positions are now loss-trainable; completion mask preserved.
     assert micro_batch.loss_mask == [True, True, True, True]
-    assert micro_batch.sft_mask == [True, True, False, False]
+    assert micro_batch.echo_mask == [True, True, False, False]
 
 
 def test_prepare_sample_skips_sft_overlay_without_alpha(make_training_example):
@@ -166,7 +166,7 @@ def test_prepare_sample_truncates_sft_mask_with_other_per_token_lists(make_train
     micro_batch = prepare_sample(example, seq_len=2)
 
     assert len(micro_batch.input_ids) == 2
-    assert len(micro_batch.sft_mask) == 2
+    assert len(micro_batch.echo_mask) == 2
     assert len(micro_batch.advantages) == 2
     assert len(micro_batch.loss_mask) == 2
 
