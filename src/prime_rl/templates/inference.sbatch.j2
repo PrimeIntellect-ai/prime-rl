@@ -156,9 +156,8 @@ srun --kill-on-bad-exit=1 bash -c '
     ROUTER_POLICY="${PRIME_RL_VLLM_ROUTER_POLICY:-{{ router_policy }}}"
 {% endif %}
 
-    # Infiniband setup
-    IB_HCA=$(ibv_devinfo 2>/dev/null | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" | paste -sd,)
-    [ -n "$IB_HCA" ] && export NCCL_IB_HCA=$IB_HCA
+    # Slingshot/Cassini NCCL fabric (single source of truth; libfabric/cxi, not IB).
+    source "$PROJECT_DIR/scripts/env/isambard-fabric.sh"
 
     INFER_NODE_RANK=$SLURM_PROCID
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
@@ -181,7 +180,7 @@ srun --kill-on-bad-exit=1 bash -c '
     export VLLM_USE_DEEP_GEMM={{ "1" if use_deep_gemm else "0" }}
     export VLLM_MOE_USE_DEEP_GEMM={{ "1" if use_deep_gemm else "0" }}
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
-    export GLOO_SOCKET_IFNAME=bond0
+    export GLOO_SOCKET_IFNAME=hsn0
     export VLLM_ENGINE_READY_TIMEOUT_S=4200
     export UCX_TLS=all
     export UCX_NET_DEVICES=all

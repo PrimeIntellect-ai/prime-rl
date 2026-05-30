@@ -10,7 +10,7 @@ description: How to install prime-rl and its optional dependencies. Use when set
 prime-rl is a monorepo with submodules. Use the install script when bootstrapping a fresh machine:
 
 ```bash
-bash scripts/install.sh   # clones, inits submodules, installs uv, runs `uv sync --all-extras`
+bash scripts/install.sh   # clones, inits submodules, installs uv, syncs PrimeRL runtime extras
 ```
 
 For an existing clone, init submodules explicitly:
@@ -26,8 +26,12 @@ Do **not** run `git submodule update --init --recursive` without paths — it tr
 ```bash
 uv sync                    # core only
 uv sync --group dev        # + pytest, ruff, pre-commit
-uv sync --all-extras       # recommended: envs, flash-attn, flash-attn-cute, etc.
+uv sync --extra all --extra envs --extra gpt-oss --extra modelexpress --group dev
 ```
+
+Do not use `uv sync --all-extras` in the full workspace. It also selects
+workspace-member extras such as `verifiers[rl]`, which intentionally conflict
+with PrimeRL's torch/vLLM runtime.
 
 The `envs` extra installs every env workspace listed in `[tool.uv.workspace]`. Adding a new env means adding it to `members`, the `envs` extra, and `[tool.uv.sources]`.
 
@@ -64,6 +68,6 @@ Verify: `uv run python -c 'import deep_ep; print(deep_ep.__file__)'`.
 ## Key files
 
 - `pyproject.toml` — dependencies, extras, dependency groups
-- `uv.lock` — pinned lockfile (refresh with `uv sync --all-extras`)
+- `uv.lock` — pinned lockfile (refresh with explicit PrimeRL extras, not `--all-extras`)
 - `scripts/install.sh` — bootstrap installer
 - `scripts/install_ep_kernels.sh` — DeepEP build script

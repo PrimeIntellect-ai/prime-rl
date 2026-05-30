@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-root="${PRIME_RL_ROOT:-/lus/lfs1aip2/projects/a6r/joanv.a6r/work/prime-rl}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/../.." && pwd)"
+root="${PRIME_RL_ROOT:-$repo_root}"
 run_root="${OFFLINE_EVAL_RUN_ROOT:?OFFLINE_EVAL_RUN_ROOT must point at the run_default directory}"
 offline_output="${OFFLINE_EVAL_OUTPUT_DIR:-$(dirname "$run_root")/offline_eval_600x8_all_ckpts}"
 arm="${OFFLINE_EVAL_ARM:?OFFLINE_EVAL_ARM must name the eval arm}"

@@ -107,13 +107,14 @@ source $HOME/.local/bin/env
 4. Install dependencies from the lock file
 
 ```bash
-uv sync --all-extras
+uv sync --extra all --extra envs --extra gpt-oss --extra modelexpress --group dev
 ```
 
 3.1. Optional: Install Flash Attention 3 (on Hopper GPUs only, for flash_attention_3 attention backend)
 
 > *NOTE*: On `x86_64`, this installs a prebuilt wheel. On `aarch64` Hopper, this builds the FA3 extension from source, so expect it to take a while.
 > *NOTE*: Extras are still opt-in. Use `uv sync --extra flash-attn-3` or `uv run --extra flash-attn-3 ...` when you need FA3 in a fresh environment.
+> *NOTE*: Do not use `uv sync --all-extras` in the full workspace. It selects extras from workspace dependencies too, including `verifiers[rl]`, which intentionally conflicts with PrimeRL's torch/vLLM runtime.
 
 ```bash
 uv sync --extra flash-attn-3

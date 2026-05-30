@@ -241,7 +241,7 @@ def train(config: TrainerConfig):
             config.model.cp,
             tokenizer,
             config.rollout_transport,
-            config.pack_samples,
+            pack_samples=config.pack_samples,
         )
 
     token_exporter = setup_token_exporter(config, parallel_dims, world, logger)

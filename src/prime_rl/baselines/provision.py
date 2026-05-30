@@ -292,18 +292,10 @@ export TRITON_CACHE_DIR="${{TRITON_CACHE_DIR:-/tmp/triton_cache_${{SLURM_JOB_ID:
 export VLLM_CACHE_ROOT="${{VLLM_CACHE_ROOT:-/tmp/vllm_cache_${{SLURM_JOB_ID:-${{USER}}}}_$(hostname -s)}}"
 mkdir -p "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR" "$VLLM_CACHE_ROOT"
 
-module load brics/nccl 2>/dev/null || true
-module load brics/aws-ofi-nccl 2>/dev/null || true
-unset NCCL_ALGO
-
-# Match production rl.sbatch: discover InfiniBand HCA so NCCL picks the
-# right device for cross-node collectives (DP coordinator, weight bcast).
-if command -v ibv_devinfo >/dev/null 2>&1; then
-    IB_HCA=$(ibv_devinfo | sed -n -e '/hca_id/p' -e '/link_layer:/p' | grep -B1 InfiniBand | grep hca_id | sed -e 's/^hca_id://g' | tr -d '[[:blank:]]' | paste -sd,)
-    if [ -n "$IB_HCA" ]; then
-        export NCCL_IB_HCA="$IB_HCA"
-    fi
-fi
+# Slingshot/Cassini NCCL fabric (single source of truth). Loads brics/nccl ->
+# NCCL_NET="AWS Libfabric", cxi provider, GPUDirect RDMA. NOT InfiniBand, so no
+# ibv_devinfo/NCCL_IB_HCA here. See scripts/env/isambard-fabric.sh.
+source "$PROJECT_DIR/scripts/env/isambard-fabric.sh"
 
 LOCAL_IP=$(ip -o -4 addr show hsn0 2>/dev/null | awk '{{split($4,a,"/"); print a[1]; exit}}')
 if [ -z "$LOCAL_IP" ]; then

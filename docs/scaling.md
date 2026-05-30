@@ -21,6 +21,7 @@ This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster
   - [Activation](#activation)
   - [`[deployment]` Block](#deployment-block)
   - [Examples](#examples)
+  - [In-allocation multi-node lanes](#in-allocation-multi-node-lanes)
   - [Custom Templates](#custom-templates)
 - [Benchmarking](#benchmarking)
 
@@ -234,6 +235,24 @@ Full multi-node configs ship in [`examples/multinode/`](https://github.com/Prime
 - [`sft.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/multinode/sft.toml) — two-node SFT against the same model.
 
 For inference-only multi-node, set `[deployment] type = "multi_node"` on an inference TOML — each node runs an independent vLLM replica (TP and DP must fit within one node), and the launcher prints one URL per node. Front the URLs with a router or point clients at any of them.
+
+### In-allocation multi-node lanes
+
+The default multi-node path submits one `sbatch` per run. On Isambard-AI it's cheaper to hold a Slurm allocation once as a node **pool** and place several runs inside it. A **lane** is one full `multi_node` run pinned to a disjoint node-slice of that held allocation.
+
+**Pool model.** Hold `N` nodes; each lane consumes `num_infer_nodes + num_train_nodes` of them on an explicit slice. Disjoint slices run concurrently — e.g. a 4-node pool carves into 2+2 (two 1-infer + 1-train lanes). The placement uses `srun --jobid=$SLURM_JOB_ID --exact -w <slice>` (`--exact`, **not** `--overlap`): each lane sees only its slice, so siblings don't contend for GPUs.
+
+**When does a run go in-allocation?** A config with no `[slurm]` block runs in the held allocation (no `sbatch`). Adding a `[slurm]` block switches back to the submit-a-fresh-allocation path — keep that for when you don't already hold nodes. The two paths share one template; per-lane parameters (`hosts` / `port_base` / `lane_tag`) fall back to job-globals when unset, so the legacy full-allocation run is unchanged.
+
+**Targeting a slice.** Three `[deployment]` fields select and isolate a lane:
+
+| Field | CLI flag | Role |
+|---|---|---|
+| `deployment.hosts` | `--deployment.hosts` | hostnames of this lane's node-slice (disjoint across lanes) |
+| `deployment.port_base` | `--deployment.port-base` | base port; every service port (master, router, backend, RPC) is an offset from it; lanes space it ≥100 apart so ports never collide |
+| `deployment.lane_tag` | `--deployment.lane-tag` | unique string namespacing the lane's caches, shm, rendezvous-id, and output subdir |
+
+`gpus_per_node = 4` is **mandatory** on Isambard AIP2 — its nodes have 4 GH200 GPUs each, where upstream examples assume 8. The Slingshot fabric is set automatically: the launch path sources `scripts/env/isambard-fabric.sh` (`module load brics/nccl`), which is libfabric rather than InfiniBand. See [Launch § In-allocation multi-node (lane) launch](launch.md#in-allocation-multi-node-lane-launch) for the exact 2+2 carving commands, and [`configs/isambard/rl_2node_inalloc.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/configs/isambard/rl_2node_inalloc.toml) for a worked 2-node lane config.
 
 ### Custom Templates
 

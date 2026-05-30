@@ -7,6 +7,16 @@ description: How to launch prime-rl training runs — the `rl`, `sft`, and `infe
 
 All entrypoints run via `uv run <command>` and accept TOML configs via `@ path/to.toml` plus CLI overrides.
 
+For allocation work, first bind the shell to the intended checkout:
+
+```bash
+source scripts/env/activate-prime-rl.sh
+```
+
+This loads the repo-local `.env`, activates the repo-local `.venv`, and sets
+`PRIME_RL_ROOT`. Do not reuse a shell whose `VIRTUAL_ENV` points at another
+worktree.
+
 ## Config system at a glance
 
 [`pydantic-config`](https://github.com/PrimeIntellect-ai/pydantic-config) — Pydantic-based TOML + CLI loader. Highlights (see the `configs` skill for full mechanics):

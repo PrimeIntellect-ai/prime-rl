@@ -10,7 +10,9 @@ after_job_id="$1"
 arm="$2"
 run_root="$3"
 offline_output="$4"
-root="${PRIME_RL_ROOT:-/lus/lfs1aip2/projects/a6r/joanv.a6r/work/prime-rl}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/../.." && pwd)"
+root="${PRIME_RL_ROOT:-$repo_root}"
 
 cd "$root"
 

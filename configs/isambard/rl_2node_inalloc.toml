@@ -1,0 +1,94 @@
+# In-allocation multi_node RL — sized for a 2-NODE lane on Isambard-AI (AIP2).
+#
+# A lane = one full multi_node run placed on a disjoint node-slice of a single
+# HELD Slurm allocation. This config is one lane = 1 infer + 1 train = 2 nodes.
+# Hold 4 nodes and carve them into 2+2 by launching this config TWICE, each
+# invocation pinned to a disjoint 2-node slice with a distinct port_base + lane_tag.
+#
+# Note the ABSENCE of a [slurm] table: that is the signal to the launcher to run
+# IN the held allocation (srun --jobid=$SLURM_JOB_ID --exact -w <slice>), not to
+# sbatch a fresh allocation. Add a [slurm] block back only if you want the legacy
+# "submit a new allocation" path. The Slingshot fabric is sourced automatically by
+# the launch path (scripts/env/isambard-fabric.sh -> module load brics/nccl).
+#
+# ── Carving 4 held nodes into 2+2 (two concurrent lanes) ─────────────────────
+# After holding 4 nodes (cc-wrapper) and binding the shell to this checkout,
+# launch two lanes targeting disjoint slices (port_base spaced >=100 apart):
+#
+#   # lane 0 — nodes nid001000,nid001001
+#   uv run rl @ <base>.toml @ configs/isambard/rl_2node_inalloc.toml \
+#     --deployment.hosts nid001000,nid001001 \
+#     --deployment.port-base 29500 \
+#     --deployment.lane-tag ${SLURM_JOB_ID}-lane0 &
+#
+#   # lane 1 — nodes nid001002,nid001003
+#   uv run rl @ <base>.toml @ configs/isambard/rl_2node_inalloc.toml \
+#     --deployment.hosts nid001002,nid001003 \
+#     --deployment.port-base 29700 \
+#     --deployment.lane-tag ${SLURM_JOB_ID}-lane1 &
+#
+#   wait   # both lanes run concurrently on disjoint slices
+#
+# The three lane params below (hosts / port_base / lane_tag) are shown commented
+# at config scope; carving by hand normally passes them on the CLI as above so a
+# single config serves every slice. Leaving them unset = launcher uses the whole
+# allocation as one lane.
+
+output_dir = "outputs/isambard/rl_2node_inalloc"
+max_steps = 100
+seq_len = 4096
+
+[log]
+level = "info"
+
+[model]
+name = "Qwen/Qwen3-1.7B"
+
+[weight_broadcast]
+type = "nccl"
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 4         # MANDATORY on Isambard AIP2 (4 GH200/node); upstream defaults to 8.
+num_train_nodes = 1       # 1 train node
+num_infer_nodes = 1       # + 1 infer node = a 2-node lane
+
+# ── Lane params (uncomment to pin a slice at config scope; usually set on CLI) ──
+# hosts = ["nid001000", "nid001001"]   # this lane's disjoint 2-node slice
+# port_base = 29500                    # base port; all service ports offset from it; >=100 apart per lane
+# lane_tag = "lane0"                   # namespaces caches/shm/rdzv-id/output subdir; distinct per lane
+
+[trainer.model]
+impl = "custom"
+seq_len = 4096
+attn = "flash_attention_3"
+optim_cpu_offload = true
+
+[trainer.model.ac]
+freq = 1
+
+[orchestrator]
+batch_size = 128
+group_size = 8
+
+[orchestrator.train.sampling]
+max_completion_tokens = 2048
+
+[[orchestrator.train.env]]
+id = "math-env"
+name = "hendrycks-math"
+args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default", math_verify_max_workers = 64, math_verify_timeout = 30 }
+
+[orchestrator.buffer]
+easy_threshold = 1.0
+hard_threshold = 0.0
+
+[inference]
+gpu_memory_utilization = 0.9
+
+[inference.model]
+max_model_len = 8192
+
+[inference.parallel]
+tp = 1                    # fits within 4 GH200/node (tp * dp <= gpus_per_node)
+dp = 4

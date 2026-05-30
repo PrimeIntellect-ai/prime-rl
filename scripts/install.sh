@@ -154,7 +154,7 @@ main() {
   uv tool install prime
 
   log_info "Syncing virtual environment..."
-  uv sync --all-extras
+  uv sync --extra all --extra envs --extra gpt-oss --extra modelexpress --group dev
 
   log_info "Installing pre-commit hooks..."
   uv run pre-commit install

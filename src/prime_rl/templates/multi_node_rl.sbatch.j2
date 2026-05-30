@@ -32,10 +32,8 @@ export NODES_PER_INFER_REPLICA={{ nodes_per_infer_replica }}
 export NUM_INFER_REPLICAS={{ num_infer_replicas }}
 export GPUS_PER_NODE={{ gpus_per_node }}
 {% if num_infer_nodes > 0 -%}
-export ROUTER_PORT={{ router_port }}
 export INFERENCE_TP={{ inference_tp }}
 export INFERENCE_DP_LOCAL=$((GPUS_PER_NODE / INFERENCE_TP))
-export INFERENCE_DATA_PARALLEL_RPC_PORT={{ inference_data_parallel_rpc_port }}
 {% if is_disaggregated -%}
 export NUM_PREFILL_NODES={{ num_prefill_nodes }}
 export NUM_DECODE_NODES={{ num_decode_nodes }}
@@ -46,7 +44,6 @@ export NODES_PER_DECODE_REPLICA=$((NUM_DECODE_NODES / NUM_DECODE_REPLICAS))
 export PREFILL_PORT={{ prefill_port }}
 export DECODE_PORT={{ decode_port }}
 {%- else -%}
-export BACKEND_PORT={{ backend_port }}
 export INFERENCE_ENABLE_EXPERT_PARALLEL={{ "1" if inference_enable_expert_parallel else "0" }}
 
 # Enable distributed EP mode only when expert parallelism spans multiple inference nodes per replica.
@@ -67,18 +64,44 @@ ln -sfn trainer/node_0.log $OUTPUT_DIR/logs/trainer.log
 ln -sfn inference/node_0.log $OUTPUT_DIR/logs/inference.log
 
 # General
+# Lane parameters (see lane-contract.md). Fallbacks make this template serve
+# BOTH the in-alloc lane path (LANE_* exported by launcher) AND the legacy
+# full-allocation sbatch path (LANE_* unset → job-globals).
+LANE_HOSTS=( ${LANE_HOSTS:-$(scontrol show hostnames "$SLURM_JOB_NODELIST")} )
+LANE_NNODES=$(echo "${LANE_HOSTS[*]}" | wc -w)  # count via wc; the bash array-length syntax trips Jinja's comment parser
+PORT_BASE=${PORT_BASE:-29500}
+LANE_TAG=${LANE_TAG:-$SLURM_JOB_ID}
+export LANE_TAG
+# Per-task resources for the internal work sruns. The launcher derives these
+# from the node and exports them; the fallback (whole node) makes the legacy
+# sbatch path behavior-equivalent to today. --exact otherwise clamps to 1 CPU.
+LANE_CPUS_PER_TASK=${LANE_CPUS_PER_TASK:-$(nproc --all)}
+echo "LANE_HOSTS=${LANE_HOSTS[*]} LANE_NNODES=${LANE_NNODES} PORT_BASE=${PORT_BASE} LANE_TAG=${LANE_TAG} LANE_CPUS_PER_TASK=${LANE_CPUS_PER_TASK} LANE_MEM_MB=${LANE_MEM_MB:-<unset>}"
+
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
-export TRITON_CACHE_DIR=/tmp/triton-cache-$USER-$SLURM_JOB_ID
+export TRITON_CACHE_DIR=/tmp/triton-cache-$USER-$LANE_TAG
 
 export WANDB_SHARED_MODE=1
 export WANDB_SHARED_RUN_ID=$(python3 -c "import uuid; print(uuid.uuid4().hex)")
 
-# Networking
-HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
-TRAIN_HOSTS=( ${HOSTNAMES[@]:$NUM_INFER_NODES:$SLURM_JOB_NUM_NODES} )
+# Networking — operate over THIS lane's slice (LANE_HOSTS), never the job-global nodelist.
+HOSTNAMES=( "${LANE_HOSTS[@]}" )
+TRAIN_HOSTS=( ${HOSTNAMES[@]:$NUM_INFER_NODES:$LANE_NNODES} )
 export HOSTNAMES_STR="${HOSTNAMES[*]}"
+LANE_HOSTS_CSV=$(IFS=,; echo "${LANE_HOSTS[*]}")
+
+# Service ports derive from PORT_BASE so disjoint lanes never collide (offsets:
+# router +10, backend +20, rpc +40). Defined before the URL construction below,
+# which bakes these ports into the router/admin/orchestrator URLs.
+{% if num_infer_nodes > 0 -%}
+export ROUTER_PORT=$((PORT_BASE + 10))
+export INFERENCE_DATA_PARALLEL_RPC_PORT=$((PORT_BASE + 40))
+{% if not is_disaggregated -%}
+export BACKEND_PORT=$((PORT_BASE + 20))
+{%- endif %}
+{%- endif %}
 
 {% if num_infer_nodes > 0 -%}
 INFER_HOSTS=( ${HOSTNAMES[@]:0:$NUM_INFER_NODES} )
@@ -138,16 +161,17 @@ echo "USE_DISTRIBUTED_EP=${USE_DISTRIBUTED_EP}"
 echo "HOSTNAMES=${HOSTNAMES[*]}"
 echo "TRAIN_HOSTS=${TRAIN_HOSTS[*]}"
 
+# Trainer-head = first trainer node within the lane (mirrors HOSTNAMES split over LANE_HOSTS).
 export MASTER_ADDR="${HOSTNAMES[$NUM_INFER_NODES]}"
-export MASTER_PORT=29500
+export MASTER_PORT=$((PORT_BASE))
 echo "MASTER_ADDR=${MASTER_ADDR}"
 echo "MASTER_PORT=${MASTER_PORT}"
 
 # Setup environment
 cd $PROJECT_DIR
 [ -f .env ] && source .env
+source "$PROJECT_DIR/scripts/env/isambard-fabric.sh"
 source .venv/bin/activate
-uv sync --all-extras
 
 {% if pre_run_command %}
 # Pre-run command
@@ -159,10 +183,39 @@ uv sync --all-extras
 # termination and cause the next launch to hang (e.g. decode engines stuck at
 # "Waiting for READY message from DP Coordinator"). Harmless on clean nodes.
 #
+# LANE SCOPING (footgun): a job-wide `srun pkill` would nuke SIBLING lanes
+# sharing this allocation. We scope two ways:
+#   (a) `-w "$LANE_HOSTS_CSV"` restricts the step to THIS lane's nodes. Because
+#       v1 lanes occupy whole, disjoint nodes (sub-node lanes are out of scope,
+#       see lane-contract.md), a node belongs to exactly one lane — so the node
+#       restriction alone fully isolates the kill from siblings.
+#   (b) the triton cache removal is LANE_TAG-namespaced; the broad
+#       /dev/shm/vllm-*, /tmp/vllm-*, /tmp/torch-* globs are NOT namespaced and
+#       are safe ONLY under the (a) whole-node lane disjointness above.
+# The broad `pkill` patterns below are intentional (vllm subprocs don't all
+# carry LANE_TAG in argv); they are safe ONLY under the (a) node restriction.
+# RESIDUAL RISK: if sub-node co-located lanes are ever introduced, (a) no longer
+# isolates and both the pkills AND the shm/tmp globs must be narrowed to a
+# LANE_TAG/process-tree match.
+#
+# Lane-aware srun flags shared by the cleanup and main work sruns. The launcher
+# runs this template directly on the head node (NO outer srun); these INTERNAL
+# sruns fan out onto the lane slice. --exact gives this step only its slice so
+# disjoint lanes coexist; --cpus-per-task is mandatory here (without it --exact
+# clamps each task to 1 CPU and starves vLLM/torch). --export=ALL propagates the
+# preamble env (incl. WANDB_SHARED_RUN_ID) to every node.
+LANE_SRUN_OPTS=( --jobid="$SLURM_JOB_ID" --exact -w "$LANE_HOSTS_CSV"
+    --nodes="$LANE_NNODES" --ntasks-per-node=1
+    --cpus-per-task="$LANE_CPUS_PER_TASK" --gpus-per-node="$GPUS_PER_NODE"
+    --export=ALL )
+[ -n "${LANE_MEM_MB:-}" ] && LANE_SRUN_OPTS+=( --mem="${LANE_MEM_MB}" )
+
 # `bash -s` with a heredoc on stdin keeps the script body out of every bash
 # / srun argv — otherwise `pkill -f "[v]llm"` self-matches the cleanup procs
 # because the surviving literal `vllm` strings below appear in the cmdline.
-srun bash -s <<'CLEANUP_SH'
+srun "${LANE_SRUN_OPTS[@]}" \
+    bash -s "$LANE_TAG" <<'CLEANUP_SH'
+    LANE_TAG="$1"
     pkill -9 -f "[p]ython.*prime_rl" 2>/dev/null
     pkill -9 -f "[t]orchrun" 2>/dev/null
     pkill -9 -f "[v]llm-router" 2>/dev/null
@@ -174,16 +227,18 @@ srun bash -s <<'CLEANUP_SH'
     pkill -9 "vllm::.*" 2>/dev/null
     sleep 2
     rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/vllm_* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null
+    rm -rf /tmp/triton-cache-$USER-$LANE_TAG 2>/dev/null
     procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::" | grep -v grep | wc -l)
     gpu=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk "{s+=\$1} END {print s}")
-    echo "[node-cleanup] $(hostname) procs=$procs gpu_mem=${gpu}MiB"
+    echo "[node-cleanup] $(hostname) lane=$LANE_TAG procs=$procs gpu_mem=${gpu}MiB"
 CLEANUP_SH
 
 # Run RL
 # --kill-on-bad-exit=1 propagates a non-zero exit on any node to all other
 # tasks so a crashed component terminates the SLURM job instead of leaving the
 # surviving ranks holding nodes.
-srun --kill-on-bad-exit=1 bash -c '
+srun "${LANE_SRUN_OPTS[@]}" \
+    --kill-on-bad-exit=1 bash -c '
     # pipefail ensures `cmd | tee log` propagates `cmd` failures, and the
     # wait/cleanup block at the end of this script surfaces background
     # process crashes (router, orchestrator) as task failures.
@@ -192,6 +247,7 @@ srun --kill-on-bad-exit=1 bash -c '
     # Source environment
     cd $PROJECT_DIR
     [ -f .env ] && source .env
+    source "$PROJECT_DIR/scripts/env/isambard-fabric.sh"
     source .venv/bin/activate
     # Do not sync to avoid conflicts with lockfile
 
@@ -199,15 +255,31 @@ srun --kill-on-bad-exit=1 bash -c '
     ulimit -n 65536
     export GIT_LFS_SKIP_SMUDGE=1
 
-    # Infiniband setup
-    IB_HCA=$(ibv_devinfo | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" |paste -sd,)
-    export NCCL_IB_HCA=$IB_HCA
+    # Lane-local node rank: position of THIS host within the lane slice.
+    # Robust under srun --exact -w <slice> where $SLURM_PROCID is already
+    # lane-local 0..LANE_NNODES-1, but derived from hostname so it is correct
+    # regardless of how the step task IDs are assigned.
+    read -ra LANE_HOSTS <<< "$HOSTNAMES_STR"
+    LANE_NODE_RANK=-1
+    _self=$(hostname -s)
+    for i in "${!LANE_HOSTS[@]}"; do
+        _h="${LANE_HOSTS[$i]}"
+        if [ "$_h" = "$_self" ] || [ "${_h%%.*}" = "$_self" ] || [ "$_h" = "$(hostname)" ]; then
+            LANE_NODE_RANK=$i
+            break
+        fi
+    done
+    if [ "$LANE_NODE_RANK" -lt 0 ]; then
+        echo "[lane] FATAL: $(hostname) not found in lane hosts: $HOSTNAMES_STR" >&2
+        exit 1
+    fi
+    echo "[lane] $(hostname) LANE_NODE_RANK=$LANE_NODE_RANK of $HOSTNAMES_STR"
 
 {% if num_infer_nodes > 0 -%}
 
-if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
+if [ "$LANE_NODE_RANK" -lt "$NUM_INFER_NODES" ]; then
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
-    INFER_NODE_RANK=$SLURM_PROCID
+    INFER_NODE_RANK=$LANE_NODE_RANK
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
 
@@ -227,8 +299,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     export VLLM_USE_DEEP_GEMM={{ "1" if use_deep_gemm else "0" }}
     export VLLM_MOE_USE_DEEP_GEMM={{ "1" if use_deep_gemm else "0" }}
 
-    export GLOO_SOCKET_IFNAME=bond0
     export VLLM_ENGINE_READY_TIMEOUT_S=4200
+    # UCX_TLS/UCX_NET_DEVICES drive NIXL KV-transfer in the PD branch — left
+    # intact (NOT Slingshot NCCL fabric); verify against isambard-fabric.sh.
     export UCX_TLS=all
     export UCX_NET_DEVICES=all
     export LD_LIBRARY_PATH="$PROJECT_DIR/third_party/ucx/lib:$PROJECT_DIR/third_party/ucx/lib/ucx:${LD_LIBRARY_PATH:-}"
@@ -263,7 +336,8 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 {% endfor %}
         ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\""
     else
-        export UCX_NET_DEVICES=mlx5_0:1
+        # No mlx5_0:1 override (InfiniBand device); AIP2 is Slingshot/cxi, so the
+        # inherited UCX_NET_DEVICES=all stands for NIXL on the decode role.
         ROLE="decode"
         RANK_IN_DECODE=$((RANK_IN_REPLICA - NUM_PREFILL_NODES))
         SUB_REPLICA=$((RANK_IN_DECODE / NODES_PER_DECODE_REPLICA))
@@ -368,12 +442,13 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             @ $CONFIG_DIR/inference.toml \
             --server.host 0.0.0.0 \
             --server.port $BACKEND_PORT \
+            --data-parallel-rpc-port $INFERENCE_DATA_PARALLEL_RPC_PORT \
             2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log &
     fi
 {%- endif %}
 
 else
-    TRAIN_NODE_RANK=$((SLURM_PROCID - NUM_INFER_NODES))
+    TRAIN_NODE_RANK=$((LANE_NODE_RANK - NUM_INFER_NODES))
 
     if [ "$TRAIN_NODE_RANK" -eq 0 ]; then
         ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.toml"
@@ -384,7 +459,7 @@ else
             2>&1 | tee $OUTPUT_DIR/logs/orchestrator.log &
     fi
 {%- else %}
-    TRAIN_NODE_RANK=$SLURM_PROCID
+    TRAIN_NODE_RANK=$LANE_NODE_RANK
 {%- endif %}
 
     export HF_HUB_OFFLINE=1
@@ -400,7 +475,7 @@ else
         --nproc-per-node=$GPUS_PER_NODE \
         --node-rank=$TRAIN_NODE_RANK \
         --rdzv-endpoint=$MASTER_ADDR:$MASTER_PORT \
-        --rdzv-id=job_$SLURM_JOB_ID \
+        --rdzv-id=job_$LANE_TAG \
         --log-dir=$OUTPUT_DIR/logs/trainer/torchrun \
         --tee=3 \
         --redirects=3 \

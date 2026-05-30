@@ -20,7 +20,7 @@ The three processes communicate through configurable transports — by default t
 curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/prime-rl/main/scripts/install.sh | bash
 ```
 
-The script clones the repo, initializes the [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) / [`renderers`](https://github.com/PrimeIntellect-ai/renderers) / [`research-environments`](https://github.com/PrimeIntellect-ai/research-environments) submodules, installs `uv`, and runs `uv sync --all-extras`. For manual setup, MoE-only installs (DeepGEMM / DeepEP / NIXL), or troubleshooting, see the [README](https://github.com/PrimeIntellect-ai/prime-rl#setup).
+The script clones the repo, initializes the [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) / [`renderers`](https://github.com/PrimeIntellect-ai/renderers) / [`research-environments`](https://github.com/PrimeIntellect-ai/research-environments) submodules, installs `uv`, and syncs the PrimeRL runtime extras. For manual setup, MoE-only installs (DeepGEMM / DeepEP / NIXL), or troubleshooting, see the [README](https://github.com/PrimeIntellect-ai/prime-rl#setup).
 
 You need at least one NVIDIA GPU (RTX 3090/4090/5090, A100, H100, H200, or B200). Single-GPU runs are supported for debugging; production RL is typically 1× inference node + 1+ trainer nodes.
 

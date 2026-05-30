@@ -4,6 +4,18 @@ Use `prime_rl.entrypoints.launch` as the single repo-local launch surface. The
 `prime-launch` console alias exists after syncing the environment, but
 `python -m` works with `uv run --no-sync`.
 
+Before launching from an allocation, bind the shell to this checkout:
+
+```bash
+cd /lus/lfs1aip2/projects/a6r/joanv.a6r/work/prime-rl-main
+source scripts/env/activate-prime-rl.sh
+```
+
+The helper loads the repo-local `.env`, clears any mismatched active venv, sets
+`PRIME_RL_ROOT`, and activates `.venv`. Model/cache paths such as `HF_HOME`,
+`HF_HUB_CACHE`, and `UV_CACHE_DIR` should live in the repo `.env`; launch
+scripts should not hard-code another checkout path.
+
 ## RLVR
 
 Dry-run:
@@ -66,6 +78,88 @@ The old scripts remain as compatibility shims:
 scripts/evals/run_omni_math2_offline_eval_28i4t.sh
 scripts/evals/submit_omni_math2_postrun_offline_eval.sh <job_id> <arm> <run_root> <out_dir>
 ```
+
+## In-allocation multi-node (lane) launch
+
+On Isambard-AI you hold a Slurm allocation as a node **pool**, then carve it into
+**lanes** — each lane is one full `multi_node` run on a disjoint node-slice. This
+runs *inside* the held allocation (no `sbatch`): the launcher fans out with
+`srun --jobid=$SLURM_JOB_ID --exact -w <slice>` (`--exact`, **not** `--overlap`),
+so disjoint slices coexist. See [Scaling § In-allocation multi-node lanes](scaling.md#in-allocation-multi-node-lanes)
+for the pool model.
+
+A config runs in-allocation **when it has no `[slurm]` block**. Presence of a
+`[slurm]` block switches back to the legacy path that submits a fresh allocation
+via `sbatch` (use that when you do *not* already hold nodes). Example lane config:
+[`configs/isambard/rl_2node_inalloc.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/configs/isambard/rl_2node_inalloc.toml)
+(1 train + 1 infer = a 2-node lane, `gpus_per_node = 4`).
+
+### Hold the nodes
+
+Hold the pool with the cc-wrapper launcher (e.g. 4 nodes), which drops you into a
+shell inside the allocation, then bind the shell to this checkout:
+
+```bash
+launch-script-mnode 4
+source scripts/env/activate-prime-rl.sh
+```
+
+### Launch one lane
+
+```bash
+uv run rl @ <base>.toml @ configs/isambard/rl_2node_inalloc.toml
+```
+
+With no `hosts` set, the launcher treats the whole allocation as a single lane.
+
+### Carve 4 nodes into 2+2 (two concurrent lanes)
+
+Two invocations of the same config, each pinned to a disjoint 2-node slice with a
+distinct `port_base` (spaced ≥100 apart) and `lane_tag`:
+
+```bash
+# lane 0 — nodes nid001000,nid001001
+uv run rl @ <base>.toml @ configs/isambard/rl_2node_inalloc.toml \
+  --deployment.hosts nid001000,nid001001 \
+  --deployment.port-base 29500 \
+  --deployment.lane-tag ${SLURM_JOB_ID}-lane0 &
+
+# lane 1 — nodes nid001002,nid001003
+uv run rl @ <base>.toml @ configs/isambard/rl_2node_inalloc.toml \
+  --deployment.hosts nid001002,nid001003 \
+  --deployment.port-base 29700 \
+  --deployment.lane-tag ${SLURM_JOB_ID}-lane1 &
+
+wait   # both lanes run concurrently on disjoint slices
+```
+
+The three lane knobs map to `MultiNodeDeploymentConfig` fields:
+
+| Flag | Field | Purpose |
+|---|---|---|
+| `--deployment.hosts` | `deployment.hosts` | hostnames of this lane's slice (disjoint per lane) |
+| `--deployment.port-base` | `deployment.port_base` | base port; every service port is an offset from it; ≥100 apart per lane |
+| `--deployment.lane-tag` | `deployment.lane_tag` | namespaces caches, shm, rendezvous-id, and output subdir |
+
+Key facts:
+
+- `gpus_per_node = 4` is **mandatory** on Isambard AIP2 (4 GH200/node); upstream
+  examples default to 8.
+- Lanes use `srun --exact` (**not** `--overlap`) so each lane gets only its slice.
+- The Slingshot fabric is set automatically — the launch path sources
+  `scripts/env/isambard-fabric.sh` (`module load brics/nccl`). It is libfabric,
+  not InfiniBand: no `ibv_devinfo` / `NCCL_IB_HCA`.
+
+### Pitfalls
+
+These trip people (and agents) consistently — the [`in-alloc-launch`](../skills/in-alloc-launch/SKILL.md) skill carries the same list for agent retrieval.
+
+- **Run `rl` plainly — never under `srun`/`sbatch`.** Inside an allocation `rl` is itself the head-node orchestrator and fans out via its own internal `srun --exact`. Wrapping it in an outer `srun` nests step creation and deadlocks.
+- **In-allocation requires NO `[slurm]` block** in the config. A `[slurm]` block switches to the sbatch-submit path; use it only when you do not already hold nodes.
+- **Set `weight_broadcast.type = "nccl"` for real runs.** It moves weights GPU→GPU over Slingshot — roughly an order of magnitude faster than the `filesystem` default at multi-billion-parameter scale, which round-trips a checkpoint through Lustre. It relies on the fabric that `activate-prime-rl.sh` loads.
+- **Concurrent lanes must be fully disjoint:** distinct host slices, `port-base` ≥100 apart, distinct `lane-tag`. The `lane-tag` namespaces outputs, rollouts, caches, and the broadcast rendezvous; reuse or omit it and concurrent lanes overwrite each other's rollouts (`FileNotFoundError` on `rollouts/step_N`).
+- **`vllm-router` must resolve for aarch64 in `uv.lock`.** If multi_node inference dies with `vllm-router: command not found`, the lock is missing the `manylinux_2_28_aarch64` router wheel. After any `pyproject.toml` dependency change, run `uv lock` and commit the regenerated lock alongside the manifest.
+- **`/tmp` and `/dev/shm` are a shared, RAM-backed tmpfs that is not wiped between jobs.** A lane can hit `OSError [Errno 28] No space left on device` from other users' leftover caches on a node — an environment condition, not a launcher bug. Pick fresh nodes or clear space rather than debugging it as code.
 
 ## Data Generation / Filtering
 

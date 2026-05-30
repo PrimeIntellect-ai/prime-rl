@@ -32,6 +32,9 @@ TRAINER_TOML = "trainer.toml"
 ORCHESTRATOR_TOML = "orchestrator.toml"
 INFERENCE_TOML = "inference.toml"
 GPU_LAYOUT_SCRIPT = "gpu_layout_rl.sh"
+MULTI_NODE_SCRIPT = "multi_node_rl.sh"
+MULTI_NODE_TEMPLATE = "multi_node_rl.sbatch.j2"
+_DEFAULT_PORT_BASE = 29500
 _GPU_LAYOUT_CPU_MARGIN = 16
 _GPU_LAYOUT_MEM_MARGIN_MB = 16_384
 
@@ -108,6 +111,70 @@ def _gpu_layout_template_vars(config: RLConfig, config_dir: Path) -> dict:
         "trainer_gpu_ids": ",".join(map(str, trainer_gpu_ids)),
         "trainer_gpu_count": len(trainer_gpu_ids),
         "master_port": int(os.environ.get("MASTER_PORT", "29500")),
+        "use_nccl_broadcast": config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
+        "ranks_filter": ",".join(map(str, config.trainer.log.ranks_filter)),
+    }
+
+
+def _multi_node_template_vars(config: RLConfig, config_dir: Path) -> dict:
+    """Topology/placement vars for the multi_node template, shared by the sbatch and
+    in-allocation launch paths. The launch axis (sbatch vs srun) is decoupled from the
+    topology axis (these vars): both paths render the same template; only the per-node
+    `LANE_*` env (hosts/ports/tag) differs, and the template reads those from the
+    environment with fallbacks (see lane-contract.md)."""
+    assert config.deployment.type == "multi_node"
+    deployment = config.deployment
+
+    if config.inference is not None and config.inference.deployment.type == "disaggregated":
+        infer_deploy = config.inference.deployment
+        return {
+            "is_disaggregated": True,
+            "config_dir": config_dir,
+            "output_dir": config.output_dir,
+            "orchestrator_output_dir": config.orchestrator.output_dir,
+            "num_train_nodes": deployment.num_train_nodes,
+            "num_infer_nodes": infer_deploy.num_nodes * deployment.num_infer_replicas,
+            "nodes_per_infer_replica": infer_deploy.num_nodes,
+            "num_infer_replicas": deployment.num_infer_replicas,
+            "num_prefill_nodes": infer_deploy.num_prefill_nodes,
+            "num_decode_nodes": infer_deploy.num_decode_nodes,
+            "num_prefill_replicas": infer_deploy.num_prefill_replicas,
+            "num_decode_replicas": infer_deploy.num_decode_replicas,
+            "gpus_per_node": deployment.gpus_per_node,
+            "router_port": infer_deploy.router_port,
+            "prefill_port": infer_deploy.prefill_port,
+            "decode_port": infer_deploy.decode_port,
+            "inference_tp": config.inference.parallel.tp,
+            "inference_data_parallel_rpc_port": config.inference.data_parallel_rpc_port,
+            "use_deep_gemm": config.inference.use_deep_gemm,
+            "prefill_env_overrides": infer_deploy.prefill_env_overrides,
+            "decode_env_overrides": infer_deploy.decode_env_overrides,
+            "dp_per_node": deployment.gpus_per_node // config.inference.parallel.tp,
+            "kv_offload": config.inference.kv_cache_offload is not None,
+            "kv_offload_cpu_bytes": int(config.inference.kv_cache_offload.cpu_bytes)
+            if config.inference.kv_cache_offload
+            else 0,
+            "use_nccl_broadcast": config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
+            "ranks_filter": ",".join(map(str, config.trainer.log.ranks_filter)),
+        }
+
+    return {
+        "is_disaggregated": False,
+        "config_dir": config_dir,  # TODO: should prob have each subconfig path separately
+        "output_dir": config.output_dir,
+        "orchestrator_output_dir": config.orchestrator.output_dir,
+        "num_train_nodes": deployment.num_train_nodes,
+        "num_infer_nodes": deployment.total_infer_nodes,
+        "nodes_per_infer_replica": deployment.num_infer_nodes,
+        "num_infer_replicas": deployment.num_infer_replicas,
+        "gpus_per_node": deployment.gpus_per_node,
+        "router_port": getattr(config.inference.deployment, "router_port", 8000) if config.inference else 8000,
+        "backend_port": getattr(config.inference.deployment, "backend_port", 8100) if config.inference else 8100,
+        "inference_tp": config.inference.parallel.tp if config.inference else 1,
+        "inference_enable_expert_parallel": config.inference.enable_expert_parallel if config.inference else False,
+        "inference_data_parallel_rpc_port": config.inference.data_parallel_rpc_port if config.inference else 29600,
+        "dp_per_node": (config.deployment.gpus_per_node // config.inference.parallel.tp) if config.inference else 1,
+        "kv_offload": config.inference is not None and config.inference.kv_cache_offload is not None,
         "use_nccl_broadcast": config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
         "ranks_filter": ",".join(map(str, config.trainer.log.ranks_filter)),
     }
@@ -427,61 +494,13 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             output_dir=config.output_dir,
             gpus_per_node=config.deployment.gpus_per_node,
         )
-    elif config.inference is not None and config.inference.deployment.type == "disaggregated":
-        infer_deploy = config.inference.deployment
-
-        script = template.render(
-            **config.slurm.template_vars,
-            is_disaggregated=True,
-            config_dir=config_dir,
-            output_dir=config.output_dir,
-            orchestrator_output_dir=config.orchestrator.output_dir,
-            num_train_nodes=config.deployment.num_train_nodes,
-            num_infer_nodes=infer_deploy.num_nodes * config.deployment.num_infer_replicas,
-            nodes_per_infer_replica=infer_deploy.num_nodes,
-            num_infer_replicas=config.deployment.num_infer_replicas,
-            num_prefill_nodes=infer_deploy.num_prefill_nodes,
-            num_decode_nodes=infer_deploy.num_decode_nodes,
-            num_prefill_replicas=infer_deploy.num_prefill_replicas,
-            num_decode_replicas=infer_deploy.num_decode_replicas,
-            gpus_per_node=config.deployment.gpus_per_node,
-            router_port=infer_deploy.router_port,
-            prefill_port=infer_deploy.prefill_port,
-            decode_port=infer_deploy.decode_port,
-            inference_tp=config.inference.parallel.tp,
-            inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port,
-            use_deep_gemm=config.inference.use_deep_gemm,
-            prefill_env_overrides=infer_deploy.prefill_env_overrides,
-            decode_env_overrides=infer_deploy.decode_env_overrides,
-            dp_per_node=config.deployment.gpus_per_node // config.inference.parallel.tp,
-            kv_offload=config.inference.kv_cache_offload is not None,
-            kv_offload_cpu_bytes=int(config.inference.kv_cache_offload.cpu_bytes)
-            if config.inference.kv_cache_offload
-            else 0,
-            use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
-            ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
-        )
     else:
+        # multi_node: topology vars come from the shared helper so the sbatch and
+        # in-alloc paths can never drift. `template_vars` supplies sbatch-only header
+        # context (job_name, partition, nodelist, ...).
         script = template.render(
             **config.slurm.template_vars,
-            is_disaggregated=False,
-            config_dir=config_dir,  # TODO: should prob have each subconfig path separately
-            output_dir=config.output_dir,
-            orchestrator_output_dir=config.orchestrator.output_dir,
-            num_train_nodes=config.deployment.num_train_nodes,
-            num_infer_nodes=config.deployment.total_infer_nodes,
-            nodes_per_infer_replica=config.deployment.num_infer_nodes,
-            num_infer_replicas=config.deployment.num_infer_replicas,
-            gpus_per_node=config.deployment.gpus_per_node,
-            router_port=getattr(config.inference.deployment, "router_port", 8000) if config.inference else 8000,
-            backend_port=getattr(config.inference.deployment, "backend_port", 8100) if config.inference else 8100,
-            inference_tp=config.inference.parallel.tp if config.inference else 1,
-            inference_enable_expert_parallel=config.inference.enable_expert_parallel if config.inference else False,
-            inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port if config.inference else 29600,
-            dp_per_node=(config.deployment.gpus_per_node // config.inference.parallel.tp) if config.inference else 1,
-            kv_offload=config.inference is not None and config.inference.kv_cache_offload is not None,
-            use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
-            ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
+            **_multi_node_template_vars(config, config_dir),
         )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
@@ -661,6 +680,141 @@ def rl_gpu_layout_allocation(config: RLConfig):
         raise RuntimeError(f"gpu_layout srun failed with exit code {result.returncode}")
 
 
+def write_multi_node_script(config: RLConfig, config_dir: Path, script_path: Path) -> None:
+    """Render the multi_node orchestrator script for the in-allocation path.
+
+    Same template as the sbatch path (``multi_node_rl.sbatch.j2``); the ``#SBATCH``
+    header lines are inert comments when the script is run directly with ``bash``. The
+    per-lane ``LANE_*`` parameters are NOT baked in here — the template reads them from
+    the environment with fallbacks, and the launcher exports them (see lane-contract.md)."""
+    from jinja2 import Environment, FileSystemLoader
+
+    assert config.deployment.type == "multi_node"
+    templates_dir = find_package_resource("templates")
+    if templates_dir is None:
+        raise RuntimeError("prime_rl templates resource not found; cannot render multi_node launcher.")
+    env = Environment(loader=FileSystemLoader(templates_dir), keep_trailing_newline=True)
+    template = env.get_template(MULTI_NODE_TEMPLATE)
+    # No [slurm] block in-alloc: `project_dir` comes from the cwd (mirrors gpu_layout).
+    # Other header vars (job_name, partition, ...) are only referenced by the inert
+    # #SBATCH comments, so they render empty harmlessly.
+    script = template.render(project_dir=Path.cwd().resolve(), **_multi_node_template_vars(config, config_dir))
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text(script)
+    script_path.chmod(0o755)
+
+
+def _select_multi_node_hosts(deployment, num_hosts: int) -> list[str]:
+    """Resolve this lane's hosts: explicit ``deployment.hosts`` if set (the slice),
+    else every host of the whole Slurm allocation (the whole alloc = one lane)."""
+    if deployment.hosts is not None:
+        hosts = deployment.hosts
+    else:
+        nodelist = os.environ.get("SLURM_JOB_NODELIST") or os.environ.get("SLURM_NODELIST")
+        if not nodelist:
+            raise RuntimeError(
+                "multi_node without [slurm] must run inside a Slurm allocation with SLURM_JOB_NODELIST set."
+            )
+        result = subprocess.run(["scontrol", "show", "hostnames", nodelist], capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to resolve Slurm hosts from {nodelist}: {result.stderr.strip()}")
+        hosts = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    if len(hosts) != num_hosts:
+        raise RuntimeError(
+            f"multi_node lane needs {num_hosts} hosts (= num_train_nodes + total_infer_nodes), "
+            f"but resolved {len(hosts)}: {hosts}. "
+            "Set deployment.hosts explicitly to carve the intended lane out of the allocation."
+        )
+    return hosts
+
+
+def rl_multinode_allocation(config: RLConfig):
+    """Launch a multi_node RL lane inside an existing Slurm allocation.
+
+    The rendered ``multi_node_rl.sbatch.j2`` is a head-node orchestrator that fans out
+    via its OWN internal ``srun --exact -w <slice>`` calls. So we run it DIRECTLY with
+    ``bash`` on the current node (NO outer srun — nesting would deadlock step creation
+    and re-run the run-once preamble per node), mirroring how the sbatch path runs it as
+    the batch step. We export the lane parameters; the template's internal sruns are
+    lane-aware and consume them (``LANE_CPUS_PER_TASK``/``--gpus-per-node`` ride the WORK
+    srun, not any launcher srun). Disjoint slices of the same allocation coexist as
+    independent lanes (see lane-contract.md)."""
+    assert config.deployment.type == "multi_node"
+
+    logger = setup_logger(
+        config.log.level or os.environ.get("PRIME_LOG_LEVEL", "info"),
+        json_logging=config.log.json_logging,
+    )
+
+    slurm_job_id = os.environ.get("SLURM_JOB_ID") or os.environ.get("SLURM_JOBID")
+    if not slurm_job_id:
+        raise RuntimeError(
+            "multi_node in-allocation launcher requires SLURM_JOB_ID/SLURM_JOBID. "
+            "Run this inside a held Slurm allocation, or add a [slurm] block to submit via sbatch."
+        )
+
+    deployment = config.deployment
+    lane_nnodes = deployment.num_train_nodes + deployment.total_infer_nodes
+    hosts = _select_multi_node_hosts(deployment, lane_nnodes)
+
+    port_base = deployment.port_base if deployment.port_base is not None else _DEFAULT_PORT_BASE
+    lane_tag = deployment.lane_tag if deployment.lane_tag is not None else slurm_job_id
+
+    # Namespace the output dir per lane so concurrent lanes don't clobber each other's
+    # script / subconfigs / logs / rollouts / checkpoints / weight broadcasts. Only when an
+    # explicit lane_tag distinguishes the lane; the bare-$SLURM_JOB_ID fallback (single lane
+    # = whole alloc) keeps the flat layout.
+    if deployment.lane_tag is not None:
+        config.output_dir = config.output_dir / lane_tag
+        # propagate_shared_fields set the sub-config output_dirs at construction (trainer =
+        # output_dir, orchestrator = output_dir / "run_default") BEFORE this suffix runs, so
+        # re-home them under the lane dir too — otherwise the trainer (rollouts/checkpoints/
+        # broadcasts via multi_run_manager) and orchestrator operate on the un-namespaced
+        # base and concurrent lanes race on it. Preserves trainer == orchestrator.parent.
+        config.trainer.output_dir = config.output_dir
+        config.orchestrator.output_dir = config.output_dir / config.orchestrator.output_dir.name
+
+    config_dir = config.output_dir / "configs"
+    write_subconfigs(config, config_dir)
+    logger.info(f"Wrote subconfigs to {config_dir}")
+
+    script_path = config.output_dir / MULTI_NODE_SCRIPT
+    write_multi_node_script(config, config_dir, script_path)
+
+    # Per-task resources for the template's internal WORK sruns: --exact otherwise
+    # clamps each task to 1 CPU and starves vLLM/torch. Derive from the node (whole
+    # node minus a margin) via the same scontrol probe gpu_layout uses.
+    cpus_per_task, mem_mb = _gpu_layout_step_resources(hosts[0])
+
+    log_dir = get_log_dir(config.output_dir)
+    logger.success(
+        f"multi_node lane (direct bash, no outer srun):\n\n  bash {script_path.as_posix()}\n\n"
+        f"hosts={hosts} LANE_NNODES={lane_nnodes} PORT_BASE={port_base} LANE_TAG={lane_tag} "
+        f"LANE_CPUS_PER_TASK={cpus_per_task} LANE_MEM_MB={mem_mb}M"
+        f"\n\n  tail -F {log_dir}/trainer.log"
+        f"\n  tail -F {log_dir}/inference.log"
+    )
+    if config.dry_run:
+        return
+
+    # LANE_* delivery = env-export (pinned decision #1). The template reads these with
+    # fallbacks and threads them onto its internal sruns (--export=ALL propagates to the
+    # compute nodes), so the SAME template also serves the legacy full-allocation sbatch
+    # path when LANE_* are unset.
+    env = {
+        **os.environ,
+        "LANE_HOSTS": " ".join(hosts),
+        "PORT_BASE": str(port_base),
+        "LANE_TAG": str(lane_tag),
+        "LANE_CPUS_PER_TASK": str(cpus_per_task),
+        "LANE_MEM_MB": f"{mem_mb}M",
+    }
+    result = subprocess.run(["bash", script_path.as_posix()], env=env)
+    if result.returncode != 0:
+        raise RuntimeError(f"multi_node lane failed with exit code {result.returncode}")
+
+
 def rl(config: RLConfig):
     resuming = config.ckpt is not None and config.ckpt.resume_step is not None
     clean = config.clean_output_dir and not os.environ.get("NEVER_CLEAN_OUTPUT_DIR")
@@ -693,10 +847,18 @@ def rl(config: RLConfig):
 
         pre_download_model(config.trainer.model.name)
 
+    # Launch axis (HOW we start) is decoupled from the topology axis (deployment.type,
+    # i.e. WHAT we place). Presence of a [slurm] block = "submit via sbatch" (kept
+    # option). Absence + an in-allocation context (SLURM_JOB_ID set) = "run in THIS
+    # held allocation": gpu_layout and multi_node each get their own in-alloc srun path;
+    # everything else runs locally.
+    in_allocation = bool(os.environ.get("SLURM_JOB_ID") or os.environ.get("SLURM_JOBID"))
     if config.slurm is not None:
         rl_slurm(config)
     elif config.deployment.type == "gpu_layout":
         rl_gpu_layout_allocation(config)
+    elif config.deployment.type == "multi_node" and in_allocation:
+        rl_multinode_allocation(config)
     else:
         rl_local(config)
 
