@@ -80,9 +80,15 @@ labels = ["rlm-swe-qwen35-4b"]
 
 [inference]
 gpu_memory_utilization = 0.85
+enable_prefix_caching = true
 
 [inference.model]
 max_model_len = 65536
 
 [inference.parallel]
 dp = 8
+
+# Qwen3.5-4B is a VL model; skip the vision tower for text-only SWE.
+# `language_model_only` is a vLLM MultiModalConfig arg (no prime-rl field) → pass via vllm_extra.
+[inference.vllm_extra]
+language_model_only = true
