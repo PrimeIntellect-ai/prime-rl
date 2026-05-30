@@ -565,17 +565,24 @@ class RolloutDispatcher:
         (both in-flight and not-yet-scheduled). Returns the count for
         off-policy metrics."""
         group = self.groups.pop(group_id, None)
-        tasks_to_cancel: list[asyncio.Task] = []
-        inflight_cancelled = 0
-        last_meta: InflightRollout | None = None
+
+        # Sync claim phase: pop matching tasks from ``self.inflight`` and
+        # release their permits in one non-yielding sweep. After this loop
+        # the dropped tasks are no longer reachable from ``self.inflight``,
+        # so ``handle_completed_rollout``'s existing None-guard makes the
+        # subsequent async emit phase race-free.
+        claimed: list[tuple[asyncio.Task, InflightRollout]] = []
         for task, meta in list(self.inflight.items()):
             if meta.group_id != group_id:
                 continue
-            self.inflight.pop(task, None)
+            del self.inflight[task]
             self.release(meta.rollout_count)
-            tasks_to_cancel.append(task)
-            inflight_cancelled += meta.rollout_count
-            last_meta = meta
+            claimed.append((task, meta))
+
+        tasks_to_cancel = [task for task, _ in claimed]
+        inflight_cancelled = sum(meta.rollout_count for _, meta in claimed)
+        last_meta: InflightRollout | None = claimed[-1][1] if claimed else None
+        for _, meta in claimed:
             for _ in range(meta.rollout_count):
                 raw = self.error_rollout_output(error_type="Cancelled", error_repr="Off-policy cancel")
                 await self.emit_rollout(meta, group, raw)
