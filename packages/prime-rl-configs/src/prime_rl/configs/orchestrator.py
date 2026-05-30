@@ -206,44 +206,6 @@ class EnvConfig(BaseConfig):
         return self
 
 
-class SFTConfig(BaseConfig):
-    """Per-env SFT-on-tool-body objective.
-
-    When enabled, tool-message body tokens in the prompt get advantage
-    ``alpha`` and are flipped into the loss mask. They contribute to the
-    gradient through ``default_loss_fn``, but with the off-policy
-    importance ratio bypassed (the model never sampled these tokens, so
-    the IS-ratio concept doesn't apply) — the policy-gradient term on
-    SFT positions reduces to ``alpha × log p_θ(x_t)``, i.e. an alpha-
-    weighted next-token cross-entropy in the SFT direction. KL is zero
-    on SFT positions for the same reason.
-
-    The RL trust-region (DPPO) clip and KL term apply only to RL
-    positions — tool tokens always pass through unmasked. This is the
-    minimal "SFT-as-RL-credit-assignment" design: drop the SFT
-    contribution onto the same loss as RL, with a fixed positive
-    advantage, and let the remaining machinery handle it.
-
-    The scaffold around tool bodies (``<|tool_response>`` specials,
-    role-tag wraps, separators) is excluded by construction — the mask
-    is built from ``prompt_attribution.is_content`` AND the per-message
-    tool-name filter, never the raw token stream.
-
-    NOTE: this is being superseded by :class:`EchoConfig` (per-role echo).
-    Kept here for backwards compatibility with in-flight runs; remove
-    once all configs have migrated to ``[orchestrator.train.env.echo]``.
-    """
-
-    on_tool_outputs: bool = False
-    """Enable SFT-on-tool-body for this env."""
-
-    alpha: float = 1.0
-    """Per-env constant advantage on SFT-mask positions (positive = SFT direction)."""
-
-    tool_names: list[str] | None = None
-    """Restrict SFT to these tool function names; None = all tools."""
-
-
 class SystemRoleEchoConfig(BaseConfig):
     """Per-system-message echo — cross-entropy supervision on system-prompt tokens.
 
@@ -342,8 +304,6 @@ class EchoConfig(BaseConfig):
     ``alpha=0`` is a legitimate "kill the gradient" value distinct from "not
     echoed."
 
-    Supersedes :class:`SFTConfig` (which only handled the tool role with a
-    single global alpha).
     """
 
     system: SystemRoleEchoConfig | None = None
@@ -367,16 +327,10 @@ class TrainEnvConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
 
-    sft: SFTConfig | None = None
-    """Per-env SFT-on-tool-body config; None = SFT disabled for this env.
-
-    DEPRECATED: use ``echo`` instead. Kept for backwards compatibility while
-    in-flight runs migrate; will be removed once all configs are on ``echo``."""
-
     echo: EchoConfig | None = None
     """Per-env per-role echo config; None = echo disabled for this env.
 
-    Supersedes ``sft``. See :class:`EchoConfig` for full semantics."""
+    See :class:`EchoConfig` for full semantics."""
 
 
 class EvalEnvConfig(EnvConfig):
