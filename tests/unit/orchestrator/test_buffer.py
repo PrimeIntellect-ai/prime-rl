@@ -1,3 +1,4 @@
+import math
 import random
 from unittest.mock import MagicMock
 
@@ -150,6 +151,44 @@ def test_buffer_no_filtering_by_default(dummy_envs, make_rollouts):
 
     # All 5 problems -> 10 rollouts kept
     assert len(buffer.rollout_buffer) == 10
+
+
+def _master_all_tasks(buffer: Buffer) -> None:
+    """Mark every currently-normal task as easy in each env (simulates a policy acing them)."""
+    for eb in buffer.env_buffers.values():
+        for example_id in list(eb.examples):
+            eb.update_pools(example_id, avg_reward=1.0)
+
+
+def test_buffer_config_rejects_uncapped_pools():
+    """Config rejects max_easy + max_hard >= 1.0 — the constraint that makes the normal-pool floor hard."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="max_easy_pool_fraction.*max_hard_pool_fraction"):
+        BufferConfig(max_easy_pool_fraction=0.6, max_hard_pool_fraction=0.6)
+
+    with pytest.raises(ValidationError, match="max_easy_pool_fraction.*max_hard_pool_fraction"):
+        BufferConfig(max_easy_pool_fraction=0.5, max_hard_pool_fraction=0.5)
+
+    # Exactly at the boundary (sum == 1.0) is also rejected.
+    with pytest.raises(ValidationError, match="max_easy_pool_fraction.*max_hard_pool_fraction"):
+        BufferConfig(max_easy_pool_fraction=0.7, max_hard_pool_fraction=0.3)
+
+
+def test_buffer_cap_recycles_and_never_drains(dummy_envs):
+    """The cap recycles mastered tasks back to normal, so the buffer never drains and sampling keeps working."""
+    buffer = Buffer(dummy_envs, BufferConfig(easy_threshold=0.9))  # default max_easy_pool_fraction=0.5
+    cap = math.floor(5 * 0.5)  # per-env easy pool cap: floor(N * max_easy_pool_fraction)
+
+    # Repeatedly ace every task; without recycling normal would empty within one pass.
+    for _ in range(20):
+        _master_all_tasks(buffer)
+        for eb in buffer.env_buffers.values():
+            assert len(eb.easy_examples) <= cap
+            assert eb.num_normal >= 5 - cap
+
+    assert get_normal_count(buffer) > 0
+    assert len(buffer.sample_examples(4)) == 4
 
 
 def test_buffer_save_load_with_conversion(dummy_envs, make_rollouts, tmp_path):

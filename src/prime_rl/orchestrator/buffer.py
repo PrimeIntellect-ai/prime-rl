@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import random
 from collections import defaultdict
 from functools import partial
@@ -66,17 +67,14 @@ class _EnvBuffer:
 
     def update_pools(self, example_id: int, avg_reward: float) -> str:
         """Assign example to pool based on reward. Returns pool name."""
-        if self.config.easy_threshold is not None and avg_reward >= self.config.easy_threshold:
-            pool = "easy"
-        elif self.config.hard_threshold is not None and avg_reward <= self.config.hard_threshold:
-            pool = "hard"
-        else:
-            pool = "normal"
+        pool = self._classify(avg_reward)
 
         if pool != "normal" and example_id in self.examples:
             example = self.examples.pop(example_id)
             target = self.easy_examples if pool == "easy" else self.hard_examples
             target.append(example)
+            max_fraction = self.config.max_easy_pool_fraction if pool == "easy" else self.config.max_hard_pool_fraction
+            self._recycle_overflow(target, max_fraction)
 
         self.num_examples_per_step[pool] += 1
         return pool
@@ -104,6 +102,22 @@ class _EnvBuffer:
 
         self.reset_step_metrics()
         return metrics
+
+    def _classify(self, avg_reward: float) -> str:
+        if self.config.easy_threshold is not None and avg_reward >= self.config.easy_threshold:
+            return "easy"
+        if self.config.hard_threshold is not None and avg_reward <= self.config.hard_threshold:
+            return "hard"
+        return "normal"
+
+    def _recycle_overflow(self, pool: list[dict], max_fraction: float) -> None:
+        """Recycle oldest sidelined tasks back to normal until the pool is within its cap."""
+        # floor (not round) is intentional: together with the BufferConfig constraint
+        # max_easy + max_hard < 1, it guarantees at least one task always stays in normal.
+        max_size = math.floor(self.num_total * max_fraction)
+        while len(pool) > max_size:
+            example = pool.pop(0)
+            self.examples[example["example_id"]] = example
 
 
 class Buffer:

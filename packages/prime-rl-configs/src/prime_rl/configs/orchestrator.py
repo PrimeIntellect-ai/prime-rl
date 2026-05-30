@@ -386,6 +386,12 @@ class BufferConfig(BaseConfig):
     hard_fraction: float = Field(0.0, ge=0, le=1)
     """Fraction of hard problems to convert to ``normal`` when resuming or starting training. Only problems with difficulty ``normal`` are sampled."""
 
+    max_easy_pool_fraction: float = Field(0.5, ge=0, lt=1)
+    """Max share of an env's tasks allowed to sit in the easy pool. When exceeded, the oldest easy task is recycled back to normal. Must satisfy ``max_easy_pool_fraction + max_hard_pool_fraction < 1`` to guarantee at least one task always stays in normal."""
+
+    max_hard_pool_fraction: float = Field(0.4, ge=0, lt=1)
+    """Max share of an env's tasks allowed to sit in the hard pool. When exceeded, the oldest hard task is recycled back to normal. Must satisfy ``max_easy_pool_fraction + max_hard_pool_fraction < 1`` to guarantee at least one task always stays in normal."""
+
     online_difficulty_filtering: bool = False
     """Filter rollouts based on difficulty. When True, rollouts with average reward 0.0 or 1.0 are not added to the buffer."""
 
@@ -396,6 +402,10 @@ class BufferConfig(BaseConfig):
     def validate_thresholds(self):
         if self.easy_threshold is not None and self.hard_threshold is not None:
             assert self.easy_threshold > self.hard_threshold, "easy_threshold must be greater than hard_threshold."
+        assert self.max_easy_pool_fraction + self.max_hard_pool_fraction < 1.0, (
+            f"max_easy_pool_fraction ({self.max_easy_pool_fraction}) + max_hard_pool_fraction ({self.max_hard_pool_fraction}) "
+            "must be < 1.0 to guarantee at least one task stays in the normal pool."
+        )
         return self
 
 
