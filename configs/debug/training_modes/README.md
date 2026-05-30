@@ -44,4 +44,4 @@ uv run rl @ configs/debug/training_modes/sft_lora.toml
 uv run rl @ configs/debug/training_modes/sft_external.toml
 ```
 
-See [docs/training_modes.md](../../docs/training_modes.md) for what each mode does.
+See [docs/training.md](../../docs/training.md#training-modes-rl--opd--sft-via-orchestrator) for what each mode does.

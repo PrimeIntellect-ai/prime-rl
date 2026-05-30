@@ -107,11 +107,13 @@ def rl_local(config: RLConfig):
     logger.info("Starting RL run")
     logger.debug(f"RL start command: {' '.join(start_command)}")
 
-    # Build shared W&B env vars for subprocesses
-    wandb_shared_env: dict[str, str] = {}
-    if config.wandb and config.wandb.shared:
-        wandb_shared_env["WANDB_SHARED_MODE"] = "1"
-        wandb_shared_env["WANDB_SHARED_RUN_ID"] = os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex)
+    # Build shared W&B env vars for subprocesses. Shared mode is always on for
+    # the rl entrypoint — trainer and orchestrator log to a single W&B run.
+    # The monitor short-circuits when WANDB_MODE=disabled/offline is also set.
+    wandb_shared_env: dict[str, str] = {
+        "WANDB_SHARED_MODE": "1",
+        "WANDB_SHARED_RUN_ID": os.environ.get("WANDB_SHARED_RUN_ID", uuid.uuid4().hex),
+    }
 
     # Validate client port matches inference server port
     if config.inference is not None and not config.orchestrator.student.client.is_elastic:
@@ -378,7 +380,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             if config.inference.kv_cache_offload
             else 0,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
-            wandb_shared=config.wandb is not None and config.wandb.shared,
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
         )
     else:
@@ -401,7 +402,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             dp_per_node=(config.deployment.gpus_per_node // config.inference.parallel.tp) if config.inference else 1,
             kv_offload=config.inference is not None and config.inference.kv_cache_offload is not None,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
-            wandb_shared=config.wandb is not None and config.wandb.shared,
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
         )
 

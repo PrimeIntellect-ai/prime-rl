@@ -17,7 +17,6 @@ level = "debug"
 [wandb]
 project = "nemotron_sami_debug"
 name = "nemotron-120b-math"
-shared = true
 
 [weight_broadcast]
 type = "nccl"

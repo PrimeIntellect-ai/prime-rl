@@ -74,15 +74,17 @@ class SharedWandbConfig(BaseConfig):
     """W&B tags attached to the run."""
 
     offline: bool | None = False
-    """Run W&B in offline mode."""
-
-    shared: bool = True
-    """Log trainer and orchestrator metrics to a single shared W&B run. Requires wandb SDK ≥ 0.19.9. Incompatible with offline mode."""
+    """Run W&B in offline mode. Incompatible with shared mode, which is always on for the ``rl`` entrypoint."""
 
     @model_validator(mode="after")
-    def validate_shared_not_offline(self):
-        if self.shared and self.offline:
-            raise ValueError("W&B shared mode requires server connectivity and is incompatible with offline mode")
+    def validate_not_offline(self):
+        if self.offline:
+            raise ValueError(
+                "W&B shared mode is always on for the rl entrypoint and requires server "
+                "connectivity; wandb.offline = true is not supported. Use offline mode "
+                "via the sub-config wandb blocks (trainer.wandb.offline, "
+                "orchestrator.wandb.offline) if you really need it per-process."
+            )
         return self
 
 
@@ -563,6 +565,9 @@ class RLConfig(BaseConfig):
             )
 
         total_infer_gpus = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
+        if "inference_metrics_roles" not in self.orchestrator.model_fields_set:
+            role_order = ["prefill"] * infer_deploy.num_prefill_nodes + ["decode"] * infer_deploy.num_decode_nodes
+            self.orchestrator.inference_metrics_roles = role_order * self.deployment.num_infer_replicas
         if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
             assert self.trainer.weight_broadcast.type == "nccl"
             self.trainer.weight_broadcast.inference_world_size = total_infer_gpus

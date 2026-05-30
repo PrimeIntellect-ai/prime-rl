@@ -266,7 +266,11 @@ class PrimeRlServingTokens(ServingTokens):
         # experts surface in the JSON.
         capture: _GenerateRoutedExpertsCapture | None = None
         if self.model_config.enable_return_routed_experts:
-            capture = _GenerateRoutedExpertsCapture(result_generator)
+            start = request.sampling_params.routed_experts_prompt_start
+            capture = _GenerateRoutedExpertsCapture(
+                result_generator,
+                start=start,
+            )
             result_generator = capture
 
         response = await super().serve_tokens_full_generator(

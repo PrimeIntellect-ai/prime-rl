@@ -52,7 +52,7 @@ With `[model] impl = "auto"` (the default), the trainer selects that custom stac
 | GLM-5 (`glm_moe_dsa`) | `zai-org/GLM-5`, `zai-org/GLM-5-FP8` | yes | ✅ | ✅ |
 | Qwen3 MoE (`qwen3_moe`) | `Qwen/Qwen3-30B-A3B`, … | yes | ✅ | ✅ |
 | Qwen3.5 MoE (`qwen3_5_moe`) | `Qwen/Qwen3.5-35B-A3B`, … | yes | ✅ | ✅ |
-| Qwen3 / Qwen3.5 VLMs | [multimodal.md](docs/multimodal.md) (`qwen3_vl`, `qwen3_5`, `qwen3_5_moe`) | MoE only on MoE VLMs | MoE only | ✅ |
+| Qwen3 / Qwen3.5 VLMs | see [advanced.md](docs/advanced.md#vision-language-models) (`qwen3_vl`, `qwen3_5`, `qwen3_5_moe`) | MoE only on MoE VLMs | MoE only | ✅ |
 | Poolside Laguna (`laguna`) | `poolside/Laguna-XS.2` | yes | ✅ | ✅ |
 | MiniMax M2 (`minimax_m2`) | `MiniMax/MiniMax-M2` | yes | ✅ | ✅ |
 | Nemotron H (`nemotron_h`) | `nvidia/Nemotron-3-Nano-30B-A3B`, `nvidia/Nemotron-3-Super-120B-A12B`, … | yes | ✅ | ❌ |
@@ -217,17 +217,13 @@ These guides are designed to be run from a Slurm cluster but can also be adapted
 
 Check out the [docs](docs) directory for in-depth guides on how to use PRIME-RL.
 
-- [**Entrypoints**](docs/entrypoints.md) - Overview of the main components (orchestrator, trainer, inference) and how to run SFT, RL, and evals
-- [**Configs**](docs/configs.md) - Configuration system using TOML files, CLI arguments, and environment variables
-- [**Environments**](docs/environments.md) - Installing and using verifiers environments from the Environments Hub
-- [**Async Training**](docs/async.md) - Understanding asynchronous off-policy training and step semantics
-- [**Logging**](docs/logging.md) - Logging with loguru, torchrun, and Weights & Biases
-- [**Checkpointing**](docs/checkpointing.md) - Saving and resuming training from checkpoints
-- [**Benchmarking**](docs/benchmarking.md) - Performance benchmarking and throughput measurement
-- [**Deployment**](docs/deployment.md) - Training deployment on single-GPU, multi-GPU, and multi-node clusters
-- [**Memory Usage**](docs/memory_usage.md) - Techniques for reducing memory usage (activation checkpointing, offloading, EP, CP, LoRA, etc.)
-- [**Troubleshooting**](docs/troubleshooting.md) - Common issues and their solutions
-- [**Multimodal**](docs/multimodal.md) - Training VLMs like Qwen3-VL
+- [**Overview**](docs/overview.md) - Architecture, install, and a copy-pasteable end-to-end RL run
+- [**Configuration**](docs/configuration.md) - TOML composition, CLI overrides, env vars, validation
+- [**Training**](docs/training.md) - RL, SFT, evals, checkpointing, observability, rules of thumb
+- [**Scaling**](docs/scaling.md) - Single-GPU through multi-node, FSDP/EP/CP, SLURM, benchmarking
+- [**Algorithms**](docs/algorithms.md) - Async/off-policy training, the AIPO loss, advantage and filter plugins, trajectory merging
+- [**Advanced**](docs/advanced.md) - Custom modeling, multimodal training, LoRA, multi-tenant training
+- [**Development**](docs/development.md) - Test suite, pre-commit hooks, adding a new model
 
 ## Contributing
 
@@ -249,28 +245,11 @@ uv run pre-commit install
 
 ### Tests
 
-Run the full test suite 
-
 ```bash
-uv run pytest -v
-```
-
-To run unit tests, run
-
-```bash
-uv run pytest tests/unit -v
-```
-
-To run integration tests, run
-
-```bash
-uv run pytest tests/integration -v
-```
-
-To run CPU-only tests, use the inverse of the `gpu` marker:
-
-```bash
-uv run pytest -v -m "not gpu"
+uv run pytest -v                    # everything
+uv run pytest tests/unit -v         # unit only
+uv run pytest tests/integration -v  # integration only
+uv run pytest -v -m "not gpu"       # CPU-only (inverse of the gpu marker)
 ```
 
 ## License

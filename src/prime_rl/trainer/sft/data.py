@@ -236,7 +236,7 @@ class SFTDataset(StatefulIterableDataset):
         if self.renderer is not None:
             if example.get("chat_template_kwargs") and not self._warned_chat_template_kwargs:
                 self.logger.warning(
-                    "Example carries chat_template_kwargs but use_renderer=True; "
+                    "Example carries chat_template_kwargs but a renderer is configured; "
                     "renderers don't forward chat_template_kwargs (model-specific "
                     "renderers bake their template behavior in). These kwargs will "
                     "be ignored. Further warnings suppressed for this dataset."

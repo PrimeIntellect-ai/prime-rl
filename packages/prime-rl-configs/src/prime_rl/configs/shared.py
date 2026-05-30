@@ -35,6 +35,9 @@ class SlurmConfig(BaseConfig):
     pre_run_command: str | None = None
     """Shell command to run on the head node after cd, .env sourcing, and venv activation. Useful for cleanup like ``sudo pkill -f vllm``; wrap with ``srun bash -c '...'`` to fan out to all nodes."""
 
+    cleanup_grace_period: int = Field(3600, ge=0)
+    """Seconds to wait before tearing down a multi-node RL job that hit a non-zero exit, letting in-flight checkpoints flush. Set to 0 to tear down immediately."""
+
     @property
     def template_vars(self) -> dict:
         """Common template variables for all SLURM templates."""
@@ -47,6 +50,7 @@ class SlurmConfig(BaseConfig):
             "account": self.account,
             "time": self.time,
             "pre_run_command": self.pre_run_command,
+            "cleanup_grace_period": self.cleanup_grace_period,
         }
 
     @model_validator(mode="after")
@@ -82,26 +86,6 @@ class BaseModelConfig(BaseConfig):
     @property
     def is_vlm(self) -> bool:
         return self.vlm is not None
-
-
-class RendererConfig(BaseConfig):
-    name: str = "auto"
-    """Renderer used for chat-template tokenization. One of: ``auto`` (detect from tokenizer), ``qwen3``, ``qwen3_vl``, ``qwen3.5``, ``glm5``, ``glm4.5``, ``minimax-m2``, ``deepseek_v3``, ``kimi_k2``, ``kimi_k25``, ``nemotron3``, ``gpt_oss``, ``default``."""
-
-    tool_parser: str | None = None
-    """Tool parser from ``renderers.parsers``. Only consumed by DefaultRenderer; model-specific renderers bake their own parsing in. Options: ``qwen3``, ``qwen3.5``, ``glm``, ``deepseek_v3``."""
-
-    reasoning_parser: str | None = None
-    """Reasoning parser from ``renderers.parsers``. Only consumed by DefaultRenderer. Options: ``think``."""
-
-    pool_size: int | None = Field(None, ge=1)
-    """Number of renderer slots shared across concurrent rollouts. Bump for long multi-turn prompts where client-side jinja tokenization serializes."""
-
-    preserve_all_thinking: bool = False
-    """Re-emit every past-assistant turn's ``reasoning_content`` between ``<think>``/``</think>`` (or the model's equivalent), even when the chat template would drop it. Strict superset of preserve_thinking_between_tool_calls."""
-
-    preserve_thinking_between_tool_calls: bool = False
-    """Preserve past-assistant ``reasoning_content`` only inside the current tool cycle — the contiguous assistant→tool→…→assistant block after the most recent user message, when that block contains at least one tool response. A new user turn closes the block."""
 
 
 class ElasticConfig(BaseConfig):
