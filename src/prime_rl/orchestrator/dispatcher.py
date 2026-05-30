@@ -162,6 +162,12 @@ class RolloutDispatcher:
         self.train_scheduling_disabled: bool = False
         self.metrics = DispatcherMetrics()
 
+        # Orchestrator-owned gate. When clear, ``fill_inflight`` returns
+        # without scheduling new groups. The dispatcher itself doesn't know
+        # *why* — the orchestrator toggles this based on step / policy lead.
+        self.dispatch_allowed = asyncio.Event()
+        self.dispatch_allowed.set()
+
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
 
@@ -280,6 +286,8 @@ class RolloutDispatcher:
         """Schedule new rollouts up to ``max_inflight``, honoring
         ``self.mode``. When ``PREFER_EVAL``'s source exhausts we flip back
         to ``PREFER_TRAIN`` so the eval tail drains alongside fresh train."""
+        if not self.dispatch_allowed.is_set():
+            return
         while True:
             if self.available_permits <= 0:
                 return

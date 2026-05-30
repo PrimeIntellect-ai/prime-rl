@@ -103,6 +103,11 @@ SHUTDOWN_TIMEOUT_S = 300
 # dataset; fail loudly instead of spinning
 MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 
+# Maximum batches the orchestrator may run ahead of the trainer. The
+# dispatcher is paused via ``update_dispatch_gate`` once this is exceeded;
+# resumed when the watcher advances ``policy.version``.
+TARGET_LAG = 1
+
 
 class Orchestrator:
     # Set in ``__init__``
@@ -393,7 +398,7 @@ class Orchestrator:
             config,
             policy=self.policy,
             inference=self.student_inference,
-            observers=[self.dispatcher],
+            observers=[self.dispatcher, self],
             lora_name=self.lora_name,
             ckpt_step=self.progress.step,
         )
@@ -571,8 +576,8 @@ class Orchestrator:
                 ex.teacher_logprobs = lp
             teacher_logprobs_time = time.perf_counter() - t
 
-        await self.wait_barrier(step)
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
+        self.update_dispatch_gate()
 
         metrics = self.metrics.build(
             step=step,
@@ -806,25 +811,29 @@ class Orchestrator:
         await asyncio.to_thread(self.ckpt_manager.save, self.progress, step)
         return time.perf_counter() - t
 
-    async def wait_barrier(self, step: int) -> None:
-        """Block until ``policy.version >= step - 1`` so the orchestrator
-        stays at most one step ahead of the trainer. Backpressure cascades
-        into the dispatcher via the bounded ``out_q``."""
-        target_lag = 1
-        next_warn = 60.0
-        t0 = time.perf_counter()
-        while True:
-            lead = step - self.policy.version
-            if lead <= target_lag:
-                return
-            elapsed = time.perf_counter() - t0
-            if elapsed >= next_warn:
+    def update_dispatch_gate(self) -> None:
+        """Pause/resume the dispatcher based on how far the orchestrator's
+        next batch would run ahead of ``policy.version``. Called from two
+        sites: after shipping a batch (step advances) and from
+        ``on_new_version`` (policy advances)."""
+        lead = (self.progress.step + 1) - self.policy.version
+        gate = self.dispatcher.dispatch_allowed
+        was_set = gate.is_set()
+        if lead > TARGET_LAG:
+            if was_set:
                 get_logger().info(
-                    f"Orchestrator waiting at async barrier ({int(elapsed)}s): step={step}, "
-                    f"policy.version={self.policy.version}, lead={lead} (max_async_level={target_lag})."
+                    "Pausing dispatcher to prevent orchestrator from racing from trainer. Waiting for new policy..."
                 )
-                next_warn = elapsed + 60.0
-            await asyncio.sleep(0.1)
+            gate.clear()
+        else:
+            if not was_set:
+                get_logger().info("Resuming dispatcher")
+            gate.set()
+
+    async def on_new_version(self, step: int) -> None:
+        """``VersionObserver`` hook: the watcher just advanced ``policy.version``;
+        re-evaluate the dispatch gate (may resume if the trainer caught up)."""
+        self.update_dispatch_gate()
 
     async def stop(self) -> None:
         """Bounded best-effort teardown of all components. Has a global
