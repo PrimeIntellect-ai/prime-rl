@@ -5,11 +5,12 @@ from typing import Any
 
 import numpy as np
 import pybase64
-import torch
 import verifiers as vf
+from renderers import mm_store
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.transport import RoutedExperts, TrainingSample
+from prime_rl.transport.types import MMRefs
 from prime_rl.utils.chat_template import (
     common_prefix_len,
     deserialize_tool_calls,
@@ -18,6 +19,12 @@ from prime_rl.utils.chat_template import (
     strip_message_content,
 )
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.mm import (
+    encode_mm_kwargs,
+    image_uris_from_messages,
+    pack_mm_kwargs_tensors,
+    reconstruct_mm_pixels,
+)
 
 # We use list() instead of deepcopy() for flat lists (token IDs, logprobs) - safe because
 # primitives are immutable. mm_kwargs payloads are not mutated after creation.
@@ -205,6 +212,7 @@ def interleave_rollout(
     output: vf.RolloutOutput,
     mm_token_type_ids_mapping: dict[int, int] | None = None,
     renderer: Any = None,
+    defer_materialization: bool = False,
 ) -> list[TrainingSample] | None:
     """
     Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
@@ -433,7 +441,13 @@ def interleave_rollout(
     if not output.get("is_filtered", False):
         for _, sample, step_indices in active_samples:
             renderer_mm = _union_step_mm_data(prepared_steps, step_indices)
-            if renderer_mm is not None:
+            if renderer_mm is None:
+                continue
+            if defer_materialization:
+                # Ship lightweight refs; the trainer materializes pixels in its
+                # data loader from the descriptor + window image URIs.
+                sample.mm_refs = _collect_mm_refs(renderer_mm, trajectory, step_indices)
+            else:
                 # The env worker ships descriptor-only mm_data (no pixel_values)
                 # to keep its memory flat. Re-derive the pixels here from the
                 # offloaded images referenced in this sample's messages, matched
@@ -441,19 +455,19 @@ def interleave_rollout(
                 # multimodal pool used for rollouts; absent (or already
                 # pixel-bearing in-process tests) → pass through unchanged.
                 if renderer is not None and _mm_needs_pixels(renderer_mm):
-                    window_messages = _window_image_messages(trajectory, step_indices)
-                    renderer_mm = _reconstruct_mm_pixels(renderer, renderer_mm, window_messages)
+                    renderer_mm = _reconstruct_mm_pixels(
+                        renderer, renderer_mm, _window_image_messages(trajectory, step_indices)
+                    )
                 mm_kwargs = _pack_mm_kwargs_from_renderer(renderer_mm)
                 if mm_kwargs is not None:
                     sample.mm_kwargs = mm_kwargs
-                    # ``mm_token_type_ids``: 1 for image-placeholder tokens, 2
-                    # for video, 0 otherwise. Renderer-supplied via
-                    # ``mm_token_type_id_map`` (single source of truth).
-                    if mm_token_type_ids_mapping is not None:
-                        sample.mm_token_type_ids = [
-                            mm_token_type_ids_mapping.get(token_id, 0)
-                            for token_id in sample.prompt_ids + sample.completion_ids
-                        ]
+            # ``mm_token_type_ids``: 1 for image-placeholder tokens, 2 for
+            # video, 0 otherwise. Renderer-supplied via ``mm_token_type_id_map``
+            # (single source of truth). Computed in both paths.
+            if (sample.mm_kwargs is not None or sample.mm_refs is not None) and mm_token_type_ids_mapping is not None:
+                sample.mm_token_type_ids = [
+                    mm_token_type_ids_mapping.get(token_id, 0) for token_id in sample.prompt_ids + sample.completion_ids
+                ]
 
     return [sample for _, sample, _ in active_samples]
 
@@ -526,82 +540,65 @@ def _window_image_messages(trajectory: list[Any], step_indices: list[int]) -> li
 
 
 def _reconstruct_mm_pixels(renderer: Any, union_mm: dict[str, Any], messages: list[Any]) -> Any:
-    """Re-attach ``pixel_values`` to a descriptor-only union mm_data.
-
-    Delegates to the renderer's ``materialize_pixels`` (hash-matched reprocess
-    of the window images, with a ``grid_thw`` assert). The descriptor's
-    ``image_grid_thw`` is decoded from its msgpack wire shape back to numpy
-    first, so the renderer's numpy-vs-numpy grid assert holds after transport.
-    """
-    from renderers.base import MultiModalData
-    from verifiers.utils.serve_utils import decode_tensor_payload
-
-    items = union_mm.get("mm_items") or {}
-    decoded_items: dict[str, list] = {}
-    for modality, lst in items.items():
-        new_lst: list[dict[str, Any]] = []
-        for item in lst or []:
-            item = dict(item)
-            grid = item.get("image_grid_thw")
-            if item.get("pixel_values") is None and grid is not None:
-                item["image_grid_thw"] = decode_tensor_payload(grid, to_torch=False)
-            new_lst.append(item)
-        decoded_items[modality] = new_lst
-
-    md = MultiModalData(
-        mm_hashes=union_mm.get("mm_hashes") or {},
-        mm_placeholders={},
-        mm_items=decoded_items,
-    )
-    return renderer.materialize_pixels(md, messages)
+    """Re-attach ``pixel_values`` to a descriptor-only union mm_data. Delegates
+    to ``utils.mm`` so the flag-off path matches the trainer's flag-on path."""
+    return reconstruct_mm_pixels(renderer, union_mm, messages)
 
 
 def _pack_mm_kwargs_from_renderer(mm_data: Any) -> "dict[str, Any] | None":
-    """Batch the renderer's per-image ``mm_items`` into model-agnostic
-    forward kwargs.
-
-    ``mm_data`` may arrive as a ``MultiModalData`` instance (in-process
-    for tests) or as a plain dict (after msgpack round-trip from the
-    env-worker). Each item is a dict keyed by the names the model's
-    ``forward`` expects (``pixel_values`` + ``image_grid_thw`` for
-    Qwen3-VL, just ``pixel_values`` for Gemma3-VL, etc.). We batch by
-    ``torch.cat(..., dim=0)`` per key — generic because every HF VLM
-    processor emits a leading batch/patch dimension, and the renderer
-    always processes one image per call.
-
-    Returns a dict of ``EncodedTensor`` payloads keyed by kwarg name,
-    or ``None`` when no multimodal data is present.
-    """
-    from verifiers.utils.serve_utils import decode_tensor_payload
-
-    from prime_rl.transport.types import EncodedTensor
-
-    mm_items = mm_data.mm_items if hasattr(mm_data, "mm_items") else (mm_data or {}).get("mm_items") or {}
-    # Flatten across modalities into one kwarg dict — the model's
-    # forward signature is the schema. ``mm_items`` is typically
-    # ``{"image": [...], "video": [...]}`` but each modality's keys
-    # don't collide for any HF VLM we ship today.
-    per_kwarg: dict[str, list] = {}
-    for _modality, items in mm_items.items():
-        for item in items or []:
-            for key, payload in item.items():
-                # ``decode_tensor_payload`` rehydrates the encoded wire shape to
-                # torch but passes already-rehydrated numpy through unchanged
-                # (e.g. pixels reconstructed in-process from disk). ``as_tensor``
-                # normalizes both to torch so the ``torch.cat`` below is uniform.
-                per_kwarg.setdefault(key, []).append(torch.as_tensor(decode_tensor_payload(payload)))
-    if not per_kwarg:
+    """Batch the renderer's per-image ``mm_items`` into ``EncodedTensor``
+    forward kwargs. Delegates to ``utils.mm`` (pack then encode)."""
+    tensors = pack_mm_kwargs_tensors(mm_data)
+    if tensors is None:
         return None
-    out: dict[str, EncodedTensor] = {}
-    for key, tensors in per_kwarg.items():
-        cat = torch.cat(tensors, dim=0).contiguous()
-        arr = cat.detach().cpu().numpy()
-        out[key] = EncodedTensor(
-            dtype=str(arr.dtype),
-            shape=list(arr.shape),
-            data=arr.tobytes(),
+    return encode_mm_kwargs(tensors)
+
+
+def _grid_to_list(grid: Any) -> "list | None":
+    """Normalize an ``image_grid_thw`` (torch/numpy tensor, msgpack wire payload,
+    or list) to a plain nested list — the only transport-safe form. Shape is
+    preserved (real Qwen grids are 2-D ``(n, 3)`` → ``list[list[int]]``), since
+    the renderer's ``_grids_equal`` compares the nested form."""
+    if grid is None:
+        return None
+    if isinstance(grid, dict):  # msgpack wire payload from the env→orch hop
+        from verifiers.utils.serve_utils import decode_tensor_payload
+
+        grid = decode_tensor_payload(grid, to_torch=False)
+    return grid.tolist() if hasattr(grid, "tolist") else list(grid)
+
+
+def _collect_mm_refs(union_mm: dict[str, Any], trajectory: list[Any], step_indices: list[int]) -> MMRefs | None:
+    """Build lightweight image references (descriptor + window URIs) for the
+    deferred-materialization path.
+
+    The descriptor must be transport-safe: the batch sender uses a bare msgspec
+    encoder that rejects tensors/ndarrays. So we ship a normalized, descriptor-ONLY
+    copy — pixel_values dropped, grids → ``list[int]``, hashes → ``str`` — rather
+    than the raw union (which on in-process paths still holds torch tensors).
+    """
+    items = union_mm.get("mm_items") or {}
+    hashes = union_mm.get("mm_hashes") or {}
+    non_image = sorted(
+        {m for m, lst in items.items() if lst and m != "image"} | {m for m, hl in hashes.items() if hl and m != "image"}
+    )
+    if non_image:
+        raise ValueError(f"defer_mm_materialization supports the image modality only this iteration; got {non_image}")
+    # Renderer-family guard: this path is Qwen-style (descriptors keyed on
+    # ``image_grid_thw``). Other families (e.g. Kimi uses ``grid_thws``) would
+    # silently ship a None grid — fail loudly instead.
+    if any(item.get("image_grid_thw") is None for item in (items.get("image") or [])):
+        raise ValueError(
+            "defer_mm_materialization currently supports Qwen-style image descriptors only "
+            "(items must carry image_grid_thw); got an image item without it — unsupported renderer family."
         )
-    return out
+    norm_items = {
+        modality: [{"image_grid_thw": _grid_to_list(item.get("image_grid_thw"))} for item in (lst or [])]
+        for modality, lst in items.items()
+    }
+    norm_hashes = {m: [str(h) if h is not None else h for h in (hl or [])] for m, hl in hashes.items()}
+    uris = image_uris_from_messages(_window_image_messages(trajectory, step_indices))
+    return MMRefs(descriptor={"mm_items": norm_items, "mm_hashes": norm_hashes}, uris=uris)
 
 
 _FILE_URL_PREFIX = "file://"
@@ -644,7 +641,7 @@ def offload_images_to_disk(rollouts: list[vf.RolloutOutput], output_dir: Path) -
     """
     # Absolute: paths become ``file://`` URLs; a relative path yields a malformed
     # URI (``file://rel/...``) that the renderer can't load.
-    images_dir = (output_dir / "assets" / "images").resolve()
+    images_dir = (output_dir / mm_store.IMAGE_ASSET_SUBDIR).resolve()
     images_dir.mkdir(parents=True, exist_ok=True)
 
     written: set[str] = set()

@@ -31,6 +31,7 @@ monkey_patch_chat_completion_logprobs()
 
 import pandas as pd
 import verifiers as vf
+from renderers import mm_store
 from renderers.base import create_renderer
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
@@ -451,14 +452,32 @@ async def orchestrate(config: OrchestratorConfig):
             save_rollouts, train_rollouts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
         )
 
+        # Canonical run asset root. The platform mounts RUN_ID into every pod, so
+        # the env worker (image + feature offload), the orchestrator offload, and
+        # the sweeper all resolve the SAME ``/data/outputs/run_<RUN_ID>`` dir —
+        # otherwise the orchestrator re-copies images the env worker already wrote
+        # (different subdir) and the sweeper misses the env-worker/feature assets.
+        # Falls back to ``output_dir`` for local runs without RUN_ID.
+        asset_root = mm_store.run_dir(run_id) if run_id else config.output_dir
+
         # Offload base64 images to disk to free memory. No-op for text-only
-        # rollouts (no ``data:image`` URLs to find); cheap to call always.
+        # rollouts (no ``data:image`` URLs to find); cheap to call always. Images
+        # the env worker already offloaded here (same dir) are recognized and not
+        # re-copied.
         offload_start = time.perf_counter()
-        num_offloaded = offload_images_to_disk(train_rollouts, config.output_dir)
+        num_offloaded = offload_images_to_disk(train_rollouts, asset_root)
         if num_offloaded:
             logger.info(
                 f"Offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
             )
+
+        # Evict stale offloaded multimodal artifacts under this run's dir (images +
+        # mm_features). No-op for text-only runs (asset dirs absent). Content-
+        # addressed + re-writable, so over-eviction is safe; each run sweeps its
+        # own dir → multi-run safe.
+        num_swept = mm_store.sweep_stale_artifacts(asset_root, config.mm_artifact_ttl_seconds)
+        if num_swept:
+            logger.info(f"Swept {num_swept} stale multimodal artifacts (ttl={config.mm_artifact_ttl_seconds}s)")
 
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
@@ -500,6 +519,7 @@ async def orchestrate(config: OrchestratorConfig):
                     rollout,
                     mm_token_type_ids_mapping=mm_token_type_ids_mapping,
                     renderer=renderer,
+                    defer_materialization=config.defer_mm_materialization,
                 )
 
         results = await asyncio.gather(*(_interleave_bounded(r) for r in train_rollouts))
