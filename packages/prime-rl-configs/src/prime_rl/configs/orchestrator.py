@@ -633,6 +633,9 @@ class OrchestratorConfig(BaseConfig):
     output_dir: Path = Path("outputs/run_default")
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
 
+    mm_artifact_ttl_seconds: float = 3600.0
+    """TTL (seconds) for offloaded multimodal artifacts under ``output_dir/assets/{images,mm_features}``. Once per step the orchestrator deletes artifact files older than this. Artifacts are content-addressed and re-materializable, so over-eviction is safe (triggers a re-write) while under-eviction only wastes disk — bias large. Defaults to 1 hour."""
+
     tasks_per_minute: int | None = Field(None, ge=1)
     """Rate limit per environment worker, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. With multiple workers, the effective total rate is ``workers × this value``. None disables rate limiting."""
 
@@ -666,6 +669,9 @@ class OrchestratorConfig(BaseConfig):
 
     mm_materialize_concurrency: int = Field(4, ge=1)
     """Max rollouts whose multimodal pixels are reconstructed concurrently when converting rollouts to training samples. Bounds the transient build-time memory spike for VLM batches (each in-flight rollout holds live pixel tensors + packing copies). No effect on text-only runs."""
+
+    defer_mm_materialization: bool = True
+    """Defer multimodal pixel materialization to the trainer. When True, the orchestrator ships lightweight image references (``mm_refs``) instead of materializing pixels and shipping heavy ``mm_kwargs``. Must match the trainer's setting. A no-op for text-only runs; forced off for SFT."""
 
     bench: bool = False
     """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""
@@ -808,6 +814,9 @@ class OrchestratorConfig(BaseConfig):
         validators below so they see the corrected value."""
         if self.training_mode == "sft":
             self.renderer = None
+            # SFT has no renderer, so it can't defer materialization; keep the
+            # default-on flag from tripping the renderer-required validator.
+            self.defer_mm_materialization = False
         return self
 
     @model_validator(mode="after")
@@ -883,6 +892,19 @@ class OrchestratorConfig(BaseConfig):
             f"(c) orchestrator.renderer='none' — opt out of the renderer "
             f"client entirely (MITO)."
         )
+
+    @model_validator(mode="after")
+    def validate_defer_mm_materialization(self):
+        """Deferred materialization needs a renderer so the descriptor it ships
+        in ``mm_refs`` is reproducible by the trainer's identical renderer."""
+        # Only VLM runs emit mm_refs; text-only runs never do, so default-on is
+        # a harmless no-op for them even if the renderer is opted out.
+        if self.defer_mm_materialization and self.renderer is None and self.student.model.vlm is not None:
+            raise ValueError(
+                "orchestrator.defer_mm_materialization requires a renderer so the trainer can "
+                "materialize pixels identically from the shipped image references."
+            )
+        return self
 
     @model_validator(mode="after")
     def resolve_batching(self):

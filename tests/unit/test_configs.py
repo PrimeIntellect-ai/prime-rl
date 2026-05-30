@@ -25,13 +25,32 @@ CONFIG_CLASSES = [
 ]
 
 
+def _git_tracked_files() -> "set[Path] | None":
+    """Resolved paths of git-tracked tomls under configs/ and examples/, or None
+    if git is unavailable. Used to skip untracked scratch/experiment configs a dev
+    drops in locally — those shouldn't break the shipped-config validation."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "configs", "examples"], capture_output=True, text=True, check=True
+        ).stdout
+    except Exception:
+        return None
+    return {Path(line).resolve() for line in out.splitlines() if line.strip().endswith(".toml")}
+
+
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/` or `examples/` (skips the configs/private/ submodule)."""
+    """Any tracked TOML file inside `configs/` or `examples/` (skips the configs/private/ submodule)."""
     private = Path("configs/private")
     config_files = [p for p in Path("configs").rglob("*.toml") if private not in p.parents]
     example_files = list(Path("examples").rglob("*.toml"))
+    candidates = config_files + example_files
 
-    return config_files + example_files
+    tracked = _git_tracked_files()
+    if tracked is not None:
+        candidates = [p for p in candidates if p.resolve() in tracked]
+    return candidates
 
 
 def is_eval_config(path: Path) -> bool:
