@@ -121,6 +121,15 @@ def train(config: TrainerConfig):
         config.output_dir, config.max_concurrent_runs, torch.device("cuda", world.local_rank), config.model.lora
     )
 
+    # Reject (at discovery) runs whose deferred-MM config is incompatible with the
+    # trainer — a misconfigured run shouldn't crash all ranks later in get_batch.
+    if world.is_master:
+        from prime_rl.utils.mm import make_defer_mm_validation_hook
+
+        multi_run_manager.register_config_validation_hook(
+            make_defer_mm_validation_hook(config.defer_mm_materialization, config.renderer)
+        )
+
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
 
@@ -238,6 +247,10 @@ def train(config: TrainerConfig):
             config.model.cp,
             tokenizer,
             config.rollout_transport,
+            defer_mm_materialization=config.defer_mm_materialization,
+            # Only VLM runs materialize pixels; text-only runs leave this None so
+            # default-on defer never builds an unused renderer for them.
+            renderer_config=config.renderer if config.model.vlm is not None else None,
         )
 
     token_exporter = setup_token_exporter(config, parallel_dims, world, logger)
@@ -336,7 +349,23 @@ def train(config: TrainerConfig):
         # Load the training batch
         logger.debug("Loading batch")
         load_data_start_time = time.perf_counter()
-        micro_batches = dataloader.get_batch()
+        # A get_batch failure on one rank (deferred-MM materialization error, a
+        # missing file://, or an orchestrator/trainer flag mismatch) must fail all
+        # ranks before the forward collective, or survivors hang in NCCL. The
+        # per-step int all-reduce is negligible and protects every run, not just MM.
+        load_error: Exception | None = None
+        try:
+            micro_batches = dataloader.get_batch()
+        except Exception as exc:
+            load_error = exc
+        failed_flag = torch.tensor(1 if load_error else 0, dtype=torch.int64, device="cuda")
+        dist.all_reduce(failed_flag, op=dist.ReduceOp.MAX)
+        if failed_flag.item() != 0:
+            # Preserve the culprit rank's traceback; bystander ranks still raise
+            # so none proceeds into the forward collective alone.
+            if load_error is not None:
+                raise RuntimeError("Training-batch load failed on this rank; failing all ranks.") from load_error
+            raise RuntimeError("Training-batch load failed on another rank; failing all ranks.")
         load_data_time = time.perf_counter() - load_data_start_time
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
 
@@ -627,6 +656,10 @@ def train(config: TrainerConfig):
             "time/step": step_time,
             "time/wait_for_batch": wait_for_batch_time,
             "time/load_data": load_data_time,
+            # Synchronous trainer-side MM materialization (decode + vision
+            # preprocessing from shipped refs), a subset of time/load_data.
+            "time/mm_materialize": getattr(dataloader, "last_mm_materialize_time", 0.0),
+            "mm/images_materialized": getattr(dataloader, "last_mm_images_materialized", 0),
             "time/broadcast_weights": broadcast_weights_time,
             "time/save_ckpt": save_ckpt_time,
             "time/forward_backward": forward_backward_time,

@@ -132,13 +132,17 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_kwargs=training_example.mm_kwargs,
+        mm_refs=training_example.mm_refs,
         training_mode=training_example.training_mode,
     )
 
 
 def _is_multimodal_sample(sample: MicroBatch) -> bool:
-    """Check if a sample contains multimodal data (images)."""
-    return sample.mm_kwargs is not None
+    """Check if a sample contains multimodal data (images). A deferred sample
+    carries ``mm_refs`` and no ``mm_kwargs``; both count as multimodal so it is
+    not mis-packed as text (which would break the FSDP per-step modality
+    invariant)."""
+    return sample.mm_kwargs is not None or sample.mm_refs is not None
 
 
 def packed_samples_into_micro_bs(
