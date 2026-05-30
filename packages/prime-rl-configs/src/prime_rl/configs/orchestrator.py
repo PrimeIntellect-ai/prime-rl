@@ -244,7 +244,7 @@ class SFTConfig(BaseConfig):
     """Restrict SFT to these tool function names; None = all tools."""
 
 
-class SystemEchoConfig(BaseConfig):
+class SystemRoleEchoConfig(BaseConfig):
     """Per-system-message echo — cross-entropy supervision on system-prompt tokens.
 
     System messages are prompt-side and scaffold/dataset-determined. Enable this
@@ -257,7 +257,7 @@ class SystemEchoConfig(BaseConfig):
     """Per-token advantage on system-message content positions (positive = SFT direction)."""
 
 
-class UserEchoConfig(BaseConfig):
+class UserRoleEchoConfig(BaseConfig):
     """Per-user-message echo — cross-entropy supervision on user-turn tokens.
 
     User messages are prompt-side and dataset-determined. Enable this for
@@ -269,14 +269,14 @@ class UserEchoConfig(BaseConfig):
     """Per-token advantage on user-message content positions."""
 
 
-class AssistantEchoConfig(BaseConfig):
+class AssistantRoleEchoConfig(BaseConfig):
     """Per-assistant-message echo — cross-entropy supervision on assistant tokens.
 
     Unlike the other role echoes, assistant tokens normally carry RL gradient
     via the rollout's GRPO advantage. Enabling this OVERRIDES the RL advantage
     with the constant ``alpha`` on assistant positions — setting ``alpha=0`` is
     the canonical "kill RL on assistant tokens" knob (useful for pure-SFT-no-RL
-    ablations when combined with ``ToolEchoConfig``).
+    ablations when combined with ``ToolRoleEchoConfig``).
 
     Applies to BOTH prompt-side assistant messages (prior turns in multi-turn
     rollouts) AND the current step's completion. The completion-side override
@@ -288,7 +288,7 @@ class AssistantEchoConfig(BaseConfig):
     """Per-token advantage on assistant-message positions. Use 0.0 to kill RL on assistant tokens."""
 
 
-class ToolEchoConfig(BaseConfig):
+class ToolRoleEchoConfig(BaseConfig):
     """Per-tool-message echo — cross-entropy supervision on tool response tokens.
 
     Tool messages are prompt-side and environment-determined: ground-truth output
@@ -317,7 +317,7 @@ class EchoConfig(BaseConfig):
     - Per-role ``alpha`` lets different roles carry different weights in the
       same run.
     - Per-role-specific fields stay scoped (e.g. ``tool_names`` lives on
-      :class:`ToolEchoConfig` only).
+      :class:`ToolRoleEchoConfig` only).
 
     **Defaults — important.** ``tool`` is ON by default with ``alpha=1.0``
     and all tools enabled; the other three roles are OFF. Writing
@@ -346,18 +346,18 @@ class EchoConfig(BaseConfig):
     single global alpha).
     """
 
-    system: SystemEchoConfig | None = None
+    system: SystemRoleEchoConfig | None = None
     """System-message echo (default: disabled)."""
 
-    user: UserEchoConfig | None = None
+    user: UserRoleEchoConfig | None = None
     """User-message echo (default: disabled)."""
 
-    assistant: AssistantEchoConfig | None = None
+    assistant: AssistantRoleEchoConfig | None = None
     """Assistant-message echo (default: disabled). The only role echo that
     overrides RL gradients on the current completion — set ``alpha=0`` here to
     kill the RL contribution on assistant tokens entirely."""
 
-    tool: ToolEchoConfig | None = ToolEchoConfig()
+    tool: ToolRoleEchoConfig | None = ToolRoleEchoConfig()
     """Tool-message echo (default: enabled with ``alpha=1.0`` and all tools).
     Set to ``None`` to disable tool echo explicitly (only possible via Python
     config — TOML can't represent None)."""
