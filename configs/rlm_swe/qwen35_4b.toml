@@ -1,5 +1,5 @@
 output_dir = "/beegfs/mika/rlm-swe-qwen35-4b"
-max_steps = 100
+max_steps = 400
 seq_len = 65536
 
 [slurm]
