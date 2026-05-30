@@ -228,6 +228,10 @@ class SFTConfig(BaseConfig):
     role-tag wraps, separators) is excluded by construction — the mask
     is built from ``prompt_attribution.is_content`` AND the per-message
     tool-name filter, never the raw token stream.
+
+    NOTE: this is being superseded by :class:`EchoConfig` (per-role echo).
+    Kept here for backwards compatibility with in-flight runs; remove
+    once all configs have migrated to ``[orchestrator.train.env.echo]``.
     """
 
     on_tool_outputs: bool = False
@@ -240,12 +244,139 @@ class SFTConfig(BaseConfig):
     """Restrict SFT to these tool function names; None = all tools."""
 
 
+class SystemEchoConfig(BaseConfig):
+    """Per-system-message echo — cross-entropy supervision on system-prompt tokens.
+
+    System messages are prompt-side and scaffold/dataset-determined. Enable this
+    when you want the model to internalize the system prompt — e.g. for
+    progressive-compression curricula where the system prompt is shortened over
+    training and the model has to absorb the original behavior into its weights.
+    """
+
+    alpha: float = 1.0
+    """Per-token advantage on system-message content positions (positive = SFT direction)."""
+
+
+class UserEchoConfig(BaseConfig):
+    """Per-user-message echo — cross-entropy supervision on user-turn tokens.
+
+    User messages are prompt-side and dataset-determined. Enable this for
+    user-simulator training, where the goal is teaching the model to produce
+    user-like turns conditional on the prior conversation.
+    """
+
+    alpha: float = 1.0
+    """Per-token advantage on user-message content positions."""
+
+
+class AssistantEchoConfig(BaseConfig):
+    """Per-assistant-message echo — cross-entropy supervision on assistant tokens.
+
+    Unlike the other role echoes, assistant tokens normally carry RL gradient
+    via the rollout's GRPO advantage. Enabling this OVERRIDES the RL advantage
+    with the constant ``alpha`` on assistant positions — setting ``alpha=0`` is
+    the canonical "kill RL on assistant tokens" knob (useful for pure-SFT-no-RL
+    ablations when combined with ``ToolEchoConfig``).
+
+    Applies to BOTH prompt-side assistant messages (prior turns in multi-turn
+    rollouts) AND the current step's completion. The completion-side override
+    is what makes the alpha=0 trick work — without it, the RL advantage would
+    still apply to the current completion.
+    """
+
+    alpha: float = 1.0
+    """Per-token advantage on assistant-message positions. Use 0.0 to kill RL on assistant tokens."""
+
+
+class ToolEchoConfig(BaseConfig):
+    """Per-tool-message echo — cross-entropy supervision on tool response tokens.
+
+    Tool messages are prompt-side and environment-determined: ground-truth output
+    of code execution, documentation lookups, etc. This is the original
+    "SFT-on-tool-body" use case — anchor the model on real tool outputs as
+    supervised data alongside the RL signal on its own completions.
+
+    Restrict to specific tool functions via ``tool_names``; defaults to all tools.
+    """
+
+    alpha: float = 1.0
+    """Per-token advantage on tool-message content positions (positive = SFT direction)."""
+
+    tool_names: list[str] | None = None
+    """Restrict echo to these tool function names; None = all tools."""
+
+
+class EchoConfig(BaseConfig):
+    """Per-env per-role echo — auxiliary cross-entropy supervision on
+    prompt-side tokens (and assistant-side completions when assistant echo
+    is enabled).
+
+    Each role has its own sub-config so that:
+
+    - Roles enable/disable independently (``None`` = role disabled).
+    - Per-role ``alpha`` lets different roles carry different weights in the
+      same run.
+    - Per-role-specific fields stay scoped (e.g. ``tool_names`` lives on
+      :class:`ToolEchoConfig` only).
+
+    **Defaults — important.** ``tool`` is ON by default with ``alpha=1.0``
+    and all tools enabled; the other three roles are OFF. Writing
+    ``[orchestrator.train.env.echo]`` with no sub-blocks gives you tool echo
+    "for free". To disable tool echo while enabling others, explicitly set
+    ``tool=None`` (only possible via Python config, not TOML — TOML can't
+    write None values).
+
+    **Mask construction.** The per-token echo mask + alpha array is built
+    from the renderer's ``prompt_attribution`` (``message_roles``,
+    ``message_indices``, ``message_tool_names``, ``is_content``). Only
+    content tokens — message-body bytes — get the overlay; template scaffold
+    (role-tag wraps, ``<|tool_response>`` specials, etc.) is excluded by
+    construction.
+
+    **Wire format.** Each ``TrainingSample`` carries a per-token alpha array
+    ``echo_alpha: list[float | None]`` parallel to ``prompt_ids +
+    completion_ids``. ``None`` per-token means "not echoed (RL gradient
+    applies as usual)"; a float means "echo at this alpha — overrides the RL
+    advantage on this position and flips loss_mask=True". Three-state
+    encoding (None / float zero / float nonzero) is required because
+    ``alpha=0`` is a legitimate "kill the gradient" value distinct from "not
+    echoed."
+
+    Supersedes :class:`SFTConfig` (which only handled the tool role with a
+    single global alpha).
+    """
+
+    system: SystemEchoConfig | None = None
+    """System-message echo (default: disabled)."""
+
+    user: UserEchoConfig | None = None
+    """User-message echo (default: disabled)."""
+
+    assistant: AssistantEchoConfig | None = None
+    """Assistant-message echo (default: disabled). The only role echo that
+    overrides RL gradients on the current completion — set ``alpha=0`` here to
+    kill the RL contribution on assistant tokens entirely."""
+
+    tool: ToolEchoConfig | None = ToolEchoConfig()
+    """Tool-message echo (default: enabled with ``alpha=1.0`` and all tools).
+    Set to ``None`` to disable tool echo explicitly (only possible via Python
+    config — TOML can't represent None)."""
+
+
 class TrainEnvConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
 
     sft: SFTConfig | None = None
-    """Per-env SFT-on-tool-body config; None = SFT disabled for this env."""
+    """Per-env SFT-on-tool-body config; None = SFT disabled for this env.
+
+    DEPRECATED: use ``echo`` instead. Kept for backwards compatibility while
+    in-flight runs migrate; will be removed once all configs are on ``echo``."""
+
+    echo: EchoConfig | None = None
+    """Per-env per-role echo config; None = echo disabled for this env.
+
+    Supersedes ``sft``. See :class:`EchoConfig` for full semantics."""
 
 
 class EvalEnvConfig(EnvConfig):
