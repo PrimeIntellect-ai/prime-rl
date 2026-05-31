@@ -224,7 +224,6 @@ verifiers = false
 prime-sandboxes = false
 prime-tunnel = false
 prime-evals = false
-verifiers = false
 renderers = false
 prime-pydantic-config = false
 # Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
