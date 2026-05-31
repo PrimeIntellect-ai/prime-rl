@@ -166,6 +166,11 @@ members = [
 ]
 
 [tool.uv]
+# Enforce a uv version that supports the friendly-duration form
+# (`"7 days"`) in the static pyproject parser. Older uvs silently parse
+# the value as an RFC 3339 date, emit a TOML parse warning, and proceed
+# *without* the cooldown — bypassing this security policy.
+required-version = ">=0.11.1"
 exclude-newer = "7 days"
 preview = true
 no-build-isolation-package = ["flash-attn"]
@@ -205,11 +210,17 @@ vllm = false
 tokenspeed-mla = false
 fastokens = false
 flash_attn_3 = false
-# PrimeIntellect-published on PyPI (trusted publisher)
+# PrimeIntellect-published packages in this project's dependency closure —
+# fast-track so first-party releases can land same-day. Only packages that
+# appear in `uv tree` need to be listed; the resolver ignores entries for
+# packages it never sees.
 prime = false
 prime-sandboxes = false
 prime-tunnel = false
 prime-evals = false
+verifiers = false
+renderers = false
+prime-pydantic-config = false
 # Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
 vllm-router = false
 dion = false
