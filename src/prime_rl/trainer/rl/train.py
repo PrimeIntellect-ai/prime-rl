@@ -25,7 +25,7 @@ from prime_rl.utils.cp import (
     setup_cp_params,
     shard_for_cp,
 )
-from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
@@ -530,13 +530,13 @@ def train(config: TrainerConfig):
                 tensors[key].append(loss_tensor.detach().to("cpu"))
 
             # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss: {tensors['loss'][-1].mean().item():.4f} | Entropy: {tensors['entropy/all'][-1].mean().item():.4f}"
+            micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss {tensors['loss'][-1].mean().item():.4f} | Entropy {tensors['entropy/all'][-1].mean().item():.4f}"
             if micro_batch["training_mode"] != "sft":
-                micro_step_message += f" | Mismatch KL: {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
+                micro_step_message += f" | Mismatch KL {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
             if "max_vio" in tensors:
-                micro_step_message += f" | Max Vio: {tensors['max_vio'][-1].mean().item():.4f}"
+                micro_step_message += f" | Max Vio {tensors['max_vio'][-1].mean().item():.4f}"
             if "routing_confidence" in tensors:
-                micro_step_message += f" | Routing Conf.: {tensors['routing_confidence'][-1].mean().item():.4f}"
+                micro_step_message += f" | Routing Conf. {tensors['routing_confidence'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
@@ -588,16 +588,16 @@ def train(config: TrainerConfig):
 
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {tensor_stats['loss/mean']:.4f} | Entropy: {tensor_stats['entropy/all/mean']:.4f}"
+        step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {tensor_stats['loss/mean']:.4f} | Entropy {tensor_stats['entropy/all/mean']:.4f}"
         if "mismatch_kl/all/mean" in tensor_stats:
-            step_message += f" | Mismatch KL: {tensor_stats['mismatch_kl/all/mean']:.4f}"
+            step_message += f" | Mismatch KL {tensor_stats['mismatch_kl/all/mean']:.4f}"
         if grad_norm is not None:
-            step_message += f" | Grad. Norm: {grad_norm:.4f}"
-        step_message += f" | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f} GiB"
+            step_message += f" | Grad. Norm {grad_norm:.4f}"
+        step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | Peak Mem. {peak_memory:.1f} GiB"
         if "max_vio/mean" in tensor_stats:
-            step_message += f" | Max Vio: {tensor_stats['max_vio/mean']:.4f}"
+            step_message += f" | Max Vio {tensor_stats['max_vio/mean']:.4f}"
         if "routing_confidence/mean" in tensor_stats:
-            step_message += f" | Routing Conf.: {tensor_stats['routing_confidence/mean']:.4f}"
+            step_message += f" | Routing Conf. {tensor_stats['routing_confidence/mean']:.4f}"
         logger.success(step_message)
 
         # Log performance metrics

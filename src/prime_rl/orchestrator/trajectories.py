@@ -429,6 +429,8 @@ def apply_echo_filter(
 def interleave_rollout(
     output: vf.RolloutOutput,
     mm_token_type_ids_mapping: dict[int, int] | None = None,
+    *,
+    env_name: str = "",
     echo_config: EchoConfig | None = None,
     filter_masks: list[list[bool]] | None = None,
 ) -> list[TrainingSample] | None:
@@ -579,7 +581,7 @@ def interleave_rollout(
             completion_temperatures=[],
             teacher_logprobs=None,
             advantage=None,
-            env_name=output["env_name"],
+            env_name=env_name,
             mm_token_type_ids=None,
             routed_experts=None,  # deferred — finalized at end of interleave_rollout
             echo_alpha=sample_echo_alpha,
