@@ -84,6 +84,7 @@ envs = [
     "opencode-science",
     "opencode-swe",
     "reverse-text",
+    "rlm-swe",
     "science-env",
     "simpleqa-verified",
     "tau2-bench",
@@ -158,6 +159,7 @@ members = [
     "deps/research-environments/environments/opencode_math",
     "deps/research-environments/environments/opencode_science",
     "deps/research-environments/environments/opencode_swe",
+    "deps/research-environments/environments/rlm_swe",
     "deps/research-environments/environments/science_env",
     "deps/research-environments/environments/simpleqa_verified",
     "deps/research-environments/environments/tau2_bench",
@@ -206,17 +208,22 @@ requires-dist = [
 # we want latest vllm, remove next patch
 vllm = false
 tokenspeed-mla = false
-fastokens = false
 flash_attn_3 = false
 # PrimeIntellect-published packages in this project's dependency closure —
 # fast-track so first-party releases can land same-day. Only packages that
 # appear in `uv tree` need to be listed; the resolver ignores entries for
 # packages it never sees.
 prime = false
+# renderers (workspace member) requires fastokens>=0.2.0 (published
+# 2026-05-17, inside the rolling 7-day exclude-newer window). Renderers
+# overrides this locally but the override doesn't propagate to the
+# workspace; mirror it here.
+fastokens = false
+# forth-lang env pins verifiers>=0.1.15.dev9 (published 2026-05-26).
+verifiers = false
 prime-sandboxes = false
 prime-tunnel = false
 prime-evals = false
-verifiers = false
 renderers = false
 prime-pydantic-config = false
 # Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
@@ -254,6 +261,7 @@ opencode-math = { workspace = true }
 opencode-science = { workspace = true }
 opencode-swe = { workspace = true }
 reverse-text = { workspace = true }
+rlm-swe = { workspace = true }
 science-env = { workspace = true }
 simpleqa-verified = { workspace = true }
 tau2-bench = { workspace = true }

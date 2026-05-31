@@ -206,9 +206,248 @@ class EnvConfig(BaseConfig):
         return self
 
 
+class SystemRoleEchoConfig(BaseConfig):
+    """Per-system-message echo — cross-entropy supervision on system-prompt tokens.
+
+    System messages are prompt-side and scaffold/dataset-determined. Enable this
+    when you want the model to internalize the system prompt — e.g. for
+    progressive-compression curricula where the system prompt is shortened over
+    training and the model has to absorb the original behavior into its weights.
+    """
+
+    alpha: float = 0.0
+    """Per-token advantage on system-message content positions. Default 0.0
+    means the role is "selected but inert" — set explicitly to a positive
+    value to actually contribute gradient."""
+
+
+class UserRoleEchoConfig(BaseConfig):
+    """Per-user-message echo — cross-entropy supervision on user-turn tokens.
+
+    User messages are prompt-side and dataset-determined. Enable this for
+    user-simulator training, where the goal is teaching the model to produce
+    user-like turns conditional on the prior conversation.
+    """
+
+    alpha: float = 0.0
+    """Per-token advantage on user-message content positions. Default 0.0
+    means inert; set explicitly to a positive value to contribute gradient."""
+
+
+class AssistantRoleEchoConfig(BaseConfig):
+    """Per-assistant-message echo — cross-entropy supervision on assistant tokens.
+
+    Unlike the other role echoes, assistant tokens normally carry RL gradient
+    via the rollout's GRPO advantage. Enabling this OVERRIDES the RL advantage
+    with the constant ``alpha`` on assistant positions — setting ``alpha=0`` is
+    the canonical "kill RL on assistant tokens" knob (useful for pure-SFT-no-RL
+    ablations when combined with ``ToolRoleEchoConfig``).
+
+    Applies to BOTH prompt-side assistant messages (prior turns in multi-turn
+    rollouts) AND the current step's completion. The completion-side override
+    is what makes the alpha=0 trick work — without it, the RL advantage would
+    still apply to the current completion.
+    """
+
+    alpha: float = 0.0
+    """Per-token advantage on assistant-message positions. The default 0.0 is
+    the canonical "kill RL on assistant tokens" value — see class docstring."""
+
+
+class ToolRoleEchoConfig(BaseConfig):
+    """Per-tool-message echo — cross-entropy supervision on tool response tokens.
+
+    Tool messages are prompt-side and environment-determined: ground-truth output
+    of code execution, documentation lookups, etc. This is the original
+    "SFT-on-tool-body" use case — anchor the model on real tool outputs as
+    supervised data alongside the RL signal on its own completions.
+
+    Restrict to specific tool functions via ``tool_names``; defaults to all tools.
+    """
+
+    alpha: float = 0.0
+    """Per-token advantage on tool-message content positions. Default 0.0
+    means inert; set explicitly to a positive value to contribute gradient."""
+
+    tool_names: list[str] | None = None
+    """Restrict echo to these tool function names; None = all tools."""
+
+
+class EchoFilterConfig(BaseConfig):
+    """User-pluggable per-token filter applied on top of the role-level echo
+    baseline.
+
+    The filter is a Python callable resolved at env setup via
+    ``import_object(import_path)``. It receives the full rollout exactly as
+    returned by the env server and returns per-step bool masks; positions
+    where the filter returns ``False`` get dropped back to "not echoed"
+    (``echo_alpha = None``) regardless of the role baseline. The filter
+    **never adds echo** — it only narrows. To get echo at a position the
+    role gate didn't enable, set the role config more permissively first.
+
+    **Filter signature:**
+
+    .. code-block:: python
+
+        def my_filter(rollout: vf.RolloutOutput, **kwargs) -> list[list[bool]]:
+            \"\"\"
+            Args:
+                rollout: Full rollout as returned by the env server.
+                    ``rollout["trajectory"]`` gives per-step ``TrajectoryStep``s;
+                    each step's ``tokens`` carries ``prompt_ids``,
+                    ``completion_ids``, ``completion_logprobs``, ``prompt_mask``,
+                    ``completion_mask``, and ``prompt_attribution`` (with
+                    ``message_roles``, ``message_indices``, ``is_content``,
+                    ``message_tool_names``). ``reward``, ``error``,
+                    ``stop_condition``, ``metrics``, ``info``, ``example_id``
+                    all live on the rollout dict.
+                **kwargs: From :attr:`EchoFilterConfig.kwargs`.
+
+            Returns:
+                Per-step masks. Outer length **must** equal
+                ``len(rollout["trajectory"])``. Inner mask for step ``i``
+                **must** have length
+                ``len(step.tokens.prompt_ids) + len(step.tokens.completion_ids)``.
+
+                Per-token semantics:
+                  - ``True``  → keep role-level echo decision as-is
+                  - ``False`` → drop to no-echo (``echo_alpha[k] = None``)
+            \"\"\"
+
+    **Determinism contract.** The filter must be deterministic given
+    ``(rollout, kwargs)``. DP ranks each see the same rollout but call the
+    filter independently — non-deterministic output → divergent masks →
+    divergent gradients → silent corruption. No ``random.*`` without a seed,
+    no ``time.time()`` thresholds, no external state lookups. The contract
+    is unenforced at runtime (double-running the filter per rollout would
+    double the hot-path cost) but signed by writing a filter.
+
+    **Performance.** The filter is invoked once per rollout, synchronously
+    in the orchestrator process. Heavy regex compilation belongs at module
+    load (``re.compile``), not per-call. The filter is not a parallelism
+    boundary — slow filters block ``process_rollout``.
+
+    **Error handling — fail loud.** All failures propagate:
+
+    - ``ImportError`` at env setup if ``import_path`` doesn't resolve.
+    - ``ValueError`` if the filter returns the wrong outer length (≠
+      number of trajectory steps) or wrong inner length on any step.
+    - ``TypeError`` if the filter returns a non-list, or any inner mask
+      contains non-bool elements.
+    - Any exception raised by the filter itself propagates — the rollout
+      fails, the training loop sees it.
+    """
+
+    import_path: str
+    """Dotted import path to the filter callable, e.g.
+    ``"my_module.filter_warnings"``."""
+
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    """Keyword arguments forwarded to the filter as ``**kwargs``. Allows
+    parameterizing generic filters from the TOML config without
+    multi-module gymnastics."""
+
+
+class EchoConfig(BaseConfig):
+    """Per-env per-role echo — auxiliary cross-entropy supervision on
+    prompt-side tokens (and assistant-side completions when assistant echo
+    is enabled).
+
+    Each role has its own sub-config so that:
+
+    - Roles enable/disable independently (``None`` = role disabled).
+    - Per-role ``alpha`` lets different roles carry different weights in the
+      same run.
+    - Per-role-specific fields stay scoped (e.g. ``tool_names`` lives on
+      :class:`ToolRoleEchoConfig` only).
+
+    **Defaults are loud — opt-in across the board.** Every role defaults to
+    ``None`` (disabled) and every per-role ``alpha`` defaults to ``0.0``. The
+    user has to explicitly:
+
+      1. Pick at least one role sub-block (validator enforces this — see
+         :meth:`require_at_least_one_role`).
+      2. Set a non-zero ``alpha`` on it, otherwise echo runs but with zero
+         gradient contribution (effectively a no-op).
+
+    To disable echo entirely, omit the ``[orchestrator.train.env.echo]``
+    block — the outer ``TrainEnvConfig.echo`` defaults to ``None``.
+
+    **Mask construction.** The per-token echo alpha array is built from the
+    renderer's ``prompt_attribution`` (``message_roles``, ``message_indices``,
+    ``message_tool_names``, ``is_content``). Only content tokens — message-body
+    bytes — get the overlay; template scaffold (role-tag wraps,
+    ``<|tool_response>`` specials, etc.) is excluded by construction.
+
+    **Optional user filter.** Set :attr:`filter` to layer a custom Python
+    callable on top of the role baseline. The filter sees the full rollout
+    and can drop positions back to no-echo based on its content — e.g.
+    masking out warning text inside tool outputs. See :class:`EchoFilterConfig`
+    for the full contract.
+
+    **Wire format.** Each ``TrainingSample`` carries a per-token alpha array
+    ``echo_alpha: list[float | None]`` parallel to ``prompt_ids +
+    completion_ids``. ``None`` per-token means "not echoed (RL gradient
+    applies as usual)"; a float means "echo at this alpha — overrides the RL
+    advantage on this position and flips loss_mask=True". Three-state
+    encoding (None / float zero / float nonzero) is required because
+    ``alpha=0`` is a legitimate "kill the gradient" value distinct from "not
+    echoed."
+    """
+
+    system: SystemRoleEchoConfig | None = None
+    """System-message echo (default: disabled). Set to a
+    :class:`SystemRoleEchoConfig` block to enable."""
+
+    user: UserRoleEchoConfig | None = None
+    """User-message echo (default: disabled). Set to a
+    :class:`UserRoleEchoConfig` block to enable."""
+
+    assistant: AssistantRoleEchoConfig | None = None
+    """Assistant-message echo (default: disabled). The only role echo that
+    overrides RL gradients on the current completion — the canonical use is
+    enabling this with ``alpha=0`` to kill the RL contribution on assistant
+    tokens entirely (pure-SFT-no-RL ablations)."""
+
+    tool: ToolRoleEchoConfig | None = None
+    """Tool-message echo (default: disabled). Set to a
+    :class:`ToolRoleEchoConfig` block to enable."""
+
+    filter: EchoFilterConfig | None = None
+    """Optional user-pluggable per-token filter on top of the role baseline.
+    Composes by AND — strictly narrowing, never adds echo. See
+    :class:`EchoFilterConfig` for the signature, determinism contract, and
+    error semantics."""
+
+    @model_validator(mode="after")
+    def require_at_least_one_role(self) -> "EchoConfig":
+        """At least one of ``system``, ``user``, ``assistant``, ``tool`` must
+        be set (non-None). An ``EchoConfig`` block with every role disabled
+        is meaningless — the caller probably meant to omit
+        ``[orchestrator.train.env.echo]`` entirely (which sets
+        ``TrainEnvConfig.echo = None`` and disables the whole feature)."""
+        if all(getattr(self, role) is None for role in ("system", "user", "assistant", "tool")):
+            raise ValueError(
+                "EchoConfig requires at least one role to be enabled. Set "
+                "`system`, `user`, `assistant`, or `tool` to a per-role config "
+                "block — or omit the [orchestrator.train.env.echo] block "
+                "entirely to disable echo for this env."
+            )
+        return self
+
+
 class TrainEnvConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
+
+    group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
+    """Rollouts generated per example for GRPO group-relative advantages.
+    Inherits from ``orchestrator.group_size`` when unset."""
+
+    echo: EchoConfig | None = None
+    """Per-env per-role echo config; None = echo disabled for this env.
+
+    See :class:`EchoConfig` for full semantics."""
 
 
 class EvalEnvConfig(EnvConfig):
@@ -296,6 +535,10 @@ class EvalConfig(BaseConfig):
     interval: int = Field(100, ge=1)
     """Step interval at which to evaluate the model."""
 
+    skip_first_step: bool = False
+    """If True, skip the startup eval that otherwise runs before any
+    train rollouts."""
+
     @model_validator(mode="after")
     def resolve_env_defaults(self):
         """Resolve per-env overrides: inherit group-level sampling, num_workers, max_retries, num_examples, group_size, and interval. Then resolve auto num_workers."""
@@ -326,6 +569,16 @@ class EvalConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_non_empty_envs(self):
+        if not self.env:
+            raise ValueError(
+                "EvalConfig must define at least one env. Either drop the "
+                "[orchestrator.eval] block entirely (to disable eval) or "
+                "add a [[orchestrator.eval.env]] block."
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_unique_env_names(self):
         env_names = [env.resolved_name for env in self.env]
         duplicates = [n for n in env_names if env_names.count(n) > 1]
@@ -334,17 +587,6 @@ class EvalConfig(BaseConfig):
                 f"Duplicate evaluation environment names: {set(duplicates)}. Each env must have a unique name."
             )
         return self
-
-    eval_base_model: bool = True
-    """Evaluate the base model we are training on."""
-
-    skip_eval_on_resume: bool = Field(
-        True, validation_alias=AliasChoices("skip_eval_on_resume", "skip_eval_on_restart")
-    )
-    """When resuming the orchestrator from a checkpoint, skip the (potentially redundant) online eval that would otherwise run immediately at the resumed step."""
-
-    cancel_inflight_rollouts_on_eval: bool = False
-    """Cancel in-flight training rollouts before starting online evals. Avoids congestion (no training + eval rollouts at the same time) at the cost of slower training steps as the pipeline has to refill after each eval."""
 
 
 class CheckpointConfig(BaseConfig):
@@ -365,38 +607,6 @@ class CheckpointConfig(BaseConfig):
 
     skip_progress: bool = False
     """Skip loading the progress from checkpoint."""
-
-    skip_buffer: bool = False
-    """Skip loading the buffer from checkpoint."""
-
-
-class BufferConfig(BaseConfig):
-    seed: int | None = None
-    """Random seed for the buffer. When set, sampling from the buffer is deterministic."""
-
-    easy_threshold: float | None = None
-    """Average-reward threshold above which a problem is classified ``easy``."""
-
-    hard_threshold: float | None = None
-    """Average-reward threshold below which a problem is classified ``hard``."""
-
-    easy_fraction: float = Field(0.0, ge=0, le=1)
-    """Fraction of easy problems to convert to ``normal`` when resuming or starting training. Only problems with difficulty ``normal`` are sampled."""
-
-    hard_fraction: float = Field(0.0, ge=0, le=1)
-    """Fraction of hard problems to convert to ``normal`` when resuming or starting training. Only problems with difficulty ``normal`` are sampled."""
-
-    online_difficulty_filtering: bool = False
-    """Filter rollouts based on difficulty. When True, rollouts with average reward 0.0 or 1.0 are not added to the buffer."""
-
-    hash_keys: list[str] = Field(["env_name", "prompt"], min_length=1)
-    """Keys used to compute example hashes. Used to match examples from buffer checkpoints and determine buffer resume behavior."""
-
-    @model_validator(mode="after")
-    def validate_thresholds(self):
-        if self.easy_threshold is not None and self.hard_threshold is not None:
-            assert self.easy_threshold > self.hard_threshold, "easy_threshold must be greater than hard_threshold."
-        return self
 
 
 class TokensLengthPenaltyConfig(BaseConfig):
@@ -569,12 +779,27 @@ class OrchestratorConfig(BaseConfig):
     eval: EvalConfig | None = None
     """Evaluation configuration."""
 
-    buffer: BufferConfig = BufferConfig()
-
     advantage: AdvantageConfig | None = DefaultAdvantageConfig()
 
-    filters: list[FilterConfig] = [GibberishFilterConfig(), RepetitionFilterConfig(), ZeroAdvantageFilterConfig()]
-    """Rollout filters. Each filter can ``monitor`` (default) or ``enforce`` (skip rollouts)."""
+    pre_batch_filters: list[FilterConfig] = [
+        GibberishFilterConfig(enforce=False),
+        RepetitionFilterConfig(enforce=False),
+        ZeroAdvantageFilterConfig(enforce=False),
+    ]
+    """Filters applied *before* a rollout enters the training batch buffer.
+    All three filter types are registered in monitor mode by default; flip ``enforce=true`` per type
+    to drop matching rollouts before they consume a slot in the batch (e.g. a zero-advantage group
+    never makes it into a training batch)."""
+
+    post_batch_filters: list[FilterConfig] = [
+        GibberishFilterConfig(),
+        RepetitionFilterConfig(),
+        ZeroAdvantageFilterConfig(),
+    ]
+    """Filters applied *after* a batch has been assembled. Each filter annotates each rollout;
+    rollouts flagged by an enforcing filter are still recorded but not shipped to the trainer.
+    The TOML/CLI key ``filters`` is accepted as an alias for ``post_batch_filters`` (see
+    ``_alias_filters_to_post_batch_filters``)."""
 
     log: LogConfig = LogConfig()
 
@@ -634,9 +859,6 @@ class OrchestratorConfig(BaseConfig):
     bench: bool = False
     """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""
 
-    seed: int | None = 42
-    """Random seed for the orchestrator."""
-
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
 
@@ -644,6 +866,48 @@ class OrchestratorConfig(BaseConfig):
     """Allow pre-release versions when installing environments (e.g. ``verifiers>=0.1.12.dev5``). Passes ``--prerelease`` to ``prime env install``."""
 
     experimental: OrchestratorExperimentalConfig = OrchestratorExperimentalConfig()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _alias_filters_to_post_batch_filters(cls, data: Any) -> Any:
+        """``filters`` is accepted as an alias for ``post_batch_filters``."""
+        if isinstance(data, dict) and "filters" in data and "post_batch_filters" not in data:
+            data = dict(data)
+            data["post_batch_filters"] = data.pop("filters")
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _warn_removed_buffer(cls, data: Any) -> Any:
+        """The ``[orchestrator.buffer]`` block (difficulty pools + online
+        difficulty filtering) has been removed. Drop it so old configs still
+        parse, but warn — loudly for ``online_difficulty_filtering``, since it
+        has a direct replacement."""
+        if not isinstance(data, dict) or "buffer" not in data:
+            return data
+        data = dict(data)
+        buffer = data.pop("buffer")
+        if isinstance(buffer, dict) and buffer.get("online_difficulty_filtering"):
+            warnings.warn(
+                "'[orchestrator.buffer]' has been removed and 'online_difficulty_filtering' "
+                "is now a no-op. To preserve the behavior (drop zero-advantage groups before "
+                "they enter the training batch), enforce the zero_advantage pre-batch filter:\n"
+                "    [[orchestrator.pre_batch_filters]]\n"
+                '    type = "zero_advantage"\n'
+                "    enforce = true\n"
+                "Difficulty pools (easy/hard thresholds and fractions) are removed with no "
+                "replacement.",
+                FutureWarning,
+                stacklevel=2,
+            )
+        else:
+            warnings.warn(
+                "'[orchestrator.buffer]' has been removed (difficulty pools are no longer "
+                "supported) and is being ignored. Remove it from your config.",
+                FutureWarning,
+                stacklevel=2,
+            )
+        return data
 
     @model_validator(mode="before")
     @classmethod
@@ -759,9 +1023,12 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_unique_filter_types(self):
-        types = [f.type for f in self.filters]
-        if len(types) != len(set(types)):
-            raise ValueError(f"Duplicate filter types: {types}. Each filter type may only appear once.")
+        for slot_name in ("pre_batch_filters", "post_batch_filters"):
+            types = [f.type for f in getattr(self, slot_name)]
+            if len(types) != len(set(types)):
+                raise ValueError(
+                    f"Duplicate filter types in {slot_name}: {types}. Each filter type may only appear once per slot."
+                )
         return self
 
     @model_validator(mode="after")
@@ -882,6 +1149,11 @@ class OrchestratorConfig(BaseConfig):
 
         if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.group_size:
             raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")
+
+        # Propagate the top-level ``group_size`` into each train env that didn't set its own.
+        for env_cfg in self.train.env:
+            if "group_size" not in env_cfg.model_fields_set:
+                env_cfg.group_size = self.group_size
 
         # Resolve train env num_workers from max_inflight_rollouts
         for env_cfg in self.train.env:

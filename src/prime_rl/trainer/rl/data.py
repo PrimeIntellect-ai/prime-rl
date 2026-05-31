@@ -46,6 +46,14 @@ class TensorMicroBatch(TypedDict):
     # sft → sft loss). All samples in a micro batch share the same mode.
     training_mode: str
 
+    # Per-token echo mask (parallel to input_ids): True where the token is
+    # an echo position (per-role cross-entropy overlay; see ``EchoConfig``).
+    # None when no sample in this micro-batch opted into echo. When present,
+    # loss.default_loss_fn forces IS ratio = 1 and skips DPPO / KL on these
+    # positions; the advantages tensor already carries the per-token alpha
+    # at those positions (overlaid in prepare_sample).
+    echo_mask: Bool[Tensor, "batch seq"] | None
+
 
 class FakeDataLoader:
     def __init__(self, config: FakeDataLoaderConfig, seq_len: int, dp_world_size: int):
@@ -120,6 +128,7 @@ class FakeDataLoader:
             "mm_kwargs": None,
             "mm_token_type_ids": None,
             "training_mode": "rl",
+            "echo_mask": None,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -148,6 +157,7 @@ class FakeDataLoader:
             "mm_kwargs": None,
             "mm_token_type_ids": None,
             "training_mode": "rl",
+            "echo_mask": None,
         }
 
 
@@ -243,6 +253,9 @@ class DataLoader:
             else None,
             routed_experts=routed_experts,
             training_mode=micro_batch.training_mode,
+            echo_mask=torch.tensor(micro_batch.echo_mask, dtype=torch.bool).unsqueeze(0)
+            if micro_batch.echo_mask is not None
+            else None,
         )
 
 

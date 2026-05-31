@@ -16,12 +16,11 @@ from verifiers.utils.serve_utils import get_free_port
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
 from prime_rl.orchestrator.eval_utils import compute_pass_at_k
-from prime_rl.orchestrator.vf_utils import get_completion_len
 from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.monitor import get_monitor
-from prime_rl.utils.utils import capitalize
+from prime_rl.utils.utils import capitalize, import_object
 
-REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
+REQUIRED_STATE_COLUMNS = ["trajectory"]
 
 
 class Env:
@@ -31,7 +30,7 @@ class Env:
         self.config = config
         self.sampling_args: dict = {}
 
-        get_logger().info(f"Initializing {config.resolved_name} ({config})")
+        get_logger().debug(f"Initializing {config.resolved_name} ({config})")
         self._env: vf.Environment = vf.load_environment(config.stripped_id, **config.args)
         self._env_client: ZMQEnvClient | None = None
         self._env_server_process: BaseProcess | None = None
@@ -169,6 +168,13 @@ class TrainEnv(Env):
     def __init__(self, config: TrainEnvConfig):
         super().__init__(config)
         self.sampling_args = config.sampling.to_sampling_args()
+        # Resolve the echo filter callable once at env setup. The
+        # ``import_object`` lookup is cheap; we cache the callable on the
+        # env so per-rollout invocation doesn't re-resolve. ``None`` when
+        # no filter is configured.
+        self.echo_filter_fn: Callable[..., list[list[bool]]] | None = None
+        if config.echo is not None and config.echo.filter is not None:
+            self.echo_filter_fn = import_object(config.echo.filter.import_path)
 
     def get_dataset(self, seed: int | None = None):
         return self.env.get_dataset(seed=seed)
@@ -268,7 +274,7 @@ class EvalEnv(Env):
             {
                 "example_id": o["example_id"],
                 "reward": o["reward"],
-                "completion_len": get_completion_len(o),
+                "completion_len": o["token_usage"]["final_output_tokens"],
                 "is_truncated": o["is_truncated"],
                 "has_error": o.get("error") is not None,
                 "no_response": not o.get("completion"),
@@ -370,7 +376,7 @@ class Envs(Generic[EnvT]):
         if not processes:
             return
         logger = get_logger()
-        logger.info(f"Shutting down {len(processes)} env server(s), waiting for sandbox cleanup...")
+        logger.debug(f"Shutting down {len(processes)} env server(s)")
         for p in processes:
             p.terminate()
         for p in processes:

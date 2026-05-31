@@ -117,6 +117,80 @@ def test_prepare_sample_propagates_training_mode(make_training_example):
     assert micro_batch.training_mode == "sft"
 
 
+def test_prepare_sample_echo_overlay(make_training_example):
+    """Per-token ``echo_alpha`` is written to ``advantages`` on echo positions
+    and the positions flip into ``loss_mask``. Different positions can carry
+    different alphas (per-role weighting). The trainer's ``default_loss_fn``
+    bypasses the IS-ratio on these positions so the gradient is pure
+    ``α × log p_θ``."""
+    example = make_training_example()
+    example.echo_alpha = [0.5, 0.5, None, None]
+
+    micro_batch = prepare_sample(example, seq_len=16)
+
+    # Echo positions: advantage = per-token alpha exactly.
+    assert micro_batch.advantages[0] == 0.5
+    assert micro_batch.advantages[1] == 0.5
+    # Non-echo positions keep the rollout's scalar advantage (1.0 from the fixture).
+    assert micro_batch.advantages[2] == 1.0
+    assert micro_batch.advantages[3] == 1.0
+    # Echo prompt positions are now loss-trainable; completion mask preserved.
+    assert micro_batch.loss_mask == [True, True, True, True]
+    assert micro_batch.echo_mask == [True, True, False, False]
+
+
+def test_prepare_sample_echo_alpha_supports_zero(make_training_example):
+    """``alpha=0`` is a legitimate "kill the RL gradient" value distinct from
+    "not echoed": position is still flipped into the loss mask and into the
+    echo_mask, but the advantage is zero so the gradient contribution vanishes.
+    This is the canonical assistant-role-echo trick (override RL on completion
+    tokens with alpha=0)."""
+    example = make_training_example()
+    # Position 2 (completion-side) is echoed with alpha=0; the rest are not.
+    example.echo_alpha = [None, None, 0.0, None]
+
+    micro_batch = prepare_sample(example, seq_len=16)
+
+    # Position 2: advantage overridden to 0 (RL contribution killed); position
+    # is still in loss_mask and echo_mask.
+    assert micro_batch.advantages[2] == 0.0
+    assert micro_batch.loss_mask[2] is True
+    assert micro_batch.echo_mask == [False, False, True, False]
+    # Other positions keep their RL advantage.
+    assert micro_batch.advantages[0] == 1.0
+    assert micro_batch.advantages[3] == 1.0
+
+
+def test_prepare_sample_skips_echo_overlay_when_alpha_is_none(make_training_example):
+    """``echo_alpha=None`` (whole field) leaves the sample untouched — no
+    overlay, no echo_mask. Different from per-token None (which means "this
+    position isn't echoed but the field exists")."""
+    example = make_training_example()
+    example.echo_alpha = None
+
+    micro_batch = prepare_sample(example, seq_len=16)
+
+    # No advantage rewrite; original scalar fills every position.
+    assert all(adv == 1.0 for adv in micro_batch.advantages)
+    # No loss_mask flip and no echo_mask materialized.
+    assert micro_batch.loss_mask == [False, False, True, True]
+    assert micro_batch.echo_mask is None
+
+
+def test_prepare_sample_truncates_echo_alpha_with_other_per_token_lists(make_training_example):
+    """Truncation slices ``echo_mask`` in lockstep with ``input_ids``,
+    keeping the length-equality assertion green."""
+    example = make_training_example()
+    example.echo_alpha = [0.5, 0.5, None, None]
+
+    micro_batch = prepare_sample(example, seq_len=2)
+
+    assert len(micro_batch.input_ids) == 2
+    assert len(micro_batch.echo_mask) == 2
+    assert len(micro_batch.advantages) == 2
+    assert len(micro_batch.loss_mask) == 2
+
+
 def test_prepare_batch_does_not_pack_mixed_training_mode(make_training_example):
     rl_example = make_training_example(training_mode="rl")
     sft_example = make_training_example(training_mode="sft")
