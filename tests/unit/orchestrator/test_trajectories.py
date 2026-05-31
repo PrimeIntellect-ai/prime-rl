@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from prime_rl.configs.orchestrator import (
     AssistantRoleEchoConfig,
     EchoConfig,
+    EchoFilterConfig,
     SystemRoleEchoConfig,
     ToolRoleEchoConfig,
     UserRoleEchoConfig,
@@ -18,6 +19,7 @@ from prime_rl.orchestrator.trajectories import (
     _deserialize_tool_calls,
     _step_echo_alpha,
     align_routed_experts,
+    apply_echo_filter,
     interleave_rollout,
 )
 
@@ -1646,3 +1648,616 @@ def test_step_echo_alpha_per_role_alphas_differ():
     )
     # Prompt: user=0.1, tool=0.5, system=0.05. Completion: assistant=0.9.
     assert alpha == [0.1, 0.5, 0.05, 0.9, 0.9]
+
+
+# ---------------------------------------------------------------------------
+# EchoFilterConfig pydantic
+# ---------------------------------------------------------------------------
+
+
+def test_echo_filter_config_requires_import_path():
+    """``import_path`` is mandatory — no implicit default."""
+    with pytest.raises(ValidationError, match="import_path"):
+        EchoFilterConfig()  # type: ignore[call-arg]
+
+
+def test_echo_filter_config_kwargs_default_empty():
+    """``kwargs`` defaults to an empty dict (not None) — the filter
+    invocation does ``**filter_kwargs`` which would fail on None."""
+    cfg = EchoFilterConfig(import_path="my_module.my_filter")
+    assert cfg.kwargs == {}
+
+
+def test_echo_filter_config_kwargs_explicit():
+    """Caller-supplied kwargs survive validation as a plain dict."""
+    cfg = EchoFilterConfig(
+        import_path="my_module.my_filter",
+        kwargs={"pattern": "warn", "min_lines": 3},
+    )
+    assert cfg.kwargs == {"pattern": "warn", "min_lines": 3}
+
+
+def test_echo_config_filter_nests_under_echo():
+    """``EchoConfig.filter`` is the documented attachment point — a
+    populated ``EchoFilterConfig`` must coexist with at least one role
+    (the at-least-one-role validator still applies; the filter is NOT
+    a role by itself)."""
+    cfg = EchoConfig(
+        tool=ToolRoleEchoConfig(alpha=0.05),
+        filter=EchoFilterConfig(import_path="my_module.my_filter"),
+    )
+    assert cfg.filter is not None
+    assert cfg.filter.import_path == "my_module.my_filter"
+
+
+def test_echo_config_filter_without_role_still_rejected():
+    """The at-least-one-role validator does NOT treat ``filter`` as a
+    role — setting only ``filter`` with no role enabled still raises.
+    The filter is a narrowing overlay; it can't enable echo by itself."""
+    with pytest.raises(ValidationError, match="at least one role"):
+        EchoConfig(filter=EchoFilterConfig(import_path="my_module.my_filter"))
+
+
+# ---------------------------------------------------------------------------
+# _step_echo_alpha — filter_mask composition
+# ---------------------------------------------------------------------------
+
+
+def _tool_only_attribution(prompt_len: int) -> dict:
+    """All prompt tokens marked as content of a single tool message named
+    ``"lookup"`` — minimal setup for filter-narrowing tests where every
+    prompt position has a baseline echo alpha to be narrowed."""
+    return _attribution(
+        message_indices=[0] * prompt_len,
+        is_content=[True] * prompt_len,
+        message_roles=["tool"],
+        message_tool_names=["lookup"],
+    )
+
+
+def test_step_echo_alpha_filter_none_is_no_op():
+    """``filter_mask=None`` (or omitted) preserves the role baseline
+    exactly — backwards-compatible default."""
+    baseline = _step_echo_alpha(
+        prompt_attribution=_tool_only_attribution(3),
+        prompt_len=3,
+        completion_len=2,
+        echo_config=EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5)),
+    )
+    filtered = _step_echo_alpha(
+        prompt_attribution=_tool_only_attribution(3),
+        prompt_len=3,
+        completion_len=2,
+        echo_config=EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5)),
+        filter_mask=None,
+    )
+    assert filtered == baseline == [0.5, 0.5, 0.5, None, None]
+
+
+def test_step_echo_alpha_filter_narrows_baseline():
+    """Filter ``False`` at a position drops the role-level echo alpha to
+    ``None`` (drops to RL gradient). Filter ``True`` preserves the role
+    baseline as-is."""
+    alpha = _step_echo_alpha(
+        prompt_attribution=_tool_only_attribution(4),
+        prompt_len=4,
+        completion_len=2,
+        echo_config=EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5)),
+        filter_mask=[True, False, True, False, False, False],
+    )
+    # Positions 0 + 2: filter True, role baseline alpha = 0.5 preserved.
+    # Positions 1 + 3: filter False, dropped to None (RL applies).
+    # Completion (4, 5): no role baseline (assistant disabled) AND filter
+    # False — stays None.
+    assert alpha == [0.5, None, 0.5, None, None, None]
+
+
+def test_step_echo_alpha_filter_cannot_add_echo():
+    """Filter ``True`` at a position that had no role baseline keeps that
+    position at ``None`` — the filter narrows the baseline, it cannot
+    expand it. Critical invariant: a permissive filter cannot accidentally
+    turn on echo for roles the user never enabled."""
+    alpha = _step_echo_alpha(
+        prompt_attribution=_attribution(
+            # msg 0 = user (NOT enabled in echo config), msg 1 = tool.
+            message_indices=[0, 0, 1, 1],
+            is_content=[True, True, True, True],
+            message_roles=["user", "tool"],
+            message_tool_names=[None, "lookup"],
+        ),
+        prompt_len=4,
+        completion_len=0,
+        echo_config=EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5)),
+        # All True — filter approves every position.
+        filter_mask=[True, True, True, True],
+    )
+    # User positions (0, 1) stay None — role disabled, filter cannot add.
+    # Tool positions (2, 3) carry alpha — role enabled, filter approved.
+    assert alpha == [None, None, 0.5, 0.5]
+
+
+def test_step_echo_alpha_filter_all_true_preserves_baseline():
+    """``filter_mask = [True] * N`` is identical to ``filter_mask=None``
+    semantically — the all-approve case is a no-op narrowing."""
+    args = dict(
+        prompt_attribution=_tool_only_attribution(3),
+        prompt_len=3,
+        completion_len=2,
+        echo_config=EchoConfig(
+            tool=ToolRoleEchoConfig(alpha=0.5),
+            assistant=AssistantRoleEchoConfig(alpha=0.8),
+        ),
+    )
+    without_filter = _step_echo_alpha(**args)
+    with_all_true = _step_echo_alpha(**args, filter_mask=[True] * 5)
+    assert without_filter == with_all_true == [0.5, 0.5, 0.5, 0.8, 0.8]
+
+
+def test_step_echo_alpha_filter_all_false_zeros_everything():
+    """``filter_mask = [False] * N`` drops every position to ``None``,
+    regardless of role baseline — the "kill all echo for this step" case."""
+    alpha = _step_echo_alpha(
+        prompt_attribution=_tool_only_attribution(3),
+        prompt_len=3,
+        completion_len=2,
+        echo_config=EchoConfig(
+            tool=ToolRoleEchoConfig(alpha=0.5),
+            assistant=AssistantRoleEchoConfig(alpha=0.8),
+        ),
+        filter_mask=[False] * 5,
+    )
+    assert alpha == [None, None, None, None, None]
+
+
+def test_step_echo_alpha_filter_narrows_assistant_completion():
+    """Filter applies to completion-side positions too — assistant
+    completion echo can be narrowed by the filter just like prompt-side
+    role echoes. Critical for the alpha=0 kill-RL use case (filter lets
+    users selectively keep or drop individual completion tokens from
+    the override)."""
+    alpha = _step_echo_alpha(
+        prompt_attribution=None,  # no prompt-side; only completion matters
+        prompt_len=2,
+        completion_len=4,
+        echo_config=EchoConfig(assistant=AssistantRoleEchoConfig(alpha=0.3)),
+        # Approve only the first two completion tokens.
+        filter_mask=[True, True, True, True, False, False],
+    )
+    # Prompt-side: assistant role doesn't trigger without attribution,
+    # so baseline is None there; filter True/False doesn't matter.
+    # Completion-side: alpha=0.3 baseline; first two kept, last two dropped.
+    assert alpha == [None, None, 0.3, 0.3, None, None]
+
+
+def test_step_echo_alpha_filter_length_mismatch_too_short_raises():
+    """Filter mask shorter than ``prompt_len + completion_len`` → ValueError
+    with both lengths in the message (load-bearing for debugging)."""
+    with pytest.raises(ValueError, match="filter_mask length 3.*does not match.*5"):
+        _step_echo_alpha(
+            prompt_attribution=_tool_only_attribution(3),
+            prompt_len=3,
+            completion_len=2,
+            echo_config=EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5)),
+            filter_mask=[True, True, True],
+        )
+
+
+def test_step_echo_alpha_filter_length_mismatch_too_long_raises():
+    """Filter mask longer than ``prompt_len + completion_len`` → ValueError."""
+    with pytest.raises(ValueError, match="filter_mask length 6.*does not match.*5"):
+        _step_echo_alpha(
+            prompt_attribution=_tool_only_attribution(3),
+            prompt_len=3,
+            completion_len=2,
+            echo_config=EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5)),
+            filter_mask=[True] * 6,
+        )
+
+
+def test_step_echo_alpha_filter_validates_before_building_baseline():
+    """Length validation runs before any baseline work — so even when
+    ``echo_config=None`` (baseline would be all-None anyway), passing a
+    wrong-length filter raises. Makes the contract uniformly enforced."""
+    with pytest.raises(ValueError, match="filter_mask length"):
+        _step_echo_alpha(
+            prompt_attribution=None,
+            prompt_len=3,
+            completion_len=2,
+            echo_config=None,
+            filter_mask=[True, True],  # length 2 ≠ 5
+        )
+
+
+def test_step_echo_alpha_filter_mixed_roles():
+    """Filter composes with a fully-loaded EchoConfig (all four roles
+    enabled). Each role's baseline is narrowed independently per-token."""
+    alpha = _step_echo_alpha(
+        prompt_attribution=_attribution(
+            # msg 0 = system, msg 1 = user, msg 2 = tool.
+            message_indices=[0, 1, 2],
+            is_content=[True, True, True],
+            message_roles=["system", "user", "tool"],
+            message_tool_names=[None, None, "lookup"],
+        ),
+        prompt_len=3,
+        completion_len=2,
+        echo_config=EchoConfig(
+            system=SystemRoleEchoConfig(alpha=0.05),
+            user=UserRoleEchoConfig(alpha=0.1),
+            tool=ToolRoleEchoConfig(alpha=0.5),
+            assistant=AssistantRoleEchoConfig(alpha=0.9),
+        ),
+        # Approve system + tool + first completion token; drop user +
+        # second completion token.
+        filter_mask=[True, False, True, True, False],
+    )
+    assert alpha == [0.05, None, 0.5, 0.9, None]
+
+
+# ---------------------------------------------------------------------------
+# apply_echo_filter — shape/type validation + invocation contract
+# ---------------------------------------------------------------------------
+
+
+def _step_with_tokens(prompt_len: int, completion_len: int) -> vf.TrajectoryStep:
+    """Build a minimal TrajectoryStep with controllable token lengths.
+    Used to exercise ``apply_echo_filter``'s per-step length checks
+    without depending on a renderer-produced attribution."""
+    return vf.TrajectoryStep(
+        prompt=[{"role": "user", "content": "U"}],
+        completion=[{"role": "assistant", "content": "A"}],
+        response=MagicMock(),
+        tokens=vf.TrajectoryStepTokens(
+            prompt_ids=list(range(prompt_len)),
+            prompt_mask=[0] * prompt_len,
+            completion_ids=list(range(prompt_len, prompt_len + completion_len)),
+            completion_mask=[1] * completion_len,
+            completion_logprobs=[-0.1] * completion_len,
+            overlong_prompt=False,
+            is_truncated=False,
+        ),
+        reward=None,
+        advantage=None,
+        is_truncated=False,
+        trajectory_id="t",
+        extras={},
+    )
+
+
+def _rollout_with_steps(*step_dims: tuple[int, int]) -> vf.RolloutOutput:
+    """Build a RolloutOutput from a list of ``(prompt_len, completion_len)``
+    tuples. Each tuple yields one trajectory step with those lengths."""
+    return vf.RolloutOutput(
+        example_id=0,
+        trajectory=[_step_with_tokens(p, c) for p, c in step_dims],
+        sampling_args={"temperature": 1.0},
+        error=None,
+    )
+
+
+def test_apply_echo_filter_valid_returns_masks():
+    """A well-behaved filter that returns the right shapes passes through.
+    Verifies the happy path as a regression anchor."""
+    rollout = _rollout_with_steps((3, 2), (4, 1))
+
+    def filter_fn(rollout):
+        return [
+            [True, False, True, True, False],  # step 0: 3+2 = 5
+            [False, False, True, True, False],  # step 1: 4+1 = 5
+        ]
+
+    result = apply_echo_filter(rollout, filter_fn, None)
+    assert result == [
+        [True, False, True, True, False],
+        [False, False, True, True, False],
+    ]
+
+
+def test_apply_echo_filter_outer_length_too_short_raises():
+    """Filter returns fewer per-step masks than trajectory steps → ValueError
+    naming both counts."""
+    rollout = _rollout_with_steps((3, 2), (4, 1))
+
+    def filter_fn(rollout):
+        return [[True] * 5]  # only 1 step mask but trajectory has 2
+
+    with pytest.raises(ValueError, match="returned 1 per-step masks.*has 2"):
+        apply_echo_filter(rollout, filter_fn, None)
+
+
+def test_apply_echo_filter_outer_length_too_long_raises():
+    """Filter returns more per-step masks than trajectory steps → ValueError."""
+    rollout = _rollout_with_steps((3, 2))
+
+    def filter_fn(rollout):
+        return [[True] * 5, [True] * 5]  # 2 masks for 1 trajectory step
+
+    with pytest.raises(ValueError, match="returned 2 per-step masks.*has 1"):
+        apply_echo_filter(rollout, filter_fn, None)
+
+
+def test_apply_echo_filter_inner_length_mismatch_raises():
+    """Filter step-mask length ≠ ``prompt_len + completion_len`` →
+    ValueError pinpointing the step index and both expected/actual."""
+    rollout = _rollout_with_steps((3, 2), (4, 1))
+
+    def filter_fn(rollout):
+        return [
+            [True] * 5,  # step 0: correct (3+2=5)
+            [True] * 3,  # step 1: wrong (3 != 4+1=5)
+        ]
+
+    with pytest.raises(
+        ValueError, match=r"step 1.*mask length 3.*expected 5.*prompt_len=4.*completion_len=1"
+    ):
+        apply_echo_filter(rollout, filter_fn, None)
+
+
+def test_apply_echo_filter_non_list_return_raises():
+    """Filter returning something that isn't a list at all → TypeError."""
+    rollout = _rollout_with_steps((2, 1))
+
+    def filter_fn(rollout):
+        return "not a list"  # type: ignore[return-value]
+
+    with pytest.raises(TypeError, match="must return list.*got str"):
+        apply_echo_filter(rollout, filter_fn, None)
+
+
+def test_apply_echo_filter_non_list_inner_raises():
+    """Filter outer-list-of-non-lists → TypeError pinpointing step."""
+    rollout = _rollout_with_steps((2, 1), (3, 0))
+
+    def filter_fn(rollout):
+        return [[True, True, True], "not a list"]  # type: ignore[list-item]
+
+    with pytest.raises(TypeError, match="step 1.*mask must be a list.*str"):
+        apply_echo_filter(rollout, filter_fn, None)
+
+
+def test_apply_echo_filter_non_bool_element_raises_int():
+    """Integer 1 is truthy but NOT bool — we reject to prevent silent
+    bugs where ``1`` got past the contract. ``isinstance(1, bool)`` would
+    return False, but ``type(1) is bool`` catches this explicitly even
+    though the two coincide here; we use ``type(v) is bool`` for clarity."""
+    rollout = _rollout_with_steps((1, 1))
+
+    def filter_fn(rollout):
+        return [[True, 1]]  # second element is int, not bool
+
+    with pytest.raises(TypeError, match=r"step 0.*mask\[1\].*must be a plain bool.*int"):
+        apply_echo_filter(rollout, filter_fn, None)
+
+
+def test_apply_echo_filter_non_bool_element_raises_string():
+    """String element → TypeError."""
+    rollout = _rollout_with_steps((2, 0))
+
+    def filter_fn(rollout):
+        return [[True, "yes"]]  # type: ignore[list-item]
+
+    with pytest.raises(TypeError, match=r"step 0.*mask\[1\].*must be a plain bool.*str"):
+        apply_echo_filter(rollout, filter_fn, None)
+
+
+def test_apply_echo_filter_propagates_user_exception():
+    """When the user's filter raises, the exception propagates verbatim —
+    no swallowing, no fallback to "no filter for this rollout"."""
+    rollout = _rollout_with_steps((2, 1))
+
+    class FilterCrash(RuntimeError):
+        pass
+
+    def filter_fn(rollout):
+        raise FilterCrash("boom")
+
+    with pytest.raises(FilterCrash, match="boom"):
+        apply_echo_filter(rollout, filter_fn, None)
+
+
+def test_apply_echo_filter_forwards_kwargs():
+    """``filter_kwargs`` flow through to the filter as ``**kwargs``. The
+    filter's signature can declare them positionally or accept ``**kwargs``."""
+    rollout = _rollout_with_steps((2, 0))
+    captured: dict = {}
+
+    def filter_fn(rollout, *, pattern: str, threshold: int):
+        captured["pattern"] = pattern
+        captured["threshold"] = threshold
+        return [[True, True]]
+
+    apply_echo_filter(rollout, filter_fn, {"pattern": "warn", "threshold": 3})
+    assert captured == {"pattern": "warn", "threshold": 3}
+
+
+def test_apply_echo_filter_kwargs_none_means_empty():
+    """``filter_kwargs=None`` is equivalent to ``filter_kwargs={}`` —
+    no kwargs passed, no TypeError from ``**None``."""
+    rollout = _rollout_with_steps((1, 1))
+    captured: dict = {}
+
+    def filter_fn(rollout, **kwargs):
+        captured.update(kwargs)
+        return [[True, True]]
+
+    apply_echo_filter(rollout, filter_fn, None)
+    assert captured == {}
+
+
+def test_apply_echo_filter_empty_trajectory_returns_empty_masks():
+    """Empty trajectory + filter returning ``[]`` is valid. Edge case that
+    falls out of the validation logic but worth pinning down."""
+    rollout = vf.RolloutOutput(
+        example_id=0,
+        trajectory=[],
+        sampling_args={"temperature": 1.0},
+        error=None,
+    )
+
+    def filter_fn(rollout):
+        return []
+
+    assert apply_echo_filter(rollout, filter_fn, None) == []
+
+
+def test_apply_echo_filter_receives_full_rollout():
+    """The filter sees the full rollout dict — not a stripped-down view.
+    Lets users branch on reward / error / metrics / info / example_id."""
+    rollout = _rollout_with_steps((2, 1))
+    seen_rollout = {}
+
+    def filter_fn(rollout):
+        seen_rollout["example_id"] = rollout["example_id"]
+        seen_rollout["error"] = rollout["error"]
+        seen_rollout["trajectory_len"] = len(rollout["trajectory"])
+        return [[True] * 3]
+
+    apply_echo_filter(rollout, filter_fn, None)
+    assert seen_rollout == {"example_id": 0, "error": None, "trajectory_len": 1}
+
+
+# ---------------------------------------------------------------------------
+# interleave_rollout — end-to-end with filter_masks
+# ---------------------------------------------------------------------------
+
+
+def test_interleave_rollout_filter_masks_none_no_op(single_step_trajectory_output):
+    """``filter_masks=None`` produces identical samples to the no-filter
+    call — verifies the parameter is opt-in and doesn't change baseline
+    behavior."""
+    rollout = single_step_trajectory_output
+    rollout["env_name"] = "test-env"
+
+    baseline = _interleave_rollout(rollout)
+    with_none = _interleave_rollout(rollout, filter_masks=None)
+
+    assert len(baseline) == len(with_none) == 1
+    assert with_none[0].echo_alpha == baseline[0].echo_alpha
+    # Both should be None for this fixture (no echo_config supplied).
+    assert with_none[0].echo_alpha is None
+
+
+def test_interleave_rollout_filter_masks_narrows_sample_echo_alpha():
+    """End-to-end: filter False at a position drops the role-level echo
+    alpha to None on the resulting sample's ``echo_alpha`` array. The
+    most important integration assertion — proves the filter mask flows
+    from the orchestrator boundary all the way to the wire format."""
+    # Single-step rollout with tool-role attribution on the prompt side.
+    rollout = vf.RolloutOutput(
+        example_id=0,
+        env_name="test-env",
+        trajectory=[
+            vf.TrajectoryStep(
+                prompt=[{"role": "tool", "content": "T1"}],
+                completion=[{"role": "assistant", "content": "A1"}],
+                response=MagicMock(),
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2, 3],
+                    prompt_mask=[0, 0, 0],
+                    completion_ids=[4, 5],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.1, -0.2],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                    prompt_attribution={
+                        "message_indices": [0, 0, 0],
+                        "is_content": [True, True, True],
+                        "message_roles": ["tool"],
+                        "message_tool_names": ["lookup"],
+                    },
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="t",
+                extras={},
+            )
+        ],
+        sampling_args={"temperature": 1.0},
+        error=None,
+    )
+    echo_config = EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5))
+
+    # Without filter: tool body → alpha=0.5 on all 3 prompt tokens.
+    samples_unfiltered = _interleave_rollout(rollout, echo_config=echo_config)
+    assert samples_unfiltered[0].echo_alpha == [0.5, 0.5, 0.5, None, None]
+
+    # With filter narrowing position 1: that position drops back to None,
+    # others preserved.
+    samples_filtered = _interleave_rollout(
+        rollout,
+        echo_config=echo_config,
+        filter_masks=[[True, False, True, True, True]],
+    )
+    assert samples_filtered[0].echo_alpha == [0.5, None, 0.5, None, None]
+
+
+def test_interleave_rollout_filter_masks_outer_length_mismatch_raises():
+    """Wrong outer length → ValueError, before per-step processing starts.
+    Defensive: catch shape bugs at the orchestrator/interleave boundary
+    even if the validation in ``apply_echo_filter`` is somehow bypassed."""
+    rollout = vf.RolloutOutput(
+        example_id=0,
+        env_name="test-env",
+        trajectory=[
+            vf.TrajectoryStep(
+                prompt=[{"role": "user", "content": "U"}],
+                completion=[{"role": "assistant", "content": "A"}],
+                response=MagicMock(),
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1],
+                    prompt_mask=[0],
+                    completion_ids=[2],
+                    completion_mask=[1],
+                    completion_logprobs=[-0.1],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="t",
+                extras={},
+            )
+        ],
+        sampling_args={"temperature": 1.0},
+        error=None,
+    )
+    with pytest.raises(ValueError, match="filter_masks outer length 2.*trajectory length 1"):
+        _interleave_rollout(rollout, filter_masks=[[True, True], [True, True]])
+
+
+def test_interleave_rollout_filter_masks_inner_length_mismatch_raises():
+    """Wrong inner length per step → ValueError out of ``_step_echo_alpha``
+    (propagated unchanged from inside ``interleave_rollout``'s per-step
+    work)."""
+    rollout = vf.RolloutOutput(
+        example_id=0,
+        env_name="test-env",
+        trajectory=[
+            vf.TrajectoryStep(
+                prompt=[{"role": "user", "content": "U"}],
+                completion=[{"role": "assistant", "content": "A"}],
+                response=MagicMock(),
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=[1, 2],
+                    prompt_mask=[0, 0],
+                    completion_ids=[3],
+                    completion_mask=[1],
+                    completion_logprobs=[-0.1],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="t",
+                extras={},
+            )
+        ],
+        sampling_args={"temperature": 1.0},
+        error=None,
+    )
+    # Step has prompt_len=2 + completion_len=1 = 3, filter mask length 2.
+    with pytest.raises(ValueError, match="filter_mask length 2.*does not match.*3"):
+        _interleave_rollout(rollout, filter_masks=[[True, True]])

@@ -273,6 +273,81 @@ class ToolRoleEchoConfig(BaseConfig):
     """Restrict echo to these tool function names; None = all tools."""
 
 
+class EchoFilterConfig(BaseConfig):
+    """User-pluggable per-token filter applied on top of the role-level echo
+    baseline.
+
+    The filter is a Python callable resolved at env setup via
+    ``import_object(import_path)``. It receives the full rollout exactly as
+    returned by the env server and returns per-step bool masks; positions
+    where the filter returns ``False`` get dropped back to "not echoed"
+    (``echo_alpha = None``) regardless of the role baseline. The filter
+    **never adds echo** — it only narrows. To get echo at a position the
+    role gate didn't enable, set the role config more permissively first.
+
+    **Filter signature:**
+
+    .. code-block:: python
+
+        def my_filter(rollout: vf.RolloutOutput, **kwargs) -> list[list[bool]]:
+            \"\"\"
+            Args:
+                rollout: Full rollout as returned by the env server.
+                    ``rollout["trajectory"]`` gives per-step ``TrajectoryStep``s;
+                    each step's ``tokens`` carries ``prompt_ids``,
+                    ``completion_ids``, ``completion_logprobs``, ``prompt_mask``,
+                    ``completion_mask``, and ``prompt_attribution`` (with
+                    ``message_roles``, ``message_indices``, ``is_content``,
+                    ``message_tool_names``). ``reward``, ``error``,
+                    ``stop_condition``, ``metrics``, ``info``, ``example_id``
+                    all live on the rollout dict.
+                **kwargs: From :attr:`EchoFilterConfig.kwargs`.
+
+            Returns:
+                Per-step masks. Outer length **must** equal
+                ``len(rollout["trajectory"])``. Inner mask for step ``i``
+                **must** have length
+                ``len(step.tokens.prompt_ids) + len(step.tokens.completion_ids)``.
+
+                Per-token semantics:
+                  - ``True``  → keep role-level echo decision as-is
+                  - ``False`` → drop to no-echo (``echo_alpha[k] = None``)
+            \"\"\"
+
+    **Determinism contract.** The filter must be deterministic given
+    ``(rollout, kwargs)``. DP ranks each see the same rollout but call the
+    filter independently — non-deterministic output → divergent masks →
+    divergent gradients → silent corruption. No ``random.*`` without a seed,
+    no ``time.time()`` thresholds, no external state lookups. The contract
+    is unenforced at runtime (double-running the filter per rollout would
+    double the hot-path cost) but signed by writing a filter.
+
+    **Performance.** The filter is invoked once per rollout, synchronously
+    in the orchestrator process. Heavy regex compilation belongs at module
+    load (``re.compile``), not per-call. The filter is not a parallelism
+    boundary — slow filters block ``process_rollout``.
+
+    **Error handling — fail loud.** All failures propagate:
+
+    - ``ImportError`` at env setup if ``import_path`` doesn't resolve.
+    - ``ValueError`` if the filter returns the wrong outer length (≠
+      number of trajectory steps) or wrong inner length on any step.
+    - ``TypeError`` if the filter returns a non-list, or any inner mask
+      contains non-bool elements.
+    - Any exception raised by the filter itself propagates — the rollout
+      fails, the training loop sees it.
+    """
+
+    import_path: str
+    """Dotted import path to the filter callable, e.g.
+    ``"my_module.filter_warnings"``."""
+
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    """Keyword arguments forwarded to the filter as ``**kwargs``. Allows
+    parameterizing generic filters from the TOML config without
+    multi-module gymnastics."""
+
+
 class EchoConfig(BaseConfig):
     """Per-env per-role echo — auxiliary cross-entropy supervision on
     prompt-side tokens (and assistant-side completions when assistant echo
@@ -304,6 +379,12 @@ class EchoConfig(BaseConfig):
     bytes — get the overlay; template scaffold (role-tag wraps,
     ``<|tool_response>`` specials, etc.) is excluded by construction.
 
+    **Optional user filter.** Set :attr:`filter` to layer a custom Python
+    callable on top of the role baseline. The filter sees the full rollout
+    and can drop positions back to no-echo based on its content — e.g.
+    masking out warning text inside tool outputs. See :class:`EchoFilterConfig`
+    for the full contract.
+
     **Wire format.** Each ``TrainingSample`` carries a per-token alpha array
     ``echo_alpha: list[float | None]`` parallel to ``prompt_ids +
     completion_ids``. ``None`` per-token means "not echoed (RL gradient
@@ -331,6 +412,12 @@ class EchoConfig(BaseConfig):
     tool: ToolRoleEchoConfig | None = None
     """Tool-message echo (default: disabled). Set to a
     :class:`ToolRoleEchoConfig` block to enable."""
+
+    filter: EchoFilterConfig | None = None
+    """Optional user-pluggable per-token filter on top of the role baseline.
+    Composes by AND — strictly narrowing, never adds echo. See
+    :class:`EchoFilterConfig` for the signature, determinism contract, and
+    error semantics."""
 
     @model_validator(mode="after")
     def require_at_least_one_role(self) -> "EchoConfig":

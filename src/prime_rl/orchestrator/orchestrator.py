@@ -12,6 +12,7 @@ from prime_rl.orchestrator.event_loop_lag import EventLoopLagMonitor
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.patches import monkey_patch_chat_completion_logprobs, monkey_patch_oai_iterable_types
 from prime_rl.orchestrator.trajectories import (
+    apply_echo_filter,
     backfill_rollout_tokens,
     interleave_rollout,
     offload_images_to_disk,
@@ -490,11 +491,39 @@ async def orchestrate(config: OrchestratorConfig):
         def process_rollout(rollout: vf.RolloutOutput) -> list[TrainingSample] | None:
             # Resolve per-env echo config so interleave_rollout can build the
             # per-token echo_alpha array in-line.
-            env_echo_config = train_envs.get(rollout["env_name"]).config.echo
+            env = train_envs.get(rollout["env_name"])
+            env_echo_config = env.config.echo
+
+            # Invoke the user's echo filter (if configured) BEFORE interleave
+            # so the per-step filter masks can be threaded into the per-step
+            # echo_alpha build. Skip the filter when:
+            #   - no filter is configured (env.echo_filter_fn is None), OR
+            #   - the trajectory is empty (interleave will early-return), OR
+            #   - the first step has no prompt_attribution (non-renderer
+            #     rollout — echo is largely a no-op, and the filter author
+            #     can't branch on roles without attribution anyway).
+            # Validation failures inside ``apply_echo_filter`` propagate
+            # loudly per the EchoFilterConfig contract — no silent fallback.
+            filter_masks: list[list[bool]] | None = None
+            trajectory = rollout["trajectory"]
+            if (
+                env.echo_filter_fn is not None
+                and trajectory
+                and trajectory[0]["tokens"] is not None
+                and trajectory[0]["tokens"].get("prompt_attribution") is not None
+            ):
+                assert env_echo_config is not None and env_echo_config.filter is not None
+                filter_masks = apply_echo_filter(
+                    rollout,
+                    env.echo_filter_fn,
+                    env_echo_config.filter.kwargs,
+                )
+
             return interleave_rollout(
                 rollout,
                 mm_token_type_ids_mapping=mm_token_type_ids_mapping,
                 echo_config=env_echo_config,
+                filter_masks=filter_masks,
             )
 
         results = await asyncio.gather(*(asyncio.to_thread(process_rollout, r) for r in train_rollouts))
