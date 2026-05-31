@@ -278,13 +278,46 @@ async def check_health(
 NCCL_READY_MARKER = "NCCL_READY"
 
 
+def _is_retryable_pause_error(exception: BaseException) -> bool:
+    """Check if an exception should trigger a retry for pausing engines."""
+    if isinstance(exception, httpx.HTTPStatusError):
+        # Retry on transient server errors (5xx, e.g. engine briefly unresponsive);
+        # client errors (4xx) won't fix themselves on retry.
+        return exception.response.status_code >= 500
+    # Retry on transport-level failures (timeouts, connection resets, etc.) so the
+    # per-attempt read timeout below turns a stuck server into a bounded retry loop
+    # instead of hanging forever on the global timeout=None admin client.
+    if isinstance(exception, (httpx.TimeoutException, httpx.TransportError)):
+        return True
+    return False
+
+
+# Per-attempt and total bounds for `/pause`. Pausing drains in-flight requests
+# (mode="keep"), so a single attempt can legitimately take a while, but the global
+# admin AsyncClient uses `timeout=None`, so a stuck server would hang the weight
+# update forever. `_READ_TIMEOUT` converts a hang into a TimeoutException so
+# tenacity retries; `_TOTAL` is the wall-clock budget across all retries.
+PAUSE_READ_TIMEOUT_S = 120.0
+PAUSE_TOTAL_TIMEOUT_S = 300.0
+
+
 async def _pause_engines(admin_clients: list[AsyncClient]) -> None:
     """Pause all inference engines, waiting for in-flight requests to drain."""
     logger = get_logger()
     logger.info("Pausing inference engines for weight update")
 
+    @retry(
+        retry=retry_if_exception(_is_retryable_pause_error),
+        stop=stop_after_delay(PAUSE_TOTAL_TIMEOUT_S) | stop_after_attempt(10),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        reraise=True,
+    )
     async def _pause(client: AsyncClient) -> None:
-        response = await client.post("/pause", params={"mode": "keep", "clear_cache": "false"})
+        response = await client.post(
+            "/pause",
+            params={"mode": "keep", "clear_cache": "false"},
+            timeout=httpx.Timeout(connect=10.0, read=PAUSE_READ_TIMEOUT_S, write=60.0, pool=10.0),
+        )
         response.raise_for_status()
 
     await asyncio.gather(*[_pause(client) for client in admin_clients])
