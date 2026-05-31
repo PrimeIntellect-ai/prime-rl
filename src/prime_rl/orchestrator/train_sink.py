@@ -242,13 +242,25 @@ class TrainSink:
         assign_advantages(survivors, self.advantage_fn)
 
         # Propagate to the pre-tokenized samples so the orchestrator can
-        # collect samples at ship time without re-walking rollouts
+        # collect samples at ship time without re-walking rollouts.
+        # ``completion_temperatures`` is left empty by ``interleave_rollout``
+        # (the env's temperature is constant per rollout); we fan it out
+        # across each sample's completion tokens here. Otherwise
+        # ``prepare_sample`` builds a temperatures tensor of length
+        # ``prompt_len`` instead of ``prompt_len + completion_len`` and the
+        # trainer's length-equality assertion in ``prepare_sample`` fires
+        # before the first step ships.
+        env_name_to_temp: dict[str, float] = {}
         for r in survivors:
+            if r.env_name not in env_name_to_temp:
+                env_name_to_temp[r.env_name] = self.train_envs.get(r.env_name).sampling_args["temperature"]
+            temperature = env_name_to_temp[r.env_name]
             for sample in r.samples:
                 sample.advantage = r.advantage
                 sample.reward = r.reward
                 sample.env_name = r.env_name
                 sample.training_mode = self.config.training_mode
+                sample.completion_temperatures = [temperature] * len(sample.completion_ids)
 
         if self.pre_filters:
             apply_filters(self.pre_filters, survivors)
