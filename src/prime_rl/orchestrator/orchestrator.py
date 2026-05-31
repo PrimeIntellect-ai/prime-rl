@@ -798,10 +798,12 @@ class Orchestrator:
             return 0.0
         if step <= 0:
             return 0.0
-        # Skip the last shipped step *and* the drain-entry step (step ==
-        # max_steps, which never ships): both defer to the final save in
-        # ``start()``, so an interval boundary at max_steps doesn't double-save.
-        near_end = self.config.max_steps is not None and step >= self.config.max_steps - 1
+        # Skip only the drain-entry step (step == max_steps, which never ships):
+        # it would double-save with the final checkpoint in ``start()`` (also at
+        # progress.step == max_steps). The last *shipped* step (max_steps - 1) is
+        # NOT skipped — the trainer saves there (its is_last_step is max_steps),
+        # so the orchestrator must too or resume from that interval ckpt breaks.
+        near_end = self.config.max_steps is not None and step >= self.config.max_steps
         if near_end:
             return 0.0
         if step % self.config.ckpt.interval != 0:
