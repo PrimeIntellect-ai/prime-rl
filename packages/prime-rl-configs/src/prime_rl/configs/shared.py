@@ -158,6 +158,9 @@ class LogConfig(BaseConfig):
     log_data: bool = False
     """Log the first data sample at startup."""
 
+    interval: float = Field(10.0, gt=0)
+    """Interval (seconds) for periodic logs across components."""
+
 
 class TrainerLogConfig(LogConfig):
     ranks_filter: list[int] = [0]
