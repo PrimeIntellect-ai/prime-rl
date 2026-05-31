@@ -248,9 +248,13 @@ def train(config: TrainerConfig):
             tokenizer,
             config.rollout_transport,
             defer_mm_materialization=config.defer_mm_materialization,
-            # Only VLM runs materialize pixels; text-only runs leave this None so
-            # default-on defer never builds an unused renderer for them.
-            renderer_config=config.renderer if config.model.vlm is not None else None,
+            # Pass the configured renderer (defaults to AutoRendererConfig). The
+            # orchestrator ships mm_refs based on whether rollouts have images, NOT
+            # on the trainer's model.vlm block (prod VLM configs may leave it None),
+            # so do NOT gate on model.vlm. data.py builds the renderer only when
+            # defer is on and renderer_config is not None, so an explicit
+            # renderer=None still opts out (and a text-only run never gets mm_refs).
+            renderer_config=config.renderer,
         )
 
     token_exporter = setup_token_exporter(config, parallel_dims, world, logger)
