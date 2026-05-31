@@ -247,8 +247,7 @@ def _step_echo_alpha(
     expected_total_len = prompt_len + completion_len
     if filter_mask is not None and len(filter_mask) != expected_total_len:
         raise ValueError(
-            f"filter_mask length {len(filter_mask)} does not match "
-            f"prompt_len + completion_len = {expected_total_len}"
+            f"filter_mask length {len(filter_mask)} does not match prompt_len + completion_len = {expected_total_len}"
         )
 
     def _build_baseline() -> list[float | None]:
@@ -291,15 +290,11 @@ def _step_echo_alpha(
         # Resolve per-role alphas once.
         system_alpha = echo_config.system.alpha if echo_config.system is not None else None
         user_alpha = echo_config.user.alpha if echo_config.user is not None else None
-        assistant_alpha_prompt = (
-            echo_config.assistant.alpha if echo_config.assistant is not None else None
-        )
+        assistant_alpha_prompt = echo_config.assistant.alpha if echo_config.assistant is not None else None
         tool_role_config = echo_config.tool
         tool_alpha = tool_role_config.alpha if tool_role_config is not None else None
         enabled_tools = (
-            set(tool_role_config.tool_names)
-            if tool_role_config is not None and tool_role_config.tool_names
-            else None
+            set(tool_role_config.tool_names) if tool_role_config is not None and tool_role_config.tool_names else None
         )
 
         # Tool-role check needs the per-message function name; safe-get
@@ -385,13 +380,10 @@ def apply_echo_filter(
     result = filter_fn(rollout, **(filter_kwargs or {}))
 
     if not isinstance(result, list):
-        raise TypeError(
-            f"echo filter must return list[list[bool]], got {type(result).__name__}"
-        )
+        raise TypeError(f"echo filter must return list[list[bool]], got {type(result).__name__}")
     if len(result) != len(trajectory):
         raise ValueError(
-            f"echo filter returned {len(result)} per-step masks but the "
-            f"rollout has {len(trajectory)} trajectory steps"
+            f"echo filter returned {len(result)} per-step masks but the rollout has {len(trajectory)} trajectory steps"
         )
 
     for step_idx, (step, mask) in enumerate(zip(trajectory, result)):
@@ -401,10 +393,7 @@ def apply_echo_filter(
         expected = prompt_len + completion_len
 
         if not isinstance(mask, list):
-            raise TypeError(
-                f"echo filter step {step_idx}: mask must be a list, "
-                f"got {type(mask).__name__}"
-            )
+            raise TypeError(f"echo filter step {step_idx}: mask must be a list, got {type(mask).__name__}")
         if len(mask) != expected:
             raise ValueError(
                 f"echo filter step {step_idx}: mask length {len(mask)} "
@@ -419,8 +408,7 @@ def apply_echo_filter(
             # bool is a common source of silent bugs.
             if type(v) is not bool:
                 raise TypeError(
-                    f"echo filter step {step_idx}: mask[{k}] must be a "
-                    f"plain bool, got {type(v).__name__} ({v!r})"
+                    f"echo filter step {step_idx}: mask[{k}] must be a plain bool, got {type(v).__name__} ({v!r})"
                 )
 
     return result
@@ -477,10 +465,7 @@ def interleave_rollout(
 
     trajectory = output["trajectory"]
     if filter_masks is not None and len(filter_masks) != len(trajectory):
-        raise ValueError(
-            f"filter_masks outer length {len(filter_masks)} != "
-            f"trajectory length {len(trajectory)}"
-        )
+        raise ValueError(f"filter_masks outer length {len(filter_masks)} != trajectory length {len(trajectory)}")
     if len(trajectory) == 0:
         error = output.get("error")
         stop = output.get("stop_condition")
@@ -568,9 +553,7 @@ def interleave_rollout(
         # case to keep the transport payload lean.
         step_echo_alpha = tokens.get("echo_alpha")
         sample_echo_alpha = (
-            list(step_echo_alpha)
-            if step_echo_alpha and any(a is not None for a in step_echo_alpha)
-            else None
+            list(step_echo_alpha) if step_echo_alpha and any(a is not None for a in step_echo_alpha) else None
         )
         sample = TrainingSample(
             prompt_ids=prompt_ids,

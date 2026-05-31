@@ -1986,9 +1986,7 @@ def test_apply_echo_filter_inner_length_mismatch_raises():
             [True] * 3,  # step 1: wrong (3 != 4+1=5)
         ]
 
-    with pytest.raises(
-        ValueError, match=r"step 1.*mask length 3.*expected 5.*prompt_len=4.*completion_len=1"
-    ):
+    with pytest.raises(ValueError, match=r"step 1.*mask length 3.*expected 5.*prompt_len=4.*completion_len=1"):
         apply_echo_filter(rollout, filter_fn, None)
 
 
