@@ -657,7 +657,7 @@ wheels = [
 
 [[package]]
 name = "code-env"
-version = "0.3.1"
+version = "0.3.2"
 source = { editable = "deps/research-environments/environments/code_env" }
 dependencies = [
     { name = "prime-sandboxes", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -2437,7 +2437,7 @@ wheels = [
 
 [[package]]
 name = "livecodebench"
-version = "0.2.6"
+version = "0.2.7"
 source = { editable = "deps/research-environments/environments/livecodebench" }
 dependencies = [
     { name = "prime-sandboxes", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -2592,7 +2592,7 @@ wheels = [
 
 [[package]]
 name = "math-env"
-version = "0.1.5"
+version = "0.1.6"
 source = { editable = "deps/research-environments/environments/math_env" }
 dependencies = [
     { name = "math-verify", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -2732,7 +2732,7 @@ wheels = [
 
 [[package]]
 name = "mini-swe-agent-plus"
-version = "0.2.24"
+version = "0.2.25"
 source = { editable = "deps/research-environments/environments/mini_swe_agent_plus" }
 dependencies = [
     { name = "prime-sandboxes", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -3419,7 +3419,7 @@ wheels = [
 
 [[package]]
 name = "opencode-cp"
-version = "0.3.10"
+version = "0.3.11"
 source = { editable = "deps/research-environments/environments/opencode_cp" }
 dependencies = [
     { name = "prime-sandboxes", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -3451,7 +3451,7 @@ requires-dist = [
 
 [[package]]
 name = "opencode-math"
-version = "0.4.11"
+version = "0.4.12"
 source = { editable = "deps/research-environments/environments/opencode_math" }
 dependencies = [
     { name = "math-verify", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -3466,7 +3466,7 @@ requires-dist = [
 
 [[package]]
 name = "opencode-science"
-version = "0.3.11"
+version = "0.3.12"
 source = { editable = "deps/research-environments/environments/opencode_science" }
 dependencies = [
     { name = "math-verify", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -3481,7 +3481,7 @@ requires-dist = [
 
 [[package]]
 name = "opencode-swe"
-version = "0.4.7"
+version = "0.4.8"
 source = { editable = "deps/research-environments/environments/opencode_swe" }
 dependencies = [
     { name = "prime-sandboxes", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
@@ -5061,7 +5061,7 @@ wheels = [
 
 [[package]]
 name = "rlm-swe"
-version = "0.4.2"
+version = "0.4.3"
 source = { editable = "deps/research-environments/environments/rlm_swe" }
 dependencies = [
     { name = "multi-swe-bench", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
