@@ -286,7 +286,15 @@ def train(config: TrainerConfig):
                 for idx in multi_run_manager.used_idxs:
                     multi_run_manager.ready_to_update[idx] = False
 
-        if (
+        if config.max_concurrent_runs > 1:
+            # Multi-run: Save per-run checkpoints using each run's orchestrator config.
+            # Trainer-level ckpt config can be set by the combined rl entrypoint,
+            # but MultiCheckpointManager has a different save signature.
+            save_ckpt_start_time = time.perf_counter()
+            ckpt_manager.save(optimizer, scheduler)
+            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
+            ckpt_manager.maybe_clean()
+        elif (
             ckpt_manager is not None
             and (config.ckpt and config.ckpt.interval)
             and not (is_first_step or is_last_step)
@@ -310,12 +318,6 @@ def train(config: TrainerConfig):
                 weight_ckpt_manager.save(progress.step, model, tokenizer)
                 save_ckpt_time += time.perf_counter() - save_ckpt_start_time
                 weight_ckpt_manager.maybe_clean()
-        elif config.max_concurrent_runs > 1:
-            # Multi-run: Save per-run checkpoints (each run has its own interval from orchestrator config)
-            save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(optimizer, scheduler)
-            save_ckpt_time = time.perf_counter() - save_ckpt_start_time
-            ckpt_manager.maybe_clean()
         else:
             save_ckpt_time = 0
 

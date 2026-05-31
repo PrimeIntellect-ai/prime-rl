@@ -21,17 +21,19 @@ exclude-newer-span = "P7D"
 [options.exclude-newer-package]
 vllm = false
 verifiers = false
+prime-pydantic-config = false
 vllm-router = false
-tokenspeed-mla = false
 dion = false
 nixl-cu12 = false
 fastokens = false
-deep-ep = false
 flash-attn-3 = false
-prime-sandboxes = false
 prime-tunnel = false
 deep-gemm = false
 prime-evals = false
+tokenspeed-mla = false
+deep-ep = false
+prime-sandboxes = false
+renderers = false
 prime = false
 
 [manifest]
