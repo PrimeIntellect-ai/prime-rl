@@ -261,6 +261,7 @@ def build_scope_metrics(
     scope: str,
     samples: list[EndpointSample],
     previous: dict[str, TimedRollup],
+    namespace: str = "inference",
 ) -> dict[str, float]:
     """Build W&B metric values for one inference scope."""
     running_values = [value for sample in samples for value in sample.rollup.values("running_requests")]
@@ -270,7 +271,7 @@ def build_scope_metrics(
     prefix_gauge_values = [value for sample in samples for value in sample.rollup.values("gpu_prefix_cache_hit_rate")]
     cpu_prefix_values = [value for sample in samples for value in sample.rollup.values("cpu_prefix_cache_hit_rate")]
 
-    prefix = f"inference/{scope}"
+    prefix = f"{namespace}/{scope}"
     metrics: dict[str, float] = {
         f"{prefix}/running_requests": sum(running_values),
         f"{prefix}/waiting_requests": sum(waiting_values),
@@ -413,6 +414,7 @@ class InferenceMetricsCollector:
 
     async def start(self):
         wandb.define_metric("inference/*", step_metric="_timestamp")
+        wandb.define_metric("inference_debug/*", step_metric="_timestamp")
 
         async def poll_loop():
             while True:
@@ -455,7 +457,9 @@ class InferenceMetricsCollector:
                     metrics.update(build_scope_metrics(role, role_samples, self.previous))
         for sample in samples:
             server_name = self.server_names[sample.endpoint.key]
-            metrics.update(build_scope_metrics(f"server/{server_name}", [sample], self.previous))
+            metrics.update(
+                build_scope_metrics(f"server/{server_name}", [sample], self.previous, namespace="inference_debug")
+            )
         self.add_cache_alias_metrics(metrics)
 
         for sample in samples:
@@ -477,12 +481,12 @@ class InferenceMetricsCollector:
     def drop_stale_server_metrics(self, smoothed_metrics: dict[str, float], current_metrics: dict[str, float]) -> None:
         """Do not keep logging stale per-server metrics when a server fails to respond."""
         for key in list(smoothed_metrics):
-            if key.startswith("inference/server/") and key not in current_metrics:
+            if key.startswith("inference_debug/server/") and key not in current_metrics:
                 del smoothed_metrics[key]
 
     def server_up_metrics(self, active_servers: set[str]) -> dict[str, float]:
         return {
-            f"inference/server/{server_name}/up": float(server_name in active_servers)
+            f"inference_debug/server/{server_name}/up": float(server_name in active_servers)
             for server_name in self.server_names.values()
         }
 
