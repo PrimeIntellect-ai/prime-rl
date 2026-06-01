@@ -266,7 +266,7 @@ class InferenceConfig(BaseConfig):
     enable_return_routed_experts: bool = False
     """Return routed experts in responses. Forwarded as ``--enable-return-routed-experts``."""
 
-    enable_fp32_lm_head: bool = False
+    enable_fp32_lm_head: bool = True
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented as a monkey-patch over vLLM's LogitsProcessor, activated by setting ``additional_config["fp32_lm_head"] = True`` on the vLLM config."""
 
     vllm_extra: dict[str, Any] = {}
