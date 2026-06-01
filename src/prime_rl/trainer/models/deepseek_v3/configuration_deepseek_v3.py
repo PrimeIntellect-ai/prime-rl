@@ -52,6 +52,7 @@ class DeepseekV3Config(PretrainedConfig):
         load_balance_coeff=None,
         use_grouped_mm=True,
         rope_interleave=True,
+        rope_parameters: dict | None = None,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -123,6 +124,10 @@ class DeepseekV3Config(PretrainedConfig):
         else:
             self.rope_type = "default"
 
+
+        self.rope_parameters = self.rope_scaling or self.rope_parameters
+        self.rope_parameters = self.rope_parameters if self.rope_parameters is not None else {}
+        
     @property
     def rope_total_dim(self):
         return self.num_attention_heads * self.qk_rope_head_dim

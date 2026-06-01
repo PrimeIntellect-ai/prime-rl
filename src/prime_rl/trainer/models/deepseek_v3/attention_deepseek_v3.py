@@ -33,7 +33,7 @@ class DeepSeekAttentionCore:
     _flash_attn_version_mapper = {
         "flash_attention_2": 2,
         "flash_attention_3": 3,
-        "flash_attention_4": 4,
+        "fa4": 4,
     }
 
     _funcs = {
@@ -105,8 +105,9 @@ class DeepSeekAttentionCore:
             # q,k,v: (batch_size, seqlen, nheads, headdim)
             num_queries_per_kv = self.num_queries_per_kv
             if num_queries_per_kv > 1:
-                k = k.repeat_interleave(num_queries_per_kv, dim=1)
-                v = v.repeat_interleave(num_queries_per_kv, dim=1)
+                k = k.repeat_interleave(num_queries_per_kv, dim=2)
+                v = v.repeat_interleave(num_queries_per_kv, dim=2)
+                
             q = q.transpose(1, 2)
             k = k.transpose(1, 2)
             v = v.transpose(1, 2)

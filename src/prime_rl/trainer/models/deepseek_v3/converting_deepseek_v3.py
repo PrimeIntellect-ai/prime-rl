@@ -115,7 +115,7 @@ def convert_hf_to_prime(state_dict: dict[str, Tensor]) -> None:
         if num_experts > 0:
             # safetensors format might have experts splitted
             dim, moe_dim = state_dict[
-                f"model.layers.{i}.mlp.experts.{i}.down_proj.weight"
+                f"model.layers.{i}.mlp.experts.0.down_proj.weight"
             ].shape
             dtype = state_dict[f"model.layers.{i}.mlp.experts.0.down_proj.weight"].dtype
 

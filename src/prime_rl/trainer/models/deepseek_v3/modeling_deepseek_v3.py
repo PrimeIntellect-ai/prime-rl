@@ -58,6 +58,8 @@ from typing import Literal
 
 from prime_rl.trainer import perf
 from prime_rl.trainer.perf import PerfCounter, PretrainedConfig
+from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
+
 
 from prime_rl.utils.logger import get_logger
 
@@ -590,17 +592,7 @@ class DeepseekV3Model(DeepseekV3PreTrainedModel):
             "flash_attention_3",
             "fa4",
         ):
-            flat_position_ids = position_ids.view(-1)
-            seqlens = torch.cat(
-                [
-                    flat_position_ids[0:1],
-                    flat_position_ids[:-1][(flat_position_ids == 0)[1:]] + 1,
-                    flat_position_ids[-1:] + 1,
-                ]
-            )
-
-            max_seqlen = seqlens.max().item()
-            cu_seqlens = seqlens.cumsum(dim=0, dtype=torch.int32)
+            cu_seqlens, max_seqlen = get_cu_seqlens_from_position_ids(position_ids)
             torch._dynamo.mark_dynamic(cu_seqlens, 0)
         else:
             max_seqlen = None
