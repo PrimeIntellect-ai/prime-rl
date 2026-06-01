@@ -408,7 +408,13 @@ class RolloutDispatcher:
         if env_collection is None:
             return False
         env = env_collection.get(group.env_name)
-        cache_salt = str(group.policy_version_at_start)
+        # SFT-mode train rollouts hit the frozen teacher pool; salting per
+        # policy version would invalidate the teacher's prefix cache every
+        # weight update for no reason.
+        if self.training_mode == "sft" and group.kind == "train":
+            cache_salt = None
+        else:
+            cache_salt = str(group.policy_version_at_start)
 
         if env.requires_group_scoring:
             permits = group.rollouts_to_schedule
