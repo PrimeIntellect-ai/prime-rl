@@ -88,7 +88,11 @@ class TokenExporter:
         self._current_step = step
         self._sequences_this_step = 0
         step_dir = self.output_dir / f"step_{step}"
-        step_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            step_dir.mkdir(parents=True, exist_ok=True)
+        except FileExistsError:
+            if not step_dir.is_dir():
+                raise
         self._file = (step_dir / f"rank_{self.rank}.jsonl").open("w", encoding="utf-8")
 
     def _write(self, record: dict[str, Any]) -> None:

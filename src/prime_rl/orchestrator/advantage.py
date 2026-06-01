@@ -1,11 +1,15 @@
-from collections import defaultdict
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import torch
 import verifiers as vf
 from jaxtyping import Float
 from torch import Tensor
+
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.types import TrainRollout
 
 from prime_rl.configs.orchestrator import (
     AdvantageConfig,
@@ -14,7 +18,7 @@ from prime_rl.configs.orchestrator import (
     TokensLengthPenaltyConfig,
     TurnsLengthPenaltyConfig,
 )
-from prime_rl.orchestrator.vf_utils import get_model_completion_len, get_num_turns, get_tool_response_len
+from prime_rl.orchestrator.utils import get_model_completion_len, get_tool_response_len
 from prime_rl.utils.utils import import_object
 
 
@@ -40,7 +44,7 @@ Expected signature:
         ...
 
 The function receives a single group and returns a list of advantages with one
-entry per rollout. `compute_advantages` calls it once per group.
+entry per rollout. `assign_advantages` calls it on one already-grouped cohort.
 """
 
 
@@ -64,7 +68,7 @@ def default_advantage_fn(
         )
         return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs).tolist())
     if isinstance(length_penalty, TurnsLengthPenaltyConfig):
-        costs = torch.tensor([get_num_turns(r) for r in inputs.rollouts], dtype=rewards.dtype)
+        costs = torch.tensor([len(r["trajectory"]) for r in inputs.rollouts], dtype=rewards.dtype)
         return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs).tolist())
 
     return AdvantageOutputs(advantages=(rewards - rewards.mean()).tolist())
@@ -124,28 +128,20 @@ def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
     return advantage_fn
 
 
-def compute_advantages(
-    rollouts: list[vf.RolloutOutput],
-    advantage_config: AdvantageConfig | None,
+def assign_advantages(
+    rollouts: list["TrainRollout"],  # noqa: F821 (forward ref)
+    advantage_fn: AdvantageFn | None,
 ) -> None:
-    """Computes advantages from rollouts, grouped by (env_name, example_id), and
-    stores them in-place on the rollouts.
-
-    `advantage_fn` is called once per group, so groups may have varying sizes
-    (partial-group training drops failed rollouts rather than rescheduling them).
+    """Compute and assign advantages for one finished group of rollouts
+    (``TrainSink.process_group`` hands in a single group's surviving rollouts).
+    ``advantage_fn=None`` is the trivial case (advantage = reward); a custom
+    ``advantage_fn`` receives the raw ``vf.RolloutOutput``\\ s via
+    ``AdvantageInputs.rollouts``.
     """
-    if not advantage_config:
+    if advantage_fn is None:
         for rollout in rollouts:
-            rollout["advantage"] = rollout["reward"]
+            rollout.advantage = rollout.reward
         return
-
-    advantage_fn = setup_advantage_fn(advantage_config)
-
-    groups_by_example: dict[tuple[str, int], list[vf.RolloutOutput]] = defaultdict(list)
-    for rollout in rollouts:
-        groups_by_example[(rollout["env_name"], rollout["example_id"])].append(rollout)
-
-    for group in groups_by_example.values():
-        result = advantage_fn(AdvantageInputs(rollouts=group))
-        for rollout, advantage in zip(group, result.advantages):
-            rollout["advantage"] = advantage
+    result = advantage_fn(AdvantageInputs(rollouts=[r.raw for r in rollouts]))
+    for rollout, advantage in zip(rollouts, result.advantages):
+        rollout.advantage = advantage

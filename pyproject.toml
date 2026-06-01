@@ -84,6 +84,7 @@ envs = [
     "opencode-science",
     "opencode-swe",
     "reverse-text",
+    "rlm-swe",
     "science-env",
     "simpleqa-verified",
     "tau2-bench",
@@ -127,43 +128,12 @@ dev = [
 ]
 
 
-[tool.uv.workspace]
-members = [
-    "packages/prime-rl-configs",
-    "deps/pydantic-config",
-    "deps/verifiers",
-    "deps/renderers",
-    "deps/verifiers/environments/alphabet_sort",
-    "deps/verifiers/environments/math_python",
-    "deps/verifiers/environments/reverse_text",
-    "deps/verifiers/environments/wiki_search",
-    "deps/research-environments/environments/aime2024",
-    "deps/research-environments/environments/aime2025",
-    "deps/research-environments/environments/code_env",
-    "deps/research-environments/environments/color_codeword",
-    "deps/research-environments/environments/deepdive",
-    "deps/research-environments/environments/general_agent",
-    "deps/research-environments/environments/gpqa",
-    "deps/research-environments/environments/hle",
-    "deps/research-environments/environments/ifeval",
-    "deps/research-environments/environments/livecodebench",
-    "deps/research-environments/environments/logic_env",
-    "deps/research-environments/environments/math500",
-    "deps/research-environments/environments/math_env",
-    "deps/research-environments/environments/mini_swe_agent_plus",
-    "deps/research-environments/environments/mini_swe_agent_plus_rlm",
-    "deps/research-environments/environments/mmlu_pro",
-    "deps/research-environments/environments/opencode_cp",
-    "deps/research-environments/environments/opencode_deepdive",
-    "deps/research-environments/environments/opencode_math",
-    "deps/research-environments/environments/opencode_science",
-    "deps/research-environments/environments/opencode_swe",
-    "deps/research-environments/environments/science_env",
-    "deps/research-environments/environments/simpleqa_verified",
-    "deps/research-environments/environments/tau2_bench",
-]
-
 [tool.uv]
+# Enforce a uv version that supports the friendly-duration form
+# (`"7 days"`) in the static pyproject parser. Older uvs silently parse
+# the value as an RFC 3339 date, emit a TOML parse warning, and proceed
+# *without* the cooldown — bypassing this security policy.
+required-version = ">=0.11.1"
 exclude-newer = "7 days"
 preview = true
 no-build-isolation-package = ["flash-attn"]
@@ -203,11 +173,17 @@ vllm = false
 tokenspeed-mla = false
 fastokens = false
 flash_attn_3 = false
-# PrimeIntellect-published on PyPI (trusted publisher)
+# PrimeIntellect-published packages in this project's dependency closure —
+# fast-track so first-party releases can land same-day. Only packages that
+# appear in `uv tree` need to be listed; the resolver ignores entries for
+# packages it never sees.
 prime = false
 prime-sandboxes = false
 prime-tunnel = false
 prime-evals = false
+verifiers = false
+renderers = false
+prime-pydantic-config = false
 # Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
 vllm-router = false
 dion = false
@@ -216,37 +192,39 @@ deep-gemm = false
 nixl-cu12 = false
 
 [tool.uv.sources]
-prime-rl-configs = { workspace = true }
-verifiers = { workspace = true }
-renderers = { workspace = true }
-aime2024 = { workspace = true }
-aime2025 = { workspace = true }
-alphabet-sort = { workspace = true }
-code-env = { workspace = true }
-color-codeword = { workspace = true }
-deepdive = { workspace = true }
-general-agent = { workspace = true }
-gpqa = { workspace = true }
-hle = { workspace = true }
-ifeval = { workspace = true }
-livecodebench = { workspace = true }
-logic-env = { workspace = true }
-math-env = { workspace = true }
-math-python = { workspace = true }
-math500 = { workspace = true }
-mini-swe-agent-plus = { workspace = true }
-mini-swe-agent-plus-rlm = { workspace = true }
-mmlu-pro = { workspace = true }
-opencode-cp = { workspace = true }
-opencode-deepdive = { workspace = true }
-opencode-math = { workspace = true }
-opencode-science = { workspace = true }
-opencode-swe = { workspace = true }
-reverse-text = { workspace = true }
-science-env = { workspace = true }
-simpleqa-verified = { workspace = true }
-tau2-bench = { workspace = true }
-wiki-search = { workspace = true }
+prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
+verifiers = { path = "deps/verifiers", editable = true }
+renderers = { path = "deps/renderers", editable = true }
+prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
+aime2024 = { path = "deps/research-environments/environments/aime2024", editable = true }
+aime2025 = { path = "deps/research-environments/environments/aime2025", editable = true }
+alphabet-sort = { path = "deps/verifiers/environments/alphabet_sort", editable = true }
+code-env = { path = "deps/research-environments/environments/code_env", editable = true }
+color-codeword = { path = "deps/research-environments/environments/color_codeword", editable = true }
+deepdive = { path = "deps/research-environments/environments/deepdive", editable = true }
+general-agent = { path = "deps/research-environments/environments/general_agent", editable = true }
+gpqa = { path = "deps/research-environments/environments/gpqa", editable = true }
+hle = { path = "deps/research-environments/environments/hle", editable = true }
+ifeval = { path = "deps/research-environments/environments/ifeval", editable = true }
+livecodebench = { path = "deps/research-environments/environments/livecodebench", editable = true }
+logic-env = { path = "deps/research-environments/environments/logic_env", editable = true }
+math-env = { path = "deps/research-environments/environments/math_env", editable = true }
+math-python = { path = "deps/verifiers/environments/math_python", editable = true }
+math500 = { path = "deps/research-environments/environments/math500", editable = true }
+mini-swe-agent-plus = { path = "deps/research-environments/environments/mini_swe_agent_plus", editable = true }
+mini-swe-agent-plus-rlm = { path = "deps/research-environments/environments/mini_swe_agent_plus_rlm", editable = true }
+mmlu-pro = { path = "deps/research-environments/environments/mmlu_pro", editable = true }
+opencode-cp = { path = "deps/research-environments/environments/opencode_cp", editable = true }
+opencode-deepdive = { path = "deps/research-environments/environments/opencode_deepdive", editable = true }
+opencode-math = { path = "deps/research-environments/environments/opencode_math", editable = true }
+opencode-science = { path = "deps/research-environments/environments/opencode_science", editable = true }
+opencode-swe = { path = "deps/research-environments/environments/opencode_swe", editable = true }
+reverse-text = { path = "deps/verifiers/environments/reverse_text", editable = true }
+rlm-swe = { path = "deps/research-environments/environments/rlm_swe", editable = true }
+science-env = { path = "deps/research-environments/environments/science_env", editable = true }
+simpleqa-verified = { path = "deps/research-environments/environments/simpleqa_verified", editable = true }
+tau2-bench = { path = "deps/research-environments/environments/tau2_bench", editable = true }
+wiki-search = { path = "deps/verifiers/environments/wiki_search", editable = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
@@ -254,8 +232,7 @@ torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "c1c3424" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "96bd151" }
-prime-pydantic-config = { workspace = true }
-vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.25/vllm_router-0.1.25-cp38-abi3-manylinux_2_28_x86_64.whl" }
+vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" }
 vllm = [
     { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.21.0+cu129.r42434.pr39568.a106aa6-cp38-abi3-manylinux_2_34_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/vllm-project/vllm/releases/download/v0.21.0/vllm-0.21.0+cu129-cp38-abi3-manylinux_2_34_aarch64.whl", marker = "platform_machine == 'aarch64'" },
@@ -289,7 +266,7 @@ select = ["F", "I"]
 ignore = ["F722", "F821"] # Need to ignore for jaxtyping (https://docs.kidger.site/jaxtyping/faq/)
 
 [tool.ruff.lint.isort]
-# `prime_rl` is split across two workspace wheels (prime-rl + prime-rl-configs).
+# `prime_rl` is split across two editable wheels (prime-rl + prime-rl-configs).
 # Without this, ruff classifies prime_rl.configs.* as third-party because it
 # doesn't live under src/.
 known-first-party = ["prime_rl"]
