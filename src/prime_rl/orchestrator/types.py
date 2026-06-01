@@ -30,7 +30,7 @@ class Progress:
     total_problems: int = 0
 
 
-Kind = Literal["train", "eval"]
+RolloutKind = Literal["train", "eval"]
 
 
 @dataclass
@@ -38,7 +38,7 @@ class InflightRollout:
     """Per-task scheduling state in the dispatcher; one entry per in-flight
     ``run_rollout`` / ``run_group`` task."""
 
-    kind: Kind
+    kind: RolloutKind
     env_name: str
     group_id: uuid.UUID
     policy_version: int
@@ -53,7 +53,7 @@ class GroupState:
     """Per-group dispatcher state: what's left to schedule + the pinned
     client (for prefix-cache hits)."""
 
-    kind: Kind
+    kind: RolloutKind
     env_name: str
     example: dict
     rollouts_to_schedule: int
@@ -124,8 +124,7 @@ class EvalRollout(FinishedRollout):
 class TrainBatchMetrics:
     """Per-batch aggregates from ``TrainSink.process_batch``; consumed by
     ``MetricsBuilder.build``. ``arrivals_by_env`` / ``errors_by_env`` count
-    rollouts at the sink (errored ones get dropped at the group level before
-    reaching ``TrainBatch.rollouts``)."""
+    rollouts at the sink."""
 
     n_trainable: int
     num_prefill_tokens: int

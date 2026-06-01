@@ -132,13 +132,11 @@ def assign_advantages(
     rollouts: list["TrainRollout"],  # noqa: F821 (forward ref)
     advantage_fn: AdvantageFn | None,
 ) -> None:
-    """Compute and assign advantages for one finished group of rollouts.
-
-    Caller (``TrainSink.process_group``) hands in a single group's
-    post-error-filter survivors, so no grouping logic is needed here.
-    ``advantage_fn=None`` is the trivial case (advantage = reward).
-    Custom advantage functions still receive the raw ``vf.RolloutOutput``\\ s
-    via ``AdvantageInputs.rollouts`` — public API unchanged.
+    """Compute and assign advantages for one finished group of rollouts
+    (``TrainSink.process_group`` hands in a single group's surviving rollouts).
+    ``advantage_fn=None`` is the trivial case (advantage = reward); a custom
+    ``advantage_fn`` receives the raw ``vf.RolloutOutput``\\ s via
+    ``AdvantageInputs.rollouts``.
     """
     if advantage_fn is None:
         for rollout in rollouts:
