@@ -1122,6 +1122,114 @@ def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
     assert sample.mm_token_type_ids == [0, 1, 0, 0, 2, 0, 0]
 
 
+def test_interleave_rollout_step_back_delta_sample_is_self_contained():
+    """A stale-prefix step-back starts a new TrainingSample, so its mm_data
+    delta must be full cumulative for that new window.
+
+    This models the cross-repo contract with verifiers' trajectory delta
+    encoder: after step 1 advances the active sample from step 0, step 2 steps
+    back to step 0's historical prefix. PrimeRL will not merge it into sample
+    0, so step 2 must carry both A and C.
+    """
+    import torch as _torch
+    from renderers.base import MultiModalData, PlaceholderRange
+    from verifiers.utils.save_utils import _delta_intermediate_mm_data
+
+    image_token = 2
+
+    def mm(*hashes: str) -> MultiModalData:
+        return MultiModalData(
+            mm_hashes={"image": list(hashes)},
+            mm_placeholders={"image": [PlaceholderRange(offset=i * 10, length=1) for i, _ in enumerate(hashes)]},
+            mm_items={
+                "image": [
+                    {
+                        "pixel_values": _torch.tensor([[float(i)]], dtype=_torch.float32),
+                        "image_grid_thw": _torch.tensor([[1, 2, 2]], dtype=_torch.int64),
+                    }
+                    for i, _ in enumerate(hashes)
+                ]
+            },
+        )
+
+    raw_steps = [
+        {
+            "tokens": {
+                "prompt_ids": [10, image_token, 11],
+                "prompt_mask": [False, False, False],
+                "completion_ids": [12],
+                "completion_mask": [True],
+                "completion_logprobs": [-0.1],
+                "multi_modal_data": mm("A"),
+            }
+        },
+        {
+            "tokens": {
+                "prompt_ids": [10, image_token, 11, 12, 13, image_token],
+                "prompt_mask": [False] * 6,
+                "completion_ids": [14],
+                "completion_mask": [True],
+                "completion_logprobs": [-0.2],
+                "multi_modal_data": mm("A", "B"),
+            }
+        },
+        {
+            "tokens": {
+                # Extends step 0's historical prefix, not step 1's active prefix.
+                "prompt_ids": [10, image_token, 11, 12, 15, image_token],
+                "prompt_mask": [False] * 6,
+                "completion_ids": [16],
+                "completion_mask": [True],
+                "completion_logprobs": [-0.3],
+                "multi_modal_data": mm("A", "C"),
+            }
+        },
+    ]
+    delta_steps = _delta_intermediate_mm_data(raw_steps)
+
+    trajectory = []
+    for idx, raw_step in enumerate(delta_steps):
+        t = raw_step["tokens"]
+        trajectory.append(
+            vf.TrajectoryStep(
+                prompt=[{"role": "user", "content": f"turn {idx}"}],
+                completion=[{"role": "assistant", "content": f"response {idx}"}],
+                response=MagicMock(),
+                tokens=vf.TrajectoryStepTokens(
+                    prompt_ids=t["prompt_ids"],
+                    prompt_mask=t["prompt_mask"],
+                    completion_ids=t["completion_ids"],
+                    completion_mask=t["completion_mask"],
+                    completion_logprobs=t["completion_logprobs"],
+                    overlong_prompt=False,
+                    is_truncated=False,
+                    multi_modal_data=t["multi_modal_data"],
+                ),
+                reward=None,
+                advantage=None,
+                is_truncated=False,
+                trajectory_id="1",
+                extras={},
+            )
+        )
+
+    rollouts = interleave_rollout(
+        vf.RolloutOutput(
+            example_id=1,
+            trajectory=trajectory,
+            sampling_args={"temperature": 1.0},
+            error=None,
+        ),
+        mm_token_type_ids_mapping={image_token: 1},
+    )
+
+    assert rollouts is not None and len(rollouts) == 2
+    assert sum(x == image_token for x in rollouts[0].prompt_ids + rollouts[0].completion_ids) == 2
+    assert _decode_mm_thw(rollouts[0]) == [[1, 2, 2], [1, 2, 2]]
+    assert sum(x == image_token for x in rollouts[1].prompt_ids + rollouts[1].completion_ids) == 2
+    assert _decode_mm_thw(rollouts[1]) == [[1, 2, 2], [1, 2, 2]]
+
+
 def test_interleave_rollout_skips_pixel_materialization_for_filtered_rollout():
     """A filtered rollout's samples are dropped before the trainer, so
     ``interleave_rollout`` must skip the expensive pixel reconstruction — the
