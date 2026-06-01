@@ -418,8 +418,22 @@ else
 # tears down instead of leaving zombies holding the allocation.
 wait -n
 EXIT_CODE=$?
-echo "[$(hostname)] component exited with code $EXIT_CODE - terminating remaining processes"
-for pid in $(jobs -p); do
+REMAINING_PIDS=$(jobs -p)
+{%- if cleanup_grace_period %}
+# Cross-node teardown is driven by `srun --kill-on-bad-exit=1`, which reaps peer
+# tasks only once a task *exits* non-zero. So on a non-zero exit (crash, SIGTERM,
+# wall-time) we stay alive for the grace period and signal nothing: this lets an
+# in-flight trainer checkpoint on this node finish, and — because the task has
+# not exited yet — keeps --kill-on-bad-exit from reaping checkpointing trainers
+# on peer nodes. We then propagate the exit code so the allocation tears down. A
+# clean (zero) exit can't trip --kill-on-bad-exit, so we tear down immediately.
+if [ "$EXIT_CODE" -ne 0 ]; then
+    echo "[$(hostname)] component exited with code $EXIT_CODE - waiting up to {{ cleanup_grace_period }}s for in-flight checkpoints to flush before teardown"
+    sleep {{ cleanup_grace_period }}
+fi
+{%- endif %}
+echo "[$(hostname)] tearing down (exit code $EXIT_CODE) - terminating remaining processes"
+for pid in $REMAINING_PIDS; do
     kill -TERM $pid 2>/dev/null || true
 done
 exit $EXIT_CODE

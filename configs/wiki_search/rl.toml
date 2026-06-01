@@ -33,9 +33,6 @@ oversampling_factor = 2.0
 [orchestrator.train.sampling]
 max_completion_tokens = 512
 
-[orchestrator.buffer]
-online_difficulty_filtering = true
-
 [[orchestrator.train.env]]
 id = "wiki-search"
 

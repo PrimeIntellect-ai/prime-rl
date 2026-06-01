@@ -256,7 +256,7 @@ class InferenceConfig(BaseConfig):
     """Enable dual batch overlap (DBO). Forwarded as ``--enable-dbo``."""
 
     use_deep_gemm: bool = False
-    """Force DeepGEMM FP8 kernels via ``VLLM_USE_DEEP_GEMM=1``. Only works with per-tensor FP8 quantization (e.g. GLM-5-FP8)."""
+    """Enable vLLM DeepGEMM FP8 kernels. Only works with per-tensor FP8 quantization (e.g. GLM-5-FP8)."""
 
     weight_broadcast: WeightBroadcastConfig = WeightBroadcastConfig()
 

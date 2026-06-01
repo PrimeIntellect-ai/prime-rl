@@ -84,6 +84,7 @@ envs = [
     "opencode-science",
     "opencode-swe",
     "reverse-text",
+    "rlm-swe",
     "science-env",
     "simpleqa-verified",
     "tau2-bench",
@@ -158,12 +159,18 @@ members = [
     "deps/research-environments/environments/opencode_math",
     "deps/research-environments/environments/opencode_science",
     "deps/research-environments/environments/opencode_swe",
+    "deps/research-environments/environments/rlm_swe",
     "deps/research-environments/environments/science_env",
     "deps/research-environments/environments/simpleqa_verified",
     "deps/research-environments/environments/tau2_bench",
 ]
 
 [tool.uv]
+# Enforce a uv version that supports the friendly-duration form
+# (`"7 days"`) in the static pyproject parser. Older uvs silently parse
+# the value as an RFC 3339 date, emit a TOML parse warning, and proceed
+# *without* the cooldown — bypassing this security policy.
+required-version = ">=0.11.1"
 exclude-newer = "7 days"
 preview = true
 no-build-isolation-package = ["flash-attn"]
@@ -203,11 +210,17 @@ vllm = false
 tokenspeed-mla = false
 fastokens = false
 flash_attn_3 = false
-# PrimeIntellect-published on PyPI (trusted publisher)
+# PrimeIntellect-published packages in this project's dependency closure —
+# fast-track so first-party releases can land same-day. Only packages that
+# appear in `uv tree` need to be listed; the resolver ignores entries for
+# packages it never sees.
 prime = false
 prime-sandboxes = false
 prime-tunnel = false
 prime-evals = false
+verifiers = false
+renderers = false
+prime-pydantic-config = false
 # Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
 vllm-router = false
 dion = false
@@ -243,6 +256,7 @@ opencode-math = { workspace = true }
 opencode-science = { workspace = true }
 opencode-swe = { workspace = true }
 reverse-text = { workspace = true }
+rlm-swe = { workspace = true }
 science-env = { workspace = true }
 simpleqa-verified = { workspace = true }
 tau2-bench = { workspace = true }
@@ -255,7 +269,7 @@ dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 transformers = { git = "https://github.com/huggingface/transformers.git", rev = "c1c3424" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "96bd151" }
 prime-pydantic-config = { workspace = true }
-vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.25/vllm_router-0.1.25-cp38-abi3-manylinux_2_28_x86_64.whl" }
+vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" }
 vllm = [
     { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/vllm-0.21.0+cu129.r42434.pr39568.a106aa6-cp38-abi3-manylinux_2_34_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/vllm-project/vllm/releases/download/v0.21.0/vllm-0.21.0+cu129-cp38-abi3-manylinux_2_34_aarch64.whl", marker = "platform_machine == 'aarch64'" },
