@@ -457,7 +457,7 @@ class InferenceMetricsCollector:
         for sample in samples:
             server_name = self.server_names[sample.endpoint.key]
             metrics.update(
-                build_scope_metrics(f"server/{server_name}", [sample], self.previous, namespace="inference_debug")
+                build_scope_metrics(server_name, [sample], self.previous, namespace="inference_debug")
             )
         self.add_cache_alias_metrics(metrics)
 
@@ -480,12 +480,12 @@ class InferenceMetricsCollector:
     def drop_stale_server_metrics(self, smoothed_metrics: dict[str, float], current_metrics: dict[str, float]) -> None:
         """Do not keep logging stale per-server metrics when a server fails to respond."""
         for key in list(smoothed_metrics):
-            if key.startswith("inference_debug/server/") and key not in current_metrics:
+            if key.startswith("inference_debug/") and key not in current_metrics:
                 del smoothed_metrics[key]
 
     def server_up_metrics(self, active_servers: set[str]) -> dict[str, float]:
         return {
-            f"inference_debug/server/{server_name}/up": float(server_name in active_servers)
+            f"inference_debug/{server_name}/up": float(server_name in active_servers)
             for server_name in self.server_names.values()
         }
 
