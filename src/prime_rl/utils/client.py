@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Mapping
 from itertools import cycle
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -15,6 +16,16 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, stop_after_d
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
+
+# Identity tuple used by ``select_train_client`` to key load counts. ``api_base_url``
+# distinguishes servers; ``X-data-parallel-rank`` distinguishes DP shards within a
+# server, since the router uses that header to route to specific GPU ranks.
+ClientIdentity = tuple[str, str | None]
+
+
+def client_identity(client: vf.ClientConfig) -> ClientIdentity:
+    """Stable identity for load balancing across inference clients."""
+    return (client.api_base_url, client.extra_headers.get("X-data-parallel-rank"))
 
 
 @runtime_checkable
@@ -42,6 +53,15 @@ class InferencePool(Protocol):
 
     async def get_eval_client(self) -> vf.ClientConfig:
         """Get next eval client in round-robin fashion."""
+        ...
+
+    async def select_train_client(self, load: Mapping[ClientIdentity, int]) -> vf.ClientConfig:
+        """Pick the train client with lowest in-flight load.
+
+        Waits for at least one train client to be available, then returns
+        the one with the smallest ``load[client_identity(client)]``. The
+        caller owns the in-flight counter; the pool just picks against it.
+        """
         ...
 
     async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
@@ -105,6 +125,11 @@ class StaticInferencePool:
 
     async def get_eval_client(self) -> vf.ClientConfig:
         return next(self._eval_cycle)
+
+    async def select_train_client(self, load: Mapping[ClientIdentity, int]) -> vf.ClientConfig:
+        while not self.train_clients:
+            await asyncio.sleep(0.5)
+        return min(self.train_clients, key=lambda c: load[client_identity(c)])
 
     async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
         await check_health(
@@ -301,10 +326,10 @@ PAUSE_READ_TIMEOUT_S = 120.0
 PAUSE_TOTAL_TIMEOUT_S = 300.0
 
 
-async def _pause_engines(admin_clients: list[AsyncClient]) -> None:
+async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None:
     """Pause all inference engines, waiting for in-flight requests to drain."""
     logger = get_logger()
-    logger.info("Pausing inference engines for weight update")
+    logger.info(f"Updating policy in-flight to v{step}")
 
     @retry(
         retry=retry_if_exception(_is_retryable_pause_error),
@@ -321,7 +346,7 @@ async def _pause_engines(admin_clients: list[AsyncClient]) -> None:
         response.raise_for_status()
 
     await asyncio.gather(*[_pause(client) for client in admin_clients])
-    logger.info("All inference engines paused")
+    logger.debug("All inference engines paused")
 
 
 async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
@@ -333,7 +358,7 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
         response.raise_for_status()
 
     await asyncio.gather(*[_resume(client) for client in admin_clients])
-    logger.info("All inference engines resumed")
+    logger.debug("All inference engines resumed")
 
 
 async def update_weights(
@@ -364,7 +389,7 @@ async def update_weights(
             response.raise_for_status()
 
         # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
-        await _pause_engines(admin_clients)
+        await _pause_engines(admin_clients, step=step)
 
         try:
             # Create ready marker before servers enter receive path (used by NCCL broadcast)
