@@ -132,7 +132,6 @@ dev = [
 members = [
     "packages/prime-rl-configs",
     "deps/pydantic-config",
-    "deps/verifiers",
     "deps/renderers",
     "deps/verifiers/environments/alphabet_sort",
     "deps/verifiers/environments/math_python",
@@ -230,7 +229,7 @@ nixl-cu12 = false
 
 [tool.uv.sources]
 prime-rl-configs = { workspace = true }
-verifiers = { workspace = true }
+verifiers = { path = "deps/verifiers", editable = true }
 renderers = { workspace = true }
 aime2024 = { workspace = true }
 aime2025 = { workspace = true }
