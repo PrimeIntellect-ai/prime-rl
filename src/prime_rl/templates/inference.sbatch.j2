@@ -63,7 +63,8 @@ export VLLM_CACHE_ROOT=/tmp/.vllm_cache_$(whoami)
 cd $PROJECT_DIR
 [ -f .env ] && source .env
 source .venv/bin/activate
-uv sync --all-extras
+# venv is pre-synced once on the login node; skip per-job `uv sync --all-extras`
+# — over the NFS venv it stat-checks ~81k files and adds ~60s/node of startup.
 
 # Print inference URLs
 export HOSTNAMES=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
@@ -272,7 +273,7 @@ srun --kill-on-bad-exit=1 bash -c '
             >> $ROUTER_LOG 2>&1 &
     fi
 
-    uv run inference \
+    uv run --no-sync inference \
         @ $CONFIG_PATH \
         --server.host 0.0.0.0 \
         --server.port $PORT \
@@ -302,7 +303,7 @@ srun --kill-on-bad-exit=1 bash -c '
             >> $ROUTER_LOG 2>&1 &
     fi
 
-    uv run inference \
+    uv run --no-sync inference \
         @ $CONFIG_PATH \
         --server.host 0.0.0.0 \
         --server.port $BACKEND_PORT \
@@ -312,7 +313,7 @@ srun --kill-on-bad-exit=1 bash -c '
     # Required for graph compilation to work
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
 
-    uv run inference \
+    uv run --no-sync inference \
         @ $CONFIG_PATH \
         2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log &
 {%- endif %}
