@@ -408,7 +408,13 @@ class RolloutDispatcher:
         if env_collection is None:
             return False
         env = env_collection.get(group.env_name)
-        cache_salt = str(group.policy_version_at_start)
+        # The salt busts the prefix cache between policy versions. In SFT mode
+        # train rollouts hit the frozen teacher, whose cache stays valid across
+        # versions, so salting would needlessly evict it every step. Eval always
+        # hits the (changing) student, so it keeps the salt.
+        cache_salt: str | None = str(group.policy_version_at_start)
+        if self.training_mode == "sft" and group.kind == "train":
+            cache_salt = None
 
         if env.requires_group_scoring:
             permits = group.rollouts_to_schedule
