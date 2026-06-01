@@ -841,6 +841,17 @@ class Qwen3_5MoeVLMModel(nn.Module):
             image_embeds = vision_output.pooler_output.to(inputs_embeds.device, inputs_embeds.dtype)
 
             image_mask = input_ids == self.config.image_token_id
+            image_token_count = int(image_mask.sum().item())
+            image_feature_count = int(image_embeds.shape[0])
+            if image_token_count != image_feature_count:
+                raise ValueError(
+                    "Qwen VLM image token/feature mismatch before scatter: "
+                    f"image_token_id={self.config.image_token_id}, "
+                    f"image_tokens={image_token_count}, image_features={image_feature_count}, "
+                    f"input_ids_shape={tuple(input_ids.shape)}, "
+                    f"pixel_values_shape={tuple(pixel_values.shape)}, "
+                    f"image_grid_thw_shape={tuple(image_grid_thw.shape) if image_grid_thw is not None else None}"
+                )
             image_mask = image_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
             inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
 

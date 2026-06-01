@@ -87,6 +87,22 @@ def test_vlm_forward():
     assert out_mm["logits"].shape == (1, input_ids_mm.shape[1], vocab)
 
 
+def test_vlm_forward_rejects_image_token_feature_mismatch():
+    """Bad MM sidecars should fail before CUDA masked_scatter asserts."""
+    config = _tiny_vlm_config()
+    with torch.device("cuda"), default_dtype(torch.float32):
+        model = Qwen3_5MoeForCausalLM(config)
+    inject_prime_lm_head(model)
+
+    pixel_values, image_grid_thw, n_img_tokens = _make_image_inputs(config)
+    text_part = torch.randint(0, 200, (1, 10), device="cuda")
+    img_part = torch.full((1, n_img_tokens + 1), config.image_token_id, device="cuda")
+    input_ids = torch.cat([text_part[:, :5], img_part, text_part[:, 5:]], dim=1)
+
+    with pytest.raises(ValueError, match="image token/feature mismatch"):
+        model(input_ids=input_ids, pixel_values=pixel_values, image_grid_thw=image_grid_thw)
+
+
 def test_vlm_backward():
     """Gradients flow through both vision scatter and text model."""
     config = _tiny_vlm_config()
