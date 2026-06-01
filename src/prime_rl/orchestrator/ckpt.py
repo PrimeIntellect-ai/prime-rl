@@ -57,7 +57,7 @@ class CheckpointManager:
             self.logger.info("Skipping progress loading from checkpoint")
         else:
             with open(ckpt_path / "progress.pt", "rb") as f:
-                state = torch.load(f, weights_only=False)
+                state = torch.load(f, weights_only=True)
 
             # Set progress in-place
             for key, value in asdict(state["progress"]).items():
