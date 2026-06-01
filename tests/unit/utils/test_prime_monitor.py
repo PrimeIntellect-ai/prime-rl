@@ -1,3 +1,4 @@
+import base64
 import io
 import json
 from unittest.mock import Mock
@@ -92,6 +93,34 @@ def test_rollouts_to_parquet_bytes_skips_rollouts_without_trajectory():
     assert len(rows) == 1
     assert rows[0]["problem_id"] == 1
     assert rows[0]["sample_id"] == 0
+
+
+def test_rollouts_to_parquet_bytes_inlines_local_image_urls(tmp_path):
+    image_bytes = b"small image payload"
+    image_path = tmp_path / "sample.jpg"
+    image_path.write_bytes(image_bytes)
+    file_url = f"file://{image_path}"
+    expected_data_url = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('ascii')}"
+
+    monitor = _new_monitor()
+    monitor.run_id = "run-images"
+    rollout = _build_rollout(example_id=1, reward=1.0, task="vision-task")
+    image_content = [{"type": "image_url", "image_url": {"url": file_url}}]
+    rollout["prompt"] = [{"role": "user", "content": image_content}]
+    rollout["trajectory"][0]["prompt"] = [{"role": "user", "content": image_content}]
+
+    parquet_bytes = monitor._rollouts_to_parquet_bytes([rollout], step=3)
+
+    assert parquet_bytes is not None
+
+    table = pq.read_table(io.BytesIO(parquet_bytes))
+    row = table.to_pylist()[0]
+    prompt = json.loads(row["prompt"])
+    trajectory = json.loads(row["trajectory"])
+
+    assert prompt[0]["content"][0]["image_url"]["url"] == expected_data_url
+    assert trajectory[0]["prompt"][0]["content"][0]["image_url"]["url"] == expected_data_url
+    assert rollout["prompt"][0]["content"][0]["image_url"]["url"] == file_url
 
 
 def test_sanitize_json_payload_drops_non_finite_values_and_logs_paths():

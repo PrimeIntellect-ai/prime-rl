@@ -1,13 +1,16 @@
 import asyncio
+import base64
 import io
 import json
 import math
+import mimetypes
 import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Thread
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 import httpx
 import pyarrow as pa
@@ -57,6 +60,8 @@ _SAMPLE_SCHEMA = pa.schema(
 
 
 _DROPPED_JSON_VALUE = object()
+_FILE_URL_SCHEME = "file"
+_MAX_INLINE_SAMPLE_IMAGE_BYTES = 2 * 1024 * 1024
 
 
 def _drop_non_finite_json_values(value: Any, dropped_paths: list[str], path: str = "") -> Any:
@@ -87,6 +92,63 @@ def _drop_non_finite_json_values(value: Any, dropped_paths: list[str], path: str
         ]
 
     return value
+
+
+def _local_image_file_to_data_url(
+    url: str,
+    cache: dict[str, str | None],
+    max_bytes: int = _MAX_INLINE_SAMPLE_IMAGE_BYTES,
+) -> str | None:
+    if url in cache:
+        return cache[url]
+
+    parsed = urlparse(url)
+    if parsed.scheme != _FILE_URL_SCHEME or parsed.netloc not in ("", "localhost"):
+        cache[url] = None
+        return None
+
+    path = Path(unquote(parsed.path))
+    media_type = mimetypes.guess_type(path.name)[0] or "image/png"
+    if not media_type.startswith("image/"):
+        cache[url] = None
+        return None
+
+    try:
+        if path.stat().st_size > max_bytes:
+            cache[url] = None
+            return None
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    except OSError:
+        cache[url] = None
+        return None
+
+    data_url = f"data:{media_type};base64,{encoded}"
+    cache[url] = data_url
+    return data_url
+
+
+def _inline_local_image_urls(value: Any, cache: dict[str, str | None]) -> Any:
+    if isinstance(value, list):
+        return [_inline_local_image_urls(item, cache) for item in value]
+
+    if not isinstance(value, dict):
+        return value
+
+    inlined = {key: _inline_local_image_urls(item, cache) for key, item in value.items()}
+    image_url = inlined.get("image_url")
+    if not isinstance(image_url, dict):
+        return inlined
+
+    url = image_url.get("url")
+    if not isinstance(url, str):
+        return inlined
+
+    data_url = _local_image_file_to_data_url(url, cache)
+    if data_url is None:
+        return inlined
+
+    inlined["image_url"] = {**image_url, "url": data_url}
+    return inlined
 
 
 class PrimeMonitor(Monitor):
@@ -332,6 +394,7 @@ class PrimeMonitor(Monitor):
         """Convert rollouts directly to Parquet bytes for upload."""
         now = datetime.now(timezone.utc)
         rows = []
+        image_data_url_cache: dict[str, str | None] = {}
 
         for sample_id, rollout in enumerate(rollouts):
             prompt = rollout.get("prompt")
@@ -366,9 +429,9 @@ class PrimeMonitor(Monitor):
                     "tag": "",
                     "problem_id": problem_id,
                     "sample_id": sample_id,
-                    "prompt": json.dumps(prompt),
-                    "completion": json.dumps(completion),
-                    "trajectory": json.dumps(trajectory_data),
+                    "prompt": json.dumps(_inline_local_image_urls(prompt, image_data_url_cache)),
+                    "completion": json.dumps(_inline_local_image_urls(completion, image_data_url_cache)),
+                    "trajectory": json.dumps(_inline_local_image_urls(trajectory_data, image_data_url_cache)),
                     "answer": rollout.get("answer") or "",
                     "env_name": rollout.get("env_name") or "",
                     "task": rollout.get("task") or "",
