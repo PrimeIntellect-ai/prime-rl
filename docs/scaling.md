@@ -1,6 +1,6 @@
 # Scaling
 
-This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster: single-node and multi-node deployments, FSDP / expert parallelism / context parallelism, and throughput benchmarking. For knobs that fit on one box, see [Training](training.md) first. For prefill/decode disaggregated inference, see [Advanced](advanced.md#disaggregated-prefilldecode-inference).
+This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster: single-node and multi-node deployments, FSDP / expert parallelism / context parallelism, and throughput benchmarking. See [Training](training.md) for detailed documentation of the trainer configuration and [Inference](inference.md) for the inference configuration.
 
 ## Table of Contents
 
@@ -90,7 +90,7 @@ FSDP2 is the default model sharding strategy. By default the trainer fully shard
 
 ### Expert Parallelism
 
-EP shards MoE expert weights across the EP mesh, dramatically reducing the FSDP communication volume per layer. EP is only available with the custom model implementation (`model.impl = "custom"` or `"auto"` for supported families).
+EP shards MoE expert weights across the EP mesh, dramatically reducing the FSDP communication volume per layer and improving the training throughput. EP is only available with the custom model implementation (`model.impl = "custom"` or `"auto"` for supported families).
 
 ```toml
 [trainer.model]
@@ -103,14 +103,14 @@ ep_comm_backend = "torch"  # or "deepep"
 
 ### Context Parallelism
 
-CP shards a single sequence across multiple GPUs along the token dimension — for long-context sequences. Only available with the custom impl and flash-attention.
+CP shards a single sequence across multiple GPUs along the token dimension — for long-context sequences. We reccomend using `ulysses` style CP for most of the models to get the most throughput. Some models (e.g. GLM-5) only support `ring` style CP. Wrong setting will be rejected on validation.
 
 ```toml
 [trainer.model]
 impl = "custom"
 attn = "flash_attention_2"   # or fa3 / fa4
 cp = 2                       # CP degree
-cp_style = "ring"            # "ulysses" for non-FA kernels
+cp_style = "ulysses"         # "ring"
 ```
 
 ### Activation Checkpointing and Offloading
@@ -127,6 +127,13 @@ Enable selective AC (custom impl only) for the best memory/throughput tradeoff:
 [trainer.model.ac]
 mode = "selective"
 targets = ["norm", "attn_proj"]  # see Reference for the full list per architecture
+```
+
+We reccomend also using `ac_offloading` and `ac_offloading.max_inflight_activations = 5` to further reduce the memory footprint in tradeoff for some throughput. We've observed this feature to be very effective, lowering the peak memory usage by 30-40% in some cases, while only lossing ~3-5% of throughput:
+
+```toml
+[trainer.model.ac_offloading]
+max_inflight_activations = 5
 ```
 
 ### Optimizer Offloading
