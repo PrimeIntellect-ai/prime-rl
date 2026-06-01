@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from itertools import cycle
 from pathlib import Path
+from typing import Any
 
 import orjson
 import verifiers as vf
@@ -103,51 +106,78 @@ async def compute_teacher_logprobs(
 ) -> list[list[float]]:
     """Compute teacher model logprobs for a batch of training samples via prefill."""
     import httpx
-    from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
+
+    def _teacher_generate_request(base_url: str, model_name: str, token_ids: list[int]) -> tuple[str, dict[str, Any]]:
+        base = base_url.rstrip("/")
+        if base.endswith("/api/v1"):
+            return f"{base}/generate", {
+                "model": model_name,
+                "prompt_token_ids": token_ids,
+                "max_tokens": 1,
+                "temperature": 1.0,
+                "top_p": 1.0,
+                "prompt_logprobs": 1,
+            }
+        return f"{base.removesuffix('/v1')}/inference/v1/generate", {
+            "model": model_name,
+            "token_ids": token_ids,
+            "sampling_params": {
+                "max_tokens": 1,
+                "temperature": 1.0,
+                "top_p": 1.0,
+                "prompt_logprobs": 1,
+            },
+        }
+
+    def _flatten_prompt_logprobs(response: dict[str, Any], token_ids: list[int]) -> list[float]:
+        # ``prompt_logprobs[i]`` is a ``{token_id: Logprob}`` dict for tokens
+        # the engine could score, or ``None`` for the leading token which has
+        # no preceding context. vLLM can include both the target token and the
+        # top-k alternatives; select the exact target token at each position.
+        prompt_logprobs = response.get("prompt_logprobs") or []
+        if len(prompt_logprobs) != len(token_ids):
+            raise ValueError(
+                f"teacher prompt_logprobs length != sample length ({len(prompt_logprobs)} != {len(token_ids)})"
+            )
+        flat: list[float] = []
+        for i, (token_id, entry) in enumerate(zip(token_ids, prompt_logprobs)):
+            if not entry:
+                if i != 0:
+                    raise ValueError(f"teacher prompt_logprobs missing entry at position {i} for token id {token_id}")
+                flat.append(0.0)
+                continue
+            target = entry.get(str(token_id))
+            if target is None:
+                target = entry.get(token_id)
+            if target is None:
+                raise ValueError(f"teacher prompt_logprobs missing token id {token_id}")
+            lp = target.get("logprob")
+            flat.append(float(lp) if lp is not None else 0.0)
+        return flat
 
     async def _compute_single(client_config: vf.ClientConfig, sample: TrainingSample) -> list[float]:
         client = setup_openai_client(client_config)
+        token_ids = list(sample.prompt_ids) + list(sample.completion_ids)
 
         # Two escape hatches from ``AsyncOpenAI.post``:
-        #   1. URL — ``/inference/v1/generate`` is mounted at server root, not
-        #      under ``/v1``. Pass an absolute URL so the SDK's
-        #      ``_prepare_url`` skips the base-url merge (it short-circuits
-        #      when the path passes ``httpx.URL.is_relative_url`` as False).
+        #   1. URL — vLLM mounts ``/inference/v1/generate`` at server root,
+        #      while Prime Inference exposes ``/api/v1/generate``. Pass an
+        #      absolute URL so the SDK's ``_prepare_url`` skips base-url merge.
         #   2. Parse — vLLM's ``GenerateResponse`` is a plain
         #      ``pydantic.BaseModel`` and the SDK's parse layer rejects any
         #      ``cast_to`` that doesn't subclass ``openai.BaseModel``. Use
         #      ``cast_to=httpx.Response`` so the SDK still builds the request
         #      (preserving ``auth_headers``, retries, timeouts, idempotency
         #      keys) and just hands us the raw response to validate ourselves.
-        base = str(client.base_url).rstrip("/").removesuffix("/v1")
+        url, body = _teacher_generate_request(str(client.base_url), model_name, token_ids)
         http_response = await client.post(
-            f"{base}/inference/v1/generate",
+            url,
             cast_to=httpx.Response,
-            body={
-                "model": model_name,
-                "token_ids": list(sample.prompt_ids) + list(sample.completion_ids),
-                "sampling_params": {
-                    "max_tokens": 1,
-                    "temperature": 1.0,
-                    "top_p": 1.0,
-                    "prompt_logprobs": 1,
-                },
-            },
+            body=body,
         )
-        response = GenerateResponse.model_validate_json(http_response.content)
-        # ``prompt_logprobs[i]`` is a ``{token_id: Logprob}`` dict for tokens
-        # the engine could score, or ``None`` for the leading token which has
-        # no preceding context. Flatten to ``list[float]`` with 0.0 in the
-        # unscored slot.
-        flat: list[float] = []
-        for entry in response.prompt_logprobs or []:
-            if not entry:
-                flat.append(0.0)
-                continue
-            first = next(iter(entry.values()))
-            lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
-            flat.append(float(lp) if lp is not None else 0.0)
-        return flat
+        http_response.raise_for_status()
+        response = http_response.json()
+        return _flatten_prompt_logprobs(response, token_ids)
 
     return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
 
