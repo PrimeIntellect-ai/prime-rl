@@ -1,0 +1,27 @@
+# glm4_moe (samsja/mini-glm-moe) grouped_mm smoke — no-regression check for the shared
+# GroupedExperts path through @_expert_parallel + generate_permute_indices after reverting the
+# shared-wrapper int64 cast. glm4_moe uses the shared MoE/TokenChoiceTopKRouter (int counts).
+# No [slurm] block -> runs in-allocation (launched plainly with `uv run sft`).
+max_steps = 2
+output_dir = "/scratch/a6r/joanv.a6r/outputs/smoke-glm4moe-noregress"
+clean_output_dir = true
+
+[model]
+name = "samsja/mini-glm-moe"
+impl = "custom"                  # routes to shared GroupedExperts via MoE
+attn = "sdpa"                    # small model; sdpa is fine for the MoE no-regression check
+moe_use_grouped_mm = true        # exercises the shared grouped_mm + generate_permute_indices path
+
+[data]
+type = "fake"
+seq_len = 512
+batch_size = 4                   # divisible by world_size(4) * micro_batch_size(1)
+micro_batch_size = 1
+
+[scheduler]
+type = "constant"
+
+[deployment]
+type = "single_node"
+gpus_per_node = 4
+num_gpus = 4

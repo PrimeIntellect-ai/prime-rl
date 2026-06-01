@@ -1,0 +1,31 @@
+# gpt-oss-20b MoE forward smoke — proves the variable-arity @_expert_parallel fix.
+# Reaches step 1 with grouped_mm experts iff the 6-arg signature no longer crashes.
+# No [slurm] block -> runs in-allocation (launched plainly with `uv run sft`).
+max_steps = 2
+output_dir = "/scratch/a6r/joanv.a6r/outputs/smoke-gpt-oss-moe-fix"
+clean_output_dir = true
+
+[model]
+name = "unsloth/gpt-oss-20b-BF16"
+impl = "custom"                  # required for fa4 + routes to GptOssGroupedExperts
+attn = "fa4"                     # model.py special-case -> flash_attention_4 on aarch64 GH200
+moe_use_grouped_mm = true        # exercises the grouped_mm expert path (the crash site)
+optimization_dtype = "bfloat16"  # bf16 on-disk; fp32 would OOM at 20B
+reduce_dtype = "bfloat16"
+
+[model.ac]
+mode = "full"
+
+[data]
+type = "fake"                    # no dataset download; deterministic increasing token ids
+seq_len = 512
+batch_size = 4                   # must be divisible by world_size(4) * micro_batch_size(1)
+micro_batch_size = 1
+
+[scheduler]
+type = "constant"
+
+[deployment]
+type = "single_node"
+gpus_per_node = 4
+num_gpus = 4

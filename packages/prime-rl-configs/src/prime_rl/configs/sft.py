@@ -205,6 +205,9 @@ class SFTConfig(BaseConfig):
 
     wandb: WandbConfig | None = None
 
+    seed: int = 0
+    """Global RNG seed for ``torch.manual_seed`` / ``torch.cuda.manual_seed_all`` (see trainer/sft/train.py). Distinct from ``data.seed``, which only governs dataset shuffling."""
+
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — checkpoints and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
 

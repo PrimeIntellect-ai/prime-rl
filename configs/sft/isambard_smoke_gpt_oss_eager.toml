@@ -1,0 +1,32 @@
+# gpt-oss-20b MoE smoke (eager attn) — proves the grouped_mm expert path trains end-to-end
+# (forward + backward through the experts) reaching step 1, isolated from the FA4-backward
+# kernel. eager is the sink-aware attention path sanctioned for gpt-oss in model.py.
+# No [slurm] block -> runs in-allocation (launched plainly with `uv run sft`).
+max_steps = 2
+output_dir = "/scratch/a6r/joanv.a6r/outputs/smoke-gpt-oss-moe-fix-eager"
+clean_output_dir = true
+
+[model]
+name = "unsloth/gpt-oss-20b-BF16"
+impl = "custom"                  # routes to GptOssGroupedExperts
+attn = "eager"                   # HF sink-aware eager attention (gpt-oss-sanctioned); avoids FA4 bwd
+moe_use_grouped_mm = true        # exercises the grouped_mm expert path (the crash site)
+optimization_dtype = "bfloat16"  # bf16 on-disk; fp32 would OOM at 20B
+reduce_dtype = "bfloat16"
+
+[model.ac]
+mode = "full"
+
+[data]
+type = "fake"                    # no dataset download; deterministic increasing token ids
+seq_len = 512
+batch_size = 4                   # must be divisible by world_size(4) * micro_batch_size(1)
+micro_batch_size = 1
+
+[scheduler]
+type = "constant"
+
+[deployment]
+type = "single_node"
+gpus_per_node = 4
+num_gpus = 4

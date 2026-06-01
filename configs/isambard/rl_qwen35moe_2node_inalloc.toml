@@ -1,0 +1,80 @@
+# In-allocation multi_node RL for Qwen3.5-35B-A3B (hybrid GatedDeltaNet + MoE).
+#
+# Sized as a 2-NODE lane on Isambard-AI (AIP2): 1 infer + 1 train. Mirrors
+# configs/isambard/rl_2node_inalloc.toml — see that file for the lane-carving
+# workflow and the meaning of the absent [slurm] block (= run in the held alloc).
+#
+# ── vLLM kernel fix (REQUIRED on aarch64 GH200) ──────────────────────────────
+# Qwen3.5's hybrid arch JIT-builds two kernels via FlashInfer's ninja path that
+# the aarch64 FlashInfer wheel does NOT ship:
+#   1. MoE: vLLM's unquantized-MoE oracle auto-picks FLASHINFER_CUTLASS on Hopper
+#      -> JIT-builds moe_gemm_tma_warp_specialized_input.cu -> ninja: missing.
+#   2. GDN prefill: defaults to FlashInfer -> JIT-builds gdn_prefill_sm90 -> ninja: missing.
+# Both kernels are absent in the wheel -> EngineCore dies (or hangs to the 1800s
+# timeout if only one backend is fixed). The complete fix is BOTH backends on Triton:
+#   moe_backend="triton"         -> TritonExperts (reference BF16 fused-MoE, no JIT;
+#                                   bypasses the FlashInfer-CUTLASS oracle priority walk).
+#   gdn_prefill_backend="triton" -> Triton GDN prefill (no JIT).
+# Both are first-class vLLM EngineArgs; prime-rl forwards inference.vllm_extra
+# verbatim onto the engine namespace (src/prime_rl/inference/vllm/server.py).
+# Keep vLLM at 0.21.0 — do NOT bump it (breaks prime-rl's pinned vLLM patches).
+
+output_dir = "outputs/isambard/rl_qwen35moe_2node_inalloc"
+max_steps = 100
+seq_len = 32768
+
+[log]
+level = "info"
+
+[model]
+name = "Qwen/Qwen3.5-35B-A3B"
+
+[weight_broadcast]
+type = "nccl"
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 4         # MANDATORY on Isambard AIP2 (4 GH200/node).
+num_train_nodes = 1       # 1 train node
+num_infer_nodes = 1       # + 1 infer node = a 2-node lane
+
+[trainer.model]
+impl = "custom"
+seq_len = 32768
+attn = "flash_attention_3"
+optim_cpu_offload = true
+
+[trainer.model.ac]
+freq = 1
+
+[orchestrator]
+batch_size = 128
+group_size = 8
+
+[orchestrator.train.sampling]
+max_completion_tokens = 16384
+
+[[orchestrator.train.env]]
+id = "math-env"
+name = "hendrycks-math"
+args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default", math_verify_max_workers = 64, math_verify_timeout = 30 }
+
+[orchestrator.buffer]
+easy_threshold = 1.0
+hard_threshold = 0.0
+
+[inference]
+gpu_memory_utilization = 0.9
+
+[inference.model]
+name = "Qwen/Qwen3.5-35B-A3B"
+max_model_len = 32768
+
+[inference.parallel]
+tp = 4                    # 35B bf16 ~70GB; tp=4 across one 4xGH200 node
+dp = 1
+
+# Kernel fix: keep BOTH MoE and GDN-prefill off the aarch64-missing FlashInfer JIT.
+[inference.vllm_extra]
+moe_backend = "triton"
+gdn_prefill_backend = "triton"

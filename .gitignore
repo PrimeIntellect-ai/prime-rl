@@ -26,6 +26,10 @@ final_summary.json
 .pydantic_config
 .chroma_db
 
+# Local exploration & stray run outputs (never committed — see CLAUDE.md / AGENTS.md)
+tmp/
+/output
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
