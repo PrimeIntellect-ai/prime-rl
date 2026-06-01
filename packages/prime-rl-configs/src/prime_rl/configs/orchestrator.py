@@ -633,8 +633,8 @@ class OrchestratorConfig(BaseConfig):
     output_dir: Path = Path("outputs/run_default")
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
 
-    mm_artifact_ttl_seconds: float = 3600.0
-    """TTL (seconds) for offloaded multimodal artifacts under ``output_dir/assets/{images,mm_features}``. Once per step the orchestrator deletes artifact files older than this. Artifacts are content-addressed and re-materializable, so over-eviction is safe (triggers a re-write) while under-eviction only wastes disk — bias large. Defaults to 1 hour."""
+    mm_artifact_ttl_seconds: float = 1800.0
+    """TTL (seconds) for offloaded multimodal ``mm_features`` artifacts under ``output_dir/assets/mm_features``. Once per step the orchestrator deletes feature files older than this. Features ONLY: source images under ``assets/images`` are never swept (they are terminal browser output with no regeneration path and are kept for the whole run as the recoverable source). Features are a regenerable cache (trainer rebuilds pixels from the image; env-worker rewrites missing features on demand), so over-eviction just forces a reprocess. The TTL only needs to exceed the write→vLLM-admit window (seconds), so minutes leave a large safety margin against racing in-flight reads. Defaults to 30 minutes."""
 
     tasks_per_minute: int | None = Field(None, ge=1)
     """Rate limit per environment worker, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. With multiple workers, the effective total rate is ``workers × this value``. None disables rate limiting."""

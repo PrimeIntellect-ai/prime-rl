@@ -691,6 +691,15 @@ def offload_images_to_disk(rollouts: list[vf.RolloutOutput], output_dir: Path) -
                     if content_hash not in written:
                         if not path.exists():
                             path.write_bytes(raw)
+                        else:
+                            # Recurring image already on disk: refresh its mtime so a
+                            # future last-use sweep treats it as hot. Images aren't
+                            # evicted today, but this keeps the practice consistent
+                            # with the mm_feature writer. Best-effort on a sweep race.
+                            try:
+                                path.touch()
+                            except OSError:
+                                pass
                         written.add(content_hash)
                     image_url["url"] = f"{_FILE_URL_PREFIX}{path}"
 

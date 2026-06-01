@@ -471,13 +471,15 @@ async def orchestrate(config: OrchestratorConfig):
                 f"Offloaded {num_offloaded} unique images to disk in {time.perf_counter() - offload_start:.2f}s"
             )
 
-        # Evict stale offloaded multimodal artifacts under this run's dir (images +
-        # mm_features). No-op for text-only runs (asset dirs absent). Content-
-        # addressed + re-writable, so over-eviction is safe; each run sweeps its
-        # own dir → multi-run safe.
+        # Evict stale offloaded mm_features (the expensive processed payloads) under
+        # this run's dir. Features ONLY — source images are kept for the whole run
+        # (terminal output, no regeneration path); features are a regenerable cache
+        # the trainer never reads, so over-eviction just forces a reprocess. No-op
+        # for text-only runs (feature dir absent); each run sweeps its own dir →
+        # multi-run safe.
         num_swept = mm_store.sweep_stale_artifacts(asset_root, config.mm_artifact_ttl_seconds)
         if num_swept:
-            logger.info(f"Swept {num_swept} stale multimodal artifacts (ttl={config.mm_artifact_ttl_seconds}s)")
+            logger.info(f"Swept {num_swept} stale mm_feature artifacts (ttl={config.mm_artifact_ttl_seconds}s)")
 
         # Convert rollouts to training samples
         parallel_preprocess_start = time.perf_counter()
