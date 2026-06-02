@@ -137,9 +137,10 @@ def test_default_loss_fn_echo_mask_gradient_flows():
     contribution.
     """
     seq_len = 5
-    echo_alpha = 0.5
-    n_echo = 2
-    per_token_echo_weight = echo_alpha / n_echo  # echo_tokens mode formula
+    # Echo positions carry a per-token alpha as their advantage (overlaid in
+    # prepare_sample). The exact value is arbitrary — the test verifies the
+    # gradient equals -alpha on those positions.
+    echo_advantage = 0.25
 
     # Create requires_grad tensor directly on cuda so it's a leaf — .cuda()
     # after requires_grad=True makes the device tensor a non-leaf and .grad
@@ -148,9 +149,7 @@ def test_default_loss_fn_echo_mask_gradient_flows():
         [-0.1, -0.2, -0.3, -0.4, -0.5], dtype=torch.float32, device="cuda", requires_grad=True
     )
     inference_logprobs = torch.tensor([-0.05, 0.0, -0.4, 0.0, -0.6], dtype=torch.float32, device="cuda")
-    advantages = torch.tensor(
-        [1.0, per_token_echo_weight, 1.0, per_token_echo_weight, 1.0], dtype=torch.float32, device="cuda"
-    )
+    advantages = torch.tensor([1.0, echo_advantage, 1.0, echo_advantage, 1.0], dtype=torch.float32, device="cuda")
     loss_mask = torch.ones(seq_len, dtype=torch.bool, device="cuda")
     echo_mask = torch.tensor([False, True, False, True, False], dtype=torch.bool, device="cuda")
 
@@ -174,7 +173,7 @@ def test_default_loss_fn_echo_mask_gradient_flows():
     assert grad[3].abs() > 1e-6, f"echo position 3: gradient was zeroed ({grad[3].item()})"
 
     # Exact magnitude: -advantage on echo positions.
-    expected = torch.tensor(-per_token_echo_weight, device=grad.device)
+    expected = torch.tensor(-echo_advantage, device=grad.device)
     assert torch.isclose(grad[1], expected, atol=1e-6)
     assert torch.isclose(grad[3], expected, atol=1e-6)
 
