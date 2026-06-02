@@ -17,12 +17,11 @@ from prime_rl.configs.orchestrator import (
     ToolRoleEchoConfig,
     UserRoleEchoConfig,
 )
+from prime_rl.orchestrator.echo import _build_step_echo_alpha, apply_echo_filter, build_echo_annotations
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.trajectories import (
-    _build_step_echo_alpha,
     _deserialize_tool_calls,
     align_routed_experts,
-    apply_echo_filter,
     interleave_rollout,
 )
 from prime_rl.orchestrator.types import TrainRollout
@@ -1752,8 +1751,9 @@ _TOOL_ATTRIBUTION = {
 def test_interleave_rollout_filter_masks_narrows_sample_echo_alpha():
     rollout = _rollout_with_steps((3, 2, _TOOL_ATTRIBUTION))
     echo_config = EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5))
+    annotations = build_echo_annotations(rollout, echo_config, _const_filter([[True, False, True, True, True]]))
 
-    filtered = _interleave_rollout(rollout, echo_config=echo_config, filter_masks=[[True, False, True, True, True]])
+    filtered = _interleave_rollout(rollout, echo_annotations=annotations)
     assert filtered[0].echo_alpha == [0.5, None, 0.5, None, None]
 
 

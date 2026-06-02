@@ -1,6 +1,5 @@
 import base64
 import hashlib
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +9,7 @@ import torch
 import verifiers as vf
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.orchestrator import EchoConfig
+from prime_rl.orchestrator.echo import EchoAnnotations
 from prime_rl.transport import RoutedExperts, TrainingSample
 from prime_rl.utils.chat_template import (
     common_prefix_len,
@@ -203,101 +202,12 @@ def backfill_rollout_tokens(
     return True
 
 
-def _build_step_echo_alpha(
-    prompt_attribution: dict | None,
-    prompt_len: int,
-    completion_len: int,
-    echo_config: EchoConfig | None,
-    filter_mask: list[bool] | None = None,
-) -> list[float | None]:
-    """Build per-token echo alpha for one trajectory step."""
-    expected_total_len = prompt_len + completion_len
-    out: list[float | None] = [None] * expected_total_len
-    if echo_config is not None:
-        if echo_config.assistant is not None:
-            out[prompt_len:expected_total_len] = [echo_config.assistant.alpha] * completion_len
-
-        if prompt_attribution is not None:
-            message_roles = prompt_attribution.get("message_roles")
-            message_indices = prompt_attribution.get("message_indices")
-            is_content = prompt_attribution.get("is_content")
-            if message_roles is not None and is_content and message_indices:
-                if len(is_content) == prompt_len and len(message_indices) == prompt_len:
-                    role_alphas = {
-                        "system": echo_config.system.alpha if echo_config.system is not None else None,
-                        "user": echo_config.user.alpha if echo_config.user is not None else None,
-                        "assistant": echo_config.assistant.alpha if echo_config.assistant is not None else None,
-                    }
-                    tool_config = echo_config.tool
-                    tool_alpha = tool_config.alpha if tool_config is not None else None
-                    enabled_tools = tool_config.tool_names if tool_config is not None else None
-                    message_tool_names = prompt_attribution.get("message_tool_names") or []
-
-                    for k, mi in enumerate(message_indices):
-                        if mi < 0 or not is_content[k] or mi >= len(message_roles):
-                            continue
-                        role = message_roles[mi]
-                        if role == "tool":
-                            tool_name = message_tool_names[mi] if mi < len(message_tool_names) else None
-                            if tool_alpha is not None and (enabled_tools is None or tool_name in enabled_tools):
-                                out[k] = tool_alpha
-                            continue
-
-                        alpha = role_alphas.get(role)
-                        if alpha is not None:
-                            out[k] = alpha
-
-    if filter_mask is not None:
-        out = [alpha if keep else None for alpha, keep in zip(out, filter_mask, strict=True)]
-
-    return out
-
-
-def apply_echo_filter(
-    rollout: vf.RolloutOutput,
-    filter_fn: Callable[..., list[list[bool]]],
-) -> list[list[bool]]:
-    """Invoke the user's echo filter and validate its per-step masks."""
-    trajectory = rollout["trajectory"]
-    result = filter_fn(rollout)
-
-    if not isinstance(result, list):
-        raise TypeError(f"echo filter must return list[list[bool]], got {type(result).__name__}")
-    if len(result) != len(trajectory):
-        raise ValueError(
-            f"echo filter returned {len(result)} per-step masks but the rollout has {len(trajectory)} trajectory steps"
-        )
-
-    for step_idx, (step, mask) in enumerate(zip(trajectory, result)):
-        tokens = step["tokens"]
-        prompt_len = len(tokens["prompt_ids"])
-        completion_len = len(tokens["completion_ids"])
-        expected = prompt_len + completion_len
-
-        if not isinstance(mask, list):
-            raise TypeError(f"echo filter step {step_idx}: mask must be a list, got {type(mask).__name__}")
-        if len(mask) != expected:
-            raise ValueError(
-                f"echo filter step {step_idx}: mask length {len(mask)} "
-                f"!= expected {expected} "
-                f"(prompt_len={prompt_len}, completion_len={completion_len})"
-            )
-        for k, v in enumerate(mask):
-            if type(v) is not bool:
-                raise TypeError(
-                    f"echo filter step {step_idx}: mask[{k}] must be a plain bool, got {type(v).__name__} ({v!r})"
-                )
-
-    return result
-
-
 def interleave_rollout(
     output: vf.RolloutOutput,
     mm_token_type_ids_mapping: dict[int, int] | None = None,
     *,
     env_name: str = "",
-    echo_config: EchoConfig | None = None,
-    filter_masks: list[list[bool]] | None = None,
+    echo_annotations: EchoAnnotations | None = None,
 ) -> list[TrainingSample] | None:
     """
     Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
@@ -322,8 +232,7 @@ def interleave_rollout(
         output: vf.RolloutOutput containing trajectory data
         mm_token_type_ids_mapping: Maps prompt-token ids to mm_token_type_ids
             (1 = image, 2 = video, 0 otherwise). Renderer-supplied.
-        echo_config: Optional per-env echo config.
-        filter_masks: Optional per-step bool masks that narrow role-selected echo.
+        echo_annotations: Optional per-step echo alpha annotations.
     """
     logger = get_logger()
 
@@ -352,14 +261,6 @@ def interleave_rollout(
                 )
                 routed_experts_start = routed_experts_payload["start"]
 
-            step_filter_mask = filter_masks[step_idx] if filter_masks is not None else None
-            echo_alpha = _build_step_echo_alpha(
-                prompt_attribution=tokens.get("prompt_attribution"),
-                prompt_len=len(tokens["prompt_ids"]),
-                completion_len=len(tokens["completion_ids"]),
-                echo_config=echo_config,
-                filter_mask=step_filter_mask,
-            )
             return {
                 "prompt_ids": list(tokens["prompt_ids"]),
                 "prompt_mask": list(map(bool, tokens["prompt_mask"])),
@@ -373,7 +274,6 @@ def interleave_rollout(
                 # a multimodal-aware renderer (e.g. Qwen3VLRenderer); absent
                 # for text-only rollouts.
                 "multi_modal_data": tokens.get("multi_modal_data"),
-                "echo_alpha": echo_alpha,
             }
 
         logger.warning(f"Missing rollout tokens for example {output['example_id']} step {step_idx}.")
@@ -405,10 +305,6 @@ def interleave_rollout(
         completion_ids = list(tokens["completion_ids"])
 
         prompt_ids = list(tokens["prompt_ids"])
-        step_echo_alpha = tokens.get("echo_alpha")
-        sample_echo_alpha = (
-            list(step_echo_alpha) if step_echo_alpha and any(a is not None for a in step_echo_alpha) else None
-        )
         sample = TrainingSample(
             prompt_ids=prompt_ids,
             prompt_mask=list(tokens["prompt_mask"]),
@@ -421,7 +317,7 @@ def interleave_rollout(
             env_name=env_name,
             mm_token_type_ids=None,
             routed_experts=None,  # deferred — finalized at end of interleave_rollout
-            echo_alpha=sample_echo_alpha,
+            echo_alpha=echo_annotations.initial_sample_alpha(step_idx) if echo_annotations is not None else None,
         )
         # Initialize routed-experts state for this sample. First chunk is the
         # raw step routed_experts (no pad, no copy). running_len is the
@@ -499,12 +395,9 @@ def interleave_rollout(
             sample.completion_mask.extend(tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
 
-        step_echo_alpha = tokens.get("echo_alpha")
-        if step_echo_alpha is not None:
+        if echo_annotations is not None:
             step_prompt_len = len(tokens["prompt_ids"])
-            new_prompt_echo = step_echo_alpha[prefix_len:step_prompt_len]
-            new_completion_echo = step_echo_alpha[step_prompt_len:]
-            extension = new_prompt_echo + new_completion_echo
+            extension = echo_annotations.extension_alpha(step_idx, prefix_len, step_prompt_len)
             if any(a is not None for a in extension) or sample.echo_alpha is not None:
                 if sample.echo_alpha is None:
                     existing_len = len(sample.prompt_ids) + len(sample.completion_ids) - len(extension)
