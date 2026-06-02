@@ -27,7 +27,6 @@ from prime_rl.trainer.optim import CPUOffloadOptimizer
 from prime_rl.trainer.runs import Progress, get_multi_run_manager
 from prime_rl.trainer.weights import (
     gather_weights_on_master,
-    revert_transformers_weight_conversion,
     save_state_dict,
 )
 from prime_rl.trainer.world import get_world
@@ -421,9 +420,11 @@ class WeightCheckpointManager:
                 f"Converted PrimeRL format to HF format in {time.perf_counter() - start_time:.2f} seconds"
             )
         else:
+            from transformers.core_model_loading import revert_weight_conversion
+
             self.logger.debug("Reverting transformers internal format to HF hub format for weight checkpoint")
             start_time = time.perf_counter()
-            state_dict = revert_transformers_weight_conversion(model, state_dict)
+            state_dict = revert_weight_conversion(model, state_dict)
             self.logger.debug(f"Reverted to HF hub format in {time.perf_counter() - start_time:.2f} seconds")
 
         # Save weight checkpoint on master rank

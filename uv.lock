@@ -11,7 +11,7 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-05-25T23:50:03.973690224Z"
+exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -38,7 +38,7 @@ overrides = [
     { name = "nvidia-cutlass-dsl", specifier = ">=4.4.1" },
     { name = "openenv-core" },
     { name = "torch", specifier = ">=2.9.0", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
+    { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=aa935fb" },
 ]
 
 [[manifest.dependency-metadata]]
@@ -3686,7 +3686,7 @@ requires-dist = [
     { name = "torchdata", specifier = ">=0.11.0" },
     { name = "torchtitan", git = "https://github.com/pytorch/torchtitan?rev=a1fdd7e" },
     { name = "torchvision", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=c1c3424" },
+    { name = "transformers", git = "https://github.com/huggingface/transformers.git?rev=aa935fb" },
     { name = "uvloop", specifier = ">=0.21.0" },
     { name = "verifiers", editable = "deps/verifiers" },
     { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'", specifier = ">=0.22.0" },
@@ -5119,8 +5119,8 @@ wheels = [
 
 [[package]]
 name = "transformers"
-version = "5.5.0"
-source = { git = "https://github.com/huggingface/transformers.git?rev=c1c3424#c1c34249fa27deefbd4a377dfbf883a39baf5c6d" }
+version = "5.6.2"
+source = { git = "https://github.com/huggingface/transformers.git?rev=aa935fb#aa935fb53dc38b56f10cc86b3a74354c2e99412f" }
 dependencies = [
     { name = "huggingface-hub", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "numpy", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },

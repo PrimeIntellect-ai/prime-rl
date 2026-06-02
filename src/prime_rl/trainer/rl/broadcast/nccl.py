@@ -15,7 +15,7 @@ from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import get_world
-from prime_rl.trainer.weights import get_max_layer_num, revert_transformers_weight_conversion
+from prime_rl.trainer.weights import get_max_layer_num
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
 from prime_rl.utils.pathing import sync_wait_for_path
@@ -94,7 +94,9 @@ def preprocess_layer_checkpoint(
         model.convert_layer_to_hf(layer_state_dict, layer_idx)
         return layer_state_dict
 
-    return revert_transformers_weight_conversion(model, layer_state_dict)
+    from transformers.core_model_loading import revert_weight_conversion
+
+    return revert_weight_conversion(model, layer_state_dict)
 
 
 def preprocess_layer_quantized(

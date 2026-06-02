@@ -14,7 +14,6 @@ from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import maybe_clean
 from prime_rl.trainer.weights import (
     gather_weights_on_master,
-    revert_transformers_weight_conversion,
     save_state_dict,
 )
 from prime_rl.trainer.world import get_world
@@ -47,7 +46,9 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
                 model.convert_to_hf(state_dict)
             else:
-                state_dict = revert_transformers_weight_conversion(model, state_dict)
+                from transformers.core_model_loading import revert_weight_conversion
+
+                state_dict = revert_weight_conversion(model, state_dict)
 
         for idx in self.multi_run_manager.ready_to_update_idxs:
             self.logger.debug(
