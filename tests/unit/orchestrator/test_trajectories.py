@@ -1543,7 +1543,7 @@ def test_build_step_echo_alpha_baseline(attribution, prompt_len, completion_len,
 
 
 def test_echo_config_rejects_filter_without_role():
-    with pytest.raises(ValidationError, match="at least one role"):
+    with pytest.raises(ValidationError, match="at least one of"):
         EchoConfig(filter=EchoFilterConfig(import_path="my_module.my_filter"))
 
 
