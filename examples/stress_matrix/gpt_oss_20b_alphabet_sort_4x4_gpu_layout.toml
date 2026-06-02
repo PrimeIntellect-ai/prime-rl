@@ -39,12 +39,18 @@ pool_size = 12
 [orchestrator.renderer]
 name = "gpt-oss"
 preserve_all_thinking = true
+reasoning_effort = "low"
 
 [orchestrator.train.sampling]
-max_completion_tokens = 256
+max_completion_tokens = 1024
 
 [inference]
 gpu_memory_utilization = 0.75
 
 [inference.model]
 max_model_len = 2048
+
+# GH200/aarch64: force Triton fused-MoE. The unquantized-BF16 MoE oracle otherwise grabs
+# FLASHINFER_CUTLASS and JIT-builds a .cu absent from the aarch64 wheel -> EngineCore dies.
+[inference.vllm_extra]
+moe_backend = "triton"

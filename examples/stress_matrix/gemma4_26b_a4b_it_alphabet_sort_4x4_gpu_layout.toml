@@ -30,6 +30,10 @@ attn = "sdpa"
 optimization_dtype = "bfloat16"
 reduce_dtype = "bfloat16"
 
+# Opt-in per-token JSONL export: writes importance_ratio / mismatch_kl / is_masked* per token
+# under output_dir/token_exports/step_N/rank_R.jsonl (the full IS/DPPO-mask family, no wandb needed).
+[trainer.experimental.token_export]
+
 [orchestrator]
 batch_size = 24
 group_size = 2
@@ -40,7 +44,7 @@ pool_size = 12
 name = "gemma4"
 
 [orchestrator.train.sampling]
-max_completion_tokens = 256
+max_completion_tokens = 512
 
 [inference]
 gpu_memory_utilization = 0.78
@@ -48,3 +52,8 @@ language_model_only = true
 
 [inference.model]
 max_model_len = 2048
+
+# GH200/aarch64: force Triton fused-MoE. The unquantized-BF16 MoE oracle otherwise grabs
+# FLASHINFER_CUTLASS and JIT-builds a .cu absent from the aarch64 wheel -> EngineCore dies.
+[inference.vllm_extra]
+moe_backend = "triton"
