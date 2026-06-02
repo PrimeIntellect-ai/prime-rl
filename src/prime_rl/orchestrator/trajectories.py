@@ -310,15 +310,11 @@ def _step_echo_alpha(
 
     out = _build_baseline()
 
-    # AND-compose with the user filter (when provided). The filter can only
-    # narrow the role baseline — positions where filter_mask[k] is False
-    # get dropped to None, but None positions stay None regardless of
-    # filter_mask[k] (a True filter result cannot "add" echo). Strictly
-    # narrowing.
+    # Narrow by the user filter: keep the baseline alpha where the mask is True,
+    # drop to None where False (a True keeps a None baseline too — the filter
+    # can only narrow, never add echo).
     if filter_mask is not None:
-        for k in range(expected_total_len):
-            if not filter_mask[k]:
-                out[k] = None
+        out = [alpha if keep else None for alpha, keep in zip(out, filter_mask)]
 
     return out
 
