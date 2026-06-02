@@ -194,12 +194,7 @@ def rl_local(config: RLConfig):
                 "orchestrator starts, otherwise rollouts will hang."
             )
 
-        # Start orchestrator process
-        orchestrator_cmd = [
-            "orchestrator",
-            "@",
-            (config_dir / ORCHESTRATOR_TOML).as_posix(),
-        ]
+        orchestrator_cmd = ["orchestrator", "@", (config_dir / ORCHESTRATOR_TOML).as_posix()]
         logger.info("Starting orchestrator process")
         logger.debug(f"Orchestrator start command: {' '.join(orchestrator_cmd)}")
         with open(log_dir / "orchestrator.log", "w") as log_file:
@@ -313,7 +308,7 @@ def rl_local(config: RLConfig):
             cleanup_processes(processes)
             sys.exit(1)
 
-        logger.success("RL training finished!")
+        logger.success("Training finished!")
 
         # Cleanup threads and processes
         cleanup_threads(monitor_threads)
@@ -340,6 +335,16 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
 
     env = Environment(loader=FileSystemLoader(config.slurm.template_path.parent), keep_trailing_newline=True)
     template = env.get_template(config.slurm.template_path.name)
+
+    offload = config.inference.kv_cache_offload if config.inference is not None else None
+    is_mooncake = offload is not None and offload.type == "mooncake"
+    mooncake_vars = dict(
+        kv_offload=offload is not None,
+        kv_offload_mooncake=is_mooncake,
+        kv_offload_cpu_bytes=int(offload.cpu.num_bytes) if is_mooncake else 0,
+        kv_offload_disk_path=str(offload.disk.path) if (is_mooncake and offload.disk is not None) else "",
+        kv_offload_device_name=offload.device_name if is_mooncake else "",
+    )
 
     if config.deployment.type == "single_node":
         script = template.render(
@@ -375,10 +380,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             prefill_env_overrides=infer_deploy.prefill_env_overrides,
             decode_env_overrides=infer_deploy.decode_env_overrides,
             dp_per_node=config.deployment.gpus_per_node // config.inference.parallel.tp,
-            kv_offload=config.inference.kv_cache_offload is not None,
-            kv_offload_cpu_bytes=int(config.inference.kv_cache_offload.cpu_bytes)
-            if config.inference.kv_cache_offload
-            else 0,
+            **mooncake_vars,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
         )
@@ -400,7 +402,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             inference_enable_expert_parallel=config.inference.enable_expert_parallel if config.inference else False,
             inference_data_parallel_rpc_port=config.inference.data_parallel_rpc_port if config.inference else 29600,
             dp_per_node=(config.deployment.gpus_per_node // config.inference.parallel.tp) if config.inference else 1,
-            kv_offload=config.inference is not None and config.inference.kv_cache_offload is not None,
+            **mooncake_vars,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
         )

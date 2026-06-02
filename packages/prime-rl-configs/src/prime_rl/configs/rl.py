@@ -76,25 +76,6 @@ class SharedWandbConfig(BaseConfig):
     offline: bool | None = False
     """Run W&B in offline mode. Incompatible with shared mode, which is always on for the ``rl`` entrypoint."""
 
-    @model_validator(mode="before")
-    @classmethod
-    def deprecate_shared_field(cls, data: Any) -> Any:
-        """``wandb.shared`` is deprecated. The ``rl`` entrypoint now always uses
-        shared W&B mode (single run for trainer + orchestrator); the legacy split
-        with ``-trainer`` / ``-orchestrator`` suffixes is gone. Drop the field
-        from input dicts with a warning so older configs keep loading.
-        """
-        if isinstance(data, dict) and "shared" in data:
-            warnings.warn(
-                "wandb.shared is deprecated and will be removed in a future release. "
-                "The rl entrypoint always uses shared W&B mode now; remove this field "
-                "from your config.",
-                FutureWarning,
-                stacklevel=2,
-            )
-            data.pop("shared", None)
-        return data
-
     @model_validator(mode="after")
     def validate_not_offline(self):
         if self.offline:
@@ -464,6 +445,20 @@ class RLConfig(BaseConfig):
             raise ValueError(
                 "Router replay with inference.kv_cache_offload is not supported. "
                 "External KV cache hits do not carry routed-expert decisions."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_mooncake_offload_requires_slurm(self):
+        if (
+            self.slurm is None
+            and self.inference is not None
+            and self.inference.kv_cache_offload is not None
+            and self.inference.kv_cache_offload.type == "mooncake"
+        ):
+            raise ValueError(
+                "Mooncake KV offload requires SLURM — the per-node store is launched by the sbatch "
+                "template. Use inference.kv_cache_offload.type='native' for local runs."
             )
         return self
 
