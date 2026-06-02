@@ -137,14 +137,14 @@ def _export_columns(
         "inference_logprobs": _tensor_to_floats(micro_batch["inference_logprobs"]),
         "trainer_logprobs": _tensor_to_floats(trainer_logprobs),
         "entropy": _tensor_to_floats(model_output["entropy"]),
-        "mismatch_kl": _optional_masked_tensor_to_floats(export_tensors["mismatch_kl"], rl_loss_mask, seq_len),
-        "log_importance_ratio": _optional_masked_tensor_to_floats(
-            export_tensors["log_importance_ratio"], rl_loss_mask, seq_len
+        "mismatch_kl": _optional_tensor_to_floats(export_tensors["mismatch_kl"], seq_len, mask=rl_loss_mask),
+        "log_importance_ratio": _optional_tensor_to_floats(
+            export_tensors["log_importance_ratio"], seq_len, mask=rl_loss_mask
         ),
-        "importance_ratio": _optional_masked_tensor_to_floats(
-            export_tensors["importance_ratio"], rl_loss_mask, seq_len
+        "importance_ratio": _optional_tensor_to_floats(
+            export_tensors["importance_ratio"], seq_len, mask=rl_loss_mask
         ),
-        "prob_delta": _optional_masked_tensor_to_floats(export_tensors["prob_delta"], rl_loss_mask, seq_len),
+        "prob_delta": _optional_tensor_to_floats(export_tensors["prob_delta"], seq_len, mask=rl_loss_mask),
         "is_masked": _optional_tensor_to_bools(export_tensors["is_masked"], seq_len),
         "is_masked_high": _optional_tensor_to_bools(export_tensors["is_masked_high"], seq_len),
         "is_masked_low": _optional_tensor_to_bools(export_tensors["is_masked_low"], seq_len),
@@ -207,13 +207,9 @@ def _tensor_to_floats(tensor: Tensor) -> list[float | None]:
     return [_json_float(value) for value in values]
 
 
-def _optional_tensor_to_floats(tensor: Tensor | None, seq_len: int) -> list[float | None]:
-    if tensor is None:
-        return [None] * seq_len
-    return _tensor_to_floats(tensor)
-
-
-def _optional_masked_tensor_to_floats(tensor: Tensor | None, mask: Tensor | None, seq_len: int) -> list[float | None]:
+def _optional_tensor_to_floats(
+    tensor: Tensor | None, seq_len: int, mask: Tensor | None = None
+) -> list[float | None]:
     if tensor is None:
         return [None] * seq_len
     if mask is None:
