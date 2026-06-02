@@ -1,9 +1,9 @@
-output_dir = "/beegfs/sami/outputs/wordle-qwen35-4b-16k-local-bs64-2nodes-klfix-cp1-sync-lr5e7"
+output_dir = "/beegfs/sami/outputs/wordle-qwen35-4b-16k-local-bs64-2nodes-cp1-fp32-lr1e7-inflight16"
 max_steps = 400
 seq_len = 16384
 
 [slurm]
-job_name = "wordle-qwen35-4b-16k-bs64-sync"
+job_name = "wordle-qwen35-4b-16k-bs64-lowkl"
 project_dir = "."
 
 [deployment]
@@ -14,7 +14,7 @@ num_infer_replicas = 1
 
 [wandb]
 project = "wordle"
-name = "qwen35-4b-16k-local-bs64-2nodes-klfix-cp1-sync-lr5e7-sami"
+name = "qwen35-4b-16k-local-bs64-2nodes-cp1-fp32-lr1e7-inflight16-sami"
 
 [weight_broadcast]
 type = "nccl"
@@ -42,14 +42,14 @@ freq = 1
 [trainer.model.compile]
 
 [trainer.optim]
-lr = 5e-7
+lr = 1e-7
 
 # --- Orchestrator ---
 
 [orchestrator]
 batch_size = 64
 group_size = 16
-max_inflight_rollouts = 64
+max_inflight_rollouts = 16
 max_off_policy_steps = 0
 
 # Thinking enabled for the Qwen3.5 renderer.
