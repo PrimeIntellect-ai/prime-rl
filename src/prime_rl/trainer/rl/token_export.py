@@ -9,7 +9,7 @@ import torch
 from torch import Tensor
 
 from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
-from prime_rl.trainer.rl.loss import compute_importance_ratio_and_mismatch_kl
+from prime_rl.trainer.rl.loss import compute_importance_ratio_and_mismatch_kl, split_loss_masks
 
 SCHEMA_VERSION = 1
 
@@ -124,20 +124,27 @@ def _export_columns(
     seq_len = len(token_ids)
     trainer_logprobs = model_output["logprobs"]
     export_tensors = _compute_export_tensors(micro_batch, trainer_logprobs, loss_config)
+    rl_loss_mask = export_tensors["rl_loss_mask"]
 
     return {
         "token_ids": token_ids,
         "position_ids": _tensor_to_ints(micro_batch["position_ids"]),
         "loss_mask": _tensor_to_bools(micro_batch["loss_mask"]),
+        "echo_mask": _optional_tensor_to_bools(micro_batch.get("echo_mask"), seq_len),
+        "rl_loss_mask": _optional_tensor_to_bools(rl_loss_mask, seq_len),
         "advantages": _tensor_to_floats(micro_batch["advantages"]),
         "rewards": _optional_tensor_to_floats(micro_batch.get("rewards"), seq_len),
         "inference_logprobs": _tensor_to_floats(micro_batch["inference_logprobs"]),
         "trainer_logprobs": _tensor_to_floats(trainer_logprobs),
         "entropy": _tensor_to_floats(model_output["entropy"]),
-        "mismatch_kl": _optional_tensor_to_floats(export_tensors["mismatch_kl"], seq_len),
-        "log_importance_ratio": _optional_tensor_to_floats(export_tensors["log_importance_ratio"], seq_len),
-        "importance_ratio": _optional_tensor_to_floats(export_tensors["importance_ratio"], seq_len),
-        "prob_delta": _optional_tensor_to_floats(export_tensors["prob_delta"], seq_len),
+        "mismatch_kl": _optional_masked_tensor_to_floats(export_tensors["mismatch_kl"], rl_loss_mask, seq_len),
+        "log_importance_ratio": _optional_masked_tensor_to_floats(
+            export_tensors["log_importance_ratio"], rl_loss_mask, seq_len
+        ),
+        "importance_ratio": _optional_masked_tensor_to_floats(
+            export_tensors["importance_ratio"], rl_loss_mask, seq_len
+        ),
+        "prob_delta": _optional_masked_tensor_to_floats(export_tensors["prob_delta"], rl_loss_mask, seq_len),
         "is_masked": _optional_tensor_to_bools(export_tensors["is_masked"], seq_len),
         "is_masked_high": _optional_tensor_to_bools(export_tensors["is_masked_high"], seq_len),
         "is_masked_low": _optional_tensor_to_bools(export_tensors["is_masked_low"], seq_len),
@@ -156,16 +163,21 @@ def _compute_export_tensors(
         "is_masked": None,
         "is_masked_high": None,
         "is_masked_low": None,
+        "rl_loss_mask": None,
     }
     if micro_batch["training_mode"] == "sft":
         return fields
 
     inference_logprobs = micro_batch["inference_logprobs"].to(trainer_logprobs.device)
     loss_mask = micro_batch["loss_mask"].to(trainer_logprobs.device)
+    echo_mask_raw = micro_batch.get("echo_mask")
+    echo_mask = echo_mask_raw.to(trainer_logprobs.device) if echo_mask_raw is not None else None
+    masks = split_loss_masks(loss_mask, echo_mask)
     advantages = micro_batch["advantages"].to(trainer_logprobs.device)
     with torch.no_grad():
         log_ratio, ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(trainer_logprobs, inference_logprobs)
         prob_delta = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
+        fields["rl_loss_mask"] = masks.rl
         fields["log_importance_ratio"] = log_ratio
         fields["importance_ratio"] = ratio
         fields["mismatch_kl"] = mismatch_kl
@@ -176,9 +188,9 @@ def _compute_export_tensors(
             positive_advantages = advantages > 0
             negative_advantages = advantages < 0
             invalid = torch.where(positive_advantages, invalid_high, invalid_low)
-            fields["is_masked"] = loss_mask & invalid
-            fields["is_masked_high"] = loss_mask & positive_advantages & invalid_high
-            fields["is_masked_low"] = loss_mask & negative_advantages & invalid_low
+            fields["is_masked"] = masks.rl & invalid
+            fields["is_masked_high"] = masks.rl & positive_advantages & invalid_high
+            fields["is_masked_low"] = masks.rl & negative_advantages & invalid_low
     return fields
 
 
@@ -199,6 +211,17 @@ def _optional_tensor_to_floats(tensor: Tensor | None, seq_len: int) -> list[floa
     if tensor is None:
         return [None] * seq_len
     return _tensor_to_floats(tensor)
+
+
+def _optional_masked_tensor_to_floats(tensor: Tensor | None, mask: Tensor | None, seq_len: int) -> list[float | None]:
+    if tensor is None:
+        return [None] * seq_len
+    if mask is None:
+        return _tensor_to_floats(tensor)
+
+    values = tensor.detach().to(dtype=torch.float32, device="cpu").reshape(-1).tolist()
+    keep = mask.detach().to(dtype=torch.bool, device="cpu").reshape(-1).tolist()
+    return [_json_float(value) if keep_value else None for value, keep_value in zip(values, keep, strict=True)]
 
 
 def _optional_tensor_to_bools(tensor: Tensor | None, seq_len: int) -> list[bool | None]:

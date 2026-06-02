@@ -41,6 +41,16 @@ def _append_routed_experts(dst: MicroBatch, src: MicroBatch) -> None:
     dst_routed.shape[0] += src_routed.shape[0]
 
 
+def _extend_optional_token_field(current, values, existing_len: int, new_len: int, fill_value):
+    if values is not None:
+        if current is None:
+            current = [fill_value] * existing_len
+        current.extend(values)
+    elif current is not None:
+        current.extend([fill_value] * new_len)
+    return current
+
+
 def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
     routed_experts = micro_batch.routed_experts
     assert routed_experts is not None
@@ -61,17 +71,23 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     mm_token_type_ids = training_example.mm_token_type_ids
     assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
     env_names = [training_example.env_name] * len(input_ids)
-    # Echo overlay: per-token alpha overwrites the RL advantage and flips
-    # loss_mask=True on echo positions (default_loss_fn then routes them through
-    # pure cross-entropy); ``echo_mask`` marks those positions for the loss fn.
+    # Echo overlay: token 0 has no valid shifted current-token logprob, so it
+    # stays masked even if the producer supplied an alpha there.
     echo_alpha = training_example.echo_alpha
     echo_mask: list[bool] | None = None
     if echo_alpha is not None:
-        echo_mask = [a is not None for a in echo_alpha]
-        for k in range(len(input_ids)):
-            if echo_alpha[k] is not None:
-                advantages[k] = echo_alpha[k]
-                loss_mask[k] = True
+        if len(echo_alpha) != len(input_ids):
+            raise ValueError(
+                f"echo_alpha length must match prompt_ids + completion_ids length "
+                f"({len(echo_alpha)} != {len(input_ids)}) for env {training_example.env_name!r}"
+            )
+        echo_mask = [False] * len(input_ids)
+        for k, alpha in enumerate(echo_alpha[1:], start=1):
+            if alpha is None:
+                continue
+            echo_mask[k] = True
+            advantages[k] = alpha
+            loss_mask[k] = True
 
     # Per-token temperatures: prompt tokens use first completion temp (masked out anyway)
     # Default to 1.0 if completion is empty (e.g., model generated only tool calls with no text)
@@ -190,24 +206,16 @@ def packed_samples_into_micro_bs(
                 and bin_content.training_mode == sample.training_mode
             ):
                 existing_len = len(bin_content.input_ids)
-                # NOTE: extend ``echo_mask`` BEFORE ``input_ids`` so the all-False
-                # backfill (when this is the first echo sample in the bin) is sized
-                # off ``existing_len`` — the bin's pre-extension length.
-                if sample.echo_mask is not None:
-                    if bin_content.echo_mask is None:
-                        bin_content.echo_mask = [False] * existing_len
-                    bin_content.echo_mask.extend(sample.echo_mask)
-                elif bin_content.echo_mask is not None:
-                    bin_content.echo_mask.extend([False] * len(sample.input_ids))
+                sample_len = len(sample.input_ids)
+                bin_content.echo_mask = _extend_optional_token_field(
+                    bin_content.echo_mask, sample.echo_mask, existing_len, sample_len, False
+                )
                 bin_content.input_ids.extend(sample.input_ids)
                 bin_content.loss_mask.extend(sample.loss_mask)
                 bin_content.advantages.extend(sample.advantages)
-                if sample.rewards is not None:
-                    if bin_content.rewards is None:
-                        bin_content.rewards = [float("nan")] * existing_len
-                    bin_content.rewards.extend(sample.rewards)
-                elif bin_content.rewards is not None:
-                    bin_content.rewards.extend([float("nan")] * len(sample.input_ids))
+                bin_content.rewards = _extend_optional_token_field(
+                    bin_content.rewards, sample.rewards, existing_len, sample_len, float("nan")
+                )
                 bin_content.inference_logprobs.extend(sample.inference_logprobs)
                 bin_content.temperatures.extend(sample.temperatures)
                 if sample.teacher_logprobs is not None:

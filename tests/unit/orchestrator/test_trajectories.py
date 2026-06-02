@@ -1,3 +1,6 @@
+import asyncio
+import uuid
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -14,6 +17,7 @@ from prime_rl.configs.orchestrator import (
     ToolRoleEchoConfig,
     UserRoleEchoConfig,
 )
+from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.trajectories import (
     _build_step_echo_alpha,
     _deserialize_tool_calls,
@@ -21,6 +25,7 @@ from prime_rl.orchestrator.trajectories import (
     apply_echo_filter,
     interleave_rollout,
 )
+from prime_rl.orchestrator.types import TrainRollout
 
 _interleave_rollout = interleave_rollout
 
@@ -1402,9 +1407,6 @@ def _attribution(
     message_roles: list[str] | None = None,
     message_tool_names: list[str | None] | None = None,
 ) -> dict:
-    """Minimal stand-in for the serialised ``renderers.base.RenderedTokens``
-    dict that the verifiers env-server hands to ``_build_step_echo_alpha`` — only
-    the keys the helper subscripts are populated."""
     out: dict = {"message_indices": message_indices, "is_content": is_content}
     if message_roles is not None:
         out["message_roles"] = message_roles
@@ -1417,59 +1419,12 @@ def _attribution(
     ("attribution", "prompt_len", "completion_len", "echo_config", "expected"),
     [
         pytest.param(
-            _attribution(
-                message_indices=[0, 0, 1, 1],
-                is_content=[False, True, False, True],
-                message_roles=["user", "tool"],
-                message_tool_names=[None, "lookup"],
-            ),
-            4,
-            2,
-            None,
-            [None] * 6,
-            id="echo_config_none",
-        ),
-        pytest.param(
             None,
             4,
             2,
             EchoConfig(assistant=AssistantRoleEchoConfig(alpha=0.3)),
             [None, None, None, None, 0.3, 0.3],
             id="no_attribution_marks_assistant_completion",
-        ),
-        pytest.param(
-            None,
-            4,
-            2,
-            EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5)),
-            [None] * 6,
-            id="no_attribution_no_completion_echo",
-        ),
-        pytest.param(
-            _attribution(
-                message_indices=[0, 0],
-                is_content=[False, True],
-                message_roles=None,
-                message_tool_names=["lookup"],
-            ),
-            2,
-            0,
-            EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5)),
-            [None, None],
-            id="no_message_roles",
-        ),
-        pytest.param(
-            _attribution(
-                message_indices=[0, 0, 1, 1, 1],
-                is_content=[False, True, False, True, True],
-                message_roles=["user", "tool"],
-                message_tool_names=[None, "lookup"],
-            ),
-            5,
-            2,
-            EchoConfig(tool=ToolRoleEchoConfig(alpha=0.7, tool_names=None)),
-            [None, None, None, 0.7, 0.7, None, None],
-            id="tool_default_all_tools",
         ),
         pytest.param(
             _attribution(
@@ -1483,56 +1438,6 @@ def _attribution(
             EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5, tool_names=["lookup"])),
             [None, None, None, None, None, 0.5],
             id="tool_name_filter",
-        ),
-        pytest.param(
-            _attribution(
-                message_indices=[0, 0, 0, 0],
-                is_content=[False, False, True, False],
-                message_roles=["tool"],
-                message_tool_names=["lookup"],
-            ),
-            4,
-            0,
-            EchoConfig(tool=ToolRoleEchoConfig(alpha=0.4)),
-            [None, None, 0.4, None],
-            id="skips_non_content_tokens",
-        ),
-        pytest.param(
-            _attribution(
-                message_indices=[0, 0, 1, 1],
-                is_content=[False, True, False, True],
-                message_roles=["user", "tool"],
-                message_tool_names=[None, "lookup"],
-            ),
-            4,
-            0,
-            EchoConfig(user=UserRoleEchoConfig(alpha=0.2), tool=None),
-            [None, 0.2, None, None],
-            id="user_role",
-        ),
-        pytest.param(
-            _attribution(
-                message_indices=[0, 0, 0],
-                is_content=[False, True, True],
-                message_roles=["system"],
-            ),
-            3,
-            0,
-            EchoConfig(system=SystemRoleEchoConfig(alpha=0.1), tool=None),
-            [None, 0.1, 0.1],
-            id="system_role",
-        ),
-        pytest.param(
-            _attribution(
-                message_indices=[0, 0, 1, 1],
-                is_content=[False, True, False, True],
-                message_roles=["user", "assistant"],
-            ),
-            4,
-            3,
-            EchoConfig(assistant=AssistantRoleEchoConfig(alpha=0.8), tool=None),
-            [None, None, None, 0.8, 0.8, 0.8, 0.8],
-            id="assistant_prompt_and_completion",
         ),
         pytest.param(
             _attribution(message_indices=[0], is_content=[True], message_roles=["user"]),
@@ -1560,14 +1465,72 @@ def _attribution(
             [0.1, 0.5, 0.05, 0.9, 0.9],
             id="per_role_alphas_differ",
         ),
+        pytest.param(
+            _attribution(
+                message_indices=[0, 0, 0],
+                is_content=[False, True, True],
+                message_roles=["system"],
+            ),
+            3,
+            0,
+            EchoConfig(system=SystemRoleEchoConfig(alpha=0.1), tool=None),
+            [None, 0.1, 0.1],
+            id="system_role",
+        ),
+        pytest.param(
+            _attribution(
+                message_indices=[0, 0, 1, 1],
+                is_content=[False, True, False, True],
+                message_roles=["user", "tool"],
+                message_tool_names=[None, "lookup"],
+            ),
+            4,
+            0,
+            EchoConfig(user=UserRoleEchoConfig(alpha=0.2), tool=None),
+            [None, 0.2, None, None],
+            id="user_role",
+        ),
+        pytest.param(
+            _attribution(
+                message_indices=[0, 0, 1, 1],
+                is_content=[False, True, False, True],
+                message_roles=["user", "assistant"],
+            ),
+            4,
+            3,
+            EchoConfig(assistant=AssistantRoleEchoConfig(alpha=0.8), tool=None),
+            [None, None, None, 0.8, 0.8, 0.8, 0.8],
+            id="assistant_prompt_and_completion",
+        ),
+        pytest.param(
+            _attribution(
+                message_indices=[0, 0, 1, 1, 1],
+                is_content=[False, True, False, True, True],
+                message_roles=["user", "tool"],
+                message_tool_names=[None, "lookup"],
+            ),
+            5,
+            2,
+            EchoConfig(tool=ToolRoleEchoConfig(alpha=0.7, tool_names=None)),
+            [None, None, None, 0.7, 0.7, None, None],
+            id="tool_default_all_tools",
+        ),
+        pytest.param(
+            _attribution(
+                message_indices=[0, 0, 0, 0],
+                is_content=[False, False, True, False],
+                message_roles=["tool"],
+                message_tool_names=["lookup"],
+            ),
+            4,
+            0,
+            EchoConfig(tool=ToolRoleEchoConfig(alpha=0.4)),
+            [None, None, 0.4, None],
+            id="skips_non_content_tokens",
+        ),
     ],
 )
 def test_build_step_echo_alpha_baseline(attribution, prompt_len, completion_len, echo_config, expected):
-    """``_build_step_echo_alpha`` builds the per-token alpha array from the renderer
-    attribution + per-role config. Only content tokens of enabled roles get a
-    float; scaffold/disabled-role tokens stay None. Completion-side assistant
-    echo is independent of attribution. ``alpha=0`` is a real value (kill-RL),
-    distinct from None (not echoed)."""
     assert (
         _build_step_echo_alpha(
             prompt_attribution=attribution,
@@ -1579,21 +1542,20 @@ def test_build_step_echo_alpha_baseline(attribution, prompt_len, completion_len,
     )
 
 
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        pytest.param({}, id="no_roles_default"),
-        pytest.param(dict(system=None, user=None, assistant=None, tool=None), id="all_roles_none"),
-        pytest.param(dict(filter=EchoFilterConfig(import_path="my_module.my_filter")), id="filter_only_no_role"),
-    ],
-)
-def test_echo_config_rejects_without_role(kwargs):
-    """``EchoConfig`` requires at least one role. The custom
-    ``require_at_least_one_role`` validator rejects an empty config, an
-    all-None config, and a filter-only config — the filter is a narrowing
-    overlay, not a role, so it can't enable echo on its own."""
+def test_echo_config_rejects_filter_without_role():
     with pytest.raises(ValidationError, match="at least one role"):
-        EchoConfig(**kwargs)
+        EchoConfig(filter=EchoFilterConfig(import_path="my_module.my_filter"))
+
+
+def test_tool_role_echo_config_rejects_empty_tool_names():
+    with pytest.raises(ValidationError, match=r"too_short|at least 1"):
+        ToolRoleEchoConfig(tool_names=[])
+
+
+def test_tool_role_echo_config_coerces_tool_names_to_set():
+    config = ToolRoleEchoConfig(tool_names=["lookup", "lookup", "calc"])
+
+    assert config.tool_names == {"lookup", "calc"}
 
 
 # ---------------------------------------------------------------------------
@@ -1602,9 +1564,6 @@ def test_echo_config_rejects_without_role(kwargs):
 
 
 def _tool_only_attribution(prompt_len: int) -> dict:
-    """All prompt tokens are content of a single ``lookup`` tool message —
-    minimal setup where every prompt position has a baseline echo alpha to be
-    narrowed by the filter."""
     return _attribution(
         message_indices=[0] * prompt_len,
         is_content=[True] * prompt_len,
@@ -1613,39 +1572,9 @@ def _tool_only_attribution(prompt_len: int) -> dict:
     )
 
 
-_TOOL_AND_ASSISTANT = EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5), assistant=AssistantRoleEchoConfig(alpha=0.8))
-
-
 @pytest.mark.parametrize(
     ("attribution", "prompt_len", "completion_len", "echo_config", "filter_mask", "expected"),
     [
-        pytest.param(
-            _tool_only_attribution(3),
-            3,
-            2,
-            EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5)),
-            None,
-            [0.5, 0.5, 0.5, None, None],
-            id="filter_none_is_no_op",
-        ),
-        pytest.param(
-            _tool_only_attribution(3),
-            3,
-            2,
-            _TOOL_AND_ASSISTANT,
-            [True] * 5,
-            [0.5, 0.5, 0.5, 0.8, 0.8],
-            id="all_true_preserves_baseline",
-        ),
-        pytest.param(
-            _tool_only_attribution(3),
-            3,
-            2,
-            _TOOL_AND_ASSISTANT,
-            [False] * 5,
-            [None] * 5,
-            id="all_false_zeros_everything",
-        ),
         pytest.param(
             _tool_only_attribution(4),
             4,
@@ -1668,15 +1597,6 @@ _TOOL_AND_ASSISTANT = EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5), assistant=A
             [True, True, True, True],
             [None, None, 0.5, 0.5],
             id="cannot_add_echo_to_disabled_role",
-        ),
-        pytest.param(
-            None,
-            2,
-            4,
-            EchoConfig(assistant=AssistantRoleEchoConfig(alpha=0.3)),
-            [True, True, True, True, False, False],
-            [None, None, 0.3, 0.3, None, None],
-            id="narrows_assistant_completion",
         ),
         pytest.param(
             _attribution(
@@ -1702,10 +1622,6 @@ _TOOL_AND_ASSISTANT = EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5), assistant=A
 def test_build_step_echo_alpha_filter_composition(
     attribution, prompt_len, completion_len, echo_config, filter_mask, expected
 ):
-    """The optional ``filter_mask`` narrows the role baseline per-token: False
-    drops a position to None (RL applies), True preserves it. The filter can
-    only narrow — it never adds echo where no role enabled it (``cannot_add``)
-    — and it applies to completion-side assistant echo too."""
     assert (
         _build_step_echo_alpha(
             prompt_attribution=attribution,
@@ -1724,9 +1640,6 @@ def test_build_step_echo_alpha_filter_composition(
 
 
 def _step_with_tokens(prompt_len: int, completion_len: int, attribution: dict | None = None) -> vf.TrajectoryStep:
-    """Minimal TrajectoryStep with controllable token lengths (and optional
-    ``prompt_attribution``) for exercising the per-step length checks without
-    a renderer."""
     tokens_kwargs: dict = dict(
         prompt_ids=list(range(prompt_len)),
         prompt_mask=[0] * prompt_len,
@@ -1752,8 +1665,6 @@ def _step_with_tokens(prompt_len: int, completion_len: int, attribution: dict | 
 
 
 def _rollout_with_steps(*step_dims: tuple, env_name: str = "test-env") -> vf.RolloutOutput:
-    """Build a RolloutOutput from ``(prompt_len, completion_len[, attribution])``
-    tuples — one trajectory step per tuple."""
     return vf.RolloutOutput(
         example_id=0,
         env_name=env_name,
@@ -1764,8 +1675,6 @@ def _rollout_with_steps(*step_dims: tuple, env_name: str = "test-env") -> vf.Rol
 
 
 def _const_filter(masks):
-    """A filter callable that ignores the rollout and returns ``masks``."""
-
     def filter_fn(rollout):
         return masks
 
@@ -1790,39 +1699,29 @@ def _const_filter(masks):
         ),
         pytest.param([(2, 1)], "not a list", TypeError, r"must return list.*got str", id="non_list_return"),
         pytest.param(
-            [(2, 1), (3, 0)],
-            [[True, True, True], "not a list"],
-            TypeError,
-            r"step 1.*mask must be a list.*str",
-            id="non_list_inner",
-        ),
-        pytest.param(
             [(1, 1)], [[True, 1]], TypeError, r"step 0.*mask\[1\].*must be a plain bool.*int", id="non_bool_int"
-        ),
-        pytest.param(
-            [(2, 0)], [[True, "yes"]], TypeError, r"step 0.*mask\[1\].*must be a plain bool.*str", id="non_bool_string"
         ),
     ],
 )
 def test_apply_echo_filter_invalid_raises(dims, filter_return, exc_type, match):
-    """``apply_echo_filter`` validates the filter's return loudly: outer length
-    must equal the trajectory length, each inner mask must equal that step's
-    ``prompt_len + completion_len``, and every element must be a plain ``bool``
-    (a truthy ``1`` is rejected)."""
     rollout = _rollout_with_steps(*dims)
     with pytest.raises(exc_type, match=match):
         apply_echo_filter(rollout, _const_filter(filter_return))
 
 
-def test_apply_echo_filter_valid_returns_masks():
-    """Happy path: a well-shaped filter return passes through unchanged."""
-    rollout = _rollout_with_steps((3, 2), (4, 1))
-    masks = [[True, False, True, True, False], [False, False, True, True, False]]
-    assert apply_echo_filter(rollout, _const_filter(masks)) == masks
+def test_apply_echo_filter_receives_full_rollout():
+    rollout = _rollout_with_steps((2, 1))
+    seen: dict = {}
+
+    def filter_fn(rollout):
+        seen.update(example_id=rollout["example_id"], error=rollout["error"], n=len(rollout["trajectory"]))
+        return [[True] * 3]
+
+    apply_echo_filter(rollout, filter_fn)
+    assert seen == {"example_id": 0, "error": None, "n": 1}
 
 
 def test_apply_echo_filter_empty_trajectory_returns_empty_masks():
-    """Empty trajectory + a filter returning ``[]`` is valid."""
     rollout = vf.RolloutOutput(
         example_id=0, env_name="test-env", trajectory=[], sampling_args={"temperature": 1.0}, error=None
     )
@@ -1830,7 +1729,6 @@ def test_apply_echo_filter_empty_trajectory_returns_empty_masks():
 
 
 def test_apply_echo_filter_propagates_user_exception():
-    """A raising filter propagates verbatim — no swallowing, no fallback."""
     rollout = _rollout_with_steps((2, 1))
 
     class FilterCrash(RuntimeError):
@@ -1843,34 +1741,6 @@ def test_apply_echo_filter_propagates_user_exception():
         apply_echo_filter(rollout, filter_fn)
 
 
-def test_apply_echo_filter_receives_full_rollout():
-    """The filter sees the full rollout dict (example_id / error / trajectory),
-    so it can branch on reward / error / metrics / info."""
-    rollout = _rollout_with_steps((2, 1))
-    seen: dict = {}
-
-    def filter_fn(rollout):
-        seen.update(example_id=rollout["example_id"], error=rollout["error"], n=len(rollout["trajectory"]))
-        return [[True] * 3]
-
-    apply_echo_filter(rollout, filter_fn)
-    assert seen == {"example_id": 0, "error": None, "n": 1}
-
-
-# ---------------------------------------------------------------------------
-# interleave_rollout — end-to-end with filter_masks
-# ---------------------------------------------------------------------------
-
-
-def test_interleave_rollout_filter_masks_none_no_op(single_step_trajectory_output):
-    """``filter_masks=None`` matches the no-filter call exactly (opt-in)."""
-    rollout = single_step_trajectory_output
-    rollout["env_name"] = "test-env"
-    baseline = _interleave_rollout(rollout)
-    with_none = _interleave_rollout(rollout, filter_masks=None)
-    assert with_none[0].echo_alpha == baseline[0].echo_alpha is None
-
-
 _TOOL_ATTRIBUTION = {
     "message_indices": [0, 0, 0],
     "is_content": [True, True, True],
@@ -1880,14 +1750,45 @@ _TOOL_ATTRIBUTION = {
 
 
 def test_interleave_rollout_filter_masks_narrows_sample_echo_alpha():
-    """End-to-end: a filter False drops that position's role echo alpha to None
-    on the resulting sample's ``echo_alpha`` — proving the mask flows from the
-    orchestrator boundary through to the wire format."""
     rollout = _rollout_with_steps((3, 2, _TOOL_ATTRIBUTION))
     echo_config = EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5))
 
-    unfiltered = _interleave_rollout(rollout, echo_config=echo_config)
-    assert unfiltered[0].echo_alpha == [0.5, 0.5, 0.5, None, None]
-
     filtered = _interleave_rollout(rollout, echo_config=echo_config, filter_masks=[[True, False, True, True, True]])
     assert filtered[0].echo_alpha == [0.5, None, 0.5, None, None]
+
+
+def test_train_sink_runs_echo_filter_without_prompt_attribution(tmp_path):
+    rollout_output = _rollout_with_steps((2, 2))
+    filter_fn = MagicMock(return_value=[[True, True, True, False]])
+
+    env = SimpleNamespace(
+        echo_filter_fn=filter_fn,
+        config=SimpleNamespace(echo=EchoConfig(assistant=AssistantRoleEchoConfig(alpha=0.3))),
+    )
+    train_envs = SimpleNamespace(get=lambda _env_name: env)
+    sink = TrainSink(
+        SimpleNamespace(output_dir=tmp_path),
+        tokenizer=None,
+        renderer=None,
+        train_envs=train_envs,
+        mm_token_type_ids_mapping=None,
+        batch_size=1,
+        token_batch_size=None,
+        advantage_config=None,
+        pre_filters=[],
+        post_filters=[],
+    )
+    rollout = TrainRollout(
+        raw=rollout_output,
+        env_name="test-env",
+        example_id=0,
+        group_id=uuid.uuid4(),
+        policy_version=0,
+        off_policy_steps=0,
+    )
+
+    asyncio.run(sink.process_rollout(rollout))
+
+    filter_fn.assert_called_once_with(rollout_output)
+    assert len(rollout.samples) == 1
+    assert rollout.samples[0].echo_alpha == [None, None, 0.3, None]

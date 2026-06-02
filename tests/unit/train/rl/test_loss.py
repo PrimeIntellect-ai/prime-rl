@@ -22,7 +22,7 @@ def test_grpo_loss():
         advantages,
         loss_mask=loss_mask,
         loss_fns=loss_fns,
-        loss_scale=1.0,
+        rl_loss_scale=1.0,
     )
     assert loss.shape == ()
 
@@ -42,7 +42,7 @@ def test_gspo_loss():
         advantages,
         loss_mask=loss_mask,
         loss_fns=loss_fns,
-        loss_scale=1.0,
+        rl_loss_scale=1.0,
     )
     assert loss.shape == ()
 
@@ -89,11 +89,11 @@ def test_sft_loss_matches_masked_nll():
         advantages=advantages,
         loss_mask=loss_mask,
         loss_fns=loss_fns,
-        loss_scale=2,
+        rl_loss_scale=2,
         training_mode="sft",
     )
 
-    # loss = -sum(masked logprobs) / loss_scale = -(-0.1 - 0.2) / 2 = 0.15
+    # loss = -sum(masked logprobs) / rl_loss_scale = -(-0.1 - 0.2) / 2 = 0.15
     assert torch.isclose(loss, torch.tensor(0.15, device=loss.device), atol=1e-6)
     assert "nll" in metrics
 
@@ -112,7 +112,7 @@ def test_sft_loss_override_uses_masked_nll_with_default_loss_config():
         advantages=advantages,
         loss_mask=loss_mask,
         loss_fns=loss_fns,
-        loss_scale=2,
+        rl_loss_scale=2,
         training_mode="sft",
     )
 
@@ -121,61 +121,74 @@ def test_sft_loss_override_uses_masked_nll_with_default_loss_config():
     assert "mismatch_kl" not in metrics
 
 
-def test_default_loss_fn_echo_mask_gradient_flows():
-    """Gradient on echo positions flows via ``trainer_logprobs``.
+def test_default_loss_fn_uses_separate_echo_loss_scale():
+    trainer_logprobs = [torch.tensor([-0.2, -0.4], dtype=torch.float32, device="cuda", requires_grad=True)]
+    inference_logprobs = [trainer_logprobs[0].detach().clone()]
+    advantages = [torch.tensor([1.0, 2.0], dtype=torch.float32, device="cuda")]
+    loss_mask = [torch.tensor([True, True], dtype=torch.bool, device="cuda")]
+    echo_mask = [torch.tensor([False, True], dtype=torch.bool, device="cuda")]
 
-    Regression test: previously ``pg_loss = advantages * importance_ratio``
-    routed echo positions through ``importance_ratio`` which was forced to 1
-    via ``torch.where(echo_mask, zeros_like(log_ratio), log_ratio)`` — that
-    construction blocks the gradient through ``trainer_logprobs`` on the
-    True branch, silently zeroing the echo signal. Fix routes echo positions
-    through ``advantages * trainer_logprobs`` directly.
-
-    On echo positions: ``pg_loss = adv * trainer_logprob`` and
-    ``loss = -pg_loss.sum()`` so ``d(loss)/d(trainer_logprob[s]) = -adv[s]``.
-    KL is zero on echo positions (log_ratio forced to 0), so no KL gradient
-    contribution.
-    """
-    seq_len = 5
-    # Echo positions carry a per-token alpha as their advantage (overlaid in
-    # prepare_sample). The exact value is arbitrary — the test verifies the
-    # gradient equals -alpha on those positions.
-    echo_advantage = 0.25
-
-    # Create requires_grad tensor directly on cuda so it's a leaf — .cuda()
-    # after requires_grad=True makes the device tensor a non-leaf and .grad
-    # would never populate.
-    trainer_logprobs = torch.tensor(
-        [-0.1, -0.2, -0.3, -0.4, -0.5], dtype=torch.float32, device="cuda", requires_grad=True
-    )
-    inference_logprobs = torch.tensor([-0.05, 0.0, -0.4, 0.0, -0.6], dtype=torch.float32, device="cuda")
-    advantages = torch.tensor([1.0, echo_advantage, 1.0, echo_advantage, 1.0], dtype=torch.float32, device="cuda")
-    loss_mask = torch.ones(seq_len, dtype=torch.bool, device="cuda")
-    echo_mask = torch.tensor([False, True, False, True, False], dtype=torch.bool, device="cuda")
-
-    loss_fns = setup_loss_fns(DefaultLossConfig(dppo_mask_high=10.0, dppo_mask_low=10.0))
-    loss, _ = compute_loss(
-        trainer_logprobs=[trainer_logprobs],
-        inference_logprobs=[inference_logprobs],
+    loss_fns = setup_loss_fns(DefaultLossConfig(dppo_mask_high=10.0, dppo_mask_low=10.0, kl_tau=0.0))
+    loss, metrics = compute_loss(
+        trainer_logprobs=trainer_logprobs,
+        inference_logprobs=inference_logprobs,
         teacher_logprobs=None,
-        advantages=[advantages],
-        loss_mask=[loss_mask],
+        advantages=advantages,
+        loss_mask=loss_mask,
         loss_fns=loss_fns,
-        loss_scale=1,
-        echo_mask=[echo_mask],
+        rl_loss_scale=1,
+        echo_loss_scale=4,
+        echo_mask=echo_mask,
     )
+
+    # RL term: -adv * ratio = -1.0. Echo term: -alpha * logprob / 4 = 0.2.
+    assert torch.isclose(loss, torch.tensor(-0.8, device=loss.device), atol=1e-6)
+    assert metrics["echo_token_count"].item() == 1
     loss.backward()
-    grad = trainer_logprobs.grad
-    assert grad is not None
+    assert torch.isclose(trainer_logprobs[0].grad[1], torch.tensor(-0.5, device="cuda"), atol=1e-6)
 
-    # Regression check: gradient on echo positions must be non-zero.
-    assert grad[1].abs() > 1e-6, f"echo position 1: gradient was zeroed ({grad[1].item()})"
-    assert grad[3].abs() > 1e-6, f"echo position 3: gradient was zeroed ({grad[3].item()})"
 
-    # Exact magnitude: -advantage on echo positions.
-    expected = torch.tensor(-echo_advantage, device=grad.device)
-    assert torch.isclose(grad[1], expected, atol=1e-6)
-    assert torch.isclose(grad[3], expected, atol=1e-6)
+@pytest.mark.parametrize("training_mode", ["sft", "opd"])
+def test_echo_rejected_for_non_rl_modes(training_mode):
+    trainer_logprobs = [torch.tensor([-0.1, -0.2], dtype=torch.float32, device="cuda")]
+    inference_logprobs = [torch.zeros(2, dtype=torch.float32, device="cuda")]
+    teacher_logprobs = [torch.zeros(2, dtype=torch.float32, device="cuda")] if training_mode == "opd" else None
+    advantages = [torch.ones(2, dtype=torch.float32, device="cuda")]
+    loss_mask = [torch.ones(2, dtype=torch.bool, device="cuda")]
+    echo_mask = [torch.tensor([False, True], dtype=torch.bool, device="cuda")]
+
+    with pytest.raises(ValueError, match="Echo is only supported"):
+        compute_loss(
+            trainer_logprobs=trainer_logprobs,
+            inference_logprobs=inference_logprobs,
+            teacher_logprobs=teacher_logprobs,
+            advantages=advantages,
+            loss_mask=loss_mask,
+            loss_fns=setup_loss_fns(DefaultLossConfig()),
+            rl_loss_scale=1,
+            training_mode=training_mode,
+            echo_mask=echo_mask,
+        )
+
+
+def test_echo_rejected_for_custom_rl_loss():
+    loss_fns = setup_loss_fns(
+        CustomLossConfig(
+            import_path="tests.unit.train.rl.test_loss._dummy_custom_loss",
+            kwargs={"multiplier": 2.0},
+        )
+    )
+    inputs = LossInputs(
+        trainer_logprobs=torch.randn(2, dtype=torch.float32, device="cuda"),
+        inference_logprobs=torch.randn(2, dtype=torch.float32, device="cuda"),
+        teacher_logprobs=None,
+        advantages=torch.ones(2, dtype=torch.float32, device="cuda"),
+        loss_mask=torch.ones(2, dtype=torch.bool, device="cuda"),
+        echo_mask=torch.tensor([False, True], dtype=torch.bool, device="cuda"),
+    )
+
+    with pytest.raises(ValueError, match="Echo is only supported with the default RL loss"):
+        loss_fns["rl"](inputs)
 
 
 def _dummy_custom_loss(inputs: LossInputs, multiplier: float = 1.0) -> LossOutputs:

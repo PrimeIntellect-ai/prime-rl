@@ -19,13 +19,18 @@ class LossInputs:
     teacher_logprobs: Float[Tensor, " seq"] | None
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
-    # Per-token mask flagging echo positions (positions where
-    # the advantage tensor carries a constant alpha/n weight, not the
-    # rollout's RL advantage). The default_loss_fn forces IS ratio = 1
-    # and skips both DPPO trust-region clipping and the KL penalty on
-    # these positions so the gradient direction matches pure cross-entropy
-    # in the echo direction. None when the rollout's env has echo disabled.
+    # Echo tokens are excluded from RL loss/metrics and trained through the
+    # echo CE term. The advantage tensor carries alpha on these positions.
     echo_mask: Bool[Tensor, " seq"] | None = None
+    rl_loss_scale: int = 1
+    echo_loss_scale: int = 1
+
+
+@dataclass
+class LossMasks:
+    loss: Bool[Tensor, " seq"]
+    rl: Bool[Tensor, " seq"]
+    echo: Bool[Tensor, " seq"]
 
 
 @dataclass
@@ -120,6 +125,16 @@ def compute_importance_ratio_and_mismatch_kl(
     return log_importance_ratio, importance_ratio, mismatch_kl
 
 
+def split_loss_masks(loss_mask: Tensor, echo_mask: Tensor | None) -> LossMasks:
+    if echo_mask is None:
+        echo_train_mask = torch.zeros_like(loss_mask, dtype=torch.bool)
+        rl_mask = loss_mask
+    else:
+        echo_train_mask = loss_mask & echo_mask
+        rl_mask = loss_mask & ~echo_mask
+    return LossMasks(loss=loss_mask, rl=rl_mask, echo=echo_train_mask)
+
+
 def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutputs:
     """
     DPPO+KL loss for RL training, combining:
@@ -136,20 +151,11 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     inference_logprobs = inputs.inference_logprobs
     advantages = inputs.advantages
     loss_mask = inputs.loss_mask
-    echo_mask = inputs.echo_mask
+    masks = split_loss_masks(loss_mask, inputs.echo_mask)
 
     log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
         trainer_logprobs, inference_logprobs
     )
-
-    # Echo positions: the off-policy correction doesn't apply (the model never
-    # sampled prompt-side echo tokens; assistant echo overrides RL directly).
-    # Force log-ratio to 0 so KL is zero here; pg_loss routes through
-    # trainer_logprobs separately below so its gradient still flows.
-    if echo_mask is not None:
-        log_importance_ratio = torch.where(echo_mask, torch.zeros_like(log_importance_ratio), log_importance_ratio)
-        importance_ratio = torch.exp(log_importance_ratio)
-        mismatch_kl = importance_ratio - log_importance_ratio - 1
 
     probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
     dppo_invalid_mask_high = probs_diff > loss_config.dppo_mask_high
@@ -158,48 +164,38 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     negative_advantages = advantages < 0
     dppo_invalid_mask = torch.where(positive_advantages, dppo_invalid_mask_high, dppo_invalid_mask_low)
 
-    # Echo positions: never trust-region-clip — the placeholder inference
-    # logprob (0.0) makes probs_diff spurious and would falsely mask them.
-    if echo_mask is not None:
-        dppo_invalid_mask = dppo_invalid_mask & ~echo_mask
-
-    is_masked = dppo_invalid_mask
-    is_masked_high = positive_advantages & dppo_invalid_mask_high
-    is_masked_low = negative_advantages & dppo_invalid_mask_low
-    drop_mask = loss_mask & is_masked
-    keep_mask = loss_mask & ~is_masked
+    dppo_drop_mask = masks.rl & dppo_invalid_mask
+    dppo_keep_mask = masks.rl & ~dppo_invalid_mask
+    is_masked_high = masks.rl & positive_advantages & dppo_invalid_mask_high
+    is_masked_low = masks.rl & negative_advantages & dppo_invalid_mask_low
 
     advantages = loss_config.adv_tau * advantages
+    rl_pg_loss = dppo_keep_mask * advantages * importance_ratio
+    rl_kl_loss = masks.rl * log_importance_ratio**2
+    rl_loss = (-rl_pg_loss + loss_config.kl_tau * rl_kl_loss).sum() / inputs.rl_loss_scale
 
-    # Echo positions route pg through ``advantages * trainer_logprobs`` (gradient
-    # w.r.t. logprobs is exactly the overlaid alpha → pure cross-entropy after the
-    # ``-pg_loss`` negation); RL positions use the IS-corrected policy gradient.
-    rl_pg = keep_mask * advantages * importance_ratio
-    if echo_mask is not None:
-        echo_pg = advantages * trainer_logprobs
-        pg_loss = torch.where(echo_mask, echo_pg, rl_pg)
+    if inputs.echo_mask is not None and masks.echo.any():
+        echo_loss = -(advantages * trainer_logprobs)[masks.echo].sum() / inputs.echo_loss_scale
     else:
-        pg_loss = rl_pg
-    kl_loss = loss_mask * log_importance_ratio**2
-    loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
+        echo_loss = torch.zeros((), device=trainer_logprobs.device, dtype=trainer_logprobs.dtype)
+
+    loss = rl_loss + echo_loss
 
     metrics = {
-        "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
-        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),  # all trainable, unmasked tokens
-        "is_masked": _safe_mean(is_masked, loss_mask),
-        "is_masked_low": _safe_mean(is_masked_low, loss_mask),
-        "is_masked_high": _safe_mean(is_masked_high, loss_mask),
-        "masked_advantage_positive": _safe_mean(positive_advantages, drop_mask),
-        "masked_advantage_negative": _safe_mean(negative_advantages, drop_mask),
+        "masked_mismatch_kl": _safe_mean(mismatch_kl, dppo_drop_mask),
+        "unmasked_mismatch_kl": _safe_mean(mismatch_kl, dppo_keep_mask),
+        "is_masked": _safe_mean(dppo_drop_mask, masks.rl),
+        "is_masked_low": _safe_mean(is_masked_low, masks.rl),
+        "is_masked_high": _safe_mean(is_masked_high, masks.rl),
+        "masked_advantage_positive": _safe_mean(positive_advantages, dppo_drop_mask),
+        "masked_advantage_negative": _safe_mean(negative_advantages, dppo_drop_mask),
     }
 
-    # Echo world-model metrics: NLL on the supervised (loss_mask & echo) tokens.
-    if echo_mask is not None:
-        echo_train_mask = loss_mask & echo_mask
-        metrics["echo_nll_mean"] = _safe_mean(-trainer_logprobs, echo_train_mask)
-        metrics["echo_token_count"] = echo_train_mask.sum().float()
-        if echo_train_mask.any():
-            metrics["echo_nll_max"] = (-trainer_logprobs[echo_train_mask]).max()
+    if inputs.echo_mask is not None:
+        metrics["echo_nll_mean"] = _safe_mean(-trainer_logprobs, masks.echo)
+        metrics["echo_token_count"] = masks.echo.sum().float()
+        if masks.echo.any():
+            metrics["echo_nll_max"] = (-trainer_logprobs[masks.echo]).max()
         else:
             metrics["echo_nll_max"] = torch.tensor(0.0, device=trainer_logprobs.device)
 
@@ -243,7 +239,7 @@ def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
 
     pg_loss = keep_mask * advantages * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
-    loss = (-pg_loss + 1e-3 * kl_loss).sum()
+    loss = (-pg_loss + 1e-3 * kl_loss).sum() / inputs.rl_loss_scale
 
     metrics = {
         "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),
@@ -264,7 +260,7 @@ def sft_loss_fn(inputs: LossInputs) -> LossOutputs:
     trainer_logprobs = inputs.trainer_logprobs
     loss_mask = inputs.loss_mask
 
-    loss = -(trainer_logprobs[loss_mask]).sum()
+    loss = -(trainer_logprobs[loss_mask]).sum() / inputs.rl_loss_scale
     metrics = {
         "nll": _safe_mean(-trainer_logprobs, loss_mask),
     }
@@ -290,7 +286,13 @@ def setup_loss_fns(loss_config: LossConfig) -> dict[str, LossFn]:
         kwargs = loss_config.kwargs
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
-            return custom_fn(inputs, **kwargs)
+            if inputs.echo_mask is not None and inputs.echo_mask.any():
+                raise ValueError(
+                    "Echo is only supported with the default RL loss. "
+                    "CustomLossConfig receives the legacy loss_mask/advantages contract and cannot safely interpret echo."
+                )
+            result = custom_fn(inputs, **kwargs)
+            return LossOutputs(loss=result.loss / inputs.rl_loss_scale, metrics=result.metrics)
     else:
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
@@ -306,9 +308,10 @@ def compute_loss(
     advantages: list[Float[Tensor, " seq_i"]],
     loss_mask: list[Bool[Tensor, " seq_i"]],
     loss_fns: dict[str, LossFn],
-    loss_scale: int,
+    rl_loss_scale: int,
     training_mode: str = "rl",
     echo_mask: list[Bool[Tensor, " seq_i"]] | None = None,
+    echo_loss_scale: int | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -324,16 +327,15 @@ def compute_loss(
         advantages: Advantages for each sequence
         loss_mask: Loss mask for each sequence
         loss_fns: Per-mode loss fn dispatch table from setup_loss_fns()
-        loss_scale: Scale factor to normalize the loss
+        rl_loss_scale: Global RL/non-echo token denominator
         training_mode: Selects which loss fn to apply
-        echo_mask: Per-sequence echo masks (parallel to loss_mask). When
-            provided and ``training_mode='rl'``, ``default_loss_fn`` gates
-            IS-ratio / DPPO / KL on these positions and emits echo_nll_mean
-            / echo_nll_max / echo_token_count metrics. None when no rollout
-            in this batch opted into echo.
+        echo_mask: Per-sequence echo masks (parallel to loss_mask). Echo tokens
+            are excluded from RL terms and trained through the echo CE term.
+        echo_loss_scale: Global echo token denominator. Defaults to rl_loss_scale
+            for backward-compatible direct calls.
 
     Returns:
-        Tuple of (scaled_loss, aggregated_metrics)
+        Tuple of (total_loss, aggregated_metrics)
     """
     try:
         effective_loss_fn = loss_fns[training_mode]
@@ -352,6 +354,8 @@ def compute_loss(
         echo_mask_list: list[Bool[Tensor, " seq_i"] | None] = [None] * len(trainer_logprobs)
     else:
         echo_mask_list = list(echo_mask)
+    if echo_loss_scale is None:
+        echo_loss_scale = rl_loss_scale
 
     for t_logp, i_logp, teach_logp, adv, mask, echo_m in zip(
         trainer_logprobs,
@@ -360,6 +364,7 @@ def compute_loss(
         advantages,
         loss_mask,
         echo_mask_list,
+        strict=True,
     ):
         inputs = LossInputs(
             trainer_logprobs=t_logp,
@@ -368,7 +373,11 @@ def compute_loss(
             advantages=adv,
             loss_mask=mask,
             echo_mask=echo_m,
+            rl_loss_scale=rl_loss_scale,
+            echo_loss_scale=echo_loss_scale,
         )
+        if echo_m is not None and echo_m.any() and training_mode != "rl":
+            raise ValueError("Echo is only supported for training_mode='rl'.")
 
         result = effective_loss_fn(inputs)
 
@@ -379,8 +388,6 @@ def compute_loss(
                 all_metrics[k] = []
             all_metrics[k].append(v)
 
-    scaled_loss = total_loss / loss_scale
-
     aggregated: dict[str, Any] = {}
     for k, v in all_metrics.items():
         if v[0].dim() == 0:
@@ -388,4 +395,4 @@ def compute_loss(
         else:
             aggregated[k] = torch.cat(v)
 
-    return scaled_loss, aggregated
+    return total_loss, aggregated

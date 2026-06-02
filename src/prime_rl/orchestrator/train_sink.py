@@ -165,12 +165,7 @@ class TrainSink:
         env = self.train_envs.get(rollout.env_name)
         filter_masks: list[list[bool]] | None = None
         trajectory = raw["trajectory"]
-        if (
-            env.echo_filter_fn is not None
-            and trajectory
-            and trajectory[0]["tokens"] is not None
-            and trajectory[0]["tokens"].get("prompt_attribution") is not None
-        ):
+        if env.echo_filter_fn is not None and trajectory and trajectory[0]["tokens"] is not None:
             filter_masks = await asyncio.to_thread(apply_echo_filter, raw, env.echo_filter_fn)
 
         samples = await asyncio.to_thread(

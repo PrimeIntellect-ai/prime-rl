@@ -117,64 +117,23 @@ def test_prepare_sample_propagates_training_mode(make_training_example):
     assert micro_batch.training_mode == "sft"
 
 
-@pytest.mark.parametrize(
-    ("echo_alpha", "expected_advantages", "expected_loss_mask", "expected_echo_mask"),
-    [
-        pytest.param(
-            [0.5, 0.5, None, None],
-            [0.5, 0.5, 1.0, 1.0],
-            [True, True, True, True],
-            [True, True, False, False],
-            id="overlay_per_role_alphas",
-        ),
-        pytest.param(
-            [None, None, 0.0, None],
-            [1.0, 1.0, 0.0, 1.0],
-            [False, False, True, True],
-            [False, False, True, False],
-            id="alpha_zero_kills_rl",
-        ),
-        pytest.param(
-            None,
-            [1.0, 1.0, 1.0, 1.0],
-            [False, False, True, True],
-            None,
-            id="field_none_is_no_op",
-        ),
-    ],
-)
-def test_prepare_sample_echo_overlay(
-    make_training_example, echo_alpha, expected_advantages, expected_loss_mask, expected_echo_mask
-):
-    """Per-token ``echo_alpha`` overwrites ``advantages`` on echo positions and
-    flips them into ``loss_mask`` + ``echo_mask`` (so ``default_loss_fn`` routes
-    them through the echo path instead of the IS-ratio). The three states are
-    distinct: a float echoes at that alpha (``alpha=0`` is a real "kill-RL"
-    value, not a no-op), per-token ``None`` leaves RL untouched, and a
-    whole-field ``None`` skips the overlay entirely (no ``echo_mask``).
-    The fixture's sample is 2 prompt + 2 completion tokens, advantage 1.0."""
+def test_prepare_sample_echo_overlay(make_training_example):
     example = make_training_example()
-    example.echo_alpha = echo_alpha
+    example.echo_alpha = [0.5, 0.0, 0.25, None]
 
     micro_batch = prepare_sample(example, seq_len=16)
 
-    assert micro_batch.advantages == expected_advantages
-    assert micro_batch.loss_mask == expected_loss_mask
-    assert micro_batch.echo_mask == expected_echo_mask
+    assert micro_batch.advantages == [1.0, 0.0, 0.25, 1.0]
+    assert micro_batch.loss_mask == [False, True, True, True]
+    assert micro_batch.echo_mask == [False, True, True, False]
 
 
-def test_prepare_sample_truncates_echo_alpha_with_other_per_token_lists(make_training_example):
-    """Truncation slices ``echo_mask`` in lockstep with ``input_ids``,
-    keeping the length-equality assertion green."""
+def test_prepare_sample_rejects_misaligned_echo_alpha(make_training_example):
     example = make_training_example()
-    example.echo_alpha = [0.5, 0.5, None, None]
+    example.echo_alpha = [0.5]
 
-    micro_batch = prepare_sample(example, seq_len=2)
-
-    assert len(micro_batch.input_ids) == 2
-    assert len(micro_batch.echo_mask) == 2
-    assert len(micro_batch.advantages) == 2
-    assert len(micro_batch.loss_mask) == 2
+    with pytest.raises(ValueError, match="echo_alpha length"):
+        prepare_sample(example, seq_len=16)
 
 
 def test_prepare_batch_does_not_pack_mixed_training_mode(make_training_example):

@@ -210,105 +210,43 @@ def _build_step_echo_alpha(
     echo_config: EchoConfig | None,
     filter_mask: list[bool] | None = None,
 ) -> list[float | None]:
-    """Per-token echo alpha for one trajectory step, length ``prompt_len +
-    completion_len``. Each entry is ``None`` (not echoed — RL applies) or a
-    ``float`` (echoed at that alpha, overriding the RL advantage and flipping
-    loss_mask=True in ``prepare_sample``); ``alpha=0`` is a real kill-RL value,
-    distinct from ``None``.
-
-    Prompt-side positions resolve their role via
-    ``message_indices[k] → message_roles[mi]`` and take that role's alpha;
-    ``is_content[k]`` excludes template scaffold, and tool positions also match
-    ``tool_names``. Completion-side positions are always assistant-role.
-    ``filter_mask`` (optional, same length) narrows the baseline by AND — False
-    drops a position to ``None`` (never adds echo).
-
-    Returns all-None when echo is disabled or attribution is missing.
-    """
+    """Build per-token echo alpha for one trajectory step."""
     expected_total_len = prompt_len + completion_len
-
-    def _build_baseline() -> list[float | None]:
-        """Build the role-level echo_alpha baseline. Multiple early returns;
-        the outer scope then applies ``filter_mask`` at a single exit point."""
-        out: list[float | None] = [None] * expected_total_len
-        if echo_config is None:
-            return out
-
-        # Completion-side first (independent of prompt_attribution — the
-        # completion is always assistant-role by construction). When
-        # assistant echo is enabled, every completion position carries
-        # that alpha.
+    out: list[float | None] = [None] * expected_total_len
+    if echo_config is not None:
         if echo_config.assistant is not None:
-            assistant_alpha = echo_config.assistant.alpha
-            for k in range(prompt_len, expected_total_len):
-                out[k] = assistant_alpha
+            out[prompt_len:expected_total_len] = [echo_config.assistant.alpha] * completion_len
 
-        # Prompt-side requires the renderer attribution.
-        if prompt_attribution is None:
-            return out
+        if prompt_attribution is not None:
+            message_roles = prompt_attribution.get("message_roles")
+            message_indices = prompt_attribution.get("message_indices")
+            is_content = prompt_attribution.get("is_content")
+            if message_roles is not None and is_content and message_indices:
+                if len(is_content) == prompt_len and len(message_indices) == prompt_len:
+                    role_alphas = {
+                        "system": echo_config.system.alpha if echo_config.system is not None else None,
+                        "user": echo_config.user.alpha if echo_config.user is not None else None,
+                        "assistant": echo_config.assistant.alpha if echo_config.assistant is not None else None,
+                    }
+                    tool_config = echo_config.tool
+                    tool_alpha = tool_config.alpha if tool_config is not None else None
+                    enabled_tools = tool_config.tool_names if tool_config is not None else None
+                    message_tool_names = prompt_attribution.get("message_tool_names") or []
 
-        # prompt_attribution arrives as a dict through the verifiers
-        # env-server JSON boundary even though the renderer emits a
-        # RenderedTokens object.
-        message_roles = prompt_attribution.get("message_roles")
-        if message_roles is None:
-            return out
+                    for k, mi in enumerate(message_indices):
+                        if mi < 0 or not is_content[k] or mi >= len(message_roles):
+                            continue
+                        role = message_roles[mi]
+                        if role == "tool":
+                            tool_name = message_tool_names[mi] if mi < len(message_tool_names) else None
+                            if tool_alpha is not None and (enabled_tools is None or tool_name in enabled_tools):
+                                out[k] = tool_alpha
+                            continue
 
-        message_indices = prompt_attribution.get("message_indices")
-        is_content = prompt_attribution.get("is_content")
-        # Defensive: if the renderer didn't populate is_content (DefaultRenderer
-        # leaves it empty) or sizes don't match, we can't tell body from
-        # scaffold — bail to the completion-side-only mask.
-        if not is_content or len(is_content) != prompt_len:
-            return out
-        if not message_indices or len(message_indices) != prompt_len:
-            return out
+                        alpha = role_alphas.get(role)
+                        if alpha is not None:
+                            out[k] = alpha
 
-        # Resolve per-role alphas once.
-        system_alpha = echo_config.system.alpha if echo_config.system is not None else None
-        user_alpha = echo_config.user.alpha if echo_config.user is not None else None
-        assistant_alpha_prompt = echo_config.assistant.alpha if echo_config.assistant is not None else None
-        tool_role_config = echo_config.tool
-        tool_alpha = tool_role_config.alpha if tool_role_config is not None else None
-        enabled_tools = (
-            set(tool_role_config.tool_names) if tool_role_config is not None and tool_role_config.tool_names else None
-        )
-
-        # Tool-role check needs the per-message function name; safe-get
-        # since message_tool_names may be absent on non-tool-aware renderers.
-        message_tool_names = prompt_attribution.get("message_tool_names") or []
-
-        for k in range(prompt_len):
-            mi = message_indices[k]
-            if mi < 0 or not is_content[k]:
-                continue
-            if mi >= len(message_roles):
-                continue
-            role = message_roles[mi]
-            if role == "system":
-                if system_alpha is not None:
-                    out[k] = system_alpha
-            elif role == "user":
-                if user_alpha is not None:
-                    out[k] = user_alpha
-            elif role == "assistant":
-                if assistant_alpha_prompt is not None:
-                    out[k] = assistant_alpha_prompt
-            elif role == "tool":
-                if tool_alpha is None:
-                    continue
-                # Per-tool-name filter: enabled_tools=None means "all tools".
-                name = message_tool_names[mi] if mi < len(message_tool_names) else None
-                if enabled_tools is None or (name is not None and name in enabled_tools):
-                    out[k] = tool_alpha
-            # Unknown roles silently skipped.
-        return out
-
-    out = _build_baseline()
-
-    # Narrow by the user filter: keep the baseline alpha where the mask is True,
-    # drop to None where False (a True keeps a None baseline too — the filter
-    # can only narrow, never add echo).
     if filter_mask is not None:
         out = [alpha if keep else None for alpha, keep in zip(out, filter_mask, strict=True)]
 
@@ -319,13 +257,7 @@ def apply_echo_filter(
     rollout: vf.RolloutOutput,
     filter_fn: Callable[..., list[list[bool]]],
 ) -> list[list[bool]]:
-    """Invoke the user's echo filter and validate its return, returning the
-    per-step masks for :func:`interleave_rollout`. Enforces the
-    :class:`EchoFilterConfig` contract loudly: ``TypeError`` for a non-list /
-    non-bool return, ``ValueError`` for an outer length ≠ trajectory steps or an
-    inner length ≠ that step's ``prompt_ids + completion_ids``; the filter's own
-    exceptions propagate.
-    """
+    """Invoke the user's echo filter and validate its per-step masks."""
     trajectory = rollout["trajectory"]
     result = filter_fn(rollout)
 
@@ -351,11 +283,6 @@ def apply_echo_filter(
                 f"(prompt_len={prompt_len}, completion_len={completion_len})"
             )
         for k, v in enumerate(mask):
-            # Reject bool subclasses other than the literal bool type? No —
-            # ``isinstance(v, bool)`` accepts True/False only (np.bool_ would
-            # need its own handling; cast it at the filter boundary). We
-            # intentionally do NOT accept int 0/1: numeric types passing as
-            # bool is a common source of silent bugs.
             if type(v) is not bool:
                 raise TypeError(
                     f"echo filter step {step_idx}: mask[{k}] must be a plain bool, got {type(v).__name__} ({v!r})"
@@ -391,17 +318,12 @@ def interleave_rollout(
     per-image processed tensors inline on ``multi_modal_data``; the last
     merged step's sidecar covers every image in the sample.
 
-    When ``echo_config`` is provided, each sample carries a per-token
-    ``echo_alpha`` array (see :func:`_build_step_echo_alpha`), extended across merged steps.
-
     Args:
         output: vf.RolloutOutput containing trajectory data
         mm_token_type_ids_mapping: Maps prompt-token ids to mm_token_type_ids
             (1 = image, 2 = video, 0 otherwise). Renderer-supplied.
-        echo_config: Per-env echo config (None when echo is disabled for this
-            env). Caller resolves it from ``train_envs.get(env_name).config.echo``.
-        filter_masks: Optional per-step bool masks that narrow the role baseline
-            (``None`` = no filter). See :func:`apply_echo_filter`.
+        echo_config: Optional per-env echo config.
+        filter_masks: Optional per-step bool masks that narrow role-selected echo.
     """
     logger = get_logger()
 
@@ -485,10 +407,6 @@ def interleave_rollout(
         completion_ids = list(tokens["completion_ids"])
 
         prompt_ids = list(tokens["prompt_ids"])
-        # ``echo_alpha`` was computed per-step against the env's EchoConfig.
-        # When echo is disabled (echo_config is None or no role enabled) the
-        # helper returns an all-None list; carry None on the sample in that
-        # case to keep the transport payload lean.
         step_echo_alpha = tokens.get("echo_alpha")
         sample_echo_alpha = (
             list(step_echo_alpha) if step_echo_alpha and any(a is not None for a in step_echo_alpha) else None
@@ -583,8 +501,6 @@ def interleave_rollout(
             sample.completion_mask.extend(tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
 
-        # Extend echo_alpha in lockstep (prompt tail + completion), materializing
-        # a previously-None array only once there's real echo signal to record.
         step_echo_alpha = tokens.get("echo_alpha")
         if step_echo_alpha is not None:
             step_prompt_len = len(tokens["prompt_ids"])

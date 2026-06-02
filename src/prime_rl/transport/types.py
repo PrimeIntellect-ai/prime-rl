@@ -56,12 +56,9 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # taus), sft uses sft_loss_fn. Stamped by the orchestrator from training_mode.
     training_mode: TrainingMode = "rl"
 
-    # Per-token echo alpha (parallel to prompt_ids + completion_ids), built by
-    # ``_build_step_echo_alpha`` from the renderer attribution + the env's EchoConfig.
-    # Three states: whole field None = no echo; per-token None = not echoed (RL
-    # applies); per-token float = echoed at that alpha (``prepare_sample``
-    # overwrites the RL advantage and flips loss_mask=True). ``alpha=0`` is a
-    # real kill-RL value, distinct from None.
+    # Per-token echo alpha parallel to prompt_ids + completion_ids. Field None
+    # means no echo; per-token None means ordinary RL; a float means echo CE
+    # with that alpha. ``0.0`` is distinct from None.
     echo_alpha: list[float | None] | None = None
 
 
@@ -98,7 +95,6 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     training_mode: TrainingMode = "rl"
     rewards: list[float] | None = None
 
-    # Per-token echo mask (parallel to input_ids): True on echo positions, where
-    # the loss skips the trust-region clip / IS-ratio (the model didn't sample
-    # them). Survives packing/padding like ``loss_mask``; None if no sample echoes.
+    # True where the token participates in echo CE. Survives packing/padding
+    # like ``loss_mask``; None if no sample echoes.
     echo_mask: list[bool] | None = None

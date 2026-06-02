@@ -32,6 +32,7 @@ from prime_rl.trainer.rl.loss import (
     compute_importance_ratio_and_mismatch_kl,
     selective_log_softmax,
     setup_loss_fns,
+    split_loss_masks,
     shift_tensor_left,
     shift_tensor_right,
 )
@@ -350,15 +351,26 @@ def train(config: TrainerConfig):
         forward_backward_start_time = time.perf_counter()
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
-        # Normalize by the global (dp_cp) number of unmasked tokens in the batch, so every rank
-        # divides by the same denominator. With a per-rank denominator, ranks with fewer loss
-        # tokens implicitly upweight their per-token gradient contribution after FSDP averaging.
+        # Normalize by global (dp_cp) denominators, so every rank divides by
+        # the same values. RL and echo terms use separate denominators: echo can
+        # add prompt/tool tokens, but that should not dilute ordinary RL
+        # completion gradients.
         # FSDP's per-rank divide is undone after the microbatch loop via fsdp_gradient_divide_factor.
-        local_loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
-        global_loss_scale = torch.tensor(local_loss_scale, dtype=torch.int64, device="cuda")
+        local_rl_loss_scale = 0
+        local_echo_loss_scale = 0
+        for micro_batch in micro_batches:
+            masks = split_loss_masks(micro_batch["loss_mask"], micro_batch.get("echo_mask"))
+            local_rl_loss_scale += masks.rl.sum().item()
+            local_echo_loss_scale += masks.echo.sum().item()
+        global_loss_scales = torch.tensor(
+            [local_rl_loss_scale, local_echo_loss_scale],
+            dtype=torch.int64,
+            device="cuda",
+        )
         dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
-        dist.all_reduce(global_loss_scale, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        loss_scale = max(global_loss_scale.item(), 1)
+        dist.all_reduce(global_loss_scales, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        rl_loss_scale = max(global_loss_scales[0].item(), 1)
+        echo_loss_scale = max(global_loss_scales[1].item(), 1)
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
@@ -372,6 +384,7 @@ def train(config: TrainerConfig):
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
+            echo_mask = micro_batch["echo_mask"].to("cuda") if micro_batch.get("echo_mask") is not None else None
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
             teacher_logprobs = (
                 micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
@@ -473,10 +486,7 @@ def train(config: TrainerConfig):
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
-            echo_mask_batch = micro_batch.get("echo_mask")
-            echo_mask_split = (
-                echo_mask_batch.to("cuda").squeeze().split(response_lengths) if echo_mask_batch is not None else None
-            )
+            echo_mask_split = echo_mask.squeeze().split(response_lengths) if echo_mask is not None else None
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
@@ -486,9 +496,10 @@ def train(config: TrainerConfig):
                 advantages=advantages.squeeze().split(response_lengths),
                 loss_mask=loss_mask.squeeze().split(response_lengths),
                 loss_fns=loss_fns,
-                loss_scale=loss_scale,
+                rl_loss_scale=rl_loss_scale,
                 training_mode=micro_batch["training_mode"],
                 echo_mask=echo_mask_split,
+                echo_loss_scale=echo_loss_scale,
             )
 
             # Backward pass
@@ -496,12 +507,13 @@ def train(config: TrainerConfig):
                 loss.backward()
 
             # Add relevant tensors to tensor dict for logging purposes
-            entropy = out["entropy"][loss_mask].detach().to("cpu")
+            loss_masks = split_loss_masks(loss_mask, echo_mask)
+            entropy = out["entropy"][loss_masks.rl].detach().to("cpu")
             tensors["entropy/all"].append(entropy)
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
             env_names = micro_batch["env_names"]
-            masked_env_names = [env_name for env_name, keep in zip(env_names, loss_mask.flatten().tolist()) if keep]
+            masked_env_names = [env_name for env_name, keep in zip(env_names, loss_masks.rl.flatten().tolist()) if keep]
             env_to_indices: dict[str, list[int]] = {}
             for idx, env_name in enumerate(masked_env_names):
                 env_to_indices.setdefault(env_name, []).append(idx)
@@ -512,7 +524,7 @@ def train(config: TrainerConfig):
             if micro_batch["training_mode"] != "sft":
                 with torch.no_grad():
                     _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(out["logprobs"], inference_logprobs)
-                mismatch_kl = mismatch_kl[loss_mask].detach().to("cpu")
+                mismatch_kl = mismatch_kl[loss_masks.rl].detach().to("cpu")
                 tensors["mismatch_kl/all"].append(mismatch_kl)
                 for env_name, indices in env_to_indices.items():
                     tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])

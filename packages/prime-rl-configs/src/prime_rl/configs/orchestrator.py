@@ -207,62 +207,38 @@ class EnvConfig(BaseConfig):
 
 
 class SystemRoleEchoConfig(BaseConfig):
-    """Per-system-message echo — cross-entropy supervision on system-prompt tokens."""
+    """Echo supervision for system-message content tokens."""
 
-    alpha: float = 1.0
-    """Per-token advantage on system-message content positions."""
+    alpha: float = Field(1.0, allow_inf_nan=False)
+    """Per-token echo weight."""
 
 
 class UserRoleEchoConfig(BaseConfig):
-    """Per-user-message echo — cross-entropy supervision on user-turn tokens."""
+    """Echo supervision for user-message content tokens."""
 
-    alpha: float = 1.0
-    """Per-token advantage on user-message content positions."""
+    alpha: float = Field(1.0, allow_inf_nan=False)
+    """Per-token echo weight."""
 
 
 class AssistantRoleEchoConfig(BaseConfig):
-    """Per-assistant-message echo — cross-entropy supervision on assistant tokens.
+    """Echo supervision for assistant-message content and completion tokens."""
 
-    Assistant tokens normally carry RL gradient (the rollout's GRPO advantage);
-    enabling this OVERRIDES that with ``alpha`` on both prompt-side prior turns
-    and the current completion. ``alpha=0`` is the canonical "kill RL on
-    assistant tokens" knob for pure-SFT ablations.
-    """
-
-    alpha: float = 1.0
-    """Per-token advantage on assistant-message positions (overrides RL)."""
+    alpha: float = Field(1.0, allow_inf_nan=False)
+    """Per-token echo weight. ``alpha=0`` keeps the token supervised but gives it zero gradient."""
 
 
 class ToolRoleEchoConfig(BaseConfig):
-    """Per-tool-message echo — cross-entropy supervision on tool response tokens.
+    """Echo supervision for tool-message content tokens."""
 
-    Restrict to specific tool functions via ``tool_names``; defaults to all tools.
-    """
+    alpha: float = Field(1.0, allow_inf_nan=False)
+    """Per-token echo weight."""
 
-    alpha: float = 1.0
-    """Per-token advantage on tool-message content positions."""
-
-    tool_names: list[str] | None = None
+    tool_names: set[str] | None = Field(None, min_length=1)
     """Restrict echo to these tool function names; None = all tools."""
 
 
 class EchoFilterConfig(BaseConfig):
-    """User-pluggable per-token filter layered on top of the role baseline.
-
-    A callable resolved at env setup via ``import_object(import_path)``::
-
-        def my_filter(rollout: vf.RolloutOutput, **kwargs) -> list[list[bool]]: ...
-
-    It returns one bool mask per trajectory step (inner length =
-    ``len(prompt_ids) + len(completion_ids)`` for that step): ``False`` drops a
-    position back to no-echo (``echo_alpha = None``), ``True`` keeps the role
-    decision. The filter can only narrow — it never adds echo where no role
-    enabled it.
-
-    Must be deterministic given ``(rollout, kwargs)`` — DP ranks run it
-    independently, so non-deterministic output diverges gradients silently. All
-    failures (bad import, wrong shape, non-bool element, user exception) propagate.
-    """
+    """Optional callable that narrows role-selected echo tokens per rollout."""
 
     import_path: str
     """Dotted import path to the filter callable, e.g. ``"my_module.filter_warnings"``."""
@@ -272,25 +248,7 @@ class EchoFilterConfig(BaseConfig):
 
 
 class EchoConfig(BaseConfig):
-    """Per-env per-role echo — auxiliary cross-entropy supervision on prompt-side
-    tokens (and assistant completions when assistant echo is enabled).
-
-    Each role has its own sub-config; roles enable independently (``None`` =
-    disabled) and carry their own ``alpha`` (default 1.0, so a role contributes
-    as soon as it's set). At least one role must be enabled — see
-    :meth:`require_at_least_one_role`. To disable echo for an env, omit the
-    ``[orchestrator.train.env.echo]`` block entirely.
-
-    The per-token alpha array is built from the renderer's ``prompt_attribution``;
-    only message-body (content) tokens get the overlay, never template scaffold.
-    Set :attr:`filter` to narrow it further (see :class:`EchoFilterConfig`).
-
-    **Wire format.** Each ``TrainingSample`` carries ``echo_alpha:
-    list[float | None]`` parallel to ``prompt_ids + completion_ids``: ``None``
-    means "not echoed (RL applies)", a float means "echo at this alpha
-    (overrides RL, flips loss_mask=True)". ``alpha=0`` is a real kill-RL value,
-    distinct from ``None``.
-    """
+    """Enable CE echo on selected message roles for this training env."""
 
     system: SystemRoleEchoConfig | None = None
     """System-message echo (default: disabled)."""
@@ -299,25 +257,18 @@ class EchoConfig(BaseConfig):
     """User-message echo (default: disabled)."""
 
     assistant: AssistantRoleEchoConfig | None = None
-    """Assistant-message echo (default: disabled) — overrides RL on assistant tokens."""
+    """Assistant-message echo (default: disabled)."""
 
     tool: ToolRoleEchoConfig | None = None
     """Tool-message echo (default: disabled)."""
 
     filter: EchoFilterConfig | None = None
-    """Optional per-token filter on top of the role baseline; strictly narrows
-    (never adds echo). See :class:`EchoFilterConfig`."""
+    """Optional per-token filter on top of the role baseline."""
 
     @model_validator(mode="after")
-    def require_at_least_one_role(self) -> "EchoConfig":
-        """Reject an all-None config — omit the ``[...echo]`` block to disable instead."""
-        if all(getattr(self, role) is None for role in ("system", "user", "assistant", "tool")):
-            raise ValueError(
-                "EchoConfig requires at least one role to be enabled. Set "
-                "`system`, `user`, `assistant`, or `tool` to a per-role config "
-                "block — or omit the [orchestrator.train.env.echo] block "
-                "entirely to disable echo for this env."
-            )
+    def validate_roles(self) -> "EchoConfig":
+        if self.system is self.user is self.assistant is self.tool is None:
+            raise ValueError("EchoConfig requires at least one of system, user, assistant, or tool.")
         return self
 
 
@@ -330,7 +281,7 @@ class TrainEnvConfig(EnvConfig):
     Inherits from ``orchestrator.group_size`` when unset."""
 
     echo: EchoConfig | None = None
-    """Per-env per-role echo config (None = disabled). See :class:`EchoConfig`."""
+    """Per-env per-role echo config."""
 
 
 class EvalEnvConfig(EnvConfig):

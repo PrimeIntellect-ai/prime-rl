@@ -46,12 +46,8 @@ class TensorMicroBatch(TypedDict):
     # sft → sft loss). All samples in a micro batch share the same mode.
     training_mode: str
 
-    # Per-token echo mask (parallel to input_ids): True where the token is
-    # an echo position (per-role cross-entropy overlay; see ``EchoConfig``).
-    # None when no sample in this micro-batch opted into echo. When present,
-    # loss.default_loss_fn forces IS ratio = 1 and skips DPPO / KL on these
-    # positions; the advantages tensor already carries the per-token alpha
-    # at those positions (overlaid in prepare_sample).
+    # True where the token participates in echo CE; None when the micro-batch
+    # has no echo tokens. ``advantages`` carries alpha on echo positions.
     echo_mask: Bool[Tensor, "batch seq"] | None
 
 
