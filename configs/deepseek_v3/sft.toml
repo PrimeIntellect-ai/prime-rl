@@ -1,4 +1,3 @@
-
 max_steps = 300
 output_dir = "./output/deepseek_v3"
 loss_impl = "liger_fused"
@@ -8,17 +7,13 @@ project = "prime-rl"
 name = "deepseek_v3"
 offline = true
 
-
 [ckpt]
 interval = 300
 keep_last = 5
-resume_step = -1 
+resume_step = -1
 
 [ckpt.weights]
 save_format = "safetensors"
-
-
-
 
 [model]
 moe_use_grouped_mm = true
@@ -33,8 +28,6 @@ dp_replicate = 1
 attn = "sdpa"
 fsdp_cpu_offload = false
 reshard_after_forward = true
-
-
 impl = "custom"
 
 [model.ac]
@@ -48,7 +41,6 @@ weight_decay = 0.01
 
 [scheduler]
 
-
 [data]
 type = "sft"
 name = "PrimeIntellect/Reverse-Text-SFT"
@@ -58,7 +50,6 @@ seq_len = 1024
 pack_function = "stack"
 shuffle = true
 seed = 42
-
 
 [deployment]
 type = "single_node"

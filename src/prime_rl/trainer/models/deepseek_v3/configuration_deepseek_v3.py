@@ -111,9 +111,6 @@ class DeepseekV3Config(PretrainedConfig):
             **kwargs,
         )
 
-        assert self.qk_nope_head_dim + self.qk_rope_head_dim == self.qk_head_dim
-        assert self.n_routed_experts % self.n_group == 0  # required for TopK router
-
         if hasattr(self, "rope_scaling") and isinstance(self.rope_scaling, dict):
             rope_conf = self.rope_scaling
             self.rope_type = rope_conf.get("rope_type", rope_conf.get("type"))
@@ -124,10 +121,20 @@ class DeepseekV3Config(PretrainedConfig):
         else:
             self.rope_type = "default"
 
-
         self.rope_parameters = self.rope_scaling or self.rope_parameters
-        self.rope_parameters = self.rope_parameters if self.rope_parameters is not None else {}
-        
+        self.rope_parameters = (
+            self.rope_parameters if self.rope_parameters is not None else {}
+        )
+
+        self.__validate__()
+
+    def __validate__(self):
+        assert self.qk_nope_head_dim + self.qk_rope_head_dim == self.qk_head_dim
+        assert self.n_routed_experts % self.n_group == 0  # required for TopK router
+        assert (
+            self.load_balance_coeff > 0
+        )  # router expert_bias always used in HF implementation
+
     @property
     def rope_total_dim(self):
         return self.num_attention_heads * self.qk_rope_head_dim

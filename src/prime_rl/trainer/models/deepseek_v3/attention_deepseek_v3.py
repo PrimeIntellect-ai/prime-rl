@@ -107,7 +107,7 @@ class DeepSeekAttentionCore:
             if num_queries_per_kv > 1:
                 k = k.repeat_interleave(num_queries_per_kv, dim=2)
                 v = v.repeat_interleave(num_queries_per_kv, dim=2)
-                
+
             q = q.transpose(1, 2)
             k = k.transpose(1, 2)
             v = v.transpose(1, 2)

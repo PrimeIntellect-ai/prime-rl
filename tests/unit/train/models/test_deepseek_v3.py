@@ -187,32 +187,16 @@ def test_deepseekv3_mlp_only(n_group: int, device):
     for layer in prime_model.model.layers:
         layer.self_attn.forward = foo
 
-    # assert_models_close(hf_model, prime_model, bs = 1, sl = 100)
+    assert_models_close(hf_model, prime_model, bs=1, sl=100)
 
-    bs = 1
-    sl = 100
-    with torch.device(device), default_dtype(torch.float32):
-        input_ids = torch.randint(0, hf_model.config.vocab_size, (bs, sl))
-        position_ids = torch.arange(1, sl).unsqueeze(0)
+    ## check that expert bias works
+    num_experts = prime_model.config.n_routed_experts
+    bias_val = 100 * torch.rand(num_experts, dtype=torch.float32, device=device)
 
-    hf_output = hf_model(input_ids, position_ids)
-    prime_output = prime_model(input_ids, position_ids)
+    hf_model.model.layers[3].mlp.gate.e_score_correction_bias = bias_val
+    prime_model.model.layers[3].mlp.expert_bias = bias_val
 
-    hf_output.logits.sum().backward()
-    prime_output["logits"].sum().backward()
-
-    logits_diff = prime_output["logits"] - hf_output.logits
-    assert torch.allclose(
-        logits_diff, torch.zeros_like(logits_diff), atol=2e-2
-    ), f"Max logits diff: {logits_diff.abs().max()}"
-
-    grad_diff = (
-        hf_model.model.embed_tokens.weight.grad
-        - prime_model.model.embed_tokens.weight.grad
-    )
-    assert torch.allclose(
-        grad_diff, torch.zeros_like(grad_diff), atol=2
-    ), f"Max grad diff: {grad_diff.abs().max()}"
+    assert_models_close(hf_model, prime_model, bs=1, sl=100)
 
 
 def test_embeddings(device):
@@ -254,6 +238,26 @@ def test_deepseek_v3_cp_patching():
 
     mock_group = MagicMock()
     substitute_ring_attn(process_group=mock_group, heads_k_stride=1)
+
+    assert DeepSeekAttentionCore._compute_attention is not original_method
+
+    # Restore to avoid polluting other tests
+    DeepSeekAttentionCore._compute_attention = original_method
+
+
+def test_deepseek_v3_ulysses_patching():
+    """Verify substitute_ulysses_attn patches DeepSeekAttentionCore._compute_attention."""
+    from unittest.mock import MagicMock
+
+    from prime_rl.trainer.models.layers.ulysses_attn import substitute_ulysses_attn
+    from prime_rl.trainer.models.deepseek_v3.attention_deepseek_v3 import (
+        DeepSeekAttentionCore,
+    )
+
+    original_method = DeepSeekAttentionCore._compute_attention
+
+    mock_group = MagicMock()
+    substitute_ulysses_attn(process_group=mock_group)
 
     assert DeepSeekAttentionCore._compute_attention is not original_method
 

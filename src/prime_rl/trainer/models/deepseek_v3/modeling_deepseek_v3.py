@@ -204,11 +204,6 @@ class DeepSeekV3MoE(MoE):
         )
         self.router = DeepSeekV3TopKRouter(config)
 
-        # # mandratory to have 'expert_bias' for converting weights from HF
-        # if self.expert_bias is None:
-        #     delattr(self, "expert_bias")
-        #     self.register_buffer("expert_bias", torch.zeros(config.n_routed_experts))
-
 
 class DeepseekV3MLADecoderLayer(GradientCheckpointingLayer):
     """DeepSeek V3 layer with Multi-head Latent Attention.
