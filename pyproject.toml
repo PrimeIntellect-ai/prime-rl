@@ -77,7 +77,6 @@ envs = [
     "math-python",
     "math500",
     "mini-swe-agent-plus",
-    "mini-swe-agent-plus-rlm",
     "mmlu-pro",
     "opencode-cp",
     "opencode-deepdive",
@@ -213,7 +212,6 @@ math-env = { path = "deps/research-environments/environments/math_env", editable
 math-python = { path = "deps/verifiers/environments/math_python", editable = true }
 math500 = { path = "deps/research-environments/environments/math500", editable = true }
 mini-swe-agent-plus = { path = "deps/research-environments/environments/mini_swe_agent_plus", editable = true }
-mini-swe-agent-plus-rlm = { path = "deps/research-environments/environments/mini_swe_agent_plus_rlm", editable = true }
 mmlu-pro = { path = "deps/research-environments/environments/mmlu_pro", editable = true }
 opencode-cp = { path = "deps/research-environments/environments/opencode_cp", editable = true }
 opencode-deepdive = { path = "deps/research-environments/environments/opencode_deepdive", editable = true }
