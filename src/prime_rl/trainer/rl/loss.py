@@ -192,12 +192,8 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     }
 
     if inputs.echo_mask is not None:
-        metrics["echo_nll_mean"] = _safe_mean(-trainer_logprobs, masks.echo)
+        metrics["echo_nll"] = _safe_mean(-trainer_logprobs, masks.echo)
         metrics["echo_token_count"] = masks.echo.sum().float()
-        if masks.echo.any():
-            metrics["echo_nll_max"] = (-trainer_logprobs[masks.echo]).max()
-        else:
-            metrics["echo_nll_max"] = torch.tensor(0.0, device=trainer_logprobs.device)
 
     return LossOutputs(loss=loss, metrics=metrics)
 
