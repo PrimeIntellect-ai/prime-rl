@@ -132,18 +132,15 @@ class NativeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
 
 class MooncakeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
     type: Literal["mooncake"] = "mooncake"
-    """Mooncake distributed store offloading (standalone-store topology). A per-node ``mooncake_master`` + ``mooncake_client`` own the pool and vLLM workers are clients. The cpu tier sets the client's DRAM segment; the optional disk tier adds the client's SSD tier."""
-
-    master_server_address: str | None = None
-    """Mooncake master address (``host:port``). If None, the launcher starts a node-local master."""
+    """Mooncake distributed store offloading (SLURM only). One ``mooncake_master`` + metadata server runs on the head inference node; every node runs a ``mooncake_client`` contributing its segment to the single shared pool, so prefixes cached on any node are reusable by all. The cpu tier sizes each node's DRAM segment; the optional disk tier adds an SSD tier."""
 
     device_name: str = ""
     """RDMA device name(s) for the store (empty = auto-detect)."""
 
     def to_connector_dict(self) -> dict[str, Any]:
-        # Sizes/addresses/tiers are realized via the MOONCAKE_CONFIG_PATH JSON and the
-        # mooncake_client launch; the worker reads preferred_segment from the
-        # MOONCAKE_PREFERRED_SEGMENT env the launcher exports.
+        # Addresses/sizes/tiers are realized by the per-node store launch in the sbatch
+        # template (MOONCAKE_CONFIG_PATH JSON); blocks are keyed by model + parallel rank +
+        # content hash (no instance id), so the shared pool is reused across nodes/replicas.
         return {
             "kv_connector": "MooncakeStoreConnector",
             "kv_role": "kv_both",

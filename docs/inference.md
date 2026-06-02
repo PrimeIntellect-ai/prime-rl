@@ -197,7 +197,7 @@ Maximizing KV-Cache space is crucial to support high-concurrency workloads. You 
 The `type` field selects the backend:
 
 - `native` — vLLM's built-in offloading. CPU-only uses `OffloadingConnector`; CPU+disk uses `TieringOffloadingSpec` (a CPU primary tier with a filesystem secondary tier). Fully self-contained — no extra processes.
-- `mooncake` — a per-node [Mooncake](https://github.com/kvcache-ai/Mooncake) distributed store. The launcher starts a node-local `mooncake_master` + `mooncake_client`; the client owns the pool (a DRAM segment, plus a file-backed disk tier when `disk` is set).
+- `mooncake` — a [Mooncake](https://github.com/kvcache-ai/Mooncake) **shared distributed store** (SLURM only). One `mooncake_master` + metadata server runs on the head inference node; every inference node runs a `mooncake_client` that contributes its DRAM (and, with `disk`, SSD) segment to that *single* pool. Because blocks are keyed by model + parallel rank + content hash (no instance id), a prefix cached by one node/replica is reusable by all of them over RDMA — pooling every node's CPU RAM into one KV cache. Use `native` for local/single-process runs.
 
 ```toml
 # Native CPU offload (reserves 128GB of CPU KV cache for this instance)
@@ -223,7 +223,7 @@ num_bytes = 128_000_000_000
 path = "/scratch/kv"
 ```
 
-For `native`, `cpu.num_bytes` is the aggregate CPU KV pool for the instance (vLLM shards it across workers). For `mooncake`, `cpu.num_bytes` is the per-node store client's DRAM segment (the store uses RDMA, so it requires an RDMA-capable fabric). Enabling offload automatically enables prefix caching.
+For `native`, `cpu.num_bytes` is the aggregate CPU KV pool for the instance (vLLM shards it across workers). For `mooncake`, `cpu.num_bytes` is the DRAM each node contributes to the shared pool (so the total pool ≈ `num_bytes × #inference-nodes`); the store uses RDMA, so it requires an RDMA-capable fabric. Enabling offload automatically enables prefix caching.
 
 
 ### Optimized P/D disaggregation deployment
