@@ -352,20 +352,18 @@ def interleave_rollout(
                 )
                 routed_experts_start = routed_experts_payload["start"]
 
-            prompt_ids = list(tokens["prompt_ids"])
-            completion_ids = list(tokens["completion_ids"])
             step_filter_mask = filter_masks[step_idx] if filter_masks is not None else None
             echo_alpha = _build_step_echo_alpha(
                 prompt_attribution=tokens.get("prompt_attribution"),
-                prompt_len=len(prompt_ids),
-                completion_len=len(completion_ids),
+                prompt_len=len(tokens["prompt_ids"]),
+                completion_len=len(tokens["completion_ids"]),
                 echo_config=echo_config,
                 filter_mask=step_filter_mask,
             )
             return {
-                "prompt_ids": prompt_ids,
+                "prompt_ids": list(tokens["prompt_ids"]),
                 "prompt_mask": list(map(bool, tokens["prompt_mask"])),
-                "completion_ids": completion_ids,
+                "completion_ids": list(tokens["completion_ids"]),
                 "completion_mask": list(map(bool, tokens["completion_mask"])),
                 "completion_logprobs": list(tokens["completion_logprobs"]),
                 "routed_experts": routed_experts,
