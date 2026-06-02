@@ -25,6 +25,7 @@ from prime_rl.trainer.lora import (
 from prime_rl.utils.logger import get_logger
 
 PYTORCH_WRAPPER_PREFIXES = ["_fsdp_wrapped_module.", "_orig_module.", "_checkpoint_wrapped_module."]
+TRANSFORMERS_REVERT_BYPASS_MODEL_TYPES = {"qwen3_5"}
 
 
 def _strip_pytorch_wrapper_prefix(key: str) -> str:
@@ -63,6 +64,17 @@ def load_state_dict(save_dir: Path) -> dict[str, Tensor]:
             for key in f.keys():
                 state_dict[key] = f.get_tensor(key)
     return state_dict
+
+
+def revert_transformers_weight_conversion(model: nn.Module, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+    """Return a transformers model state dict in HF hub naming."""
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    if model_type in TRANSFORMERS_REVERT_BYPASS_MODEL_TYPES:
+        return state_dict
+
+    from transformers.core_model_loading import revert_weight_conversion
+
+    return revert_weight_conversion(model, state_dict)
 
 
 def save_state_dict(
