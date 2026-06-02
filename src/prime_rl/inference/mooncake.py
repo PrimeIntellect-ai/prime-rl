@@ -92,11 +92,13 @@ class MooncakeStore:
 def _resolve_addresses(cfg: MooncakeKVCacheOffloadConfig) -> tuple[str, str, str, int]:
     """Return (master_server_address, metadata_server, client_host, client_port).
 
-    Defaults launch a node-local master that also hosts the HTTP metadata server.
+    The metadata server is always the HTTP server hosted by the master (auto-detected to the
+    master host); the node-local master hosts it unless an external master is configured.
     """
     ip = _local_ip()
     master_addr = cfg.master_server_address or f"{ip}:{DEFAULT_MASTER_RPC_PORT}"
-    metadata = cfg.metadata_server or f"http://{ip}:{DEFAULT_METADATA_HTTP_PORT}/metadata"
+    master_host = master_addr.split(":")[0]
+    metadata = f"http://{master_host}:{DEFAULT_METADATA_HTTP_PORT}/metadata"
     return master_addr, metadata, ip, DEFAULT_CLIENT_PORT
 
 
@@ -129,24 +131,21 @@ def _offload_env(cfg: MooncakeKVCacheOffloadConfig) -> dict[str, str]:
     if cfg.disk is None:
         return {}
     cfg.disk.path.mkdir(parents=True, exist_ok=True)
-    env = {
+    return {
         "MOONCAKE_OFFLOAD_FSDIR": str(cfg.disk.path),
         "MOONCAKE_OFFLOAD_FILE_STORAGE_PATH": str(cfg.disk.path),
         "MOONCAKE_OFFLOAD_ENABLE_EVICTION": "true",
     }
-    if cfg.disk.num_bytes is not None:
-        env["MOONCAKE_OFFLOAD_TOTAL_SIZE_LIMIT_BYTES"] = str(int(cfg.disk.num_bytes))
-    return env
 
 
-def _launch_master(cfg: MooncakeKVCacheOffloadConfig, ip: str, log_dir: Path, host_metadata: bool) -> subprocess.Popen:
-    args = [_bin("mooncake_master"), f"-rpc_port={DEFAULT_MASTER_RPC_PORT}"]
-    if host_metadata:
-        args += [
-            "-enable_http_metadata_server",
-            f"-http_metadata_server_host={ip}",
-            f"-http_metadata_server_port={DEFAULT_METADATA_HTTP_PORT}",
-        ]
+def _launch_master(cfg: MooncakeKVCacheOffloadConfig, ip: str, log_dir: Path) -> subprocess.Popen:
+    args = [
+        _bin("mooncake_master"),
+        f"-rpc_port={DEFAULT_MASTER_RPC_PORT}",
+        "-enable_http_metadata_server",
+        f"-http_metadata_server_host={ip}",
+        f"-http_metadata_server_port={DEFAULT_METADATA_HTTP_PORT}",
+    ]
     if cfg.disk is not None:
         # The master owns the file-storage backend config the client mounts against.
         args += ["-enable_offload=true", f"-root_fs_dir={cfg.disk.path}"]
@@ -185,15 +184,13 @@ def start_mooncake_store(cfg: MooncakeKVCacheOffloadConfig, output_dir: Path) ->
     log_dir.mkdir(parents=True, exist_ok=True)
 
     master_addr, metadata, client_ip, client_port = _resolve_addresses(cfg)
-    host_metadata = cfg.metadata_server is None  # we host it on the master unless overridden
 
     master = None
     if cfg.master_server_address is None:
-        master = _launch_master(cfg, client_ip, log_dir, host_metadata=host_metadata)
+        master = _launch_master(cfg, client_ip, log_dir)
         master_host, master_port = master_addr.split(":")
         _wait_for_port(master_host, int(master_port))
-        if host_metadata:
-            _wait_for_port(client_ip, DEFAULT_METADATA_HTTP_PORT)
+        _wait_for_port(client_ip, DEFAULT_METADATA_HTTP_PORT)
 
     client = _launch_client(cfg, client_ip, master_addr, metadata, log_dir)
     _wait_for_port(client_ip, client_port)

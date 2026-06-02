@@ -1,4 +1,3 @@
-import warnings
 from argparse import Namespace
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
@@ -94,10 +93,7 @@ class CPUOffloadTier(BaseConfig):
 
 class DiskOffloadTier(BaseConfig):
     path: Path
-    """Filesystem root for the disk tier. For ``native`` this is the ``fs_python`` secondary tier's ``root_dir``; for ``mooncake`` it is the store client's ``MOONCAKE_OFFLOAD_FILE_STORAGE_PATH``."""
-
-    num_bytes: int | None = Field(None, gt=0)
-    """Advisory per-node disk pool size. Neither backend enforces a hard disk quota — the native ``fs_python`` tier and Mooncake's file offload are both bounded by the filesystem at ``path``."""
+    """Filesystem root for the disk tier. For ``native`` this is the ``fs_python`` secondary tier's ``root_dir``; for ``mooncake`` it is the store client's ``MOONCAKE_OFFLOAD_FILE_STORAGE_PATH``. Capacity is bounded by the filesystem at ``path`` (neither backend enforces a byte quota)."""
 
 
 class BaseKVCacheOffloadConfig(BaseConfig):
@@ -121,17 +117,6 @@ class NativeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
     type: Literal["native"] = "native"
     """vLLM-native offloading. cpu-only uses ``OffloadingConnector`` + ``CPUOffloadingSpec``; cpu+disk uses ``TieringOffloadingSpec`` (CPU primary tier + ``fs_python`` disk secondary). Fully self-contained — no external processes."""
 
-    @model_validator(mode="after")
-    def warn_ignored_disk_capacity(self):
-        if self.disk is not None and self.disk.num_bytes is not None:
-            warnings.warn(
-                "inference.kv_cache_offload.disk.num_bytes is ignored by the native backend: the "
-                "fs_python disk tier has no quota and is bounded by the filesystem at disk.path. "
-                "Set num_bytes only with the mooncake backend.",
-                stacklevel=1,
-            )
-        return self
-
     def to_connector_dict(self) -> dict[str, Any]:
         assert self.cpu is not None
         extra: dict[str, Any] = {"cpu_bytes_to_use": int(self.cpu.num_bytes)}
@@ -151,9 +136,6 @@ class MooncakeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
 
     master_server_address: str | None = None
     """Mooncake master address (``host:port``). If None, the launcher starts a node-local master."""
-
-    metadata_server: str | None = None
-    """Mooncake metadata-server connection string. If None, the launcher hosts an HTTP metadata server on the node-local master."""
 
     device_name: str = ""
     """RDMA device name(s) for the store (empty = auto-detect)."""
