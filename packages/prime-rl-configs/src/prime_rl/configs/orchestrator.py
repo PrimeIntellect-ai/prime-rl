@@ -209,14 +209,14 @@ class EnvConfig(BaseConfig):
 class SystemRoleEchoConfig(BaseConfig):
     """Per-system-message echo — cross-entropy supervision on system-prompt tokens."""
 
-    alpha: float = 0.0
+    alpha: float = 1.0
     """Per-token advantage on system-message content positions."""
 
 
 class UserRoleEchoConfig(BaseConfig):
     """Per-user-message echo — cross-entropy supervision on user-turn tokens."""
 
-    alpha: float = 0.0
+    alpha: float = 1.0
     """Per-token advantage on user-message content positions."""
 
 
@@ -229,7 +229,7 @@ class AssistantRoleEchoConfig(BaseConfig):
     assistant tokens" knob for pure-SFT ablations.
     """
 
-    alpha: float = 0.0
+    alpha: float = 1.0
     """Per-token advantage on assistant-message positions (overrides RL)."""
 
 
@@ -239,7 +239,7 @@ class ToolRoleEchoConfig(BaseConfig):
     Restrict to specific tool functions via ``tool_names``; defaults to all tools.
     """
 
-    alpha: float = 0.0
+    alpha: float = 1.0
     """Per-token advantage on tool-message content positions."""
 
     tool_names: list[str] | None = None
@@ -276,7 +276,8 @@ class EchoConfig(BaseConfig):
     tokens (and assistant completions when assistant echo is enabled).
 
     Each role has its own sub-config; roles enable independently (``None`` =
-    disabled) and carry their own ``alpha``. At least one role must be enabled — see
+    disabled) and carry their own ``alpha`` (default 1.0, so a role contributes
+    as soon as it's set). At least one role must be enabled — see
     :meth:`require_at_least_one_role`. To disable echo for an env, omit the
     ``[orchestrator.train.env.echo]`` block entirely.
 
