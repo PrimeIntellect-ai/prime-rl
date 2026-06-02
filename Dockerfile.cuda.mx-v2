@@ -12,9 +12,14 @@ USER root
 # ────────────────────────────────────────────────────────────────────
 # 1. Update modelexpress to the PR #349 branch
 #    (Phase 4 multi-source slice picker + MxWeightTransferEngine)
+#
+# uv lives at /usr/local/bin/uv (per Dockerfile.cuda line 31's
+# UV_INSTALL_DIR). The venv has no pip installed by default, so we
+# use uv with --python pointing at the venv interpreter.
 # ────────────────────────────────────────────────────────────────────
 RUN --mount=type=cache,target=/app/.cache/uv \
-    /app/.venv/bin/uv pip install --no-deps --reinstall \
+    /usr/local/bin/uv pip install --no-deps --reinstall \
+        --python /app/.venv/bin/python \
         "modelexpress @ git+https://github.com/ai-dynamo/modelexpress.git@kavink/post-2389-phase3-4#subdirectory=modelexpress_client/python"
 
 # ────────────────────────────────────────────────────────────────────
@@ -31,6 +36,8 @@ COPY --chown=appuser:appuser packages/prime-rl-configs/src/prime_rl/configs/trai
 # ────────────────────────────────────────────────────────────────────
 RUN /app/.venv/bin/python -c "from modelexpress.vllm_weight_transfer import MxWeightTransferEngine, MxInitInfo, MxUpdateInfo; print('engine adapter:', MxWeightTransferEngine)"
 RUN /app/.venv/bin/python -c "from modelexpress.nemo_rl_v2 import MxV2TrainingPublisher, MxV2RefitReceiver, TrainerWorldLayout; print('v2 fat clients OK')"
-RUN /app/.venv/bin/python -c "import flash_attn; import flash_attn.ops; print('flash_attn ABI:', flash_attn.__version__)"
+RUN /app/.venv/bin/python -c "import vllm; print('vllm:', vllm.__version__)"
+# Smoke test the mx_v2 imports from prime-rl-side
+RUN /app/.venv/bin/python -c "import sys; sys.path.insert(0, '/app/src'); sys.path.insert(0, '/app/packages/prime-rl-configs/src'); from prime_rl.configs.trainer import MxV2WeightBroadcastConfig; print('MxV2WeightBroadcastConfig OK')"
 
 USER appuser
