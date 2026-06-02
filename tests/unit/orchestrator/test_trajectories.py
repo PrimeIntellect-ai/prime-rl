@@ -1833,14 +1833,14 @@ def test_apply_echo_filter_invalid_raises(dims, filter_return, exc_type, match):
     (a truthy ``1`` is rejected)."""
     rollout = _rollout_with_steps(*dims)
     with pytest.raises(exc_type, match=match):
-        apply_echo_filter(rollout, _const_filter(filter_return), None)
+        apply_echo_filter(rollout, _const_filter(filter_return))
 
 
 def test_apply_echo_filter_valid_returns_masks():
     """Happy path: a well-shaped filter return passes through unchanged."""
     rollout = _rollout_with_steps((3, 2), (4, 1))
     masks = [[True, False, True, True, False], [False, False, True, True, False]]
-    assert apply_echo_filter(rollout, _const_filter(masks), None) == masks
+    assert apply_echo_filter(rollout, _const_filter(masks)) == masks
 
 
 def test_apply_echo_filter_empty_trajectory_returns_empty_masks():
@@ -1848,7 +1848,7 @@ def test_apply_echo_filter_empty_trajectory_returns_empty_masks():
     rollout = vf.RolloutOutput(
         example_id=0, env_name="test-env", trajectory=[], sampling_args={"temperature": 1.0}, error=None
     )
-    assert apply_echo_filter(rollout, _const_filter([]), None) == []
+    assert apply_echo_filter(rollout, _const_filter([])) == []
 
 
 def test_apply_echo_filter_propagates_user_exception():
@@ -1862,7 +1862,7 @@ def test_apply_echo_filter_propagates_user_exception():
         raise FilterCrash("boom")
 
     with pytest.raises(FilterCrash, match="boom"):
-        apply_echo_filter(rollout, filter_fn, None)
+        apply_echo_filter(rollout, filter_fn)
 
 
 def test_apply_echo_filter_receives_full_rollout():
@@ -1875,29 +1875,8 @@ def test_apply_echo_filter_receives_full_rollout():
         seen.update(example_id=rollout["example_id"], error=rollout["error"], n=len(rollout["trajectory"]))
         return [[True] * 3]
 
-    apply_echo_filter(rollout, filter_fn, None)
+    apply_echo_filter(rollout, filter_fn)
     assert seen == {"example_id": 0, "error": None, "n": 1}
-
-
-@pytest.mark.parametrize(
-    ("filter_kwargs", "expected"),
-    [
-        pytest.param({"pattern": "warn", "threshold": 3}, {"pattern": "warn", "threshold": 3}, id="forwards_kwargs"),
-        pytest.param(None, {}, id="none_means_empty"),
-    ],
-)
-def test_apply_echo_filter_kwargs(filter_kwargs, expected):
-    """``filter_kwargs`` flow through to the filter as ``**kwargs``; ``None``
-    means no kwargs (no ``**None`` TypeError)."""
-    rollout = _rollout_with_steps((2, 0))
-    captured: dict = {}
-
-    def filter_fn(rollout, **kwargs):
-        captured.update(kwargs)
-        return [[True, True]]
-
-    apply_echo_filter(rollout, filter_fn, filter_kwargs)
-    assert captured == expected
 
 
 # ---------------------------------------------------------------------------

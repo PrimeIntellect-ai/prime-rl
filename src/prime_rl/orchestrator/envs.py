@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import functools
 import multiprocessing as mp
 import time
 from collections.abc import Awaitable, Callable, Iterator, Sequence
@@ -172,7 +173,8 @@ class TrainEnv(Env):
         self.sampling_args = config.sampling.to_sampling_args()
         self.echo_filter_fn: Callable[..., list[list[bool]]] | None = None
         if config.echo is not None and config.echo.filter is not None:
-            self.echo_filter_fn = import_object(config.echo.filter.import_path)
+            fn = import_object(config.echo.filter.import_path)
+            self.echo_filter_fn = functools.partial(fn, **config.echo.filter.kwargs)
 
     def get_dataset(self, seed: int | None = None):
         return self.env.get_dataset(seed=seed)

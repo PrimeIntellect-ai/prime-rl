@@ -326,18 +326,16 @@ def _step_echo_alpha(
 def apply_echo_filter(
     rollout: vf.RolloutOutput,
     filter_fn: Callable[..., list[list[bool]]],
-    filter_kwargs: dict[str, Any] | None = None,
 ) -> list[list[bool]]:
     """Invoke the user's echo filter and validate its return, returning the
-    per-step masks for :func:`interleave_rollout`. ``filter_kwargs`` (or None
-    for empty) are forwarded as ``**kwargs``. Enforces the
+    per-step masks for :func:`interleave_rollout`. Enforces the
     :class:`EchoFilterConfig` contract loudly: ``TypeError`` for a non-list /
     non-bool return, ``ValueError`` for an outer length ≠ trajectory steps or an
     inner length ≠ that step's ``prompt_ids + completion_ids``; the filter's own
     exceptions propagate.
     """
     trajectory = rollout["trajectory"]
-    result = filter_fn(rollout, **(filter_kwargs or {}))
+    result = filter_fn(rollout)
 
     if not isinstance(result, list):
         raise TypeError(f"echo filter must return list[list[bool]], got {type(result).__name__}")
