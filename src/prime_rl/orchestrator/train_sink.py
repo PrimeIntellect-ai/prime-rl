@@ -203,13 +203,17 @@ class TrainSink:
         assign_advantages(survivors, self.advantage_fn)
 
         # Propagate to the pre-tokenized samples so the orchestrator can
-        # collect samples at ship time without re-walking rollouts
+        # collect samples at ship time without re-walking rollouts. The env
+        # has a single sampling temperature; fan it out across each sample's
+        # completion tokens here (interleave leaves it empty).
+        temperature = env.sampling_args["temperature"]
         for r in survivors:
             for sample in r.samples:
                 sample.advantage = r.advantage
                 sample.reward = r.reward
                 sample.env_name = r.env_name
                 sample.training_mode = self.config.training_mode
+                sample.completion_temperatures = [temperature] * len(sample.completion_ids)
 
         if self.pre_filters:
             apply_filters(self.pre_filters, survivors)
