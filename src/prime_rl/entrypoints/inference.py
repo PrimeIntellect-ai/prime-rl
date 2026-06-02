@@ -123,24 +123,9 @@ def inference_slurm(config: InferenceConfig):
 
 def inference_local(config: InferenceConfig):
     """Run inference locally."""
-    import os
-
     from prime_rl.inference.server import setup_vllm_env
 
     logger = setup_logger("info")
-
-    # Mooncake offload relies on the per-node store the sbatch template launches (which also
-    # exports MOONCAKE_CONFIG_PATH). When that env is absent, this is a bare local run with no
-    # store, so fail fast instead of letting the worker error on a missing config.
-    if (
-        config.kv_cache_offload is not None
-        and config.kv_cache_offload.type == "mooncake"
-        and "MOONCAKE_CONFIG_PATH" not in os.environ
-    ):
-        raise ValueError(
-            "Mooncake KV offload requires SLURM — the per-node store (master + client) is launched "
-            "by the sbatch template. Use inference.kv_cache_offload.type='native' for local runs."
-        )
 
     if config.dry_run:
         logger.success("Dry run complete. To start inference locally, remove --dry-run from your command.")
