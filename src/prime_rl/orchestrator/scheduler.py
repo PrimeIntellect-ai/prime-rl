@@ -206,7 +206,7 @@ class Scheduler:
         env_name = group.example["env_name"]
         env = self.train_envs.get(env_name)
 
-        cache_salt = str(self.ckpt_step)
+        cache_salt = None if self.config.training_mode == "sft" else str(self.ckpt_step)
         if env.requires_group_scoring:
             rollout_count = group.rollouts_to_schedule
             group.rollouts_to_schedule = 0
