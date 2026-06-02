@@ -130,12 +130,13 @@ class NIXLMxV2WeightBroadcast(WeightBroadcast):
         # We pass our rank as ``worker_rank``; receivers with
         # ``same_rank_only=True`` (Phase 2 default) will only pull from
         # the trainer rank matching their own.
+        world_layout = self._build_world_layout()
         self._publisher = MxV2TrainingPublisher(
             agent_name=make_agent_name("trainer", self.world.rank),
             device_id=torch.cuda.current_device(),
             mx_server_url=f"{self.config.host}:{self.config.port}",
             worker_rank=self.world.rank,
-            world_layout=self._build_world_layout(),
+            world_layout=world_layout,
         )
         self._publisher.initialize(
             model_name=self.config.inference_model_name,
@@ -144,7 +145,7 @@ class NIXLMxV2WeightBroadcast(WeightBroadcast):
         self.is_initialized = True
         self.logger.info(
             f"[mx_v2] publisher initialized: rank={self.world.rank} "
-            f"layout={self._build_world_layout().encode()} "
+            f"layout={world_layout.encode()} "
             f"compile_target={self._conversion.compile_target}"
         )
 
