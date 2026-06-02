@@ -26,13 +26,13 @@ pool_size = 4
 # Step 0 on Qwen3-VL-4B vs color-codeword can be uniform (all-correct or
 # all-wrong), so don't enforce zero-advantage dropping or training would crash
 # before any progress.
-[[orchestrator.filters]]
+[[orchestrator.post_batch_filters]]
 type = "gibberish"
 
-[[orchestrator.filters]]
+[[orchestrator.post_batch_filters]]
 type = "repetition"
 
-[[orchestrator.filters]]
+[[orchestrator.post_batch_filters]]
 type = "zero_advantage"
 enforce = false
 

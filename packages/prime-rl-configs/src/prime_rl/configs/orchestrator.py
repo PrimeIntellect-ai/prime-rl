@@ -797,9 +797,7 @@ class OrchestratorConfig(BaseConfig):
         ZeroAdvantageFilterConfig(),
     ]
     """Filters applied *after* a batch has been assembled. Each filter annotates each rollout;
-    rollouts flagged by an enforcing filter are still recorded but not shipped to the trainer.
-    The TOML/CLI key ``filters`` is accepted as an alias for ``post_batch_filters`` (see
-    ``_alias_filters_to_post_batch_filters``)."""
+    rollouts flagged by an enforcing filter are still recorded but not shipped to the trainer."""
 
     log: LogConfig = LogConfig()
 
@@ -866,48 +864,6 @@ class OrchestratorConfig(BaseConfig):
     """Allow pre-release versions when installing environments (e.g. ``verifiers>=0.1.12.dev5``). Passes ``--prerelease`` to ``prime env install``."""
 
     experimental: OrchestratorExperimentalConfig = OrchestratorExperimentalConfig()
-
-    @model_validator(mode="before")
-    @classmethod
-    def _alias_filters_to_post_batch_filters(cls, data: Any) -> Any:
-        """``filters`` is accepted as an alias for ``post_batch_filters``."""
-        if isinstance(data, dict) and "filters" in data and "post_batch_filters" not in data:
-            data = dict(data)
-            data["post_batch_filters"] = data.pop("filters")
-        return data
-
-    @model_validator(mode="before")
-    @classmethod
-    def _warn_removed_buffer(cls, data: Any) -> Any:
-        """The ``[orchestrator.buffer]`` block (difficulty pools + online
-        difficulty filtering) has been removed. Drop it so old configs still
-        parse, but warn — loudly for ``online_difficulty_filtering``, since it
-        has a direct replacement."""
-        if not isinstance(data, dict) or "buffer" not in data:
-            return data
-        data = dict(data)
-        buffer = data.pop("buffer")
-        if isinstance(buffer, dict) and buffer.get("online_difficulty_filtering"):
-            warnings.warn(
-                "'[orchestrator.buffer]' has been removed and 'online_difficulty_filtering' "
-                "is now a no-op. To preserve the behavior (drop zero-advantage groups before "
-                "they enter the training batch), enforce the zero_advantage pre-batch filter:\n"
-                "    [[orchestrator.pre_batch_filters]]\n"
-                '    type = "zero_advantage"\n'
-                "    enforce = true\n"
-                "Difficulty pools (easy/hard thresholds and fractions) are removed with no "
-                "replacement.",
-                FutureWarning,
-                stacklevel=2,
-            )
-        else:
-            warnings.warn(
-                "'[orchestrator.buffer]' has been removed (difficulty pools are no longer "
-                "supported) and is being ignored. Remove it from your config.",
-                FutureWarning,
-                stacklevel=2,
-            )
-        return data
 
     @model_validator(mode="before")
     @classmethod

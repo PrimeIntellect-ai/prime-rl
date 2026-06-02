@@ -37,8 +37,8 @@ from prime_rl.orchestrator.types import (
     FinishedRollout,
     GroupState,
     InflightRollout,
-    Kind,
     Policy,
+    RolloutKind,
     TrainRollout,
 )
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
@@ -193,8 +193,8 @@ class RolloutDispatcher:
         return self.max_inflight - self.inflight_permits
 
     @property
-    def inflight_by_env(self) -> dict[tuple[Kind, str], int]:
-        counts: dict[tuple[Kind, str], int] = defaultdict(int)
+    def inflight_by_env(self) -> dict[tuple[RolloutKind, str], int]:
+        counts: dict[tuple[RolloutKind, str], int] = defaultdict(int)
         for meta in self.inflight.values():
             counts[(meta.kind, meta.env_name)] += meta.rollout_count
         return dict(counts)
@@ -263,8 +263,8 @@ class RolloutDispatcher:
         """Bump off-policy counters and drop groups past
         ``max_off_policy_steps`` (drop_group emits ``Cancelled`` markers so
         the sink still finalizes the partial group)."""
-        stale_groups: dict[uuid.UUID, Kind] = {}
-        cancelled_by_kind: dict[Kind, int] = {"train": 0, "eval": 0}
+        stale_groups: dict[uuid.UUID, RolloutKind] = {}
+        cancelled_by_kind: dict[RolloutKind, int] = {"train": 0, "eval": 0}
         for meta in self.inflight.values():
             meta.off_policy_steps += 1
             if meta.off_policy_steps > self.max_off_policy_steps:
@@ -320,7 +320,7 @@ class RolloutDispatcher:
         get_logger().info(f"Switching dispatcher mode to prefer {prefer} rollouts because {reason}")
         self.mode = new_mode
 
-    async def try_schedule(self, kind: Kind) -> bool:
+    async def try_schedule(self, kind: RolloutKind) -> bool:
         """Schedule one rollout of ``kind``: prefer continuing an existing
         group (keeps prefix-cache hits); otherwise open a fresh group from
         the corresponding source. Returns False if nothing could be
@@ -346,7 +346,7 @@ class RolloutDispatcher:
         self.groups[gid] = fresh
         return await self.schedule_group_rollout(gid, fresh)
 
-    def next_fresh_group(self, kind: Kind, envs) -> GroupState | None:
+    def next_fresh_group(self, kind: RolloutKind, envs) -> GroupState | None:
         """Pop the next example from the corresponding source and wrap it in
         a ``GroupState``. Returns ``None`` if the source is empty or the
         picked env's permit cost doesn't fit."""
@@ -408,7 +408,13 @@ class RolloutDispatcher:
         if env_collection is None:
             return False
         env = env_collection.get(group.env_name)
-        cache_salt = str(group.policy_version_at_start)
+        # SFT-mode train rollouts hit the frozen teacher pool; salting per
+        # policy version would invalidate the teacher's prefix cache every
+        # weight update for no reason.
+        if self.training_mode == "sft" and group.kind == "train":
+            cache_salt = None
+        else:
+            cache_salt = str(group.policy_version_at_start)
 
         if env.requires_group_scoring:
             permits = group.rollouts_to_schedule

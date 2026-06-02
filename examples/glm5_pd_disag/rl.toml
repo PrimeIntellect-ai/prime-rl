@@ -77,7 +77,7 @@ id = "mini-swe-agent-plus"
 name = "swe-bench-verified-quick"
 args = { dataset_name="PrimeIntellect/SWE-Bench-Verified-Quick", max_turns = 200, cpu_cores = 2,  memory_gb = 4, disk_size_gb = 4, labels = ["mini-swe-agent-plus"], total_timeout_minutes = 720, sandbox_client_max_workers = 256, max_command_timeouts = 3, sandbox_command_timeout = 30}
 
-[[orchestrator.filters]]
+[[orchestrator.post_batch_filters]]
 type = "gibberish"
 enforce = true
 
