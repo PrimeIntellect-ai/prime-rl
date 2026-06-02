@@ -141,9 +141,7 @@ def _export_columns(
         "log_importance_ratio": _optional_tensor_to_floats(
             export_tensors["log_importance_ratio"], seq_len, mask=rl_loss_mask
         ),
-        "importance_ratio": _optional_tensor_to_floats(
-            export_tensors["importance_ratio"], seq_len, mask=rl_loss_mask
-        ),
+        "importance_ratio": _optional_tensor_to_floats(export_tensors["importance_ratio"], seq_len, mask=rl_loss_mask),
         "prob_delta": _optional_tensor_to_floats(export_tensors["prob_delta"], seq_len, mask=rl_loss_mask),
         "is_masked": _optional_tensor_to_bools(export_tensors["is_masked"], seq_len),
         "is_masked_high": _optional_tensor_to_bools(export_tensors["is_masked_high"], seq_len),
@@ -207,9 +205,7 @@ def _tensor_to_floats(tensor: Tensor) -> list[float | None]:
     return [_json_float(value) for value in values]
 
 
-def _optional_tensor_to_floats(
-    tensor: Tensor | None, seq_len: int, mask: Tensor | None = None
-) -> list[float | None]:
+def _optional_tensor_to_floats(tensor: Tensor | None, seq_len: int, mask: Tensor | None = None) -> list[float | None]:
     if tensor is None:
         return [None] * seq_len
     if mask is None:
