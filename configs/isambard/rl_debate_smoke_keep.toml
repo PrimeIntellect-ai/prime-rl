@@ -1,0 +1,140 @@
+# Stage A debate SMOKE (KEEP) — validate the pack-driven think protocol e2e.
+#
+# Topology (self-play): debater_a / debater_b both route to the LIVE policy
+# (Qwen3.5-35B-A3B + LoRA "debate-r32") and BOTH train. Judge is FROZEN + external
+# (OpenRouter / Qwen3.5-9B). Reward = judge verdict only — no ground truth in loop.
+#
+# Think protocol (verifiers @ 9d2d2f0 + renderers @ d932460):
+#   - VISIBILITY is the pack's (selfplay.yaml think: debaters private, judge off):
+#     DebateEnv.split_response_channels recovers raw_content=<think>..</think>arg,
+#     public_channel=arg. visibility_policy: private -> judge/opponent see arg only
+#     (no CoT leak); own turns see raw (KEEP).
+#   - GENERATION params live in the sampling config (below) + the renderer:
+#     [orchestrator.renderer] preserve_all_thinking=false — Qwen's "No Thinking
+#     Content in History" best-practice: the Qwen35Renderer drops each PAST
+#     assistant turn's <think> on re-render (only the live turn thinks). The
+#     own-turn CoT visibility (KEEP) is the pack's visibility_policy, not this flag.
+#
+# Launch (no live alloc): submit a fresh allocation via launch-script-mnode --new;
+# rl runs in-alloc inside it (NO [slurm] block — the launcher owns submission).
+
+output_dir = "outputs/isambard/debate_smoke_bundled_8kcap"   # fresh: 8k think-cap + 4-question diversity; do not clobber debate_smoke_keep_32k_thinkfix
+max_steps = 5   # 5-step e2e smoke
+seq_len = 32768
+
+[log]
+level = "info"
+
+[model]
+name = "Qwen/Qwen3.5-35B-A3B"
+
+[trainer.model.lora]
+rank = 32
+alpha = 64
+
+[weight_broadcast]
+type = "filesystem"   # NCCL broadcast does not support LoRA
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 4         # Isambard AIP2: 4 GH200/node
+num_train_nodes = 1
+num_infer_nodes = 1       # 2-node lane (1 train + 1 infer)
+
+[trainer.model]
+impl = "custom"
+seq_len = 32768
+attn = "flash_attention_3"
+optim_cpu_offload = true    # LoRA optimizer to host (small, host-safe)
+fsdp_cpu_offload = false    # offloading 35B params to Grace caused a HOST oom_kill; keep params on GPU
+cp = 2                      # context-parallel: split the debate seq across 2 GPUs
+cp_style = "ulysses"        # REQUIRED for Qwen3.5 DeltaNet (ring CP asserts on linear-attn)
+fused_lm_head_token_chunk_size = "auto"  # =8192 (trainer auto_setup). Chunks LM head/CE so the
+                                         # seq×vocab (248k) logits never fully materialize —
+                                         # fixes the 14.6GiB fp32 logits OOM at 16k tok/rank.
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.optim]
+lr = 1e-5
+
+[orchestrator]
+batch_size = 16      # 4 distinct questions/step (n_questions = batch_size / group_size); each fans out to 2 trainable seats
+group_size = 4       # 4 debates/question; ema_per_member baseline is persistent (cross-step), so small groups still give signal
+dump_trajectory = true   # persist full debate transcripts for inspection
+
+# name="auto" resolves Qwen3.5-35B-A3B -> Qwen35Renderer and auto-detects
+# enable_thinking (the single source of truth that also drives the pack's tag mechanics).
+[orchestrator.renderer]
+name = "auto"
+preserve_all_thinking = false   # Qwen "No Thinking Content in History" best-practice (recipe override; code default stays True)
+
+[orchestrator.advantage]
+type = "ema_per_member"   # REQUIRED for multi-agent (fail-loud assert: MA <=> ema_per_member)
+
+[orchestrator.model.lora]
+name = "debate-r32"
+
+# DEBATER sampling = Qwen3.5 THINKING preset (model card): temperature=1.0, top_p=0.95,
+# top_k=20, min_p=0.0, presence_penalty=1.5, repetition_penalty=1.0. top_k/min_p/
+# presence_penalty aren't TrainSamplingConfig fields, so they ride in extra_body;
+# repetition_penalty=1.0 is the code default (to_sampling_args omits it). This replaces
+# the prior top_p=1.0 / top_k=-1 / presence_penalty-unset repetition anti-pattern.
+[orchestrator.train.sampling]
+temperature = 1.0
+top_p = 0.95
+repetition_penalty = 1.0
+# max_completion_tokens = total per-turn budget (think + public). 12288 = 8192 think-cap
+# + 4096 for the post-</think> answer; leaves 20480 tok of seq_len=32768 for the prompt.
+max_completion_tokens = 12288
+# thinking_token_budget: hard-cap <think> at 8192 tok; vLLM then force-injects </think> and the
+# turn writes its public answer. Source-verified path (vLLM 0.21.0): field -> extra_body ->
+# ChatCompletionRequest.thinking_token_budget (protocol.py:222/611) -> SamplingParams ->
+# ThinkingBudgetStateHolder. The input_processor.py:101 gate passes because --reasoning-parser
+# (auto->qwen3) auto-creates + initializes reasoning_config (arg_utils:2374, vllm.py:1297).
+thinking_token_budget = 8192
+extra_body = { top_k = 20, min_p = 0.0, presence_penalty = 1.5 }
+
+# Frozen judge — external OpenRouter (Stage A). reasoning.enabled=false is the ONLY
+# disable that works for 9b (sweep); toggle to true here to let the judge reason later.
+# Sampling = Qwen3.5 non-thinking/general (model card): temperature=0.7, top_p=0.8,
+# top_k=20, min_p=0, presence_penalty=1.5. top_k/min_p/presence_penalty aren't
+# TrainSamplingConfig fields, so they ride in extra_body; repetition_penalty=1.0 is the
+# default (to_sampling_args omits it). This stabilises the reward signal and stops the
+# format drift (echoed/repeated <decision>) seen under the inherited temp=1.0/top_p=1.0.
+[orchestrator.multi_agent.fixed.judge_target]
+members = ["judge"]
+model = "qwen/qwen3.5-9b"
+base_url = ["https://openrouter.ai/api/v1"]
+api_key_var = "OPENROUTER_API_KEY"
+request_mode = "chat"
+# allow_fallbacks=true: with it false, a DeepInfra 503 had no failover path -> the 503
+# error-body (no `choices`) failed ChatCompletion validation and aborted rollouts (measured
+# 10 validation errors across 2 groups). true lets OpenRouter route around the dead provider.
+sampling = { temperature = 0.7, top_p = 0.8, extra_body = { top_k = 20, min_p = 0.0, presence_penalty = 1.5, reasoning = { enabled = false }, provider = { order = ["DeepInfra", "Together", "Venice"], allow_fallbacks = true } } }
+
+[[orchestrator.train.env]]
+id = "gpqa-debate"
+name = "gpqa-debate-smoke"
+
+[orchestrator.train.env.args]
+prompts_ref = "selfplay"
+subset = "gpqa_diamond"
+truth_member = "debater_a"   # measurement designation only; reward is judge-only
+
+[orchestrator.buffer]
+easy_threshold = 1.0      # permissive: zero-sum debate avg_reward ~ 0 => nothing filtered
+hard_threshold = -1.0
+
+[inference]
+gpu_memory_utilization = 0.85
+enable_lora = true
+max_lora_rank = 32
+
+[inference.model]
+max_model_len = 32768
+
+[inference.parallel]
+tp = 4
+dp = 1
