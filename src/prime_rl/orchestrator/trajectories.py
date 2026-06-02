@@ -203,7 +203,7 @@ def backfill_rollout_tokens(
     return True
 
 
-def _step_echo_alpha(
+def _build_step_echo_alpha(
     prompt_attribution: dict | None,
     prompt_len: int,
     completion_len: int,
@@ -392,7 +392,7 @@ def interleave_rollout(
     merged step's sidecar covers every image in the sample.
 
     When ``echo_config`` is provided, each sample carries a per-token
-    ``echo_alpha`` array (see :func:`_step_echo_alpha`), extended across merged steps.
+    ``echo_alpha`` array (see :func:`_build_step_echo_alpha`), extended across merged steps.
 
     Args:
         output: vf.RolloutOutput containing trajectory data
@@ -433,7 +433,7 @@ def interleave_rollout(
             prompt_ids = list(tokens["prompt_ids"])
             completion_ids = list(tokens["completion_ids"])
             step_filter_mask = filter_masks[step_idx] if filter_masks is not None else None
-            echo_alpha = _step_echo_alpha(
+            echo_alpha = _build_step_echo_alpha(
                 prompt_attribution=tokens.get("prompt_attribution"),
                 prompt_len=len(prompt_ids),
                 completion_len=len(completion_ids),

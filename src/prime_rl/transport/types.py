@@ -57,7 +57,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     training_mode: TrainingMode = "rl"
 
     # Per-token echo alpha (parallel to prompt_ids + completion_ids), built by
-    # ``_step_echo_alpha`` from the renderer attribution + the env's EchoConfig.
+    # ``_build_step_echo_alpha`` from the renderer attribution + the env's EchoConfig.
     # Three states: whole field None = no echo; per-token None = not echoed (RL
     # applies); per-token float = echoed at that alpha (``prepare_sample``
     # overwrites the RL advantage and flips loss_mask=True). ``alpha=0`` is a

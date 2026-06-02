@@ -15,8 +15,8 @@ from prime_rl.configs.orchestrator import (
     UserRoleEchoConfig,
 )
 from prime_rl.orchestrator.trajectories import (
+    _build_step_echo_alpha,
     _deserialize_tool_calls,
-    _step_echo_alpha,
     align_routed_experts,
     apply_echo_filter,
     interleave_rollout,
@@ -1403,7 +1403,7 @@ def _attribution(
     message_tool_names: list[str | None] | None = None,
 ) -> dict:
     """Minimal stand-in for the serialised ``renderers.base.RenderedTokens``
-    dict that the verifiers env-server hands to ``_step_echo_alpha`` — only
+    dict that the verifiers env-server hands to ``_build_step_echo_alpha`` — only
     the keys the helper subscripts are populated."""
     out: dict = {"message_indices": message_indices, "is_content": is_content}
     if message_roles is not None:
@@ -1562,14 +1562,14 @@ def _attribution(
         ),
     ],
 )
-def test_step_echo_alpha_baseline(attribution, prompt_len, completion_len, echo_config, expected):
-    """``_step_echo_alpha`` builds the per-token alpha array from the renderer
+def test_build_step_echo_alpha_baseline(attribution, prompt_len, completion_len, echo_config, expected):
+    """``_build_step_echo_alpha`` builds the per-token alpha array from the renderer
     attribution + per-role config. Only content tokens of enabled roles get a
     float; scaffold/disabled-role tokens stay None. Completion-side assistant
     echo is independent of attribution. ``alpha=0`` is a real value (kill-RL),
     distinct from None (not echoed)."""
     assert (
-        _step_echo_alpha(
+        _build_step_echo_alpha(
             prompt_attribution=attribution,
             prompt_len=prompt_len,
             completion_len=completion_len,
@@ -1597,7 +1597,7 @@ def test_echo_config_rejects_without_role(kwargs):
 
 
 # ---------------------------------------------------------------------------
-# _step_echo_alpha — filter_mask composition
+# _build_step_echo_alpha — filter_mask composition
 # ---------------------------------------------------------------------------
 
 
@@ -1699,7 +1699,7 @@ _TOOL_AND_ASSISTANT = EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5), assistant=A
         ),
     ],
 )
-def test_step_echo_alpha_filter_composition(
+def test_build_step_echo_alpha_filter_composition(
     attribution, prompt_len, completion_len, echo_config, filter_mask, expected
 ):
     """The optional ``filter_mask`` narrows the role baseline per-token: False
@@ -1707,7 +1707,7 @@ def test_step_echo_alpha_filter_composition(
     only narrow — it never adds echo where no role enabled it (``cannot_add``)
     — and it applies to completion-side assistant echo too."""
     assert (
-        _step_echo_alpha(
+        _build_step_echo_alpha(
             prompt_attribution=attribution,
             prompt_len=prompt_len,
             completion_len=completion_len,
