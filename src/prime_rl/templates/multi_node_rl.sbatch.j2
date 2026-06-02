@@ -172,9 +172,13 @@ srun bash -s <<'CLEANUP_SH'
     # which pkill -f does not see because -f only matches the cmdline.
     pkill -9 "vllm" 2>/dev/null
     pkill -9 "vllm::.*" 2>/dev/null
+    # Mooncake store (master + client) left over from a prior offload run. -x matches
+    # the exact process name, so it never hits the worktree path (e.g. mooncake-baby).
+    pkill -9 -x mooncake_master 2>/dev/null
+    pkill -9 -x mooncake_client 2>/dev/null
     sleep 2
     rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/vllm_* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null
-    procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::" | grep -v grep | wc -l)
+    procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::|mooncake_" | grep -v grep | wc -l)
     gpu=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk "{s+=\$1} END {print s}")
     echo "[node-cleanup] $(hostname) procs=$procs gpu_mem=${gpu}MiB"
 CLEANUP_SH
@@ -214,6 +218,12 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 {%- if kv_offload %}
     ulimit -l unlimited
 {%- endif %}
+{%- if kv_offload_mooncake %}
+    # Launch the node-local Mooncake store master + client, then source the env vars
+    # MOONCAKE_CONFIG_PATH and PYTHONHASHSEED so the vLLM process picks them up.
+    uv run python -m prime_rl.inference.mooncake --config $CONFIG_DIR/inference.toml --output-dir $OUTPUT_DIR/mooncake/node_${INFER_NODE_RANK}
+    source $OUTPUT_DIR/mooncake/node_${INFER_NODE_RANK}/env.sh
+{%- endif %}
 
     REPLICA_IDX=$((INFER_NODE_RANK / NODES_PER_INFER_REPLICA))
     RANK_IN_REPLICA=$((INFER_NODE_RANK % NODES_PER_INFER_REPLICA))
@@ -237,17 +247,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     export VLLM_NIXL_SIDE_CHANNEL_HOST=$LOCAL_IP
     export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
 
-{%- if kv_offload %}
-    PREFILL_KV_CFG='"'"'{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}},{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":{{ kv_offload_cpu_bytes }}}}]}}'"'"'
-{%- else %}
-    PREFILL_KV_CFG='"'"'{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}}'"'"'
-{%- endif %}
+    # The kv_transfer_config (NIXL transfer + any KV offload connector) is built in
+    # InferenceConfig.to_vllm() from the per-node config, so it is no longer assembled here.
 
-{%- if kv_offload %}
-    DECODE_KV_CFG='"'"'{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}},{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":{{ kv_offload_cpu_bytes }}}}]}}'"'"'
-{%- else %}
-    DECODE_KV_CFG='"'"'{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}}'"'"'
-{%- endif %}
     DECODE_COMPILE_CFG='"'"'{"cudagraph_mode":"FULL_DECODE_ONLY"}'"'"'
 
     REPLICA_BASE=$((REPLICA_IDX * NODES_PER_INFER_REPLICA))
@@ -284,23 +286,13 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
 
     if [ "$DP" -gt 1 ]; then
-        if [ "$ROLE" = "prefill" ]; then
-            KV_CFG_TO_USE="$PREFILL_KV_CFG"
-        else
-            KV_CFG_TO_USE="$DECODE_KV_CFG"
-        fi
-
         if [ "$ROLE_RANK" -eq 0 ]; then
-            VLLM_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\", \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $KV_CFG_TO_USE, $ROLE_EXTRA}"
+            VLLM_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\", \"data_parallel_hybrid_lb\": true, $ROLE_EXTRA}"
         else
-            VLLM_EXTRA="{\"data_parallel_address\": \"$HEAD_HOST\", \"data_parallel_start_rank\": $START_RANK, \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $KV_CFG_TO_USE, $ROLE_EXTRA}"
+            VLLM_EXTRA="{\"data_parallel_address\": \"$HEAD_HOST\", \"data_parallel_start_rank\": $START_RANK, \"data_parallel_hybrid_lb\": true, $ROLE_EXTRA}"
         fi
     else
-        if [ "$ROLE" = "prefill" ]; then
-            VLLM_EXTRA="{\"kv_transfer_config\": $PREFILL_KV_CFG, $ROLE_EXTRA}"
-        else
-            VLLM_EXTRA="{\"kv_transfer_config\": $DECODE_KV_CFG, $ROLE_EXTRA}"
-        fi
+        VLLM_EXTRA="{$ROLE_EXTRA}"
     fi
 
     # Start vllm-router on the first node of each replica (PD mode)

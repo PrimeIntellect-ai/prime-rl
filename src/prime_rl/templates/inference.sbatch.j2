@@ -130,9 +130,13 @@ srun bash -s <<'CLEANUP_SH'
     # which pkill -f does not see because -f only matches the cmdline.
     pkill -9 "vllm" 2>/dev/null
     pkill -9 "vllm::.*" 2>/dev/null
+    # Mooncake store (master + client) left over from a prior offload run. -x matches
+    # the exact process name, so it never hits the worktree path (e.g. mooncake-baby).
+    pkill -9 -x mooncake_master 2>/dev/null
+    pkill -9 -x mooncake_client 2>/dev/null
     sleep 2
     rm -rf /dev/shm/vllm-* /dev/shm/vllm_* /tmp/vllm-* /tmp/vllm_* /tmp/torch-* /tmp/torchelastic_* 2>/dev/null
-    procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::" | grep -v grep | wc -l)
+    procs=$(ps -eo comm,args | grep -E "python|torchrun|vllm|vllm::|mooncake_" | grep -v grep | wc -l)
     gpu=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | awk "{s+=\$1} END {print s}")
     echo "[node-cleanup] $(hostname) procs=$procs gpu_mem=${gpu}MiB"
 CLEANUP_SH
@@ -161,6 +165,12 @@ srun --kill-on-bad-exit=1 bash -c '
 {%- if kv_offload %}
     ulimit -l unlimited
 {%- endif %}
+{%- if kv_offload_mooncake %}
+    # Launch the node-local Mooncake store master + client, then source the env vars
+    # MOONCAKE_CONFIG_PATH and PYTHONHASHSEED so the vLLM process picks them up.
+    uv run python -m prime_rl.inference.mooncake --config $CONFIG_PATH --output-dir $OUTPUT_DIR/mooncake/node_${INFER_NODE_RANK}
+    source $OUTPUT_DIR/mooncake/node_${INFER_NODE_RANK}/env.sh
+{%- endif %}
 
 {% if disaggregated -%}
     # NVSHMEM libs for DeepEP — ensure the rpath target exists on all nodes
@@ -187,17 +197,8 @@ srun --kill-on-bad-exit=1 bash -c '
     export VLLM_NIXL_SIDE_CHANNEL_HOST=$LOCAL_IP
     export VLLM_NIXL_SIDE_CHANNEL_PORT=5600
 
-{%- if kv_offload %}
-    PREFILL_KV_CFG='"'"'{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}},{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":{{ kv_offload_cpu_bytes }}}}]}}'"'"'
-{%- else %}
-    PREFILL_KV_CFG='"'"'{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}}'"'"'
-{%- endif %}
-
-{%- if kv_offload %}
-    DECODE_KV_CFG='"'"'{"kv_connector":"MultiConnector","kv_role":"kv_both","kv_connector_extra_config":{"connectors":[{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}},{"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"cpu_bytes_to_use":{{ kv_offload_cpu_bytes }}}}]}}'"'"'
-{%- else %}
-    DECODE_KV_CFG='"'"'{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_connector_extra_config":{"num_threads":1}}'"'"'
-{%- endif %}
+    # The kv_transfer_config (NIXL transfer + any KV offload connector) is built in
+    # InferenceConfig.to_vllm() from the per-node config, so it is no longer assembled here.
 
     DECODE_COMPILE_CFG='"'"'{"cudagraph_mode":"FULL_DECODE_ONLY"}'"'"'
 
@@ -222,9 +223,9 @@ srun --kill-on-bad-exit=1 bash -c '
         ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\""
 
         if [ "$ROLE_RANK" -eq 0 ]; then
-            VLLM_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\", \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $PREFILL_KV_CFG, $ROLE_EXTRA}"
+            VLLM_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\", \"data_parallel_hybrid_lb\": true, $ROLE_EXTRA}"
         else
-            VLLM_EXTRA="{\"data_parallel_address\": \"$HEAD_HOST\", \"data_parallel_start_rank\": $START_RANK, \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $PREFILL_KV_CFG, $ROLE_EXTRA}"
+            VLLM_EXTRA="{\"data_parallel_address\": \"$HEAD_HOST\", \"data_parallel_start_rank\": $START_RANK, \"data_parallel_hybrid_lb\": true, $ROLE_EXTRA}"
         fi
     else
         # ── Decode node ──
@@ -244,9 +245,9 @@ srun --kill-on-bad-exit=1 bash -c '
         ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG"
 
         if [ "$ROLE_RANK" -eq 0 ]; then
-            VLLM_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\", \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $DECODE_KV_CFG, $ROLE_EXTRA}"
+            VLLM_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\", \"data_parallel_hybrid_lb\": true, $ROLE_EXTRA}"
         else
-            VLLM_EXTRA="{\"data_parallel_address\": \"$HEAD_HOST\", \"data_parallel_start_rank\": $START_RANK, \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $DECODE_KV_CFG, $ROLE_EXTRA}"
+            VLLM_EXTRA="{\"data_parallel_address\": \"$HEAD_HOST\", \"data_parallel_start_rank\": $START_RANK, \"data_parallel_hybrid_lb\": true, $ROLE_EXTRA}"
         fi
     fi
 
