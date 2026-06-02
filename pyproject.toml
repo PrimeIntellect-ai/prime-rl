@@ -89,6 +89,7 @@ envs = [
     "science-env",
     "simpleqa-verified",
     "tau2-bench",
+    "wordle",
     "wiki-search",
 ]
 disagg = [
@@ -127,7 +128,6 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.12.1",
 ]
-
 
 [tool.uv]
 # Enforce a uv version that supports the friendly-duration form
@@ -225,6 +225,7 @@ rlm-swe = { path = "deps/research-environments/environments/rlm_swe", editable =
 science-env = { path = "deps/research-environments/environments/science_env", editable = true }
 simpleqa-verified = { path = "deps/research-environments/environments/simpleqa_verified", editable = true }
 tau2-bench = { path = "deps/research-environments/environments/tau2_bench", editable = true }
+wordle = { path = "deps/verifiers/environments/wordle", editable = true }
 wiki-search = { path = "deps/verifiers/environments/wiki_search", editable = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }

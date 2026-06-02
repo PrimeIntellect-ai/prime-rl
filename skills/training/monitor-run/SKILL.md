@@ -149,6 +149,8 @@ jq '.reward' {output_dir}/rollouts/step_42/train_rollouts.jsonl
 
 A few warnings are normal. Escalate when errors are persistent, growing, or hit a large fraction of rollouts.
 
+**Qwen3.5 high `mismatch_kl` (~0.03+ target ~0.001)**: suspect trainer-vLLM logprob drift in the hybrid linear-attention path, especially with context parallelism. For the next experiment, first try `trainer.model.cp = 1` to bypass Qwen3.5 DeltaNet CP, use a fresh output directory, and enable the precision-oriented logprob knobs (`trainer.model.fused_lm_head_token_chunk_size = "auto"` and `inference.enable_fp32_lm_head = true`). If the initial KL is low but later steps drift, lower rollout staleness/update size with `orchestrator.max_off_policy_steps = 0` and a smaller trainer LR. If CP must be used, verify the custom Qwen3.5 DeltaNet path threads global packed `cu_seqlens` into FLA CP and uses `fla.modules.conv.cp.causal_conv1d_cp` for the pre-DeltaNet causal convolution; otherwise packed sequences or CP rank boundaries can leak state and inflate KL.
+
 - **Env workers**: exceptions in env code, timeouts, sandbox errors, OOM kills (most common source — runs user code).
 - **Orchestrator**: empty/errored rollout spikes, weight-broadcast failures, checkpoint errors.
 - **Trainer**: NCCL/CUDA errors, OOM, NaN loss or gradients.
