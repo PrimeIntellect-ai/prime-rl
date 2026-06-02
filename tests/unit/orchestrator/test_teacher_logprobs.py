@@ -85,53 +85,6 @@ def test_compute_teacher_logprobs_uses_inference_generate(monkeypatch):
     asyncio.run(_run())
 
 
-def test_compute_teacher_logprobs_uses_prime_generate_for_api_base_url(monkeypatch):
-    async def _run():
-        fake_client = _FakeOpenAIClient(
-            {
-                "request_id": "gen-test",
-                "choices": [],
-                "prompt_logprobs": [
-                    None,
-                    {"13": {"logprob": -0.1}, "2": {"logprob": -0.7}},
-                    {"198": {"logprob": -0.2}, "3": {"logprob": -0.3}},
-                ],
-                "kv_transfer_params": None,
-            },
-            base_url="https://api.primeintellect.ai/api/v1",
-        )
-        monkeypatch.setattr(orchestrator_utils, "setup_openai_client", lambda _: fake_client)
-
-        sample = SimpleNamespace(
-            prompt_ids=[1],
-            prompt_mask=[True],
-            completion_ids=[2, 3],
-            completion_mask=[True, True],
-            completion_logprobs=[-0.1, -0.2],
-            completion_temperatures=[1.0, 1.0],
-            env_name="test-env",
-        )
-
-        result = await orchestrator_utils.compute_teacher_logprobs(
-            clients=[vf.ClientConfig()],
-            model_name="teacher-model",
-            samples=[sample],
-        )
-
-        assert result == [[0.0, -0.7, -0.3]]
-        assert fake_client.calls[0]["url"] == "https://api.primeintellect.ai/api/v1/generate"
-        assert fake_client.calls[0]["body"] == {
-            "model": "teacher-model",
-            "prompt_token_ids": [1, 2, 3],
-            "max_tokens": 1,
-            "temperature": 1.0,
-            "top_p": 1.0,
-            "prompt_logprobs": 1,
-        }
-
-    asyncio.run(_run())
-
-
 def test_compute_teacher_logprobs_rejects_wrong_length(monkeypatch):
     async def _run():
         fake_client = _FakeOpenAIClient(

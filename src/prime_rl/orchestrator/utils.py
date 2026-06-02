@@ -107,20 +107,15 @@ async def compute_teacher_logprobs(
     """Compute teacher model logprobs for a batch of training samples via prefill."""
     import httpx
 
-    def _teacher_generate_request(base_url: str, model_name: str, token_ids: list[int]) -> tuple[str, dict[str, Any]]:
+    def _teacher_generate_request(
+        base_url: str,
+        model_name: str,
+        scored_token_ids: list[int],
+    ) -> tuple[str, dict[str, Any]]:
         base = base_url.rstrip("/")
-        if base.endswith("/api/v1"):
-            return f"{base}/generate", {
-                "model": model_name,
-                "prompt_token_ids": token_ids,
-                "max_tokens": 1,
-                "temperature": 1.0,
-                "top_p": 1.0,
-                "prompt_logprobs": 1,
-            }
         return f"{base.removesuffix('/v1')}/inference/v1/generate", {
             "model": model_name,
-            "token_ids": token_ids,
+            "token_ids": scored_token_ids,
             "sampling_params": {
                 "max_tokens": 1,
                 "temperature": 1.0,
@@ -157,19 +152,18 @@ async def compute_teacher_logprobs(
 
     async def _compute_single(client_config: vf.ClientConfig, sample: TrainingSample) -> list[float]:
         client = setup_openai_client(client_config)
-        token_ids = list(sample.prompt_ids) + list(sample.completion_ids)
+        scored_token_ids = list(sample.prompt_ids) + list(sample.completion_ids)
 
         # Two escape hatches from ``AsyncOpenAI.post``:
         #   1. URL — vLLM mounts ``/inference/v1/generate`` at server root,
-        #      while Prime Inference exposes ``/api/v1/generate``. Pass an
-        #      absolute URL so the SDK's ``_prepare_url`` skips base-url merge.
+        #      so pass an absolute URL and skip the SDK's base-url merge.
         #   2. Parse — vLLM's ``GenerateResponse`` is a plain
         #      ``pydantic.BaseModel`` and the SDK's parse layer rejects any
         #      ``cast_to`` that doesn't subclass ``openai.BaseModel``. Use
         #      ``cast_to=httpx.Response`` so the SDK still builds the request
         #      (preserving ``auth_headers``, retries, timeouts, idempotency
         #      keys) and just hands us the raw response to validate ourselves.
-        url, body = _teacher_generate_request(str(client.base_url), model_name, token_ids)
+        url, body = _teacher_generate_request(str(client.base_url), model_name, scored_token_ids)
         http_response = await client.post(
             url,
             cast_to=httpx.Response,
@@ -177,7 +171,7 @@ async def compute_teacher_logprobs(
         )
         http_response.raise_for_status()
         response = http_response.json()
-        return _flatten_prompt_logprobs(response, token_ids)
+        return _flatten_prompt_logprobs(response, scored_token_ids)
 
     return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
 
