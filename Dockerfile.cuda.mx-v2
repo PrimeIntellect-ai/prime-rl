@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 prime intellect & contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Overlay Dockerfile for the v2 prime-rl × ModelExpress integration.
+# Layers on top of v0.7.1-kavin-phase2-phase3 (which already has Phase 2
+# + Phase 3 source baked in). See docs/proposals/image-build-mx-v2.md.
+
+FROM nvcr.io/nvidian/dynamo-dev/prime-rl-mx-on-nixl:v0.7.1-kavin-phase2-phase3
+
+USER root
+
+# ────────────────────────────────────────────────────────────────────
+# 1. Update modelexpress to the PR #349 branch
+#    (Phase 4 multi-source slice picker + MxWeightTransferEngine)
+# ────────────────────────────────────────────────────────────────────
+RUN --mount=type=cache,target=/app/.cache/uv \
+    /app/.venv/bin/uv pip install --no-deps --reinstall \
+        "modelexpress @ git+https://github.com/ai-dynamo/modelexpress.git@kavink/post-2389-phase3-4#subdirectory=modelexpress_client/python"
+
+# ────────────────────────────────────────────────────────────────────
+# 2. Overlay the v2 prime-rl source files
+# ────────────────────────────────────────────────────────────────────
+COPY --chown=appuser:appuser src/prime_rl/transport/                                       /app/src/prime_rl/transport/
+COPY --chown=appuser:appuser src/prime_rl/inference/vllm/worker/nixl_mx_v2.py              /app/src/prime_rl/inference/vllm/worker/nixl_mx_v2.py
+COPY --chown=appuser:appuser src/prime_rl/trainer/rl/broadcast/nixl_mx_v2.py               /app/src/prime_rl/trainer/rl/broadcast/nixl_mx_v2.py
+COPY --chown=appuser:appuser src/prime_rl/trainer/rl/broadcast/__init__.py                 /app/src/prime_rl/trainer/rl/broadcast/__init__.py
+COPY --chown=appuser:appuser packages/prime-rl-configs/src/prime_rl/configs/trainer.py     /app/packages/prime-rl-configs/src/prime_rl/configs/trainer.py
+
+# ────────────────────────────────────────────────────────────────────
+# 3. Smoke-test that the v2 path imports cleanly
+# ────────────────────────────────────────────────────────────────────
+RUN /app/.venv/bin/python -c "from modelexpress.vllm_weight_transfer import MxWeightTransferEngine, MxInitInfo, MxUpdateInfo; print('engine adapter:', MxWeightTransferEngine)"
+RUN /app/.venv/bin/python -c "from modelexpress.nemo_rl_v2 import MxV2TrainingPublisher, MxV2RefitReceiver, TrainerWorldLayout; print('v2 fat clients OK')"
+RUN /app/.venv/bin/python -c "import flash_attn; import flash_attn.ops; print('flash_attn ABI:', flash_attn.__version__)"
+
+USER appuser
