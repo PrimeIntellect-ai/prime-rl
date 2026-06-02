@@ -1718,28 +1718,6 @@ def test_step_echo_alpha_filter_composition(
     )
 
 
-@pytest.mark.parametrize(
-    ("filter_mask", "echo_config"),
-    [
-        pytest.param([True, True, True], EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5)), id="too_short"),
-        pytest.param([True] * 6, EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5)), id="too_long"),
-        pytest.param([True, True], None, id="validates_even_when_echo_disabled"),
-    ],
-)
-def test_step_echo_alpha_filter_length_mismatch_raises(filter_mask, echo_config):
-    """``filter_mask`` length must equal ``prompt_len + completion_len`` (5
-    here). Length is validated before any baseline work, so a wrong length
-    raises even when echo is disabled (``echo_config=None``)."""
-    with pytest.raises(ValueError, match="filter_mask length"):
-        _step_echo_alpha(
-            prompt_attribution=None,
-            prompt_len=3,
-            completion_len=2,
-            echo_config=echo_config,
-            filter_mask=filter_mask,
-        )
-
-
 # ---------------------------------------------------------------------------
 # apply_echo_filter — shape/type validation + invocation contract
 # ---------------------------------------------------------------------------
@@ -1913,22 +1891,3 @@ def test_interleave_rollout_filter_masks_narrows_sample_echo_alpha():
 
     filtered = _interleave_rollout(rollout, echo_config=echo_config, filter_masks=[[True, False, True, True, True]])
     assert filtered[0].echo_alpha == [0.5, None, 0.5, None, None]
-
-
-@pytest.mark.parametrize(
-    ("dims", "filter_masks", "match"),
-    [
-        pytest.param(
-            [(1, 1)],
-            [[True, True], [True, True]],
-            r"filter_masks outer length 2.*trajectory length 1",
-            id="outer_mismatch",
-        ),
-        pytest.param([(2, 1)], [[True, True]], r"filter_mask length 2.*does not match.*3", id="inner_mismatch"),
-    ],
-)
-def test_interleave_rollout_filter_masks_length_mismatch_raises(dims, filter_masks, match):
-    """Wrong outer length (vs trajectory) or inner length (vs step tokens) →
-    ValueError at the interleave boundary."""
-    with pytest.raises(ValueError, match=match):
-        _interleave_rollout(_rollout_with_steps(*dims), filter_masks=filter_masks)

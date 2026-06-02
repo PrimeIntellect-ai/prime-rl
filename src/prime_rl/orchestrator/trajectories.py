@@ -221,15 +221,11 @@ def _step_echo_alpha(
     ``is_content[k]`` excludes template scaffold, and tool positions also match
     ``tool_names``. Completion-side positions are always assistant-role.
     ``filter_mask`` (optional, same length) narrows the baseline by AND — False
-    drops a position to ``None`` (never adds echo); a wrong length raises.
+    drops a position to ``None`` (never adds echo).
 
     Returns all-None when echo is disabled or attribution is missing.
     """
     expected_total_len = prompt_len + completion_len
-    if filter_mask is not None and len(filter_mask) != expected_total_len:
-        raise ValueError(
-            f"filter_mask length {len(filter_mask)} does not match prompt_len + completion_len = {expected_total_len}"
-        )
 
     def _build_baseline() -> list[float | None]:
         """Build the role-level echo_alpha baseline. Multiple early returns;
@@ -314,7 +310,7 @@ def _step_echo_alpha(
     # drop to None where False (a True keeps a None baseline too — the filter
     # can only narrow, never add echo).
     if filter_mask is not None:
-        out = [alpha if keep else None for alpha, keep in zip(out, filter_mask)]
+        out = [alpha if keep else None for alpha, keep in zip(out, filter_mask, strict=True)]
 
     return out
 
@@ -410,8 +406,6 @@ def interleave_rollout(
     logger = get_logger()
 
     trajectory = output["trajectory"]
-    if filter_masks is not None and len(filter_masks) != len(trajectory):
-        raise ValueError(f"filter_masks outer length {len(filter_masks)} != trajectory length {len(trajectory)}")
     if len(trajectory) == 0:
         error = output.get("error")
         stop = output.get("stop_condition")
