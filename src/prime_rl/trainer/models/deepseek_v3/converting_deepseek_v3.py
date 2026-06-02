@@ -47,11 +47,6 @@ def get_num_experts(state_dict: dict[str, Tensor], layer_idx: int) -> int:
 def keys_converter(layer_idx: int):
     """mapping between HF and PrimeRL keys."""
 
-    # example
-    hf_key = f"model.layer.{layer_idx}.hf_name_test"
-    prime_key = f"model.layer.{layer_idx}.prime_name_test"
-    yield hf_key, prime_key
-
     ## No experts
     hf_key = f"model.layers.{layer_idx}.mlp.gate_proj.weight"
     prime_key = f"model.layers.{layer_idx}.mlp.gate_proj.weight"
@@ -88,9 +83,18 @@ def keys_converter(layer_idx: int):
     yield hf_key, prime_key
 
 
-def convert_hf_to_prime(state_dict: dict[str, Tensor]) -> None:
+def convert_hf_to_prime(
+    state_dict: dict[str, Tensor], layer_idx: int | None = None
+) -> None:
     num_layers = get_max_layer_num(state_dict)
-    for i in range(num_layers):
+
+    if layer_idx is None:
+        # iterate over all layers
+        layers_iter = range(num_layers)
+    else:
+        layers_iter = [layer_idx]
+
+    for i in layers_iter:
         # replace keys using mapping
         for hf_key, prime_key in keys_converter(i):
             if hf_key in state_dict:
@@ -145,12 +149,20 @@ def convert_hf_to_prime(state_dict: dict[str, Tensor]) -> None:
     pass
 
 
-def convert_prime_to_hf(state_dict: dict[str, Tensor]) -> None:
+def convert_prime_to_hf(
+    state_dict: dict[str, Tensor], layer_idx: int | None = None
+) -> None:
 
     concat_experts = True
     num_layers = get_max_layer_num(state_dict)
 
-    for i in range(num_layers):
+    if layer_idx is None:
+        # iterate over all layers
+        layers_iter = range(num_layers)
+    else:
+        layers_iter = [layer_idx]
+
+    for i in layers_iter:
         # replace keys using mapping
         for hf_key, prime_key in keys_converter(i):
             if prime_key in state_dict:
@@ -190,8 +202,8 @@ def convert_prime_to_hf(state_dict: dict[str, Tensor]) -> None:
 
 
 def convert_hf_layer_to_prime(state_dict: dict[str, Tensor], layer_idx: int) -> None:
-    raise NotImplementedError()
+    return convert_hf_to_prime(state_dict, layer_idx)
 
 
 def convert_prime_layer_to_hf(state_dict: dict[str, Tensor], layer_idx: int) -> None:
-    raise NotImplementedError()
+    return convert_prime_to_hf(state_dict, layer_idx)

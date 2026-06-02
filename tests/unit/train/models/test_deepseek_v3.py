@@ -1,8 +1,4 @@
-import os
-from importlib import reload
 from prime_rl.trainer.models.deepseek_v3 import DeepseekV3Config, DeepseekV3ForCausalLM
-
-from transformers import AutoConfig, AutoTokenizer, AutoModelForCausalLM
 from transformers import DeepseekV3ForCausalLM as HFDeepseekV3ForCausalLM
 import torch
 from torch import nn
@@ -10,6 +6,7 @@ from prime_rl.utils.utils import default_dtype
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from copy import deepcopy
 import pytest
+import re
 
 
 @pytest.fixture(scope="module")
@@ -23,7 +20,10 @@ class _IdentityMLP(nn.Identity):
 
 
 def get_configs(
-    n_group: int = None, rope_interleave: bool = True, rope_type: str = "default"
+    n_group: int = None,
+    rope_interleave: bool = True,
+    rope_type: str = "default",
+    num_hidden_layers: int = 8,
 ):
 
     if rope_type == "yarn":
@@ -46,7 +46,7 @@ def get_configs(
         intermediate_size=1024,
         num_attention_heads=4,
         num_key_value_heads=4,
-        num_hidden_layers=8,
+        num_hidden_layers=num_hidden_layers,
         first_k_dense_replace=1,
         num_nextn_predict_layers=0,
         moe_intermediate_size=1024,
@@ -63,8 +63,6 @@ def get_configs(
         rope_interleave=rope_interleave,
         load_balance_coeff=1,
     )
-
-    assert hf_conf.n_routed_experts // hf_conf.n_group >= 2
 
     prime_config = deepcopy(hf_conf)
     return hf_conf, prime_config
@@ -130,19 +128,33 @@ def assert_models_close(
     assert grad_diff < atol_grad, f"Grad differ by: {grad_diff:.3e}"
 
 
-def run_models_eval(hf_model, prime_model):
+def assert_eval_models_close(hf_model, prime_model, device):
+    """Compare models outputs without checking their gradients."""
+    hf_model.eval()
+    prime_model.eval()
 
-    with torch.device("cuda"), default_dtype(torch.float32):
+    with torch.device(device), default_dtype(torch.float32):
         input_ids = torch.randint(0, hf_model.config.vocab_size, (1, 100))
         position_ids = torch.arange(1, 101).unsqueeze(0)
 
-    hf_model.eval()
-    prime_model.eval()
     with torch.no_grad():
         hf_output = hf_model(input_ids, position_ids)
         prime_output = prime_model(input_ids, position_ids)
 
-    return hf_output, prime_output
+    logits_diff = prime_output["logits"] - hf_output.logits
+    assert torch.allclose(
+        logits_diff, torch.zeros_like(logits_diff), atol=2e-2
+    ), f"Max logits diff: {logits_diff.abs().max()}"
+
+
+def test_empty_config():
+    """Empty config shouldn't raise errors."""
+    try:
+        conf = DeepseekV3Config()
+        with torch.device("meta"):
+            model = DeepseekV3ForCausalLM(conf)
+    except:
+        raise
 
 
 @pytest.mark.parametrize(
@@ -282,12 +294,7 @@ def test_hf_to_prime_conversion(device):
 
     inject_prime_lm_head(prime_model, chunk_size=None)
 
-    hf_output, prime_output = run_models_eval(hf_model, prime_model)
-
-    logits_diff = prime_output["logits"] - hf_output.logits
-    assert torch.allclose(
-        logits_diff, torch.zeros_like(logits_diff), atol=2e-2
-    ), f"Max logits diff: {logits_diff.abs().max()}"
+    assert_eval_models_close(hf_model, prime_model, device=device)
 
 
 def test_prime_to_hf_conversion(device):
@@ -307,9 +314,51 @@ def test_prime_to_hf_conversion(device):
 
     inject_prime_lm_head(prime_model, chunk_size=None)
 
-    hf_output, prime_output = run_models_eval(hf_model, prime_model)
+    assert_eval_models_close(hf_model, prime_model, device=device)
 
-    logits_diff = prime_output["logits"] - hf_output.logits
-    assert torch.allclose(
-        logits_diff, torch.zeros_like(logits_diff), atol=2e-2
-    ), f"Max logits diff: {logits_diff.abs().max()}"
+
+@pytest.mark.parametrize(("layer_idx"), [1, 4, 13, 20])
+def test_layers_conversion(layer_idx: int, device):
+    fix_seed(55)
+
+    device = "meta"
+    hf_conf, prime_conf = get_configs(n_group=None, num_hidden_layers=20)
+
+    with torch.device(device), default_dtype(torch.float32):
+        prime_model = DeepseekV3ForCausalLM(prime_conf)
+        hf_model = HFDeepseekV3ForCausalLM(hf_conf)
+
+    hf_state_dict = hf_model.state_dict()
+    prime_state_dict = prime_model.state_dict()
+
+    # prime to hf conversion
+    new_state_dict = prime_model.convert_layer_to_prime(
+        hf_state_dict.copy(), layer_idx=layer_idx
+    )
+
+    for k in new_state_dict.keys():
+        p = re.search("model.layers.(\d+)", k)
+        if not p:
+            continue
+
+        k_layer_idx = int(p.group(1))
+        if k_layer_idx == layer_idx:
+            assert k in prime_state_dict
+        else:
+            assert k in hf_state_dict
+
+    # hf to prime conversion
+    new_state_dict = prime_model.convert_layer_to_hf(
+        prime_state_dict.copy(), layer_idx=layer_idx
+    )
+
+    for k in new_state_dict.keys():
+        p = re.search("model.layers.(\d+)", k)
+        if not p:
+            continue
+
+        k_layer_idx = int(p.group(1))
+        if k_layer_idx == layer_idx:
+            assert k in hf_state_dict
+        else:
+            assert k in prime_state_dict

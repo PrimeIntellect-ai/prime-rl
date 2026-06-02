@@ -49,7 +49,7 @@ class DeepseekV3Config(PretrainedConfig):
         rope_ver="v1",
         ep_size=1,
         num_nextn_predict_layers=1,
-        load_balance_coeff=None,
+        load_balance_coeff=1,
         use_grouped_mm=True,
         rope_interleave=True,
         rope_parameters: dict | None = None,
@@ -129,11 +129,15 @@ class DeepseekV3Config(PretrainedConfig):
         self.__validate__()
 
     def __validate__(self):
+
         assert self.qk_nope_head_dim + self.qk_rope_head_dim == self.qk_head_dim
         assert self.n_routed_experts % self.n_group == 0  # required for TopK router
-        assert (
-            self.load_balance_coeff > 0
-        )  # router expert_bias always used in HF implementation
+
+        # router expert_bias always used in HF implementation
+        assert self.load_balance_coeff > 0
+
+        # we always use at least top2 experts from each group
+        assert self.n_routed_experts // self.n_group >= 2
 
     @property
     def rope_total_dim(self):
