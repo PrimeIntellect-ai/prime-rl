@@ -77,14 +77,24 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
     # storage *after* the parameter has been correctly reloaded. Skip the copy
     # for any buffer that shares storage with a parameter; _place_kernel_tensors
     # re-registers the original view, which trivially reflects the parameter.
-    # Remove this patch once https://github.com/vllm-project/vllm/pull/42481 is
-    # included in the vLLM release we pin/use.
+    #
+    # Gemma4Router.root_size is the same reload bug class with a non-alias
+    # runtime buffer: it is a non-persistent hidden_size**-0.5 constant that is
+    # not checkpoint-loaded, but warm reload materializes it as 1.0 and copies it
+    # back. Preserve it until vLLM carries the generic unloaded-buffer fix.
+    #
+    # Remove the alias-buffer part once vLLM #42481 is included in the vLLM
+    # release we pin/use. Remove the Gemma4 root_size part once the upstream
+    # unloaded-buffer preservation fix lands.
     from vllm.logger import init_logger
     from vllm.model_executor.model_loader.reload import layerwise as reload_layerwise
 
     logger = init_logger(__name__)
 
-    def _copy_and_restore_kernel_tensors(layer: torch.nn.Module, info: reload_layerwise.LayerReloadingInfo):
+    def _copy_and_restore_kernel_tensors(
+        layer: torch.nn.Module,
+        info: reload_layerwise.LayerReloadingInfo,
+    ):
         assert info.kernel_tensors is not None
         parameters, buffers = info.kernel_tensors
         param_storage_ptrs = {p.untyped_storage().data_ptr() for p in layer.parameters(recurse=True)}
@@ -93,12 +103,14 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
         for name, buffer in buffers.items():
             if buffer.untyped_storage().data_ptr() in param_storage_ptrs:
                 continue
+            if layer.__class__.__name__ == "Gemma4Router" and name == "root_size":
+                continue
             buffer.data.copy_(getattr(layer, name))
 
         reload_layerwise._place_kernel_tensors(layer, info)
 
     reload_layerwise._copy_and_restore_kernel_tensors = _copy_and_restore_kernel_tensors
-    logger.warning("Enabled vLLM layerwise reload alias-buffer patch.")
+    logger.warning("Enabled vLLM layerwise reload buffer-preservation patch.")
 
 
 @triton.jit

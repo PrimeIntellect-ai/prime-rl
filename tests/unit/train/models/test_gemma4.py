@@ -113,7 +113,7 @@ def test_gemma4_custom_impl_registered_for_text_and_vlm() -> None:
         Gemma4ForConditionalGeneration as PrimeRLGemma4ForConditionalGeneration,
     )
 
-    text_config = _tiny_text_config()
+    text_config = _tiny_text_config(hidden_size_per_layer_input=0)
     vlm_config = _tiny_vlm_config()
 
     assert supports_custom_impl(text_config)
@@ -130,7 +130,7 @@ def test_gemma4_text_forward_matches_hf_logits() -> None:
     )
 
     torch.manual_seed(0)
-    config = _tiny_text_config()
+    config = _tiny_text_config(hidden_size_per_layer_input=0)
     with default_dtype(torch.float32):
         hf_model = HFGemma4ForCausalLM._from_config(config)
         prime_model = PrimeRLGemma4ForCausalLM._from_config(config)
@@ -147,6 +147,30 @@ def test_gemma4_text_forward_matches_hf_logits() -> None:
         prime_output = prime_model(input_ids=input_ids, position_ids=position_ids)
 
     assert torch.allclose(prime_output["logits"], hf_output.logits, atol=1e-5, rtol=1e-5)
+
+
+def test_gemma4_text_forward_preserves_unpacked_batched_sdpa() -> None:
+    from prime_rl.trainer.models.gemma4 import (
+        Gemma4ForCausalLM as PrimeRLGemma4ForCausalLM,
+    )
+
+    config = _tiny_text_config(hidden_size_per_layer_input=0)
+    with default_dtype(torch.float32):
+        model = PrimeRLGemma4ForCausalLM._from_config(config)
+    inject_prime_lm_head(model, chunk_size=None)
+
+    batched_input_ids = torch.randint(3, config.vocab_size - 1, (2, 7))
+    with torch.no_grad():
+        batched_output = model(input_ids=batched_input_ids)
+
+    assert batched_output["logits"].shape == (2, batched_input_ids.shape[1], config.vocab_size)
+
+    packed_input_ids = torch.randint(3, config.vocab_size - 1, (1, 6))
+    packed_position_ids = torch.tensor([[0, 1, 2, 0, 1, 2]])
+    with torch.no_grad():
+        packed_output = model(input_ids=packed_input_ids, position_ids=packed_position_ids)
+
+    assert packed_output["logits"].shape == (1, packed_input_ids.shape[1], config.vocab_size)
 
 
 def test_gemma4_vlm_text_only_forward_uses_language_model_registry() -> None:

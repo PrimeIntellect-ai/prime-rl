@@ -530,13 +530,16 @@ def get_model(
     model_config.dtype = dtype
     is_vlm_arch = is_vlm_architecture(model_config)
     if getattr(model_config, "model_type", None) == "gemma4" and not is_vlm_training:
-        # Gemma4 text-only RL trains adapters for the language model that vLLM
-        # can load back under model.language_model. E2B/E4B configs declare
-        # extra modality towers whose weights are not part of the text
-        # checkpoint path; skip those towers unless multimodal training is
-        # explicitly requested.
-        model_config.vision_config = None
-        model_config.audio_config = None
+        # Gemma4 text-only RL: train the NATIVE prime-rl text stack (Gemma4ForCausalLM)
+        # directly, dropping the modality towers. The VLM checkpoint stores text weights
+        # under `model.language_model.*`; Gemma4ForCausalLM.convert_to_prime strips that
+        # prefix on load and convert_to_hf restores it for vLLM/HF round-trips. Demoting
+        # to the text config routes get_model through the custom causal-LM path below.
+        text_config = model_config.get_text_config()
+        text_config.use_cache = False
+        text_config.dtype = dtype
+        model_config = text_config
+        is_vlm_arch = False
 
     if is_vlm_training:
         logger.info(f"Detected vision-language model: {config.name}")
@@ -685,6 +688,10 @@ def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
         from transformers import AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(config.name, **tokenizer_kwargs)
+    # ``config=`` only resolves the tokenizer class at load time, but the tokenizer keeps it
+    # in init_kwargs; for gemma-4 that's a Gemma4Config object that breaks save_pretrained()'s
+    # JSON dump (i.e. disk checkpointing). Drop it from the serialized state.
+    tokenizer.init_kwargs.pop("config", None)
     if config.chat_template is not None:
         path = Path(config.chat_template)
         if path.is_file():

@@ -47,6 +47,25 @@ class RMSNorm(nn.Module):
         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
 
 
+class RMSNormNoScale(nn.Module):
+    """RMSNorm without a learnable scale (e.g. gemma-4's v_norm, HF ``Gemma4RMSNorm(with_scale=False)``).
+
+    Normalizes over the last dim in float32 and casts back. No weight parameter — so it produces no
+    state-dict entry, matching HF.
+    """
+
+    def __init__(self, eps: float = 1e-6) -> None:
+        super().__init__()
+        self.variance_epsilon = eps
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        input_dtype = hidden_states.dtype
+        hidden_states = hidden_states.to(torch.float32)
+        variance = hidden_states.pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+        return hidden_states.to(input_dtype)
+
+
 class LayerNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()

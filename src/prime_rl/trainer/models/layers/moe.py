@@ -15,7 +15,18 @@ from torch import nn
 from prime_rl.configs.trainer import EPCommBackend
 
 
-def _expert_parallel(fn):
+def _expert_parallel(func):
+    """Variable-arity reimplementation of torchtitan's ``expert_parallel`` wrapper.
+
+    Torchtitan's upstream wrapper hardcodes a 3-weight ``(w1, w2, w3, x, num_tokens)``
+    signature, so it rejects expert fns with different parameter layouts, including gpt-oss's
+    4-tensor ``(gate_up_proj, gate_up_proj_bias, down_proj, down_proj_bias)`` layout.
+    We vendor the wrapper body verbatim but split the leading positionals as ``*weights``,
+    so 3-weight (GroupedExperts), 2-weight (GemmaGroupedExperts), 2+dummy
+    (NonGatedGroupedExperts), and gpt-oss 4-tensor fns all dispatch uniformly.
+    Behaviour for the 3-weight path is byte-identical to upstream: the wrapper only touches
+    ``x`` and reads ``weights[0].shape[0]``; weights pass through.
+    """
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
@@ -23,9 +34,50 @@ def _expert_parallel(fn):
             category=DeprecationWarning,
             module=r"torch\.jit\._script",
         )
-        from torchtitan.distributed.expert_parallel import expert_parallel
+        from torchtitan.distributed import expert_parallel as _ep
 
-    return expert_parallel(fn)
+    from torch.distributed.tensor import DTensor
+
+    def wrapper(*args: torch.Tensor) -> torch.Tensor:
+        *weights, x, num_tokens_per_expert = args
+
+        weights = [w.to_local() if isinstance(w, DTensor) else w for w in weights]
+
+        if num_tokens_per_expert is not None:
+            from torchtitan.experiments.kernels.moe.indices import generate_permute_indices
+
+            # Read the alignment global live: set_token_group_alignment_size_m mutates it.
+            align_size = _ep.TOKEN_GROUP_ALIGN_SIZE_M
+            experts_per_ep_rank = weights[0].shape[0]
+            num_ep_ranks = num_tokens_per_expert.shape[0] // experts_per_ep_rank
+
+            with torch.no_grad():
+                (
+                    permuted_indices,
+                    num_tokens_per_expert,
+                    _,  # offsets
+                ) = generate_permute_indices(
+                    num_tokens_per_expert,
+                    experts_per_ep_rank,
+                    num_ep_ranks,
+                    x.shape[0] + experts_per_ep_rank * align_size,
+                    align_size,
+                )
+
+            x = torch.vstack((x, x.new_zeros((x.shape[-1]))))
+            input_shape = x.shape
+            x = x[permuted_indices, :]
+
+        out = func(*weights, x, num_tokens_per_expert)
+
+        if num_tokens_per_expert is not None:
+            out_unpermuted = out.new_empty(input_shape)
+            out_unpermuted[permuted_indices, :] = out
+            out = out_unpermuted[:-1]
+
+        return out
+
+    return wrapper
 
 
 @dataclass
@@ -398,6 +450,127 @@ class GptOssGroupedExperts(nn.Module):
         nn.init.zeros_(self.gate_up_proj_bias)
         nn.init.trunc_normal_(self.down_proj, mean=0.0, std=init_std)
         nn.init.zeros_(self.down_proj_bias)
+
+
+def _run_gemma_experts_for_loop_impl(
+    gate_up_proj: torch.Tensor,
+    down_proj: torch.Tensor,
+    x: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+) -> torch.Tensor:
+    n = num_tokens_per_expert.tolist()
+    num_padding = x.shape[0] - sum(n)
+    x_split = torch.split(x[: sum(n)], split_size_or_sections=n, dim=0)
+    out_splits = []
+    for e, x_e in enumerate(x_split):
+        gate, up = (x_e @ gate_up_proj[e].transpose(-2, -1)).chunk(2, dim=-1)
+        h = F.gelu(gate, approximate="tanh") * up
+        out_splits.append(h @ down_proj[e].transpose(-2, -1))
+    out = torch.cat(out_splits, dim=0)
+    return torch.vstack((out, out.new_zeros((num_padding, out.shape[-1]))))
+
+
+@_expert_parallel
+def _run_gemma_experts_for_loop(
+    gate_up_proj: torch.Tensor,
+    down_proj: torch.Tensor,
+    x: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+) -> torch.Tensor:
+    return _run_gemma_experts_for_loop_impl(gate_up_proj, down_proj, x, num_tokens_per_expert)
+
+
+def _run_gemma_experts_grouped_mm_impl(
+    gate_up_proj: torch.Tensor,
+    down_proj: torch.Tensor,
+    x: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    fp8: bool = False,
+) -> torch.Tensor:
+    offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
+    assert x.dim() == 2
+
+    if fp8:
+        from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
+
+        gate_up = grouped_fp8_gemm(x.bfloat16(), gate_up_proj.bfloat16().transpose(-2, -1), offsets)
+    else:
+        gate_up = torch._grouped_mm(x.bfloat16(), gate_up_proj.bfloat16().transpose(-2, -1), offs=offsets)
+    gate, up = gate_up.chunk(2, dim=-1)
+    h = F.gelu(gate, approximate="tanh") * up
+    if fp8:
+        out = grouped_fp8_gemm(h, down_proj.bfloat16().transpose(-2, -1), offsets)
+    else:
+        out = torch._grouped_mm(h, down_proj.bfloat16().transpose(-2, -1), offs=offsets)
+    return out.type_as(x)
+
+
+@_expert_parallel
+def _run_gemma_experts_grouped_mm(
+    gate_up_proj: torch.Tensor,
+    down_proj: torch.Tensor,
+    x: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+) -> torch.Tensor:
+    return _run_gemma_experts_grouped_mm_impl(gate_up_proj, down_proj, x, num_tokens_per_expert)
+
+
+@_expert_parallel
+def _run_gemma_experts_fp8_grouped_mm(
+    gate_up_proj: torch.Tensor,
+    down_proj: torch.Tensor,
+    x: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+) -> torch.Tensor:
+    return _run_gemma_experts_grouped_mm_impl(gate_up_proj, down_proj, x, num_tokens_per_expert, fp8=True)
+
+
+class GemmaGroupedExperts(nn.Module):
+    """gemma-4 grouped experts: fused gate_up_proj + down_proj, chunk-split gated gelu_pytorch_tanh, no bias.
+
+    Mirrors HF ``Gemma4TextExperts`` parameter names/layout (``gate_up_proj[E, 2*inter, hidden]``,
+    ``down_proj[E, hidden, inter]``) so the checkpoint loads with no key conversion. The routing
+    weights are applied by the surrounding dispatch (score-after-experts), not here.
+    """
+
+    def __init__(
+        self,
+        hidden_size: int,
+        intermediate_size: int,
+        num_experts: int,
+        use_grouped_mm: bool,
+        fp8: bool = False,
+    ):
+        super().__init__()
+        self.num_experts = num_experts
+        self.gate_up_proj = nn.Parameter(torch.empty(num_experts, 2 * intermediate_size, hidden_size))
+        self.down_proj = nn.Parameter(torch.empty(num_experts, hidden_size, intermediate_size))
+        self.use_grouped_mm = use_grouped_mm
+        self.fp8 = fp8
+        self.ep_comm_backend: EPCommBackend = "torch"
+
+    def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
+        self.ep_comm_backend = backend
+
+    def _forward_deepep(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
+        gate_up_proj = self.gate_up_proj.to_local()
+        down_proj = self.down_proj.to_local()
+        if self.use_grouped_mm:
+            return _run_gemma_experts_grouped_mm_impl(gate_up_proj, down_proj, x, num_tokens_per_expert, fp8=self.fp8)
+        return _run_gemma_experts_for_loop_impl(gate_up_proj, down_proj, x, num_tokens_per_expert)
+
+    def forward(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
+        if self.ep_comm_backend == "deepep":
+            return self._forward_deepep(x, num_tokens_per_expert)
+        if self.use_grouped_mm:
+            if self.fp8:
+                return _run_gemma_experts_fp8_grouped_mm(self.gate_up_proj, self.down_proj, x, num_tokens_per_expert)
+            return _run_gemma_experts_grouped_mm(self.gate_up_proj, self.down_proj, x, num_tokens_per_expert)
+        return _run_gemma_experts_for_loop(self.gate_up_proj, self.down_proj, x, num_tokens_per_expert)
+
+    def init_weights(self, init_std: float):
+        nn.init.trunc_normal_(self.gate_up_proj, mean=0.0, std=0.02)
+        nn.init.trunc_normal_(self.down_proj, mean=0.0, std=init_std)
 
 
 def _selected_probability_mass_sum(

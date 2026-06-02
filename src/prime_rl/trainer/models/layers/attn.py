@@ -39,6 +39,7 @@ class AttentionConfig:
     rms_norm_eps: float
     qk_norm_type: Literal["per_head", "per_layer"] = "per_head"
     output_bias: bool = False
+    scaling: float | None = None
 
 
 # TODO: Does torch compile support config._attn_implementation forking?
@@ -59,7 +60,7 @@ class FlashAttention(nn.Module):
         super().__init__()
         self.head_dim = config.head_dim
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
-        self.scaling = self.head_dim**-0.5
+        self.scaling = config.scaling if config.scaling is not None else self.head_dim**-0.5
         self.is_causal = config.is_causal
 
         self.q_proj = nn.Linear(
@@ -190,7 +191,7 @@ class SDPAAttention(nn.Module):
         super().__init__()
         self.head_dim = config.head_dim
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
-        self.scaling = self.head_dim**-0.5
+        self.scaling = config.scaling if config.scaling is not None else self.head_dim**-0.5
         self.is_causal = config.is_causal
 
         self.q_proj = nn.Linear(
@@ -259,7 +260,7 @@ class SDPAAttention(nn.Module):
     ) -> torch.Tensor:
         key_states = key_states.repeat_interleave(self.num_key_value_groups, dim=1)
         value_states = value_states.repeat_interleave(self.num_key_value_groups, dim=1)
-        out = F.scaled_dot_product_attention(query_states, key_states, value_states, is_causal=True)
+        out = F.scaled_dot_product_attention(query_states, key_states, value_states, is_causal=True, scale=self.scaling)
         out = out.transpose(1, 2).contiguous()
         return out.view(out.shape[0], out.shape[1], -1)
 
