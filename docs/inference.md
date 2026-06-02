@@ -102,7 +102,7 @@ tp = 2
 dp = 4
 ```
 
-This configuration will run 2 independent vLLM replicas, each with `tp=2` and `dp=4`. Routing will be handled by the `vllm-router` instance running on the same node as the 1st replica. We aim to support more advanced routing options, such as `llm-d` or `dynamo` in the future. You can read more about the supported routing options in the [router](#router) section.
+This configuration will run 2 independent vLLM replicas, each with `tp=2` and `dp=4`. Routing is handled by a router instance running on the same node as the 1st replica — either `vllm-router` (default) or the upstream `llm-d` EPP+Envoy, selected via `router_backend`. You can read more about the supported routing options in the [router](#router) section.
 
 ### Wide-EP
 
@@ -167,11 +167,24 @@ This will run 3 inference replicas, each running on 6 nodes. Each replica will r
 
 ## Router
 
-We use our own fork of [vllm-router](https://github.com/PrimeIntellect-ai/router) as the request handler. We plan to support more advanced proxy options in the future.
+Multi-node and disaggregated deployments front their vLLM backends with a router. Two backends are supported, selected with `router_backend`:
 
-Right now, router handles 2 most important things:
+```toml
+[inference.deployment]          # or [deployment] for the RL entrypoint's multi_node case
+type = "multi_node"
+router_backend = "vllm-router"  # default; or "llm-d"
+```
+
+- **`vllm-router`** (default) — our fork of [vllm-router](https://github.com/PrimeIntellect-ai/router).
+- **`llm-d`** — the upstream [llm-d](https://llm-d.ai) Endpoint Picker (EPP) + an Envoy proxy, run in standalone (no-Kubernetes) mode via the EPP's file-discovery plugin. Adds prefix-cache-aware + KV-cache-utilization + queue-depth scoring. Requires the `epp`/`envoy`/`pd-sidecar` binaries — install once with `bash scripts/install_llmd.sh` (they land in `third_party/llmd/bin`).
+
+Both backends run on **vLLM external-LB data parallelism**: each DP rank is its own API server on its own port, and the router load-balances across the per-rank endpoints (admin ops — weight broadcast, pause/resume — bypass the router and hit each rank directly).
+
+Right now, the router handles 2 most important things:
 - Request routing - KV cache re-use and balanced routing
 - P/D disaggregation - handling the prefill and decode stages separately
+
+**P/D backend support:** both backends handle P/D. Under `llm-d`, decode runs behind a `pd-sidecar` that orchestrates remote prefill (via the `x-prefiller-host-port` header the EPP sets) and the NIXL KV transfer. Upstream's sidecar only disaggregates the OpenAI endpoints; prime-rl's renderer/TITO path (`/inference/v1/generate`) needs a small patch (`scripts/install_llmd.sh` builds it from a fork pending upstream PR llm-d/llm-d-router#1458).
 
 ### Routing policies
 The 2 policies you might want to configure are:

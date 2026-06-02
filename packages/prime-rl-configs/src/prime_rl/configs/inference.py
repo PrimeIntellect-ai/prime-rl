@@ -128,7 +128,10 @@ class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     """Port for vLLM backend instances."""
 
     router_policy: str = "consistent_hash"
-    """vllm-router routing policy (e.g. ``consistent_hash``, ``round_robin``)."""
+    """vllm-router routing policy (e.g. ``consistent_hash``, ``round_robin``). Ignored when ``router_backend = "llm-d"``."""
+
+    router_backend: Literal["vllm-router", "llm-d"] = "vllm-router"
+    """Router implementation. ``vllm-router`` is the PrimeIntellect fork (default). ``llm-d`` runs the upstream llm-d EPP + Envoy in standalone (no-Kubernetes) mode via the file-discovery plugin."""
 
 
 # Disaggregated prefill/decode inference. Each replica is split into separate
@@ -161,8 +164,14 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     decode_port: int = 8200
     """Port for decode vLLM instances."""
 
+    decode_sidecar_port: int = 8300
+    """Port for the llm-d pd-sidecar on decode nodes (P/D, ``router_backend = "llm-d"`` only). EPP/Envoy route decode requests here; the sidecar orchestrates remote prefill via the ``x-prefiller-host-port`` header and forwards the decode to vLLM on ``decode_port``."""
+
     router_policy: str = "consistent_hash"
-    """vllm-router routing policy (e.g. ``consistent_hash``, ``round_robin``)."""
+    """vllm-router routing policy (e.g. ``consistent_hash``, ``round_robin``). Ignored when ``router_backend = "llm-d"``."""
+
+    router_backend: Literal["vllm-router", "llm-d"] = "vllm-router"
+    """Router implementation. ``vllm-router`` is the PrimeIntellect fork (default). ``llm-d`` runs the upstream llm-d EPP + Envoy in standalone (no-Kubernetes) mode via the file-discovery plugin, with a pd-sidecar on each decode node."""
 
     prefill_env_overrides: dict[str, str] = {}
     """Extra environment variables exported only on prefill nodes."""

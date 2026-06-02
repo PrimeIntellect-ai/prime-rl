@@ -1,0 +1,20 @@
+# Verify the standalone `uv run inference` entrypoint with the llm-d router
+# (multi-node, external-LB). 2 inference nodes, 8 per-rank endpoints each, behind
+# the llm-d EPP+Envoy. reverse_text (Qwen3-0.6B).
+#
+# Usage: source .env && uv run inference @ examples/llmd/inference_mn.toml
+output_dir = "outputs/llmd-inf-mn"
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[deployment]
+type = "multi_node"
+num_nodes = 2
+router_backend = "llm-d"
+
+[parallel]
+tp = 1
+
+[slurm]
+job_name = "llmd-inf-mn"

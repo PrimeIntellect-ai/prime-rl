@@ -167,6 +167,9 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     nodes_per_fsdp_group: int | None = None
     """Training nodes per FSDP island. Auto-sets ``trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
 
+    router_backend: Literal["vllm-router", "llm-d"] = "vllm-router"
+    """Router implementation for multi-node (non-disaggregated) inference. ``vllm-router`` is the PrimeIntellect fork (default); ``llm-d`` runs the upstream EPP + Envoy in standalone mode. Disaggregated inference reads ``inference.deployment.router_backend`` instead."""
+
     @property
     def total_infer_nodes(self) -> int:
         return self.num_infer_nodes * self.num_infer_replicas
@@ -566,7 +569,16 @@ class RLConfig(BaseConfig):
 
         total_infer_gpus = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
         if "inference_metrics_roles" not in self.orchestrator.model_fields_set:
-            role_order = ["prefill"] * infer_deploy.num_prefill_nodes + ["decode"] * infer_deploy.num_decode_nodes
+            # llm-d uses external-LB: one admin client per DP rank, so roles expand per
+            # rank (stride = dp_local = gpus_per_node / tp). vllm-router has one admin
+            # client per node (stride 1). ADMIN_URLS lists all prefill ranks, then all
+            # decode ranks, per replica — match that order.
+            stride = 1
+            if getattr(infer_deploy, "router_backend", "vllm-router") == "llm-d":
+                stride = self.deployment.gpus_per_node // self.inference.parallel.tp
+            role_order = ["prefill"] * (infer_deploy.num_prefill_nodes * stride) + ["decode"] * (
+                infer_deploy.num_decode_nodes * stride
+            )
             self.orchestrator.inference_metrics_roles = role_order * self.deployment.num_infer_replicas
         if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
             assert self.trainer.weight_broadcast.type == "nccl"
@@ -580,16 +592,13 @@ class RLConfig(BaseConfig):
     def auto_setup_inference_client(self):
         """Auto-configure orchestrator student client from the inference server config.
 
-        For all modes, sets dp_rank_count from inference DP size. For SFT mode,
-        also sets base_url - rl/opd rely on the ClientConfig default
+        For SFT mode, sets base_url - rl/opd rely on the ClientConfig default
         (``["http://localhost:8000/v1"]``) which already matches the auto-launched
         student vLLM at inference.server.port = 8000.
         """
         if self.inference is None:
             return self
         client = self.orchestrator.student.client
-        if "dp_rank_count" not in client.model_fields_set:
-            client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
         if self.orchestrator.training_mode == "sft" and "base_url" not in client.model_fields_set:
             host = self.inference.server.host or "localhost"
             port = self.inference.server.port

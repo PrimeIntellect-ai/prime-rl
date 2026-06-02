@@ -1,0 +1,21 @@
+# Verify the standalone `uv run inference` entrypoint with llm-d P/D
+# disaggregation (EPP + Envoy + pd-sidecar). 1 prefill node + 1 decode node,
+# Qwen3-30B-A3B wide-EP (tp=1), NIXL prefill->decode.
+#
+# Usage: source .env && uv run inference @ examples/llmd/inference_pd.toml
+output_dir = "outputs/llmd-inf-pd"
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+
+[deployment]
+type = "disaggregated"
+num_prefill_nodes = 1
+num_decode_nodes = 1
+router_backend = "llm-d"
+
+[parallel]
+tp = 1
+
+[slurm]
+job_name = "llmd-inf-pd"

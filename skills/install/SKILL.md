@@ -61,6 +61,16 @@ Flags: `--workspace DIR`, `--deepep-ref REF` (default `73b6ea4`), `--nvshmem-ver
 
 Verify: `uv run python -c 'import deep_ep; print(deep_ep.__file__)'`.
 
+### llm-d router backend
+
+Multi-node / disaggregated deployments can route through the upstream llm-d Endpoint Picker instead of `vllm-router` (set `router_backend = "llm-d"`). It needs three native binaries — install once:
+
+```bash
+bash scripts/install_llmd.sh   # builds epp + pd-sidecar from a pinned llm-d-router commit (vendored Go), fetches envoy
+```
+
+Binaries land in `third_party/llmd/bin/{epp,envoy,pd-sidecar}` (a shared path, so SLURM nodes see them). `epp` is pinned to the commit that includes the `vllmhttp-parser` (PR #1248) so prime-rl's renderer/TITO `/inference/v1/generate` path routes correctly. Override the pin with `LLMD_ROUTER_REF=<sha>`. The SLURM templates call `scripts/write_llmd_configs.sh` at runtime to render the EPP + Envoy + endpoints configs per replica.
+
 ## Key files
 
 - `pyproject.toml` — dependencies, extras, dependency groups
