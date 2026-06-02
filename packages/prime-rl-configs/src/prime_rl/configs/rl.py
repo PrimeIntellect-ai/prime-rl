@@ -449,6 +449,20 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_mooncake_offload_requires_slurm(self):
+        if (
+            self.slurm is None
+            and self.inference is not None
+            and self.inference.kv_cache_offload is not None
+            and self.inference.kv_cache_offload.type == "mooncake"
+        ):
+            raise ValueError(
+                "Mooncake KV offload requires SLURM — the per-node store is launched by the sbatch "
+                "template. Use inference.kv_cache_offload.type='native' for local runs."
+            )
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_deployment(self):
         if self.deployment.type == "single_node":  # single-node
             # set num_train_workers to the number of data replicas

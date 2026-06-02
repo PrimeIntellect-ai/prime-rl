@@ -219,10 +219,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     ulimit -l unlimited
 {%- endif %}
 {%- if kv_offload_mooncake %}
-    # Launch the node-local Mooncake store master + client, then source the env vars
-    # MOONCAKE_CONFIG_PATH and PYTHONHASHSEED so the vLLM process picks them up.
-    uv run python -m prime_rl.inference.mooncake --config $CONFIG_DIR/inference.toml --output-dir $OUTPUT_DIR/mooncake/node_${INFER_NODE_RANK}
-    source $OUTPUT_DIR/mooncake/node_${INFER_NODE_RANK}/env.sh
+{% include "_mooncake_store.sh.j2" %}
 {%- endif %}
 
     REPLICA_IDX=$((INFER_NODE_RANK / NODES_PER_INFER_REPLICA))

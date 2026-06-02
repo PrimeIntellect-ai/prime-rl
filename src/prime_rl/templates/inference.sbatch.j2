@@ -166,10 +166,7 @@ srun --kill-on-bad-exit=1 bash -c '
     ulimit -l unlimited
 {%- endif %}
 {%- if kv_offload_mooncake %}
-    # Launch the node-local Mooncake store master + client, then source the env vars
-    # MOONCAKE_CONFIG_PATH and PYTHONHASHSEED so the vLLM process picks them up.
-    uv run python -m prime_rl.inference.mooncake --config $CONFIG_PATH --output-dir $OUTPUT_DIR/mooncake/node_${INFER_NODE_RANK}
-    source $OUTPUT_DIR/mooncake/node_${INFER_NODE_RANK}/env.sh
+{% include "_mooncake_store.sh.j2" %}
 {%- endif %}
 
 {% if disaggregated -%}

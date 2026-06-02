@@ -192,19 +192,6 @@ def server(config: InferenceConfig, vllm_extra: dict[str, Any] | None = None):
     if config.lora_target_modules and not any("expert" in m for m in config.lora_target_modules):
         os.environ["PRIME_NO_MOE_LORA"] = "1"
 
-    # Launch the node-local Mooncake store for local runs. The SLURM launcher does this per
-    # node and exports MOONCAKE_CONFIG_PATH itself, so skip when it is already set. The store
-    # env (incl. PYTHONHASHSEED) must be applied before the engine/worker processes spawn.
-    from prime_rl.configs.inference import MooncakeKVCacheOffloadConfig
-
-    mooncake_store = None
-    if isinstance(config.kv_cache_offload, MooncakeKVCacheOffloadConfig) and "MOONCAKE_CONFIG_PATH" not in os.environ:
-        from prime_rl.inference.mooncake import start_mooncake_store
-
-        mooncake_store = start_mooncake_store(config.kv_cache_offload, config.output_dir / "mooncake")
-        mooncake_store.apply_env()
-        logger.info(f"Started node-local Mooncake store (config: {mooncake_store.config_path})")
-
     namespace = config.to_vllm()
     if vllm_extra:
         for key, value in vllm_extra.items():
@@ -219,15 +206,11 @@ def server(config: InferenceConfig, vllm_extra: dict[str, Any] | None = None):
     # Set the worker extension class based on the broadcast backend
     args.worker_extension_cls = WORKER_EXTENSION_CLS[config.weight_broadcast.type]
 
-    try:
-        if args.headless or args.api_server_count < 1:
-            run_headless(args)
+    if args.headless or args.api_server_count < 1:
+        run_headless(args)
+    else:
+        if args.api_server_count > 1:
+            run_multi_api_server(args)
         else:
-            if args.api_server_count > 1:
-                run_multi_api_server(args)
-            else:
-                # Single API server (this process).
-                uvloop.run(run_server(args))
-    finally:
-        if mooncake_store is not None:
-            mooncake_store.shutdown()
+            # Single API server (this process).
+            uvloop.run(run_server(args))

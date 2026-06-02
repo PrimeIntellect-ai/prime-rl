@@ -36,6 +36,9 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
     is_disaggregated = config.deployment.type == "disaggregated"
     dp_per_node = config.deployment.gpus_per_node // config.parallel.tp
 
+    offload = config.kv_cache_offload
+    is_mooncake = offload is not None and offload.type == "mooncake"
+
     template_vars = dict(
         **config.slurm.template_vars,
         config_path=config_path,
@@ -45,8 +48,11 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
         num_nodes=getattr(config.deployment, "num_nodes", 1),
         port=config.server.port,
         disaggregated=is_disaggregated,
-        kv_offload=config.kv_cache_offload is not None,
-        kv_offload_mooncake=config.kv_cache_offload is not None and config.kv_cache_offload.type == "mooncake",
+        kv_offload=offload is not None,
+        kv_offload_mooncake=is_mooncake,
+        kv_offload_cpu_bytes=int(offload.cpu.num_bytes) if is_mooncake else 0,
+        kv_offload_disk_path=str(offload.disk.path) if (is_mooncake and offload.disk is not None) else "",
+        kv_offload_device_name=offload.device_name if is_mooncake else "",
     )
 
     is_multi_node = config.deployment.type == "multi_node"
@@ -117,9 +123,24 @@ def inference_slurm(config: InferenceConfig):
 
 def inference_local(config: InferenceConfig):
     """Run inference locally."""
+    import os
+
     from prime_rl.inference.server import setup_vllm_env
 
     logger = setup_logger("info")
+
+    # Mooncake offload relies on the per-node store the sbatch template launches (which also
+    # exports MOONCAKE_CONFIG_PATH). When that env is absent, this is a bare local run with no
+    # store, so fail fast instead of letting the worker error on a missing config.
+    if (
+        config.kv_cache_offload is not None
+        and config.kv_cache_offload.type == "mooncake"
+        and "MOONCAKE_CONFIG_PATH" not in os.environ
+    ):
+        raise ValueError(
+            "Mooncake KV offload requires SLURM — the per-node store (master + client) is launched "
+            "by the sbatch template. Use inference.kv_cache_offload.type='native' for local runs."
+        )
 
     if config.dry_run:
         logger.success("Dry run complete. To start inference locally, remove --dry-run from your command.")
