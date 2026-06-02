@@ -152,8 +152,9 @@ class TrainSink:
         return None
 
     async def process_rollout(self, rollout: TrainRollout) -> None:
-        """Eagerly tokenize the rollout (backfilling tokens for SFT-against-API
-        rollouts); errored rollouts are skipped and dropped at the group level."""
+        """Tokenize the rollout eagerly. Backfills tokens if the env didn't
+        return them (SFT against external teacher APIs); errored rollouts
+        skip tokenization and get dropped at the group level."""
         if rollout.error is not None:
             return
         raw = rollout.raw
