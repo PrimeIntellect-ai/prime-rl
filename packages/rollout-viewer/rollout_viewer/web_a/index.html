@@ -1,0 +1,90 @@
+<!doctype html>
+<!-- rollout-viewer · Direction A — INSTRUMENT / OSCILLOSCOPE.
+     Zero build: vanilla HTML + CSS + ES modules, served statically by FastAPI. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rollout-viewer · scope</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;500;600;700&family=Spline+Sans+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand">
+    <span class="logo" aria-hidden="true"></span>
+    <b>rollout</b><span class="sep">/</span><span class="dim">scope</span>
+  </div>
+  <label class="field">
+    <span class="lbl">run</span>
+    <select id="run"></select>
+  </label>
+  <label class="field">
+    <span class="lbl">sort</span>
+    <select id="sort">
+      <option value="reward">reward</option>
+      <option value="step">step</option>
+      <option value="advantage">advantage</option>
+      <option value="example_id">example</option>
+      <option value="winner">winner</option>
+      <option value="kind">kind</option>
+    </select>
+  </label>
+  <label class="field">
+    <span class="lbl">order</span>
+    <select id="order"><option value="desc">desc</option><option value="asc">asc</option></select>
+  </label>
+  <div class="regime" id="regime" title="run schedule regime"></div>
+  <div class="spacer"></div>
+  <button id="demo" class="ghost" title="load synthetic single-agent + multi-turn episodes to prove regime-genericity">demo regimes</button>
+  <span id="live" class="live" title="SSE registry feed">live offline</span>
+</header>
+
+<main class="grid">
+  <!-- LEFT: episode list (Inspect-AI style, sortable) -->
+  <aside class="rail" id="rail">
+    <div class="rail-head">
+      <span id="rail-count" class="dim">—</span>
+      <span class="rail-cols">step · ex · winner · reward</span>
+    </div>
+    <div id="list" class="list"><div class="placeholder">loading runs…</div></div>
+  </aside>
+
+  <!-- RIGHT: the scope -->
+  <section class="scope">
+    <!-- top: hybrid scrubbers -->
+    <div class="scrubbers" id="scrubbers" hidden>
+      <div class="scope-meta" id="scope-meta"></div>
+
+      <!-- training-step axis: faint sparkline traces under a step rail -->
+      <div class="axis step-axis">
+        <div class="axis-row">
+          <span class="axis-lbl">step</span>
+          <div class="step-rail" id="step-rail"></div>
+        </div>
+        <svg class="spark" id="spark" preserveAspectRatio="none" aria-hidden="true"></svg>
+        <div class="spark-legend" id="spark-legend"></div>
+      </div>
+
+      <!-- turn axis: schedule-aligned ticks -->
+      <div class="axis turn-axis">
+        <div class="axis-row">
+          <span class="axis-lbl">turn</span>
+          <div class="turn-rail" id="turn-rail"></div>
+        </div>
+        <div class="turn-legend" id="turn-legend"></div>
+      </div>
+    </div>
+
+    <!-- bottom: selected-turn detail -->
+    <div class="detail" id="detail">
+      <div class="placeholder big">select an episode<span class="dim">— the scope is idle</span></div>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

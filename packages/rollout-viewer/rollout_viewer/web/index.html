@@ -1,0 +1,151 @@
+<!doctype html>
+<!-- BAREBONES viewer — deliberately unstyled/minimal. W5 replaces this with the
+     design-skill SPA. Purpose: eyeball real rollouts through the real API. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rollout-viewer (barebones)</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #16181c; color: #d6d9df; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  header { padding: 8px 14px; border-bottom: 1px solid #2a2e36; display: flex; gap: 14px; align-items: baseline; position: sticky; top: 0; background: #16181c; }
+  header b { color: #e8eaed; font-weight: 600; }
+  header .muted { color: #6b7280; }
+  #live { font-size: 11px; color: #6b7280; }
+  #live.on { color: #79c08f; }
+  main { display: grid; grid-template-columns: minmax(520px, 1fr) minmax(520px, 1.2fr); gap: 0; height: calc(100vh - 41px); }
+  #list { overflow: auto; border-right: 1px solid #2a2e36; }
+  #detail { overflow: auto; padding: 12px 16px; }
+  select, button { background: #21252d; color: #d6d9df; border: 1px solid #343a44; border-radius: 4px; padding: 3px 7px; font: inherit; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #21242b; white-space: nowrap; }
+  th { position: sticky; top: 0; background: #1b1e24; color: #8b919c; font-weight: 500; cursor: pointer; user-select: none; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: #1d2128; }
+  tbody tr.sel { background: #25303a; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .tag { padding: 0 5px; border-radius: 3px; background: #2a2e36; color: #aeb4bf; font-size: 11px; }
+  .win { color: #79c08f; }
+  .neg { color: #d98a8a; } .pos { color: #79c08f; }
+  .seat { margin: 14px 0; border: 1px solid #2a2e36; border-radius: 6px; overflow: hidden; }
+  .seat > .hd { display: flex; gap: 10px; align-items: baseline; padding: 5px 10px; background: #1b1e24; }
+  .seat > .hd .id { font-weight: 600; color: #e8eaed; }
+  .seat > .hd .diag { margin-left: auto; color: #8b919c; font-size: 11px; }
+  .msg { padding: 6px 10px; border-top: 1px solid #21242b; }
+  .msg .role { color: #6b7280; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .msg .content { white-space: pre-wrap; word-break: break-word; margin-top: 2px; }
+  .role-system .content { color: #9aa0ab; }
+  .role-user .content { color: #c7ccd4; }
+  .role-assistant .content { color: #dfe3ea; }
+  .sub { color: #6b7280; font-size: 11px; }
+  .empty { padding: 40px; color: #6b7280; text-align: center; }
+  .kvs { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 6px 0 12px; }
+  .kvs span { color: #8b919c; } .kvs b { color: #c7ccd4; font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <b>rollout-viewer</b><span class="muted">barebones</span>
+  <select id="run"></select>
+  <select id="sort">
+    <option value="reward">sort: reward</option>
+    <option value="step">sort: step</option>
+    <option value="example_id">sort: example_id</option>
+  </select>
+  <button id="refresh">refresh</button>
+  <span id="live">live: connecting…</span>
+</header>
+<main>
+  <div id="list"><div class="empty">loading runs…</div></div>
+  <div id="detail"><div class="empty">select an episode</div></div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const api = (p) => fetch(p).then(r => r.ok ? r.json() : Promise.reject(r.status + ' ' + p));
+let RUN = null, ROWS = [], SORT = 'reward', SEL = null;
+
+async function loadRuns() {
+  const runs = await api('/api/runs');
+  const sel = $('#run');
+  sel.innerHTML = runs.map(r => `<option value="${r.run_id}">${r.run_id} (${r.steps.length} steps)</option>`).join('');
+  if (!RUN && runs.length) RUN = runs[0].run_id;
+  if (RUN) sel.value = RUN;
+  await loadEpisodes();
+}
+
+async function loadEpisodes() {
+  if (!RUN) return;
+  const j = await api(`/api/runs/${RUN}/episodes?sort=${SORT}&order=desc&limit=2000`);
+  ROWS = j.rows || [];
+  renderList();
+}
+
+function fmt(x) { return x === null || x === undefined ? '·' : (typeof x === 'number' ? x.toFixed(3) : x); }
+function rewardCls(x) { return x > 0 ? 'pos' : x < 0 ? 'neg' : ''; }
+
+function renderList() {
+  if (!ROWS.length) { $('#list').innerHTML = '<div class="empty">no episodes</div>'; return; }
+  const head = ['step','example_id','kind','winner','reward','seats','retained'];
+  const rows = ROWS.map((r, i) => {
+    const seats = (r.members || []).join(',');
+    const ret = r.transcript_line >= 0 ? '✓' : '·';
+    return `<tr data-i="${i}" class="${SEL===i?'sel':''}">
+      <td class="num">${r.step}</td><td>${r.example_id}</td>
+      <td><span class="tag">${(r.kind||'').replace('_',' ')}</span></td>
+      <td class="win">${r.winner ?? '·'}</td>
+      <td class="num ${rewardCls(r.reward)}">${fmt(r.reward)}</td>
+      <td class="sub">${seats}</td><td class="num">${ret}</td></tr>`;
+  }).join('');
+  $('#list').innerHTML = `<table><thead><tr>${head.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>`;
+  $('#list').querySelectorAll('tbody tr').forEach(tr => tr.onclick = () => openEpisode(+tr.dataset.i));
+}
+
+function diagLine(d) {
+  if (!d || d.status === 'absent') return 'diag: absent';
+  if (d.status === 'masked_out') return 'diag: masked_out';
+  const p = (v) => v == null ? '·' : v.mean?.toFixed(3);
+  return `IS ${p(d.importance_ratio)} · KL ${p(d.mismatch_kl)} · H ${p(d.entropy)} · n=${d.n_tokens ?? '·'}`;
+}
+
+async function openEpisode(i) {
+  SEL = i; renderList();
+  const r = ROWS[i];
+  const d = $('#detail');
+  if (r.transcript_line < 0) { d.innerHTML = `<div class="empty">transcript not retained for this episode<br><span class="sub">(metrics + diagnostics are still in the index)</span></div>`; return; }
+  d.innerHTML = '<div class="empty">loading transcript…</div>';
+  let ep;
+  try { ep = await api(`/api/episodes/${RUN}/${r.step}/${r.transcript_line}`); }
+  catch (e) { d.innerHTML = `<div class="empty">error: ${e}</div>`; return; }
+  if (ep.retained === false) { d.innerHTML = '<div class="empty">transcript not retained</div>'; return; }
+  const cat = ep.mar?.categorical || {};
+  const kv = Object.entries(cat).map(([k,v]) => `<span>${k}=<b>${v}</b></span>`).join('');
+  const seats = ep.steps.map(s => `
+    <div class="seat">
+      <div class="hd"><span class="id">${s.member_id ?? 'agent'}</span>
+        <span class="sub">turn ${s.index}${s.phase ? ' · '+s.phase : ''}${s.reward!=null?' · r='+s.reward.toFixed(2):''}</span>
+        <span class="diag">${diagLine(s.diagnostics)}</span></div>
+      ${[...s.prompt.map(m=>['prompt',m]), ...s.completion.map(m=>['completion',m])].map(([k,m]) => `
+        <div class="msg role-${m.role}"><div class="role">${k} · ${m.role}</div><div class="content">${escapeHtml(typeof m.content === 'string' ? m.content : JSON.stringify(m.content, null, 2))}</div></div>`).join('')}
+    </div>`).join('');
+  d.innerHTML = `<div class="kvs"><span>example=<b>${ep.example_id}</b></span><span>kind=<b>${ep.kind}</b></span><span>reward=<b>${fmt(ep.reward)}</b></span>${kv}</div>${seats}`;
+}
+
+function escapeHtml(s){ return (s??'').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+$('#run').onchange = e => { RUN = e.target.value; SEL = null; loadEpisodes(); };
+$('#sort').onchange = e => { SORT = e.target.value; loadEpisodes(); };
+$('#refresh').onclick = () => loadRuns();
+
+// live feed
+try {
+  const es = new EventSource('/api/stream');
+  es.onopen = () => { $('#live').textContent = 'live: on'; $('#live').className = 'on'; };
+  es.onmessage = () => loadEpisodes();
+  es.onerror = () => { $('#live').textContent = 'live: off'; $('#live').className = ''; };
+} catch (e) { $('#live').textContent = 'live: n/a'; }
+
+loadRuns();
+</script>
+</body>
+</html>
