@@ -60,11 +60,9 @@ class GptOssTopKRouter(nn.Module):
         logits = F.linear(x, self.weight, self.bias)  # (T, num_experts)
         top_logits, top_indices = torch.topk(logits, self.top_k, dim=-1)
         top_scores = F.softmax(top_logits, dim=-1, dtype=top_logits.dtype)
-        num_tokens_per_expert = torch.histc(
-            top_indices.reshape(-1).float(),
-            bins=self.num_experts,
-            min=0,
-            max=self.num_experts,
+        num_tokens_per_expert = torch.bincount(
+            top_indices.reshape(-1),
+            minlength=self.num_experts,
         )
         return top_scores, top_indices, num_tokens_per_expert
 
@@ -83,9 +81,6 @@ class GptOssMoE(nn.Module):
 
     def __init__(self, config: GptOssConfig):
         super().__init__()
-        # GptOssGroupedExperts has fused gate_up_proj + per-expert biases; the
-        # current FP8 grouped-GEMM path doesn't model that yet.
-        assert not getattr(config, "fp8", False), "FP8 training is not supported for GPT-OSS"
         self.num_experts = config.num_local_experts
         self.top_k = config.num_experts_per_tok
         self.router = GptOssTopKRouter(config)
@@ -94,6 +89,7 @@ class GptOssMoE(nn.Module):
             intermediate_size=config.intermediate_size,
             num_experts=self.num_experts,
             use_grouped_mm=getattr(config, "use_grouped_mm", True),
+            fp8=getattr(config, "fp8", False),
         )
 
     def forward(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
