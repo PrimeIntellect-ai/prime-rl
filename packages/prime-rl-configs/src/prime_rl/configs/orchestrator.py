@@ -207,225 +207,109 @@ class EnvConfig(BaseConfig):
 
 
 class SystemRoleEchoConfig(BaseConfig):
-    """Per-system-message echo — cross-entropy supervision on system-prompt tokens.
-
-    System messages are prompt-side and scaffold/dataset-determined. Enable this
-    when you want the model to internalize the system prompt — e.g. for
-    progressive-compression curricula where the system prompt is shortened over
-    training and the model has to absorb the original behavior into its weights.
-    """
+    """Per-system-message echo — cross-entropy supervision on system-prompt tokens."""
 
     alpha: float = 0.0
-    """Per-token advantage on system-message content positions. Default 0.0
-    means the role is "selected but inert" — set explicitly to a positive
-    value to actually contribute gradient."""
+    """Per-token advantage on system-message content positions."""
 
 
 class UserRoleEchoConfig(BaseConfig):
-    """Per-user-message echo — cross-entropy supervision on user-turn tokens.
-
-    User messages are prompt-side and dataset-determined. Enable this for
-    user-simulator training, where the goal is teaching the model to produce
-    user-like turns conditional on the prior conversation.
-    """
+    """Per-user-message echo — cross-entropy supervision on user-turn tokens."""
 
     alpha: float = 0.0
-    """Per-token advantage on user-message content positions. Default 0.0
-    means inert; set explicitly to a positive value to contribute gradient."""
+    """Per-token advantage on user-message content positions."""
 
 
 class AssistantRoleEchoConfig(BaseConfig):
     """Per-assistant-message echo — cross-entropy supervision on assistant tokens.
 
-    Unlike the other role echoes, assistant tokens normally carry RL gradient
-    via the rollout's GRPO advantage. Enabling this OVERRIDES the RL advantage
-    with the constant ``alpha`` on assistant positions — setting ``alpha=0`` is
-    the canonical "kill RL on assistant tokens" knob (useful for pure-SFT-no-RL
-    ablations when combined with ``ToolRoleEchoConfig``).
-
-    Applies to BOTH prompt-side assistant messages (prior turns in multi-turn
-    rollouts) AND the current step's completion. The completion-side override
-    is what makes the alpha=0 trick work — without it, the RL advantage would
-    still apply to the current completion.
+    Assistant tokens normally carry RL gradient (the rollout's GRPO advantage);
+    enabling this OVERRIDES that with ``alpha`` on both prompt-side prior turns
+    and the current completion. ``alpha=0`` is the canonical "kill RL on
+    assistant tokens" knob for pure-SFT ablations.
     """
 
     alpha: float = 0.0
-    """Per-token advantage on assistant-message positions. The default 0.0 is
-    the canonical "kill RL on assistant tokens" value — see class docstring."""
+    """Per-token advantage on assistant-message positions (overrides RL)."""
 
 
 class ToolRoleEchoConfig(BaseConfig):
     """Per-tool-message echo — cross-entropy supervision on tool response tokens.
 
-    Tool messages are prompt-side and environment-determined: ground-truth output
-    of code execution, documentation lookups, etc. This is the original
-    "SFT-on-tool-body" use case — anchor the model on real tool outputs as
-    supervised data alongside the RL signal on its own completions.
-
     Restrict to specific tool functions via ``tool_names``; defaults to all tools.
     """
 
     alpha: float = 0.0
-    """Per-token advantage on tool-message content positions. Default 0.0
-    means inert; set explicitly to a positive value to contribute gradient."""
+    """Per-token advantage on tool-message content positions."""
 
     tool_names: list[str] | None = None
     """Restrict echo to these tool function names; None = all tools."""
 
 
 class EchoFilterConfig(BaseConfig):
-    """User-pluggable per-token filter applied on top of the role-level echo
-    baseline.
+    """User-pluggable per-token filter layered on top of the role baseline.
 
-    The filter is a Python callable resolved at env setup via
-    ``import_object(import_path)``. It receives the full rollout exactly as
-    returned by the env server and returns per-step bool masks; positions
-    where the filter returns ``False`` get dropped back to "not echoed"
-    (``echo_alpha = None``) regardless of the role baseline. The filter
-    **never adds echo** — it only narrows. To get echo at a position the
-    role gate didn't enable, set the role config more permissively first.
+    A callable resolved at env setup via ``import_object(import_path)``::
 
-    **Filter signature:**
+        def my_filter(rollout: vf.RolloutOutput, **kwargs) -> list[list[bool]]: ...
 
-    .. code-block:: python
+    It returns one bool mask per trajectory step (inner length =
+    ``len(prompt_ids) + len(completion_ids)`` for that step): ``False`` drops a
+    position back to no-echo (``echo_alpha = None``), ``True`` keeps the role
+    decision. The filter can only narrow — it never adds echo where no role
+    enabled it.
 
-        def my_filter(rollout: vf.RolloutOutput, **kwargs) -> list[list[bool]]:
-            \"\"\"
-            Args:
-                rollout: Full rollout as returned by the env server.
-                    ``rollout["trajectory"]`` gives per-step ``TrajectoryStep``s;
-                    each step's ``tokens`` carries ``prompt_ids``,
-                    ``completion_ids``, ``completion_logprobs``, ``prompt_mask``,
-                    ``completion_mask``, and ``prompt_attribution`` (with
-                    ``message_roles``, ``message_indices``, ``is_content``,
-                    ``message_tool_names``). ``reward``, ``error``,
-                    ``stop_condition``, ``metrics``, ``info``, ``example_id``
-                    all live on the rollout dict.
-                **kwargs: From :attr:`EchoFilterConfig.kwargs`.
-
-            Returns:
-                Per-step masks. Outer length **must** equal
-                ``len(rollout["trajectory"])``. Inner mask for step ``i``
-                **must** have length
-                ``len(step.tokens.prompt_ids) + len(step.tokens.completion_ids)``.
-
-                Per-token semantics:
-                  - ``True``  → keep role-level echo decision as-is
-                  - ``False`` → drop to no-echo (``echo_alpha[k] = None``)
-            \"\"\"
-
-    **Determinism contract.** The filter must be deterministic given
-    ``(rollout, kwargs)``. DP ranks each see the same rollout but call the
-    filter independently — non-deterministic output → divergent masks →
-    divergent gradients → silent corruption. No ``random.*`` without a seed,
-    no ``time.time()`` thresholds, no external state lookups. The contract
-    is unenforced at runtime (double-running the filter per rollout would
-    double the hot-path cost) but signed by writing a filter.
-
-    **Performance.** The filter is invoked once per rollout, synchronously
-    in the orchestrator process. Heavy regex compilation belongs at module
-    load (``re.compile``), not per-call. The filter is not a parallelism
-    boundary — slow filters block ``process_rollout``.
-
-    **Error handling — fail loud.** All failures propagate:
-
-    - ``ImportError`` at env setup if ``import_path`` doesn't resolve.
-    - ``ValueError`` if the filter returns the wrong outer length (≠
-      number of trajectory steps) or wrong inner length on any step.
-    - ``TypeError`` if the filter returns a non-list, or any inner mask
-      contains non-bool elements.
-    - Any exception raised by the filter itself propagates — the rollout
-      fails, the training loop sees it.
+    Must be deterministic given ``(rollout, kwargs)`` — DP ranks run it
+    independently, so non-deterministic output diverges gradients silently. All
+    failures (bad import, wrong shape, non-bool element, user exception) propagate.
     """
 
     import_path: str
-    """Dotted import path to the filter callable, e.g.
-    ``"my_module.filter_warnings"``."""
+    """Dotted import path to the filter callable, e.g. ``"my_module.filter_warnings"``."""
 
     kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Keyword arguments forwarded to the filter as ``**kwargs``. Allows
-    parameterizing generic filters from the TOML config without
-    multi-module gymnastics."""
+    """Keyword arguments forwarded to the filter as ``**kwargs``."""
 
 
 class EchoConfig(BaseConfig):
-    """Per-env per-role echo — auxiliary cross-entropy supervision on
-    prompt-side tokens (and assistant-side completions when assistant echo
-    is enabled).
+    """Per-env per-role echo — auxiliary cross-entropy supervision on prompt-side
+    tokens (and assistant completions when assistant echo is enabled).
 
-    Each role has its own sub-config so that:
+    Each role has its own sub-config; roles enable independently (``None`` =
+    disabled) and carry their own ``alpha``. At least one role must be enabled — see
+    :meth:`require_at_least_one_role`. To disable echo for an env, omit the
+    ``[orchestrator.train.env.echo]`` block entirely.
 
-    - Roles enable/disable independently (``None`` = role disabled).
-    - Per-role ``alpha`` lets different roles carry different weights in the
-      same run.
-    - Per-role-specific fields stay scoped (e.g. ``tool_names`` lives on
-      :class:`ToolRoleEchoConfig` only).
+    The per-token alpha array is built from the renderer's ``prompt_attribution``;
+    only message-body (content) tokens get the overlay, never template scaffold.
+    Set :attr:`filter` to narrow it further (see :class:`EchoFilterConfig`).
 
-    **Defaults are loud — opt-in across the board.** Every role defaults to
-    ``None`` (disabled) and every per-role ``alpha`` defaults to ``0.0``. The
-    user has to explicitly:
-
-      1. Pick at least one role sub-block (validator enforces this — see
-         :meth:`require_at_least_one_role`).
-      2. Set a non-zero ``alpha`` on it, otherwise echo runs but with zero
-         gradient contribution (effectively a no-op).
-
-    To disable echo entirely, omit the ``[orchestrator.train.env.echo]``
-    block — the outer ``TrainEnvConfig.echo`` defaults to ``None``.
-
-    **Mask construction.** The per-token echo alpha array is built from the
-    renderer's ``prompt_attribution`` (``message_roles``, ``message_indices``,
-    ``message_tool_names``, ``is_content``). Only content tokens — message-body
-    bytes — get the overlay; template scaffold (role-tag wraps,
-    ``<|tool_response>`` specials, etc.) is excluded by construction.
-
-    **Optional user filter.** Set :attr:`filter` to layer a custom Python
-    callable on top of the role baseline. The filter sees the full rollout
-    and can drop positions back to no-echo based on its content — e.g.
-    masking out warning text inside tool outputs. See :class:`EchoFilterConfig`
-    for the full contract.
-
-    **Wire format.** Each ``TrainingSample`` carries a per-token alpha array
-    ``echo_alpha: list[float | None]`` parallel to ``prompt_ids +
-    completion_ids``. ``None`` per-token means "not echoed (RL gradient
-    applies as usual)"; a float means "echo at this alpha — overrides the RL
-    advantage on this position and flips loss_mask=True". Three-state
-    encoding (None / float zero / float nonzero) is required because
-    ``alpha=0`` is a legitimate "kill the gradient" value distinct from "not
-    echoed."
+    **Wire format.** Each ``TrainingSample`` carries ``echo_alpha:
+    list[float | None]`` parallel to ``prompt_ids + completion_ids``: ``None``
+    means "not echoed (RL applies)", a float means "echo at this alpha
+    (overrides RL, flips loss_mask=True)". ``alpha=0`` is a real kill-RL value,
+    distinct from ``None``.
     """
 
     system: SystemRoleEchoConfig | None = None
-    """System-message echo (default: disabled). Set to a
-    :class:`SystemRoleEchoConfig` block to enable."""
+    """System-message echo (default: disabled)."""
 
     user: UserRoleEchoConfig | None = None
-    """User-message echo (default: disabled). Set to a
-    :class:`UserRoleEchoConfig` block to enable."""
+    """User-message echo (default: disabled)."""
 
     assistant: AssistantRoleEchoConfig | None = None
-    """Assistant-message echo (default: disabled). The only role echo that
-    overrides RL gradients on the current completion — the canonical use is
-    enabling this with ``alpha=0`` to kill the RL contribution on assistant
-    tokens entirely (pure-SFT-no-RL ablations)."""
+    """Assistant-message echo (default: disabled) — overrides RL on assistant tokens."""
 
     tool: ToolRoleEchoConfig | None = None
-    """Tool-message echo (default: disabled). Set to a
-    :class:`ToolRoleEchoConfig` block to enable."""
+    """Tool-message echo (default: disabled)."""
 
     filter: EchoFilterConfig | None = None
-    """Optional user-pluggable per-token filter on top of the role baseline.
-    Composes by AND — strictly narrowing, never adds echo. See
-    :class:`EchoFilterConfig` for the signature, determinism contract, and
-    error semantics."""
+    """Optional per-token filter on top of the role baseline; strictly narrows
+    (never adds echo). See :class:`EchoFilterConfig`."""
 
     @model_validator(mode="after")
     def require_at_least_one_role(self) -> "EchoConfig":
-        """At least one of ``system``, ``user``, ``assistant``, ``tool`` must
-        be set (non-None). An ``EchoConfig`` block with every role disabled
-        is meaningless — the caller probably meant to omit
-        ``[orchestrator.train.env.echo]`` entirely (which sets
-        ``TrainEnvConfig.echo = None`` and disables the whole feature)."""
+        """Reject an all-None config — omit the ``[...echo]`` block to disable instead."""
         if all(getattr(self, role) is None for role in ("system", "user", "assistant", "tool")):
             raise ValueError(
                 "EchoConfig requires at least one role to be enabled. Set "
@@ -445,9 +329,7 @@ class TrainEnvConfig(EnvConfig):
     Inherits from ``orchestrator.group_size`` when unset."""
 
     echo: EchoConfig | None = None
-    """Per-env per-role echo config; None = echo disabled for this env.
-
-    See :class:`EchoConfig` for full semantics."""
+    """Per-env per-role echo config (None = disabled). See :class:`EchoConfig`."""
 
 
 class EvalEnvConfig(EnvConfig):

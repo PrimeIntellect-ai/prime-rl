@@ -56,24 +56,12 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # taus), sft uses sft_loss_fn. Stamped by the orchestrator from training_mode.
     training_mode: TrainingMode = "rl"
 
-    # Per-token echo alpha (parallel to prompt_ids + completion_ids).
-    # Three-state encoding:
-    #   - None (whole field):     env opted out of echo entirely (no overlay)
-    #   - None per-token:         this position is NOT echoed; the RL gradient
-    #                             (or prompt-mask exclusion) applies as usual
-    #   - float per-token:        this position IS echoed at this alpha; in
-    #                             ``prepare_sample`` the per-token alpha
-    #                             overwrites the RL advantage AND flips
-    #                             loss_mask=True, making it a pure
-    #                             cross-entropy contribution
-    # Built by ``_step_echo_alpha`` from the renderer's prompt_attribution
-    # (message_roles, message_indices, is_content, message_tool_names) and
-    # the env's ``EchoConfig`` per-role sub-configs. The three-state encoding
-    # is required because ``alpha=0`` is a legitimate "kill the RL gradient"
-    # value (the assistant-role use case), distinct from "not echoed at all".
-    # Distinct from ``training_mode='sft'`` above: that switches the whole
-    # sample to the SFT loss function; this is a per-token overlay co-existing
-    # with the RL loss in default_loss_fn.
+    # Per-token echo alpha (parallel to prompt_ids + completion_ids), built by
+    # ``_step_echo_alpha`` from the renderer attribution + the env's EchoConfig.
+    # Three states: whole field None = no echo; per-token None = not echoed (RL
+    # applies); per-token float = echoed at that alpha (``prepare_sample``
+    # overwrites the RL advantage and flips loss_mask=True). ``alpha=0`` is a
+    # real kill-RL value, distinct from None.
     echo_alpha: list[float | None] | None = None
 
 
@@ -110,11 +98,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     training_mode: TrainingMode = "rl"
     rewards: list[float] | None = None
 
-    # Per-token echo mask (parallel to input_ids): True where the token is an
-    # echo position (per-role cross-entropy overlay, see ``EchoConfig``).
-    # Survives packing and padding identical to ``loss_mask``. None when no
-    # sample in this micro-batch carried any echo positions. Used by the loss
-    # function to skip the trust-region clip and zero out the IS-ratio on echo
-    # positions (the off-policy correction concept doesn't apply to tokens the
-    # model didn't sample).
+    # Per-token echo mask (parallel to input_ids): True on echo positions, where
+    # the loss skips the trust-region clip / IS-ratio (the model didn't sample
+    # them). Survives packing/padding like ``loss_mask``; None if no sample echoes.
     echo_mask: list[bool] | None = None

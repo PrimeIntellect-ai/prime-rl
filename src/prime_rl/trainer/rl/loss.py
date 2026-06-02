@@ -142,16 +142,10 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
         trainer_logprobs, inference_logprobs
     )
 
-    # echo positions: the model never sampled these tokens (for prompt-side
-    # echo) or we're explicitly overriding the RL advantage (for assistant
-    # role echo), so the off-policy correction concept doesn't apply. Force
-    # log-ratio to 0 so ``kl_loss = loss_mask * log_importance_ratio**2`` is
-    # zero on these positions, and zero out ``mismatch_kl`` for metrics. The
-    # pg_loss term itself is built separately below — on echo positions it
-    # routes through ``trainer_logprobs`` directly so the gradient flows;
-    # routing it through ``importance_ratio`` here would not, because
-    # ``torch.where(cond, zeros_like(x), x)`` blocks the gradient through
-    # ``x`` on the True branch.
+    # Echo positions: the off-policy correction doesn't apply (the model never
+    # sampled prompt-side echo tokens; assistant echo overrides RL directly).
+    # Force log-ratio to 0 so KL is zero here; pg_loss routes through
+    # trainer_logprobs separately below so its gradient still flows.
     if echo_mask is not None:
         log_importance_ratio = torch.where(echo_mask, torch.zeros_like(log_importance_ratio), log_importance_ratio)
         importance_ratio = torch.exp(log_importance_ratio)
@@ -164,11 +158,8 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     negative_advantages = advantages < 0
     dppo_invalid_mask = torch.where(positive_advantages, dppo_invalid_mask_high, dppo_invalid_mask_low)
 
-    # Echo positions: never trust-region-clip. The inference logprob for
-    # prompt-side echo tokens is placeholder 0.0 (not a real sample), so
-    # probs_diff ≈ exp(trainer_logprob) - 1 and would almost always trigger
-    # the high-side mask — silently dropping the echo gradient. Exclude echo
-    # positions from the trust-region check by construction.
+    # Echo positions: never trust-region-clip — the placeholder inference
+    # logprob (0.0) makes probs_diff spurious and would falsely mask them.
     if echo_mask is not None:
         dppo_invalid_mask = dppo_invalid_mask & ~echo_mask
 
@@ -180,13 +171,9 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
 
     advantages = loss_config.adv_tau * advantages
 
-    # pg_loss on RL positions: standard policy gradient with IS correction.
-    # On echo positions: use ``advantages * trainer_logprobs`` directly so
-    # the gradient w.r.t. ``trainer_logprobs`` equals ``advantages`` (the
-    # per-token alpha overlaid in prepare_sample). After the negation in
-    # ``loss = -pg_loss.sum()``, this gives parameter updates in the
-    # ``+∇log p`` direction on echo positions — pure cross-entropy in the
-    # echo direction.
+    # Echo positions route pg through ``advantages * trainer_logprobs`` (gradient
+    # w.r.t. logprobs is exactly the overlaid alpha → pure cross-entropy after the
+    # ``-pg_loss`` negation); RL positions use the IS-corrected policy gradient.
     rl_pg = keep_mask * advantages * importance_ratio
     if echo_mask is not None:
         echo_pg = advantages * trainer_logprobs
@@ -206,11 +193,7 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
         "masked_advantage_negative": _safe_mean(negative_advantages, drop_mask),
     }
 
-    # Echo world-model loss: per-rollout NLL on the body tokens the trainer
-    # is supervising via the echo overlay. ``echo_train_mask`` is the
-    # intersection of loss_mask (count only trainable positions) and echo_mask;
-    # for rollouts whose env has echo disabled, echo_mask is None and the
-    # metrics default to zero / non-NaN so downstream aggregation stays clean.
+    # Echo world-model metrics: NLL on the supervised (loss_mask & echo) tokens.
     if echo_mask is not None:
         echo_train_mask = loss_mask & echo_mask
         metrics["echo_nll_mean"] = _safe_mean(-trainer_logprobs, echo_train_mask)

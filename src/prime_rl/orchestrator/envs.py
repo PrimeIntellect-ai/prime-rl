@@ -170,10 +170,6 @@ class TrainEnv(Env):
     def __init__(self, config: TrainEnvConfig):
         super().__init__(config)
         self.sampling_args = config.sampling.to_sampling_args()
-        # Resolve the echo filter callable once at env setup. The
-        # ``import_object`` lookup is cheap; we cache the callable on the
-        # env so per-rollout invocation doesn't re-resolve. ``None`` when
-        # no filter is configured.
         self.echo_filter_fn: Callable[..., list[list[bool]]] | None = None
         if config.echo is not None and config.echo.filter is not None:
             self.echo_filter_fn = import_object(config.echo.filter.import_path)

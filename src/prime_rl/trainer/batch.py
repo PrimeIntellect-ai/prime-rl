@@ -50,19 +50,7 @@ def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
 
 
 def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch:
-    """
-    Prepare a problem for sequence packing training.
-    Tokenize and prepare tensors.
-
-    When ``training_example`` carries a per-token ``echo_alpha`` array (see
-    :class:`EchoConfig`), positions with ``echo_alpha[k] is not None`` get
-    their advantage overwritten to ``echo_alpha[k]`` and are flipped into
-    ``loss_mask=True``. ``default_loss_fn`` then bypasses the IS-ratio and
-    KL on these positions, leaving ``alpha × log p_θ`` as the policy-gradient
-    contribution — pure cross-entropy in the echo direction. The MicroBatch
-    carries the per-token bool mask as ``echo_mask`` (True where
-    ``echo_alpha`` is non-None), parallel to ``input_ids``.
-    """
+    """Prepare a sample for sequence-packing training: tokenize and build tensors."""
     input_ids = training_example.prompt_ids + training_example.completion_ids
     loss_mask = list(training_example.prompt_mask) + list(training_example.completion_mask)
     inference_logprobs = [0.0] * len(training_example.prompt_ids) + training_example.completion_logprobs
@@ -73,11 +61,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     mm_token_type_ids = training_example.mm_token_type_ids
     assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
     env_names = [training_example.env_name] * len(input_ids)
-    # Echo overlay: per-token alpha overwrites advantages and flips loss_mask
-    # to True on echo positions. ``default_loss_fn`` then bypasses IS-ratio
-    # and KL on those positions, leaving alpha × log p_θ as the echo
-    # contribution. The MicroBatch's per-token bool ``echo_mask`` is True
-    # exactly where ``echo_alpha`` is non-None — derived once here.
+    # Echo overlay: per-token alpha overwrites the RL advantage and flips
+    # loss_mask=True on echo positions (default_loss_fn then routes them through
+    # pure cross-entropy); ``echo_mask`` marks those positions for the loss fn.
     echo_alpha = training_example.echo_alpha
     echo_mask: list[bool] | None = None
     if echo_alpha is not None:

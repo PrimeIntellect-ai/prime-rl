@@ -152,26 +152,8 @@ class TrainSink:
         return None
 
     async def process_rollout(self, rollout: TrainRollout) -> None:
-        """Tokenize the rollout eagerly. Backfills tokens if the env didn't
-        return them (SFT against external teacher APIs); errored rollouts
-        skip tokenization and get dropped at the group level.
-
-        If the env has an ``EchoConfig`` with a user-supplied filter
-        (``env.echo_filter_fn``), invoke it *before* ``interleave_rollout``
-        and thread the per-step bool masks into the tokenization step so
-        ``_step_echo_alpha`` can AND them against the role baseline. The
-        filter is wrapped in ``asyncio.to_thread`` since it's user Python
-        and must not block the event loop. Skip the filter call when:
-
-          - no filter is configured (``env.echo_filter_fn is None``), OR
-          - the trajectory is empty (interleave will early-return), OR
-          - the first step has no ``prompt_attribution`` (non-renderer
-            rollout — echo is largely a no-op, and the filter can't
-            branch on roles without attribution).
-
-        Validation failures inside ``apply_echo_filter`` propagate per
-        the ``EchoFilterConfig`` contract (no silent fallback).
-        """
+        """Eagerly tokenize the rollout (backfilling tokens for SFT-against-API
+        rollouts); errored rollouts are skipped and dropped at the group level."""
         if rollout.error is not None:
             return
         raw = rollout.raw

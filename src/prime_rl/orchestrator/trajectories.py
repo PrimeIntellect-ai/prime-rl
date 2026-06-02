@@ -210,39 +210,20 @@ def _step_echo_alpha(
     echo_config: EchoConfig | None,
     filter_mask: list[bool] | None = None,
 ) -> list[float | None]:
-    """Per-token echo alpha for one trajectory step.
+    """Per-token echo alpha for one trajectory step, length ``prompt_len +
+    completion_len``. Each entry is ``None`` (not echoed — RL applies) or a
+    ``float`` (echoed at that alpha, overriding the RL advantage and flipping
+    loss_mask=True in ``prepare_sample``); ``alpha=0`` is a real kill-RL value,
+    distinct from ``None``.
 
-    Length = ``prompt_len + completion_len``. Each entry is either:
-      - ``None``: this position is NOT echoed (RL gradient applies normally)
-      - ``float``: this position IS echoed at this alpha (overrides the RL
-        advantage and flips loss_mask=True in ``prepare_sample``)
+    Prompt-side positions resolve their role via
+    ``message_indices[k] → message_roles[mi]`` and take that role's alpha;
+    ``is_content[k]`` excludes template scaffold, and tool positions also match
+    ``tool_names``. Completion-side positions are always assistant-role.
+    ``filter_mask`` (optional, same length) narrows the baseline by AND — False
+    drops a position to ``None`` (never adds echo); a wrong length raises.
 
-    Three-state encoding because ``alpha=0`` is a legitimate "kill the RL
-    gradient" value (assistant-role use case) distinct from "not echoed".
-
-    Prompt-side positions are resolved by joining
-    ``message_indices[k] → message_roles[mi]`` to look up the role's
-    per-role echo config (system / user / assistant / tool); ``is_content[k]``
-    excludes template scaffold (role-tag wraps, ``<|tool_response>`` specials).
-    Tool positions additionally filter by ``tool_names`` matching
-    ``message_tool_names[mi]``.
-
-    Completion-side positions are ALWAYS assistant-role (the model's emission)
-    so they're marked when ``echo_config.assistant`` is enabled, regardless of
-    ``is_content`` (which is prompt-side-only).
-
-    ``filter_mask`` (optional): per-token bool mask of length
-    ``prompt_len + completion_len`` that narrows the role baseline by AND.
-    Positions where ``filter_mask[k]`` is ``False`` get dropped back to
-    ``None`` regardless of the role baseline — the filter can only narrow,
-    never add echo. Wrong length raises ``ValueError`` (load-bearing length
-    contract — caller is the orchestrator after ``apply_echo_filter``
-    validates the user's filter output).
-
-    Returns all-None when any precondition fails: echo disabled (config is
-    None or all roles disabled), missing attribution, missing roles/content,
-    or non-renderer client rollout. Callers treat all-None as "no echo for
-    this step" without branching.
+    Returns all-None when echo is disabled or attribution is missing.
     """
     expected_total_len = prompt_len + completion_len
     if filter_mask is not None and len(filter_mask) != expected_total_len:
@@ -347,34 +328,13 @@ def apply_echo_filter(
     filter_fn: Callable[..., list[list[bool]]],
     filter_kwargs: dict[str, Any] | None = None,
 ) -> list[list[bool]]:
-    """Invoke the user's echo filter, validate the return shape, return the
-    per-step masks ready to be threaded into :func:`interleave_rollout`.
-
-    See :class:`EchoFilterConfig` for the full contract this helper enforces.
-    Failures are loud:
-
-    - ``TypeError`` if the filter returns a non-list, or any inner mask is
-      not a list, or any element is not a ``bool``.
-    - ``ValueError`` if the outer length doesn't match the trajectory step
-      count, or any inner length doesn't match that step's
-      ``prompt_ids + completion_ids`` length.
-    - Any exception raised by the filter itself propagates.
-
-    Args:
-        rollout: The rollout to filter. The full output dict is passed to
-            the user's callable as the first positional argument.
-        filter_fn: User callable resolved via
-            :func:`prime_rl.utils.utils.import_object` at env setup. Signature
-            is ``(rollout, **kwargs) -> list[list[bool]]`` — see
-            :class:`EchoFilterConfig` for details.
-        filter_kwargs: Optional kwargs forwarded as ``**kwargs`` to the
-            filter (from :attr:`EchoFilterConfig.kwargs`). ``None`` means
-            empty kwargs.
-
-    Returns:
-        Per-step bool masks. Outer length equals
-        ``len(rollout["trajectory"])``. Each inner mask has length equal to
-        that step's ``len(prompt_ids) + len(completion_ids)``.
+    """Invoke the user's echo filter and validate its return, returning the
+    per-step masks for :func:`interleave_rollout`. ``filter_kwargs`` (or None
+    for empty) are forwarded as ``**kwargs``. Enforces the
+    :class:`EchoFilterConfig` contract loudly: ``TypeError`` for a non-list /
+    non-bool return, ``ValueError`` for an outer length ≠ trajectory steps or an
+    inner length ≠ that step's ``prompt_ids + completion_ids``; the filter's own
+    exceptions propagate.
     """
     trajectory = rollout["trajectory"]
     result = filter_fn(rollout, **(filter_kwargs or {}))
@@ -442,11 +402,7 @@ def interleave_rollout(
     merged step's sidecar covers every image in the sample.
 
     When ``echo_config`` is provided, each sample carries a per-token
-    ``echo_alpha`` array (``list[float | None]`` parallel to
-    ``prompt_ids + completion_ids``) that the trainer overlays per-token alpha
-    advantages onto. The array is computed per-step from the renderer's
-    ``prompt_attribution`` (``message_roles``, ``message_indices``,
-    ``is_content``, ``message_tool_names``) and extended through step merging.
+    ``echo_alpha`` array (see :func:`_step_echo_alpha`), extended across merged steps.
 
     Args:
         output: vf.RolloutOutput containing trajectory data
@@ -454,12 +410,8 @@ def interleave_rollout(
             (1 = image, 2 = video, 0 otherwise). Renderer-supplied.
         echo_config: Per-env echo config (None when echo is disabled for this
             env). Caller resolves it from ``train_envs.get(env_name).config.echo``.
-        filter_masks: Optional per-step bool masks from the user's echo
-            filter (see :class:`EchoFilterConfig`). Outer length must equal
-            the trajectory step count; each inner mask has the same length
-            as that step's ``prompt_ids + completion_ids``. Composes by AND
-            with the role baseline — strictly narrows, never adds echo.
-            ``None`` means no filter (role baseline used as-is).
+        filter_masks: Optional per-step bool masks that narrow the role baseline
+            (``None`` = no filter). See :func:`apply_echo_filter`.
     """
     logger = get_logger()
 
@@ -475,9 +427,7 @@ def interleave_rollout(
         return None
 
     has_error = output["error"] is not None
-    # ``completion_temperatures`` is left empty here; the orchestrator
-    # fans out the env's sampling temperature across each sample's
-    # completion tokens before constructing the TrainingBatch.
+    # completion_temperatures is left empty; the train sink fills it per-env later.
 
     def prepare_step_tokens(step: vf.TrajectoryStep, step_idx: int) -> dict[str, Any] | None:
         tokens = step["tokens"]
@@ -645,22 +595,15 @@ def interleave_rollout(
             sample.completion_mask.extend(tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
 
-        # Extend the echo_alpha array in lockstep: the new prompt tail (its
-        # completion_mask is False here, but content tokens may carry tool/
-        # user/system echo) AND the new completion (assistant emission, which
-        # carries assistant-role echo when enabled).
+        # Extend echo_alpha in lockstep (prompt tail + completion), materializing
+        # a previously-None array only once there's real echo signal to record.
         step_echo_alpha = tokens.get("echo_alpha")
         if step_echo_alpha is not None:
             step_prompt_len = len(tokens["prompt_ids"])
-            # Both prompt-tail and completion bits come from the step's
-            # per-position echo_alpha (the helper handles both sides).
             new_prompt_echo = step_echo_alpha[prefix_len:step_prompt_len]
             new_completion_echo = step_echo_alpha[step_prompt_len:]
             extension = new_prompt_echo + new_completion_echo
             if any(a is not None for a in extension) or sample.echo_alpha is not None:
-                # Materialize a previously-None array only when there's actually
-                # echo signal to record. Length must align with the existing
-                # prompt + completion at this point in the merge.
                 if sample.echo_alpha is None:
                     existing_len = len(sample.prompt_ids) + len(sample.completion_ids) - len(extension)
                     sample.echo_alpha = [None] * existing_len
