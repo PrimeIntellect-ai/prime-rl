@@ -54,6 +54,8 @@ COPY --chown=appuser:appuser src/prime_rl/inference/vllm/worker/nixl_mx_v2.py   
 COPY --chown=appuser:appuser src/prime_rl/trainer/rl/broadcast/nixl_mx_v2.py               /app/src/prime_rl/trainer/rl/broadcast/nixl_mx_v2.py
 COPY --chown=appuser:appuser src/prime_rl/trainer/rl/broadcast/__init__.py                 /app/src/prime_rl/trainer/rl/broadcast/__init__.py
 COPY --chown=appuser:appuser src/prime_rl/utils/client.py                                  /app/src/prime_rl/utils/client.py
+COPY --chown=appuser:appuser src/prime_rl/orchestrator/orchestrator.py                     /app/src/prime_rl/orchestrator/orchestrator.py
+COPY --chown=appuser:appuser src/prime_rl/orchestrator/scheduler.py                        /app/src/prime_rl/orchestrator/scheduler.py
 COPY --chown=appuser:appuser packages/prime-rl-configs/src/prime_rl/configs/trainer.py     /app/packages/prime-rl-configs/src/prime_rl/configs/trainer.py
 
 # ────────────────────────────────────────────────────────────────────
