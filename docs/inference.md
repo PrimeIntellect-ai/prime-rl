@@ -192,16 +192,38 @@ X-Session-ID = "trajectory_id" # this is the default - each rollout has a unique
 
 ### KV Cache Offload
 
-Maximizing KV-Cache space is crucial to support high-concurrency workloads. We allow you to offload the KV cache to CPU memory, which can increase the space 10-fold in some cases. You can configure the amount of CPU memory to use for the KV cache by setting `inference.deployment.kv_cache_offload.cpu_bytes`.
+Maximizing KV-Cache space is crucial to support high-concurrency workloads. You can offload the KV cache to CPU memory (and, behind it, disk) by setting `inference.kv_cache_offload`. It is a discriminated config with two composable tiers, `cpu` and `disk`: a `cpu` tier is always required, and an optional `disk` tier is layered behind it (GPU → DRAM → disk). Disk-only is not supported.
+
+The `type` field selects the backend:
+
+- `native` — vLLM's built-in offloading. CPU-only uses `OffloadingConnector`; CPU+disk uses `TieringOffloadingSpec` (a CPU primary tier with a filesystem secondary tier). Fully self-contained — no extra processes.
+- `mooncake` — a [Mooncake](https://github.com/kvcache-ai/Mooncake) **shared distributed store** (SLURM only). One `mooncake_master` + metadata server runs on the head inference node; every inference node runs a `mooncake_client` that contributes its DRAM (and, with `disk`, SSD) segment to that *single* pool. Because blocks are keyed by model + parallel rank + content hash (no instance id), a prefix cached by one node/replica is reusable by all of them over RDMA — pooling every node's CPU RAM into one KV cache. Use `native` for local/single-process runs.
 
 ```toml
+# Native CPU offload (reserves 128GB of CPU KV cache for this instance)
 [inference.kv_cache_offload]
-cpu_bytes = 128_000_000_000 # 128GB
+type = "native"
+[inference.kv_cache_offload.cpu]
+num_bytes = 128_000_000_000 # 128GB
+
+# Native CPU + disk tiering (self-contained)
+[inference.kv_cache_offload]
+type = "native"
+[inference.kv_cache_offload.cpu]
+num_bytes = 128_000_000_000
+[inference.kv_cache_offload.disk]
+path = "/scratch/kv"        # disk capacity is bounded by the filesystem
+
+# Mooncake CPU + disk (per-node distributed store, RDMA)
+[inference.kv_cache_offload]
+type = "mooncake"
+[inference.kv_cache_offload.cpu]
+num_bytes = 128_000_000_000
+[inference.kv_cache_offload.disk]
+path = "/scratch/kv"
 ```
 
-This will reserve 128GB of CPU memory per worker. If you use dp=8, this will reserve 1TB of CPU memory per node.
-
-We aim to support more offloading options in the future, such as multi-tier offloading to also utilize disk-based KV cache, or distributed storage options like Mooncake Connector.
+For `native`, `cpu.num_bytes` is the aggregate CPU KV pool for the instance (vLLM shards it across workers). For `mooncake`, `cpu.num_bytes` is the DRAM each node contributes to the shared pool (so the total pool ≈ `num_bytes × #inference-nodes`); the store uses RDMA, so it requires an RDMA-capable fabric. Enabling offload automatically enables prefix caching.
 
 
 ### Optimized P/D disaggregation deployment

@@ -2,6 +2,7 @@
 
 Documenting **breaking** configuration changes — renamed, removed, or moved fields that require users to update existing configs.
 
+- **`inference.kv_cache_offload.cpu_bytes` removed → discriminated `type` config**: The flat `[inference.kv_cache_offload]` block with a single `cpu_bytes` field is replaced by a backend-discriminated union with composable `cpu`/`disk` tiers. Migrate native CPU offload from `[inference.kv_cache_offload]\ncpu_bytes = N` to `[inference.kv_cache_offload]\ntype = "native"` plus `[inference.kv_cache_offload.cpu]\nnum_bytes = N`. A `type = "mooncake"` backend (per-node distributed store; multi-node/SLURM only) and an optional `[inference.kv_cache_offload.disk]\npath = "..."` tier (layered behind cpu) are also available. `extra="forbid"` rejects the old `cpu_bytes` key, so existing configs must migrate. (2026-06-02)
 - **Orchestrator async-pipeline rewrite** (collection of removals/renames). The orchestrator was rewritten to overlap train/eval rollouts on a shared concurrency limiter; several config fields were removed or renamed.
   - **`orchestrator.seed` removed**: was only consumed by the deleted buffer; no replacement.
   - **`orchestrator.eval.eval_base_model` → `orchestrator.eval.skip_first_step`** (semantics inverted): `eval_base_model = true` becomes `skip_first_step = false` (the default — run the step-0 eval before any train rollouts). No alias; configs setting `eval_base_model` must rename.
