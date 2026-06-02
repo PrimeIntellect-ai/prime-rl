@@ -222,3 +222,85 @@ def grouped_fp8_gemm(
         (M, N) output tensor in bfloat16.
     """
     return _GroupedFP8Gemm.apply(x, weight, offs)
+
+
+# ── torch-native FP8 grouped GEMM (no deep_gemm) ─────────────────────────────
+# deep_gemm ships an x86_64 wheel only; on aarch64 (e.g. GH200) the path above is
+# unavailable. torch._scaled_grouped_mm is the Hopper(sm90)-native fp8 grouped GEMM
+# and needs no external dep. It requires: mat_b column-major ("transposed"), scale_a
+# a 1D (M,) per-token tensor, scale_b a 2D (G, N) per-(group, output-col) tensor.
+
+_E4M3_MAX = 448.0
+
+
+def _quant_rowwise_fp8(t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """(M, K) bf16 -> e4m3 (M, K) + fp32 per-row scale (M,) (amax over K)."""
+    amax = t.abs().amax(dim=1).clamp(min=1e-4)
+    scale = (amax / _E4M3_MAX).float()
+    q = (t.float() / scale[:, None]).clamp(-_E4M3_MAX, _E4M3_MAX).to(torch.float8_e4m3fn)
+    return q.contiguous(), scale.contiguous()
+
+
+def _quant_grouped_weight_fp8(w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """(G, Kc, Nc) bf16 weight (contract Kc) -> column-major e4m3 mat_b (G, Kc, Nc)
+    + fp32 scale (G, Nc) (amax over Kc). The returned tensor is a transposed view of
+    a (G, Nc, Kc)-contiguous buffer, satisfying _scaled_grouped_mm's mat_b layout."""
+    w_gnk = w.transpose(1, 2).contiguous()  # (G, Nc, Kc)
+    amax = w_gnk.abs().amax(dim=2).clamp(min=1e-4)  # (G, Nc)
+    scale = (amax / _E4M3_MAX).float()
+    q = (w_gnk.float() / scale[..., None]).clamp(-_E4M3_MAX, _E4M3_MAX).to(torch.float8_e4m3fn)
+    return q.transpose(1, 2), scale  # (G, Kc, Nc) transposed view, (G, Nc)
+
+
+def _grouped_grad_weight_bf16(
+    x: torch.Tensor, grad_out: torch.Tensor, offs: torch.Tensor, weight_shape: torch.Size
+) -> torch.Tensor:
+    """grad_w[g] = x_g^T @ grad_out_g per group, in bf16. Only reached when the base
+    weight requires grad (full fine-tuning); LoRA freezes it so this is skipped."""
+    grad_w = torch.zeros(weight_shape, device=x.device, dtype=torch.float32)
+    start = 0
+    for g, end in enumerate(offs.tolist()):
+        if end > start:
+            grad_w[g] = x[start:end].float().transpose(0, 1) @ grad_out[start:end].float()
+        start = end
+    return grad_w.to(x.dtype)
+
+
+class _ScaledGroupedFP8Gemm(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
+        xq, sx = _quant_rowwise_fp8(x)
+        wq, sw = _quant_grouped_weight_fp8(weight)
+        out = torch._scaled_grouped_mm(xq, wq, sx, sw, offs=offs, out_dtype=torch.bfloat16, use_fast_accum=True)
+        ctx.save_for_backward(x, weight, offs)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_out: torch.Tensor):
+        x, weight, offs = ctx.saved_tensors
+        grad_x = grad_weight = None
+        if ctx.needs_input_grad[0]:
+            gq, sg = _quant_rowwise_fp8(grad_out.contiguous())
+            # grad_x = grad_out @ W^T per group: contract N. W^T is (G, N, K).
+            wTq, swT = _quant_grouped_weight_fp8(weight.transpose(1, 2).contiguous())
+            grad_x = torch._scaled_grouped_mm(
+                gq, wTq, sg, swT, offs=offs, out_dtype=torch.bfloat16, use_fast_accum=True
+            )
+        if ctx.needs_input_grad[1]:
+            grad_weight = _grouped_grad_weight_bf16(x, grad_out, offs, weight.shape)
+        return grad_x, grad_weight, None
+
+
+def grouped_scaled_fp8_gemm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
+    """torch-native fp8 grouped GEMM (Hopper/sm90), drop-in for torch._grouped_mm.
+
+    Args:
+        x: (M, K) token activations in bfloat16.
+        weight: (G, K, N) expert weights in bfloat16.
+        offs: (G,) int32 cumulative token counts per expert.
+
+    Returns:
+        (M, N) bfloat16 output. Forward and grad_x run in fp8; grad_weight (full
+        fine-tuning only) falls back to bf16.
+    """
+    return _ScaledGroupedFP8Gemm.apply(x, weight, offs)
