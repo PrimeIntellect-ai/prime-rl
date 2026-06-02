@@ -11,7 +11,7 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-05-25T22:45:49.773564147Z"
+exclude-newer = "2026-05-25T23:50:03.973690224Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -2482,6 +2482,19 @@ wheels = [
 ]
 
 [[package]]
+name = "mooncake-transfer-engine"
+version = "0.3.11.post1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "requests", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/82/6c/92d517ba157a02b2612b06a00c7e3f366d1050e41cc50e1bdefa382a7dc0/mooncake_transfer_engine-0.3.11.post1-cp312-cp312-manylinux_2_35_x86_64.whl", hash = "sha256:5ea50146d0d65f0274a406db49a570d187ad04760e054a49627bf84158038ac0", size = 42661963, upload-time = "2026-05-24T12:08:40.453Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/a4/a187adcd485ff27bdbdb5c2b4d9cf210427bc74bcaacfc8226409db17535/mooncake_transfer_engine-0.3.11.post1-cp312-cp312-manylinux_2_39_aarch64.whl", hash = "sha256:1ccad9f44cf1a67f4e0494bd02f505503139ab606ecbe76cd6050d7a069247d5", size = 18089789, upload-time = "2026-05-24T16:19:01.828Z" },
+]
+
+[[package]]
 name = "mpmath"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3457,6 +3470,7 @@ dependencies = [
     { name = "jaxtyping", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "liger-kernel", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "loguru", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "mooncake-transfer-engine", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "numpy", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "nvidia-ml-py", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "openai", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -3601,6 +3615,7 @@ requires-dist = [
     { name = "mini-swe-agent-plus-rlm", marker = "extra == 'envs'", editable = "deps/research-environments/environments/mini_swe_agent_plus_rlm" },
     { name = "mmlu-pro", marker = "extra == 'envs'", editable = "deps/research-environments/environments/mmlu_pro" },
     { name = "modelexpress", marker = "extra == 'modelexpress'", specifier = "==0.3.0" },
+    { name = "mooncake-transfer-engine", specifier = ">=0.3.10.post2" },
     { name = "nixl", marker = "extra == 'disagg'" },
     { name = "nixl-cu12", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" },
     { name = "numpy", specifier = ">=2.2.6" },

@@ -19,6 +19,7 @@ dependencies = [
     "torchdata>=0.11.0",
     "transformers",
     "vllm>=0.22.0",
+    "mooncake-transfer-engine>=0.3.10.post2",
     "wandb>=0.26.1",
     "ring-flash-attn>=0.1.8",
     "prime>=0.6.4",
