@@ -86,3 +86,57 @@ def grouped_fp8_block_quantize(
     if sf is not None:
         sf.copy_(s_accum)
     return q_accum, s_accum
+
+
+# ----------------------------------------------------------------------------
+# Per-output-channel FP8 (cutlass-style): one scale per row of W. Used by
+# cutlass scaled_mm + vLLM's native FP8 path. For a 2D weight of shape
+# (out_features, in_features), reduction is over in_features (axis=-1) and
+# the resulting scale has shape (out_features,). For a 3D stacked-expert
+# weight of shape (num_local_experts, out_features, in_features) we run the
+# same recipe per expert, producing a (num_local_experts, out_features)
+# scale tensor. No padding / block reshuffling — the bytes go out in the
+# same layout the trainer holds them in, which matches cutlass's
+# RowMajor + per-channel scale convention.
+# ----------------------------------------------------------------------------
+
+
+def fp8_per_channel_quantize(
+    weight: Tensor,
+) -> tuple[Tensor, Tensor]:
+    """Per-output-channel symmetric FP8 e4m3 quantization.
+
+    Supports both 2D ``(out, in)`` linear weights and 3D
+    ``(E, out, in)`` stacked-expert weights via the same code path.
+    Returns ``(quantized, scale)`` where ``scale`` has shape
+    ``weight.shape[:-1]`` (i.e. one scalar per output row, per expert).
+    """
+    if weight.ndim not in (2, 3):
+        raise ValueError(
+            f"fp8_per_channel_quantize expects 2D or 3D, got shape={tuple(weight.shape)}"
+        )
+    fp8_max = torch.finfo(torch.float8_e4m3fn).max  # 448 for e4m3
+    # amax over the innermost (input-features) axis.
+    amax = weight.detach().float().abs().amax(dim=-1, keepdim=True).clamp(min=1e-12)
+    scale = (amax / fp8_max).clamp(min=1e-12)
+    q = (weight.float() / scale).clamp(-fp8_max, fp8_max).to(torch.float8_e4m3fn)
+    return q.contiguous(), scale.squeeze(-1).to(torch.float32).contiguous()
+
+
+def fp8_per_channel_quantize_into(
+    weight: Tensor,
+    out: Tensor | None = None,
+    sf: Tensor | None = None,
+) -> tuple[Tensor, Tensor]:
+    """Per-channel FP8 quantize, optionally writing into preallocated buffers.
+
+    Shape contract:
+      - ``out.shape == weight.shape``, dtype ``torch.float8_e4m3fn``
+      - ``sf.shape == weight.shape[:-1]``, dtype ``torch.float32``
+    """
+    q, s = fp8_per_channel_quantize(weight)
+    if out is not None:
+        out.copy_(q)
+    if sf is not None:
+        sf.copy_(s)
+    return q, s
