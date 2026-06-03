@@ -374,31 +374,22 @@ class CheckpointConfig(BaseConfig):
     """Skip loading the progress from checkpoint."""
 
 
-class TokensLengthPenaltyConfig(BaseConfig):
-    type: Literal["tokens"] = "tokens"
+class LinearLengthPenaltyConfig(BaseConfig):
+    coef: float = Field(0.25, ge=0, allow_inf_nan=False)
+    """Scale on the linear length penalty. Each reward is reduced by ``coef * pass_rate * (model completion tokens / orchestrator.seq_len)`` — where ``pass_rate`` is the group's mean reward — before the GRPO baseline subtraction. Finite and non-negative."""
 
-    completion_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
-    """Weight on model completion tokens. Finite and non-negative."""
-
-    tool_response_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
-    """Weight on tool-response tokens (read from the rollout's ``*_total_tool_response_tokens`` harness metric; 0 if absent). Finite and non-negative."""
-
-
-class TurnsLengthPenaltyConfig(BaseConfig):
-    type: Literal["turns"] = "turns"
-
-
-LengthPenaltyConfig: TypeAlias = Annotated[
-    TokensLengthPenaltyConfig | TurnsLengthPenaltyConfig,
-    Field(discriminator="type"),
-]
+    gate_by_correctness: bool = False
+    """When True, scale each rollout's penalty by its reward (``penalty * reward``), so correct rollouts (``reward == 1``) are penalized and incorrect ones (``reward == 0``) are not. When False, every rollout is penalized equally."""
 
 
 class DefaultAdvantageConfig(BaseConfig):
     type: Literal["default"] = "default"
 
-    length_penalty: LengthPenaltyConfig | None = None
-    """Correctness-gated length penalty. ``tokens`` shapes by weighted token cost; ``turns`` shapes by trajectory turn count; None disables shaping. In mixed groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost rollouts get advantage in [0, 1], others get 0."""
+    length_penalty: LinearLengthPenaltyConfig | None = None
+    """Length penalty applied during advantage computation. Subtracts a ``coef * pass_rate * (completion tokens / orchestrator.seq_len)`` term from each reward (``pass_rate`` = group mean reward) before the baseline subtraction, so solved-often problems get the strongest concision pressure and never-solved groups get none. None disables the penalty."""
+
+    length_weighted_baseline: bool = False
+    """When True, the GRPO baseline is the token-length-weighted mean reward (``sum(len_i * reward_i) / sum(len_i)``) instead of the plain group mean, centering advantages by per-token expected reward."""
 
 
 class CustomAdvantageConfig(BaseConfig):

@@ -60,7 +60,9 @@ class TrainSink:
         self.token_batch_size = token_batch_size
         # Built once — custom advantage funcs do an ``import_object`` and
         # we don't want to pay that per group. ``None`` = reward-only path
-        self.advantage_fn = setup_advantage_fn(advantage_config) if advantage_config is not None else None
+        self.advantage_fn = (
+            setup_advantage_fn(advantage_config, max_seq_len=config.seq_len) if advantage_config is not None else None
+        )
         self.pre_filters = pre_filters
         self.post_filters = post_filters
 
