@@ -108,8 +108,8 @@ def _local_image_file_to_data_url(
         return None
 
     path = Path(unquote(parsed.path))
-    media_type = mimetypes.guess_type(path.name)[0] or "image/png"
-    if not media_type.startswith("image/"):
+    media_type = mimetypes.guess_type(path.name)[0]
+    if media_type is None or not media_type.startswith("image/"):
         cache[url] = None
         return None
 

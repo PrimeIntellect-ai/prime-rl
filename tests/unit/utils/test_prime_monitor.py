@@ -123,6 +123,28 @@ def test_rollouts_to_parquet_bytes_inlines_local_image_urls(tmp_path):
     assert rollout["prompt"][0]["content"][0]["image_url"]["url"] == file_url
 
 
+def test_rollouts_to_parquet_bytes_does_not_inline_extensionless_file_urls(tmp_path):
+    image_path = tmp_path / "sample"
+    image_path.write_bytes(b"extensionless payload")
+    file_url = image_path.as_uri()
+
+    monitor = _new_monitor()
+    monitor.run_id = "run-extensionless"
+    rollout = _build_rollout(example_id=1, reward=1.0, task="vision-task")
+    image_content = [{"type": "image_url", "image_url": {"url": file_url}}]
+    rollout["prompt"] = [{"role": "user", "content": image_content}]
+
+    parquet_bytes = monitor._rollouts_to_parquet_bytes([rollout], step=3)
+
+    assert parquet_bytes is not None
+
+    table = pq.read_table(io.BytesIO(parquet_bytes))
+    row = table.to_pylist()[0]
+    prompt = json.loads(row["prompt"])
+
+    assert prompt[0]["content"][0]["image_url"]["url"] == file_url
+
+
 def test_sanitize_json_payload_drops_non_finite_values_and_logs_paths():
     monitor = _new_monitor()
     monitor.logger = Mock()
