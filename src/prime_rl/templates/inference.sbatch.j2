@@ -170,6 +170,7 @@ srun --kill-on-bad-exit=1 bash -c '
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
 
 {% include '_launch_rank.sh.j2' %}
+{% include '_launch_router.sh.j2' %}
 {%- if kv_offload %}
     ulimit -l unlimited
 {%- endif %}
@@ -248,22 +249,10 @@ srun --kill-on-bad-exit=1 bash -c '
     echo "NODE_RANK=$INFER_NODE_RANK ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT LOCAL_IP=$LOCAL_IP" \
         | tee $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
 
-    # Start vllm-router on the first prefill node of each replica (external LB across per-rank endpoints)
+    # Start the router on the first prefill node of each replica (external LB across per-rank endpoints)
     if [ "$RANK_IN_REPLICA" -eq 0 ]; then
-        ROUTER_LOG="$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log"
-        echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG
-
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
-
-        vllm-router \
-            --policy {{ router_policy }} \
-            --vllm-pd-disaggregation \
-            $REPLICA_ROUTER_ARGS \
-            --host 0.0.0.0 \
-            --port $ROUTER_PORT \
-            --worker-startup-timeout-secs 4200 \
-            --log-level debug \
-            >> $ROUTER_LOG 2>&1 &
+        launch_router pd "$REPLICA_ROUTER_ARGS" "$ROUTER_PORT" "{{ router_policy }}" "$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log" "$REPLICA_IDX"
     fi
 
     # External-LB: one vLLM API server per local DP rank (PORT + k), each pinned to its TP
@@ -286,19 +275,9 @@ srun --kill-on-bad-exit=1 bash -c '
     TP=$((GPUS_PER_NODE / DP_PER_NODE))
     EP={{ "1" if enable_expert_parallel else "0" }}
 
-    # Start router on node 0 (balances across per-rank endpoints — no intra-node DP header)
+    # Start the router on node 0 (balances across per-rank endpoints — no intra-node DP header)
     if [ "$INFER_NODE_RANK" -eq 0 ]; then
-        ROUTER_LOG="$OUTPUT_DIR/logs/inference/router.log"
-        echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT" | tee $ROUTER_LOG
-
-        vllm-router \
-            --policy {{ router_policy }} \
-            --worker-urls $ROUTER_ARGS \
-            --host 0.0.0.0 \
-            --port $ROUTER_PORT \
-            --worker-startup-timeout-secs 4200 \
-            --log-level debug \
-            >> $ROUTER_LOG 2>&1 &
+        launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router_policy }}" "$OUTPUT_DIR/logs/inference/router.log"
     fi
 
     # External-LB: one vLLM API server per DP rank on this node (BACKEND_PORT + dp_local),

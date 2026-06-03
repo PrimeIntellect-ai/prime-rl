@@ -229,6 +229,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 
     CONFIG_PATH="$CONFIG_DIR/inference.toml"
 {% include '_launch_rank.sh.j2' %}
+{% include '_launch_router.sh.j2' %}
 
 {% if is_disaggregated -%}
     # PD disaggregated: NIXL KV transfer + role-based inference
@@ -284,21 +285,10 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     echo "ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT" \
         | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log
 
-    # Start vllm-router on the first node of each replica (PD mode, external LB across per-rank endpoints)
+    # Start the router on the first node of each replica (PD mode, external LB across per-rank endpoints)
     if [ "$RANK_IN_REPLICA" -eq 0 ]; then
-        ROUTER_LOG="$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log"
-        echo "Starting vllm-router (PD) on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG
-
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
-
-        vllm-router \
-            --policy consistent_hash \
-            --vllm-pd-disaggregation \
-            $REPLICA_ROUTER_ARGS \
-            --host 0.0.0.0 \
-            --port $ROUTER_PORT \
-            --worker-startup-timeout-secs 4200 \
-            >> $ROUTER_LOG 2>&1 &
+        launch_router pd "$REPLICA_ROUTER_ARGS" "$ROUTER_PORT" consistent_hash "$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log" "$REPLICA_IDX"
     fi
 
     # External-LB: one vLLM API server per local DP rank (PORT + k), each pinned to its TP
@@ -313,20 +303,10 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
     done
 {%- else -%}
-    # Start vllm-router on the first node of each replica
+    # Start the router on the first node of each replica
     if [ "$RANK_IN_REPLICA" -eq 0 ]; then
-        ROUTER_LOG="$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log"
-        echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG
-
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
-
-        vllm-router \
-            --policy consistent_hash \
-            --worker-urls $REPLICA_ROUTER_ARGS \
-            --host 0.0.0.0 \
-            --port $ROUTER_PORT \
-            --worker-startup-timeout-secs 4200 \
-            >> $ROUTER_LOG 2>&1 &
+        launch_router regular "$REPLICA_ROUTER_ARGS" "$ROUTER_PORT" consistent_hash "$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log" "$REPLICA_IDX"
     fi
 
     # External-LB: one vLLM API server per DP rank on this node (BACKEND_PORT + d),
