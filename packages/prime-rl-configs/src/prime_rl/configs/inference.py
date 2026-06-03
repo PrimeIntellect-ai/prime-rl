@@ -372,8 +372,8 @@ class InferenceConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):
-        if self.deployment.type == "multi_node" and self.slurm is None:
-            raise ValueError("Must use SLURM for multi-node deployment.")
+        if self.deployment.type in ("multi_node", "disaggregated") and self.slurm is None:
+            raise ValueError("Must use SLURM for multi-node / disaggregated deployment.")
         return self
 
     @model_validator(mode="after")

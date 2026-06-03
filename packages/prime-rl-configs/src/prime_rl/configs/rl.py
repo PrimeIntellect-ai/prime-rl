@@ -286,24 +286,16 @@ class RLConfig(BaseConfig):
         propagation table, transforms, and the mutex rule.
         """
         data = propagate_shared_fields(data)
-        # Forward the multi-node deployment + SLURM into the nested inference: RL
-        # multi-node inference IS multi-node (driven by [deployment] + [inference.parallel])
-        # and runs under the RL SLURM allocation. This lets the router live on the
-        # multi-node / disaggregated inference deployment and pass its "multi-node
-        # requires SLURM" validator. RL writes inference.toml without deployment/slurm,
-        # so the per-rank ``uv run inference`` still runs locally on a single node.
-        if (
-            isinstance(data, dict)
-            and isinstance(data.get("deployment"), dict)
-            and data["deployment"].get("type") == "multi_node"
-            and isinstance(data.get("inference"), dict)
-        ):
-            inference = data["inference"]
-            deployment = inference.setdefault("deployment", {})
-            if isinstance(deployment, dict):
-                deployment.setdefault("type", "multi_node")
-            if data.get("slurm") is not None:
-                inference.setdefault("slurm", data["slurm"])
+        if not isinstance(data, dict):
+            return data
+        inference = data.get("inference")
+        deployment = data.get("deployment") or {}
+        # A multi-node RL run drives a multi-node inference deployment under the same
+        # SLURM allocation, so the nested inference inherits the multi-node shape
+        # (P/D specializes it to "disaggregated") and [slurm]; the router lives there.
+        if isinstance(inference, dict) and deployment.get("type") == "multi_node":
+            inference.setdefault("deployment", {}).setdefault("type", "multi_node")
+            inference.setdefault("slurm", data.get("slurm"))
         return data
 
     ### Validate shared configs (after sub-config construction)
