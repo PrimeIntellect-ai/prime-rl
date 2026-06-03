@@ -250,8 +250,9 @@ class MultiRunManager:
             try:
                 is_valid, error_message = hook(config)
             except Exception as e:
+                hook_name = getattr(hook, "__name__", type(hook).__name__)
                 is_valid = False
-                error_message = f"Validation hook {hook.__name__} crashed: {e}"
+                error_message = f"Validation hook {hook_name} crashed: {e}"
             if not is_valid:
                 self.logger.error(f"Run {run_id}: {error_message}")
                 if error_path.parent.exists():
