@@ -1,0 +1,85 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 prime intellect & contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Overlay Dockerfile for the v2 prime-rl × ModelExpress integration.
+# Layers on top of v0.7.1-kavin-phase2-phase3 (which already has Phase 2
+# + Phase 3 source baked in). See docs/proposals/image-build-mx-v2.md.
+
+FROM nvcr.io/nvidian/dynamo-dev/prime-rl-mx-on-nixl:v0.7.1-kavin-phase2-phase3
+
+USER root
+
+# ────────────────────────────────────────────────────────────────────
+# 1a. Install the flash-attn ARM64 stub package
+#
+# The v0.7.1 baseline image ships only flash-attn-cute (Cute kernels),
+# but ring-flash-attn (transitively imported by
+# prime_rl.trainer.models.glm_moe_dsa) imports
+# `flash_attn.flash_attn_interface`. We restore that import surface
+# from the same stub the v0.5.2 image uses on the live kavin trainer
+# (extracted via kubectl cp). Functions raise NotImplementedError if
+# actually called — callers should use SDPA.
+# ────────────────────────────────────────────────────────────────────
+COPY --chown=appuser:appuser scripts/flash_attn_stub/__init__.py              /app/.venv/lib/python3.12/site-packages/flash_attn/__init__.py
+COPY --chown=appuser:appuser scripts/flash_attn_stub/flash_attn_interface.py  /app/.venv/lib/python3.12/site-packages/flash_attn/flash_attn_interface.py
+
+# ────────────────────────────────────────────────────────────────────
+# 1b. Update modelexpress to the PR #349 branch
+#     (Phase 4 multi-source slice picker + MxWeightTransferEngine)
+#
+# uv lives at /usr/local/bin/uv (per Dockerfile.cuda line 31's
+# UV_INSTALL_DIR). The venv has no pip installed by default, so we
+# use uv with --python pointing at the venv interpreter.
+# ────────────────────────────────────────────────────────────────────
+RUN --mount=type=cache,target=/app/.cache/uv \
+    /usr/local/bin/uv pip install --no-deps --reinstall \
+        --python /app/.venv/bin/python \
+        "modelexpress @ git+https://github.com/ai-dynamo/modelexpress.git@kavink/post-2389-phase3-4#subdirectory=modelexpress_client/python"
+
+# ────────────────────────────────────────────────────────────────────
+# 2. Overlay the v2 prime-rl source files
+#
+# Six files touched by the kavink/post-2389-mx-v2 branch:
+#   trainer side  — broadcast/nixl_mx_v2.py (new), broadcast/__init__.py (mx_v2 dispatch)
+#   inference side — worker/nixl_mx_v2.py (new),
+#                    server.py (WORKER_EXTENSION_CLS["mx_v2"] + /init_nixl_mx_v2 +
+#                                /update_weights_v2 endpoints)
+#   config       — packages/.../configs/trainer.py (MxV2WeightBroadcastConfig)
+#   orchestrator — utils/client.py (init_nixl_mx_v2_broadcast + update_weights_v2)
+#   transport    — transport/ (was unchanged but copied as-is for completeness)
+# ────────────────────────────────────────────────────────────────────
+COPY --chown=appuser:appuser src/prime_rl/transport/                                       /app/src/prime_rl/transport/
+COPY --chown=appuser:appuser src/prime_rl/inference/vllm/server.py                         /app/src/prime_rl/inference/vllm/server.py
+COPY --chown=appuser:appuser src/prime_rl/inference/vllm/worker/nixl_mx_v2.py              /app/src/prime_rl/inference/vllm/worker/nixl_mx_v2.py
+COPY --chown=appuser:appuser src/prime_rl/trainer/rl/broadcast/nixl_mx_v2.py               /app/src/prime_rl/trainer/rl/broadcast/nixl_mx_v2.py
+COPY --chown=appuser:appuser src/prime_rl/trainer/rl/broadcast/__init__.py                 /app/src/prime_rl/trainer/rl/broadcast/__init__.py
+COPY --chown=appuser:appuser src/prime_rl/utils/client.py                                  /app/src/prime_rl/utils/client.py
+COPY --chown=appuser:appuser src/prime_rl/orchestrator/orchestrator.py                     /app/src/prime_rl/orchestrator/orchestrator.py
+COPY --chown=appuser:appuser src/prime_rl/orchestrator/scheduler.py                        /app/src/prime_rl/orchestrator/scheduler.py
+COPY --chown=appuser:appuser packages/prime-rl-configs/src/prime_rl/configs/trainer.py     /app/packages/prime-rl-configs/src/prime_rl/configs/trainer.py
+COPY --chown=appuser:appuser packages/prime-rl-configs/src/prime_rl/configs/orchestrator.py /app/packages/prime-rl-configs/src/prime_rl/configs/orchestrator.py
+COPY --chown=appuser:appuser packages/prime-rl-configs/src/prime_rl/configs/inference.py    /app/packages/prime-rl-configs/src/prime_rl/configs/inference.py
+
+# prime-rl-configs is INSTALLED into /app/.venv/.../site-packages at image
+# build time (per the original Dockerfile.cuda's `uv sync`). The COPYs above
+# only update the source tree; the runtime imports the installed copy.
+# Mirror the three updated config files into the venv site-packages so the
+# new MxV2WeightBroadcastConfig + extended Literal types are actually visible
+# at import time.
+COPY --chown=appuser:appuser packages/prime-rl-configs/src/prime_rl/configs/trainer.py     /app/.venv/lib/python3.12/site-packages/prime_rl/configs/trainer.py
+COPY --chown=appuser:appuser packages/prime-rl-configs/src/prime_rl/configs/orchestrator.py /app/.venv/lib/python3.12/site-packages/prime_rl/configs/orchestrator.py
+COPY --chown=appuser:appuser packages/prime-rl-configs/src/prime_rl/configs/inference.py    /app/.venv/lib/python3.12/site-packages/prime_rl/configs/inference.py
+
+# ────────────────────────────────────────────────────────────────────
+# 3. Smoke-test that the v2 path imports cleanly
+# ────────────────────────────────────────────────────────────────────
+RUN /app/.venv/bin/python -c "from modelexpress.vllm_weight_transfer import MxWeightTransferEngine, MxInitInfo, MxUpdateInfo; print('engine adapter:', MxWeightTransferEngine)"
+RUN /app/.venv/bin/python -c "from modelexpress.nemo_rl_v2 import MxV2TrainingPublisher, MxV2RefitReceiver, TrainerWorldLayout; print('v2 fat clients OK')"
+RUN /app/.venv/bin/python -c "import vllm; print('vllm:', vllm.__version__)"
+# Smoke test that flash_attn stub allows the broadcast __init__.py import chain
+RUN /app/.venv/bin/python -c "from flash_attn.flash_attn_interface import _flash_attn_forward; print('flash_attn stub OK')"
+# Smoke test the mx_v2 imports from prime-rl-side + WORKER_EXTENSION_CLS["mx_v2"]
+RUN /app/.venv/bin/python -c "import sys; sys.path.insert(0, '/app/src'); sys.path.insert(0, '/app/packages/prime-rl-configs/src'); from prime_rl.configs.trainer import MxV2WeightBroadcastConfig; from prime_rl.trainer.rl.broadcast.nixl_mx_v2 import NIXLMxV2WeightBroadcast; from prime_rl.inference.vllm.worker.nixl_mx_v2 import NIXLMxV2WeightUpdateWorker; print('prime-rl mx_v2 surfaces all import OK')"
+RUN /app/.venv/bin/python -c "import sys; sys.path.insert(0, '/app/src'); sys.path.insert(0, '/app/packages/prime-rl-configs/src'); from prime_rl.inference.vllm.server import WORKER_EXTENSION_CLS; assert 'mx_v2' in WORKER_EXTENSION_CLS, 'mx_v2 missing from server.WORKER_EXTENSION_CLS'; print('WORKER_EXTENSION_CLS[mx_v2] =', WORKER_EXTENSION_CLS['mx_v2'])"
+
+USER appuser

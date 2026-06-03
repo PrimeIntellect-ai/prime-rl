@@ -539,3 +539,75 @@ async def init_nixl_mx_broadcast(
         response.raise_for_status()
 
     await asyncio.gather(*[_init(admin_client, i * gpus_per_server) for i, admin_client in enumerate(admin_clients)])
+
+
+async def init_nixl_mx_v2_broadcast(
+    admin_clients: list[AsyncClient],
+    host: str,
+    port: int,
+    inference_world_size: int,
+    *,
+    publish_self_as_replica: bool = True,
+    listen_port: int | None = None,
+) -> None:
+    """Initialize the ``mx_v2`` (pull-mode) receivers on inference servers.
+
+    Mirrors :func:`init_nixl_mx_broadcast` but targets the v2 worker
+    extension (``NIXLMxV2WeightUpdateWorker``) which uses the published
+    :class:`MxWeightTransferEngine` adapter instead of the in-tree
+    :class:`MxRendezvous`.
+    """
+    logger = get_logger()
+    gpus_per_server = inference_world_size // len(admin_clients)
+
+    logger.info(
+        f"Initializing NIXL+MX v2 broadcast: {len(admin_clients)} servers, "
+        f"inference_world_size={inference_world_size}, gpus_per_server={gpus_per_server}, "
+        f"publish_self_as_replica={publish_self_as_replica}"
+    )
+
+    async def _init(admin_client: AsyncClient, rank_offset: int) -> None:
+        response = await admin_client.post(
+            "/init_nixl_mx_v2",
+            json={
+                "host": host,
+                "port": port,
+                "rank_offset": rank_offset,
+                "publish_self_as_replica": publish_self_as_replica,
+                "listen_port": listen_port,
+            },
+        )
+        response.raise_for_status()
+
+    await asyncio.gather(*[_init(admin_client, i * gpus_per_server) for i, admin_client in enumerate(admin_clients)])
+
+
+async def update_weights_v2(
+    admin_clients: list[AsyncClient],
+    step: int,
+    *,
+    compile_target_filter: list[str] | None = None,
+    timeout_seconds: float = 300.0,
+    same_rank_only: bool = True,
+) -> list[dict]:
+    """Drive a v2 (pull-mode) refit on all inference servers.
+
+    Mirrors the existing ``/update_weights`` poke but for the
+    ``mx_v2`` worker path. Returns the per-server metrics dicts so the
+    orchestrator can emit per-cycle timing to its dashboards.
+    """
+
+    async def _update(admin_client: AsyncClient) -> dict:
+        response = await admin_client.post(
+            "/update_weights_v2",
+            json={
+                "step": int(step),
+                "compile_target_filter": compile_target_filter,
+                "timeout_seconds": float(timeout_seconds),
+                "same_rank_only": bool(same_rank_only),
+            },
+        )
+        response.raise_for_status()
+        return response.json()
+
+    return list(await asyncio.gather(*[_update(c) for c in admin_clients]))

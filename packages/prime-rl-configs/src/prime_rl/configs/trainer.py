@@ -494,8 +494,72 @@ class NIXLMxWeightBroadcastConfig(BaseWeightBroadcastConfig):
     """HF model name of the inference target."""
 
 
+class MxV2WeightBroadcastConfig(BaseWeightBroadcastConfig):
+    """v2 weight broadcast over NIXL + ModelExpress fat clients.
+
+    Selectable from config via ``weight_broadcast.type = "mx_v2"``.
+    Coexists with the existing ``"nixl_mx"`` path (PR #2389) for
+    migration. See ``docs/proposals/post-pr2389-mx-v2.md`` for the
+    full design. Maps to
+    :class:`prime_rl.trainer.rl.broadcast.nixl_mx_v2.NIXLMxV2WeightBroadcast`
+    (trainer) and
+    :class:`prime_rl.inference.vllm.worker.nixl_mx_v2.NIXLMxV2WeightUpdateWorker`
+    (inference).
+    """
+
+    type: Literal["mx_v2"] = "mx_v2"
+
+    # ─── Control plane (same as nixl_mx) ────────────────────────────
+    host: str = "localhost"
+    """Host for the ModelExpress server."""
+
+    port: int = 29501
+    """Port for the ModelExpress server."""
+
+    timeout: int = 1200
+    """Timeout in seconds for rendezvous and per-step transfers."""
+
+    inference_world_size: int = 1
+    """Number of GPUs used for inference."""
+
+    inference_model_name: str = ""
+    """HF model name of the inference target."""
+
+    # ─── Discovery (Phase 2) ────────────────────────────────────────
+    same_rank_only: bool = True
+    """GB200/EFA multi-NIC fabrics: receivers pull from same-rank trainer only.
+    rdma-0..3 are separate L3 subnets, so cross-rank writes are unrouted."""
+
+    dedup_freshest_per_rank: bool = True
+    """When multiple READY entries share a worker_rank (e.g. after a pod
+    restart), pick the freshest by ``updated_at``. Without this, stale
+    catalog entries cause ``NIXL_ERR_NOT_ALLOWED`` on ``add_remote_agent``."""
+
+    # ─── Layout metadata (Phase 3) ──────────────────────────────────
+    publish_compile_target: bool = True
+    """Trainer stamps every publish with the conversion's compile_target tag
+    (e.g. ``cutlass_fp8``, ``deep_gemm_fp8``, ``hf_raw``) so receivers can
+    refuse mismatched layouts at discovery, before any RDMA cycle."""
+
+    compile_target_filter: list[str] | None = None
+    """Receiver-side whitelist of acceptable compile_target strings.
+    ``None`` (default) = accept anything — back-compat with PR #2389
+    publishers that don't carry the tag. Set e.g. ``["cutlass_fp8"]``
+    or ``["cutlass_fp8", "hf_raw"]`` to refuse mismatches."""
+
+    # ─── Pipeline replication (TensorHub pattern) ───────────────────
+    publish_self_as_replica: bool = True
+    """After a successful receive, inference workers republish their
+    NIXL buffers as additional sources. Subsequent receivers can pull
+    from peers instead of the trainer, amplifying total egress
+    bandwidth. Trainer NIC stops being the bottleneck past ~4 receivers."""
+
+
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLMxWeightBroadcastConfig,
+    FileSystemWeightBroadcastConfig
+    | NCCLWeightBroadcastConfig
+    | NIXLMxWeightBroadcastConfig
+    | MxV2WeightBroadcastConfig,
     Field(discriminator="type"),
 ]
 

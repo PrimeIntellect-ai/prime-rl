@@ -57,6 +57,7 @@ from prime_rl.transport.mx_rendezvous import MxRendezvous
 from prime_rl.utils.client import (
     init_nccl_broadcast,
     init_nixl_mx_broadcast,
+    init_nixl_mx_v2_broadcast,
     setup_inference_pool,
 )
 from prime_rl.utils.config import cli
@@ -283,6 +284,19 @@ async def orchestrate(config: OrchestratorConfig):
             inference_world_size=config.weight_broadcast.inference_world_size,
             quantize_in_weight_transfer=config.weight_broadcast.quantize_in_weight_transfer,
         )
+    elif config.weight_broadcast.type == "mx_v2":
+        await init_nixl_mx_v2_broadcast(
+            student_inference.admin_clients,
+            config.weight_broadcast.host,
+            config.weight_broadcast.port,
+            inference_world_size=config.weight_broadcast.inference_world_size,
+            publish_self_as_replica=config.weight_broadcast.publish_self_as_replica,
+        )
+        # mx_v2 doesn't use an orchestrator-side MxRendezvous: the trainer
+        # is the only publisher, drives `publish() → mark_ready()` itself
+        # at each step, and inference receivers pull via the catalog. The
+        # scheduler drives the per-cycle refit through `/update_weights_v2`
+        # below.
     elif config.weight_broadcast.type == "nixl_mx":
         await init_nixl_mx_broadcast(
             student_inference.admin_clients,
@@ -324,8 +338,8 @@ async def orchestrate(config: OrchestratorConfig):
             # Allow eval at resumed step by setting prev_ckpt_step one behind
             prev_ckpt_step = scheduler.ckpt_step - 1
 
-        # In NCCL/NIXL modes, skip existence check - weights are pushed, not stored on disk
-        check_exists = config.weight_broadcast.type not in ("nccl", "nixl_mx")
+        # In NCCL/NIXL modes, skip existence check - weights are pushed/pulled, not stored on disk
+        check_exists = config.weight_broadcast.type not in ("nccl", "nixl_mx", "mx_v2")
         wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
         weights_path = get_weight_dir(
             config.output_dir, scheduler.ckpt_step, check_exists=check_exists, wait_timeout=wait_timeout
