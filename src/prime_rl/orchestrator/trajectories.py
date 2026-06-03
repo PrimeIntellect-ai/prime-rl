@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import mimetypes
 from pathlib import Path
 from typing import Any
 
@@ -609,20 +610,25 @@ def _pack_mm_kwargs_from_renderer(mm_data: Any) -> "dict[str, Any] | None":
     return out
 
 
+def _image_file_suffix_from_data_url(url: str) -> str:
+    media_type = url.split(",", 1)[0].removeprefix("data:").split(";", 1)[0]
+    return mimetypes.guess_extension(media_type) or ".png"
+
+
 def offload_images_to_disk(rollouts: list[vf.RolloutOutput], output_dir: Path) -> int:
     """Replace base64 image data in rollout trajectories with file paths on disk.
 
     Scans all trajectory step prompts for data:image URLs, writes the decoded
-    image bytes to ``{output_dir}/assets/images/{hash}.png``, and replaces the
+    image bytes to ``{output_dir}/assets/images/{hash}.{ext}``, and replaces the
     URL in-place with an absolute ``file://`` URI. Deduplicates by content hash
-    so each unique image is written only once.
+    and media type so each unique image file is written only once.
 
     Returns the number of unique images written to disk.
     """
     images_dir = output_dir / "assets" / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
 
-    written: set[str] = set()
+    written: set[Path] = set()
 
     for output in rollouts:
         for step in output.get("trajectory", []):
@@ -641,11 +647,11 @@ def offload_images_to_disk(rollouts: list[vf.RolloutOutput], output_dir: Path) -
                         continue
                     b64_data = url.split(",", 1)[1]
                     content_hash = hashlib.sha256(b64_data.encode()).hexdigest()[:16]
-                    path = images_dir / f"{content_hash}.png"
-                    if content_hash not in written:
+                    path = images_dir / f"{content_hash}{_image_file_suffix_from_data_url(url)}"
+                    if path not in written:
                         if not path.exists():
                             path.write_bytes(base64.b64decode(b64_data))
-                        written.add(content_hash)
+                        written.add(path)
                     item["image_url"]["url"] = path.resolve().as_uri()
 
     return len(written)

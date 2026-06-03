@@ -80,6 +80,32 @@ def test_offload_images_to_disk_uses_absolute_file_uri_for_relative_output_dir(t
     assert image_path.read_bytes() == image_bytes
 
 
+def test_offload_images_to_disk_preserves_image_media_type_suffix(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    image_bytes = b"jpeg image payload"
+    data_url = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('ascii')}"
+    rollout = {
+        "trajectory": [
+            {
+                "prompt": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "image_url", "image_url": {"url": data_url}}],
+                    }
+                ]
+            }
+        ]
+    }
+
+    assert offload_images_to_disk([rollout], Path("outputs/run")) == 1
+
+    file_url = rollout["trajectory"][0]["prompt"][0]["content"][0]["image_url"]["url"]
+    image_path = Path(unquote(urlparse(file_url).path))
+
+    assert image_path.suffix == ".jpg"
+    assert image_path.read_bytes() == image_bytes
+
+
 def test_deserialize_tool_calls_does_not_inject_missing_key():
     messages = [{"role": "assistant", "content": "hello"}]
 
