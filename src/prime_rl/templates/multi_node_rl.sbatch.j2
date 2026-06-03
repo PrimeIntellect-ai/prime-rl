@@ -311,18 +311,19 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 
     # External-LB: one vLLM API server per DP rank on this node (BACKEND_PORT + d),
     # each pinned to its TP slice of GPUs; the router balances across the per-rank
-    # endpoints.
+    # endpoints. For MoE the ranks form one external-LB DP group (EP all2all spans
+    # them) rooted on the replica-head DP coordinator. data_parallel_address is
+    # per-node, not per-rank: every rank on the head reaches the coordinator via the
+    # head LOCAL_IP, ranks on other nodes via the head hostname (matches the P/D path).
     read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
     REPLICA_HEAD_HOST="${HOSTNAMES[$((REPLICA_IDX * NODES_PER_INFER_REPLICA))]}"
     INFER_GROUP_DP=$((NODES_PER_INFER_REPLICA * INFERENCE_DP_LOCAL))
+    if [ "$RANK_IN_REPLICA" -eq 0 ]; then DP_ADDR="$LOCAL_IP"; else DP_ADDR="$REPLICA_HEAD_HOST"; fi
     for ((d=0; d<INFERENCE_DP_LOCAL; d++)); do
         RANK_GPUS=$(seq -s, $((d * INFERENCE_TP)) $((d * INFERENCE_TP + INFERENCE_TP - 1)))
         RANK_LOG=$(rank_log "$INFER_NODE_RANK" "$d")
         if [ "$INFERENCE_ENABLE_EXPERT_PARALLEL" -eq 1 ]; then
-            # MoE: ranks form one external-LB DP group so EP all2all spans them; all
-            # ranks rendezvous on the replica head DP coordinator.
             GLOBAL_DP_RANK=$((RANK_IN_REPLICA * INFERENCE_DP_LOCAL + d))
-            if [ "$GLOBAL_DP_RANK" -eq 0 ]; then DP_ADDR="$LOCAL_IP"; else DP_ADDR="$REPLICA_HEAD_HOST"; fi
             RANK_EXTRA="{\"data_parallel_rank\": $GLOBAL_DP_RANK, \"data_parallel_address\": \"$DP_ADDR\"}"
             launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$INFER_GROUP_DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG"
         else
