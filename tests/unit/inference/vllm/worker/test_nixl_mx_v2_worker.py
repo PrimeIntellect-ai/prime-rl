@@ -247,9 +247,12 @@ def test_update_weights_via_mx_v2_no_filter_passes_none(worker_mod):
     assert upd_kwargs["compile_target_filter"] is None
 
 
-def test_load_weights_batch_feeds_through_vllm_model_load_weights(worker_mod):
+def test_load_weights_batch_passthrough_when_no_hf_config(worker_mod):
+    """When _hf_config is None (non-MoE model / probe failed), the translator
+    falls through to passthrough and forwards the batch unchanged."""
     mod, _ = worker_mod
     worker = _make_worker(mod)
+    worker._hf_config = None  # force passthrough
     captured_batches = []
     worker.raw_model.load_weights = MagicMock(
         side_effect=lambda batch: captured_batches.append(batch)
@@ -259,6 +262,166 @@ def test_load_weights_batch_feeds_through_vllm_model_load_weights(worker_mod):
     worker._load_weights_batch(batch_1)
     worker._load_weights_batch(batch_2)
     assert captured_batches == [batch_1, batch_2]
+
+
+def test_translate_tt_to_hf_qkv_split(worker_mod):
+    """Fused qkv_proj.weight (TT format) splits into q/k/v (HF format)
+    with the right per-projection row counts derived from head dims."""
+    import torch
+
+    mod, _ = worker_mod
+    worker = _make_worker(mod)
+    # Qwen3-30B-A3B-like dims: 32 q heads, 4 kv heads, head_dim=128, hidden=2048.
+    worker._hf_config = {
+        "model_type": "qwen3_moe",
+        "num_attention_heads": 32,
+        "num_kv_heads": 4,
+        "head_dim": 128,
+        "num_experts": 128,
+        "ep_size": 4,
+    }
+    worker._global_rank = 0
+    q_size = 32 * 128  # 4096
+    kv_size = 4 * 128  # 512
+    rows = q_size + 2 * kv_size  # 5120
+    qkv = torch.arange(rows * 2048, dtype=torch.float32).view(rows, 2048)
+    out = worker._translate_tt_to_hf(
+        [("model.layers.0.self_attn.qkv_proj.weight", qkv)]
+    )
+    names = [n for n, _ in out]
+    assert names == [
+        "model.layers.0.self_attn.q_proj.weight",
+        "model.layers.0.self_attn.k_proj.weight",
+        "model.layers.0.self_attn.v_proj.weight",
+    ]
+    assert out[0][1].shape == (q_size, 2048)
+    assert out[1][1].shape == (kv_size, 2048)
+    assert out[2][1].shape == (kv_size, 2048)
+    # Data preserved: first row of q == first row of qkv
+    assert torch.equal(out[0][1][0], qkv[0])
+    assert torch.equal(out[1][1][0], qkv[q_size])
+    assert torch.equal(out[2][1][0], qkv[q_size + kv_size])
+
+
+def test_translate_tt_to_hf_router_rename(worker_mod):
+    """mlp.router.gate.weight renames to mlp.gate.weight (HF naming)."""
+    import torch
+
+    mod, _ = worker_mod
+    worker = _make_worker(mod)
+    worker._hf_config = {
+        "model_type": "qwen3_moe",
+        "num_attention_heads": 32,
+        "num_kv_heads": 4,
+        "head_dim": 128,
+        "num_experts": 128,
+        "ep_size": 4,
+    }
+    worker._global_rank = 0
+    gate = torch.randn(128, 2048)
+    out = worker._translate_tt_to_hf(
+        [("model.layers.3.mlp.router.gate.weight", gate)]
+    )
+    assert [n for n, _ in out] == ["model.layers.3.mlp.gate.weight"]
+    assert torch.equal(out[0][1], gate)
+
+
+def test_translate_tt_to_hf_expert_w13_per_expert_split(worker_mod):
+    """Stacked w13 (gate+up) splits per-expert with the correct global
+    expert ID derived from rank * num_local + local_id."""
+    import torch
+
+    mod, _ = worker_mod
+    worker = _make_worker(mod)
+    worker._hf_config = {
+        "model_type": "qwen3_moe",
+        "num_attention_heads": 32,
+        "num_kv_heads": 4,
+        "head_dim": 128,
+        "num_experts": 128,
+        "ep_size": 4,
+    }
+    worker._global_rank = 2  # ep_rank=2 → global IDs 64..95 (num_local=32)
+    moe_dim = 768
+    hidden = 2048
+    n_local = 32
+    w13 = torch.arange(n_local * 2 * moe_dim * hidden, dtype=torch.float32).view(
+        n_local, 2 * moe_dim, hidden
+    )
+    out = worker._translate_tt_to_hf(
+        [("model.layers.5.mlp.experts.w13_weight", w13)]
+    )
+    # Each local expert produces TWO tensors (gate + up)
+    assert len(out) == n_local * 2
+    # First emitted should be local-expert-0 → global ID 64 (rank 2 × 32)
+    first_name, first_t = out[0]
+    assert first_name == "model.layers.5.mlp.experts.64.gate_proj.weight"
+    assert first_t.shape == (moe_dim, hidden)
+    # Second emitted should be local-0's up_proj (global ID 64)
+    assert out[1][0] == "model.layers.5.mlp.experts.64.up_proj.weight"
+    # Last local expert (31) → global ID 95
+    last_gate_name = f"model.layers.5.mlp.experts.{2 * 32 + 31}.gate_proj.weight"
+    assert last_gate_name in [n for n, _ in out]
+    # Data preservation: local-0's gate-slice matches w13[0, :moe_dim]
+    assert torch.equal(first_t, w13[0, :moe_dim])
+
+
+def test_translate_tt_to_hf_expert_w2_per_expert(worker_mod):
+    """w2 (down) splits per-expert with the correct global IDs."""
+    import torch
+
+    mod, _ = worker_mod
+    worker = _make_worker(mod)
+    worker._hf_config = {
+        "model_type": "qwen3_moe",
+        "num_attention_heads": 32,
+        "num_kv_heads": 4,
+        "head_dim": 128,
+        "num_experts": 128,
+        "ep_size": 4,
+    }
+    worker._global_rank = 0
+    hidden = 2048
+    moe_dim = 768
+    n_local = 32
+    w2 = torch.randn(n_local, hidden, moe_dim)
+    out = worker._translate_tt_to_hf([("model.layers.7.mlp.experts.w2_weight", w2)])
+    assert len(out) == n_local
+    assert out[0][0] == "model.layers.7.mlp.experts.0.down_proj.weight"
+    assert out[-1][0] == "model.layers.7.mlp.experts.31.down_proj.weight"
+    assert torch.equal(out[0][1], w2[0])
+    assert torch.equal(out[31][1], w2[31])
+
+
+def test_translate_tt_to_hf_passthrough_for_unknown_names(worker_mod):
+    """Names not in the TT→HF table pass through unchanged (norms, embed,
+    lm_head, o_proj, q_norm, k_norm, etc.)."""
+    import torch
+
+    mod, _ = worker_mod
+    worker = _make_worker(mod)
+    worker._hf_config = {
+        "model_type": "qwen3_moe",
+        "num_attention_heads": 32,
+        "num_kv_heads": 4,
+        "head_dim": 128,
+        "num_experts": 128,
+        "ep_size": 4,
+    }
+    worker._global_rank = 0
+    t = torch.randn(2048)
+    passthrough_cases = [
+        ("model.embed_tokens.weight", t),
+        ("model.norm.weight", t),
+        ("lm_head.weight", t),
+        ("model.layers.0.self_attn.o_proj.weight", t),
+        ("model.layers.0.self_attn.q_norm.weight", t),
+        ("model.layers.0.self_attn.k_norm.weight", t),
+        ("model.layers.0.input_layernorm.weight", t),
+        ("model.layers.0.post_attention_layernorm.weight", t),
+    ]
+    out = worker._translate_tt_to_hf(passthrough_cases)
+    assert out == passthrough_cases  # exact same list, unchanged
 
 
 def test_update_weights_via_mx_v2_metrics_safe_when_stats_none(worker_mod):

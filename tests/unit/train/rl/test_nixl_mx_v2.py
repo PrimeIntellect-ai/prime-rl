@@ -252,7 +252,7 @@ def _make_fake_slot(*, name: str, is_expert: bool = False, num_buffers: int = 2)
     slot.buffers = [
         (f"{name}.buf_{i}", torch.zeros(4), object()) for i in range(num_buffers)
     ]
-    slot.fill_from = MagicMock()
+    slot.convert = MagicMock()
     return slot
 
 
@@ -441,8 +441,12 @@ def test_broadcast_weights_skips_non_primary_hsdp_rank(broadcast_mod):
     mocks["publisher"].publish.assert_not_called()
 
 
-def test_broadcast_weights_calls_slot_fill_from(broadcast_mod):
-    mod, mocks = broadcast_mod
+def test_broadcast_weights_calls_slot_convert(broadcast_mod):
+    """Each slot's `convert(state_dict)` must be invoked exactly once per
+    broadcast cycle. GatheredSlot's API takes only the state_dict — the
+    conversion (compile_target / quantization) is baked in at
+    `from_spec` creation time, not threaded per-call."""
+    mod, _ = broadcast_mod
     bc = mod.NIXLMxV2WeightBroadcast(
         output_dir=Path("/tmp/out"),
         config=_make_config(),
@@ -455,9 +459,10 @@ def test_broadcast_weights_calls_slot_fill_from(broadcast_mod):
     model = _make_fake_model(slots)
     bc.broadcast_weights(model, step=3)
     for slot in slots:
-        slot.fill_from.assert_called_once()
-        args = slot.fill_from.call_args.args
-        assert args[1] is mocks["conversion"]
+        slot.convert.assert_called_once()
+        # convert receives the state_dict (single positional arg).
+        args = slot.convert.call_args.args
+        assert isinstance(args[0], dict)
 
 
 def test_shutdown_calls_publisher_shutdown_idempotent(broadcast_mod):

@@ -124,9 +124,42 @@ class NIXLMxV2WeightUpdateWorker(Worker):
             )
         )
         self._global_rank = global_rank
+
+        # Cache the HF model config + parallel layout so the TT→HF
+        # translator (`_translate_tt_to_hf`) can split fused tensors into
+        # the per-tensor / per-expert names vLLM's `load_weights` expects.
+        try:
+            from transformers import AutoConfig
+            hf = AutoConfig.from_pretrained(inference_model_name)
+            mc = self.model_runner.model_config
+            ep_size = getattr(mc, "ep_size", None) or getattr(
+                mc, "data_parallel_size", 1
+            )
+            self._hf_config = {
+                "model_type": getattr(hf, "model_type", ""),
+                "num_attention_heads": getattr(hf, "num_attention_heads", 0),
+                "num_kv_heads": getattr(hf, "num_key_value_heads", 0)
+                or getattr(hf, "num_attention_heads", 0),
+                "head_dim": getattr(hf, "head_dim", 0)
+                or (
+                    getattr(hf, "hidden_size", 0)
+                    // max(1, getattr(hf, "num_attention_heads", 1))
+                ),
+                "num_experts": getattr(hf, "num_experts", 0)
+                or getattr(hf, "num_local_experts", 0),
+                "ep_size": int(ep_size or 1),
+            }
+        except Exception as e:  # noqa: BLE001 — never block engine init
+            logger.warning(
+                f"[mx_v2] HF config probe failed ({e!r}); TT→HF translator "
+                f"will fall through to passthrough — non-MoE models only."
+            )
+            self._hf_config = None
+
         logger.info(
             f"[mx_v2] init: rank={global_rank} model={inference_model_name} "
-            f"publish_self_as_replica={publish_self_as_replica}"
+            f"publish_self_as_replica={publish_self_as_replica} "
+            f"hf_config={self._hf_config}"
         )
 
     # ------------------------------------------------------------------
@@ -246,10 +279,122 @@ class NIXLMxV2WeightUpdateWorker(Worker):
     def _load_weights_batch(self, batch: list[tuple[str, torch.Tensor]]) -> None:
         """Feed yielded ``(name, tensor)`` pairs through vLLM's load_weights.
 
-        vLLM's :meth:`model.load_weights` handles HF→fused name remapping
-        via ``stacked_params_mapping`` (e.g. ``q_proj|k_proj|v_proj →
-        qkv_proj``), so this worker doesn't need to know about fusion —
-        the engine yields HF-format names and vLLM does the rest.
-        Matches the NemoRL v2 pattern + Anyscale's RDT pattern.
+        Translation pass: PrimeRL's trainer-side ``GatheredSlot`` emits
+        tensors in TT-format (fused ``qkv_proj``, stacked-expert
+        ``w13_weight``/``w2_weight``, ``mlp.router.gate`` prefix). vLLM's
+        ``load_weights`` expects HF-checkpoint names + per-expert tensors
+        so its ``stacked_params_mapping`` (QKV / gate-up) and
+        ``expert_params_mapping`` (FusedMoE) can route them into the
+        model's actual stacked params. We translate TT → HF here so the
+        engine adapter (``MxWeightTransferEngine``) stays model-agnostic.
+
+        The slot-side conversion specs that PrimeRL applies on the
+        publisher side are the inverse of this translator — see
+        ``prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe``.
         """
-        self.raw_model.load_weights(batch)
+        translated = self._translate_tt_to_hf(batch)
+        if translated:
+            self.raw_model.load_weights(translated)
+
+    # ------------------------------------------------------------------
+    # TT → HF translation
+    # ------------------------------------------------------------------
+
+    def _translate_tt_to_hf(
+        self,
+        batch: list[tuple[str, torch.Tensor]],
+    ) -> list[tuple[str, torch.Tensor]]:
+        """Translate PrimeRL TT-format slot keys to HF checkpoint names.
+
+        Currently supports Qwen3-MoE family (Qwen3MoeForCausalLM); other
+        models pass through (most non-MoE PrimeRL models already match
+        HF naming). To extend, add per-prefix unstacking logic.
+
+        Layout assumption: the per-trainer-rank expert subset matches the
+        per-inference-rank EP subset (i.e. ``trainer.ep == inference.EP``),
+        so local-expert index lines up with global expert ID via
+        ``my_rank * num_local + local_id``. Cross-EP slicing (Phase 4
+        mixed-TP / multi-source picker) is the follow-up that lifts this
+        constraint.
+        """
+        cfg = self._hf_config
+        if cfg is None or cfg.get("model_type") not in {"qwen3_moe", "qwen3"}:
+            return batch  # passthrough for unsupported models
+
+        q_size = cfg["num_attention_heads"] * cfg["head_dim"]
+        kv_size = cfg["num_kv_heads"] * cfg["head_dim"]
+        num_experts = cfg.get("num_experts", 0)
+        ep_size = max(1, cfg.get("ep_size", 1))
+        num_local_experts = num_experts // ep_size if num_experts else 0
+        my_rank = self._global_rank % ep_size if ep_size > 1 else 0
+
+        out: list[tuple[str, torch.Tensor]] = []
+        for name, tensor in batch:
+            # ── QKV split (fused → q/k/v) ───────────────────────────────
+            if name.endswith(".self_attn.qkv_proj.weight"):
+                prefix = name.removesuffix(".self_attn.qkv_proj.weight")
+                expected = q_size + 2 * kv_size
+                assert tensor.shape[0] == expected, (
+                    f"qkv_proj rows {tensor.shape[0]} != "
+                    f"q({q_size})+k({kv_size})+v({kv_size})={expected}"
+                )
+                out.append((f"{prefix}.self_attn.q_proj.weight", tensor[:q_size]))
+                out.append((f"{prefix}.self_attn.k_proj.weight", tensor[q_size : q_size + kv_size]))
+                out.append((f"{prefix}.self_attn.v_proj.weight", tensor[q_size + kv_size :]))
+
+            # ── Dense MLP gate/up split (future-proof, no-op on Qwen3-30B-A3B)
+            elif name.endswith(".mlp.gate_up_proj.weight"):
+                prefix = name.removesuffix(".mlp.gate_up_proj.weight")
+                mid = tensor.shape[0] // 2
+                out.append((f"{prefix}.mlp.gate_proj.weight", tensor[:mid]))
+                out.append((f"{prefix}.mlp.up_proj.weight", tensor[mid:]))
+
+            # ── Router rename (TT prefix → HF) ──────────────────────────
+            elif name.endswith(".mlp.router.gate.weight"):
+                prefix = name.removesuffix(".mlp.router.gate.weight")
+                out.append((f"{prefix}.mlp.gate.weight", tensor))
+
+            # ── MoE w13 (fused gate+up, stacked across local experts) ───
+            elif name.endswith(".mlp.experts.w13_weight"):
+                prefix = name.removesuffix(".mlp.experts.w13_weight")
+                if tensor.ndim != 3:
+                    out.append((name, tensor))
+                    continue
+                n_local, fused_dim, _ = tensor.shape
+                moe_dim = fused_dim // 2
+                for j in range(n_local):
+                    global_id = my_rank * num_local_experts + j
+                    out.append(
+                        (
+                            f"{prefix}.mlp.experts.{global_id}.gate_proj.weight",
+                            tensor[j, :moe_dim].contiguous(),
+                        )
+                    )
+                    out.append(
+                        (
+                            f"{prefix}.mlp.experts.{global_id}.up_proj.weight",
+                            tensor[j, moe_dim:].contiguous(),
+                        )
+                    )
+
+            # ── MoE w2 (down, stacked across local experts) ─────────────
+            elif name.endswith(".mlp.experts.w2_weight"):
+                prefix = name.removesuffix(".mlp.experts.w2_weight")
+                if tensor.ndim != 3:
+                    out.append((name, tensor))
+                    continue
+                n_local = tensor.shape[0]
+                for j in range(n_local):
+                    global_id = my_rank * num_local_experts + j
+                    out.append(
+                        (
+                            f"{prefix}.mlp.experts.{global_id}.down_proj.weight",
+                            tensor[j].contiguous(),
+                        )
+                    )
+
+            # ── Passthrough: norms, o_proj, q/k_norm, embed, lm_head ────
+            else:
+                out.append((name, tensor))
+
+        return out
