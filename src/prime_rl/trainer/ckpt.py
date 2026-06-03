@@ -171,7 +171,12 @@ class CheckpointManager:
         # Checkpoint the local dataloader
         if dataloader is not None:
             dataloader_dir = path / "dataloader"
-            dataloader_dir.mkdir(parents=True, exist_ok=True)
+            # Avoid concurrent mkdir from all ranks — on parallel filesystems
+            # (e.g. beegfs) a non-master rank can hit EEXIST + is_dir()==False
+            # right after master creates the dir and have exist_ok=True fail.
+            if self.world.is_master:
+                dataloader_dir.mkdir(parents=True, exist_ok=True)
+            torch.distributed.barrier()
             torch.save(dataloader.state_dict(), dataloader_dir / f"rank_{self.world.rank}.pt")
 
         # Save sharded state
@@ -239,7 +244,9 @@ class CheckpointManager:
     ) -> None:
         """Save the full checkpoint state for a specified step."""
         ckpt_path = self.get_ckpt_path(step)
-        ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.world.is_master:
+            ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.distributed.barrier()
 
         self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
         bisect.insort(self.ckpt_steps, step)
@@ -390,7 +397,9 @@ class WeightCheckpointManager:
     ):
         """Save a HF-compatible weight-only checkpoint for a given step."""
         step_path = self.get_step_path(step)
-        step_path.mkdir(parents=True, exist_ok=True)
+        if self.world.is_master:
+            step_path.mkdir(parents=True, exist_ok=True)
+        torch.distributed.barrier()
 
         # Gather all weights on master rank
         self.logger.debug("Gathering weights on master rank for weight checkpoint")
