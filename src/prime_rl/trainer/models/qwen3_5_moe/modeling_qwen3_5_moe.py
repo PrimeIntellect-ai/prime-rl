@@ -52,13 +52,11 @@ except ImportError:
 
 try:
     from fla.modules import FusedRMSNormGated
-    from fla.modules.conv.cp import causal_conv1d_cp
     from fla.ops.cp import FLACPContext, build_cp_context
     from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 except ImportError:
     chunk_gated_delta_rule = None  # type: ignore
     FusedRMSNormGated = None  # type: ignore
-    causal_conv1d_cp = None  # type: ignore
     FLACPContext = None  # type: ignore
     build_cp_context = None  # type: ignore
 
@@ -244,17 +242,14 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         self._causal_conv1d_fn = causal_conv1d_fn
         self._chunk_gated_delta_rule = chunk_gated_delta_rule or torch_chunk_gated_delta_rule
 
-    def _build_cp_context(self) -> "FLACPContext | None":
-        """Build FLA CP context from the full packed sequence boundaries."""
+    def _build_cp_context(self, local_seq_len: int, device: torch.device) -> "FLACPContext | None":
+        """Build fla CP context from the local (sharded) sequence length."""
         cp_group = getattr(self, "cp_group", None)
         if cp_group is None or build_cp_context is None:
             return None
-
-        from prime_rl.trainer.models.layers.ulysses_attn import ULYSSES_PARAMS
-
-        global_cu_seqlens = ULYSSES_PARAMS.get("cu_seqlens")
-        if global_cu_seqlens is None:
-            raise RuntimeError("Qwen3.5 DeltaNet CP requires global Ulysses cu_seqlens")
+        # Reconstruct global cu_seqlens: single contiguous sequence across all CP ranks
+        global_seq_len = local_seq_len * self.cp_world_size
+        global_cu_seqlens = torch.tensor([0, global_seq_len], dtype=torch.int32, device=device)
         return build_cp_context(
             cu_seqlens=global_cu_seqlens,
             group=cp_group,
@@ -273,21 +268,9 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         b = self.in_proj_b(hidden_states)
         a = self.in_proj_a(hidden_states)
 
-        cp_context = self._build_cp_context()
-
-        # Causal conv1d — must reset at packed sequence boundaries and, under
-        # CP, receive the prefix tokens for sequences split across CP ranks.
-        if cp_context is not None:
-            if causal_conv1d_cp is None:
-                raise RuntimeError("Qwen3.5 DeltaNet CP requires fla.modules.conv.cp.causal_conv1d_cp")
-            mixed_qkv = causal_conv1d_cp(
-                x=mixed_qkv.transpose(1, 2).contiguous(),
-                weight=self.conv1d.weight.squeeze(1),
-                bias=self.conv1d.bias,
-                activation=self.activation,
-                cp_context=cp_context,
-            ).transpose(1, 2)
-        elif self._causal_conv1d_fn is not None:
+        # Causal conv1d — must reset at sequence boundaries for packed batches,
+        # otherwise the kernel-1 left pad leaks state across sequences.
+        if self._causal_conv1d_fn is not None:
             seq_idx = None
             if cu_seqlens is not None:
                 seg_lens = cu_seqlens[1:] - cu_seqlens[:-1]
@@ -328,7 +311,8 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
             query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
             key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
 
-        # Use FLA's native recurrence CP when available, otherwise run locally.
+        # Use fla's native CP when available, otherwise fall back to PyTorch kernel
+        cp_context = self._build_cp_context(seq_len, hidden_states.device)
         if cp_context is not None:
             cu_seqlens = cp_context.cu_seqlens
             core_attn_out, _ = self._chunk_gated_delta_rule(
