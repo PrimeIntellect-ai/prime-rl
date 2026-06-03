@@ -121,10 +121,36 @@ class NIXLMxV2WeightBroadcast(WeightBroadcast):
         self._hf_config = AutoConfig.from_pretrained(self.config.inference_model_name)
         self._conversion = select_default_conversion(self.config.inference_model_name)
 
-        with classic_cuda_alloc():
-            self._model_slots = model.build_slots(
-                self.parallel_dims, self._conversion, self._hf_config.torch_dtype
-            )
+        # Pull-mode (this broadcast type) + same-rank routing means each
+        # inference rank only contacts ONE trainer rank, so the trainer must
+        # have the FULL tensor on each rank — ShardedSlot's 1/N FSDP-shard
+        # would deliver only 1/N to each receiver and vLLM's load_weights
+        # would refuse the shape mismatch. Force every non-expert slot
+        # into GatheredSlot (DTensor.full_tensor() allgather + full tensor
+        # held per rank) by raising the threshold beyond any realistic
+        # weight size. Expert slots remain ExpertSlot (each rank owns its
+        # EP shard, which is exactly what same-rank pull mode wants).
+        #
+        # In push-mode (PR #2389's `nixl_mx`) ShardedSlot is correct
+        # because each trainer rank writes its FSDP shard directly into
+        # the inference's pre-allocated buffer at its rank-specific
+        # offset — there each receiver assembles N shards from N senders.
+        # Pull-mode receivers can't do that without Phase-4 multi-source
+        # slicing in the engine adapter; until that lands, gather first.
+        from prime_rl.trainer.models import slots as _slots_mod
+        if getattr(self, "_orig_small_non_expert_bytes", None) is None:
+            self._orig_small_non_expert_bytes = _slots_mod.SMALL_NON_EXPERT_BYTES
+        _slots_mod.SMALL_NON_EXPERT_BYTES = 1 << 60
+
+        try:
+            with classic_cuda_alloc():
+                self._model_slots = model.build_slots(
+                    self.parallel_dims, self._conversion, self._hf_config.torch_dtype
+                )
+        finally:
+            # Restore the threshold so we don't perturb other code paths
+            # (e.g. nixl_mx broadcast running in the same process).
+            _slots_mod.SMALL_NON_EXPERT_BYTES = self._orig_small_non_expert_bytes
 
         # The v2 publisher owns the NIXL agent + MX client + heartbeat.
         # We pass our rank as ``worker_rank``; receivers with

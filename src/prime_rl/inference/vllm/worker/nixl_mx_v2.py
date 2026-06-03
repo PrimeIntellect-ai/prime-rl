@@ -230,12 +230,18 @@ class NIXLMxV2WeightUpdateWorker(Worker):
             except Exception as e:  # noqa: BLE001 — engine may raise plain RuntimeError
                 msg = str(e)
                 last_err = e
-                # Only retry on "no source matches" / discovery-empty errors;
-                # propagate any other (e.g. NIXL transport failure) immediately.
+                # Retry on discovery-empty errors (trainer hasn't published
+                # version=N yet) AND on NIXL transient connection errors
+                # (trainer-pod restart races where the catalog still has the
+                # dead agent's metadata for a few seconds). Any other error
+                # (e.g. real shape mismatch in load_weights) propagates.
                 transient = (
                     "no source matches" in msg
                     or "NoSourceMatchesFilterError" in msg
                     or "no matching source" in msg
+                    or "NIXL_ERR_REMOTE_DISCONNECT" in msg
+                    or "NIXL_ERR_NOT_ALLOWED" in msg
+                    or "NIXL_ERR_NOT_FOUND" in msg
                 )
                 if not transient or _time.monotonic() >= retry_deadline:
                     raise

@@ -92,6 +92,12 @@ def _install_stubs():
     sys.modules["prime_rl.trainer"] = types.ModuleType("prime_rl.trainer")
     sys.modules["prime_rl.trainer.models"] = pkg_trainer_models
 
+    # ─── prime_rl.trainer.models.slots (for SMALL_NON_EXPERT_BYTES) ─────
+    pkg_slots = types.ModuleType("prime_rl.trainer.models.slots")
+    pkg_slots.SMALL_NON_EXPERT_BYTES = 2 * 1024 * 1024  # match real default
+    sys.modules["prime_rl.trainer.models.slots"] = pkg_slots
+    mocks["slots_mod"] = pkg_slots
+
     # ─── prime_rl.trainer.models.conversions.select_default_conversion ──
     fake_conversion = types.SimpleNamespace(
         compile_target="cutlass_fp8",
@@ -463,6 +469,44 @@ def test_broadcast_weights_calls_slot_convert(broadcast_mod):
         # convert receives the state_dict (single positional arg).
         args = slot.convert.call_args.args
         assert isinstance(args[0], dict)
+
+
+def test_lazy_init_forces_gathered_slots_for_pull_mode(broadcast_mod):
+    """lazy_init must temporarily raise `slots.SMALL_NON_EXPERT_BYTES` to
+    infinity while `model.build_slots(...)` runs — this forces every
+    non-expert weight into GatheredSlot (full tensor on each rank via
+    DTensor.full_tensor()) instead of ShardedSlot (1/N FSDP shard).
+    Pull-mode + same-rank routing requires the full tensor per rank.
+    The threshold must be restored after build_slots returns so other
+    code paths (e.g. nixl_mx push-mode broadcast running in the same
+    process) aren't perturbed."""
+    mod, mocks = broadcast_mod
+    slots_mod = mocks["slots_mod"]
+    original_threshold = slots_mod.SMALL_NON_EXPERT_BYTES
+
+    bc = mod.NIXLMxV2WeightBroadcast(
+        output_dir=Path("/tmp/out"),
+        config=_make_config(),
+        parallel_dims=_make_parallel_dims(),
+    )
+    seen_thresholds = []
+    model = _make_fake_model([_make_fake_slot(name="layer0", num_buffers=1)])
+    # Capture the threshold value AT THE TIME build_slots is called
+    model.build_slots = MagicMock(
+        side_effect=lambda *_a, **_kw: (
+            seen_thresholds.append(slots_mod.SMALL_NON_EXPERT_BYTES)
+            or [_make_fake_slot(name="layer0", num_buffers=1)]
+        )
+    )
+    bc.lazy_init(model)
+
+    assert seen_thresholds, "build_slots was never called"
+    assert seen_thresholds[0] > 2 * 1024 * 1024, (
+        f"threshold was {seen_thresholds[0]} during build_slots — must be "
+        f"raised (1<<60) so all non-expert weights become GatheredSlot"
+    )
+    # Restored to original value after lazy_init returns.
+    assert slots_mod.SMALL_NON_EXPERT_BYTES == original_threshold
 
 
 def test_shutdown_calls_publisher_shutdown_idempotent(broadcast_mod):
