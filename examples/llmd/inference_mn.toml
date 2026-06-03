@@ -11,7 +11,9 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 [deployment]
 type = "multi_node"
 num_nodes = 2
-router_backend = "llm-d"
+
+[deployment.router]
+type = "llm-d"
 
 [parallel]
 tp = 1

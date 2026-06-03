@@ -167,9 +167,6 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     nodes_per_fsdp_group: int | None = None
     """Training nodes per FSDP island. Auto-sets ``trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
 
-    router_backend: Literal["vllm-router", "llm-d"] = "vllm-router"
-    """Router implementation for multi-node (non-disaggregated) inference. ``vllm-router`` is the PrimeIntellect fork (default); ``llm-d`` runs the upstream EPP + Envoy in standalone mode. Disaggregated inference reads ``inference.deployment.router_backend`` instead."""
-
     @property
     def total_infer_nodes(self) -> int:
         return self.num_infer_nodes * self.num_infer_replicas
@@ -288,7 +285,26 @@ class RLConfig(BaseConfig):
         are constructed. See ``validation.propagate_shared_fields`` for the full
         propagation table, transforms, and the mutex rule.
         """
-        return propagate_shared_fields(data)
+        data = propagate_shared_fields(data)
+        # Forward the multi-node deployment + SLURM into the nested inference: RL
+        # multi-node inference IS multi-node (driven by [deployment] + [inference.parallel])
+        # and runs under the RL SLURM allocation. This lets the router live on the
+        # multi-node / disaggregated inference deployment and pass its "multi-node
+        # requires SLURM" validator. RL writes inference.toml without deployment/slurm,
+        # so the per-rank ``uv run inference`` still runs locally on a single node.
+        if (
+            isinstance(data, dict)
+            and isinstance(data.get("deployment"), dict)
+            and data["deployment"].get("type") == "multi_node"
+            and isinstance(data.get("inference"), dict)
+        ):
+            inference = data["inference"]
+            deployment = inference.setdefault("deployment", {})
+            if isinstance(deployment, dict):
+                deployment.setdefault("type", "multi_node")
+            if data.get("slurm") is not None:
+                inference.setdefault("slurm", data["slurm"])
+        return data
 
     ### Validate shared configs (after sub-config construction)
 
@@ -569,13 +585,10 @@ class RLConfig(BaseConfig):
 
         total_infer_gpus = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
         if "inference_metrics_roles" not in self.orchestrator.model_fields_set:
-            # llm-d uses external-LB: one admin client per DP rank, so roles expand per
-            # rank (stride = dp_local = gpus_per_node / tp). vllm-router has one admin
-            # client per node (stride 1). ADMIN_URLS lists all prefill ranks, then all
-            # decode ranks, per replica — match that order.
-            stride = 1
-            if getattr(infer_deploy, "router_backend", "vllm-router") == "llm-d":
-                stride = self.deployment.gpus_per_node // self.inference.parallel.tp
+            # External-LB: one admin client per DP rank, so roles expand per rank
+            # (stride = dp_local = gpus_per_node / tp). ADMIN_URLS lists all prefill
+            # ranks, then all decode ranks, per replica — match that order.
+            stride = self.deployment.gpus_per_node // self.inference.parallel.tp
             role_order = ["prefill"] * (infer_deploy.num_prefill_nodes * stride) + ["decode"] * (
                 infer_deploy.num_decode_nodes * stride
             )

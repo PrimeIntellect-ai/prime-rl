@@ -30,7 +30,7 @@ We support 3 distinct deployment shapes:
 
 Most of the features are supported for all deployment shapes, with few exceptions. These exceptions are rejected on validation.
 
-You can select the deployment shape with `InferenceDeploymentConfig` in your config file. This is a config-field that allows you to set the deployment shape, deployment-specific knobs such as `num_nodes`, `num_replicas`, `router_port`, `backend_port`, etc.
+You can select the deployment shape with `InferenceDeploymentConfig` in your config file. This is a config-field that allows you to set the deployment shape, deployment-specific knobs such as `num_nodes`, `num_replicas`, `backend_port`, and a `[...deployment.router]` block, etc.
 
 ```toml
 [inference.deployment]
@@ -102,7 +102,7 @@ tp = 2
 dp = 4
 ```
 
-This configuration will run 2 independent vLLM replicas, each with `tp=2` and `dp=4`. Routing is handled by a router instance running on the same node as the 1st replica — either `vllm-router` (default) or the upstream `llm-d` EPP+Envoy, selected via `router_backend`. You can read more about the supported routing options in the [router](#router) section.
+This configuration will run 2 independent vLLM replicas, each with `tp=2` and `dp=4`. Routing is handled by a router instance running on the same node as the 1st replica — either `vllm-router` (default) or the upstream `llm-d` EPP+Envoy, selected via the `[...deployment.router]` block. You can read more about the supported routing options in the [router](#router) section.
 
 ### Wide-EP
 
@@ -167,16 +167,21 @@ This will run 3 inference replicas, each running on 6 nodes. Each replica will r
 
 ## Router
 
-Multi-node and disaggregated deployments front their vLLM backends with a router. Two backends are supported, selected with `router_backend`:
+Multi-node and disaggregated deployments front their vLLM backends with a router, configured via a discriminated `[...deployment.router]` block (`type = "vllm-router" | "llm-d"`):
 
 ```toml
-[inference.deployment]          # or [deployment] for the RL entrypoint's multi_node case
-type = "multi_node"
-router_backend = "vllm-router"  # default; or "llm-d"
+[inference.deployment.router]   # or [deployment.router] for the standalone inference entrypoint
+type = "llm-d"                  # "vllm-router" (default) or "llm-d"
+# llm-d-only knobs (all optional):
+scorers = { "prefix-cache-scorer" = 3.0, "active-request-scorer" = 2.0 }   # base, applied to every profile
+prefill_scorer_overrides = { "queue-scorer" = 2.0, "kv-cache-utilization-scorer" = 2.0 }  # merged onto the P/D prefill profile
+decode_scorer_overrides = {}    # merged onto the P/D decode profile
+non_cached_tokens = 16          # prefix-based-pd-decider threshold (P/D)
+# epp_config_path = "my-epp.yaml"  # escape hatch: a full EPP config, used verbatim
 ```
 
-- **`vllm-router`** (default) — our fork of [vllm-router](https://github.com/PrimeIntellect-ai/router).
-- **`llm-d`** — the upstream [llm-d](https://llm-d.ai) Endpoint Picker (EPP) + an Envoy proxy, run in standalone (no-Kubernetes) mode via the EPP's file-discovery plugin. Adds prefix-cache-aware + KV-cache-utilization + queue-depth scoring. Requires the `epp`/`envoy`/`pd-sidecar` binaries — install once with `bash scripts/install_llmd.sh` (they land in `third_party/llmd/bin`).
+- **`vllm-router`** (default) — our fork of [vllm-router](https://github.com/PrimeIntellect-ai/router). Knob: `policy`.
+- **`llm-d`** — the upstream [llm-d](https://llm-d.ai) Endpoint Picker (EPP) + an Envoy proxy, run in standalone (no-Kubernetes) mode via the EPP's file-discovery plugin. Routing combines **prefix-cache affinity** (grouped rollouts reuse a cached prefix and skip prefill) with the **`active-request-scorer`** — the EPP-tracked in-flight load balancer that spreads requests across all ranks immediately, unlike the metrics-scraped `queue-scorer` / `kv-cache-utilization-scorer` / `load-aware-scorer` (which lag and concentrate bursts of same-prefix requests). The scorer weights follow the upstream llm-d P/D guide; tune via `scorers` (base) + `prefill_scorer_overrides` / `decode_scorer_overrides` (per-profile, P/D). Requires the `epp`/`envoy`/`pd-sidecar` binaries — install once with `bash scripts/install_llmd.sh` (they land in `third_party/llmd/bin`). The EPP + Envoy + endpoints configs are rendered from `src/prime_rl/templates/llmd/*.yaml.j2` into the SLURM script.
 
 Both backends run on **vLLM external-LB data parallelism**: each DP rank is its own API server on its own port, and the router load-balances across the per-rank endpoints (admin ops — weight broadcast, pause/resume — bypass the router and hit each rank directly).
 

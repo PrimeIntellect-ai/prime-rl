@@ -105,6 +105,95 @@ All2AllBackend = Literal[
 ]
 
 
+# Known llm-d EPP scorer plugins (used to guard the ``scorers`` map against typos).
+KNOWN_SCORERS = frozenset(
+    {
+        "prefix-cache-scorer",
+        "precise-prefix-cache-scorer",
+        "queue-scorer",
+        "kv-cache-utilization-scorer",
+        "active-request-scorer",
+        "load-aware-scorer",
+        "running-requests-size-scorer",
+        "token-load-scorer",
+        "latency-scorer",
+        "session-affinity-scorer",
+        "lora-affinity-scorer",
+    }
+)
+
+
+class VllmRouterConfig(BaseConfig):
+    """PrimeIntellect vllm-router: load-aware routing over the per-rank (external-LB) endpoints."""
+
+    type: Literal["vllm-router"] = "vllm-router"
+
+    port: int = 8000
+    """Port the router listens on — becomes the client-facing router URL."""
+
+    policy: str = "consistent_hash"
+    """Routing policy, e.g. ``consistent_hash`` or ``round_robin``."""
+
+
+class LlmdRouterConfig(BaseConfig):
+    """llm-d standalone (no-Kubernetes) router: EPP + Envoy with the file-discovery plugin."""
+
+    type: Literal["llm-d"] = "llm-d"
+
+    port: int = 8000
+    """Port the Envoy gateway listens on — becomes the client-facing router URL."""
+
+    scorers: dict[str, float] = {
+        "prefix-cache-scorer": 3.0,
+        "active-request-scorer": 2.0,
+    }
+    """Base EPP scorer name → weight, applied to every profile (the non-P/D estimate profile and both P/D profiles, before per-profile overrides). Pairs prefix-cache affinity (llm-d's edge — grouped rollouts reuse a cached prefix and skip prefill) with ``active-request-scorer``, the EPP-tracked in-flight load balancer that reacts immediately, unlike the metrics-scraped ``queue-scorer`` / ``load-aware-scorer`` / ``kv-cache-utilization-scorer`` (which lag ~200ms and concentrate bursts of same-prefix requests). See ``KNOWN_SCORERS`` for the full set."""
+
+    prefill_scorer_overrides: dict[str, float] = {
+        "queue-scorer": 2.0,
+        "kv-cache-utilization-scorer": 2.0,
+    }
+    """P/D only: scorer → weight merged onto ``scorers`` for the **prefill** profile (a weight wins over the base). Mirrors the upstream llm-d PD guide, which adds metrics-scraped ``queue-scorer`` / ``kv-cache-utilization-scorer`` to prefill (short ops tolerate the lag), with prefix-cache routing as the priority."""
+
+    decode_scorer_overrides: dict[str, float] = {}
+    """P/D only: scorer → weight merged onto ``scorers`` for the **decode** profile (a weight wins over the base). Empty by default — decode inherits ``scorers`` (prefix-cache + active-request), matching the upstream llm-d PD guide's decode profile."""
+
+    non_cached_tokens: int = 16
+    """P/D only: the ``prefix-based-pd-decider`` threshold — a request with fewer than this many non-cached prompt tokens skips remote prefill (runs decode-only)."""
+
+    decode_sidecar_port: int = 8300
+    """P/D only: port the pd-sidecar listens on (decode nodes). EPP/Envoy route decode here; the sidecar orchestrates remote prefill via the ``x-prefiller-host-port`` header and forwards the decode to vLLM on ``decode_port``."""
+
+    epp_config_path: Path | None = None
+    """Escape hatch: path to a full EPP config YAML used verbatim (only the endpoints-file path is injected). When set, ``scorers`` is ignored."""
+
+    @property
+    def prefill_scorers(self) -> dict[str, float]:
+        """Effective prefill-profile scorers: ``scorers`` merged with ``prefill_scorer_overrides``."""
+        return {**self.scorers, **self.prefill_scorer_overrides}
+
+    @property
+    def decode_scorers(self) -> dict[str, float]:
+        """Effective decode-profile scorers: ``scorers`` merged with ``decode_scorer_overrides``."""
+        return {**self.scorers, **self.decode_scorer_overrides}
+
+    @model_validator(mode="after")
+    def validate_scorers(self):
+        if self.epp_config_path is None:
+            unknown = (
+                set(self.scorers) | set(self.prefill_scorer_overrides) | set(self.decode_scorer_overrides)
+            ) - KNOWN_SCORERS
+            if unknown:
+                raise ValueError(
+                    f"Unknown llm-d scorer(s): {sorted(unknown)}. Known scorers: {sorted(KNOWN_SCORERS)}. "
+                    "Set epp_config_path to supply a custom EPP config instead."
+                )
+        return self
+
+
+RouterConfig: TypeAlias = Annotated[VllmRouterConfig | LlmdRouterConfig, Field(discriminator="type")]
+
+
 class BaseInferenceDeploymentConfig(BaseConfig):
     gpus_per_node: int = 8
     """GPUs per node."""
@@ -121,17 +210,11 @@ class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     num_nodes: int = Field(2, ge=1)
     """Inference nodes."""
 
-    router_port: int = 8000
-    """Port for the vllm-router."""
-
     backend_port: int = 8100
     """Port for vLLM backend instances."""
 
-    router_policy: str = "consistent_hash"
-    """vllm-router routing policy (e.g. ``consistent_hash``, ``round_robin``). Ignored when ``router_backend = "llm-d"``."""
-
-    router_backend: Literal["vllm-router", "llm-d"] = "vllm-router"
-    """Router implementation. ``vllm-router`` is the PrimeIntellect fork (default). ``llm-d`` runs the upstream llm-d EPP + Envoy in standalone (no-Kubernetes) mode via the file-discovery plugin."""
+    router: RouterConfig = VllmRouterConfig()
+    """Router fronting the per-rank endpoints. ``vllm-router`` (default) or ``llm-d`` (EPP + Envoy, file-discovery)."""
 
 
 # Disaggregated prefill/decode inference. Each replica is split into separate
@@ -155,23 +238,14 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     num_decode_replicas: int = Field(1, ge=1)
     """Independent decode vLLM instances. Must evenly divide ``num_decode_nodes``."""
 
-    router_port: int = 8000
-    """Port for the vllm-router on each replica."""
-
     prefill_port: int = 8100
     """Port for prefill vLLM instances."""
 
     decode_port: int = 8200
     """Port for decode vLLM instances."""
 
-    decode_sidecar_port: int = 8300
-    """Port for the llm-d pd-sidecar on decode nodes (P/D, ``router_backend = "llm-d"`` only). EPP/Envoy route decode requests here; the sidecar orchestrates remote prefill via the ``x-prefiller-host-port`` header and forwards the decode to vLLM on ``decode_port``."""
-
-    router_policy: str = "consistent_hash"
-    """vllm-router routing policy (e.g. ``consistent_hash``, ``round_robin``). Ignored when ``router_backend = "llm-d"``."""
-
-    router_backend: Literal["vllm-router", "llm-d"] = "vllm-router"
-    """Router implementation. ``vllm-router`` is the PrimeIntellect fork (default). ``llm-d`` runs the upstream llm-d EPP + Envoy in standalone (no-Kubernetes) mode via the file-discovery plugin, with a pd-sidecar on each decode node."""
+    router: RouterConfig = VllmRouterConfig()
+    """Router fronting the per-rank prefill/decode endpoints. ``vllm-router`` (default) or ``llm-d`` (EPP + Envoy + pd-sidecar). The pd-sidecar port lives on the llm-d variant (``decode_sidecar_port``)."""
 
     prefill_env_overrides: dict[str, str] = {}
     """Extra environment variables exported only on prefill nodes."""

@@ -50,6 +50,9 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
 
     is_multi_node = config.deployment.type == "multi_node"
 
+    if is_disaggregated or is_multi_node:
+        template_vars.update(router=config.deployment.router, data_parallel_rpc_port=config.data_parallel_rpc_port)
+
     if is_disaggregated:
         template_vars.update(
             num_prefill_nodes=config.deployment.num_prefill_nodes,
@@ -58,11 +61,6 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
             num_decode_replicas=config.deployment.num_decode_replicas,
             prefill_port=config.deployment.prefill_port,
             decode_port=config.deployment.decode_port,
-            decode_sidecar_port=config.deployment.decode_sidecar_port,
-            router_port=config.deployment.router_port,
-            router_policy=config.deployment.router_policy,
-            router_backend=config.deployment.router_backend,
-            data_parallel_rpc_port=config.data_parallel_rpc_port,
             use_deep_gemm=config.use_deep_gemm,
             prefill_env_overrides=config.deployment.prefill_env_overrides,
             decode_env_overrides=config.deployment.decode_env_overrides,
@@ -70,12 +68,8 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
         )
     elif is_multi_node:
         template_vars.update(
-            router_port=config.deployment.router_port,
             backend_port=config.deployment.backend_port,
-            router_policy=config.deployment.router_policy,
-            router_backend=config.deployment.router_backend,
             enable_expert_parallel=config.enable_expert_parallel,
-            data_parallel_rpc_port=config.data_parallel_rpc_port,
         )
 
     script = template.render(**template_vars)

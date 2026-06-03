@@ -32,7 +32,7 @@ export NODES_PER_INFER_REPLICA={{ nodes_per_infer_replica }}
 export NUM_INFER_REPLICAS={{ num_infer_replicas }}
 export GPUS_PER_NODE={{ gpus_per_node }}
 {% if num_infer_nodes > 0 -%}
-export ROUTER_PORT={{ router_port }}
+export ROUTER_PORT={{ router.port }}
 export INFERENCE_TP={{ inference_tp }}
 export INFERENCE_DP_LOCAL=$((GPUS_PER_NODE / INFERENCE_TP))
 export INFERENCE_DATA_PARALLEL_RPC_PORT={{ inference_data_parallel_rpc_port }}
@@ -45,7 +45,9 @@ export NODES_PER_PREFILL_REPLICA=$((NUM_PREFILL_NODES / NUM_PREFILL_REPLICAS))
 export NODES_PER_DECODE_REPLICA=$((NUM_DECODE_NODES / NUM_DECODE_REPLICAS))
 export PREFILL_PORT={{ prefill_port }}
 export DECODE_PORT={{ decode_port }}
-export DECODE_SIDECAR_PORT={{ decode_sidecar_port }}
+{%- if router.type == "llm-d" %}
+export DECODE_SIDECAR_PORT={{ router.decode_sidecar_port }}
+{%- endif %}
 {%- else -%}
 export BACKEND_PORT={{ backend_port }}
 export INFERENCE_ENABLE_EXPERT_PARALLEL={{ "1" if inference_enable_expert_parallel else "0" }}
@@ -89,14 +91,9 @@ INFER_URLS=""
 ADMIN_URLS=""
 ALL_ROUTER_ARGS=""
 {% if is_disaggregated -%}
-{%- if router_backend == "llm-d" %}
-# llm-d uses external-LB: one vLLM engine per DP rank, so admin (weight broadcast /
-# pause / update) must hit every rank's port directly. Router args stay base-port —
-# write_llmd_configs.sh expands them per rank (decode → pd-sidecar port + rank).
-DP_PORT_STRIDE=$INFERENCE_DP_LOCAL
-{%- else %}
-DP_PORT_STRIDE=1
-{%- endif %}
+# External-LB: one vLLM engine per DP rank. Admin (weight broadcast / pause /
+# update) hits every rank vLLM port directly. vllm-router gets per-rank
+# --prefill/--decode args; llm-d fills its endpoints from HOSTNAMES directly.
 for ((r=0; r<NUM_INFER_REPLICAS; r++)); do
     replica_base=$((r * NODES_PER_INFER_REPLICA))
     router_host="${INFER_HOSTS[$replica_base]}"
@@ -104,20 +101,22 @@ for ((r=0; r<NUM_INFER_REPLICAS; r++)); do
 
     REPLICA_ROUTER_ARGS=""
     for ((p=0; p<NUM_PREFILL_NODES; p++)); do
-        node_idx=$((replica_base + p))
-        host="${INFER_HOSTS[$node_idx]}"
-        for ((k=0; k<DP_PORT_STRIDE; k++)); do
+        host="${INFER_HOSTS[$((replica_base + p))]}"
+        for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
             ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((PREFILL_PORT + k))/v1"
+{%- if router.type != "llm-d" %}
+            REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS --prefill http://${host}:$((PREFILL_PORT + k))"
+{%- endif %}
         done
-        REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS --prefill http://${host}:${PREFILL_PORT}"
     done
     for ((d=0; d<NUM_DECODE_NODES; d++)); do
-        node_idx=$((replica_base + NUM_PREFILL_NODES + d))
-        host="${INFER_HOSTS[$node_idx]}"
-        for ((k=0; k<DP_PORT_STRIDE; k++)); do
+        host="${INFER_HOSTS[$((replica_base + NUM_PREFILL_NODES + d))]}"
+        for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
             ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((DECODE_PORT + k))/v1"
+{%- if router.type != "llm-d" %}
+            REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS --decode http://${host}:$((DECODE_PORT + k))"
+{%- endif %}
         done
-        REPLICA_ROUTER_ARGS="$REPLICA_ROUTER_ARGS --decode http://${host}:${DECODE_PORT}"
     done
     ALL_ROUTER_ARGS="${ALL_ROUTER_ARGS:+$ALL_ROUTER_ARGS|}$REPLICA_ROUTER_ARGS"
 done
@@ -230,7 +229,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     INFER_NODE_RANK=$SLURM_PROCID
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
+    CONFIG_PATH="$CONFIG_DIR/inference.toml"
 
+{% include 'llmd/_launch_rank.sh.j2' %}
 {%- if kv_offload %}
     ulimit -l unlimited
 {%- endif %}
@@ -314,33 +315,49 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     if [ "$RANK_IN_REPLICA" -eq 0 ]; then
         ROUTER_LOG="$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log"
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
-{%- if router_backend == "llm-d" %}
+{%- if router.type == "llm-d" %}
         echo "Starting llm-d router (EPP+Envoy, PD) on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG
         export PATH="$PROJECT_DIR/third_party/llmd/bin:$PATH"
         LLMD_DIR="$OUTPUT_DIR/logs/inference/llmd_${REPLICA_IDX}"
-        bash $PROJECT_DIR/scripts/write_llmd_configs.sh disaggregated $ROUTER_PORT "$LLMD_DIR" \
-            --decode-sidecar-port $DECODE_SIDECAR_PORT --dp-size $INFERENCE_DP_LOCAL $REPLICA_ROUTER_ARGS
+        mkdir -p "$LLMD_DIR"
+        cat > "$LLMD_DIR/epp.yaml" <<LLMD_EOF
+{% include 'llmd/epp_pd.yaml.j2' %}
+LLMD_EOF
+        cat > "$LLMD_DIR/envoy.yaml" <<LLMD_EOF
+{% include 'llmd/envoy.yaml.j2' %}
+LLMD_EOF
+{%- set ep_disaggregated = true %}
+{%- set ep_num_prefill = num_prefill_nodes %}
+{%- set ep_num_decode = num_decode_nodes %}
+{%- set ep_dp = dp_per_node %}
+{%- set ep_prefill_port = prefill_port %}
+{%- set ep_sidecar_port = router.decode_sidecar_port %}
+        cat > "$LLMD_DIR/endpoints.yaml" <<LLMD_EOF
+{% include 'llmd/endpoints.yaml.j2' %}
+LLMD_EOF
+        node=0
+        for ((p=0; p<NUM_PREFILL_NODES; p++)); do ip=$(getent hosts "${HOSTNAMES[$((REPLICA_BASE+p))]}" | awk "{print \$1}"); sed -i "s|__LLMD_ADDR_${node}__|${ip}|g" "$LLMD_DIR/endpoints.yaml"; node=$((node+1)); done
+        for ((d=0; d<NUM_DECODE_NODES; d++)); do ip=$(getent hosts "${HOSTNAMES[$((REPLICA_BASE+NUM_PREFILL_NODES+d))]}" | awk "{print \$1}"); sed -i "s|__LLMD_ADDR_${node}__|${ip}|g" "$LLMD_DIR/endpoints.yaml"; node=$((node+1)); done
         epp --pool-name prime-rl --pool-namespace slurm \
             --config-file "$LLMD_DIR/epp.yaml" \
             --grpc-port 9002 --grpc-health-port 9003 --metrics-port 9090 \
             --secure-serving=false --metrics-endpoint-auth=false --tracing=false \
             >> $ROUTER_LOG 2>&1 &
-        envoy -c "$LLMD_DIR/envoy.yaml" --concurrency 1 >> $ROUTER_LOG 2>&1 &
+        envoy -c "$LLMD_DIR/envoy.yaml" >> $ROUTER_LOG 2>&1 &
 {%- else %}
         echo "Starting vllm-router (PD) on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG
         vllm-router \
-            --policy consistent_hash \
+            --policy {{ router.policy }} \
             --vllm-pd-disaggregation \
             $REPLICA_ROUTER_ARGS \
             --host 0.0.0.0 \
             --port $ROUTER_PORT \
-            --intra-node-data-parallel-size {{ dp_per_node }} \
             --worker-startup-timeout-secs 4200 \
             >> $ROUTER_LOG 2>&1 &
 {%- endif %}
     fi
 
-{%- if router_backend == "llm-d" %}
+{%- if router.type == "llm-d" %}
     # pd-sidecar on each decode node: EPP routes decode → sidecar (DECODE_SIDECAR_PORT
     # + rank) → vLLM decode (DECODE_PORT + rank) after orchestrating remote prefill.
     if [ "$ROLE" = "decode" ] && [ "$ROLE_RANK" -eq 0 ]; then
@@ -357,67 +374,52 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             --data-parallel-size $INFERENCE_DP_LOCAL \
             >> $SIDECAR_LOG 2>&1 &
     fi
+{%- endif %}
 
-    # External LB: one vLLM API server per local DP rank (PORT + k), one GPU each,
+    # External-LB: one vLLM API server per local DP rank (PORT + k), one GPU each,
     # unique NIXL side-channel port. Each role is its own external-LB DP group rooted
-    # on the role-replica head (HEAD_HOST); rank 0 hosts the DP coordinator.
+    # on the role-replica head (HEAD_HOST). Same launch for both routers.
     if [ "$ROLE_RANK" -eq 0 ]; then DP_ADDR=$LOCAL_IP; else DP_ADDR=$HEAD_HOST; fi
     for k in $(seq 0 $((INFERENCE_DP_LOCAL - 1))); do
-        RANK_PORT=$((PORT + k))
         GLOBAL_RANK=$((START_RANK + k))
         RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK, \"kv_transfer_config\": $KV_CFG_TO_USE, $ROLE_EXTRA}"
-        CUDA_VISIBLE_DEVICES=$(seq -s, $((k * INFERENCE_TP)) $((k * INFERENCE_TP + INFERENCE_TP - 1))) \
-        VLLM_NIXL_SIDE_CHANNEL_PORT=$((5600 + k)) \
-        uv run inference \
-            @ $CONFIG_DIR/inference.toml \
-            --server.host 0.0.0.0 \
-            --server.port $RANK_PORT \
-            --parallel.dp $DP \
-            --data-parallel-size-local 1 \
-            --api-server-count 1 \
-            --data-parallel-rpc-port $INFERENCE_DATA_PARALLEL_RPC_PORT \
-            --vllm-extra "$RANK_EXTRA" \
-            2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}_rank_${k}.log &
+        launch_inference_rank "$((PORT + k))" "$(seq -s, $((k * INFERENCE_TP)) $((k * INFERENCE_TP + INFERENCE_TP - 1)))" "$DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}_rank_${k}.log"
     done
-{%- else %}
-    if [ "$DP" -gt 1 ]; then
-        if [ "$ROLE_RANK" -eq 0 ]; then
-            VLLM_EXTRA="{\"data_parallel_address\": \"$LOCAL_IP\", \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $KV_CFG_TO_USE, $ROLE_EXTRA}"
-        else
-            VLLM_EXTRA="{\"data_parallel_address\": \"$HEAD_HOST\", \"data_parallel_start_rank\": $START_RANK, \"data_parallel_hybrid_lb\": true, \"kv_transfer_config\": $KV_CFG_TO_USE, $ROLE_EXTRA}"
-        fi
-    else
-        VLLM_EXTRA="{\"kv_transfer_config\": $KV_CFG_TO_USE, $ROLE_EXTRA}"
-    fi
-    uv run inference \
-        @ $CONFIG_DIR/inference.toml \
-        --server.host 0.0.0.0 \
-        --server.port $PORT \
-        --parallel.dp $DP \
-        --data-parallel-rpc-port $INFERENCE_DATA_PARALLEL_RPC_PORT \
-        --vllm-extra "$VLLM_EXTRA" \
-        2>&1 | tee -a $OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}.log &
-{%- endif %}
 {%- else -%}
     # Start the router on the first node of each replica (external LB across per-rank endpoints)
     if [ "$RANK_IN_REPLICA" -eq 0 ]; then
         ROUTER_LOG="$OUTPUT_DIR/logs/inference/router_${REPLICA_IDX}.log"
         REPLICA_ROUTER_ARGS=$(echo "$ALL_ROUTER_ARGS" | cut -d"|" -f$((REPLICA_IDX + 1)))
-{%- if router_backend == "llm-d" %}
+{%- if router.type == "llm-d" %}
         echo "Starting llm-d router (EPP+Envoy) on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG
         export PATH="$PROJECT_DIR/third_party/llmd/bin:$PATH"
         LLMD_DIR="$OUTPUT_DIR/logs/inference/llmd_${REPLICA_IDX}"
-        bash $PROJECT_DIR/scripts/write_llmd_configs.sh multi_node $ROUTER_PORT "$LLMD_DIR" $REPLICA_ROUTER_ARGS
+        mkdir -p "$LLMD_DIR"
+        cat > "$LLMD_DIR/epp.yaml" <<LLMD_EOF
+{% include 'llmd/epp_estimate.yaml.j2' %}
+LLMD_EOF
+        cat > "$LLMD_DIR/envoy.yaml" <<LLMD_EOF
+{% include 'llmd/envoy.yaml.j2' %}
+LLMD_EOF
+{%- set ep_disaggregated = false %}
+{%- set ep_num_nodes = nodes_per_infer_replica %}
+{%- set ep_dp = dp_per_node %}
+{%- set ep_backend_port = backend_port %}
+        cat > "$LLMD_DIR/endpoints.yaml" <<LLMD_EOF
+{% include 'llmd/endpoints.yaml.j2' %}
+LLMD_EOF
+        read -ra HOSTNAMES <<< "$HOSTNAMES_STR"
+        for ((n=0; n<NODES_PER_INFER_REPLICA; n++)); do ip=$(getent hosts "${HOSTNAMES[$((REPLICA_IDX*NODES_PER_INFER_REPLICA+n))]}" | awk "{print \$1}"); sed -i "s|__LLMD_ADDR_${n}__|${ip}|g" "$LLMD_DIR/endpoints.yaml"; done
         epp --pool-name prime-rl --pool-namespace slurm \
             --config-file "$LLMD_DIR/epp.yaml" \
             --grpc-port 9002 --grpc-health-port 9003 --metrics-port 9090 \
             --secure-serving=false --metrics-endpoint-auth=false --tracing=false \
             >> $ROUTER_LOG 2>&1 &
-        envoy -c "$LLMD_DIR/envoy.yaml" --concurrency 1 >> $ROUTER_LOG 2>&1 &
+        envoy -c "$LLMD_DIR/envoy.yaml" >> $ROUTER_LOG 2>&1 &
 {%- else %}
         echo "Starting vllm-router on $LOCAL_IP:$ROUTER_PORT for replica $REPLICA_IDX" | tee $ROUTER_LOG
         vllm-router \
-            --policy consistent_hash \
+            --policy {{ router.policy }} \
             --worker-urls $REPLICA_ROUTER_ARGS \
             --host 0.0.0.0 \
             --port $ROUTER_PORT \
@@ -433,7 +435,6 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     REPLICA_HEAD_HOST="${HOSTNAMES[$((REPLICA_IDX * NODES_PER_INFER_REPLICA))]}"
     INFER_GROUP_DP=$((NODES_PER_INFER_REPLICA * INFERENCE_DP_LOCAL))
     for ((d=0; d<INFERENCE_DP_LOCAL; d++)); do
-        RANK_PORT=$((BACKEND_PORT + d))
         RANK_GPUS=$(seq -s, $((d * INFERENCE_TP)) $((d * INFERENCE_TP + INFERENCE_TP - 1)))
         RANK_LOG="$OUTPUT_DIR/logs/inference/node_${INFER_NODE_RANK}_rank${d}.log"
         if [ "$INFERENCE_ENABLE_EXPERT_PARALLEL" -eq 1 ]; then
@@ -445,27 +446,11 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
             else
                 DP_ADDR="$REPLICA_HEAD_HOST"
             fi
-            VLLM_EXTRA="{\"data_parallel_rank\": $GLOBAL_DP_RANK, \"data_parallel_address\": \"$DP_ADDR\"}"
-            CUDA_VISIBLE_DEVICES=$RANK_GPUS uv run inference \
-                @ $CONFIG_DIR/inference.toml \
-                --server.host 0.0.0.0 \
-                --server.port $RANK_PORT \
-                --parallel.dp $INFER_GROUP_DP \
-                --data-parallel-size-local 1 \
-                --data-parallel-rpc-port $INFERENCE_DATA_PARALLEL_RPC_PORT \
-                --api-server-count 1 \
-                --vllm-extra "$VLLM_EXTRA" \
-                2>&1 | tee -a $RANK_LOG &
+            RANK_EXTRA="{\"data_parallel_rank\": $GLOBAL_DP_RANK, \"data_parallel_address\": \"$DP_ADDR\"}"
+            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$INFER_GROUP_DP" "$INFERENCE_DATA_PARALLEL_RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG"
         else
             # Dense: fully independent single-engine servers (no DP linkage).
-            CUDA_VISIBLE_DEVICES=$RANK_GPUS uv run inference \
-                @ $CONFIG_DIR/inference.toml \
-                --server.host 0.0.0.0 \
-                --server.port $RANK_PORT \
-                --parallel.dp 1 \
-                --data-parallel-size-local 1 \
-                --api-server-count 1 \
-                2>&1 | tee -a $RANK_LOG &
+            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" 1 "" "" "" "$RANK_LOG"
         fi
     done
 {%- endif %}
@@ -522,7 +507,7 @@ REMAINING_PIDS=$(jobs -p)
 # in-flight trainer checkpoint on this node finish, and — because the task has
 # not exited yet — keeps --kill-on-bad-exit from reaping checkpointing trainers
 # on peer nodes. We then propagate the exit code so the allocation tears down. A
-# clean (zero) exit can't trip --kill-on-bad-exit, so we tear down immediately.
+# clean (zero) exit cannot trip --kill-on-bad-exit, so we tear down immediately.
 if [ "$EXIT_CODE" -ne 0 ]; then
     echo "[$(hostname)] component exited with code $EXIT_CODE - waiting up to {{ cleanup_grace_period }}s for in-flight checkpoints to flush before teardown"
     sleep {{ cleanup_grace_period }}

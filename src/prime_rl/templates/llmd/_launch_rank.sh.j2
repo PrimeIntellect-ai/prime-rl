@@ -1,0 +1,17 @@
+{# Shared external-LB vLLM launch helper, included once per template and called
+   from every per-rank launch site (multi-node and disaggregated, both routers).
+   One vLLM API server per DP rank, pinned to its GPU slice. #}
+# launch_inference_rank <port> <cuda_visible_devices> <dp> <rpc_port> <vllm_extra_json|""> <nixl_side_channel_port|""> <log_file>
+launch_inference_rank() {
+    local port="$1" gpus="$2" dp="$3" rpc="$4" extra="$5" nixl="$6" log="$7"
+    local -a cmd=(uv run inference @ "$CONFIG_PATH"
+        --server.host 0.0.0.0 --server.port "$port"
+        --parallel.dp "$dp" --data-parallel-size-local 1 --api-server-count 1)
+    [ -n "$rpc" ] && cmd+=(--data-parallel-rpc-port "$rpc")
+    [ -n "$extra" ] && cmd+=(--vllm-extra "$extra")
+    if [ -n "$nixl" ]; then
+        CUDA_VISIBLE_DEVICES="$gpus" VLLM_NIXL_SIDE_CHANNEL_PORT="$nixl" "${cmd[@]}" 2>&1 | tee -a "$log" &
+    else
+        CUDA_VISIBLE_DEVICES="$gpus" "${cmd[@]}" 2>&1 | tee -a "$log" &
+    fi
+}
