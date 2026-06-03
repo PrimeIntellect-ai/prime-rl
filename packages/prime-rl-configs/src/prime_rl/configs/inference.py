@@ -167,8 +167,26 @@ All2AllBackend = Literal[
 ]
 
 
+# Known llm-d EPP scorer plugins (used to guard the ``scorers`` map against typos).
+KNOWN_SCORERS = frozenset(
+    {
+        "prefix-cache-scorer",
+        "precise-prefix-cache-scorer",
+        "queue-scorer",
+        "kv-cache-utilization-scorer",
+        "active-request-scorer",
+        "load-aware-scorer",
+        "running-requests-size-scorer",
+        "token-load-scorer",
+        "latency-scorer",
+        "session-affinity-scorer",
+        "lora-affinity-scorer",
+    }
+)
+
+
 class VllmRouterConfig(BaseConfig):
-    """PrimeIntellect vllm-router fronting the per-rank (external-LB) endpoints."""
+    """PrimeIntellect vllm-router."""
 
     type: Literal["vllm-router"] = "vllm-router"
 
@@ -179,9 +197,57 @@ class VllmRouterConfig(BaseConfig):
     """Routing policy, e.g. ``consistent_hash`` or ``round_robin``."""
 
 
-# Discriminated on ``type`` so additional router backends can be added to the
-# union (a single member needs no discriminator yet).
-RouterConfig: TypeAlias = VllmRouterConfig
+class LlmdRouterConfig(BaseConfig):
+    """llm-d router backend (EPP + Envoy)."""
+
+    type: Literal["llm-d"] = "llm-d"
+
+    port: int = 8000
+    """Port the Envoy gateway listens on — becomes the client-facing router URL."""
+
+    scorers: dict[str, float] = {
+        "prefix-cache-scorer": 3.0,
+        "active-request-scorer": 2.0,
+    }
+    """EPP scorer name → weight, applied to every routing profile (before the per-profile P/D overrides). Defaults to prefix-cache affinity plus in-flight (active-request) load balancing. Unknown scorer names are rejected."""
+
+    prefill_scorer_overrides: dict[str, float] = {
+        "queue-scorer": 2.0,
+        "kv-cache-utilization-scorer": 2.0,
+    }
+    """P/D only: scorer → weight merged onto ``scorers`` for the prefill profile (a per-profile weight overrides the base)."""
+
+    decode_scorer_overrides: dict[str, float] = {}
+    """P/D only: scorer → weight merged onto ``scorers`` for the decode profile (a per-profile weight overrides the base); empty by default."""
+
+    non_cached_tokens: int = 16
+    """P/D only: requests with fewer than this many non-cached prompt tokens skip remote prefill and run decode-only."""
+
+    decode_sidecar_port: int = 8300
+    """P/D only: port the decode-side llm-d sidecar listens on."""
+
+    @property
+    def prefill_scorers(self) -> dict[str, float]:
+        """Effective prefill-profile scorers: ``scorers`` merged with ``prefill_scorer_overrides``."""
+        return {**self.scorers, **self.prefill_scorer_overrides}
+
+    @property
+    def decode_scorers(self) -> dict[str, float]:
+        """Effective decode-profile scorers: ``scorers`` merged with ``decode_scorer_overrides``."""
+        return {**self.scorers, **self.decode_scorer_overrides}
+
+    @model_validator(mode="after")
+    def validate_scorers(self):
+        unknown = (
+            set(self.scorers) | set(self.prefill_scorer_overrides) | set(self.decode_scorer_overrides)
+        ) - KNOWN_SCORERS
+        if unknown:
+            raise ValueError(f"Unknown llm-d scorer(s): {sorted(unknown)}. Known scorers: {sorted(KNOWN_SCORERS)}.")
+        return self
+
+
+# Discriminated on ``type`` so the launch path can pick the router backend.
+RouterConfig: TypeAlias = Annotated[VllmRouterConfig | LlmdRouterConfig, Field(discriminator="type")]
 
 
 class BaseInferenceDeploymentConfig(BaseConfig):
@@ -364,6 +430,18 @@ class InferenceConfig(BaseConfig):
     def validate_multi_node_requires_slurm(self):
         if self.deployment.type in ("multi_node", "disaggregated") and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node / disaggregated deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_llmd_no_routed_experts(self):
+        """Reject routed-expert return with the llm-d router (breaks P/D, unverified for multi-node)."""
+        router = getattr(self.deployment, "router", None)
+        if router is not None and router.type == "llm-d" and self.enable_return_routed_experts:
+            raise ValueError(
+                "The llm-d router backend does not support routed-expert return "
+                "(enable_return_routed_experts): it breaks P/D and is unverified for multi-node. "
+                "Use router type 'vllm-router' for routed-expert runs."
+            )
         return self
 
     @model_validator(mode="after")

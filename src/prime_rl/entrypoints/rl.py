@@ -12,6 +12,7 @@ from threading import Event, Thread
 import pynvml
 import tomli_w
 
+from prime_rl.configs.inference import VllmRouterConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import get_logger, setup_logger
@@ -371,7 +372,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             num_prefill_replicas=infer_deploy.num_prefill_replicas,
             num_decode_replicas=infer_deploy.num_decode_replicas,
             gpus_per_node=config.deployment.gpus_per_node,
-            router_port=infer_deploy.router.port,
+            router=infer_deploy.router,
             prefill_port=infer_deploy.prefill_port,
             decode_port=infer_deploy.decode_port,
             inference_tp=config.inference.parallel.tp,
@@ -396,7 +397,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, script_path: Path) ->
             nodes_per_infer_replica=config.deployment.num_infer_nodes,
             num_infer_replicas=config.deployment.num_infer_replicas,
             gpus_per_node=config.deployment.gpus_per_node,
-            router_port=config.inference.deployment.router.port if config.inference else 8000,
+            router=config.inference.deployment.router if config.inference else VllmRouterConfig(),
+            infer_nodes_per_replica=config.deployment.num_infer_nodes,
             backend_port=config.inference.deployment.backend_port if config.inference else 8100,
             inference_tp=config.inference.parallel.tp if config.inference else 1,
             inference_enable_expert_parallel=config.inference.enable_expert_parallel if config.inference else False,
