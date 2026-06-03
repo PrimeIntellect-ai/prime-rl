@@ -34,6 +34,12 @@ uv run rl @ examples/reverse_text/rl.toml --dry-run                             
 - Config: `RLConfig` (`packages/prime-rl-configs/src/prime_rl/configs/rl.py`)
 - Entrypoint: `src/prime_rl/entrypoints/rl.py`
 - SLURM: single- and multi-node
+- Environment packages: before launching a config with a non-core verifier env id,
+  verify the package imports under `uv run` (for example
+  `uv run python -c "import importlib.util; print(importlib.util.find_spec('rlm_swe'))"`).
+  If a local env exists under `deps/research-environments/environments/` but does not
+  import, add it to the root `pyproject.toml` env extra, workspace members, and
+  `[tool.uv.sources]`, then run `uv sync --all-extras`.
 
 ## `sft` — SFT training
 
