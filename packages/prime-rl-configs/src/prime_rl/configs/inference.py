@@ -167,9 +167,32 @@ All2AllBackend = Literal[
 ]
 
 
+class VllmRouterConfig(BaseConfig):
+    """PrimeIntellect vllm-router fronting the per-rank (external-LB) endpoints."""
+
+    type: Literal["vllm-router"] = "vllm-router"
+
+    port: int = 8000
+    """Port the router listens on — becomes the client-facing router URL."""
+
+    policy: str = "consistent_hash"
+    """Routing policy, e.g. ``consistent_hash`` or ``round_robin``."""
+
+
+# Discriminated on ``type`` so additional router backends can be added to the
+# union (a single member needs no discriminator yet).
+RouterConfig: TypeAlias = VllmRouterConfig
+
+
 class BaseInferenceDeploymentConfig(BaseConfig):
     gpus_per_node: int = 8
     """GPUs per node."""
+
+    backend_port: int = 8100
+    """Port for the per-rank vLLM backend instances."""
+
+    router: RouterConfig = VllmRouterConfig()
+    """Router fronting the per-rank endpoints."""
 
 
 class SingleNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
@@ -182,15 +205,6 @@ class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
 
     num_nodes: int = Field(2, ge=1)
     """Inference nodes."""
-
-    router_port: int = 8000
-    """Port for the vllm-router."""
-
-    backend_port: int = 8100
-    """Port for vLLM backend instances."""
-
-    router_policy: str = "consistent_hash"
-    """vllm-router routing policy (e.g. ``consistent_hash``, ``round_robin``)."""
 
 
 # Disaggregated prefill/decode inference. Each replica is split into separate
@@ -214,17 +228,11 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     num_decode_replicas: int = Field(1, ge=1)
     """Independent decode vLLM instances. Must evenly divide ``num_decode_nodes``."""
 
-    router_port: int = 8000
-    """Port for the vllm-router on each replica."""
-
     prefill_port: int = 8100
     """Port for prefill vLLM instances."""
 
     decode_port: int = 8200
     """Port for decode vLLM instances."""
-
-    router_policy: str = "consistent_hash"
-    """vllm-router routing policy (e.g. ``consistent_hash``, ``round_robin``)."""
 
     prefill_env_overrides: dict[str, str] = {}
     """Extra environment variables exported only on prefill nodes."""
