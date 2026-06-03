@@ -26,6 +26,7 @@ from prime_rl.utils.cp import (
     shard_for_cp,
 )
 from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.vlm import get_packed_mm_disabled_reasons, get_packed_mm_position_strategy
 from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
@@ -158,6 +159,20 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
 
+    mm_position_strategy = get_packed_mm_position_strategy(model)
+    mm_pack_reasons = get_packed_mm_disabled_reasons(
+        model,
+        enabled=config.pack_multimodal,
+        attn_impl=config.model.attn,
+        cp_enabled=parallel_dims.cp_enabled,
+        cp_size=config.model.cp,
+    )
+    pack_multimodal = not mm_pack_reasons
+    if pack_multimodal:
+        logger.info("Multimodal packing enabled (position_strategy=pass_1d)")
+    elif config.model.vlm is not None or mm_position_strategy != "none":
+        logger.info(f"Multimodal packing disabled ({', '.join(mm_pack_reasons)})")
+
     # Set up the loss function
     logger.info(f"Setting up loss function ({config.loss})")
     loss_fns = setup_loss_fns(config.loss)
@@ -255,6 +270,7 @@ def train(config: TrainerConfig):
             # defer is on and renderer_config is not None, so an explicit
             # renderer=None still opts out (and a text-only run never gets mm_refs).
             renderer_config=config.renderer,
+            pack_multimodal=pack_multimodal,
         )
 
     token_exporter = setup_token_exporter(config, parallel_dims, world, logger)

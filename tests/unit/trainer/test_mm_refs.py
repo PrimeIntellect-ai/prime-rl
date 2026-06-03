@@ -16,7 +16,7 @@ from renderers.base import MultiModalData
 
 from prime_rl.orchestrator.trajectories import _collect_mm_refs, _pack_mm_kwargs_from_renderer, _reconstruct_mm_pixels
 from prime_rl.trainer.batch import _is_multimodal_sample
-from prime_rl.transport.types import MicroBatch, MMRefs, TrainingSample
+from prime_rl.transport.types import EncodedTensor, MicroBatch, MMRefs, TrainingSample
 from prime_rl.utils.mm import (
     build_image_messages,
     encode_mm_kwargs,
@@ -230,6 +230,243 @@ def _text_sample(env: str = "e", n_prompt: int = 4, n_comp: int = 4):
         advantage=0.0,
         reward=0.0,
     )
+
+
+def _encoded_tensor(tensor: torch.Tensor) -> EncodedTensor:
+    arr = tensor.detach().cpu().numpy()
+    return EncodedTensor(dtype=str(arr.dtype), shape=list(arr.shape), data=arr.tobytes())
+
+
+def _mm_kwargs_sample(pixel_values: torch.Tensor, env: str = "e", n_prompt: int = 2, n_comp: int = 2):
+    return TrainingSample(
+        prompt_ids=list(range(n_prompt)),
+        prompt_mask=[False] * n_prompt,
+        completion_ids=list(range(n_comp)),
+        completion_mask=[True] * n_comp,
+        completion_logprobs=[0.0] * n_comp,
+        completion_temperatures=[1.0] * n_comp,
+        env_name=env,
+        advantage=0.0,
+        reward=0.0,
+        mm_token_type_ids=[1] * (n_prompt + n_comp),
+        mm_kwargs={
+            "pixel_values": _encoded_tensor(pixel_values),
+            "image_grid_thw": _encoded_tensor(torch.tensor([[1, 1, pixel_values.shape[0]]], dtype=torch.int64)),
+        },
+    )
+
+
+def test_prepare_batch_packs_mm_refs_when_enabled_preserving_order_and_boundaries():
+    """Deferred refs pack by token length, while descriptors/uris concatenate in
+    the same order and position_ids keep per-sample resets."""
+    from prime_rl.trainer.batch import prepare_batch
+
+    uri = "file:///dup.jpg"
+    rollouts = [
+        _mm_sample(uri, n_prompt=2, n_comp=2),
+        _mm_sample(uri, n_prompt=1, n_comp=3),
+        _text_sample(n_prompt=2, n_comp=2),
+    ]
+
+    grid = prepare_batch(
+        rollouts,
+        seq_len=16,
+        num_train_workers=1,
+        idxs=[0, 0, 0],
+        num_loras=1,
+        pack_multimodal=True,
+    )
+    flat = grid[0]
+    mm_mbs = [mb for mb in flat if _is_multimodal_sample(mb)]
+    text_mbs = [mb for mb in flat if not _is_multimodal_sample(mb)]
+
+    assert len(mm_mbs) == 1
+    assert len(text_mbs) == 1
+    mb = mm_mbs[0]
+    assert mb.mm_refs is not None and mb.mm_kwargs is None
+    assert mb.input_ids == [0, 1, 0, 1, 0, 0, 1, 2]
+    assert mb.position_ids == [0, 1, 2, 3, 0, 1, 2, 3]
+    assert mb.mm_token_type_ids == [1] * len(mb.input_ids)
+    assert mb.mm_refs.uris == [uri, uri]
+    assert mb.mm_refs.descriptor["mm_hashes"]["image"] == [_uri_hash(uri), _uri_hash(uri)]
+    assert len(mb.mm_refs.descriptor["mm_items"]["image"]) == 2
+    assert mb.lora_num_tokens == [len(mb.input_ids)]
+
+
+def test_packed_mm_refs_filesystem_transport_materializes_stitched_tensors(tmp_path):
+    """End-to-end trainer mechanics: prepare packed MM refs, write/read them
+    through the real filesystem microbatch transport, then materialize them in
+    DataLoader into the model kwargs consumed by forward."""
+    from types import SimpleNamespace
+
+    from prime_rl.trainer.batch import prepare_batch
+    from prime_rl.trainer.rl.data import DataLoader
+    from prime_rl.transport.filesystem import FileSystemMicroBatchReceiver, FileSystemMicroBatchSender
+
+    uri0, uri1 = "file:///packed-a.jpg", "file:///packed-b.jpg"
+    rollouts = [
+        _mm_sample(uri0, n_prompt=2, n_comp=2),
+        _mm_sample(uri1, n_prompt=2, n_comp=2),
+    ]
+    grid = prepare_batch(
+        rollouts,
+        seq_len=16,
+        num_train_workers=2,
+        idxs=[0, 0],
+        num_loras=1,
+        pack_multimodal=True,
+    )
+
+    assert len(grid) == 2
+    assert len(grid[0]) == len(grid[1]) == 1
+    assert any(grid[0][0].loss_mask)
+    assert not any(grid[1][0].loss_mask)  # modality-preserving dummy for rank alignment
+
+    sender = FileSystemMicroBatchSender(tmp_path, data_world_size=2, current_step=0)
+    sender.send(grid)
+    rank0_mb = FileSystemMicroBatchReceiver(tmp_path, data_rank=0, current_step=0).receive()[0]
+    rank1_mb = FileSystemMicroBatchReceiver(tmp_path, data_rank=1, current_step=0).receive()[0]
+
+    for mb, has_loss in ((rank0_mb, True), (rank1_mb, False)):
+        assert mb.mm_refs is not None and mb.mm_kwargs is None
+        assert mb.mm_refs.uris == [uri0, uri1]
+        assert mb.mm_refs.descriptor["mm_hashes"]["image"] == [_uri_hash(uri0), _uri_hash(uri1)]
+        assert len(mb.mm_refs.descriptor["mm_items"]["image"]) == 2
+        assert mb.position_ids == [0, 1, 2, 3, 0, 1, 2, 3]
+        assert any(mb.loss_mask) is has_loss
+
+    renderer = _StubRenderer(
+        {
+            _uri_hash(uri0): torch.tensor([[10.0, 11.0]], dtype=torch.float32),
+            _uri_hash(uri1): torch.tensor([[20.0, 21.0]], dtype=torch.float32),
+        }
+    )
+
+    loader = DataLoader.__new__(DataLoader)
+    loader.multi_run_manager = SimpleNamespace(max_runs=1)
+    loader._renderer = renderer
+    loader.last_mm_materialize_time = 0.0
+    loader.last_mm_images_materialized = 0
+
+    rank0 = DataLoader._micro_batch_to_tensor(loader, rank0_mb)
+    rank1 = DataLoader._micro_batch_to_tensor(loader, rank1_mb)
+
+    for tensor_batch, has_loss in ((rank0, True), (rank1, False)):
+        torch.testing.assert_close(tensor_batch["position_ids"], torch.tensor([[0, 1, 2, 3, 0, 1, 2, 3]]))
+        torch.testing.assert_close(tensor_batch["mm_token_type_ids"], torch.ones((1, 8), dtype=torch.long))
+        assert bool(tensor_batch["loss_mask"].any().item()) is has_loss
+        assert tensor_batch["mm_kwargs"] is not None
+        torch.testing.assert_close(
+            tensor_batch["mm_kwargs"]["pixel_values"],
+            torch.tensor([[10.0, 11.0], [20.0, 21.0]], dtype=torch.float32),
+        )
+        torch.testing.assert_close(
+            tensor_batch["mm_kwargs"]["image_grid_thw"],
+            torch.tensor([[1, 2, 3], [1, 2, 3]], dtype=torch.int64),
+        )
+
+    assert loader.last_mm_images_materialized == 4  # both aligned ranks materialized two image refs
+
+
+def test_prepare_batch_does_not_pack_mm_refs_with_text_or_other_lora():
+    from prime_rl.trainer.batch import prepare_batch
+
+    rollouts = [
+        _mm_sample("file:///run0.jpg", n_prompt=2, n_comp=2),
+        _mm_sample("file:///run1.jpg", n_prompt=2, n_comp=2),
+        _text_sample(n_prompt=2, n_comp=2),
+    ]
+    grid = prepare_batch(
+        rollouts,
+        seq_len=16,
+        num_train_workers=1,
+        idxs=[0, 1, 0],
+        num_loras=2,
+        pack_multimodal=True,
+    )
+
+    mm_mbs = [mb for mb in grid[0] if _is_multimodal_sample(mb)]
+    text_mbs = [mb for mb in grid[0] if not _is_multimodal_sample(mb)]
+    assert len(mm_mbs) == 2
+    assert len(text_mbs) == 1
+    assert [mb.lora_num_tokens for mb in mm_mbs] == [[4, 0], [0, 4]]
+
+
+def test_prepare_batch_does_not_pack_mm_refs_with_eager_mm_kwargs():
+    from prime_rl.trainer.batch import prepare_batch
+
+    rollouts = [
+        _mm_sample("file:///refs.jpg", n_prompt=2, n_comp=2),
+        _mm_kwargs_sample(torch.tensor([[1.0, 2.0]], dtype=torch.float32)),
+    ]
+    grid = prepare_batch(
+        rollouts,
+        seq_len=16,
+        num_train_workers=1,
+        idxs=[0, 0],
+        num_loras=1,
+        pack_multimodal=True,
+    )
+
+    mm_mbs = [mb for mb in grid[0] if _is_multimodal_sample(mb)]
+    assert len(mm_mbs) == 2
+    assert {("refs" if mb.mm_refs is not None else "kwargs") for mb in mm_mbs} == {"refs", "kwargs"}
+
+
+def test_prepare_batch_packs_eager_mm_kwargs_when_enabled():
+    from prime_rl.trainer.batch import prepare_batch
+
+    rollouts = [
+        _mm_kwargs_sample(torch.tensor([[1.0, 2.0]], dtype=torch.float32)),
+        _mm_kwargs_sample(torch.tensor([[3.0, 4.0]], dtype=torch.float32)),
+    ]
+    grid = prepare_batch(
+        rollouts,
+        seq_len=16,
+        num_train_workers=1,
+        idxs=[0, 0],
+        num_loras=1,
+        pack_multimodal=True,
+    )
+
+    mb = grid[0][0]
+    assert mb.mm_kwargs is not None and mb.mm_refs is None
+    pv = mb.mm_kwargs["pixel_values"]
+    assert pv.shape == [2, 2]
+    pixel_values = torch.frombuffer(bytearray(pv.data), dtype=torch.float32).reshape(pv.shape)
+    torch.testing.assert_close(pixel_values, torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
+    assert mb.position_ids == [0, 1, 2, 3, 0, 1, 2, 3]
+
+
+def test_prepare_batch_rejects_incompatible_eager_mm_kwargs():
+    from prime_rl.trainer.batch import prepare_batch
+
+    with pytest.raises(ValueError, match="incompatible shapes"):
+        prepare_batch(
+            [
+                _mm_kwargs_sample(torch.tensor([[1.0, 2.0]], dtype=torch.float32)),
+                _mm_kwargs_sample(torch.tensor([[3.0, 4.0, 5.0]], dtype=torch.float32)),
+            ],
+            seq_len=16,
+            num_train_workers=1,
+            idxs=[0, 0],
+            num_loras=1,
+            pack_multimodal=True,
+        )
+
+
+def test_prepare_batch_rejects_truncated_multimodal_sample():
+    from prime_rl.trainer.batch import prepare_batch
+
+    with pytest.raises(ValueError, match="Cannot truncate multimodal"):
+        prepare_batch(
+            [_mm_sample("file:///too-long.jpg", n_prompt=2, n_comp=2)],
+            seq_len=3,
+            num_train_workers=1,
+            idxs=[0],
+            num_loras=1,
+            pack_multimodal=True,
+        )
 
 
 def test_multirun_packing_preserves_mm_refs_modality_and_run_tagging():

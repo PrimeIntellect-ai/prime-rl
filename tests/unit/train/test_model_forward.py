@@ -81,3 +81,22 @@ def test_forward_keeps_position_ids_for_non_mrope_vlm():
 
     assert model.kwargs is not None
     torch.testing.assert_close(model.kwargs["position_ids"], position_ids)
+
+
+def test_forward_keeps_position_ids_for_pass_1d_mrope_vlm():
+    """Custom Prime VLMs with packed 1D position support keep position_ids even
+    when Qwen-style image_grid_thw is present."""
+    model = _CaptureModel(SimpleNamespace(model_type="qwen3_5_moe"))
+    model.packed_mm_position_strategy = "pass_1d"
+    input_ids = torch.tensor([[1, 10, 10, 2, 20, 20]])
+    position_ids = torch.tensor([[0, 1, 2, 0, 1, 2]])
+
+    forward(
+        model,
+        input_ids,
+        position_ids,
+        mm_kwargs={"pixel_values": torch.ones(4, 3), "image_grid_thw": torch.tensor([[1, 1, 2], [1, 1, 2]])},
+    )
+
+    assert model.kwargs is not None
+    torch.testing.assert_close(model.kwargs["position_ids"], position_ids)

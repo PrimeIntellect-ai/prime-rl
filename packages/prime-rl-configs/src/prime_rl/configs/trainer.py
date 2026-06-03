@@ -566,6 +566,9 @@ class TrainerConfig(BaseConfig):
     defer_mm_materialization: bool = True
     """Defer multimodal pixel materialization from the orchestrator to the trainer. When True, the orchestrator ships lightweight image references (``mm_refs``) and the trainer materializes pixels in its data loader. Must match the orchestrator's setting; requires ``renderer`` to be set for VLM runs. A no-op for text-only runs (no ``mm_refs`` ever arrive)."""
 
+    pack_multimodal: bool = True
+    """Pack multimodal samples together when the active model path supports packed multimodal position boundaries. Default-on, but the trainer gates it off for unsupported VLM/HF MRoPE paths, non-varlen attention, or context parallelism."""
+
     renderer: RendererConfig | None = AutoRendererConfig()
     """Typed renderer config (``renderers.RendererConfig`` discriminated union), mirroring the orchestrator's. Auto-resolves from the model by default so VLM defer runs work without restating it; only used by VLM runs (text-only ignores it)."""
 

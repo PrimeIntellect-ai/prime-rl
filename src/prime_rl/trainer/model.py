@@ -55,7 +55,12 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sequence import get_cu_seqlens_from_position_ids
 from prime_rl.utils.utils import format_time
-from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
+from prime_rl.utils.vlm import (
+    get_language_model,
+    get_packed_mm_position_strategy,
+    get_vision_encoder,
+    is_vlm_architecture,
+)
 
 
 def pre_download_model(model_name: str) -> None:
@@ -1144,11 +1149,11 @@ def forward(
         kwargs.update(mm_kwargs)
         if mm_token_type_ids is not None:
             kwargs["mm_token_type_ids"] = mm_token_type_ids
-        # ``position_ids`` for MRoPE families: Qwen3-VL's HF forward
-        # recomputes 3D positions from ``image_grid_thw`` and breaks if
-        # given the trainer's pre-computed 1D ``position_ids``. Detect
-        # via the mm_kwargs shape so we don't enumerate model_types.
-        if "image_grid_thw" not in mm_kwargs:
+        # HF Qwen-style MRoPE models must compute 3D/4-row multimodal
+        # positions from ``image_grid_thw`` internally. Custom Prime VLMs with
+        # ``pass_1d`` consume reset 1D positions and derive packed boundaries
+        # from them, so they must receive trainer ``position_ids``.
+        if "image_grid_thw" not in mm_kwargs or get_packed_mm_position_strategy(model) == "pass_1d":
             kwargs["position_ids"] = position_ids
     else:
         kwargs["position_ids"] = position_ids

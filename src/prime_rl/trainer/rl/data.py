@@ -168,6 +168,7 @@ class DataLoader:
         config: TransportConfig,
         defer_mm_materialization: bool = False,
         renderer_config: RendererConfig | None = None,
+        pack_multimodal: bool = False,
     ):
         self.world = get_world()
 
@@ -179,6 +180,7 @@ class DataLoader:
                 transport_config=config,
                 pad_to_multiple_of=pad_to_multiple_of,
                 start_step=start_step,
+                pack_multimodal=pack_multimodal,
             )
 
         non_dp_world_size = self.world.world_size // dp_world_size

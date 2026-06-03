@@ -132,7 +132,7 @@ def _mm_sample(uri: str) -> TrainingSample:
     )
 
 
-def _packer_with_two_runs(tmp_path, monkeypatch, dp_world_size, seq_len):
+def _packer_with_two_runs(tmp_path, monkeypatch, dp_world_size, seq_len, pack_multimodal: bool = False):
     """Set up a MultiPacker over two discovered runs; capture sent grids."""
     reset_world()
     runs._MULTI_RUN_MANAGER = None
@@ -163,6 +163,7 @@ def _packer_with_two_runs(tmp_path, monkeypatch, dp_world_size, seq_len):
         tokenizer=None,
         config=FileSystemTransportConfig(),
         start_step=0,
+        pack_multimodal=pack_multimodal,
     )
     return manager, packer, sent
 
@@ -223,3 +224,30 @@ def test_multipacker_pack_mm_padding_is_zero_loss(tmp_path, monkeypatch):
     assert dummies, "expected a zero-loss dummy MM padding microbatch"
     for d in dummies:
         assert all(a == 0.0 for a in d.advantages)
+
+
+def test_multipacker_pack_packs_mm_refs_within_each_run_when_enabled(tmp_path, monkeypatch):
+    """MultiPacker threads the MM-packing capability into per-run prepare_batch
+    calls, so refs pack within a run but never across runs."""
+    from prime_rl.trainer.batch import _is_multimodal_sample
+
+    manager, packer, sent = _packer_with_two_runs(
+        tmp_path, monkeypatch, dp_world_size=2, seq_len=4, pack_multimodal=True
+    )
+    a, b = manager.id_2_idx["run_a"], manager.id_2_idx["run_b"]
+    for idx, prefix in ((a, "a"), (b, "b")):
+        packer.buffers[idx].append((_mm_sample(f"{prefix}0"), 0))
+        packer.buffers[idx].append((_mm_sample(f"{prefix}1"), 0))
+
+    packer.pack()
+    assert sent
+    grid = sent[-1]
+    real_mm_mbs = [mb for rank in grid for mb in rank if _is_multimodal_sample(mb) and any(mb.loss_mask)]
+
+    assert len(real_mm_mbs) == 2
+    assert sorted(mb.mm_refs.uris for mb in real_mm_mbs) == [["a0", "a1"], ["b0", "b1"]]
+    for mb in real_mm_mbs:
+        assert len(mb.input_ids) == 4
+        assert mb.position_ids == [0, 1, 0, 1]
+        tagged = [i for i, n in enumerate(mb.lora_num_tokens) if n > 0]
+        assert len(tagged) == 1
