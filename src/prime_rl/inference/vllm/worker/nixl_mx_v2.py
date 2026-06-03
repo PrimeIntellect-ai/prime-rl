@@ -161,6 +161,8 @@ class NIXLMxV2WeightUpdateWorker(Worker):
             Per-cycle metrics dict (bytes / Gbps / discovery_seconds /
             rdma_seconds) suitable for emission to dashboards.
         """
+        import time as _time
+
         from modelexpress.vllm_weight_transfer import MxUpdateInfo
 
         update_info = MxUpdateInfo(
@@ -170,7 +172,46 @@ class NIXLMxV2WeightUpdateWorker(Worker):
             timeout_seconds=timeout_seconds,
             same_rank_only=same_rank_only,
         )
-        self._engine.receive_weights(update_info, load_weights=self._load_weights_batch)
+
+        # Async-RL synchronization: orchestrator polls /update_weights_v2 with
+        # step=N right after a training cycle, but the trainer publishes
+        # version=N asynchronously (it has to finish optimizer.step + the
+        # publisher's add_tensor loop). If the engine's discovery fires
+        # before the trainer has marked version=N READY in the MX catalog,
+        # `receive_weights` raises `no source matches filters`.
+        #
+        # Wrap the engine call in a bounded retry loop so the synchronization
+        # gap is absorbed at the worker layer (no orchestrator changes needed
+        # and the failure surface stays at this layer's known timeout).
+        retry_deadline = _time.monotonic() + timeout_seconds
+        backoff = 0.5
+        attempts = 0
+        last_err: Exception | None = None
+        while True:
+            attempts += 1
+            try:
+                self._engine.receive_weights(
+                    update_info, load_weights=self._load_weights_batch
+                )
+                break
+            except Exception as e:  # noqa: BLE001 — engine may raise plain RuntimeError
+                msg = str(e)
+                last_err = e
+                # Only retry on "no source matches" / discovery-empty errors;
+                # propagate any other (e.g. NIXL transport failure) immediately.
+                transient = (
+                    "no source matches" in msg
+                    or "NoSourceMatchesFilterError" in msg
+                    or "no matching source" in msg
+                )
+                if not transient or _time.monotonic() >= retry_deadline:
+                    raise
+                logger.info(
+                    f"[mx_v2] receive_weights attempt #{attempts} for step={step}: "
+                    f"transient miss ({msg[:80]!r}); retrying in {backoff:.1f}s"
+                )
+                _time.sleep(backoff)
+                backoff = min(backoff * 1.6, 8.0)
 
         # Post-load housekeeping: same as PR #2389's path.
         torch.cuda.synchronize(self.device)

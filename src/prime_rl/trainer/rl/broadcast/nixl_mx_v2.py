@@ -143,10 +143,15 @@ class NIXLMxV2WeightBroadcast(WeightBroadcast):
             dtype=str(self._hf_config.torch_dtype).replace("torch.", ""),
         )
         self.is_initialized = True
+        # `select_default_conversion` may return either a registered conversion
+        # object (with .compile_target + .compile_metadata) on the newer
+        # conversion registry, OR a plain string ('bf16_cast', 'fp8_pack', ...)
+        # on older registries. Use getattr so we degrade gracefully.
+        conversion_target = getattr(self._conversion, "compile_target", str(self._conversion))
         self.logger.info(
             f"[mx_v2] publisher initialized: rank={self.world.rank} "
             f"layout={world_layout.encode()} "
-            f"compile_target={self._conversion.compile_target}"
+            f"compile_target={conversion_target}"
         )
 
     # ------------------------------------------------------------------
@@ -192,9 +197,11 @@ class NIXLMxV2WeightBroadcast(WeightBroadcast):
         # 2. Fill slots from the live model state-dict via the conversion.
         #    This is where FP8 packing + fusion happens; same code path
         #    as PR #2389. We do NOT change the kernel.
+        #    GatheredSlot's API takes only the state_dict; the conversion
+        #    is baked into the slot at `from_spec` creation time.
         state_dict = model.state_dict()
         for slot in self._model_slots:
-            slot.fill_from(state_dict, self._conversion)
+            slot.convert(state_dict)
 
         # 3. Register every slot tensor with the v2 publisher, tagged with
         #    compile_target + compile_metadata so receivers can refuse
