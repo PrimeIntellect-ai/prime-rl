@@ -57,6 +57,18 @@ COPY --chown=appuser:appuser src/prime_rl/utils/client.py                       
 COPY --chown=appuser:appuser src/prime_rl/orchestrator/orchestrator.py                     /app/src/prime_rl/orchestrator/orchestrator.py
 COPY --chown=appuser:appuser src/prime_rl/orchestrator/scheduler.py                        /app/src/prime_rl/orchestrator/scheduler.py
 COPY --chown=appuser:appuser packages/prime-rl-configs/src/prime_rl/configs/trainer.py     /app/packages/prime-rl-configs/src/prime_rl/configs/trainer.py
+COPY --chown=appuser:appuser packages/prime-rl-configs/src/prime_rl/configs/orchestrator.py /app/packages/prime-rl-configs/src/prime_rl/configs/orchestrator.py
+COPY --chown=appuser:appuser packages/prime-rl-configs/src/prime_rl/configs/inference.py    /app/packages/prime-rl-configs/src/prime_rl/configs/inference.py
+
+# prime-rl-configs is INSTALLED into /app/.venv/.../site-packages at image
+# build time (per the original Dockerfile.cuda's `uv sync`). The COPYs above
+# only update the source tree; the runtime imports the installed copy.
+# Mirror the three updated config files into the venv site-packages so the
+# new MxV2WeightBroadcastConfig + extended Literal types are actually visible
+# at import time.
+COPY --chown=appuser:appuser packages/prime-rl-configs/src/prime_rl/configs/trainer.py     /app/.venv/lib/python3.12/site-packages/prime_rl/configs/trainer.py
+COPY --chown=appuser:appuser packages/prime-rl-configs/src/prime_rl/configs/orchestrator.py /app/.venv/lib/python3.12/site-packages/prime_rl/configs/orchestrator.py
+COPY --chown=appuser:appuser packages/prime-rl-configs/src/prime_rl/configs/inference.py    /app/.venv/lib/python3.12/site-packages/prime_rl/configs/inference.py
 
 # ────────────────────────────────────────────────────────────────────
 # 3. Smoke-test that the v2 path imports cleanly

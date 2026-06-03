@@ -557,8 +557,42 @@ class NIXLMxWeightBroadcastConfig(BaseConfig):
     """Total inference GPUs across all servers."""
 
 
+class MxV2WeightBroadcastConfig(BaseConfig):
+    """Orchestrator-side config for ``weight_broadcast.type = "mx_v2"``.
+
+    Mirrors the trainer-side ``MxV2WeightBroadcastConfig`` in
+    ``configs/trainer.py``. The orchestrator reads ``host`` / ``port`` to
+    init the v2 receivers via ``/init_nixl_mx_v2`` and uses the Phase 3b
+    filter fields to drive per-cycle ``/update_weights_v2`` calls.
+    """
+
+    type: Literal["mx_v2"] = "mx_v2"
+
+    host: str = "localhost"
+    port: int = 29501
+    timeout: int = 1200
+
+    inference_world_size: int = Field(1, ge=1)
+
+    # ─── Discovery (Phase 2) ────────────────────────────────────────────
+    same_rank_only: bool = True
+    """GB200/EFA multi-NIC fabrics: receivers pull from same-rank trainer only."""
+
+    # ─── Layout metadata (Phase 3b) ─────────────────────────────────────
+    compile_target_filter: list[str] | None = None
+    """Receiver-side whitelist of acceptable compile_target strings.
+    ``None`` = back-compat (accept anything)."""
+
+    # ─── Pipeline replication (TensorHub pattern) ───────────────────────
+    publish_self_as_replica: bool = True
+    """Receivers republish as sources after refit for tree fan-out."""
+
+
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLMxWeightBroadcastConfig,
+    FileSystemWeightBroadcastConfig
+    | NCCLWeightBroadcastConfig
+    | NIXLMxWeightBroadcastConfig
+    | MxV2WeightBroadcastConfig,
     Field(discriminator="type"),
 ]
 
