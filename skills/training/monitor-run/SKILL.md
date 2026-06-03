@@ -149,8 +149,6 @@ jq '.reward' {output_dir}/rollouts/step_42/train_rollouts.jsonl
 
 A few warnings are normal. Escalate when errors are persistent, growing, or hit a large fraction of rollouts.
 
-**Qwen3.5 high `mismatch_kl` (~0.03+ target ~0.001)**: first check whether the initial KL is low but grows right after weight updates. If so, inspect inference logs for vLLM reload warnings like `Parameter language_model.language_model... not found in params_dict, skip loading` or `Failed to load weights`; this means the live broadcast keys are wrong and inference is not receiving updated Qwen3.5 language-model weights. Qwen3.5 VLM checkpoints already use `model.language_model...` HF hub naming, so use a Transformers pin that includes the Qwen3.5 VLM conversion mapping fix and the flash-attention `s_aux` null guard (v5.6.2 or newer; v5.6.0 has the mapping fix but crashes in trainer full-attention layers) before changing PrimeRL broadcast code. If skipped-weight warnings are absent and CP is enabled, then suspect trainer-vLLM logprob drift in the hybrid linear-attention path: try `trainer.model.cp = 1` in a fresh output directory, and if CP must be used, verify the custom Qwen3.5 DeltaNet path threads global packed `cu_seqlens` into FLA CP and uses `fla.modules.conv.cp.causal_conv1d_cp` for the pre-DeltaNet causal convolution.
-
 - **Env workers**: exceptions in env code, timeouts, sandbox errors, OOM kills (most common source — runs user code).
 - **Orchestrator**: empty/errored rollout spikes, weight-broadcast failures, checkpoint errors.
 - **Trainer**: NCCL/CUDA errors, OOM, NaN loss or gradients.
