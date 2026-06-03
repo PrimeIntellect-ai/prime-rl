@@ -285,18 +285,7 @@ class RLConfig(BaseConfig):
         are constructed. See ``validation.propagate_shared_fields`` for the full
         propagation table, transforms, and the mutex rule.
         """
-        data = propagate_shared_fields(data)
-        if not isinstance(data, dict):
-            return data
-        inference = data.get("inference")
-        deployment = data.get("deployment") or {}
-        # A multi-node RL run drives a multi-node inference deployment under the same
-        # SLURM allocation, so the nested inference inherits the multi-node shape
-        # (P/D specializes it to "disaggregated") and [slurm]; the router lives there.
-        if isinstance(inference, dict) and deployment.get("type") == "multi_node":
-            inference.setdefault("deployment", {}).setdefault("type", "multi_node")
-            inference.setdefault("slurm", data.get("slurm"))
-        return data
+        return propagate_shared_fields(data)
 
     ### Validate shared configs (after sub-config construction)
 

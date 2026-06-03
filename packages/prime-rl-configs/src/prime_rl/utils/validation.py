@@ -155,6 +155,16 @@ def propagate_shared_fields(data: Any) -> Any:
     if trainer_chat_template is not None:
         fill("inference.model.chat_template", trainer_chat_template)
 
+    # [slurm] / [deployment] → inference. A multi-node RL run drives a multi-node
+    # inference deployment under the same SLURM allocation, so the nested inference
+    # inherits [slurm] and the multi-node deployment shape (where the router lives).
+    # P/D specializes inference.deployment.type to "disaggregated" itself, so that
+    # one is fill-if-absent rather than propagate (which would flag the intended
+    # multi_node-vs-disaggregated mismatch as a conflict).
+    propagate("slurm", "inference.slurm")
+    if get("deployment.type") == "multi_node":
+        fill("inference.deployment.type", "multi_node")
+
     # Bare ``[ckpt]`` / ``[wandb]`` block: presence-only signal that enables
     # the section with defaults on both sub-configs. Necessary because
     # ``trainer.ckpt`` / ``orchestrator.ckpt`` are Optional[None] by default —
