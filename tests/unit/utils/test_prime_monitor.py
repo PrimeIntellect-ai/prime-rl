@@ -99,7 +99,7 @@ def test_rollouts_to_parquet_bytes_inlines_local_image_urls(tmp_path):
     image_bytes = b"small image payload"
     image_path = tmp_path / "sample.jpg"
     image_path.write_bytes(image_bytes)
-    file_url = f"file://{image_path}"
+    file_url = image_path.as_uri()
     expected_data_url = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('ascii')}"
 
     monitor = _new_monitor()

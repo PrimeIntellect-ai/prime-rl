@@ -609,16 +609,13 @@ def _pack_mm_kwargs_from_renderer(mm_data: Any) -> "dict[str, Any] | None":
     return out
 
 
-_FILE_URL_PREFIX = "file://"
-
-
 def offload_images_to_disk(rollouts: list[vf.RolloutOutput], output_dir: Path) -> int:
     """Replace base64 image data in rollout trajectories with file paths on disk.
 
     Scans all trajectory step prompts for data:image URLs, writes the decoded
     image bytes to ``{output_dir}/assets/images/{hash}.png``, and replaces the
-    URL in-place with ``file://{path}``.  Deduplicates by content hash so each
-    unique image is written only once.
+    URL in-place with an absolute ``file://`` URI. Deduplicates by content hash
+    so each unique image is written only once.
 
     Returns the number of unique images written to disk.
     """
@@ -649,6 +646,6 @@ def offload_images_to_disk(rollouts: list[vf.RolloutOutput], output_dir: Path) -
                         if not path.exists():
                             path.write_bytes(base64.b64decode(b64_data))
                         written.add(content_hash)
-                    item["image_url"]["url"] = f"{_FILE_URL_PREFIX}{path}"
+                    item["image_url"]["url"] = path.resolve().as_uri()
 
     return len(written)

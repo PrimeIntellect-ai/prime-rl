@@ -1,4 +1,7 @@
+import base64
+from pathlib import Path
 from unittest.mock import MagicMock
+from urllib.parse import unquote, urlparse
 
 import numpy as np
 import pybase64
@@ -9,6 +12,7 @@ from prime_rl.orchestrator.trajectories import (
     _deserialize_tool_calls,
     align_routed_experts,
     interleave_rollout,
+    offload_images_to_disk,
 )
 
 _interleave_rollout = interleave_rollout
@@ -45,6 +49,35 @@ def _sample_routed_experts(sample) -> np.ndarray:
     return np.frombuffer(sample.routed_experts.data, dtype=np.dtype(sample.routed_experts.dtype)).reshape(
         sample.routed_experts.shape
     )
+
+
+def test_offload_images_to_disk_uses_absolute_file_uri_for_relative_output_dir(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    image_bytes = b"small image payload"
+    data_url = f"data:image/png;base64,{base64.b64encode(image_bytes).decode('ascii')}"
+    rollout = {
+        "trajectory": [
+            {
+                "prompt": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "image_url", "image_url": {"url": data_url}}],
+                    }
+                ]
+            }
+        ]
+    }
+
+    assert offload_images_to_disk([rollout], Path("outputs/run")) == 1
+
+    file_url = rollout["trajectory"][0]["prompt"][0]["content"][0]["image_url"]["url"]
+    parsed = urlparse(file_url)
+    image_path = Path(unquote(parsed.path))
+
+    assert parsed.scheme == "file"
+    assert parsed.netloc == ""
+    assert image_path.is_absolute()
+    assert image_path.read_bytes() == image_bytes
 
 
 def test_deserialize_tool_calls_does_not_inject_missing_key():
