@@ -150,7 +150,7 @@ override-dependencies = [
     "nvidia-cutlass-dsl>=4.4.1",
     "transformers>=5.1.0.dev0",
     "torch>=2.9.0",
-    "openenv-core",
+    "openenv-core>=0.3.0",
 ]
 
 # ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
