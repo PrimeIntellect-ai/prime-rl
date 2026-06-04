@@ -32,6 +32,8 @@ dependencies = [
     "uvloop>=0.21.0",
     "torchtitan",
     "verifiers",
+    "harnesses",
+    "tasksets",
     "renderers",
     "dion",
     "tilelang>=0.1.8",
@@ -77,17 +79,12 @@ envs = [
     "math-python",
     "math500",
     "mini-swe-agent-plus",
-    "mini-swe-agent-plus-rlm",
     "mmlu-pro",
-    "opencode-cp",
-    "opencode-deepdive",
-    "opencode-math",
-    "opencode-science",
-    "opencode-swe",
     "reverse-text",
     "rlm-swe",
     "science-env",
     "simpleqa-verified",
+    "swebench-pro",
     "tau2-bench",
     "wiki-search",
     "wordle",
@@ -195,6 +192,8 @@ nixl-cu12 = false
 [tool.uv.sources]
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 verifiers = { path = "deps/verifiers", editable = true }
+harnesses = { path = "deps/verifiers/packages/harnesses", editable = true }
+tasksets = { path = "deps/verifiers/packages/tasksets", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
 aime2024 = { path = "deps/research-environments/environments/aime2024", editable = true }
@@ -213,17 +212,12 @@ math-env = { path = "deps/research-environments/environments/math_env", editable
 math-python = { path = "deps/verifiers/environments/math_python", editable = true }
 math500 = { path = "deps/research-environments/environments/math500", editable = true }
 mini-swe-agent-plus = { path = "deps/research-environments/environments/mini_swe_agent_plus", editable = true }
-mini-swe-agent-plus-rlm = { path = "deps/research-environments/environments/mini_swe_agent_plus_rlm", editable = true }
 mmlu-pro = { path = "deps/research-environments/environments/mmlu_pro", editable = true }
-opencode-cp = { path = "deps/research-environments/environments/opencode_cp", editable = true }
-opencode-deepdive = { path = "deps/research-environments/environments/opencode_deepdive", editable = true }
-opencode-math = { path = "deps/research-environments/environments/opencode_math", editable = true }
-opencode-science = { path = "deps/research-environments/environments/opencode_science", editable = true }
-opencode-swe = { path = "deps/research-environments/environments/opencode_swe", editable = true }
 reverse-text = { path = "deps/verifiers/environments/reverse_text", editable = true }
 rlm-swe = { path = "deps/research-environments/environments/rlm_swe", editable = true }
 science-env = { path = "deps/research-environments/environments/science_env", editable = true }
 simpleqa-verified = { path = "deps/research-environments/environments/simpleqa_verified", editable = true }
+swebench-pro = { path = "deps/research-environments/environments/swebench_pro", editable = true }
 tau2-bench = { path = "deps/research-environments/environments/tau2_bench", editable = true }
 wiki-search = { path = "deps/verifiers/environments/wiki_search", editable = true }
 wordle = { path = "deps/verifiers/environments/wordle", editable = true }
