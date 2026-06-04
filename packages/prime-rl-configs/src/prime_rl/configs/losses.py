@@ -4,15 +4,14 @@ A training run defines a list of named loss *terms*; per-env ``enabled_losses``
 selects which apply. Each term is a preset discriminated by ``type``:
 
 - ``rl``     — DPPO+KL policy-gradient core (trains the sampled completion).
-- ``sft``    — masked NLL core (trains the completion as supervised tokens).
-- ``opd``    — on-policy-distillation core (teacher-KL signal; needs a teacher).
 - ``echo``   — per-role CE overlay on *context* tokens (system/user/tool/assistant).
 - ``custom`` — a user import path resolved to a loss core.
 
-``rl``/``sft``/``opd`` carry trainer-side core params; ``echo`` carries
-orchestrator-side params (per-role alphas + an optional filter). The list is
-shared (defined once, propagated to both the trainer and the orchestrator); each
-process reads the slots it executes.
+``rl`` carries trainer-side core params; ``echo`` carries orchestrator-side params
+(per-role alphas + an optional filter). sft/opd are separate ``training_mode`` paths
+with fixed cores — they are *not* loss-list terms (so a run uses at most one rl/custom
+term + optional echo). The list is shared (defined once, propagated to both the
+trainer and the orchestrator); each process reads the slots it executes.
 """
 
 from typing import Annotated, Any, Literal, TypeAlias
@@ -82,20 +81,6 @@ class RLLossConfig(BaseConfig):
     """Temperature for the KL term."""
 
 
-class SFTLossConfig(BaseConfig):
-    """Masked-NLL term (trainer-side core)."""
-
-    type: Literal["sft"] = "sft"
-    name: str = "sft"
-
-
-class OPDLossConfig(BaseConfig):
-    """On-policy-distillation term (trainer-side core; requires a teacher)."""
-
-    type: Literal["opd"] = "opd"
-    name: str = "opd"
-
-
 class EchoLossConfig(BaseConfig):
     """Per-role CE echo overlay (orchestrator-side weights; trainer-side CE core).
 
@@ -143,7 +128,7 @@ class CustomLossTermConfig(BaseConfig):
 
 
 LossTermConfig: TypeAlias = Annotated[
-    RLLossConfig | SFTLossConfig | OPDLossConfig | EchoLossConfig | CustomLossTermConfig,
+    RLLossConfig | EchoLossConfig | CustomLossTermConfig,
     Field(discriminator="type"),
 ]
 """A single loss term. The list of these is the unified ``losses`` surface."""

@@ -407,6 +407,19 @@ def test_two_primary_terms_rejected():
         )
 
 
+def test_sft_loss_term_type_rejected():
+    # sft/opd are training_mode paths with fixed cores, not loss-list terms — reject in `losses`.
+    with pytest.raises(ValidationError):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [{"type": "sft"}],
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
 def test_tokenizer_name_falls_back_to_model_name_when_unset():
     config = RLConfig.model_validate(
         {

@@ -536,9 +536,10 @@ class OrchestratorConfig(BaseConfig):
             check_enabled_losses(loss_names, echo_names, enabled, where)
             check_loss_overrides(loss_names, echo_names, env.loss_overrides, where)
 
-        # Prompt-role echo needs renderer-provided prompt_attribution; MITO (renderer=None)
-        # won't have it, so system/user/tool echo silently no-ops. Warn, don't hard-fail.
-        if self.renderer is None:
+        # Prompt-role echo needs renderer-provided prompt_attribution; MITO (renderer=None,
+        # including sft mode which forces renderer=None later) won't have it, so system/user/
+        # tool echo silently no-ops. Warn, don't hard-fail.
+        if self.renderer is None or self.training_mode == "sft":
             for term in self.losses:
                 if term.type == "echo" and (term.system or term.user or term.tool):
                     warnings.warn(

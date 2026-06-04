@@ -16,6 +16,8 @@ from prime_rl.configs.orchestrator import FilterConfig
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from prime_rl.orchestrator.types import TrainRollout
 
 
@@ -97,16 +99,25 @@ class RepetitionFilter:
         return FilterResult(detected=False)
 
 
+def _primary_always_active(env_name: str) -> bool:
+    return True
+
+
 @dataclass
 class ZeroAdvantageFilter:
     """Flags rollouts whose computed advantage is zero (e.g. all rollouts in a
-    GRPO group earned the same reward, so the centered advantage collapses)."""
+    GRPO group earned the same reward, so the centered advantage collapses).
+
+    Zero advantage only means "no signal" for the RL primary, so ``primary_active``
+    gates it: echo-only / rl-disabled envs are not dropped on zero advantage.
+    Defaults to always-active, so without echo the behavior is unchanged."""
 
     name: str
     enforce: bool = True
+    primary_active: Callable[[str], bool] = _primary_always_active
 
     def check(self, rollout: "TrainRollout") -> FilterResult:
-        if rollout.advantage is not None and rollout.advantage == 0.0:
+        if rollout.advantage is not None and rollout.advantage == 0.0 and self.primary_active(rollout.env_name):
             return FilterResult(detected=True)
         return FilterResult(detected=False)
 
