@@ -24,20 +24,17 @@ else:
 
 logger = init_logger("vllm.inference.vllm.worker_nccl")
 
-# NemotronH params that vLLM 0.22's layerwise reload mis-loads through the online-reload path.
-_RELOAD_CORRUPTED_SUFFIXES = (".mixer.D", ".e_score_correction_bias")
+# NemotronH mixer.D is dropped by vLLM 0.22's layerwise online-reload path (left uninitialized).
+_RELOAD_CORRUPTED_SUFFIXES = (".mixer.D",)
 
 
 def _restore_reload_corrupted_params(model: Module, received: dict[str, torch.Tensor]) -> None:
     """Work around a vLLM 0.22 layerwise-reload bug for NemotronH.
 
-    The online reload mis-loads exactly two per-layer parameter families -- ``mixer.D`` (Mamba SSD
-    skip) and the MoE router's ``gate.e_score_correction_bias`` -- while loading all other weights
-    correctly. ``mixer.D`` ends up as non-deterministic garbage/inf (NaN logits) and the gate bias
-    gets a wrong value (broken expert routing), so generations go to NaN after a weight update.
-
-    The received broadcast value is correct, so restore those params from it via each param's own
-    ``weight_loader`` (which applies the right sharding). Remove once the upstream reload bug is fixed.
+    The online reload drops the weight load for every Mamba layer's ``mixer.D`` (the SSD skip
+    connection), leaving it as uninitialized ``empty_strided`` memory -- it reads back as garbage
+    (NaN/inf) and the logits go NaN after a weight update. The received broadcast value is correct,
+    so restore D from it via the param's own ``weight_loader``. Remove once the upstream bug is fixed.
     """
 
     def _layer_key(name: str) -> str:
@@ -182,8 +179,8 @@ class NCCLWeightUpdateWorker(Worker):
             update_mla_absorbed_weights(model)
             return
 
-        # vLLM 0.22's layerwise reload mis-loads NemotronH mixer.D and MoE gate.e_score_correction_bias
-        # (see _restore_reload_corrupted_params). Capture the correct received values to restore after.
+        # vLLM 0.22's layerwise reload drops NemotronH mixer.D's weight load (see
+        # _restore_reload_corrupted_params). Capture the correct received value to restore after.
         received_reload_fix: dict[str, torch.Tensor] = {}
 
         def _capture_reload_fix(weights):
