@@ -384,7 +384,7 @@ def test_mito_prompt_role_echo_warns():
 
 def test_training_mode_without_matching_primary_rejected():
     # training_mode=rl (default) but losses has only an echo term → no rl/custom primary.
-    with pytest.raises(ValidationError, match="requires a matching loss term"):
+    with pytest.raises(ValidationError, match="requires an rl or custom loss term"):
         RLConfig.model_validate(
             {
                 "model": {"name": "my-model"},
