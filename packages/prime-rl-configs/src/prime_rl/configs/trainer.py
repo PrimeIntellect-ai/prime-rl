@@ -13,6 +13,7 @@ from prime_rl.configs.shared import (
     TrainerLogConfig,
     TransportConfig,
     WandbConfig,
+    ZMQTransportConfig,
 )
 from prime_rl.utils.config import BaseConfig
 
@@ -522,6 +523,9 @@ class TrainerConfig(BaseConfig):
 
     rollout_transport: TransportConfig = FileSystemTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
+
+    micro_batch_transport: TransportConfig = ZMQTransportConfig()
+    """Transport used to ship packed per-rank micro-batches from the trainer master to data ranks."""
 
     log: TrainerLogConfig = TrainerLogConfig()
 

@@ -187,6 +187,14 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+def test_trainer_splits_rollout_and_micro_batch_transport_defaults():
+    config = TrainerConfig()
+
+    assert config.rollout_transport.type == "filesystem"
+    assert config.micro_batch_transport.type == "zmq"
+    assert config.micro_batch_transport.hwm == 64
+
+
 def test_orchestrator_vlm_requires_renderer():
     with pytest.raises(ValidationError, match="orchestrator.renderer must be set when model.vlm is set"):
         OrchestratorConfig.model_validate(

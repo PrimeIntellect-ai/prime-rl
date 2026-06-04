@@ -71,6 +71,16 @@ from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
 
 
+def _raise_if_any_rank_failed(local_error: Exception | None, message: str) -> None:
+    failed_flag = torch.tensor(1 if local_error else 0, dtype=torch.int64, device="cuda")
+    dist.all_reduce(failed_flag, op=dist.ReduceOp.MAX)
+    if failed_flag.item() == 0:
+        return
+    if local_error is not None:
+        raise RuntimeError(f"{message} on this rank; failing all ranks.") from local_error
+    raise RuntimeError(f"{message} on another rank; failing all ranks.")
+
+
 @clean_exit
 def train(config: TrainerConfig):
     # Setup world and logger
@@ -271,6 +281,7 @@ def train(config: TrainerConfig):
             # renderer=None still opts out (and a text-only run never gets mm_refs).
             renderer_config=config.renderer,
             pack_multimodal=pack_multimodal,
+            micro_batch_transport_config=config.micro_batch_transport,
         )
 
     token_exporter = setup_token_exporter(config, parallel_dims, world, logger)
@@ -362,7 +373,13 @@ def train(config: TrainerConfig):
         # Wait for the batch to be available
         logger.debug("Waiting for training batch to arrive")
         wait_for_batch_start_time = time.perf_counter()
-        dataloader.wait_for_batch()
+        wait_error: Exception | None = None
+        try:
+            dataloader.wait_for_batch()
+        except Exception as exc:
+            wait_error = exc
+        _raise_if_any_rank_failed(wait_error, "Training-batch wait failed")
+        dataloader.synchronize_state()
         wait_for_batch_time = time.perf_counter() - wait_for_batch_start_time
         logger.debug(f"Waited for batch to arrive for {wait_for_batch_time:.2f} seconds")
 
@@ -378,14 +395,9 @@ def train(config: TrainerConfig):
             micro_batches = dataloader.get_batch()
         except Exception as exc:
             load_error = exc
-        failed_flag = torch.tensor(1 if load_error else 0, dtype=torch.int64, device="cuda")
-        dist.all_reduce(failed_flag, op=dist.ReduceOp.MAX)
-        if failed_flag.item() != 0:
-            # Preserve the culprit rank's traceback; bystander ranks still raise
-            # so none proceeds into the forward collective alone.
-            if load_error is not None:
-                raise RuntimeError("Training-batch load failed on this rank; failing all ranks.") from load_error
-            raise RuntimeError("Training-batch load failed on another rank; failing all ranks.")
+        # Preserve the culprit rank's traceback; bystander ranks still raise so
+        # none proceeds into the forward collective alone.
+        _raise_if_any_rank_failed(load_error, "Training-batch load failed")
         load_data_time = time.perf_counter() - load_data_start_time
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
 

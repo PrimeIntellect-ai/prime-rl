@@ -5,6 +5,7 @@ import pytest
 import tomli_w
 import torch
 import torch.distributed as dist
+import torch.distributed.distributed_c10d as c10d
 
 import prime_rl.trainer.runs as runs
 from prime_rl.configs.shared import FileSystemTransportConfig
@@ -251,3 +252,20 @@ def test_multipacker_pack_packs_mm_refs_within_each_run_when_enabled(tmp_path, m
         assert mb.position_ids == [0, 1, 0, 1]
         tagged = [i for i, n in enumerate(mb.lora_num_tokens) if n > 0]
         assert len(tagged) == 1
+
+
+def test_micro_batch_publish_status_round_trip():
+    from prime_rl.trainer.rl.data import DataLoader
+
+    loader = DataLoader.__new__(DataLoader)
+    loader._store = c10d._get_default_store()
+    loader._publish_timeout_seconds = 1
+    loader._current_step = 987654
+
+    loader._publish_micro_batch_status(ok=True)
+    loader._wait_for_micro_batch_status()
+
+    loader._current_step += 1
+    loader._publish_micro_batch_status(ok=False, error="boom")
+    with pytest.raises(RuntimeError, match="boom"):
+        loader._wait_for_micro_batch_status()

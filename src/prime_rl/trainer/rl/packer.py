@@ -34,6 +34,7 @@ class BasePacker(ABC):
         config: TransportConfig,
         start_step: int = 0,
         pack_multimodal: bool = False,
+        micro_batch_transport_config: TransportConfig | None = None,
     ):
         self.logger = get_logger()
         self.multi_run_manager = get_multi_run_manager()
@@ -43,9 +44,10 @@ class BasePacker(ABC):
         self.tokenizer = tokenizer
         self.pack_multimodal = pack_multimodal
         self.receiver = setup_training_batch_receiver(config)
+        micro_batch_transport_config = micro_batch_transport_config or config
         shutil.rmtree(get_rollout_dir(self.multi_run_manager.output_dir), ignore_errors=True)
         self.sender: MicroBatchSender = setup_micro_batch_sender(
-            self.multi_run_manager.output_dir, dp_world_size, start_step, config
+            self.multi_run_manager.output_dir, dp_world_size, start_step, micro_batch_transport_config
         )
         self._last_heartbeat = time.monotonic()
         self._watchdog_armed = threading.Event()
@@ -88,8 +90,18 @@ class SinglePacker(BasePacker):
         config: TransportConfig,
         start_step: int = 0,
         pack_multimodal: bool = False,
+        micro_batch_transport_config: TransportConfig | None = None,
     ):
-        super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step, pack_multimodal)
+        super().__init__(
+            dp_world_size,
+            seq_len,
+            pad_to_multiple_of,
+            tokenizer,
+            config,
+            start_step,
+            pack_multimodal,
+            micro_batch_transport_config,
+        )
         assert self.multi_run_manager.max_runs == 1, "SinglePacker only supports one run"
 
     def pack(self):
@@ -129,8 +141,18 @@ class MultiPacker(BasePacker):
         config: TransportConfig,
         start_step: int = 0,
         pack_multimodal: bool = False,
+        micro_batch_transport_config: TransportConfig | None = None,
     ):
-        super().__init__(dp_world_size, seq_len, pad_to_multiple_of, tokenizer, config, start_step, pack_multimodal)
+        super().__init__(
+            dp_world_size,
+            seq_len,
+            pad_to_multiple_of,
+            tokenizer,
+            config,
+            start_step,
+            pack_multimodal,
+            micro_batch_transport_config,
+        )
         # Per-run buffer: stores (TrainingSample, step) tuples
         self.buffers: list[deque[tuple[TrainingSample, int]]] = [
             deque() for _ in range(self.multi_run_manager.max_runs)
@@ -349,6 +371,7 @@ def setup_packer(
     transport_config: TransportConfig,
     start_step: int = 0,
     pack_multimodal: bool = False,
+    micro_batch_transport_config: TransportConfig | None = None,
 ) -> BasePacker:
     multi_run_manager = get_multi_run_manager()
     if multi_run_manager.max_runs == 1:
@@ -360,6 +383,7 @@ def setup_packer(
             transport_config,
             start_step,
             pack_multimodal,
+            micro_batch_transport_config,
         )
     else:
         return MultiPacker(
@@ -370,4 +394,5 @@ def setup_packer(
             transport_config,
             start_step,
             pack_multimodal,
+            micro_batch_transport_config,
         )
