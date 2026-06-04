@@ -37,6 +37,28 @@ def make_training_example():
     return _make_training_example
 
 
+def test_prepare_sample_builds_echo_mask_and_weight():
+    example = TrainingSample(
+        prompt_ids=[1, 2],
+        prompt_mask=[False, False],
+        completion_ids=[3, 4],
+        completion_mask=[True, True],
+        completion_logprobs=[-0.1, -0.2],
+        completion_temperatures=[1.0, 1.0],
+        advantage=1.0,
+        env_name="test-env",
+        echo_alpha=[0.9, 0.5, None, 0.3],
+    )
+    mb = prepare_sample(example, seq_len=8)
+    # Token 0 is excluded (no valid shifted current-token logprob) even though it
+    # carries an alpha; None positions are not echoed.
+    assert mb.echo_mask == [False, True, False, True]
+    assert mb.echo_weight == [0.0, 0.5, 0.0, 0.3]
+    # Echo stays separate from the RL signals: loss_mask and advantages untouched.
+    assert mb.loss_mask == [False, False, True, True]
+    assert mb.advantages == [1.0, 1.0, 1.0, 1.0]
+
+
 def test_training_sample_requires_env_name():
     with pytest.raises(TypeError, match="env_name"):
         TrainingSample(

@@ -56,6 +56,11 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # taus), sft uses sft_loss_fn. Stamped by the orchestrator from training_mode.
     training_mode: TrainingMode = "rl"
 
+    # Per-token echo alpha parallel to prompt_ids + completion_ids. Field None
+    # means no echo; per-token None means ordinary RL only; a float means the
+    # token also gets an echo CE term with that weight. ``0.0`` is distinct from None.
+    echo_alpha: list[float | None] | None = None
+
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A batch of training examples with metadata for transport."""
@@ -89,3 +94,9 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # sft → sft loss). All samples packed into a micro batch share the same mode.
     training_mode: TrainingMode = "rl"
     rewards: list[float] | None = None
+
+    # Echo overlay, parallel to input_ids. echo_mask is True where the token gets
+    # an echo CE term; echo_weight carries its per-token alpha (0.0 elsewhere).
+    # Both survive packing/padding like loss_mask; None if no sample echoes.
+    echo_mask: list[bool] | None = None
+    echo_weight: list[float] | None = None

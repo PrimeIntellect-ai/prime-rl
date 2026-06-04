@@ -181,6 +181,11 @@ class MultiPacker(BasePacker):
                 False,
                 f"Run wrote a sample with teacher logprobs length != sample length ({len(sample.teacher_logprobs)} != {sample_length})",
             )
+        if sample.echo_alpha is not None and len(sample.echo_alpha) != sample_length:
+            return (
+                False,
+                f"Run wrote a sample with echo_alpha length != sample length ({len(sample.echo_alpha)} != {sample_length})",
+            )
         return True, None
 
     def _get_batch(self) -> None:

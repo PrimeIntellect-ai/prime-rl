@@ -19,6 +19,7 @@ from collections import defaultdict
 
 from prime_rl.configs.orchestrator import AdvantageConfig, OrchestratorConfig
 from prime_rl.orchestrator.advantage import assign_advantages, setup_advantage_fn
+from prime_rl.orchestrator.echo import build_echo_annotations
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.trajectories import (
@@ -160,11 +161,16 @@ class TrainSink:
         needs_backfill = any(s["tokens"] is None for s in raw.get("trajectory") or [])
         if needs_backfill:
             await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
+
+        env = self.train_envs.get(rollout.env_name)
+        echo_annotations = await asyncio.to_thread(build_echo_annotations, raw, env.config.echo, env.echo_filter_fn)
+
         samples = await asyncio.to_thread(
             interleave_rollout,
             raw,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             env_name=rollout.env_name,
+            echo_annotations=echo_annotations,
         )
         rollout.samples = samples or []
         # Offload base64 image bytes to disk as soon as the rollout is

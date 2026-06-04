@@ -46,6 +46,10 @@ class TensorMicroBatch(TypedDict):
     # sft → sft loss). All samples in a micro batch share the same mode.
     training_mode: str
 
+    # Echo overlay (parallel to input_ids); None when no sample in the batch echoes.
+    echo_mask: Bool[Tensor, "batch seq"] | None
+    echo_weight: Float[Tensor, "batch seq"] | None
+
 
 class FakeDataLoader:
     def __init__(self, config: FakeDataLoaderConfig, seq_len: int, dp_world_size: int):
@@ -120,6 +124,8 @@ class FakeDataLoader:
             "mm_kwargs": None,
             "mm_token_type_ids": None,
             "training_mode": "rl",
+            "echo_mask": None,
+            "echo_weight": None,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -148,6 +154,8 @@ class FakeDataLoader:
             "mm_kwargs": None,
             "mm_token_type_ids": None,
             "training_mode": "rl",
+            "echo_mask": None,
+            "echo_weight": None,
         }
 
 
@@ -243,6 +251,12 @@ class DataLoader:
             else None,
             routed_experts=routed_experts,
             training_mode=micro_batch.training_mode,
+            echo_mask=torch.tensor(micro_batch.echo_mask, dtype=torch.bool).unsqueeze(0)
+            if micro_batch.echo_mask is not None
+            else None,
+            echo_weight=torch.tensor(micro_batch.echo_weight, dtype=torch.float).unsqueeze(0)
+            if micro_batch.echo_weight is not None
+            else None,
         )
 
 

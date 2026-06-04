@@ -49,6 +49,21 @@ def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
     routed_experts.shape[0] += padding_size
 
 
+def _extend_optional_token_field(current, values, existing_len: int, new_len: int, fill_value):
+    """Extend a per-token field that may be present on only some packed samples.
+
+    Back-fills the bin with ``fill_value`` the first time a value appears, and
+    pads with ``fill_value`` when a later sample has no value of its own.
+    """
+    if values is not None:
+        if current is None:
+            current = [fill_value] * existing_len
+        current.extend(values)
+    elif current is not None:
+        current.extend([fill_value] * new_len)
+    return current
+
+
 def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch:
     """
     Prepare a problem for sequence packing training.
@@ -64,6 +79,26 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     mm_token_type_ids = training_example.mm_token_type_ids
     assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
     env_names = [training_example.env_name] * len(input_ids)
+
+    # Echo overlay: token 0 has no valid shifted current-token logprob, so it stays
+    # unmasked even if the producer supplied an alpha there. echo_mask/echo_weight
+    # stay separate from loss_mask/advantages — terms may overlap and their grads sum.
+    echo_alpha = training_example.echo_alpha
+    echo_mask: list[bool] | None = None
+    echo_weight: list[float] | None = None
+    if echo_alpha is not None:
+        if len(echo_alpha) != len(input_ids):
+            raise ValueError(
+                f"echo_alpha length must match prompt_ids + completion_ids length "
+                f"({len(echo_alpha)} != {len(input_ids)}) for env {training_example.env_name!r}"
+            )
+        echo_mask = [False] * len(input_ids)
+        echo_weight = [0.0] * len(input_ids)
+        for k, alpha in enumerate(echo_alpha[1:], start=1):
+            if alpha is None:
+                continue
+            echo_mask[k] = True
+            echo_weight[k] = alpha
 
     # Per-token temperatures: prompt tokens use first completion temp (masked out anyway)
     # Default to 1.0 if completion is empty (e.g., model generated only tool calls with no text)
@@ -92,6 +127,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:seq_len]
         env_names = env_names[:seq_len]
+        if echo_mask is not None:
+            echo_mask = echo_mask[:seq_len]
+            echo_weight = echo_weight[:seq_len]
 
     assert (
         len(input_ids)
@@ -133,6 +171,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         env_names=env_names,
         mm_kwargs=training_example.mm_kwargs,
         training_mode=training_example.training_mode,
+        echo_mask=echo_mask,
+        echo_weight=echo_weight,
     )
 
 
@@ -177,6 +217,13 @@ def packed_samples_into_micro_bs(
                 and bin_content.training_mode == sample.training_mode
             ):
                 existing_len = len(bin_content.input_ids)
+                sample_len = len(sample.input_ids)
+                bin_content.echo_mask = _extend_optional_token_field(
+                    bin_content.echo_mask, sample.echo_mask, existing_len, sample_len, False
+                )
+                bin_content.echo_weight = _extend_optional_token_field(
+                    bin_content.echo_weight, sample.echo_weight, existing_len, sample_len, 0.0
+                )
                 bin_content.input_ids.extend(sample.input_ids)
                 bin_content.loss_mask.extend(sample.loss_mask)
                 bin_content.advantages.extend(sample.advantages)
@@ -254,6 +301,10 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
         micro_batch.mm_token_type_ids.extend([0] * padding_size)
     if micro_batch.routed_experts is not None:
         _pad_routed_experts(micro_batch, padding_size)
+    if micro_batch.echo_mask is not None:
+        micro_batch.echo_mask.extend([False] * padding_size)
+    if micro_batch.echo_weight is not None:
+        micro_batch.echo_weight.extend([0.0] * padding_size)
     micro_batch.env_names.extend([""] * padding_size)
 
     return micro_batch
@@ -264,6 +315,10 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy = copy.deepcopy(source)
     dummy.advantages = [0.0] * len(dummy.input_ids)
     dummy.loss_mask = [False] * len(dummy.input_ids)
+    if dummy.echo_mask is not None:
+        dummy.echo_mask = [False] * len(dummy.input_ids)
+    if dummy.echo_weight is not None:
+        dummy.echo_weight = [0.0] * len(dummy.input_ids)
     return dummy
 
 

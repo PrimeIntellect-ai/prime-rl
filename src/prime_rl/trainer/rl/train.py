@@ -27,6 +27,7 @@ from prime_rl.utils.cp import (
 )
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.rl.loss import (
+    ExtraTerm,
     compute_entropy,
     compute_loss,
     compute_importance_ratio_and_mismatch_kl,
@@ -355,10 +356,19 @@ def train(config: TrainerConfig):
         # tokens implicitly upweight their per-token gradient contribution after FSDP averaging.
         # FSDP's per-rank divide is undone after the microbatch loop via fsdp_gradient_divide_factor.
         local_loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
-        global_loss_scale = torch.tensor(local_loss_scale, dtype=torch.int64, device="cuda")
+        # Echo tokens get their own global denominator so the echo CE term is a true
+        # per-token mean and neither dilutes nor is diluted by the RL term. Both scales
+        # ride one all-reduce so every rank issues the same collective.
+        local_echo_scale = sum(
+            micro_batch["echo_mask"].sum().item()
+            for micro_batch in micro_batches
+            if micro_batch.get("echo_mask") is not None
+        )
+        global_loss_scales = torch.tensor([local_loss_scale, local_echo_scale], dtype=torch.int64, device="cuda")
         dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
-        dist.all_reduce(global_loss_scale, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        loss_scale = max(global_loss_scale.item(), 1)
+        dist.all_reduce(global_loss_scales, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        loss_scale = max(global_loss_scales[0].item(), 1)
+        echo_loss_scale = max(global_loss_scales[1].item(), 1)
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
@@ -372,6 +382,8 @@ def train(config: TrainerConfig):
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
+            echo_mask = micro_batch["echo_mask"].to("cuda") if micro_batch.get("echo_mask") is not None else None
+            echo_weight = micro_batch["echo_weight"].to("cuda") if micro_batch.get("echo_weight") is not None else None
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
             teacher_logprobs = (
                 micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
@@ -473,6 +485,17 @@ def train(config: TrainerConfig):
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
+            extra_terms = []
+            if echo_mask is not None and echo_weight is not None:
+                extra_terms.append(
+                    ExtraTerm(
+                        name="echo",
+                        core=loss_fns["echo"],
+                        scale=echo_loss_scale,
+                        masks=echo_mask.squeeze().split(response_lengths),
+                        weights=echo_weight.squeeze().split(response_lengths),
+                    )
+                )
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
@@ -484,6 +507,7 @@ def train(config: TrainerConfig):
                 loss_fns=loss_fns,
                 loss_scale=loss_scale,
                 training_mode=micro_batch["training_mode"],
+                extra_terms=extra_terms or None,
             )
 
             # Backward pass

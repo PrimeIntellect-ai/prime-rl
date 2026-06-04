@@ -206,6 +206,72 @@ class EnvConfig(BaseConfig):
         return self
 
 
+class SystemRoleEchoConfig(BaseConfig):
+    """Echo supervision for system-message content tokens."""
+
+    alpha: float = Field(1.0, allow_inf_nan=False)
+    """Per-token echo weight."""
+
+
+class UserRoleEchoConfig(BaseConfig):
+    """Echo supervision for user-message content tokens."""
+
+    alpha: float = Field(1.0, allow_inf_nan=False)
+    """Per-token echo weight."""
+
+
+class AssistantRoleEchoConfig(BaseConfig):
+    """Echo supervision for assistant-message content and completion tokens."""
+
+    alpha: float = Field(1.0, allow_inf_nan=False)
+    """Per-token echo weight. ``alpha=0`` keeps the token supervised but gives it zero gradient."""
+
+
+class ToolRoleEchoConfig(BaseConfig):
+    """Echo supervision for tool-message content tokens."""
+
+    alpha: float = Field(1.0, allow_inf_nan=False)
+    """Per-token echo weight."""
+
+    tool_names: set[str] | None = Field(None, min_length=1)
+    """Restrict echo to these tool function names; None = all tools."""
+
+
+class EchoFilterConfig(BaseConfig):
+    """Optional callable that narrows role-selected echo tokens per rollout."""
+
+    import_path: str
+    """Dotted import path to the filter callable, e.g. ``"my_module.filter_warnings"``."""
+
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    """Keyword arguments forwarded to the filter as ``**kwargs``."""
+
+
+class EchoConfig(BaseConfig):
+    """Enable CE echo on selected message roles for this training env."""
+
+    system: SystemRoleEchoConfig | None = None
+    """System-message echo (default: disabled)."""
+
+    user: UserRoleEchoConfig | None = None
+    """User-message echo (default: disabled)."""
+
+    assistant: AssistantRoleEchoConfig | None = None
+    """Assistant-message echo (default: disabled)."""
+
+    tool: ToolRoleEchoConfig | None = None
+    """Tool-message echo (default: disabled)."""
+
+    filter: EchoFilterConfig | None = None
+    """Optional per-token filter on top of the role baseline."""
+
+    @model_validator(mode="after")
+    def validate_roles(self) -> "EchoConfig":
+        if self.system is self.user is self.assistant is self.tool is None:
+            raise ValueError("EchoConfig requires at least one of system, user, assistant, or tool.")
+        return self
+
+
 class TrainEnvConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
@@ -213,6 +279,9 @@ class TrainEnvConfig(EnvConfig):
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Rollouts generated per example for GRPO group-relative advantages.
     Inherits from ``orchestrator.group_size`` when unset."""
+
+    echo: EchoConfig | None = None
+    """Per-env per-role echo config."""
 
 
 class EvalEnvConfig(EnvConfig):
