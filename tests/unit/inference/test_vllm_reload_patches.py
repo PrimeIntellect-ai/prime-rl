@@ -11,6 +11,14 @@ class AliasedKernelLayer(torch.nn.Module):
         self.register_buffer("running", torch.zeros(2, dtype=torch.float32))
 
 
+class ChildParameterAliasedKernelLayer(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.child = torch.nn.Linear(2, 2, bias=False)
+        self.register_buffer("conv_weights", self.child.weight.view(-1), persistent=False)
+        self.register_buffer("running", torch.zeros(2, dtype=torch.float32))
+
+
 def _layer_reloading_info(layer: AliasedKernelLayer):
     from vllm.model_executor.model_loader.reload.types import LayerReloadingInfo
 
@@ -19,6 +27,22 @@ def _layer_reloading_info(layer: AliasedKernelLayer):
         restore_device=torch.device("cpu"),
         kernel_tensors=(
             {"weight": layer._parameters["weight"]},
+            {
+                "conv_weights": layer._buffers["conv_weights"],
+                "running": layer._buffers["running"],
+            },
+        ),
+    )
+
+
+def _child_parameter_layer_reloading_info(layer: ChildParameterAliasedKernelLayer):
+    from vllm.model_executor.model_loader.reload.types import LayerReloadingInfo
+
+    return LayerReloadingInfo(
+        restore_metadata=({}, {}),
+        restore_device=torch.device("cpu"),
+        kernel_tensors=(
+            {},
             {
                 "conv_weights": layer._buffers["conv_weights"],
                 "running": layer._buffers["running"],
@@ -45,6 +69,40 @@ def test_vllm_layerwise_reload_alias_buffer_patch_preserves_parameter_storage():
 
     assert torch.equal(layer.weight, torch.full_like(layer.weight, 7.0))
     assert torch.equal(layer.conv_weights, layer.weight.view(-1))
+    assert torch.equal(layer.running, torch.full_like(layer.running, 3.0))
+
+
+def test_vllm_layerwise_reload_alias_buffer_patch_handles_child_parameter_alias():
+    from vllm.model_executor.model_loader.reload import layerwise
+
+    layer = ChildParameterAliasedKernelLayer()
+    info = _child_parameter_layer_reloading_info(layer)
+    layer.child.weight.data.fill_(7.0)
+    layer._buffers["conv_weights"] = torch.full_like(layer.conv_weights, float("nan"))
+    layer._buffers["running"] = torch.full_like(layer.running, 3.0)
+
+    patches.monkey_patch_vllm_layerwise_reload_alias_buffers()
+    layerwise._copy_and_restore_kernel_tensors(layer, info)
+
+    assert torch.equal(layer.child.weight, torch.full_like(layer.child.weight, 7.0))
+    assert torch.equal(layer.conv_weights, layer.child.weight.view(-1))
+    assert torch.equal(layer.running, torch.full_like(layer.running, 3.0))
+
+
+def test_vllm_layerwise_reload_alias_buffer_patch_skips_absent_alias_buffer():
+    from vllm.model_executor.model_loader.reload import layerwise
+
+    layer = ChildParameterAliasedKernelLayer()
+    info = _child_parameter_layer_reloading_info(layer)
+    layer.child.weight.data.fill_(7.0)
+    del layer._buffers["conv_weights"]
+    layer._buffers["running"] = torch.full_like(layer.running, 3.0)
+
+    patches.monkey_patch_vllm_layerwise_reload_alias_buffers()
+    layerwise._copy_and_restore_kernel_tensors(layer, info)
+
+    assert torch.equal(layer.child.weight, torch.full_like(layer.child.weight, 7.0))
+    assert torch.equal(layer.conv_weights, layer.child.weight.view(-1))
     assert torch.equal(layer.running, torch.full_like(layer.running, 3.0))
 
 

@@ -82,16 +82,35 @@ def monkey_patch_vllm_layerwise_reload_alias_buffers():
 
     logger = init_logger(__name__)
 
+    def _tensor_storage_ptr(tensor: torch.Tensor) -> int | None:
+        try:
+            return tensor.untyped_storage().data_ptr()
+        except (RuntimeError, ValueError):
+            return None
+
     def _copy_and_restore_kernel_tensors(layer: torch.nn.Module, info: reload_layerwise.LayerReloadingInfo):
         assert info.kernel_tensors is not None
         parameters, buffers = info.kernel_tensors
-        param_storage_ptrs = {param.untyped_storage().data_ptr() for param in parameters.values()}
+        param_storage_ptrs = {
+            storage_ptr
+            for param in layer.parameters(recurse=True)
+            if (storage_ptr := _tensor_storage_ptr(param)) is not None
+        }
+        param_storage_ptrs.update(
+            storage_ptr
+            for param in parameters.values()
+            if (storage_ptr := _tensor_storage_ptr(param)) is not None
+        )
         for name, param in parameters.items():
-            param.data.copy_(getattr(layer, name))
-        for name, buffer in buffers.items():
-            if buffer.untyped_storage().data_ptr() in param_storage_ptrs:
+            if name not in layer._parameters:
                 continue
-            buffer.data.copy_(getattr(layer, name))
+            param.data.copy_(layer._parameters[name])
+        for name, buffer in buffers.items():
+            if name not in layer._buffers:
+                continue
+            if _tensor_storage_ptr(buffer) in param_storage_ptrs:
+                continue
+            buffer.data.copy_(layer._buffers[name])
 
         reload_layerwise._place_kernel_tensors(layer, info)
 

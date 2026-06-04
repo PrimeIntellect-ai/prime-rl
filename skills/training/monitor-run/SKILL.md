@@ -150,7 +150,7 @@ jq '.reward' {output_dir}/rollouts/step_42/train_rollouts.jsonl
 A few warnings are normal. Escalate when errors are persistent, growing, or hit a large fraction of rollouts.
 
 - **Env workers**: exceptions in env code, timeouts, sandbox errors, OOM kills (most common source — runs user code).
-- **Orchestrator**: empty/errored rollout spikes, weight-broadcast failures, checkpoint errors.
+- **Orchestrator**: empty/errored rollout spikes, weight-broadcast failures, checkpoint errors. For NCCL weight updates, a trainer-side "weights broadcasted" log only proves the send completed; also check inference logs for `/update_weights` 500s or reload tracebacks.
 - **Trainer**: NCCL/CUDA errors, OOM, NaN loss or gradients.
 - **Inference**: NCCL/CUDA errors, OOM, request timeouts.
 
