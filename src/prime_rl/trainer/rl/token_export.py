@@ -56,7 +56,7 @@ class TokenExporter:
         for micro_sequence_idx, length in enumerate(response_lengths):
             raw_end = start + length
             end = _trim_padding(columns, start, raw_end)
-            if end > start and any(columns["loss_mask"][start:end]):
+            if end > start and (any(columns["loss_mask"][start:end]) or any(columns["echo_mask"][start:end])):
                 self._write(
                     {
                         "schema_version": SCHEMA_VERSION,
@@ -130,6 +130,8 @@ def _export_columns(
         "token_ids": token_ids,
         "position_ids": _tensor_to_ints(micro_batch["position_ids"]),
         "loss_mask": _tensor_to_bools(micro_batch["loss_mask"]),
+        "echo_mask": _optional_tensor_to_bools(micro_batch.get("echo_mask"), seq_len),
+        "echo_weight": _optional_tensor_to_floats(micro_batch.get("echo_weight"), seq_len),
         "advantages": _tensor_to_floats(micro_batch["advantages"]),
         "rewards": _optional_tensor_to_floats(micro_batch.get("rewards"), seq_len),
         "inference_logprobs": _tensor_to_floats(micro_batch["inference_logprobs"]),

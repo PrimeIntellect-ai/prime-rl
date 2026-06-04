@@ -323,6 +323,65 @@ def test_losses_under_trainer_only_conflict_raises():
         )
 
 
+def test_two_echo_terms_default_enabled_rejected():
+    # enabled_losses unset → "all terms" → two echo terms enabled → rejected at config time.
+    with pytest.raises(ValidationError, match="at most one echo term"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [
+                    {"type": "rl"},
+                    {"type": "echo", "name": "e1", "system": {"alpha": 0.5}},
+                    {"type": "echo", "name": "e2", "user": {"alpha": 0.5}},
+                ],
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
+def test_loss_overrides_unknown_key_rejected():
+    with pytest.raises(ValidationError, match="loss_overrides key"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [{"type": "rl"}, {"type": "echo", "system": {"alpha": 0.5}}],
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": None,
+                    "train": {"env": [{"id": "reverse-text", "loss_overrides": {"nope": {"system": {"alpha": 0.1}}}}]},
+                },
+            }
+        )
+
+
+def test_loss_overrides_non_echo_term_rejected():
+    with pytest.raises(ValidationError, match="only to echo terms"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [{"type": "rl"}, {"type": "echo", "system": {"alpha": 0.5}}],
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": None,
+                    "train": {"env": [{"id": "reverse-text", "loss_overrides": {"rl": {"kl_tau": 0.1}}}]},
+                },
+            }
+        )
+
+
+def test_mito_prompt_role_echo_warns():
+    with pytest.warns(UserWarning, match="renderer=None"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [{"type": "rl"}, {"type": "echo", "system": {"alpha": 0.5}}],
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
 def test_tokenizer_name_falls_back_to_model_name_when_unset():
     config = RLConfig.model_validate(
         {

@@ -7,7 +7,7 @@ from pydantic import AliasChoices, Field, model_serializer, model_validator
 from pydantic_core.core_schema import SerializerFunctionWrapHandler
 from renderers import AutoRendererConfig, RendererConfig
 
-from prime_rl.configs.losses import LossList, check_enabled_losses, default_losses
+from prime_rl.configs.losses import LossList, check_enabled_losses, check_loss_overrides, default_losses
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
@@ -530,8 +530,22 @@ class OrchestratorConfig(BaseConfig):
         loss_names = {term.name for term in self.losses}
         echo_names = {term.name for term in self.losses if term.type == "echo"}
         for env in self.train.env:
-            if env.enabled_losses is not None:
-                check_enabled_losses(loss_names, echo_names, env.enabled_losses, f"env {env.resolved_name!r}")
+            where = f"env {env.resolved_name!r}"
+            # None means "all terms" — validate as the full list so the >1-echo check fires.
+            enabled = env.enabled_losses if env.enabled_losses is not None else sorted(loss_names)
+            check_enabled_losses(loss_names, echo_names, enabled, where)
+            check_loss_overrides(loss_names, echo_names, env.loss_overrides, where)
+
+        # Prompt-role echo needs renderer-provided prompt_attribution; MITO (renderer=None)
+        # won't have it, so system/user/tool echo silently no-ops. Warn, don't hard-fail.
+        if self.renderer is None:
+            for term in self.losses:
+                if term.type == "echo" and (term.system or term.user or term.tool):
+                    warnings.warn(
+                        f"Echo term {term.name!r} supervises prompt roles (system/user/tool), which require "
+                        f"renderer prompt_attribution; with renderer=None (MITO) those echo tokens become no-ops.",
+                        stacklevel=2,
+                    )
         return self
 
     tokenizer: TokenizerConfig = TokenizerConfig()

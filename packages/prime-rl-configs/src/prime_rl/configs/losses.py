@@ -97,7 +97,11 @@ class OPDLossConfig(BaseConfig):
 
 
 class EchoLossConfig(BaseConfig):
-    """Per-role CE echo overlay (orchestrator-side weights; trainer-side CE core)."""
+    """Per-role CE echo overlay (orchestrator-side weights; trainer-side CE core).
+
+    Echo CE is computed on the rollout's temperature-scaled logprobs (the same ones RL
+    uses), not true ``T=1`` NLL — scale ``alpha`` to compensate if needed. Negative
+    ``alpha`` is allowed and *suppresses* the selected tokens (anti-echo)."""
 
     type: Literal["echo"] = "echo"
     name: str = "echo"
@@ -166,6 +170,15 @@ def check_enabled_losses(loss_names: set[str], echo_names: set[str], enabled: li
     enabled_echo = sorted(set(enabled) & echo_names)
     if len(enabled_echo) > 1:
         raise ValueError(f"{where}: at most one echo term may be enabled per env, got {enabled_echo}.")
+
+
+def check_loss_overrides(loss_names: set[str], echo_names: set[str], overrides: dict[str, dict], where: str) -> None:
+    """Raise if ``overrides`` references unknown terms or any non-echo term."""
+    for name in overrides:
+        if name not in loss_names:
+            raise ValueError(f"{where}: loss_overrides key {name!r} not found in losses {sorted(loss_names)}.")
+        if name not in echo_names:
+            raise ValueError(f"{where}: loss_overrides currently applies only to echo terms, got {name!r}.")
 
 
 def default_losses() -> list[LossTermConfig]:
