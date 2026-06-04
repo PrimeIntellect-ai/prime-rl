@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import functools
 import multiprocessing as mp
 import time
 from collections.abc import Awaitable, Callable, Iterator, Sequence
@@ -19,7 +18,7 @@ from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConf
 from prime_rl.orchestrator.eval_utils import compute_pass_at_k
 from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.monitor import get_monitor
-from prime_rl.utils.utils import capitalize, import_object
+from prime_rl.utils.utils import capitalize
 
 REQUIRED_STATE_COLUMNS = ["trajectory"]
 
@@ -171,10 +170,6 @@ class TrainEnv(Env):
     def __init__(self, config: TrainEnvConfig):
         super().__init__(config)
         self.sampling_args = config.sampling.to_sampling_args()
-        self.echo_filter_fn: Callable[..., list[list[bool]]] | None = None
-        if config.echo is not None and config.echo.filter is not None:
-            fn = import_object(config.echo.filter.import_path)
-            self.echo_filter_fn = functools.partial(fn, **config.echo.filter.kwargs)
 
     def get_dataset(self, seed: int | None = None):
         return self.env.get_dataset(seed=seed)

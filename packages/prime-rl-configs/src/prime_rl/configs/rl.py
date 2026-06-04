@@ -6,6 +6,7 @@ from pydantic import Field, model_validator
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
+from prime_rl.configs.losses import LossTermConfig, default_losses
 from prime_rl.configs.orchestrator import (
     FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig,
 )
@@ -215,6 +216,11 @@ class RLConfig(BaseConfig):
     """Shared sequence length. Propagates to ``trainer.model.seq_len`` and ``orchestrator.seq_len`` only when those values were not explicitly set; explicit per-component values always win."""
 
     weight_broadcast: SharedWeightBroadcastConfig | None = None
+
+    losses: list[LossTermConfig] = Field(default_factory=default_losses)
+    """Shared composable loss terms (see ``configs.losses``). Propagated to
+    ``trainer.losses`` and ``orchestrator.losses``; per-env selection via
+    ``orchestrator.train.env.enabled_losses``."""
 
     bench: bool = False
     """Benchmark mode. Sets trainer and orchestrator to benchmark mode and, when set, suffixes the W&B project with ``-bench``."""

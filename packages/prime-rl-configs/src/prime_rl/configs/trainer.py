@@ -1,9 +1,10 @@
 import warnings
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
+from prime_rl.configs.losses import LossTermConfig, default_losses
 from prime_rl.configs.shared import (
     BaseModelConfig,
     FileSystemTransportConfig,
@@ -409,35 +410,6 @@ class CheckpointConfig(BaseConfig):
     """Skip loading the optimizer state from checkpoint."""
 
 
-class DefaultLossConfig(BaseConfig):
-    type: Literal["default"] = "default"
-
-    dppo_mask_low: float = Field(0.2, ge=0)
-    """Lower DPPO masking threshold."""
-
-    dppo_mask_high: float = Field(0.2, ge=0)
-    """Upper DPPO masking threshold."""
-
-    adv_tau: float = Field(1.0, ge=0)
-    """Temperature for the advantage term."""
-
-    kl_tau: float = Field(1e-3, ge=0)
-    """Temperature for the KL term."""
-
-
-class CustomLossConfig(BaseConfig):
-    type: Literal["custom"] = "custom"
-
-    import_path: str
-    """Import path to the loss function (e.g. ``my_module.my_loss``)."""
-
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Kwargs forwarded to the loss function."""
-
-
-LossConfig: TypeAlias = Annotated[DefaultLossConfig | CustomLossConfig, Field(discriminator="type")]
-
-
 class FakeDataLoaderConfig(BaseConfig):
     batch_size: int = Field(2, ge=1)
     """Batch size of the fake data loader."""
@@ -506,8 +478,10 @@ class TrainerConfig(BaseConfig):
 
     data: DataLoaderConfig = DataLoaderConfig()
 
-    loss: LossConfig = DefaultLossConfig()
-    """Loss config for rl-mode batches. opd and sft batches dispatch to their own loss fns unconditionally and do not read this."""
+    losses: list[LossTermConfig] = Field(default_factory=default_losses)
+    """Composable loss terms applied to rl-mode batches (see ``configs.losses``).
+    opd and sft batches dispatch to their own cores. Shared at the RL level and
+    propagated here; per-env selection lives in ``orchestrator.train.env.enabled_losses``."""
 
     optim: OptimizerConfig = AdamWConfig()
 

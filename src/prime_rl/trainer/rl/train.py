@@ -151,8 +151,10 @@ def train(config: TrainerConfig):
     tokenizer = setup_tokenizer(config.tokenizer)
 
     # Set up the loss function
-    logger.info(f"Setting up loss function ({config.loss})")
-    loss_fns = setup_loss_fns(config.loss)
+    logger.info(f"Setting up loss functions ({config.losses})")
+    loss_fns = setup_loss_fns(config.losses)
+    # The rl term configures token-export's DPPO threshold annotations.
+    rl_loss_config = next((term for term in config.losses if term.type == "rl"), None)
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -536,7 +538,7 @@ def train(config: TrainerConfig):
                 for env_name, indices in env_to_indices.items():
                     tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
-            token_exporter.export(progress.step, micro_step, micro_batch, out, response_lengths, config.loss)
+            token_exporter.export(progress.step, micro_step, micro_batch, out, response_lengths, rl_loss_config)
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)

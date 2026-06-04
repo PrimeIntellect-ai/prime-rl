@@ -8,7 +8,8 @@ from typing import Any
 import torch
 from torch import Tensor
 
-from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
+from prime_rl.configs.losses import RLLossConfig
+from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.loss import compute_importance_ratio_and_mismatch_kl
 
 SCHEMA_VERSION = 1
@@ -170,7 +171,7 @@ def _compute_export_tensors(
         fields["importance_ratio"] = ratio
         fields["mismatch_kl"] = mismatch_kl
         fields["prob_delta"] = prob_delta
-        if isinstance(loss_config, DefaultLossConfig):
+        if isinstance(loss_config, RLLossConfig):
             invalid_high = prob_delta > loss_config.dppo_mask_high
             invalid_low = prob_delta < -loss_config.dppo_mask_low
             positive_advantages = advantages > 0

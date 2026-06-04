@@ -2,9 +2,9 @@
 
 import pytest
 
-from prime_rl.configs.orchestrator import (
+from prime_rl.configs.losses import (
     AssistantRoleEchoConfig,
-    EchoConfig,
+    EchoLossConfig,
     SystemRoleEchoConfig,
     ToolRoleEchoConfig,
 )
@@ -21,7 +21,7 @@ def test_role_alpha_maps_only_enabled_roles():
         prompt_attribution=attribution,
         prompt_len=4,
         completion_len=0,
-        echo_config=EchoConfig(system=SystemRoleEchoConfig(alpha=0.5)),
+        echo_config=EchoLossConfig(system=SystemRoleEchoConfig(alpha=0.5)),
     )
     # System tokens get alpha; user tokens stay None (user echo disabled).
     assert out == [0.5, 0.5, None, None]
@@ -32,7 +32,7 @@ def test_assistant_alpha_covers_completion():
         prompt_attribution=None,
         prompt_len=2,
         completion_len=2,
-        echo_config=EchoConfig(assistant=AssistantRoleEchoConfig(alpha=0.3)),
+        echo_config=EchoLossConfig(assistant=AssistantRoleEchoConfig(alpha=0.3)),
     )
     assert out == [None, None, 0.3, 0.3]
 
@@ -48,7 +48,7 @@ def test_tool_names_filter():
         prompt_attribution=attribution,
         prompt_len=2,
         completion_len=0,
-        echo_config=EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5, tool_names={"lookup"})),
+        echo_config=EchoLossConfig(tool=ToolRoleEchoConfig(alpha=0.5, tool_names={"lookup"})),
     )
     assert kept == [0.5, 0.5]
 
@@ -56,7 +56,7 @@ def test_tool_names_filter():
         prompt_attribution=attribution,
         prompt_len=2,
         completion_len=0,
-        echo_config=EchoConfig(tool=ToolRoleEchoConfig(alpha=0.5, tool_names={"other"})),
+        echo_config=EchoLossConfig(tool=ToolRoleEchoConfig(alpha=0.5, tool_names={"other"})),
     )
     assert dropped == [None, None]
 
@@ -71,7 +71,7 @@ def test_filter_mask_narrows_role_baseline():
         prompt_attribution=attribution,
         prompt_len=4,
         completion_len=0,
-        echo_config=EchoConfig(system=SystemRoleEchoConfig(alpha=0.5)),
+        echo_config=EchoLossConfig(system=SystemRoleEchoConfig(alpha=0.5)),
         filter_mask=[True, False, True, True],
     )
     assert out == [0.5, None, 0.5, 0.5]

@@ -6,7 +6,7 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, LossConfig
+from prime_rl.configs.losses import LossTermConfig, RLLossConfig
 from prime_rl.utils.utils import import_object
 
 
@@ -148,7 +148,7 @@ def compute_importance_ratio_and_mismatch_kl(
     return log_importance_ratio, importance_ratio, mismatch_kl
 
 
-def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossOutputs:
+def default_loss_fn(inputs: LossInputs, loss_config: RLLossConfig) -> LossOutputs:
     """
     DPPO+KL loss for RL training, combining:
     - DPPO-Binary TV Loss (https://arxiv.org/pdf/2602.04879)
@@ -284,30 +284,31 @@ def echo_loss_fn(inputs: LossInputs) -> LossOutputs:
     return LossOutputs(loss=loss, metrics=metrics)
 
 
-def setup_loss_fns(loss_config: LossConfig) -> dict[str, LossFn]:
-    """Build the per-training-mode loss fn dispatch table.
+def setup_loss_fns(losses: list[LossTermConfig]) -> dict[str, LossFn]:
+    """Build the per-training-mode core registry from the loss-term list.
 
-    Always returns all three modes - the trainer is mode-agnostic and routes
-    per batch from ``TrainingSample.training_mode``:
+    The trainer routes per batch from ``TrainingSample.training_mode``:
 
-    - ``"sft"`` → ``sft_loss_fn`` (masked NLL on teacher tokens)
-    - ``"opd"`` → ``opd_loss_fn`` (teacher KL as gradient signal, hardcoded
-      DPPO + KL knobs)
-    - ``"rl"``  → ``default_loss_fn(loss_config)`` for ``DefaultLossConfig``,
-      or the imported function for ``CustomLossConfig``.
+    - ``"sft"``  → ``sft_loss_fn`` (masked NLL)
+    - ``"opd"``  → ``opd_loss_fn`` (teacher KL as gradient signal, fixed knobs)
+    - ``"rl"``   → ``default_loss_fn`` configured by the ``rl`` term, or a
+      ``custom`` term's imported function.
+    - ``"echo"`` → ``echo_loss_fn`` (weighted CE), applied by additive echo terms.
 
-    ``trainer.loss`` only affects the rl path - opd and sft are independent.
+    Only the ``rl``/``custom`` term affects the rl path; sft/opd/echo cores are fixed.
     """
-    if isinstance(loss_config, CustomLossConfig):
-        custom_fn = import_object(loss_config.import_path)
-        kwargs = loss_config.kwargs
+    rl_term = next((term for term in losses if term.type in ("rl", "custom")), None)
+    if rl_term is not None and rl_term.type == "custom":
+        custom_fn = import_object(rl_term.import_path)
+        kwargs = rl_term.kwargs
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return custom_fn(inputs, **kwargs)
     else:
+        rl_config = rl_term if rl_term is not None else RLLossConfig()
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
-            return default_loss_fn(inputs, loss_config)
+            return default_loss_fn(inputs, rl_config)
 
     return {"sft": sft_loss_fn, "opd": opd_loss_fn, "rl": rl_fn, "echo": echo_loss_fn}
 
@@ -323,7 +324,7 @@ def build_loss_terms(training_mode: str, cores: dict[str, LossFn]) -> list[LossT
     except KeyError:
         raise ValueError(
             f"No loss fn available for training_mode={training_mode!r} "
-            f"(available: {sorted(cores)}). Check trainer.loss.type."
+            f"(available: {sorted(cores)}). Check the sample's training_mode."
         )
     return [LossTerm(name=training_mode, core=core)]
 

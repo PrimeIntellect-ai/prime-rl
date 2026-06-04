@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import verifiers as vf
 
-from prime_rl.configs.orchestrator import EchoConfig
+from prime_rl.configs.losses import EchoLossConfig
 
 
 @dataclass(frozen=True)
@@ -23,7 +23,7 @@ class EchoAnnotations:
 
 def build_echo_annotations(
     rollout: vf.RolloutOutput,
-    echo_config: EchoConfig | None,
+    echo_config: EchoLossConfig | None,
     filter_fn: Callable[..., list[list[bool]]] | None = None,
 ) -> EchoAnnotations | None:
     if echo_config is None:
@@ -56,7 +56,7 @@ def _build_step_echo_alpha(
     prompt_attribution: dict | None,
     prompt_len: int,
     completion_len: int,
-    echo_config: EchoConfig | None,
+    echo_config: EchoLossConfig | None,
     filter_mask: list[bool] | None = None,
 ) -> list[float | None]:
     expected_total_len = prompt_len + completion_len

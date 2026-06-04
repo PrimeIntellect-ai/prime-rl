@@ -61,7 +61,7 @@ $$
 
 $\mu$ is the policy that generated the rollout (inference), $\pi$ is the current policy (trainer), $\hat{A}_{i,t}$ is the token-level advantage, $\delta$ is the importance-sampling clipping ratio, and $\tau_{KL}$ is the KL temperature. The `min` clamps the importance ratio from above so a stale rollout assigning very low probability to a high-reward token doesn't produce a runaway gradient.
 
-The knobs (under `[trainer.loss]` with `type = "default"`):
+The knobs (on the `rl` loss term — a `[[losses]]` entry with `type = "rl"`):
 
 | Knob | Default | What it does |
 |---|---|---|
@@ -75,7 +75,7 @@ The trainer dispatches automatically based on the batch's training mode (set by 
 - `opd` mode → KL distillation against the teacher's per-token logprobs. The teacher must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
 - `sft` mode → standard token-level NLL on teacher-generated rollouts.
 
-Set `[trainer.loss] type = "default"` and configure via the knobs above. SFT and OPD modes ignore the policy-gradient–specific fields.
+The default `losses = [{ type = "rl" }]` applies this loss to rl-mode batches; configure via the knobs above. SFT and OPD modes ignore the policy-gradient–specific fields. Add more terms (e.g. an `echo` overlay) to the `losses` list and select them per env via `orchestrator.train.env.enabled_losses`.
 
 ### Custom Loss
 
@@ -103,8 +103,9 @@ def ppo_clip_loss(inputs: LossInputs, clip_eps: float = 0.2) -> LossOutputs:
 Wire it up:
 
 ```toml
-[trainer.loss]
+[[losses]]
 type = "custom"
+name = "ppo"
 import_path = "my_module.ppo_clip_loss"
 kwargs = { clip_eps = 0.2 }
 ```

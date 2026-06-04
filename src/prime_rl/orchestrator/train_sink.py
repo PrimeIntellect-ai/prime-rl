@@ -14,9 +14,11 @@ save_rollouts, monitor.log, teacher logprobs) live on the orchestrator.
 from __future__ import annotations
 
 import asyncio
+import functools
 import uuid
 from collections import defaultdict
 
+from prime_rl.configs.losses import EchoLossConfig
 from prime_rl.configs.orchestrator import AdvantageConfig, OrchestratorConfig
 from prime_rl.orchestrator.advantage import assign_advantages, setup_advantage_fn
 from prime_rl.orchestrator.echo import build_echo_annotations
@@ -30,6 +32,18 @@ from prime_rl.orchestrator.trajectories import (
 from prime_rl.orchestrator.types import TrainBatch, TrainBatchMetrics, TrainRollout
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.utils import import_object
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge ``override`` into ``base`` (override wins on leaves)."""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 class TrainSink:
@@ -56,6 +70,7 @@ class TrainSink:
         self.tokenizer = tokenizer
         self.renderer = renderer
         self.train_envs = train_envs
+        self._echo_cache: dict[str, tuple] = {}
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
@@ -151,6 +166,32 @@ class TrainSink:
             return self.process_batch()
         return None
 
+    def _resolve_echo(self, env_name: str):
+        """Resolve the env's enabled echo term (with per-env overrides applied) and
+        its bound filter fn, cached per env. At most one echo term may be enabled."""
+        if env_name not in self._echo_cache:
+            env_config = self.train_envs.get(env_name).config
+            enabled = env_config.enabled_losses
+            echo_terms = [
+                term for term in self.config.losses if term.type == "echo" and (enabled is None or term.name in enabled)
+            ]
+            if len(echo_terms) > 1:
+                raise ValueError(
+                    f"At most one echo term may be enabled per env (env {env_name!r}): "
+                    f"{[term.name for term in echo_terms]}"
+                )
+            term = echo_terms[0] if echo_terms else None
+            if term is not None:
+                override = env_config.loss_overrides.get(term.name)
+                if override:
+                    term = EchoLossConfig(**_deep_merge(term.model_dump(), override))
+            filter_fn = None
+            if term is not None and term.filter is not None:
+                fn = import_object(term.filter.import_path)
+                filter_fn = functools.partial(fn, **term.filter.kwargs)
+            self._echo_cache[env_name] = (term, filter_fn)
+        return self._echo_cache[env_name]
+
     async def process_rollout(self, rollout: TrainRollout) -> None:
         """Tokenize the rollout eagerly. Backfills tokens if the env didn't
         return them (SFT against external teacher APIs); errored rollouts
@@ -162,8 +203,8 @@ class TrainSink:
         if needs_backfill:
             await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
 
-        env = self.train_envs.get(rollout.env_name)
-        echo_annotations = await asyncio.to_thread(build_echo_annotations, raw, env.config.echo, env.echo_filter_fn)
+        echo_term, echo_filter_fn = self._resolve_echo(rollout.env_name)
+        echo_annotations = await asyncio.to_thread(build_echo_annotations, raw, echo_term, echo_filter_fn)
 
         samples = await asyncio.to_thread(
             interleave_rollout,
