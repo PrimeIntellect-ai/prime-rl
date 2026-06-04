@@ -269,8 +269,10 @@ class ZMQTransportConfig(BaseTransportConfig):
     publish_timeout_seconds: int = Field(1800, ge=1)
     """Seconds ranks wait for the master to publish/fail a packed micro-batch step."""
 
-    publish_grace_ms: int = Field(100, ge=0)
-    """Small startup grace after all READY messages arrive, reducing PUB/SUB slow-joiner races."""
+    publish_grace_ms: int = Field(1000, ge=0)
+    """One-time startup grace after all READY messages arrive, before the first publish, to let
+    PUB/SUB subscriptions propagate and avoid step-0 slow-joiner drops. Conservative by default
+    since it is a one-time cost; lower it once a topology is observed to start cleanly."""
 
 
 TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig, Field(discriminator="type")]
