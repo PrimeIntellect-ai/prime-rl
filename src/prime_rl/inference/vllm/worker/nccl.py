@@ -24,6 +24,45 @@ else:
 
 logger = init_logger("vllm.inference.vllm.worker_nccl")
 
+# NemotronH params that vLLM 0.22's layerwise reload mis-loads through the online-reload path.
+_RELOAD_CORRUPTED_SUFFIXES = (".mixer.D", ".e_score_correction_bias")
+
+
+def _restore_reload_corrupted_params(model: Module, received: dict[str, torch.Tensor]) -> None:
+    """Work around a vLLM 0.22 layerwise-reload bug for NemotronH.
+
+    The online reload mis-loads exactly two per-layer parameter families -- ``mixer.D`` (Mamba SSD
+    skip) and the MoE router's ``gate.e_score_correction_bias`` -- while loading all other weights
+    correctly. ``mixer.D`` ends up as non-deterministic garbage/inf (NaN logits) and the gate bias
+    gets a wrong value (broken expert routing), so generations go to NaN after a weight update.
+
+    The received broadcast value is correct, so restore those params from it via each param's own
+    ``weight_loader`` (which applies the right sharding). Remove once the upstream reload bug is fixed.
+    """
+
+    def _layer_key(name: str) -> str:
+        index = name.find("layers.")
+        return name[index:] if index >= 0 else name
+
+    received_by_key = {_layer_key(name): tensor for name, tensor in received.items()}
+    restored = 0
+    for name, param in model.named_parameters():
+        if not name.endswith(_RELOAD_CORRUPTED_SUFFIXES):
+            continue
+        tensor = received_by_key.get(_layer_key(name))
+        if tensor is None:
+            continue
+        tensor = tensor.to(device=param.device)
+        weight_loader = getattr(param, "weight_loader", None)
+        if weight_loader is not None:
+            weight_loader(param, tensor)
+        elif tensor.shape == param.shape:
+            param.data.copy_(tensor.to(param.dtype))
+        else:
+            continue
+        restored += 1
+    logger.debug("Restored %d NemotronH params (mixer.D, e_score_correction_bias) after reload", restored)
+
 
 def receive_integer(communicator: PyNcclCommunicator) -> int:
     """Receive an integer from the trainer master rank using NCCL communicator."""
@@ -148,9 +187,20 @@ class NCCLWeightUpdateWorker(Worker):
             update_mla_absorbed_weights(model)
             return
 
+        # vLLM 0.22's layerwise reload mis-loads NemotronH mixer.D and MoE gate.e_score_correction_bias
+        # (see _restore_reload_corrupted_params). Capture the correct received values to restore after.
+        received_reload_fix: dict[str, torch.Tensor] = {}
+
+        def _capture_reload_fix(weights):
+            for name, tensor in weights:
+                if name.endswith(_RELOAD_CORRUPTED_SUFFIXES):
+                    received_reload_fix[name] = tensor.detach().to("cpu", copy=True)
+                yield name, tensor
+
         load_weights_checkpoint_layerwise(
             model,
-            state_iter,
+            _capture_reload_fix(state_iter),
             self.model_runner.model_config,
             self.vllm_config,
         )
+        _restore_reload_corrupted_params(model, received_reload_fix)
