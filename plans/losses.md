@@ -53,7 +53,8 @@ term(s) to apply, the same way it carries `training_mode` today.
   ⇒ the `rl` preset's filter is `completion`, and this pairing is validated.
 - `loss=sft` (masked NLL) works on **any** token — which is exactly why echo can use it on
   context tokens. This is the permissive core.
-- (`opd` needs `teacher_logprobs`; it stays a separate per-sample path for now — see §8.)
+- `loss=opd` (on-policy distillation) needs `teacher_logprobs`. It's a built-in core with an
+  `opd` preset (§16); the `opd` data *path* stays separate for now — see §8.
 
 ## 3. The execution seam (what runs where)
 
@@ -77,6 +78,11 @@ rollout, the **trainer** owns the forward.
 The **DPPO trust-region mask** (`probs_diff` thresholds) is *internal* to the `rl` core — it
 zeroes the per-token loss for violators and is **not** a user-facing filter.
 
+**Weights are external (orchestrator-side) by design.** A per-token coefficient that depends on
+the live `trainer_logprobs` — e.g. opd's teacher-KL signal — belongs *inside the core*, not in
+the `weight` slot, which is only for coefficients the orchestrator can compute from the rollout.
+A custom core that wants to do its own thing with the logprobs does it in the loss.
+
 ## 4. Pointers + presets (resolution model)
 
 Every slot value is **either a built-in key or a dotted import path**, plus a `kwargs` dict,
@@ -86,7 +92,8 @@ resolved with the existing convention: `import_object(path)` then
 
 Built-in registry (resolve by key to in-repo functions):
 
-- **cores**: `rl` → the current DPPO+KL loss fn, `sft` → masked NLL.
+- **cores**: `rl` → the current DPPO+KL loss fn, `sft` → masked NLL, `opd` → the current
+  on-policy-distillation loss fn (teacher-KL signal; reads the shipped `teacher_logprobs`).
 - **filters**: `completion` (the sampled-completion / `loss_mask` tokens),
   `role` (kwargs: `roles: list[str]`, `tools: set[str] | None`).
 - **weights**: `grpo` (the shipped per-token advantage, `× adv_tau`),
@@ -109,6 +116,11 @@ Built-in registry (resolve by key to in-repo functions):
            loss:    { type: "sft" },
            filters: [ { type: "completion" } ],
            weight:  { type: "constant", value: 1.0 } }
+
+"opd"  → { name: "opd",
+           loss:    { type: "opd" },                      # signal derived from teacher_logprobs
+           filters: [ { type: "completion" } ],
+           weight:  { type: "constant", value: 1.0 } }     # ignored by the core
 ```
 
 Validation has two layers:
@@ -199,9 +211,11 @@ axis** — it routes by data source/path. We **keep it as-is**. The `losses` lis
 composition *within the `rl` path*; the `opd` and `sft` per-sample paths stay their own
 functions for now.
 
-Note the naming: the `sft` *core* in a loss term (masked NLL — the objective form) is **not**
-the same thing as a sample whose `training_mode="sft"` (a data path). The framework adds the
-`sft` core; the `sft` path's data-sourcing is unchanged.
+Note the naming: the `sft`/`opd` *cores* in a loss term (the objective forms) are **not** the
+same thing as a sample whose `training_mode` is `sft`/`opd` (a data path). The framework
+registers those cores — reusing the existing loss functions, so the core and the path are the
+same code, no divergence — plus an `opd` preset (§16). The `sft`/`opd` paths' data-sourcing is
+unchanged.
 
 ## 9. Normalization
 
@@ -304,7 +318,8 @@ the trainer and orchestrator processes, and thread the shared `losses` section t
 1. **Term abstraction + core registry + `compute_loss` over a list**, with `losses=["rl"]` only.
    No behavior change; the golden test guards it.
 2. **`sft` core + `echo` preset** (role filter + constant weight) — reaches the echo objective
-   as a preset (orchestrator `losses.py`, wire format, `batch.py`).
+   as a preset (orchestrator `losses.py`, wire format, `batch.py`). Also register the `opd` core
+   + preset here (reuses `opd_loss_fn` + the already-shipped `teacher_logprobs`).
 3. **Per-env `enabled_losses` + overrides**, including the per-sample resolved core kwargs.
 4. **Custom pointers + validation polish.**
 
@@ -317,3 +332,27 @@ Open as a draft PR.
 - **Ship per-sample resolved core kwargs** for trainer-side knobs (`kl_tau`, DPPO thresholds);
   do it in phase 3 (§7).
 - **`adv_tau` is baked into the advantage orchestrator-side** (§7), so it's per-env-free.
+- **`opd` is a built-in core with an `opd` preset** (§16), reusing `opd_loss_fn`; the `opd` data
+  path stays separate for now.
+- **The `weight` slot stays external/orchestrator-side only** (§3); per-token signals that need
+  live `trainer_logprobs` live inside the core, not in a weight fn.
+
+## 16. opd as a core, and the path-unification trajectory
+
+`opd` is registered as a built-in core with an `opd` preset, reusing the existing `opd_loss_fn`
+(which already takes `teacher_logprobs` via `LossInputs`) — no contract change. Its teacher-KL
+signal is derived inside the core from the shipped `teacher_logprobs` plus the live forward, so
+it uses no external `weight` (§3). The `opd` *path* stays separate for now; this just makes the
+objective selectable through the same mechanism.
+
+Why register it now: the three paths (`sft`/`opd`/`rl`) differ on two axes — the **loss** and the
+**data source**. This framework unifies the loss axis (rl/sft/opd/custom are all terms); the
+planned env-sampler refactor unifies the data axis (inference rollouts / fixed datasets / replay
+buffers through one sampler). `opd` already shares `rl`'s data source (inference), so it's the
+cheapest to fold; `sft` is the data-axis-hard one. Once the env sampler lands, a sample carries
+`{data source, loss term(s)}` and the three paths collapse into one — with the loss half already
+done.
+
+(Aside: `rl` and `opd` are the same DPPO+KL core with different per-token signals — reward
+advantage vs teacher-KL — while `sft` is a distinct masked-NLL core. A later refinement could
+fold them into one parameterized core; not now.)
