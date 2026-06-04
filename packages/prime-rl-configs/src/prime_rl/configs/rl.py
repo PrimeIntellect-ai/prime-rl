@@ -548,11 +548,14 @@ class RLConfig(BaseConfig):
                     self.inference.api_server_count = dp_per_node
 
             if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
-                # Compute inference_world_size from actual worker count per server:
-                # each api_server runs tp workers that participate in collective_rpc.
-                api_server_count = self.inference.api_server_count if self.inference else 1
-                tp = self.inference.parallel.tp if self.inference else 1
-                total_infer_workers = self.deployment.total_infer_nodes * api_server_count * tp
+                # Every allocated inference GPU is a NCCL rank in the weight broadcast.
+                # The external-LB launcher starts dp_per_node (= gpus_per_node / tp)
+                # TP-sharded servers per node, i.e. gpus_per_node workers per node, so use
+                # the GPU count directly. Deriving it from api_server_count double-counts:
+                # api_server_count can resolve to the *global* DP size, making the node
+                # factor count twice and NCCL wait for ranks that never connect. Matches
+                # the disaggregated path below.
+                total_infer_workers = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
                 assert self.trainer.weight_broadcast.type == "nccl"
                 self.trainer.weight_broadcast.host = "0.0.0.0"
                 self.trainer.weight_broadcast.inference_world_size = total_infer_workers
