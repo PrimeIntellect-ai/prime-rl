@@ -1,7 +1,4 @@
-import base64
-from pathlib import Path
 from unittest.mock import MagicMock
-from urllib.parse import unquote, urlparse
 
 import numpy as np
 import pybase64
@@ -12,14 +9,13 @@ from prime_rl.orchestrator.trajectories import (
     _deserialize_tool_calls,
     align_routed_experts,
     interleave_rollout,
-    offload_images_to_disk,
 )
 
 _interleave_rollout = interleave_rollout
 
 
 def interleave_rollout(output, *args, **kwargs):
-    output.setdefault("env_name", "test-env")
+    kwargs.setdefault("env_name", output.get("env_name", "test-env"))
     return _interleave_rollout(output, *args, **kwargs)
 
 
@@ -49,61 +45,6 @@ def _sample_routed_experts(sample) -> np.ndarray:
     return np.frombuffer(sample.routed_experts.data, dtype=np.dtype(sample.routed_experts.dtype)).reshape(
         sample.routed_experts.shape
     )
-
-
-def test_offload_images_to_disk_uses_absolute_file_uri_for_relative_output_dir(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    image_bytes = b"small image payload"
-    data_url = f"data:image/png;base64,{base64.b64encode(image_bytes).decode('ascii')}"
-    rollout = {
-        "trajectory": [
-            {
-                "prompt": [
-                    {
-                        "role": "user",
-                        "content": [{"type": "image_url", "image_url": {"url": data_url}}],
-                    }
-                ]
-            }
-        ]
-    }
-
-    assert offload_images_to_disk([rollout], Path("outputs/run")) == 1
-
-    file_url = rollout["trajectory"][0]["prompt"][0]["content"][0]["image_url"]["url"]
-    parsed = urlparse(file_url)
-    image_path = Path(unquote(parsed.path))
-
-    assert parsed.scheme == "file"
-    assert parsed.netloc == ""
-    assert image_path.is_absolute()
-    assert image_path.read_bytes() == image_bytes
-
-
-def test_offload_images_to_disk_preserves_image_media_type_suffix(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    image_bytes = b"jpeg image payload"
-    data_url = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('ascii')}"
-    rollout = {
-        "trajectory": [
-            {
-                "prompt": [
-                    {
-                        "role": "user",
-                        "content": [{"type": "image_url", "image_url": {"url": data_url}}],
-                    }
-                ]
-            }
-        ]
-    }
-
-    assert offload_images_to_disk([rollout], Path("outputs/run")) == 1
-
-    file_url = rollout["trajectory"][0]["prompt"][0]["content"][0]["image_url"]["url"]
-    image_path = Path(unquote(urlparse(file_url).path))
-
-    assert image_path.suffix == ".jpg"
-    assert image_path.read_bytes() == image_bytes
 
 
 def test_deserialize_tool_calls_does_not_inject_missing_key():
@@ -408,7 +349,7 @@ def test_branching_equivalent_multi_step_trajectory(multi_step_trajectory_extens
     assert rollout.completion_ids == [3, 4]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2]
-    assert rollout.completion_temperatures == [1.0, 1.0]
+    assert rollout.completion_temperatures == []
 
     # second step
     rollout = rollouts[1]
@@ -417,7 +358,7 @@ def test_branching_equivalent_multi_step_trajectory(multi_step_trajectory_extens
     assert rollout.completion_ids == [7, 8]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.3, -0.4]
-    assert rollout.completion_temperatures == [1.0, 1.0]
+    assert rollout.completion_temperatures == []
 
 
 def test_branching_equivalent_multi_step_trajectory_with_tool_calls(
@@ -435,7 +376,7 @@ def test_branching_equivalent_multi_step_trajectory_with_tool_calls(
     assert rollout.completion_ids == [3, 4]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2]
-    assert rollout.completion_temperatures == [1.0, 1.0]
+    assert rollout.completion_temperatures == []
 
     # second step
     rollout = rollouts[1]
@@ -444,7 +385,7 @@ def test_branching_equivalent_multi_step_trajectory_with_tool_calls(
     assert rollout.completion_ids == [7, 8]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.3, -0.4]
-    assert rollout.completion_temperatures == [1.0, 1.0]
+    assert rollout.completion_temperatures == []
 
 
 def test_interleave_rollout_single_step_trajectory(single_step_trajectory_output):
@@ -459,7 +400,7 @@ def test_interleave_rollout_single_step_trajectory(single_step_trajectory_output
     assert rollout.completion_ids == [3, 4]
     assert rollout.completion_mask == [True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2]
-    assert rollout.completion_temperatures == [1.0, 1.0]
+    assert rollout.completion_temperatures == []
     assert rollout.env_name == "test-env"
 
 
@@ -474,8 +415,8 @@ def test_interleave_rollout_multi_step_trajectory(multi_step_trajectory_output):
     assert rollout.completion_ids == [3, 4, 5, 6, 7, 8]
     assert rollout.completion_mask == [True, True, False, False, True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2, 0, 0, -0.3, -0.4]
-    # Temperatures: 2 completion tokens at temp 1.0, then 2 prompt tokens at temp 1.0, then 2 completion tokens at temp 1.0
-    assert rollout.completion_temperatures == [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    # ``completion_temperatures`` is filled by the orchestrator post-interleave; empty here.
+    assert rollout.completion_temperatures == []
 
 
 def test_interleave_rollout_multi_step_trajectory_with_tool_calls(multi_step_trajectory_with_tool_calls_output):
@@ -489,8 +430,8 @@ def test_interleave_rollout_multi_step_trajectory_with_tool_calls(multi_step_tra
     assert rollout.completion_ids == [3, 4, 5, 6, 7, 8]
     assert rollout.completion_mask == [True, True, False, False, True, True]
     assert rollout.completion_logprobs == [-0.1, -0.2, 0, 0, -0.3, -0.4]
-    # Temperatures: 2 completion tokens at temp 1.0, then 2 prompt tokens at temp 1.0, then 2 completion tokens at temp 1.0
-    assert rollout.completion_temperatures == [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    # ``completion_temperatures`` is filled by the orchestrator post-interleave; empty here.
+    assert rollout.completion_temperatures == []
 
 
 @pytest.fixture
@@ -1011,9 +952,9 @@ def test_interleave_rollout_error_masks_all_false():
     # Extension holds so tokens merge, but ALL completion_mask should be False
     assert rollout.completion_ids == [3, 4, 5, 6, 7, 8]
     assert rollout.completion_mask == [False, False, False, False, False, False]
-    # Logprobs and temperatures still present
+    # Logprobs preserved; ``completion_temperatures`` is filled by the orchestrator post-interleave.
     assert rollout.completion_logprobs == [-0.1, -0.2, 0.0, 0.0, -0.3, -0.4]
-    assert rollout.completion_temperatures == [0.8] * 6
+    assert rollout.completion_temperatures == []
 
 
 def test_align_routed_experts_none():
