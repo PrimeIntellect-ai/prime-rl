@@ -9,7 +9,7 @@ behavior-preserving: the summed result equals the per-sample core loss divided b
 import pytest
 import torch
 
-from prime_rl.configs.losses import RLLossConfig
+from prime_rl.configs.losses import AssistantRoleEchoConfig, EchoLossConfig, RLLossConfig
 from prime_rl.trainer.rl.loss import (
     ExtraTerm,
     LossInputs,
@@ -183,3 +183,11 @@ def test_extra_terms_none_matches_rl_only():
     loss_default, _ = compute_loss(trainer, inference, teacher, advantages, **kwargs)
     loss_explicit_none, _ = compute_loss(trainer, inference, teacher, advantages, extra_terms=None, **kwargs)
     assert torch.allclose(loss_default, loss_explicit_none)
+
+
+def test_no_rl_term_makes_rl_core_raise():
+    # No rl/custom term: the rl core must error when applied, not fabricate a default loss.
+    loss_fns = setup_loss_fns([EchoLossConfig(assistant=AssistantRoleEchoConfig(alpha=0.5))])
+    inputs = LossInputs(torch.zeros(3), torch.zeros(3), None, torch.zeros(3), torch.ones(3, dtype=torch.bool))
+    with pytest.raises(ValueError, match="no rl/custom term"):
+        loss_fns["rl"](inputs)

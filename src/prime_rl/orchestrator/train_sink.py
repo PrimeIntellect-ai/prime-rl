@@ -71,6 +71,7 @@ class TrainSink:
         self.renderer = renderer
         self.train_envs = train_envs
         self._echo_cache: dict[str, tuple] = {}
+        self._primary_cache: dict[str, bool] = {}
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
@@ -191,6 +192,17 @@ class TrainSink:
                 filter_fn = functools.partial(fn, **term.filter.kwargs)
             self._echo_cache[env_name] = (term, filter_fn)
         return self._echo_cache[env_name]
+
+    def _primary_enabled(self, env_name: str) -> bool:
+        """Whether the primary term (matching training_mode) is enabled for this env. When
+        disabled, the env's samples ship with a zeroed completion mask so the primary core
+        trains nothing on them (echo, which has its own mask, still applies)."""
+        if env_name not in self._primary_cache:
+            primary_types = {"rl": ("rl", "custom"), "sft": ("sft",), "opd": ("opd",)}[self.config.training_mode]
+            primary = next((term for term in self.config.losses if term.type in primary_types), None)
+            enabled = self.train_envs.get(env_name).config.enabled_losses
+            self._primary_cache[env_name] = primary is not None and (enabled is None or primary.name in enabled)
+        return self._primary_cache[env_name]
 
     async def process_rollout(self, rollout: TrainRollout) -> None:
         """Tokenize the rollout eagerly. Backfills tokens if the env didn't
@@ -334,6 +346,10 @@ class TrainSink:
                 decode += sample_decode
                 prefill += sample_prefill
                 if not r.is_filtered:
+                    # Disable the primary loss for this env by zeroing the completion mask
+                    # (done after the decode/prefill metric above so throughput stays accurate).
+                    if not self._primary_enabled(r.env_name):
+                        sample.completion_mask = [False] * len(sample.completion_mask)
                     samples.append(sample)
             prefill_lens.append(prefill)
             decode_lens.append(decode)

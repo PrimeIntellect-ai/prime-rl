@@ -149,16 +149,22 @@ LossTermConfig: TypeAlias = Annotated[
 """A single loss term. The list of these is the unified ``losses`` surface."""
 
 
-def validate_unique_loss_names(losses: list[LossTermConfig]) -> list[LossTermConfig]:
-    """Reject duplicate term names — ``enabled_losses`` references terms by name."""
+def validate_loss_list(losses: list[LossTermConfig]) -> list[LossTermConfig]:
+    """Reject duplicate term names and more than one primary (rl/custom) term.
+
+    The rl-path core comes from the single rl/custom term, so >1 is ambiguous.
+    """
     names = [term.name for term in losses]
     duplicates = sorted({name for name in names if names.count(name) > 1})
     if duplicates:
         raise ValueError(f"Duplicate loss term names: {duplicates}. Each term in `losses` needs a unique name.")
+    primaries = [term.name for term in losses if term.type in ("rl", "custom")]
+    if len(primaries) > 1:
+        raise ValueError(f"At most one primary (rl/custom) loss term is allowed, got {primaries}.")
     return losses
 
 
-LossList: TypeAlias = Annotated[list[LossTermConfig], AfterValidator(validate_unique_loss_names)]
+LossList: TypeAlias = Annotated[list[LossTermConfig], AfterValidator(validate_loss_list)]
 """``list[LossTermConfig]`` with a unique-name check; the field type for ``losses``."""
 
 

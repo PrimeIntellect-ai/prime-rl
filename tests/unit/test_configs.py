@@ -382,6 +382,31 @@ def test_mito_prompt_role_echo_warns():
         )
 
 
+def test_training_mode_without_matching_primary_rejected():
+    # training_mode=rl (default) but losses has only an echo term → no rl/custom primary.
+    with pytest.raises(ValidationError, match="requires a matching loss term"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [{"type": "echo", "assistant": {"alpha": 0.5}}],
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
+def test_two_primary_terms_rejected():
+    with pytest.raises(ValidationError, match="At most one primary"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [{"type": "rl", "name": "a"}, {"type": "rl", "name": "b"}],
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
 def test_tokenizer_name_falls_back_to_model_name_when_unset():
     config = RLConfig.model_validate(
         {

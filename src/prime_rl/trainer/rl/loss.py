@@ -298,17 +298,24 @@ def setup_loss_fns(losses: list[LossTermConfig]) -> dict[str, LossFn]:
     Only the ``rl``/``custom`` term affects the rl path; sft/opd/echo cores are fixed.
     """
     rl_term = next((term for term in losses if term.type in ("rl", "custom")), None)
-    if rl_term is not None and rl_term.type == "custom":
+    if rl_term is None:
+        # No rl/custom term: don't fabricate a default. An rl-mode batch erroring here is
+        # the trainer-side complement to the orchestrator's training_mode/losses validation.
+        def rl_fn(inputs: LossInputs) -> LossOutputs:
+            raise ValueError(
+                "rl-mode batch received but `losses` has no rl/custom term. Add one, or set "
+                "the orchestrator's training_mode to match the configured terms."
+            )
+    elif rl_term.type == "custom":
         custom_fn = import_object(rl_term.import_path)
         kwargs = rl_term.kwargs
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return custom_fn(inputs, **kwargs)
     else:
-        rl_config = rl_term if rl_term is not None else RLLossConfig()
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
-            return default_loss_fn(inputs, rl_config)
+            return default_loss_fn(inputs, rl_term)
 
     return {"sft": sft_loss_fn, "opd": opd_loss_fn, "rl": rl_fn, "echo": echo_loss_fn}
 
