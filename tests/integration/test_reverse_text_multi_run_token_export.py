@@ -1,6 +1,7 @@
 """Integration coverage for multi-run token export routing."""
 
 import json
+import math
 import os
 import subprocess
 import time
@@ -9,6 +10,7 @@ from typing import Generator
 
 import pytest
 
+from prime_rl.orchestrator.token_export_metrics import collect_token_export_metrics
 from tests.conftest import ProcessResult
 from tests.integration.test_reverse_text_multi_run import INFERENCE_BASE_URLS, INFERENCE_PORTS, TIMEOUT
 
@@ -223,3 +225,35 @@ def test_token_exports_are_run_local(multi_run_token_export_result: dict[str, Pr
             assert len(record["token_ids"]) == len(record["importance_ratio"])
             assert len(record["token_ids"]) == len(record["mismatch_kl"])
             assert len(record["token_ids"]) == len(record["prob_delta"])
+
+
+def test_orchestrator_collects_token_export_metrics(
+    multi_run_token_export_result: dict[str, ProcessResult], output_dir: Path
+) -> None:
+    """Each run's orchestrator reads back its own exports and surfaces mismatch_kl/entropy metrics.
+
+    `collect_token_export_metrics` is the exact call the orchestrator makes per step
+    (via `collect_next_token_export_metrics`), so running it against the real exports
+    verifies the end-to-end read path that feeds W&B.
+    """
+    for name, result in multi_run_token_export_result.items():
+        assert result.returncode == 0
+        run_dir = output_dir / f"run_{name}"
+        stable_steps = sorted(
+            int(step_dir.name.removeprefix("step_"))
+            for step_dir in (run_dir / "token_exports").glob("step_*")
+            if (step_dir / "STABLE").exists()
+        )
+        assert stable_steps, f"No stable token export steps found for run_{name}"
+
+        metrics_by_step = {step: collect_token_export_metrics(run_dir, step) for step in stable_steps}
+        assert any(metrics_by_step.values()), f"No token export metrics collected for run_{name}"
+
+        for step, metrics in metrics_by_step.items():
+            if not metrics:
+                continue
+            for field in ("mismatch_kl", "entropy"):
+                for stat in ("mean", "max"):
+                    key = f"{field}/{stat}"
+                    assert key in metrics, f"Missing {key} for run_{name} step {step}"
+                    assert math.isfinite(metrics[key]), f"Non-finite {key} for run_{name} step {step}"
