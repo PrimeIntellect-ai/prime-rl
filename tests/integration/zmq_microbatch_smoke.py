@@ -38,7 +38,6 @@ def main() -> None:
             port=zmq_base_port,
             recv_timeout_seconds=5,
             ready_timeout_seconds=5,
-            publish_timeout_seconds=20,
             publish_grace_ms=0,
         ),
     )

@@ -259,7 +259,6 @@ def test_micro_batch_publish_status_round_trip():
 
     loader = DataLoader.__new__(DataLoader)
     loader._store = c10d._get_default_store()
-    loader._publish_timeout_seconds = 1
     loader._current_step = 987654
 
     loader._publish_micro_batch_status(ok=True)

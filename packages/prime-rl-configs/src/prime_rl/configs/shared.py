@@ -266,9 +266,6 @@ class ZMQTransportConfig(BaseTransportConfig):
     ready_timeout_seconds: int = Field(300, ge=1)
     """Seconds the micro-batch sender waits at startup for rank READY messages before failing fast."""
 
-    publish_timeout_seconds: int = Field(1800, ge=1)
-    """Seconds ranks wait for the master to publish/fail a packed micro-batch step."""
-
     publish_grace_ms: int = Field(1000, ge=0)
     """One-time startup grace after all READY messages arrive, before the first publish, to let
     PUB/SUB subscriptions propagate and avoid step-0 slow-joiner drops. Conservative by default

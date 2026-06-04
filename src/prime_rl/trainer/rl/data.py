@@ -1,6 +1,5 @@
 import pickle
 import time
-from datetime import timedelta
 from pathlib import Path
 from typing import TypedDict
 
@@ -18,7 +17,8 @@ from prime_rl.trainer.world import get_world
 from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfig, setup_micro_batch_receiver
 from prime_rl.utils.logger import get_logger
 
-DEFAULT_MICRO_BATCH_PUBLISH_TIMEOUT_SECONDS = 1800
+# Poll interval for the worker wait on the master's micro-batch publish status.
+_PUBLISH_POLL_SECONDS = 1.0
 
 
 class TensorMicroBatch(TypedDict):
@@ -182,11 +182,6 @@ class DataLoader:
         self.world = get_world()
         self._current_step = start_step
         self._micro_batch_transport_config = micro_batch_transport_config or config
-        self._publish_timeout_seconds = getattr(
-            self._micro_batch_transport_config,
-            "publish_timeout_seconds",
-            DEFAULT_MICRO_BATCH_PUBLISH_TIMEOUT_SECONDS,
-        )
         self._store = c10d._get_default_store()
 
         if self.world.is_master:
@@ -231,14 +226,16 @@ class DataLoader:
         self._store.set(self._publish_status_key(), pickle.dumps({"ok": ok, "error": error}))
 
     def _wait_for_micro_batch_status(self) -> None:
+        # No deadline here: packing is generation-bound (the master blocks on the
+        # orchestrator) and can legitimately take arbitrarily long, so a fixed
+        # timeout would crash the run on slow generation rather than a real fault.
+        # Liveness is already covered: a wedged master is killed by the packer
+        # watchdog -> torchrun tears down the group, and a master pack error sets
+        # ok=False below for an immediate coordinated fail. Genuine ZMQ delivery
+        # is still bounded by the receiver's recv_timeout once published.
         key = self._publish_status_key()
-        try:
-            self._store.wait([key], timedelta(seconds=self._publish_timeout_seconds))
-        except Exception as exc:
-            raise TimeoutError(
-                f"Timed out waiting for trainer master to publish micro-batch step {self._current_step} "
-                f"after {self._publish_timeout_seconds}s"
-            ) from exc
+        while not self._store.check([key]):
+            time.sleep(_PUBLISH_POLL_SECONDS)
 
         status = pickle.loads(self._store.get(key))
         if not status.get("ok", False):
