@@ -169,8 +169,8 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     is_masked_high = masks.rl & positive_advantages & dppo_invalid_mask_high
     is_masked_low = masks.rl & negative_advantages & dppo_invalid_mask_low
 
-    advantages = loss_config.adv_tau * advantages
-    rl_pg_loss = dppo_keep_mask * advantages * importance_ratio
+    rl_advantages = loss_config.adv_tau * advantages
+    rl_pg_loss = dppo_keep_mask * rl_advantages * importance_ratio
     rl_kl_loss = masks.rl * log_importance_ratio**2
     rl_loss = (-rl_pg_loss + loss_config.kl_tau * rl_kl_loss).sum() / inputs.rl_loss_scale
 
