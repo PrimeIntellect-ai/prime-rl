@@ -518,6 +518,15 @@ def get_model(
 
     logger.debug(f"Loaded model config ({model_config.to_dict()})")
 
+    # NemotronH: transformers' Mamba2 mixer __init__ calls lazy_load_kernel("mamba-ssm" /
+    # "causal-conv1d") whenever config.use_mamba_kernels is set. That hub-kernel path is gated only
+    # by whether the `kernels` package is importable (NOT by USE_HUB_KERNELS) and resolves from the
+    # HF Hub, which hard-crashes under HF_HUB_OFFLINE=1. prime-rl swaps in its own mamba_ssm Triton
+    # SSD kernels via _patch_mamba2_use_triton_ssd, so the hub kernels are redundant; disable them
+    # to keep model init offline-safe.
+    if getattr(model_config, "model_type", "") == "nemotron_h":
+        model_config.use_mamba_kernels = False
+
     if config.debug.num_layers is not None:
         # VLM configs nest num_hidden_layers under text_config
         target_config = getattr(model_config, "text_config", model_config)
