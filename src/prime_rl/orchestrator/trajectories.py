@@ -644,7 +644,7 @@ def offload_images_to_disk(rollouts: list[vf.RolloutOutput], output_dir: Path) -
     images_dir = (output_dir / mm_store.IMAGE_ASSET_SUBDIR).resolve()
     images_dir.mkdir(parents=True, exist_ok=True)
 
-    written: set[str] = set()
+    written: set[Path] = set()
 
     for output in rollouts:
         for step in output.get("trajectory", []):
@@ -688,7 +688,7 @@ def offload_images_to_disk(rollouts: list[vf.RolloutOutput], output_dir: Path) -
 
                     content_hash = hashlib.sha256(raw).hexdigest()[:16]
                     path = images_dir / f"{content_hash}{ext}"
-                    if content_hash not in written:
+                    if path not in written:
                         if not path.exists():
                             path.write_bytes(raw)
                         else:
@@ -700,7 +700,7 @@ def offload_images_to_disk(rollouts: list[vf.RolloutOutput], output_dir: Path) -
                                 path.touch()
                             except OSError:
                                 pass
-                        written.add(content_hash)
-                    image_url["url"] = f"{_FILE_URL_PREFIX}{path}"
+                        written.add(path)
+                    image_url["url"] = path.as_uri()
 
     return len(written)

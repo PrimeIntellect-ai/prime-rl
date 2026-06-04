@@ -1317,6 +1317,23 @@ def test_offload_data_uri_writes_decoded_bytes(tmp_path):
     assert path.read_bytes() == raw
 
 
+def test_offload_same_bytes_with_different_media_types_writes_both_files(tmp_path):
+    raw = b"same-image-bytes"
+    b64 = base64.b64encode(raw).decode("ascii")
+    png_rollout = _image_rollout(f"data:image/png;base64,{b64}")
+    jpg_rollout = _image_rollout(f"data:image/jpeg;base64,{b64}")
+
+    n = offload_images_to_disk([png_rollout, jpg_rollout], tmp_path)
+
+    assert n == 2
+    png_path = Path(_step_image_url(png_rollout)[len("file://") :])
+    jpg_path = Path(_step_image_url(jpg_rollout)[len("file://") :])
+    assert png_path.suffix == ".png"
+    assert jpg_path.suffix == ".jpg"
+    assert png_path.read_bytes() == raw
+    assert jpg_path.read_bytes() == raw
+
+
 def test_offload_leaves_file_url_already_in_assets(tmp_path):
     images_dir = tmp_path / "assets" / "images"
     images_dir.mkdir(parents=True)
