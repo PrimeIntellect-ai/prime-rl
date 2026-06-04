@@ -371,6 +371,30 @@ def apply_force_balanced_routing(model: nn.Module) -> None:
     )
 
 
+def configure_router_replay_filter(model: nn.Module, score_threshold_ratio: float) -> None:
+    """Configure trainer-side plausibility filtering for replayed MoE routes."""
+    logger = get_logger()
+    language_model = get_language_model(model)
+    routers = []
+
+    for layer in language_model.layers:
+        mlp = getattr(layer, "mlp", None) or getattr(layer, "feed_forward", None)
+        if isinstance(mlp, MoE):
+            routers.append(mlp.router)
+
+    if not routers:
+        logger.warning("Router replay is enabled, but no token-choice MoE routers were found to configure.")
+        return
+
+    for router in routers:
+        router.router_replay_score_threshold_ratio = score_threshold_ratio
+
+    logger.info(
+        f"Configured router replay plausibility filtering on {len(routers)} MoE layers "
+        f"(score_threshold_ratio={score_threshold_ratio})."
+    )
+
+
 def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(model.config, "num_experts") or hasattr(model.config, "n_routed_experts")
 

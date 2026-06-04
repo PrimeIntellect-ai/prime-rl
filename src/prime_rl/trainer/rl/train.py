@@ -42,6 +42,7 @@ from prime_rl.trainer.model import (
     setup_model,
     is_tt_moe_model,
     get_load_balance_stats,
+    configure_router_replay_filter,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
@@ -145,6 +146,8 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = config.ckpt and checkpoint_step is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+    if config.enable_router_replay:
+        configure_router_replay_filter(model, config.router_replay_score_threshold_ratio)
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)

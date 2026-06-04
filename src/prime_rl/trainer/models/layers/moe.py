@@ -427,6 +427,43 @@ class TokenChoiceTopKRouter(nn.Module):
         self.route_norm = route_norm
         self.route_scale = route_scale
         self.force_balanced = False
+        self.router_replay_score_threshold_ratio = 0.0
+
+    def _topk_from_scores(
+        self, scores: torch.Tensor, expert_bias: torch.Tensor | None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if expert_bias is not None:
+            _, selected_experts_indices = torch.topk(scores + expert_bias, k=self.top_k, dim=1)
+            top_scores = scores.gather(dim=1, index=selected_experts_indices)
+        else:
+            top_scores, selected_experts_indices = torch.topk(scores, k=self.top_k, dim=1)
+        return top_scores, selected_experts_indices
+
+    def _filter_replayed_experts(
+        self,
+        scores: torch.Tensor,
+        routed_experts: torch.Tensor,
+        router_top_scores: torch.Tensor,
+        router_selected_experts: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        replayed_scores = scores.gather(dim=1, index=routed_experts)
+        threshold = router_top_scores.amin(dim=1, keepdim=True) * self.router_replay_score_threshold_ratio
+        keep_replayed = replayed_scores >= threshold
+
+        selected_experts_indices = torch.where(keep_replayed, routed_experts, torch.full_like(routed_experts, -1))
+        for candidate_slot in range(self.top_k):
+            candidate = router_selected_experts[:, candidate_slot]
+            candidate_unused = (selected_experts_indices != candidate.unsqueeze(1)).all(dim=1)
+            fillable_slots = (selected_experts_indices < 0) & candidate_unused.unsqueeze(1)
+            first_fillable_slot = fillable_slots & (fillable_slots.cumsum(dim=1) == 1)
+            selected_experts_indices = torch.where(
+                first_fillable_slot,
+                candidate.unsqueeze(1),
+                selected_experts_indices,
+            )
+
+        top_scores = scores.gather(dim=1, index=selected_experts_indices)
+        return top_scores, selected_experts_indices
 
     def forward(
         self, x: torch.Tensor, expert_bias: torch.Tensor | None = None, routed_experts: torch.Tensor | None = None
@@ -468,18 +505,25 @@ class TokenChoiceTopKRouter(nn.Module):
         #       top_scores is still derived from the original scores.
 
         if routed_experts is not None:
-            top_scores = scores.gather(dim=1, index=routed_experts)
-            selected_experts_indices = routed_experts
+            routed_experts = routed_experts.to(torch.long)
+            if self.router_replay_score_threshold_ratio > 0:
+                router_top_scores, router_selected_experts = self._topk_from_scores(scores, expert_bias)
+                top_scores, selected_experts_indices = self._filter_replayed_experts(
+                    scores,
+                    routed_experts,
+                    router_top_scores,
+                    router_selected_experts,
+                )
+            else:
+                top_scores = scores.gather(dim=1, index=routed_experts)
+                selected_experts_indices = routed_experts
         elif self.force_balanced:
             num_tokens = scores.shape[0]
             arange = torch.arange(num_tokens * self.top_k, device=scores.device)
             selected_experts_indices = (arange % self.num_experts).view(num_tokens, self.top_k)
             top_scores = scores.gather(dim=1, index=selected_experts_indices)
-        elif expert_bias is not None:
-            _, selected_experts_indices = torch.topk(scores + expert_bias, k=self.top_k, dim=1)
-            top_scores = scores.gather(dim=1, index=selected_experts_indices)
         else:
-            top_scores, selected_experts_indices = torch.topk(scores, k=self.top_k, dim=1)
+            top_scores, selected_experts_indices = self._topk_from_scores(scores, expert_bias)
 
         routing_confidence_sum = _selected_probability_mass_sum(scores, top_scores, self.score_func)
 
@@ -490,7 +534,7 @@ class TokenChoiceTopKRouter(nn.Module):
 
         # group tokens together by expert indices from 0 to num_experts and pass that to experts forward
         num_tokens_per_expert = torch.histc(
-            selected_experts_indices.reshape(-1),
+            selected_experts_indices.reshape(-1).float(),
             bins=self.num_experts,
             min=0,
             max=self.num_experts,
@@ -542,7 +586,7 @@ class TokenReorderer(nn.Module):
         # group tokens together by expert indices from 0 to num_experts and pass that to experts forward
         selected_experts_indices = selected_experts_indices.reshape(-1)
         num_tokens_per_expert = torch.histc(
-            selected_experts_indices,
+            selected_experts_indices.float(),
             bins=self.num_experts,
             min=0,
             max=self.num_experts,

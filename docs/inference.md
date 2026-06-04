@@ -264,6 +264,8 @@ enable_router_replay = true # this will also auto-set the inference.enable_retur
 enable_return_routed_experts = true
 ```
 
+During training, the router still computes gate scores so gradients flow through it. By default, router replay uses the inference-selected experts exactly. Set `trainer.router_replay_score_threshold_ratio` to a value greater than `0` to filter replayed experts whose gate score falls below that fraction of the weakest expert in the trainer router's own top-k for that token, then fill those slots with router-selected candidates.
+
 This however is not free, it adds a significant overhead to the HTTP requests as this payload can grow quite large. We reccomend increasing `orchestrator.*.env.num_workers` to allow for more parallelization on the verifiers side.
 
 Currently this feature is also not supported with CPU KV cache offload, which can have negative impact on the inference throughput.
