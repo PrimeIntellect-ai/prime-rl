@@ -537,3 +537,24 @@ def test_explicit_inference_parser_wins_over_auto():
     )
     assert config.inference is not None
     assert config.inference.model.tool_call_parser == "hermes"
+
+
+def test_multi_node_dense_nccl_world_size_matches_inference_gpu_count_and_router_client():
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "slurm": {},
+            "deployment": {"type": "multi_node", "num_train_nodes": 2, "num_infer_nodes": 2},
+            "weight_broadcast": {"type": "nccl"},
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+            "inference": {"parallel": {"tp": 4, "dp": 4}},
+        }
+    )
+
+    assert config.inference is not None
+    assert config.inference.api_server_count == 4
+    assert config.inference.data_parallel_size_local == 2
+    assert config.trainer.weight_broadcast.inference_world_size == 16
+    assert config.orchestrator.weight_broadcast.inference_world_size == 16
+    assert config.orchestrator.student.client.dp_rank_count == 1

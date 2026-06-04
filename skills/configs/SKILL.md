@@ -28,6 +28,12 @@ uv run rl --help                                  # all fields and defaults
 uv run rl @ rl.toml --dry-run --output-dir /tmp/x # write resolved TOML to /tmp/x/configs
 ```
 
+For multi-node RL with NCCL weight broadcast, inspect the resolved trainer and
+orchestrator TOML after `--dry-run`. `inference_world_size` should match allocated
+inference GPUs. For dense external-LB router launches, the orchestrator student's
+`dp_rank_count` should stay `1`; admin URLs cover every backend for weight updates,
+while the router handles request load balancing/stickiness.
+
 ## Validators
 
 Incompatible combinations (e.g. CP requires flash attention) must raise in a `model_validator` at resolve time, not at runtime. When renaming a field, emit a deprecation warning with a migration hint — never silently drop.

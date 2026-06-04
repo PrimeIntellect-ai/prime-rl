@@ -548,11 +548,9 @@ class RLConfig(BaseConfig):
                     self.inference.api_server_count = dp_per_node
 
             if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
-                # Compute inference_world_size from actual worker count per server:
-                # each api_server runs tp workers that participate in collective_rpc.
-                api_server_count = self.inference.api_server_count if self.inference else 1
-                tp = self.inference.parallel.tp if self.inference else 1
-                total_infer_workers = self.deployment.total_infer_nodes * api_server_count * tp
+                # The multi-node RL launcher starts one TP-sharded backend for each
+                # DP slice on every allocated inference node.
+                total_infer_workers = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
                 assert self.trainer.weight_broadcast.type == "nccl"
                 self.trainer.weight_broadcast.host = "0.0.0.0"
                 self.trainer.weight_broadcast.inference_world_size = total_infer_workers
@@ -600,16 +598,31 @@ class RLConfig(BaseConfig):
     def auto_setup_inference_client(self):
         """Auto-configure orchestrator student client from the inference server config.
 
-        For all modes, sets dp_rank_count from inference DP size. For SFT mode,
-        also sets base_url - rl/opd rely on the ClientConfig default
-        (``["http://localhost:8000/v1"]``) which already matches the auto-launched
-        student vLLM at inference.server.port = 8000.
+        For most modes, sets dp_rank_count from inference DP size. Dense
+        multi-node external-LB launches route through vllm-router, so requests
+        must not carry vLLM DP-rank headers. For SFT mode, also sets base_url -
+        rl/opd rely on the ClientConfig default (``["http://localhost:8000/v1"]``)
+        which already matches the auto-launched student vLLM at inference.server.port = 8000.
         """
         if self.inference is None:
             return self
         client = self.orchestrator.student.client
         if "dp_rank_count" not in client.model_fields_set:
-            client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
+            if (
+                self.deployment.type == "multi_node"
+                and self.inference.deployment.type != "disaggregated"
+                and self.inference.enable_expert_parallel
+            ):
+                dp_per_node = self.deployment.gpus_per_node // self.inference.parallel.tp
+                client.dp_rank_count = self.deployment.num_infer_nodes * dp_per_node
+            elif (
+                self.deployment.type == "multi_node"
+                and self.inference.deployment.type != "disaggregated"
+                and not self.inference.enable_expert_parallel
+            ):
+                client.dp_rank_count = 1
+            else:
+                client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
         if self.orchestrator.training_mode == "sft" and "base_url" not in client.model_fields_set:
             host = self.inference.server.host or "localhost"
             port = self.inference.server.port
