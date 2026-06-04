@@ -11,6 +11,34 @@ over a single shared forward.
 > completion — is **one preset** in this framework, not a bespoke feature. It expands to
 > `{loss: sft, filters: [role], weight: constant}`.
 
+## Status — as built (phases 1–4)
+
+Implemented across 6 commits (phase 1 → 2a → 2b → 3 step 1 → 3 step 2 → 4): ruff-clean, but **not
+yet run end-to-end**. How the build refines the plan, and what's deferred:
+
+**As built (refinements vs. the plan below):**
+- **Wire (§10):** kept the single *merged* echo weight stream (`echo_alpha` → `echo_mask` +
+  `echo_weight`) instead of a `term_weights` dict — sufficient because all echo terms share the CE
+  core and roles are disjoint, so **at most one echo term is allowed per env**. The dict
+  generalization is deferred.
+- **Config placement (§12):** `RLConfig.losses` propagates to `trainer.losses` +
+  `orchestrator.losses` via `propagate_shared_fields`; `validate_shared_losses` enforces the
+  set-once-at-top-level rule.
+- **Per-env (§7):** `enabled_losses` + `loss_overrides` select / override *orchestrator-side*
+  params (echo roles / alpha / filter). Per-env *trainer-side* core kwargs are deferred.
+- **opd (§16):** registered as a core + an `opd` preset; the opd *path* stays `training_mode`-driven.
+- **Validation (phase 4):** unique term names; `enabled_losses ⊆` defined terms; ≤1 echo term/env;
+  `trainer.losses == orchestrator.losses`.
+
+**Shipped custom pointers:** custom **core** (`CustomLossTermConfig`) and custom echo **filter**
+(`EchoFilterConfig.import_path`).
+
+**Deferred (a coherent follow-up — these belong together):**
+- `term_weights` **dict**: multiple *independent-core* terms on the wire (lifts the ≤1-echo limit).
+- Custom **weight** fn (custom per-token weights) — pairs with the dict.
+- Per-env **trainer-side** core kwargs (per-env `kl_tau`) + **rl-disable-per-env** (need the
+  per-sample-kwargs wire).
+
 ## 1. Goal
 
 Decouple three concerns that are entangled in today's RL loss:
