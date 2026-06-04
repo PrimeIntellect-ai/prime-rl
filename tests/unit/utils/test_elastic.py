@@ -417,7 +417,6 @@ def test_elastic_clients_preserve_renderer_model_name_when_model_name_updates():
         client_config.headers = {}
         client_config.headers_from_env = {}
         client_config.extra_headers_from_state = {}
-        client_config.dp_rank_count = 1
 
         from renderers import Qwen3VLRendererConfig
 
