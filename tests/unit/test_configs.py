@@ -271,7 +271,7 @@ def test_duplicate_loss_names_rejected():
         RLConfig.model_validate(
             {
                 "model": {"name": "my-model"},
-                "losses": [{"type": "rl", "name": "x"}, {"type": "sft", "name": "x"}],
+                "losses": [{"type": "rl", "name": "x"}, {"type": "echo", "name": "x", "assistant": {"alpha": 0.5}}],
                 "trainer": {},
                 "orchestrator": {"renderer": None},
             }
