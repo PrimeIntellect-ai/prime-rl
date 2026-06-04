@@ -84,8 +84,13 @@ def propagate_shared_fields(data: Any) -> Any:
     )
 
     # [log]
-    propagate("log.level", "trainer.log.level", "orchestrator.log.level")
-    propagate("log.json_logging", "trainer.log.json_logging", "orchestrator.log.json_logging")
+    propagate("log.level", "trainer.log.level", "orchestrator.log.level", "inference.log.level")
+    propagate(
+        "log.json_logging",
+        "trainer.log.json_logging",
+        "orchestrator.log.json_logging",
+        "inference.log.json_logging",
+    )
 
     # [ckpt] leaves. (Bare empty ``[ckpt]`` block enablement is at the end.)
     # ``orchestrator.ckpt`` has no ``output_dir`` field — trainer-only.

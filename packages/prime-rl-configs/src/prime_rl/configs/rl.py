@@ -51,10 +51,10 @@ class RLExperimentalConfig(BaseConfig):
 
 class SharedLogConfig(BaseConfig):
     level: str | None = None
-    """Log level for trainer and orchestrator. When unset, each sub-config's own log level applies (defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``)."""
+    """Log level for trainer, orchestrator, and inference. When unset, each sub-config's own log level applies (defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``)."""
 
     json_logging: bool = False
-    """Emit newline-delimited JSON logs for aggregation (Loki, Grafana, etc.)."""
+    """Emit newline-delimited JSON logs for aggregation (Loki, Grafana, etc.). Propagated to trainer, orchestrator, and inference."""
 
 
 class SharedWandbConfig(BaseConfig):
