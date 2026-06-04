@@ -38,6 +38,19 @@ Expected signature:
 """
 
 
+@dataclass
+class LossTerm:
+    """A single loss term: a named core loss fn applied to a packed sample.
+
+    ``compute_loss`` applies every term in its list and sums the results before a
+    single backward. Today there is exactly one term per sample (selected by
+    ``training_mode``); this is the seam where additional terms are added.
+    """
+
+    name: str
+    core: LossFn
+
+
 @jaxtyped(typechecker=typechecker)
 @torch.compile(dynamic=True)
 def selective_log_softmax(
@@ -258,6 +271,22 @@ def setup_loss_fns(loss_config: LossConfig) -> dict[str, LossFn]:
     return {"sft": sft_loss_fn, "opd": opd_loss_fn, "rl": rl_fn}
 
 
+def build_loss_terms(training_mode: str, cores: dict[str, LossFn]) -> list[LossTerm]:
+    """Select the loss term(s) for a packed sample.
+
+    Currently one term per sample, keyed by ``training_mode`` into the core
+    registry built by ``setup_loss_fns``.
+    """
+    try:
+        core = cores[training_mode]
+    except KeyError:
+        raise ValueError(
+            f"No loss fn available for training_mode={training_mode!r} "
+            f"(available: {sorted(cores)}). Check trainer.loss.type."
+        )
+    return [LossTerm(name=training_mode, core=core)]
+
+
 def compute_loss(
     trainer_logprobs: list[Float[Tensor, " seq_i"]],
     inference_logprobs: list[Float[Tensor, " seq_i"]],
@@ -271,9 +300,11 @@ def compute_loss(
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
 
-    Loss dispatch is batch-driven: ``training_mode`` selects the loss fn from
-    ``loss_fns`` (built by ``setup_loss_fns``). sft → sft_loss_fn, opd →
-    opd_loss_fn, rl → the configured default/custom loss.
+    Loss dispatch is batch-driven: ``training_mode`` selects the loss term(s) via
+    ``build_loss_terms`` from the core registry ``loss_fns`` (built by
+    ``setup_loss_fns``). Every term is applied and summed before the single
+    backward; today there is exactly one term per sample. sft → sft_loss_fn,
+    opd → opd_loss_fn, rl → the configured default/custom loss.
 
     Args:
         trainer_logprobs: Log probabilities for each sequence
@@ -288,13 +319,7 @@ def compute_loss(
     Returns:
         Tuple of (scaled_loss, aggregated_metrics)
     """
-    try:
-        effective_loss_fn = loss_fns[training_mode]
-    except KeyError:
-        raise ValueError(
-            f"No loss fn available for training_mode={training_mode!r} "
-            f"(available: {sorted(loss_fns)}). Check trainer.loss.type."
-        )
+    terms = build_loss_terms(training_mode, loss_fns)
 
     total_loss = 0.0
     all_metrics: dict[str, list[Tensor]] = {}
@@ -317,14 +342,14 @@ def compute_loss(
             loss_mask=mask,
         )
 
-        result = effective_loss_fn(inputs)
-
-        total_loss = total_loss + result.loss
-
-        for k, v in result.metrics.items():
-            if k not in all_metrics:
-                all_metrics[k] = []
-            all_metrics[k].append(v)
+        # Every term is summed into one scalar; today there is exactly one per sample.
+        for term in terms:
+            result = term.core(inputs)
+            total_loss = total_loss + result.loss
+            for k, v in result.metrics.items():
+                if k not in all_metrics:
+                    all_metrics[k] = []
+                all_metrics[k].append(v)
 
     scaled_loss = total_loss / loss_scale
 
