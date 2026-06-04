@@ -558,3 +558,38 @@ def test_multi_node_dense_nccl_world_size_matches_inference_gpu_count_and_router
     assert config.trainer.weight_broadcast.inference_world_size == 16
     assert config.orchestrator.weight_broadcast.inference_world_size == 16
     assert config.orchestrator.student.client.dp_rank_count == 1
+
+
+def test_multi_node_dense_rejects_invalid_router_dp_rank_count():
+    with pytest.raises(ValidationError, match=r"dp_rank_count must resolve to 1"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "Qwen/Qwen3-0.6B"},
+                "slurm": {},
+                "deployment": {"type": "multi_node", "num_train_nodes": 2, "num_infer_nodes": 2},
+                "weight_broadcast": {"type": "nccl"},
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": None,
+                    "student": {"client": {"dp_rank_count": 4}},
+                },
+                "inference": {"parallel": {"tp": 4, "dp": 4}},
+            }
+        )
+
+
+def test_multi_node_nccl_rejects_invalid_inference_world_size_override():
+    with pytest.raises(ValidationError, match=r"inference_world_size must match allocated inference GPUs"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "Qwen/Qwen3-0.6B"},
+                "slurm": {},
+                "deployment": {"type": "multi_node", "num_train_nodes": 2, "num_infer_nodes": 2},
+                "trainer": {"weight_broadcast": {"type": "nccl", "inference_world_size": 32}},
+                "orchestrator": {
+                    "renderer": None,
+                    "weight_broadcast": {"type": "nccl", "inference_world_size": 32},
+                },
+                "inference": {"parallel": {"tp": 4, "dp": 4}},
+            }
+        )

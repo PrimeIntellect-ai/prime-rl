@@ -630,6 +630,49 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_multi_node_inference_resolution(self):
+        if self.deployment.type != "multi_node" or self.inference is None:
+            return self
+
+        if self.trainer.weight_broadcast.type == "nccl" or self.orchestrator.weight_broadcast.type == "nccl":
+            expected_world_size = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
+
+            if (
+                self.trainer.weight_broadcast.type == "nccl"
+                and self.trainer.weight_broadcast.inference_world_size != expected_world_size
+            ):
+                raise ValueError(
+                    "trainer.weight_broadcast.inference_world_size must match allocated inference GPUs "
+                    f"({expected_world_size}) for multi-node NCCL weight broadcast."
+                )
+
+            if (
+                self.orchestrator.weight_broadcast.type == "nccl"
+                and self.orchestrator.weight_broadcast.inference_world_size != expected_world_size
+            ):
+                raise ValueError(
+                    "orchestrator.weight_broadcast.inference_world_size must match allocated inference GPUs "
+                    f"({expected_world_size}) for multi-node NCCL weight broadcast."
+                )
+
+        if self.inference.deployment.type != "disaggregated":
+            if self.inference.enable_expert_parallel:
+                dp_per_node = self.deployment.gpus_per_node // self.inference.parallel.tp
+                expected_dp_rank_count = self.deployment.num_infer_nodes * dp_per_node
+            else:
+                expected_dp_rank_count = 1
+
+            client = self.orchestrator.student.client
+            if client.dp_rank_count != expected_dp_rank_count:
+                raise ValueError(
+                    "orchestrator.student.client.dp_rank_count must resolve to "
+                    f"{expected_dp_rank_count} for multi-node non-disaggregated inference; "
+                    f"got {client.dp_rank_count}."
+                )
+
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_slurm_template(self):
         """Auto-setup the default single-node/multi-node SLURM template if no custom template is provided."""
         if self.slurm is not None and self.slurm.template_path is None:
