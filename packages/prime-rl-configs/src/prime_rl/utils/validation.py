@@ -127,6 +127,12 @@ def propagate_shared_fields(data: Any) -> Any:
     propagate("max_steps", "trainer.max_steps", "orchestrator.max_steps")
     propagate("seq_len", "trainer.model.seq_len", "orchestrator.seq_len")
 
+    # [slurm] → inference: a multi-node RL run drives its inference deployment under
+    # the same SLURM allocation, so the nested inference inherits [slurm]. This is
+    # what lets the nested InferenceConfig's multi-node / disaggregated SLURM check
+    # pass (the per-rank inference.toml drops slurm, so each rank still runs locally).
+    propagate("slurm", "inference.slurm")
+
     # output_dir: orchestrator gets a ``/run_default`` subdir so trainer +
     # orchestrator nest under the same experiment root without colliding.
     # Conflicts are reported against the *transformed* sub-config value, not

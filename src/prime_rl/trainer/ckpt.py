@@ -171,9 +171,6 @@ class CheckpointManager:
         # Checkpoint the local dataloader
         if dataloader is not None:
             dataloader_dir = path / "dataloader"
-            # Avoid concurrent mkdir from all ranks — on parallel filesystems
-            # (e.g. beegfs) a non-master rank can hit EEXIST + is_dir()==False
-            # right after master creates the dir and have exist_ok=True fail.
             if self.world.is_master:
                 dataloader_dir.mkdir(parents=True, exist_ok=True)
             torch.distributed.barrier()
@@ -429,7 +426,6 @@ class WeightCheckpointManager:
                 f"Converted PrimeRL format to HF format in {time.perf_counter() - start_time:.2f} seconds"
             )
         else:
-            # For regular transformers models, revert internal format to original HF hub format
             from transformers.core_model_loading import revert_weight_conversion
 
             self.logger.debug("Reverting transformers internal format to HF hub format for weight checkpoint")

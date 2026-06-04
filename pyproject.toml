@@ -17,7 +17,7 @@ dependencies = [
     "torchvision",
     "torchaudio",
     "torchdata>=0.11.0",
-    "transformers",
+    "transformers==5.6.2",
     "vllm>=0.22.0",
     "mooncake-transfer-engine>=0.3.10.post2",
     "wandb>=0.26.1",
@@ -91,6 +91,7 @@ envs = [
     "tasksets",
     "tau2-bench",
     "wiki-search",
+    "wordle",
 ]
 disagg = [
     "deep-ep ; platform_machine == 'x86_64'",
@@ -129,7 +130,6 @@ dev = [
     "ruff>=0.12.1",
 ]
 
-
 [tool.uv]
 # Enforce a uv version that supports the friendly-duration form
 # (`"7 days"`) in the static pyproject parser. Older uvs silently parse
@@ -148,7 +148,7 @@ environments = [
 override-dependencies = [
     "nvidia-cudnn-cu12>=9.15",
     "nvidia-cutlass-dsl>=4.4.1",
-    "transformers>=5.1.0.dev0",
+    "transformers==5.6.2",
     "torch>=2.9.0",
     "openenv-core",
 ]
@@ -228,12 +228,12 @@ science-env = { path = "deps/research-environments/environments/science_env", ed
 simpleqa-verified = { path = "deps/research-environments/environments/simpleqa_verified", editable = true }
 tau2-bench = { path = "deps/research-environments/environments/tau2_bench", editable = true }
 wiki-search = { path = "deps/verifiers/environments/wiki_search", editable = true }
+wordle = { path = "deps/verifiers/environments/wordle", editable = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
-transformers = { git = "https://github.com/huggingface/transformers.git", rev = "c1c3424" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "96bd151" }
 vllm-router = { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.1.26/vllm_router-0.1.26-cp38-abi3-manylinux_2_28_x86_64.whl" }
 vllm = [
