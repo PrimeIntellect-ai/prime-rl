@@ -4,6 +4,10 @@ from vllm.triton_utils import tl, triton
 from prime_rl.inference.vllm.padded_input_scrub import monkey_patch_vllm_padded_input_scrub
 
 
+def _trim_logits_to_org_vocab(logits: torch.Tensor, org_vocab_size: int) -> torch.Tensor:
+    return logits[..., :org_vocab_size].contiguous()
+
+
 def transformers_v5_compat():
     """vLLM general plugin: patch transformers v5 config attrs that vLLM still expects.
 
@@ -863,7 +867,7 @@ def monkey_patch_fp32_lm_head():
 
         logits = self._gather_logits(logits)
         if logits is not None:
-            logits = logits[..., : self.org_vocab_size]
+            logits = _trim_logits_to_org_vocab(logits, self.org_vocab_size)
         return logits
 
     LogitsProcessor.__init__ = _patched_init
