@@ -550,14 +550,10 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_primary_loss(self):
-        # The active primary core is selected by training_mode; require a matching term so the
-        # trainer never has to fabricate one (rl-mode → rl/custom, sft → sft, opd → opd).
-        primary_types = {"rl": ("rl", "custom"), "sft": ("sft",), "opd": ("opd",)}[self.training_mode]
-        if not any(term.type in primary_types for term in self.losses):
-            raise ValueError(
-                f"training_mode={self.training_mode!r} requires a matching loss term "
-                f"({' or '.join(primary_types)}) in `losses`, but found none."
-            )
+        # The rl-mode primary core comes from the rl/custom term; sft/opd dispatch to fixed
+        # cores by training_mode and need no matching term in `losses` (default losses=[rl] is fine).
+        if self.training_mode == "rl" and not any(term.type in ("rl", "custom") for term in self.losses):
+            raise ValueError("training_mode='rl' requires an rl or custom loss term in `losses`, but found none.")
         return self
 
     tokenizer: TokenizerConfig = TokenizerConfig()

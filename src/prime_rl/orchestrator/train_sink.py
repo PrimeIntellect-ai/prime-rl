@@ -194,14 +194,17 @@ class TrainSink:
         return self._echo_cache[env_name]
 
     def _primary_enabled(self, env_name: str) -> bool:
-        """Whether the primary term (matching training_mode) is enabled for this env. When
-        disabled, the env's samples ship with a zeroed completion mask so the primary core
-        trains nothing on them (echo, which has its own mask, still applies)."""
+        """Whether the rl-mode primary (the rl/custom term) is enabled for this env. sft/opd
+        dispatch to fixed cores and are always on; only rl-mode can be disabled per env via
+        enabled_losses, in which case that env's samples ship with a zeroed completion mask
+        (echo, which has its own mask, still applies)."""
         if env_name not in self._primary_cache:
-            primary_types = {"rl": ("rl", "custom"), "sft": ("sft",), "opd": ("opd",)}[self.config.training_mode]
-            primary = next((term for term in self.config.losses if term.type in primary_types), None)
-            enabled = self.train_envs.get(env_name).config.enabled_losses
-            self._primary_cache[env_name] = primary is not None and (enabled is None or primary.name in enabled)
+            if self.config.training_mode != "rl":
+                self._primary_cache[env_name] = True
+            else:
+                primary = next((term for term in self.config.losses if term.type in ("rl", "custom")), None)
+                enabled = self.train_envs.get(env_name).config.enabled_losses
+                self._primary_cache[env_name] = primary is not None and (enabled is None or primary.name in enabled)
         return self._primary_cache[env_name]
 
     async def process_rollout(self, rollout: TrainRollout) -> None:
