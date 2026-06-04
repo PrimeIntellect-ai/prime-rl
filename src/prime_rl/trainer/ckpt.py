@@ -171,7 +171,12 @@ class CheckpointManager:
         # Checkpoint the local dataloader
         if dataloader is not None:
             dataloader_dir = path / "dataloader"
-            dataloader_dir.mkdir(parents=True, exist_ok=True)
+            # Only the master creates the dir; the rest wait at a barrier. On a
+            # parallel FS (beegfs), concurrent mkdir from every rank can re-raise
+            # FileExistsError (EEXIST + stale is_dir() metadata).
+            if self.world.is_master:
+                dataloader_dir.mkdir(parents=True, exist_ok=True)
+            torch.distributed.barrier()
             torch.save(dataloader.state_dict(), dataloader_dir / f"rank_{self.world.rank}.pt")
 
         # Save sharded state
@@ -239,7 +244,11 @@ class CheckpointManager:
     ) -> None:
         """Save the full checkpoint state for a specified step."""
         ckpt_path = self.get_ckpt_path(step)
-        ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+        # Master-only mkdir + barrier: concurrent mkdir from every rank can
+        # re-raise FileExistsError on a parallel FS (see save_to_path).
+        if self.world.is_master:
+            ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.distributed.barrier()
 
         self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
         bisect.insort(self.ckpt_steps, step)
@@ -390,7 +399,11 @@ class WeightCheckpointManager:
     ):
         """Save a HF-compatible weight-only checkpoint for a given step."""
         step_path = self.get_step_path(step)
-        step_path.mkdir(parents=True, exist_ok=True)
+        # Master-only mkdir + barrier: concurrent mkdir from every rank can
+        # re-raise FileExistsError on a parallel FS (EEXIST + stale is_dir()).
+        if self.world.is_master:
+            step_path.mkdir(parents=True, exist_ok=True)
+        torch.distributed.barrier()
 
         # Gather all weights on master rank
         self.logger.debug("Gathering weights on master rank for weight checkpoint")
@@ -420,7 +433,6 @@ class WeightCheckpointManager:
                 f"Converted PrimeRL format to HF format in {time.perf_counter() - start_time:.2f} seconds"
             )
         else:
-            # For regular transformers models, revert internal format to original HF hub format
             from transformers.core_model_loading import revert_weight_conversion
 
             self.logger.debug("Reverting transformers internal format to HF hub format for weight checkpoint")

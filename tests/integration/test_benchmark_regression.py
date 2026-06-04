@@ -20,7 +20,7 @@ pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
 TIMEOUT = 15 * 60  # 15 minutes
 # Note: I would prefer 5% but massed compute A600s seem to be slower than hyperstack A600s (which is the baseline)
-METRIC_TOLERANCE = 0.1  # 10% tolerance for mfu, throughput, step_time
+METRIC_TOLERANCE = 0.15  # 15% tolerance for mfu, throughput, step_time
 MEMORY_TOLERANCE = 0.01  # 1% tolerance for peak memory
 TOKEN_CHUNK_SIZE = "1024"
 

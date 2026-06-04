@@ -21,6 +21,10 @@
 #SBATCH --output={{ output_dir }}/job_%j.log
 #SBATCH --error={{ output_dir }}/job_%j.log
 
+# Exit immediately if any setup command or the launcher fails so the SLURM job
+# releases its allocation instead of holding nodes after a crash.
+set -e
+
 export PROJECT_DIR={{ project_dir }}
 
 # Setup environment

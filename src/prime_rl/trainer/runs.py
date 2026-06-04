@@ -247,7 +247,12 @@ class MultiRunManager:
 
         # Run registered validation hooks
         for hook in self._config_validation_hooks:
-            is_valid, error_message = hook(config)
+            try:
+                is_valid, error_message = hook(config)
+            except Exception as e:
+                hook_name = getattr(hook, "__name__", type(hook).__name__)
+                is_valid = False
+                error_message = f"Validation hook {hook_name} crashed: {e}"
             if not is_valid:
                 self.logger.error(f"Run {run_id}: {error_message}")
                 if error_path.parent.exists():
@@ -510,20 +515,24 @@ def setup_multi_run_manager(
         trainer_lora = lora_config
 
         def validate_lora_rank(orch_config: "OrchestratorConfig") -> tuple[bool, str]:
+            if orch_config.student.model.lora is None:
+                return False, "student.model.lora is required when trainer is configured with LoRA"
             # Default to trainer's rank/alpha if not specified
-            if orch_config.model.lora.rank is None:
-                orch_config.model.lora.rank = trainer_lora.rank
-            if orch_config.model.lora.alpha is None:
-                orch_config.model.lora.alpha = trainer_lora.alpha
-            if orch_config.model.lora.rank > trainer_lora.rank:
+            if orch_config.student.model.lora.rank is None:
+                orch_config.student.model.lora.rank = trainer_lora.rank
+            if orch_config.student.model.lora.alpha is None:
+                orch_config.student.model.lora.alpha = trainer_lora.alpha
+            if orch_config.student.model.lora.rank > trainer_lora.rank:
                 return (
                     False,
-                    f"model.lora.rank ({orch_config.model.lora.rank}) exceeds trainer max rank ({trainer_lora.rank})",
+                    f"student.model.lora.rank ({orch_config.student.model.lora.rank}) exceeds trainer max rank ({trainer_lora.rank})",
                 )
             return True, ""
 
         def on_run_discovered(idx: int, run_id: str, orch_config: "OrchestratorConfig") -> None:
-            _MULTI_RUN_MANAGER.scaling_factors[idx] = orch_config.model.lora.alpha / orch_config.model.lora.rank
+            _MULTI_RUN_MANAGER.scaling_factors[idx] = (
+                orch_config.student.model.lora.alpha / orch_config.student.model.lora.rank
+            )
 
         _MULTI_RUN_MANAGER.register_config_validation_hook(validate_lora_rank)
         _MULTI_RUN_MANAGER.register_discovered_hook(on_run_discovered)

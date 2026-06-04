@@ -44,11 +44,19 @@ assert_supported_platform() {
 }
 
 has_ssh_access() {
-  # Probe SSH auth to GitHub without prompting; treat any nonzero as "no ssh"
-  # We try a quick ls-remote to avoid cloning on failure.
-  # Disable -e for the probe so the script doesn't exit on a failed test.
+  # Probe GitHub SSH auth directly. `ssh -T git@github.com` returns
+  # "successfully authenticated" only when the local key is registered
+  # with a GitHub user, which is the precondition for cloning private
+  # submodules over SSH. The previous `git ls-remote` probe could
+  # spuriously succeed (cached creds, public-repo edge cases) and
+  # leave submodule clones to fail later.
+  #
+  # Note: ssh -T git@github.com always exits 1 (GitHub denies shell
+  # access after authenticating), so we capture stdout/stderr to a var
+  # first and grep the var. Piping directly would trigger pipefail.
   set +e
-  timeout 5s git ls-remote --heads git@github.com:PrimeIntellect-ai/${REPO_ID}.git >/dev/null 2>&1
+  out=$(timeout 5s ssh -o BatchMode=yes -T git@github.com 2>&1)
+  echo "$out" | grep -q "successfully authenticated"
   rc=$?
   set -e
   return $rc
@@ -63,6 +71,29 @@ ensure_known_hosts() {
     ssh-keyscan -H github.com 2>/dev/null | sort -u |
       tee -a "${HOME}/.ssh/known_hosts" >/dev/null
     chmod 600 "${HOME}/.ssh/known_hosts"
+  fi
+}
+
+# Initialize each submodule independently so that a missing private repo
+# (e.g. configs/private when the user lacks access) does not abort the install.
+init_submodules() {
+  if [ ! -f .gitmodules ]; then
+    return 0
+  fi
+  local paths failures
+  paths=$(git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | awk '{print $2}')
+  failures=()
+  for path in $paths; do
+    log_info "Initializing submodule: ${path}"
+    if git submodule update --init --recursive -- "$path"; then
+      :
+    else
+      log_warn "Could not initialize submodule '${path}' (likely no access). Continuing without it."
+      failures+=("$path")
+    fi
+  done
+  if [ "${#failures[@]}" -gt 0 ]; then
+    log_warn "Skipped submodules: ${failures[*]}"
   fi
 }
 
@@ -97,6 +128,19 @@ main() {
     log_info "Entering project directory..."
     cd ${REPO_ID}
   fi
+
+  if ! has_ssh_access; then
+    # Propagate the rewrite via env vars so it reaches `git submodule--helper clone`,
+    # which spawns fresh `git clone` processes that do not read the parent repo's
+    # local `.git/config`. Local `git config url..insteadOf` is invisible to them.
+    log_info "Routing git@github.com: SSH URLs to HTTPS for this run."
+    export GIT_CONFIG_COUNT=1
+    export GIT_CONFIG_KEY_0="url.https://github.com/.insteadOf"
+    export GIT_CONFIG_VALUE_0="git@github.com:"
+  fi
+
+  log_info "Initializing submodules..."
+  init_submodules
 
   log_info "Installing uv..."
   curl -LsSf https://astral.sh/uv/install.sh | sh

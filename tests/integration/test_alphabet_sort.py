@@ -4,7 +4,13 @@ from typing import Callable
 import pytest
 
 from tests.conftest import ProcessResult
-from tests.utils import check_no_error, check_reward_goes_up, check_reward_in_range, strip_escape_codes
+from tests.utils import (
+    check_avg_mismatch_kl_in_range,
+    check_no_error,
+    check_reward_goes_up,
+    check_reward_in_range,
+    strip_escape_codes,
+)
 
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
@@ -13,22 +19,15 @@ TIMEOUT = 900  # 15 minutes
 
 
 @pytest.fixture(scope="module")
-def rl_output_dir(output_dir: Path) -> Path:
-    rl_dir = output_dir / "alphabet_sort_start"
-    rl_dir.mkdir(parents=True, exist_ok=True)
-    return rl_dir
-
-
-@pytest.fixture(scope="module")
 def wandb_name(branch_name: str) -> str:
     """Fixture for W&B name for alphabet sort RL CI integration tests."""
-    return f"test-alphabet-sort-{branch_name}"
+    return f"test-alphabet-sort:{branch_name}"
 
 
 @pytest.fixture(scope="module")
 def rl_process(
     run_process: Callable[..., ProcessResult],
-    rl_output_dir: Path,
+    output_dir: Path,
     wandb_project: str,
     wandb_name: str,
 ) -> ProcessResult:
@@ -37,32 +36,39 @@ def rl_process(
         "run",
         "rl",
         "@",
-        "configs/ci/integration/alphabet_sort/start.toml",
+        "configs/ci/integration/alphabet_sort.toml",
         "--wandb.project",
         wandb_project,
         "--wandb.name",
         wandb_name,
         "--output-dir",
-        rl_output_dir.as_posix(),
+        output_dir.as_posix(),
     ]
     return run_process(cmd, timeout=TIMEOUT)
 
 
 @pytest.fixture(scope="module")
-def test_no_error(rl_process: ProcessResult, rl_output_dir: Path):
+def test_no_error(rl_process: ProcessResult, output_dir: Path):
     """Tests that the RL process does not fail."""
-    check_no_error(rl_process, rl_output_dir)
+    check_no_error(rl_process, output_dir)
 
 
-def test_reward_goes_up(rl_process: ProcessResult, test_no_error, rl_output_dir: Path):
+def test_reward_goes_up(rl_process: ProcessResult, test_no_error, output_dir: Path):
     """Tests that the reward goes up in the RL process."""
-    with open(rl_output_dir / "logs" / "orchestrator.log", "r") as f:
+    with open(output_dir / "logs" / "orchestrator.log", "r") as f:
         orchestrator_stdout = strip_escape_codes(f.read()).splitlines()
     check_reward_goes_up(orchestrator_stdout)
 
 
-def test_reward_in_range(rl_process: ProcessResult, test_no_error, rl_output_dir: Path):
+def test_reward_in_range(rl_process: ProcessResult, test_no_error, output_dir: Path):
     """Tests that the reward is in range in the RL process."""
-    with open(rl_output_dir / "logs" / "orchestrator.log", "r") as f:
+    with open(output_dir / "logs" / "orchestrator.log", "r") as f:
         orchestrator_stdout = strip_escape_codes(f.read()).splitlines()
-    check_reward_in_range(orchestrator_stdout, min_threshold=0.05)
+    check_reward_in_range(orchestrator_stdout, min_threshold=0.10)
+
+
+def test_mismatch_kl_in_range(rl_process: ProcessResult, test_no_error, output_dir: Path):
+    """Tests that the average mismatch KL is below 0.15 across the last 5 steps."""
+    with open(output_dir / "logs" / "trainer.log", "r") as f:
+        trainer_stdout = strip_escape_codes(f.read()).splitlines()
+    check_avg_mismatch_kl_in_range(trainer_stdout, last_n_steps=5, max_threshold=0.15)

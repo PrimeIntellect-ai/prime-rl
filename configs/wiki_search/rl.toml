@@ -27,14 +27,11 @@ target_modules = [
 
 [orchestrator]
 batch_size = 512
-rollouts_per_example = 16
+group_size = 16
 oversampling_factor = 2.0
 
 [orchestrator.train.sampling]
 max_completion_tokens = 512
-
-[orchestrator.buffer]
-online_difficulty_filtering = true
 
 [[orchestrator.train.env]]
 id = "wiki-search"

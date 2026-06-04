@@ -1,7 +1,6 @@
 from pathlib import Path
-from typing import Annotated
 
-from pydantic import Field, model_validator
+from pydantic import model_validator
 
 from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.shared import LogConfig
@@ -9,18 +8,15 @@ from prime_rl.utils.config import BaseConfig
 
 
 class EnvServerConfig(BaseConfig):
-    """Configures an environment server."""
-
     env: EnvConfig = EnvConfig()
-    log: LogConfig = LogConfig()
-    env_install_prerelease: bool = False
 
-    output_dir: Annotated[
-        Path,
-        Field(
-            description="Directory to write outputs to. Will be populated with checkpoints, weights, rollouts and logs as subdirectories. Should be set to a persistent directory with enough disk space. This value should be distinct across experiments running on a single node. See the README for more details."
-        ),
-    ] = Path("outputs")
+    log: LogConfig = LogConfig()
+
+    env_install_prerelease: bool = False
+    """Allow pre-release versions when installing environments. Passes ``--prerelease`` to ``prime env install``."""
+
+    output_dir: Path = Path("outputs")
+    """Directory to write outputs to — logs and any generated artifacts are written as subdirectories."""
 
     @model_validator(mode="after")
     def validate_num_workers(self):

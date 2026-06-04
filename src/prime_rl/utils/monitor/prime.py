@@ -134,7 +134,6 @@ class PrimeMonitor(Monitor):
             return
 
         assert config is not None
-        self.logger.info(f"Initializing {self.__class__.__name__} ({config})")
 
         api_key = os.getenv(config.api_key_var)
         if api_key is None:

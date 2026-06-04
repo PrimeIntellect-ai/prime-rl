@@ -13,7 +13,7 @@ from transformers.utils import TransformersKwargs, auto_docstring
 from transformers.utils.deprecation import deprecate_kwarg
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig
+from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig, _index_cache_skip_topk
 from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import (
     convert_hf_layer_to_tt,
     convert_hf_to_tt_moe,
@@ -29,7 +29,7 @@ from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 
 
-def _sparse_mla_attention_args(config: GlmMoeDsaConfig) -> SparseMlaAttentionArgs:
+def _sparse_mla_attention_args(config: GlmMoeDsaConfig, layer_idx: int) -> SparseMlaAttentionArgs:
     if config.q_lora_rank is None:
         raise ValueError("Sparse MLA attention requires q_lora_rank to be set")
     return SparseMlaAttentionArgs(
@@ -46,6 +46,8 @@ def _sparse_mla_attention_args(config: GlmMoeDsaConfig) -> SparseMlaAttentionArg
         index_n_heads=config.index_n_heads,
         index_head_dim=config.index_head_dim,
         index_topk=config.index_topk,
+        use_index_cache=getattr(config, "use_index_cache", False),
+        skip_topk=_index_cache_skip_topk(config, layer_idx),
     )
 
 
@@ -53,7 +55,7 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
     def __init__(self, config: GlmMoeDsaConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
-        self.self_attn = GlmMoeDsaAttention(_sparse_mla_attention_args(config))
+        self.self_attn = GlmMoeDsaAttention(_sparse_mla_attention_args(config, layer_idx))
 
         moe_args = MoEArgs(
             num_experts=config.n_routed_experts,
@@ -95,15 +97,17 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
         ks: Optional[torch.Tensor] = None,
         ke: Optional[torch.Tensor] = None,
+        cached_indices: Optional[torch.Tensor] = None,
         routed_experts: Optional[torch.LongTensor] = None,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states, _ = self.self_attn(
+        hidden_states, cached_indices = self.self_attn(
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
             ks=ks,
             ke=ke,
+            cached_indices=cached_indices,
         )
         hidden_states = residual + hidden_states
 
@@ -111,7 +115,7 @@ class GlmMoeDsaDecoderLayer(GradientCheckpointingLayer):
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states, routed_experts=routed_experts)
         hidden_states = residual + hidden_states
-        return hidden_states
+        return hidden_states, cached_indices
 
 
 @auto_docstring
@@ -256,15 +260,19 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         else:
             ks, ke = ks_full, ke_full
 
+        cached_indices = None
+        use_index_cache = getattr(self.config, "use_index_cache", False)
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
-            hidden_states = decoder_layer(
+            hidden_states, next_cached_indices = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
                 ks=ks,
                 ke=ke,
+                cached_indices=cached_indices,
                 routed_experts=routed_experts_layer,
             )
+            cached_indices = next_cached_indices if use_index_cache else None
 
         hidden_states = self.norm(hidden_states)
         return BaseModelOutputWithPast(last_hidden_state=hidden_states)
