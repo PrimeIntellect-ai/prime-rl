@@ -213,6 +213,17 @@ def validate_shared_ckpt_config(
         )
 
 
+def validate_shared_losses(
+    trainer: TrainerConfig,
+    orchestrator: OrchestratorConfig,
+) -> None:
+    if [term.model_dump() for term in trainer.losses] != [term.model_dump() for term in orchestrator.losses]:
+        raise ValueError(
+            "trainer.losses and orchestrator.losses differ. Set `losses` once at the top level "
+            "(it propagates to both) rather than under [trainer]/[orchestrator] separately."
+        )
+
+
 def validate_shared_model_name(
     trainer: TrainerConfig,
     orchestrator: OrchestratorConfig,

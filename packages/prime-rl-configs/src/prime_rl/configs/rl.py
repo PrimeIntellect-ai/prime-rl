@@ -6,7 +6,7 @@ from pydantic import Field, model_validator
 
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
-from prime_rl.configs.losses import LossTermConfig, default_losses
+from prime_rl.configs.losses import LossList, default_losses
 from prime_rl.configs.orchestrator import (
     FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig,
 )
@@ -36,6 +36,7 @@ from prime_rl.utils.config import BaseConfig, find_package_resource
 from prime_rl.utils.validation import (
     propagate_shared_fields,
     validate_shared_ckpt_config,
+    validate_shared_losses,
     validate_shared_max_steps,
     validate_shared_model_name,
     validate_shared_output_dir,
@@ -217,7 +218,7 @@ class RLConfig(BaseConfig):
 
     weight_broadcast: SharedWeightBroadcastConfig | None = None
 
-    losses: list[LossTermConfig] = Field(default_factory=default_losses)
+    losses: LossList = Field(default_factory=default_losses)
     """Shared composable loss terms (see ``configs.losses``). Propagated to
     ``trainer.losses`` and ``orchestrator.losses``; per-env selection via
     ``orchestrator.train.env.enabled_losses``."""
@@ -304,6 +305,7 @@ class RLConfig(BaseConfig):
         validate_shared_max_steps(self.trainer, self.orchestrator)
         validate_shared_seq_len(self.trainer, self.orchestrator)
         validate_shared_ckpt_config(self.trainer, self.orchestrator)
+        validate_shared_losses(self.trainer, self.orchestrator)
         validate_shared_wandb_config(self.trainer, self.orchestrator)
         return self
 

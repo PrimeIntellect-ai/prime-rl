@@ -17,7 +17,7 @@ process reads the slots it executes.
 
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import Field, model_validator
+from pydantic import AfterValidator, Field, model_validator
 
 from prime_rl.utils.config import BaseConfig
 
@@ -143,6 +143,29 @@ LossTermConfig: TypeAlias = Annotated[
     Field(discriminator="type"),
 ]
 """A single loss term. The list of these is the unified ``losses`` surface."""
+
+
+def validate_unique_loss_names(losses: list[LossTermConfig]) -> list[LossTermConfig]:
+    """Reject duplicate term names — ``enabled_losses`` references terms by name."""
+    names = [term.name for term in losses]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ValueError(f"Duplicate loss term names: {duplicates}. Each term in `losses` needs a unique name.")
+    return losses
+
+
+LossList: TypeAlias = Annotated[list[LossTermConfig], AfterValidator(validate_unique_loss_names)]
+"""``list[LossTermConfig]`` with a unique-name check; the field type for ``losses``."""
+
+
+def check_enabled_losses(loss_names: set[str], echo_names: set[str], enabled: list[str], where: str) -> None:
+    """Raise if ``enabled`` references unknown terms or selects more than one echo term."""
+    unknown = sorted(set(enabled) - loss_names)
+    if unknown:
+        raise ValueError(f"{where}: enabled_losses {unknown} not found in losses {sorted(loss_names)}.")
+    enabled_echo = sorted(set(enabled) & echo_names)
+    if len(enabled_echo) > 1:
+        raise ValueError(f"{where}: at most one echo term may be enabled per env, got {enabled_echo}.")
 
 
 def default_losses() -> list[LossTermConfig]:

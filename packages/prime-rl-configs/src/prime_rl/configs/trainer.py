@@ -4,7 +4,7 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
-from prime_rl.configs.losses import LossTermConfig, default_losses
+from prime_rl.configs.losses import LossList, default_losses
 from prime_rl.configs.shared import (
     BaseModelConfig,
     FileSystemTransportConfig,
@@ -478,7 +478,7 @@ class TrainerConfig(BaseConfig):
 
     data: DataLoaderConfig = DataLoaderConfig()
 
-    losses: list[LossTermConfig] = Field(default_factory=default_losses)
+    losses: LossList = Field(default_factory=default_losses)
     """Composable loss terms applied to rl-mode batches (see ``configs.losses``).
     opd and sft batches dispatch to their own cores. Shared at the RL level and
     propagated here; per-env selection lives in ``orchestrator.train.env.enabled_losses``."""

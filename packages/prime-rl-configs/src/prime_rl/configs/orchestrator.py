@@ -7,7 +7,7 @@ from pydantic import AliasChoices, Field, model_serializer, model_validator
 from pydantic_core.core_schema import SerializerFunctionWrapHandler
 from renderers import AutoRendererConfig, RendererConfig
 
-from prime_rl.configs.losses import LossTermConfig, default_losses
+from prime_rl.configs.losses import LossList, check_enabled_losses, default_losses
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
@@ -520,10 +520,19 @@ class OrchestratorConfig(BaseConfig):
 
     train: TrainConfig = TrainConfig()
 
-    losses: list[LossTermConfig] = Field(default_factory=default_losses)
+    losses: LossList = Field(default_factory=default_losses)
     """Composable loss terms (see ``configs.losses``). Shared at the RL level and
     propagated here; the orchestrator builds the echo overlay for echo terms that
     each env's ``enabled_losses`` selects."""
+
+    @model_validator(mode="after")
+    def validate_enabled_losses(self):
+        loss_names = {term.name for term in self.losses}
+        echo_names = {term.name for term in self.losses if term.type == "echo"}
+        for env in self.train.env:
+            if env.enabled_losses is not None:
+                check_enabled_losses(loss_names, echo_names, env.enabled_losses, f"env {env.resolved_name!r}")
+        return self
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 

@@ -252,6 +252,77 @@ def test_shared_and_sub_tokenizer_name_conflict_raises():
         )
 
 
+def test_shared_losses_propagate_to_subconfigs():
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "losses": [{"type": "rl", "kl_tau": 0.01}, {"type": "echo", "system": {"alpha": 0.5}}],
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+        }
+    )
+    assert [t.type for t in config.trainer.losses] == ["rl", "echo"]
+    assert [t.type for t in config.orchestrator.losses] == ["rl", "echo"]
+    assert config.trainer.losses[0].kl_tau == 0.01
+
+
+def test_duplicate_loss_names_rejected():
+    with pytest.raises(ValidationError, match="Duplicate loss term names"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [{"type": "rl", "name": "x"}, {"type": "sft", "name": "x"}],
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
+def test_enabled_losses_unknown_name_rejected():
+    with pytest.raises(ValidationError, match="not found in losses"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [{"type": "rl"}],
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": None,
+                    "train": {"env": [{"id": "reverse-text", "enabled_losses": ["nope"]}]},
+                },
+            }
+        )
+
+
+def test_multiple_echo_terms_per_env_rejected():
+    with pytest.raises(ValidationError, match="at most one echo term"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [
+                    {"type": "rl"},
+                    {"type": "echo", "name": "e1", "system": {"alpha": 0.5}},
+                    {"type": "echo", "name": "e2", "user": {"alpha": 0.5}},
+                ],
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": None,
+                    "train": {"env": [{"id": "reverse-text", "enabled_losses": ["rl", "e1", "e2"]}]},
+                },
+            }
+        )
+
+
+def test_losses_under_trainer_only_conflict_raises():
+    with pytest.raises(ValidationError, match="losses differ"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "trainer": {"losses": [{"type": "rl"}, {"type": "echo", "system": {"alpha": 0.5}}]},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
 def test_tokenizer_name_falls_back_to_model_name_when_unset():
     config = RLConfig.model_validate(
         {
