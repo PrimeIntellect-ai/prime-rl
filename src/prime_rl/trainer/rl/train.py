@@ -71,6 +71,15 @@ from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
 
 
+def _mask_env_indices(env_names: list[str], mask: torch.Tensor) -> dict[str, list[int]]:
+    """Group per-token env names by env, in the order ``mask`` selects them."""
+    selected = [env_name for env_name, keep in zip(env_names, mask.flatten().tolist()) if keep]
+    indices: dict[str, list[int]] = {}
+    for idx, env_name in enumerate(selected):
+        indices.setdefault(env_name, []).append(idx)
+    return indices
+
+
 @clean_exit
 def train(config: TrainerConfig):
     # Setup world and logger
@@ -520,18 +529,16 @@ def train(config: TrainerConfig):
             with maybe_record_function("backward"):
                 loss.backward()
 
-            # Add relevant tensors to tensor dict for logging purposes
-            entropy = out["entropy"][loss_mask].detach().to("cpu")
+            # Add relevant tensors to tensor dict for logging purposes. Entropy/env metrics span the
+            # primary (completion) mask plus the echo overlay, so primary-disabled / echo-only envs
+            # stay visible instead of logging empty/nan (metric_mask == loss_mask when no echo).
+            metric_mask = loss_mask if echo_mask is None else (loss_mask | echo_mask)
+            entropy = out["entropy"][metric_mask].detach().to("cpu")
             tensors["entropy/all"].append(entropy)
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
             env_names = micro_batch["env_names"]
-            masked_env_names = [env_name for env_name, keep in zip(env_names, loss_mask.flatten().tolist()) if keep]
-            env_to_indices: dict[str, list[int]] = {}
-            for idx, env_name in enumerate(masked_env_names):
-                env_to_indices.setdefault(env_name, []).append(idx)
-
-            for env_name, indices in env_to_indices.items():
+            for env_name, indices in _mask_env_indices(env_names, metric_mask).items():
                 tensors[f"entropy/{env_name}"].append(entropy[indices])
 
             if micro_batch["training_mode"] != "sft":
@@ -539,7 +546,8 @@ def train(config: TrainerConfig):
                     _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(out["logprobs"], inference_logprobs)
                 mismatch_kl = mismatch_kl[loss_mask].detach().to("cpu")
                 tensors["mismatch_kl/all"].append(mismatch_kl)
-                for env_name, indices in env_to_indices.items():
+                # mismatch_kl is an RL diagnostic over completion tokens, so it indexes by loss_mask.
+                for env_name, indices in _mask_env_indices(env_names, loss_mask).items():
                     tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
             token_exporter.export(progress.step, micro_step, micro_batch, out, response_lengths, rl_loss_config)

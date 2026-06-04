@@ -277,10 +277,12 @@ def echo_loss_fn(inputs: LossInputs) -> LossOutputs:
     weight = inputs.advantages
 
     loss = -(weight * trainer_logprobs)[mask].sum()
-    metrics = {
-        "echo_nll": _safe_mean(-trainer_logprobs, mask),
-        "echo_token_count": mask.sum().float(),
-    }
+    # Only report metrics for splits that actually carry echo tokens. A packed split with no echo
+    # tokens would otherwise contribute a spurious echo_nll=0, biasing the mean by packing composition.
+    metrics: dict[str, Tensor] = {}
+    if mask.any():
+        metrics["echo_nll"] = _safe_mean(-trainer_logprobs, mask)
+        metrics["echo_token_count"] = mask.sum().float()
     return LossOutputs(loss=loss, metrics=metrics)
 
 

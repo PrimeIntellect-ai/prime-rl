@@ -7,7 +7,13 @@ from pydantic import AliasChoices, Field, model_serializer, model_validator
 from pydantic_core.core_schema import SerializerFunctionWrapHandler
 from renderers import AutoRendererConfig, RendererConfig
 
-from prime_rl.configs.losses import LossList, check_enabled_losses, check_loss_overrides, default_losses
+from prime_rl.configs.losses import (
+    LossList,
+    apply_echo_override,
+    check_enabled_losses,
+    check_loss_overrides,
+    default_losses,
+)
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
@@ -529,12 +535,22 @@ class OrchestratorConfig(BaseConfig):
     def validate_enabled_losses(self):
         loss_names = {term.name for term in self.losses}
         echo_names = {term.name for term in self.losses if term.type == "echo"}
+        echo_by_name = {term.name: term for term in self.losses if term.type == "echo"}
         for env in self.train.env:
             where = f"env {env.resolved_name!r}"
+            if env.enabled_losses is not None and not env.enabled_losses:
+                raise ValueError(
+                    f"{where}: enabled_losses is empty — the env would train nothing. Omit the field "
+                    f"to enable all terms, or list the terms to apply."
+                )
             # None means "all terms" — validate as the full list so the >1-echo check fires.
             enabled = env.enabled_losses if env.enabled_losses is not None else sorted(loss_names)
             check_enabled_losses(loss_names, echo_names, enabled, where)
             check_loss_overrides(loss_names, echo_names, env.loss_overrides, where)
+            # Build the merged echo config now so a malformed override (unknown field, bad shape,
+            # non-float alpha) fails during dry-run, not mid-run when the orchestrator resolves it.
+            for name, override in env.loss_overrides.items():
+                apply_echo_override(echo_by_name[name], override)
 
         # Prompt-role echo needs renderer-provided prompt_attribution; MITO (renderer=None,
         # including sft mode which forces renderer=None later) won't have it, so system/user/

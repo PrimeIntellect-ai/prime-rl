@@ -312,6 +312,46 @@ def test_multiple_echo_terms_per_env_rejected():
         )
 
 
+def test_empty_enabled_losses_rejected():
+    with pytest.raises(ValidationError, match="enabled_losses is empty"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [{"type": "rl"}],
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": None,
+                    "train": {"env": [{"id": "reverse-text", "enabled_losses": []}]},
+                },
+            }
+        )
+
+
+def test_malformed_loss_override_rejected():
+    # An override targeting a real echo term but with a bad alpha is caught at config time
+    # (built via apply_echo_override), not deferred to the orchestrator's resolve step.
+    with pytest.raises(ValidationError):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [{"type": "rl"}, {"type": "echo", "name": "echo", "assistant": {"alpha": 0.5}}],
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": None,
+                    "train": {
+                        "env": [
+                            {
+                                "id": "reverse-text",
+                                "enabled_losses": ["rl", "echo"],
+                                "loss_overrides": {"echo": {"assistant": {"alpha": "not-a-float"}}},
+                            }
+                        ]
+                    },
+                },
+            }
+        )
+
+
 def test_losses_under_trainer_only_conflict_raises():
     with pytest.raises(ValidationError, match="losses differ"):
         RLConfig.model_validate(

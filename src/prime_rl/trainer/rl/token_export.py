@@ -12,7 +12,8 @@ from prime_rl.configs.losses import RLLossConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.loss import compute_importance_ratio_and_mismatch_kl
 
-SCHEMA_VERSION = 1
+# v2 adds the additive echo_mask / echo_weight columns (v1 consumers reading by name still work).
+SCHEMA_VERSION = 2
 
 
 class DisabledTokenExporter:

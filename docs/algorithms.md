@@ -49,8 +49,21 @@ $$
 \mathcal{J}_{\text{PG}}(\theta)
 = \frac{1}{\sum_{j,i} |y_i^{(j)}|}
 \sum_{j,i,t}
-\min\!\left(\frac{\pi(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}{\mu(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}, \delta\right) \hat{A}^{(j)}_{i,t}
+m_{i,t}^{(j)}\,\hat{A}^{(j)}_{i,t}\,\frac{\pi(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}{\mu(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}
 $$
+
+with a DPPO trust-region mask $m_{i,t}^{(j)}\in\{0,1\}$ that zeroes tokens whose per-token probability has already moved too far in the advantage's direction:
+
+$$
+m_{i,t}^{(j)} =
+\begin{cases}
+0, & \hat{A}^{(j)}_{i,t} > 0 \;\text{ and }\; \pi - \mu > \epsilon_{\text{high}}\\
+0, & \hat{A}^{(j)}_{i,t} < 0 \;\text{ and }\; \pi - \mu < -\epsilon_{\text{low}}\\
+1, & \text{otherwise}
+\end{cases}
+$$
+
+where $\pi - \mu$ is the difference of the per-token probabilities (not the log-ratio).
 
 and the KL regularizer penalizes drift between trainer and inference policies via the squared log importance ratio:
 
@@ -59,7 +72,7 @@ $$
 \sum_{j,i,t} \log^2\!\left(\frac{\pi(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}{\mu(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}\right).
 $$
 
-$\mu$ is the policy that generated the rollout (inference), $\pi$ is the current policy (trainer), $\hat{A}_{i,t}$ is the token-level advantage, $\delta$ is the importance-sampling clipping ratio, and $\tau_{KL}$ is the KL temperature. The `min` clamps the importance ratio from above so a stale rollout assigning very low probability to a high-reward token doesn't produce a runaway gradient.
+$\mu$ is the policy that generated the rollout (inference), $\pi$ is the current policy (trainer), $\hat{A}_{i,t}$ is the token-level advantage, $\epsilon_{\text{low}}$ / $\epsilon_{\text{high}}$ are the DPPO masking thresholds (`dppo_mask_low` / `dppo_mask_high`), and $\tau_{KL}$ is the KL temperature. The mask drops trust-region violators — an upweighted token ($\hat{A}>0$) that has already grown too likely, or a downweighted token ($\hat{A}<0$) that has already grown too unlikely — so a stale rollout doesn't produce a runaway gradient.
 
 The knobs (on the `rl` loss term — a `[[losses]]` entry with `type = "rl"`):
 
@@ -139,8 +152,8 @@ This is intentionally simple — it does the right thing for most envs. Switch t
 
 Two built-in **length penalties** can be layered on top of any advantage to discourage rambling:
 
-- `[orchestrator.length_penalty] type = "tokens"` — penalizes long completions in tokens, with configurable target and slope.
-- `[orchestrator.length_penalty] type = "turns"` — penalizes long multi-turn rollouts by turn count.
+- `[orchestrator.advantage.length_penalty] type = "tokens"` — penalizes long completions in tokens, with configurable target and slope.
+- `[orchestrator.advantage.length_penalty] type = "turns"` — penalizes long multi-turn rollouts by turn count.
 
 
 ### Custom Advantage
@@ -178,15 +191,15 @@ Filters drop rollouts between scoring and training. Built-ins (composable):
 | `repetition` | Drops rollouts with high n-gram repetition. |
 | `zero_advantage` | Drops rollouts whose advantage is zero, so the trainer doesn't waste tokens on them. |
 
-The default `[orchestrator]` config already includes all three filters with their defaults. To override, set `filters` explicitly — the list replaces the defaults wholesale:
+The default `[orchestrator]` config registers all three filters (in monitor mode) in both `pre_batch_filters` (applied before a rollout enters the batch buffer) and `post_batch_filters` (applied after the batch is assembled). To override, set the relevant list explicitly — each replaces its defaults wholesale:
 
 ```toml
-[[orchestrator.filters]]
+[[orchestrator.post_batch_filters]]
 type = "zero_advantage"
 
-[[orchestrator.filters]]
+[[orchestrator.post_batch_filters]]
 type = "repetition"
-threshold = 0.4
+prob_threshold = 0.95
 ```
 
 Filtered rollouts still appear in W&B distributions, just not in the trainer batch — useful for spotting whether filtering is doing its job.

@@ -395,7 +395,9 @@ class Orchestrator:
         )
         # Zero-advantage filtering is an RL-primary concern; gate it on whether the env's
         # primary loss is active so echo-only / rl-disabled envs aren't dropped on zero advantage.
-        for filt in post_filters:
+        # Both filter lists are gated — a pre-batch zero_advantage filter would otherwise drop
+        # echo-only rollouts before they reach training.
+        for filt in (*pre_filters, *post_filters):
             if isinstance(filt, ZeroAdvantageFilter):
                 filt.primary_active = self.train_sink._primary_enabled
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None

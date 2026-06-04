@@ -172,6 +172,27 @@ def check_loss_overrides(loss_names: set[str], echo_names: set[str], overrides: 
             raise ValueError(f"{where}: loss_overrides currently applies only to echo terms, got {name!r}.")
 
 
+def deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge ``override`` into ``base`` (override wins on leaves)."""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def apply_echo_override(echo_term: EchoLossConfig, override: dict) -> EchoLossConfig:
+    """Deep-merge a per-env ``override`` into an echo term and rebuild it.
+
+    Constructing the ``EchoLossConfig`` here validates the merged payload (unknown
+    fields, bad shapes, non-float alphas) — at config time when called from the
+    validator, and at resolve time when called from the orchestrator.
+    """
+    return EchoLossConfig(**deep_merge(echo_term.model_dump(), override))
+
+
 def default_losses() -> list[LossTermConfig]:
     """Default loss list: RL only (reproduces the pre-``losses`` default)."""
     return [RLLossConfig()]

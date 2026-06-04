@@ -18,7 +18,7 @@ import functools
 import uuid
 from collections import defaultdict
 
-from prime_rl.configs.losses import EchoLossConfig
+from prime_rl.configs.losses import apply_echo_override
 from prime_rl.configs.orchestrator import AdvantageConfig, OrchestratorConfig
 from prime_rl.orchestrator.advantage import assign_advantages, setup_advantage_fn
 from prime_rl.orchestrator.echo import build_echo_annotations
@@ -35,15 +35,14 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import import_object
 
 
-def _deep_merge(base: dict, override: dict) -> dict:
-    """Recursively merge ``override`` into ``base`` (override wins on leaves)."""
-    merged = dict(base)
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _deep_merge(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
+def _sample_has_trainable_tokens(sample: TrainingSample) -> bool:
+    """Whether a sample contributes any gradient: a primary (completion) token after
+    any per-env zeroing, or an echo token. Echo position 0 is excluded to match the
+    trainer (the first token has no shifted current-token logprob)."""
+    if any(sample.completion_mask):
+        return True
+    echo_alpha = sample.echo_alpha
+    return echo_alpha is not None and any(a is not None for a in echo_alpha[1:])
 
 
 class TrainSink:
@@ -185,7 +184,7 @@ class TrainSink:
             if term is not None:
                 override = env_config.loss_overrides.get(term.name)
                 if override:
-                    term = EchoLossConfig(**_deep_merge(term.model_dump(), override))
+                    term = apply_echo_override(term, override)
             filter_fn = None
             if term is not None and term.filter is not None:
                 fn = import_object(term.filter.import_path)
@@ -339,10 +338,12 @@ class TrainSink:
         samples_per_rollout: list[int] = []
         num_prefill = 0
         num_decode = 0
+        n_trainable = 0
         for r in cohort:
             samples_per_rollout.append(len(r.samples))
             prefill = 0
             decode = 0
+            rollout_trainable = False
             for sample in r.samples:
                 sample_decode = sum(sample.completion_mask)
                 sample_prefill = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode
@@ -354,12 +355,15 @@ class TrainSink:
                     if not self._primary_enabled(r.env_name):
                         sample.completion_mask = [False] * len(sample.completion_mask)
                     samples.append(sample)
+                    rollout_trainable = rollout_trainable or _sample_has_trainable_tokens(sample)
             prefill_lens.append(prefill)
             decode_lens.append(decode)
             num_prefill += prefill
             num_decode += decode
-
-        n_trainable = sum(1 for r in cohort if not r.is_filtered)
+            # Count a rollout as trainable only if it ships at least one loss-bearing token
+            # (primary or echo) — a primary-disabled env with no echo tokens contributes nothing.
+            if rollout_trainable:
+                n_trainable += 1
 
         metrics = TrainBatchMetrics(
             n_trainable=n_trainable,

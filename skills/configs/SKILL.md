@@ -14,7 +14,7 @@ uv run rl @ examples/reverse_text/rl.toml                                  # sin
 uv run rl @ examples/reverse_text/rl.toml --max-steps 50                   # CLI override
 uv run rl @ base.toml @ overlay.toml                                       # left-to-right merge
 uv run rl --model @ model.toml --data @ data.toml                          # nested section files
-uv run rl @ base.toml --trainer @ trainer.toml --trainer.lr 1e-3           # mixed
+uv run rl @ base.toml --trainer @ trainer.toml --trainer.optim.lr 1e-3     # mixed
 ```
 
 Resolution order: CLI > config files (left-to-right) > class defaults. Merging is deep — unset fields in an overlay are preserved from the base.
@@ -41,11 +41,11 @@ Incompatible combinations (e.g. CP requires flash attention) must raise in a `mo
 **Lists** — TOML uses array of tables; later config files replace lists wholesale, so overlays must include the full desired list:
 
 ```toml
-[[orchestrator.env]]
+[[orchestrator.train.env]]
 id = "reverse-text"
 ```
 
-CLI: `--env.0.id reverse-text --env.1.id math-env`.
+CLI: `--orchestrator.train.env.0.id reverse-text --orchestrator.train.env.1.id math-env`.
 
 **Dicts** — TOML uses a section; CLI takes a JSON string: `--vllm-extra '{"key1": "value1"}'`.
 
