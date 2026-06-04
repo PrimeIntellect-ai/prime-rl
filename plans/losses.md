@@ -1,86 +1,95 @@
 # Composable per-term losses — implementation plan
 
-Branch: `sebastian/losses-2026-06-04` (from `main` @ `63af82343`).
-Supersedes the bespoke per-role echo work on `feat/per-role-echo` (#2677): echo becomes
-a *preset*, not a feature.
+Branch: `sebastian/losses-2026-06-04` (from `main`).
+
+Today the RL loss bakes the objective, the token selection, and the per-token weighting into
+one function. This plan pulls them apart and lets the trainer apply a **list of loss terms**
+over a single shared forward.
+
+> **Echo** — per-role, per-token cross-entropy supervision over *context* tokens (system / user /
+> tool / assistant turns), as opposed to the usual policy-gradient signal on the sampled
+> completion — is **one preset** in this framework, not a bespoke feature. It expands to
+> `{loss: sft, filters: [role], weight: constant}`.
 
 ## 1. Goal
 
-Decouple three things that are currently entangled in the RL loss:
+Decouple three concerns that are entangled in today's RL loss:
 
-1. **the objective** ("loss" / core) — DPPO+KL for RL, masked-NLL for SFT/echo, custom;
+1. **the objective** ("loss" / core) — DPPO+KL for RL, masked-NLL for SFT/echo, or custom;
 2. **token selection** ("filters") — which tokens a term trains on;
-3. **per-token weight** — GRPO advantage for RL, a constant `alpha` for echo, custom.
+3. **per-token weight** — the GRPO advantage for RL, a constant `alpha` for echo, or custom.
 
-Then let the trainer apply a **list** of such terms over one shared forward, summing them
-into a single backward. Echo stops being special: it is `{loss: sft, filters: [role], weight: constant}`.
+A term is `{name, loss, filters, weight}`. The trainer applies a **list** of terms over one
+shared forward and sums them into a single backward.
 
-**Hard requirement: the default is byte-for-byte `main`.** With no configuration, `losses = ["rl"]`
-must reproduce today's DPPO+KL training exactly (same masks, same normalization, same gradient).
+**Hard requirement: the default is byte-for-byte today's training.** With no configuration,
+`losses = ["rl"]` must reproduce the current DPPO+KL loss exactly — same masks, same
+normalization, same gradient.
 
-This is also preparatory for the planned env-sampler refactor: a sample carries which loss
-term(s) to apply, exactly as it carries `training_mode` today.
+This is also preparatory for the planned env-sampler refactor: a sample will carry which loss
+term(s) to apply, the same way it carries `training_mode` today.
 
-## 2. Why this is sound (and the two corrections that shaped it)
+## 2. Why this is sound (and two things it deliberately is *not*)
 
 - **One shared forward, one summed backward.** Every term differentiates the *same* per-token
-  `trainer_logprobs` produced by the single forward. `∇(rl + echo) = ∇rl + ∇echo`, so summing
-  the per-term scalars and calling `backward()` once is correct and cheapest. Separate
-  backward passes are **not** used: the forward (the expensive, shared part) cannot be freed
-  between them without `retain_graph=True` (which frees nothing), so they would double the
-  backward cost for an identical gradient. The only thing that would justify separate backwards
-  is gradient surgery (PCGrad) — out of scope.
-- **RL is not "cross-entropy + an advantage step."** The DPPO+KL core is a function of the
-  *importance ratio* `exp(trainer_lp − inference_lp)` plus a squared-KL term, and it owns its
-  advantage multiplication and its trust-region mask internally. So the term abstraction is
-  **not** a two-stage `loss ∘ post-loss` pipeline; it is "a core fn that receives `(logprobs,
-  mask, weight, scale)` and decides how to combine them." Echo/SFT (masked NLL) *is* cleanly
-  `weight · (−logprob)` masked, but RL is not, and we do not force it to be.
+  `trainer_logprobs` from the single forward. `∇(rl + echo) = ∇rl + ∇echo`, so summing the
+  per-term scalars and calling `backward()` once is correct and cheapest. We do **not** use
+  separate backward passes: the forward (the expensive, shared part) cannot be freed between
+  them without `retain_graph=True` (which frees nothing), so separate backwards would double
+  the backward cost for an identical gradient. (Gradient surgery / PCGrad would be the only
+  reason to split — out of scope.)
+- **The term abstraction is not a two-stage `loss ∘ post-loss` pipeline.** The DPPO+KL core is
+  a function of the *importance ratio* `exp(trainer_lp − inference_lp)` plus a squared-KL term,
+  and it owns its advantage multiplication and its trust-region mask internally — it is not
+  "cross-entropy times an advantage." So a core is "a function that receives `(logprobs, mask,
+  weight, scale)` and decides how to combine them," not a post-processor of per-token losses.
+  Masked-NLL (sft/echo) *is* cleanly `weight · (−logprob)` masked; RL is not, and we don't
+  force it to be.
 
-### Validity constraints (these gate which combos make sense)
+### Validity constraints (these gate which combinations make sense)
 
-- `core=rl` needs **sampled completion tokens with real `inference_logprobs`** and GRPO
-  advantages. Prompt/context tokens have `inference_logprobs = 0.0` → RL on them is garbage.
+- `loss=rl` needs **sampled completion tokens with real `inference_logprobs`** and GRPO
+  advantages. Context tokens have `inference_logprobs = 0.0`, so RL on them is meaningless.
   ⇒ the `rl` preset's filter is `completion`, and this pairing is validated.
-- `core=opd` needs `teacher_logprobs` (a configured teacher).
-- `core=sft` (masked NLL) works on **any** token — which is exactly why echo can use it on
+- `loss=sft` (masked NLL) works on **any** token — which is exactly why echo can use it on
   context tokens. This is the permissive core.
+- (`opd` needs `teacher_logprobs`; it stays a separate per-sample path for now — see §8.)
 
 ## 3. The execution seam (what runs where)
 
-A term spans both processes, along the seam echo already uses today:
+A term spans both processes, along a natural seam: the **orchestrator** owns the rendered
+rollout, the **trainer** owns the forward.
 
-| Slot      | Runs on      | Input it needs                              | Output |
-|-----------|--------------|---------------------------------------------|--------|
-| `filters` | orchestrator | rollout + `prompt_attribution` (roles/tools)| per-token bool mask (AND-composed) |
-| `weight`  | orchestrator | rollout (rewards → GRPO advantage; roles)   | per-token float coefficient |
-| `loss`    | trainer      | `trainer_logprobs` from the forward         | per-token objective → scalar |
+| Slot      | Runs on      | Input it needs                               | Output |
+|-----------|--------------|----------------------------------------------|--------|
+| `filters` | orchestrator | rollout + `prompt_attribution` (roles/tools) | per-token bool mask (AND-composed) |
+| `weight`  | orchestrator | rollout (rewards → GRPO advantage; roles)    | per-token float coefficient |
+| `loss`    | trainer      | `trainer_logprobs` from the forward          | per-token objective → scalar |
 
 - `prompt_attribution` (`message_roles`, `message_indices`, `is_content`, `message_tool_names`)
-  is emitted by the **verifiers renderer** (`deps/verifiers` @ `05c66c235`, same pin as main) on
-  each trajectory step's `tokens` dict. The trainer never sees it — hence filters/weights are
-  orchestrator-side.
+  is emitted by the **verifiers renderer** (the pinned `deps/verifiers`) on each trajectory
+  step's `tokens` dict. The trainer never sees it — hence filters/weights are orchestrator-side.
 - GRPO advantage is group-relative (needs the whole rollout group) → intrinsically
-  orchestrator-side. It is already computed there and shipped per-token (`advantage`).
+  orchestrator-side. It is already computed there and shipped per-token.
 - The two sides are tied by the term **name**. The orchestrator ships each enabled term's
   per-token `(mask, weight)`; the trainer looks the core up by name and applies it.
 
-The **DPPO trust-region mask** (`probs_diff` thresholds) is *internal* to the `rl` core
-(it zeroes the per-token loss for violators) — it is **not** a user-facing filter.
+The **DPPO trust-region mask** (`probs_diff` thresholds) is *internal* to the `rl` core — it
+zeroes the per-token loss for violators and is **not** a user-facing filter.
 
 ## 4. Pointers + presets (resolution model)
 
-Every slot value is **either a built-in key or a dotted import path**, plus a `kwargs` dict —
-resolved exactly like the existing convention (`import_object(path)` then
-`functools.partial(fn, **kwargs)`, as in `orchestrator/envs.py` and `orchestrator/advantage.py`).
+Every slot value is **either a built-in key or a dotted import path**, plus a `kwargs` dict,
+resolved with the existing convention: `import_object(path)` then
+`functools.partial(fn, **kwargs)` (see `orchestrator/advantage.py` for custom advantages and
+`trainer/rl/loss.py`'s `setup_loss_fns` for custom losses).
 
 Built-in registry (resolve by key to in-repo functions):
 
-- **cores**: `rl` → `default_loss_fn` (DPPO+KL, today's `main`), `sft` → masked NLL,
-  (`opd` stays a separate per-sample path — see §8).
+- **cores**: `rl` → the current DPPO+KL loss fn, `sft` → masked NLL.
 - **filters**: `completion` (the sampled-completion / `loss_mask` tokens),
   `role` (kwargs: `roles: list[str]`, `tools: set[str] | None`).
-- **weights**: `grpo` (the shipped per-token advantage, optionally `× adv_tau`),
+- **weights**: `grpo` (the shipped per-token advantage, `× adv_tau`),
   `constant` (kwargs: `value: float` — echo's `alpha`).
 
 **Presets** are sugar that expand to a full validated triple:
@@ -106,16 +115,20 @@ Validation has two layers:
 
 - **Structural** (always): types, required fields, unique term names, `enabled_losses ⊆`
   defined term names, filters non-empty.
-- **Semantic** (presets only): e.g. `rl` filter must be `completion`-like; reject obviously
-  broken pairings. Custom pointers are **caller-beware** — we expose every option and validate
-  structure, but do not police the semantics of user functions.
+- **Semantic** (presets only): e.g. the `rl` preset's filter must be `completion`-like; reject
+  obviously broken pairings. Custom pointers are **caller-beware** — every option is exposed and
+  the config is structurally validated, but the semantics of user functions are the user's
+  responsibility.
 
 ## 5. Config surface
+
+One shared `losses` list defines the terms; per-env config selects from it by name. The common
+surface stays tiny — the three-slot machinery only appears when deliberately going custom.
 
 Default — nothing to write (`losses` defaults to the `rl` preset):
 
 ```python
-losses = ["rl"]          # == main, exactly
+losses = ["rl"]          # == today's training, exactly
 ```
 
 Echo via preset:
@@ -130,7 +143,6 @@ losses = [
 Per-env: select by name, with optional kwarg overrides (see §7):
 
 ```python
-# orchestrator / env config
 environments:
   - { id: "math" }                                   # uses default enabled_losses = ["rl"]
   - { id: "tool-traces", enabled_losses: ["rl", "echo"],
@@ -150,168 +162,158 @@ losses = [
 ]
 ```
 
-Common surface stays tiny: `["rl"]` or a one-line preset. The three-slot machinery only
-appears when deliberately going custom.
-
 ## 6. Overlap semantics
 
 - Terms may overlap; **gradients sum**. There is no automatic cross-term exclusion.
-- "Echo replaces RL on the completion" (today's behavior) is expressed by **omitting `rl`**:
+- Training echo *instead of* RL on the completion is expressed by **omitting `rl`**:
   `enabled_losses = ["echo"]`. Deactivating RL is trivial.
-- A token trained by two terms simply receives both gradients and counts toward both terms'
+- A token trained by two terms receives both gradients and counts toward both terms'
   denominators (§9). This is intended ("do both and add the losses").
 
 ## 7. Per-env kwarg overrides
 
-Global term defaults, overridable per-env. Merge is per-slot shallow: term's global `kwargs`
-provide defaults, the per-env override patches individual keys. **The cost depends on which
-side the slot runs on:**
+Global term defaults, overridable per-env. Merge is per-slot shallow: the term's global
+`kwargs` provide defaults, the per-env override patches individual keys. **The cost depends on
+which side the slot runs on:**
 
 - **Orchestrator-side kwargs (filters, weight — incl. `alpha`, and `adv_tau`): free.**
-  The orchestrator already resolves per-env config and bakes the *result* into the shipped
-  per-token `(mask, weight)`. `adv_tau` folds into the advantage value (a scalar multiply)
-  before shipping. This is exactly how per-env `alpha` already works for echo today.
+  The orchestrator resolves per-env config and bakes the *result* into the shipped per-token
+  `(mask, weight)`. `adv_tau` folds into the advantage value (a scalar multiply) before
+  shipping — **decided: bake it in orchestrator-side**, so per-env `adv_tau` is free and the
+  `rl` core just consumes the pre-scaled advantage.
 - **Trainer-side core kwargs that touch trainer-only quantities (`kl_tau`,
   `dppo_mask_low/high`): require a per-sample field.** They scale quantities that only exist
-  after the forward (`(trainer_lp − inference_lp)²`, `exp(trainer_lp) − exp(inference_lp)`),
-  so they cannot be baked orchestrator-side. To make them per-env, the orchestrator resolves
-  `global ⊕ per-env` and **stamps the resolved core kwargs onto the sample**; the trainer reads
-  them per sample (cheap via msgspec `omit_defaults` — nothing ships when unset).
+  after the forward (`(trainer_lp − inference_lp)²`, `exp(trainer_lp) − exp(inference_lp)`), so
+  they cannot be baked orchestrator-side. **Decided: ship resolved core kwargs per sample** —
+  the orchestrator resolves `global ⊕ per-env` and stamps them onto the sample; the trainer
+  reads them per sample (cheap via msgspec `omit_defaults`, nothing ships when unset). This is
+  the env-sampler-aligned shape.
 
 Rule of thumb: *a core kwarg is per-env-free if it folds into a shipped per-token quantity
-(`adv_tau` → advantage); otherwise it ships per sample.* We implement the per-sample
-resolved-kwargs field (it is the env-sampler-aligned shape), defaulting to the global value.
+(`adv_tau` → advantage); otherwise it ships per sample.*
 
-## 8. Relationship to `training_mode` (sft/opd entrypoints)
+## 8. Relationship to `training_mode` (sft/opd paths)
 
 `training_mode` (`sft`/`opd`/`rl`, stamped per sample by the orchestrator) is a **separate
-axis** — it routes mixed datasets (SFT demos vs RL rollouts) to a path. We **keep it as-is**.
-The `losses` list governs composition *within the `rl` path*. `opd` and `sft` per-sample modes
-stay their own functions. (The `sft` *core* in a loss term — masked NLL — is the objective
-form; it is not the same thing as a sample being `training_mode="sft"`.)
+axis** — it routes by data source/path. We **keep it as-is**. The `losses` list governs
+composition *within the `rl` path*; the `opd` and `sft` per-sample paths stay their own
+functions for now.
+
+Note the naming: the `sft` *core* in a loss term (masked NLL — the objective form) is **not**
+the same thing as a sample whose `training_mode="sft"` (a data path). The framework adds the
+`sft` core; the `sft` path's data-sourcing is unchanged.
 
 ## 9. Normalization
 
-Generalize the single global `loss_scale` to **one scale per term** = the global (dp_cp)
-count of that term's mask tokens (all-reduced, `max(·, 1)`), so each term is a true per-token
-mean over the global batch and terms do not dilute each other. The FSDP per-rank
+Generalize the single global `loss_scale` to **one scale per term** = the global (dp_cp) count
+of that term's mask tokens (all-reduced, `max(·, 1)`), so each term is a true per-token mean
+over the global batch and terms do not dilute each other. The FSDP per-rank
 `fsdp_gradient_divide_factor` undo after the micro-batch loop is unchanged.
 
-(`main` today: `compute_loss(..., loss_scale)` then `scaled_loss = total_loss / loss_scale`.
-New: each term divides by its own scale inside `compute_loss`, then terms sum. With
-`losses = ["rl"]`, the rl scale equals today's `loss_scale` ⇒ identical result.)
+(Today: `compute_loss(..., loss_scale)` then `scaled_loss = total_loss / loss_scale`. New: each
+term divides by its own scale inside `compute_loss`, then terms sum. With `losses = ["rl"]`, the
+rl scale equals today's `loss_scale` ⇒ identical result.)
 
-## 10. Wire format (transport/types.py)
+## 10. Wire format (`transport/types.py`)
 
-Generalize echo's single `echo_alpha` to per-term data:
-
-- `rl` term reuses existing fields (`loss_mask`, `advantage`, `inference_logprobs`) — no new
-  per-token data for the default path.
-- Each **additional** enabled term ships per-token `(mask, weight)`. Concretely a
-  `term_weights: dict[str, list[float | None]]` keyed by term name (`None` = ineligible),
-  which is the natural generalization of `echo_alpha` (echo was exactly "the echo term's
-  per-token weight, `None` where ineligible"). The boolean mask is `weight is not None`.
+- The `rl` term reuses existing fields (`loss_mask`, `advantage`, `inference_logprobs`) — the
+  default path adds **no** new per-token data.
+- Each **additional** enabled term ships per-token `(mask, weight)`, carried as a
+  `term_weights: dict[str, list[float | None]]` keyed by term name (`None` = ineligible). The
+  boolean mask is `weight is not None`. Add this to `TrainingSample` and `MicroBatch`.
 - Optional `term_loss_kwargs: dict[str, dict]` for per-sample resolved core kwargs (§7),
   omitted when equal to the global default.
-- `enabled_losses` need not ship if derivable from term presence; ship the names for clarity.
+- Optionally ship `enabled_losses` (the names) for clarity.
 
-All `omit_defaults` (msgspec) so the default path adds nothing to the wire.
+All fields use msgspec `omit_defaults`, so the default path adds nothing to the wire.
 
-## 11. File-by-file changes (against `main`)
+## 11. File-by-file changes
 
 ### Config (`packages/prime-rl-configs/src/prime_rl/configs/`)
 
-- **`trainer.py`** — add the term registry. New `LossTermConfig` (`name`, `loss`, `filters`,
-  `weight`), discriminated sub-configs for each slot (`RLCore`/`SFTCore`/`CustomCore`;
+- **`trainer.py`** — add the term registry: `LossTermConfig` (`name`, `loss`, `filters`,
+  `weight`) with discriminated sub-configs per slot (`RLCore`/`SFTCore`/`CustomCore`;
   `CompletionFilter`/`RoleFilter`/`CustomFilter`; `GRPOWeight`/`ConstantWeight`/`CustomWeight`).
-  Add `losses: list[LossTermConfig | str]` to `TrainerConfig` (default `["rl"]`); the `str`
-  form is a preset name. Keep `DefaultLossConfig`/`CustomLossConfig` as the `rl`/`custom`
-  *core* configs (rename/move under the term, preserving fields `kl_tau`, `dppo_mask_*`,
-  `adv_tau`, `import_path`, `kwargs`). Preset-expansion + validators here.
-- **`orchestrator.py`** — per-env `enabled_losses: list[str]` + `loss_overrides: dict[str, dict]`.
-  **Remove `EchoConfig`/`RoleEchoConfig`/`EchoFilterConfig`** (echo is now a preset). The
-  per-env filter/weight definitions either live here or are read from the shared `losses`
-  list (see §12).
-- **`rl.py`** (`RLConfig`) — wire the shared `losses` definition so both `trainer` and
-  `orchestrator` sub-configs can resolve their slots (see §12 for placement decision).
+  Add `losses: list[LossTermConfig | str]` (default `["rl"]`; the `str` form is a preset name).
+  The existing `DefaultLossConfig`/`CustomLossConfig` already carry the `rl`/`custom` core
+  fields (`kl_tau`, `dppo_mask_*`, `adv_tau`, `import_path`, `kwargs`) — reuse them as the `rl`
+  and `custom` core configs. Preset-expansion + validators live here.
+- **`orchestrator.py`** — add per-env `enabled_losses: list[str]` + `loss_overrides: dict[str, dict]`.
+- **`rl.py` (`RLConfig`)** — host the single shared `losses` definition (see §12) and distribute
+  it to both the trainer and orchestrator sub-configs.
 
 ### Transport (`src/prime_rl/transport/types.py`)
 
-- Add `term_weights` (+ optional `term_loss_kwargs`, `enabled_losses`) to `TrainingSample` and
-  the per-token `term_weights` to `MicroBatch`; all `omit_defaults`. Remove `echo_alpha`.
+- Add `term_weights` (+ optional `term_loss_kwargs`, `enabled_losses`) to `TrainingSample`, and
+  the per-token `term_weights` to `MicroBatch`; all `omit_defaults`.
 
 ### Orchestrator (`src/prime_rl/orchestrator/`)
 
-- **`losses.py`** (new; generalizes the echo-branch `echo.py`) — bind each enabled term's
-  filters + weight per env (`import_object` + `functools.partial`), run them per rollout to
-  produce per-token `(mask, weight)`; AND-compose filters; validate filter return shape (port
-  `apply_echo_filter`'s checks: `list[list[bool]]`, outer == #steps, inner == prompt+completion,
-  plain bools). Built-in `completion`/`role` filters and `grpo`/`constant` weights live here.
-- **`envs.py`** — replace the single `echo_filter_fn` binding with per-term bound
-  filters/weights from `enabled_losses` (+ `loss_overrides`).
-- **`train_sink.py`** — replace the `build_echo_annotations(...)` call with the per-term
-  builder; stamp `term_weights` (+ resolved `term_loss_kwargs`) onto each `TrainingSample`.
-- **`trajectories.py`** — generalize the `echo_alpha` extension logic to extend per-term
-  weights across multi-step trajectories.
-- **`advantage.py`** — unchanged mechanism; the `grpo` weight reads its output. `adv_tau`
-  baking (§7) applied here or at stamp time.
+- **`losses.py`** (new module) — bind each enabled term's filters + weight per env
+  (`import_object` + `functools.partial`), run them per rollout to produce per-token
+  `(mask, weight)`, AND-compose filters, and **validate the filter return shape**: a filter must
+  return `list[list[bool]]` with the outer length equal to the number of trajectory steps, each
+  inner length equal to that step's `prompt_ids + completion_ids`, and every element a plain
+  `bool`. Built-in `completion`/`role` filters and `grpo`/`constant` weights live here.
+- **`envs.py`** — bind each enabled term's filters/weights for the env (from `enabled_losses`
+  + `loss_overrides`).
+- **`train_sink.py`** — run the per-term builder per rollout and stamp `term_weights`
+  (+ resolved `term_loss_kwargs`) onto each `TrainingSample`.
+- **`trajectories.py`** — extend per-term weights across multi-step trajectories (alongside the
+  existing per-token field extension).
+- **`advantage.py`** — unchanged mechanism; the `grpo` weight reads its output, with `adv_tau`
+  baked in at stamp time.
 
 ### Trainer (`src/prime_rl/trainer/`)
 
-- **`rl/loss.py`** — `default_loss_fn` stays **exactly `main`** (DPPO+KL over its `loss_mask`,
-  knows nothing about terms). Add `sft`/echo core = masked NLL `−(weight · logprob)[mask].sum()/scale`.
-  Add a built-in **core registry** `{"rl": default_loss_fn, "sft": ...}` + custom import.
-  Rework `compute_loss` to iterate enabled terms, apply each core over its `(mask, weight,
-  scale, kwargs)`, **sum**, and aggregate per-term metrics. Keep `LossInputs`/`LossOutputs`.
+- **`rl/loss.py`** — `default_loss_fn` stays **exactly as it is today** (DPPO+KL over its
+  `loss_mask`, unaware of terms). Add an `sft`/echo core = masked NLL
+  `−(weight · logprob)[mask].sum() / scale`. Add a built-in **core registry**
+  `{"rl": default_loss_fn, "sft": ...}` plus custom import. Rework `compute_loss` to iterate
+  enabled terms, apply each core over its `(mask, weight, scale, kwargs)`, **sum**, and
+  aggregate per-term metrics. Keep `LossInputs`/`LossOutputs`.
 - **`batch.py`** — `prepare_sample`: build per-term per-token `(mask, weight)` from the shipped
-  `term_weights` (generalizing the current single echo path). Propagate through
-  `packed_samples_into_micro_bs`, `pad_micro_batch`, `_make_dummy_batch` (parallel lists).
-- **`rl/packer.py`** — generalize the `echo_alpha` length assertions to per-term weights.
+  `term_weights`. Propagate through `packed_samples_into_micro_bs`, `pad_micro_batch`,
+  `_make_dummy_batch` (parallel lists).
+- **`rl/packer.py`** — add per-term weight length assertions (parallel to the existing
+  per-token field checks).
 - **`rl/train.py`** — compute **per-term scales** (generalize the single all-reduced
   `loss_scale`); move per-term `term_weights` to CUDA + `.split(response_lengths)`; pass to
   `compute_loss`; keep the **single** `loss.backward()` and the FSDP-undo loop unchanged.
-- **`rl/token_export.py`** — export per-term masks/weights instead of the single echo mask.
+- **`rl/token_export.py`** — export per-term masks/weights.
 
-## 12. Open decision: where the term *definition* physically lives
+## 12. Config placement (decided)
 
-The core runs trainer-side; filters/weights run orchestrator-side. Two ways to avoid drift:
+The core runs trainer-side; filters/weights run orchestrator-side. To keep a single source of
+truth and make the user-facing surface easy, **define the `losses` list once at the `RLConfig`
+level** and distribute it to both processes; each reads the slots it executes, and per-env
+config selects terms by name. Implementation check: confirm how `RLConfig` hands sub-config to
+the trainer and orchestrator processes, and thread the shared `losses` section through both.
 
-- **(A) Single shared `losses` list at `RLConfig` level**, passed to both processes; each reads
-  the slots it executes. Cleanest single-source-of-truth. Requires both entrypoints to accept
-  the shared section. **(recommended)**
-- **(B) Cores in `TrainerConfig.losses`, filters/weights + per-env selection in
-  `OrchestratorConfig`, tied by name.** Mirrors today (echo config is orchestrator-side, CE
-  core is trainer-side) but two places to keep in sync.
+## 13. Testing (conservative)
 
-Recommendation: **(A)** — define once, select per-env by name. Confirm with the launcher how
-`RLConfig` distributes sub-config to the two processes before committing to it.
-
-## 13. Testing (conservative, per AGENTS.md)
-
-- **Golden: `losses=["rl"]` is bit-identical to `main`** on a fixed input — the contract for
-  "default unchanged." (Primary regression guard.)
+- **Golden: `losses=["rl"]` is bit-identical to today's loss** on a fixed input — the contract
+  for "default unchanged." (Primary regression guard.)
 - Term composition sums correctly; overlapping masks double-train; per-term scales correct.
 - Filter AND-composition; `completion`/`role` built-ins select the right tokens.
-- Only pure-logic units (loss cores, mask/weight builders, preset expansion, validators).
-  No new framework-glue tests.
+- Only pure-logic units (loss cores, mask/weight builders, preset expansion, validators). No new
+  framework-glue tests.
 
-## 14. Suggested PR phases (keep default green throughout)
+## 14. Suggested PR phases (keep the default green throughout)
 
-1. **Term abstraction + registry + `compute_loss` over a list**, with `losses=["rl"]` only.
-   No behavior change; the golden test guards it. (loss.py, train.py scales, configs.)
-2. **`sft` core + `echo` preset** (role filter + constant weight) — feature parity with the
-   echo branch, now as a preset. (orchestrator `losses.py`, wire format, batch.py.)
-3. **Per-env `enabled_losses` + overrides** (incl. per-sample resolved core kwargs).
+1. **Term abstraction + core registry + `compute_loss` over a list**, with `losses=["rl"]` only.
+   No behavior change; the golden test guards it.
+2. **`sft` core + `echo` preset** (role filter + constant weight) — reaches the echo objective
+   as a preset (orchestrator `losses.py`, wire format, `batch.py`).
+3. **Per-env `enabled_losses` + overrides**, including the per-sample resolved core kwargs.
 4. **Custom pointers + validation polish.**
 
-Draft PR. Reference `feat/per-role-echo` (#2677) for the orchestrator-side filter mechanics,
-per-token weight plumbing, and tests as a porting source.
+Open as a draft PR.
 
-## 15. Loose ends / decisions for Sebastian
+## 15. Settled decisions
 
-- Confirm **§12** placement (shared `RLConfig` list vs trainer+orchestrator tied by name).
-- Confirm we ship **per-sample resolved core kwargs** in phase 3 (vs deferring per-env `kl_tau`).
-- Fate of **#2677** (`feat/per-role-echo`): close in favor of this, or land losses then migrate
-  its configs. (The custom-echo-loss experiment is stashed on that branch: `stash@{1}`.)
-- `adv_tau` placement: baked into advantage orchestrator-side (per-env-free) vs applied in the
-  `rl` core. Plan assumes baked.
+- **Single shared `losses` list at `RLConfig` level** (§12); per-env selects by name. *Impl
+  check remaining: how `RLConfig` distributes sub-config to the two processes.*
+- **Ship per-sample resolved core kwargs** for trainer-side knobs (`kl_tau`, DPPO thresholds);
+  do it in phase 3 (§7).
+- **`adv_tau` is baked into the advantage orchestrator-side** (§7), so it's per-env-free.
