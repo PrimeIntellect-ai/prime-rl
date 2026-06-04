@@ -45,7 +45,6 @@ def _restore_reload_corrupted_params(model: Module, received: dict[str, torch.Te
         return name[index:] if index >= 0 else name
 
     received_by_key = {_layer_key(name): tensor for name, tensor in received.items()}
-    restored = 0
     for name, param in model.named_parameters():
         if not name.endswith(_RELOAD_CORRUPTED_SUFFIXES):
             continue
@@ -58,10 +57,6 @@ def _restore_reload_corrupted_params(model: Module, received: dict[str, torch.Te
             weight_loader(param, tensor)
         elif tensor.shape == param.shape:
             param.data.copy_(tensor.to(param.dtype))
-        else:
-            continue
-        restored += 1
-    logger.debug("Restored %d NemotronH params (mixer.D, e_score_correction_bias) after reload", restored)
 
 
 def receive_integer(communicator: PyNcclCommunicator) -> int:
