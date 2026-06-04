@@ -51,6 +51,23 @@ class LossTerm:
     core: LossFn
 
 
+@dataclass
+class ExtraTerm:
+    """An additional loss term applied alongside the primary (training_mode) term.
+
+    ``masks``/``weights`` are per packed sample (parallel to ``compute_loss``'s
+    ``trainer_logprobs``). The core sees a ``LossInputs`` whose ``loss_mask`` is
+    this term's token-selection mask and whose ``advantages`` carry this term's
+    per-token weight. ``scale`` is the term's own (global) token denominator.
+    """
+
+    name: str
+    core: LossFn
+    scale: int
+    masks: list[Bool[Tensor, " seq"]]
+    weights: list[Float[Tensor, " seq"]]
+
+
 @jaxtyped(typechecker=typechecker)
 @torch.compile(dynamic=True)
 def selective_log_softmax(
@@ -115,6 +132,11 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
     """Mean of values over a boolean mask; returns 0 when mask is empty."""
     denom = torch.clamp_min(mask.sum(), 1)
     return values[mask].sum() / denom
+
+
+def _accumulate_metrics(all_metrics: dict[str, list[Tensor]], metrics: dict[str, Tensor]) -> None:
+    for k, v in metrics.items():
+        all_metrics.setdefault(k, []).append(v)
 
 
 def compute_importance_ratio_and_mismatch_kl(
@@ -243,6 +265,25 @@ def sft_loss_fn(inputs: LossInputs) -> LossOutputs:
     return LossOutputs(loss=loss, metrics=metrics)
 
 
+def echo_loss_fn(inputs: LossInputs) -> LossOutputs:
+    """Weighted masked negative log-likelihood — the echo / SFT-overlay core.
+
+    Reads ``inputs.loss_mask`` as the term's token-selection mask and
+    ``inputs.advantages`` as the per-token weight (``alpha``). With weight 1.0 on
+    the trainable mask this reduces to plain masked NLL.
+    """
+    trainer_logprobs = inputs.trainer_logprobs
+    mask = inputs.loss_mask
+    weight = inputs.advantages
+
+    loss = -(weight * trainer_logprobs)[mask].sum()
+    metrics = {
+        "echo_nll": _safe_mean(-trainer_logprobs, mask),
+        "echo_token_count": mask.sum().float(),
+    }
+    return LossOutputs(loss=loss, metrics=metrics)
+
+
 def setup_loss_fns(loss_config: LossConfig) -> dict[str, LossFn]:
     """Build the per-training-mode loss fn dispatch table.
 
@@ -268,7 +309,7 @@ def setup_loss_fns(loss_config: LossConfig) -> dict[str, LossFn]:
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return default_loss_fn(inputs, loss_config)
 
-    return {"sft": sft_loss_fn, "opd": opd_loss_fn, "rl": rl_fn}
+    return {"sft": sft_loss_fn, "opd": opd_loss_fn, "rl": rl_fn, "echo": echo_loss_fn}
 
 
 def build_loss_terms(training_mode: str, cores: dict[str, LossFn]) -> list[LossTerm]:
@@ -296,6 +337,7 @@ def compute_loss(
     loss_fns: dict[str, LossFn],
     loss_scale: int,
     training_mode: str = "rl",
+    extra_terms: list[ExtraTerm] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -313,13 +355,15 @@ def compute_loss(
         advantages: Advantages for each sequence
         loss_mask: Loss mask for each sequence
         loss_fns: Per-mode loss fn dispatch table from setup_loss_fns()
-        loss_scale: Scale factor to normalize the loss
+        loss_scale: Scale factor to normalize the primary (training_mode) term
         training_mode: Selects which loss fn to apply
+        extra_terms: Additional terms (e.g. echo) summed alongside the primary
+            term; each carries its own per-sample mask/weight and scale.
 
     Returns:
         Tuple of (scaled_loss, aggregated_metrics)
     """
-    terms = build_loss_terms(training_mode, loss_fns)
+    primary_terms = build_loss_terms(training_mode, loss_fns)
 
     total_loss = 0.0
     all_metrics: dict[str, list[Tensor]] = {}
@@ -327,13 +371,10 @@ def compute_loss(
     if teacher_logprobs is None:
         teacher_logprobs = [None] * len(trainer_logprobs)
 
-    for t_logp, i_logp, teach_logp, adv, mask in zip(
-        trainer_logprobs,
-        inference_logprobs,
-        teacher_logprobs,
-        advantages,
-        loss_mask,
-    ):
+    # Materialized so extra terms can re-zip the shared per-sample inputs.
+    samples = list(zip(trainer_logprobs, inference_logprobs, teacher_logprobs, advantages, loss_mask))
+
+    for t_logp, i_logp, teach_logp, adv, mask in samples:
         inputs = LossInputs(
             trainer_logprobs=t_logp,
             inference_logprobs=i_logp,
@@ -341,17 +382,33 @@ def compute_loss(
             advantages=adv,
             loss_mask=mask,
         )
-
-        # Every term is summed into one scalar; today there is exactly one per sample.
-        for term in terms:
+        for term in primary_terms:
             result = term.core(inputs)
             total_loss = total_loss + result.loss
-            for k, v in result.metrics.items():
-                if k not in all_metrics:
-                    all_metrics[k] = []
-                all_metrics[k].append(v)
+            _accumulate_metrics(all_metrics, result.metrics)
 
+    # Primary term keeps the single global divide, so the rl-only path stays
+    # bit-identical to the pre-term-refactor loss.
     scaled_loss = total_loss / loss_scale
+
+    # Extra terms (e.g. echo) carry their own per-token mask/weight and scale.
+    # Every term differentiates the same shared forward -> one backward upstream.
+    for term in extra_terms or []:
+        term_total = 0.0
+        for (t_logp, i_logp, teach_logp, _adv, _mask), term_mask, term_weight in zip(
+            samples, term.masks, term.weights, strict=True
+        ):
+            inputs = LossInputs(
+                trainer_logprobs=t_logp,
+                inference_logprobs=i_logp,
+                teacher_logprobs=teach_logp,
+                advantages=term_weight,
+                loss_mask=term_mask,
+            )
+            result = term.core(inputs)
+            term_total = term_total + result.loss
+            _accumulate_metrics(all_metrics, result.metrics)
+        scaled_loss = scaled_loss + term_total / term.scale
 
     aggregated: dict[str, Any] = {}
     for k, v in all_metrics.items():

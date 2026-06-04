@@ -11,10 +11,12 @@ import torch
 
 from prime_rl.configs.trainer import DefaultLossConfig
 from prime_rl.trainer.rl.loss import (
+    ExtraTerm,
     LossInputs,
     build_loss_terms,
     compute_loss,
     default_loss_fn,
+    echo_loss_fn,
     opd_loss_fn,
     setup_loss_fns,
     sft_loss_fn,
@@ -121,3 +123,63 @@ def test_build_loss_terms_unknown_mode_raises():
     cores = setup_loss_fns(DefaultLossConfig())
     with pytest.raises(ValueError, match="No loss fn available"):
         build_loss_terms("nope", cores)
+
+
+def test_echo_loss_fn_is_weighted_masked_nll():
+    logprobs = torch.tensor([-1.0, -2.0, -3.0, -4.0])
+    weight = torch.tensor([0.5, 0.5, 2.0, 1.0])
+    mask = torch.tensor([True, False, True, False])
+
+    out = echo_loss_fn(LossInputs(logprobs, torch.zeros(4), None, weight, mask))
+
+    # -(weight * logprobs)[mask].sum() = -((0.5 * -1) + (2.0 * -3)) = 6.5
+    assert torch.allclose(out.loss, torch.tensor(6.5))
+    assert torch.allclose(out.metrics["echo_token_count"], torch.tensor(2.0))
+
+
+def test_extra_echo_term_adds_scaled_contribution():
+    cfg = DefaultLossConfig()
+    trainer, inference, teacher, advantages, loss_mask = _inputs([6, 4], seed=4)
+    loss_scale, echo_scale = 9, 5
+
+    g = torch.Generator().manual_seed(99)
+    echo_masks = [torch.randint(0, 2, (n,), generator=g).bool() for n in (6, 4)]
+    echo_weights = [torch.rand(n, generator=g, dtype=torch.float32) for n in (6, 4)]
+    echo_term = ExtraTerm(name="echo", core=echo_loss_fn, scale=echo_scale, masks=echo_masks, weights=echo_weights)
+
+    loss, metrics = compute_loss(
+        trainer,
+        inference,
+        teacher,
+        advantages,
+        loss_mask=loss_mask,
+        loss_fns=setup_loss_fns(cfg),
+        loss_scale=loss_scale,
+        training_mode="rl",
+        extra_terms=[echo_term],
+    )
+
+    rl_total = 0.0
+    for t, i, te, a, m in zip(trainer, inference, teacher, advantages, loss_mask):
+        rl_total = rl_total + default_loss_fn(LossInputs(t, i, te, a, m), cfg).loss
+    echo_total = 0.0
+    for t, i, te, em, ew in zip(trainer, inference, teacher, echo_masks, echo_weights):
+        echo_total = echo_total + echo_loss_fn(LossInputs(t, i, te, ew, em)).loss
+
+    expected = rl_total / loss_scale + echo_total / echo_scale
+    assert torch.allclose(loss, expected)
+    assert "echo_nll" in metrics and "echo_token_count" in metrics
+
+
+def test_extra_terms_none_matches_rl_only():
+    cfg = DefaultLossConfig()
+    trainer, inference, teacher, advantages, loss_mask = _inputs([5, 5], seed=7)
+    kwargs = dict(
+        loss_mask=loss_mask,
+        loss_fns=setup_loss_fns(cfg),
+        loss_scale=8,
+        training_mode="rl",
+    )
+    loss_default, _ = compute_loss(trainer, inference, teacher, advantages, **kwargs)
+    loss_explicit_none, _ = compute_loss(trainer, inference, teacher, advantages, extra_terms=None, **kwargs)
+    assert torch.allclose(loss_default, loss_explicit_none)
