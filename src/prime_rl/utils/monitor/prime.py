@@ -201,10 +201,16 @@ class PrimeMonitor(Monitor):
         environments = getattr(run_config, "env", None) if run_config else None
         wandb = getattr(run_config, "wandb", None) if run_config else None
 
-        payload: dict = {
+        payload: dict[str, Any] = {
             "base_model": model.name if model else "unknown",
             "max_steps": getattr(run_config, "max_steps", None) or 0,
         }
+        if run_config:
+            payload["run_config"] = run_config.model_dump(exclude_none=True, mode="json")
+            for field in ("batch_size", "rollouts_per_example", "seq_len"):
+                value = getattr(run_config, field, None)
+                if value is not None:
+                    payload[field] = value
         if config.run_name:
             payload["name"] = config.run_name
         if team_id:

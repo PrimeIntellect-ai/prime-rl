@@ -1,5 +1,6 @@
 import io
 import json
+import types
 from unittest.mock import Mock
 
 import pyarrow.parquet as pq
@@ -92,6 +93,68 @@ def test_rollouts_to_parquet_bytes_skips_rollouts_without_trajectory():
     assert len(rows) == 1
     assert rows[0]["problem_id"] == 1
     assert rows[0]["sample_id"] == 0
+
+
+def test_register_run_sends_display_config_and_run_config(monkeypatch):
+    run_config_dump = {
+        "max_steps": 30,
+        "batch_size": 64,
+        "rollouts_per_example": 16,
+        "seq_len": 4096,
+    }
+    run_config = types.SimpleNamespace(
+        model=types.SimpleNamespace(name="PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"),
+        env=[types.SimpleNamespace(id="primeintellect/reverse-text")],
+        wandb=types.SimpleNamespace(project="prime-rl-e2e"),
+        max_steps=30,
+        batch_size=64,
+        rollouts_per_example=16,
+        seq_len=4096,
+        model_dump=Mock(return_value=run_config_dump),
+    )
+    monitor = _new_monitor()
+    monitor.base_url = "https://api.primeintellect.ai/api/v1/rft"
+    monitor._headers = {
+        "Authorization": "Bearer pit-test",
+        "x-api-key": "pit-test",
+        "Content-Type": "application/json",
+    }
+    monitor.logger = Mock()
+    config = types.SimpleNamespace(
+        team_id="team-1",
+        frontend_url=None,
+        run_name="e2e-run",
+    )
+    response = Mock(status_code=201)
+    response.json.return_value = {"run": {"id": "run-123"}}
+    post = Mock(return_value=response)
+    monkeypatch.setattr("prime_rl.utils.monitor.prime.httpx.post", post)
+
+    run_id = monitor._register_run(config, run_config)
+
+    assert run_id == "run-123"
+    run_config.model_dump.assert_called_once_with(exclude_none=True, mode="json")
+    post.assert_called_once_with(
+        "https://api.primeintellect.ai/api/v1/rft/external-runs",
+        headers={
+            "Authorization": "Bearer pit-test",
+            "x-api-key": "pit-test",
+            "Content-Type": "application/json",
+        },
+        json={
+            "base_model": "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT",
+            "max_steps": 30,
+            "run_config": run_config_dump,
+            "batch_size": 64,
+            "rollouts_per_example": 16,
+            "seq_len": 4096,
+            "name": "e2e-run",
+            "team_id": "team-1",
+            "environments": [{"id": "primeintellect/reverse-text"}],
+            "wandb_project": "prime-rl-e2e",
+        },
+        timeout=30,
+    )
 
 
 def test_sanitize_json_payload_drops_non_finite_values_and_logs_paths():
