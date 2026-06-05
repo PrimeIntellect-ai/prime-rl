@@ -17,7 +17,6 @@ level = "debug"
 [wandb]
 project = "nemotron_sami_debug"
 name = "nemotron-120b-math"
-shared = true
 
 [weight_broadcast]
 type = "nccl"
@@ -54,10 +53,6 @@ max_completion_tokens = 4096
 id = "math-env"
 name = "hendrycks-math"
 args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default", math_verify_max_workers = 128, math_verify_timeout = 60 }
-
-[orchestrator.buffer]
-easy_threshold = 1.0
-hard_threshold = 0.0
 
 [orchestrator.eval]
 interval = 10

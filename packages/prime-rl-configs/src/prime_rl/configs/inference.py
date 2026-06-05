@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
-from prime_rl.configs.shared import BaseModelConfig, SlurmConfig
+from prime_rl.configs.shared import BaseModelConfig, LogConfig, SlurmConfig
 from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
 from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
 
@@ -86,9 +86,71 @@ class WeightBroadcastConfig(BaseConfig):
     """Weight broadcast transport."""
 
 
-class KVCacheOffloadConfig(BaseConfig):
-    cpu_bytes: int = Field(1_000_000_000, gt=0)
-    """CPU bytes available for KV cache offloading per worker."""
+class CPUOffloadTier(BaseConfig):
+    num_bytes: int = Field(..., gt=0)
+    """CPU/DRAM offload capacity. For the ``native`` backend this is vLLM's aggregate ``cpu_bytes_to_use`` (scaled across workers internally). For the ``mooncake`` backend this is the per-node store client's DRAM segment (``-global_segment_size``)."""
+
+
+class DiskOffloadTier(BaseConfig):
+    path: Path
+    """Filesystem root for the disk tier. For ``native`` this is the ``fs_python`` secondary tier's ``root_dir``; for ``mooncake`` it is the store client's ``MOONCAKE_OFFLOAD_FILE_STORAGE_PATH``. Capacity is bounded by the filesystem at ``path`` (neither backend enforces a byte quota)."""
+
+
+class BaseKVCacheOffloadConfig(BaseConfig):
+    cpu: CPUOffloadTier | None = None
+    """CPU/DRAM offload tier. Always required — disk-only offload is not supported."""
+
+    disk: DiskOffloadTier | None = None
+    """Optional disk tier, layered behind the CPU tier (GPU → DRAM → disk)."""
+
+    @model_validator(mode="after")
+    def valid_tiers(self):
+        # Both backends support only two shapes: cpu-only or cpu+disk. Native disk
+        # tiering needs a CPU primary tier; Mooncake standalone-store needs a DRAM
+        # staging tier. Disk-only is rejected for both.
+        if self.cpu is None:
+            raise ValueError("inference.kv_cache_offload requires a cpu tier (disk-only offload is not supported).")
+        return self
+
+
+class NativeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
+    type: Literal["native"] = "native"
+    """vLLM-native offloading. cpu-only uses ``OffloadingConnector`` + ``CPUOffloadingSpec``; cpu+disk uses ``TieringOffloadingSpec`` (CPU primary tier + ``fs_python`` disk secondary). Fully self-contained — no external processes."""
+
+    def to_connector_dict(self) -> dict[str, Any]:
+        assert self.cpu is not None
+        extra: dict[str, Any] = {"cpu_bytes_to_use": int(self.cpu.num_bytes)}
+        if self.disk is not None:
+            extra["spec_name"] = "TieringOffloadingSpec"
+            extra["secondary_tiers"] = [{"type": "fs_python", "root_dir": str(self.disk.path)}]
+        return {
+            "kv_connector": "OffloadingConnector",
+            "kv_role": "kv_both",
+            "kv_connector_extra_config": extra,
+        }
+
+
+class MooncakeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
+    type: Literal["mooncake"] = "mooncake"
+    """Mooncake distributed store offloading (SLURM only). One ``mooncake_master`` + metadata server runs on the head inference node; every node runs a ``mooncake_client`` contributing its segment to the single shared pool, so prefixes cached on any node are reusable by all. The cpu tier sizes each node's DRAM segment; the optional disk tier adds an SSD tier."""
+
+    device_name: str = ""
+    """RDMA device name(s) for the store (empty = auto-detect)."""
+
+    def to_connector_dict(self) -> dict[str, Any]:
+        # Addresses/sizes/tiers are realized by the per-node store launch in the sbatch
+        # template (MOONCAKE_CONFIG_PATH JSON); blocks are keyed by model + parallel rank +
+        # content hash (no instance id), so the shared pool is reused across nodes/replicas.
+        return {
+            "kv_connector": "MooncakeStoreConnector",
+            "kv_role": "kv_both",
+            "kv_connector_extra_config": {},
+        }
+
+
+KVCacheOffloadConfig: TypeAlias = Annotated[
+    NativeKVCacheOffloadConfig | MooncakeKVCacheOffloadConfig, Field(discriminator="type")
+]
 
 
 # Valid vLLM max_lora_rank values (from vllm/config/lora.py)
@@ -105,9 +167,32 @@ All2AllBackend = Literal[
 ]
 
 
+class VllmRouterConfig(BaseConfig):
+    """PrimeIntellect vllm-router fronting the per-rank (external-LB) endpoints."""
+
+    type: Literal["vllm-router"] = "vllm-router"
+
+    port: int = 8000
+    """Port the router listens on — becomes the client-facing router URL."""
+
+    policy: str = "consistent_hash"
+    """Routing policy, e.g. ``consistent_hash`` or ``round_robin``."""
+
+
+# Discriminated on ``type`` so additional router backends can be added to the
+# union (a single member needs no discriminator yet).
+RouterConfig: TypeAlias = VllmRouterConfig
+
+
 class BaseInferenceDeploymentConfig(BaseConfig):
     gpus_per_node: int = 8
     """GPUs per node."""
+
+    backend_port: int = 8100
+    """Port for the per-rank vLLM backend instances."""
+
+    router: RouterConfig = VllmRouterConfig()
+    """Router fronting the per-rank endpoints."""
 
 
 class SingleNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
@@ -120,15 +205,6 @@ class MultiNodeInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
 
     num_nodes: int = Field(2, ge=1)
     """Inference nodes."""
-
-    router_port: int = 8000
-    """Port for the vllm-router."""
-
-    backend_port: int = 8100
-    """Port for vLLM backend instances."""
-
-    router_policy: str = "consistent_hash"
-    """vllm-router routing policy (e.g. ``consistent_hash``, ``round_robin``)."""
 
 
 # Disaggregated prefill/decode inference. Each replica is split into separate
@@ -152,17 +228,11 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     num_decode_replicas: int = Field(1, ge=1)
     """Independent decode vLLM instances. Must evenly divide ``num_decode_nodes``."""
 
-    router_port: int = 8000
-    """Port for the vllm-router on each replica."""
-
     prefill_port: int = 8100
     """Port for prefill vLLM instances."""
 
     decode_port: int = 8200
     """Port for decode vLLM instances."""
-
-    router_policy: str = "consistent_hash"
-    """vllm-router routing policy (e.g. ``consistent_hash``, ``round_robin``)."""
 
     prefill_env_overrides: dict[str, str] = {}
     """Extra environment variables exported only on prefill nodes."""
@@ -206,6 +276,9 @@ class InferenceConfig(BaseConfig):
 
     parallel: ParallelConfig = ParallelConfig()
     """Multi-node and multi-GPU parallelism (TP, DP, PP)."""
+
+    log: LogConfig = LogConfig()
+    """Logging configuration."""
 
     enable_lora: bool = False
     """Enable LoRA. Forwarded as ``--enable-lora``."""
@@ -256,17 +329,20 @@ class InferenceConfig(BaseConfig):
     """Enable dual batch overlap (DBO). Forwarded as ``--enable-dbo``."""
 
     use_deep_gemm: bool = False
-    """Force DeepGEMM FP8 kernels via ``VLLM_USE_DEEP_GEMM=1``. Only works with per-tensor FP8 quantization (e.g. GLM-5-FP8)."""
+    """Enable vLLM DeepGEMM FP8 kernels ``VLLM_USE_DEEP_GEMM=1``. Only works with block-wise FP8 quantization (e.g. GLM-5-FP8)."""
 
     weight_broadcast: WeightBroadcastConfig = WeightBroadcastConfig()
 
     kv_cache_offload: KVCacheOffloadConfig | None = None
-    """CPU KV cache offload for inference workers. Standard inference uses vLLM's ``OffloadingConnector``. Disaggregated P/D deployments combine it with NIXL through ``MultiConnector`` in the SLURM launcher."""
+    """KV cache offload for inference workers, as composable CPU/disk tiers. Discriminated on ``type``: ``native`` (vLLM ``OffloadingConnector``/``TieringOffloadingSpec``, self-contained) or ``mooncake`` (per-node Mooncake distributed store). Disaggregated P/D combines the chosen connector with NIXL through ``MultiConnector``."""
+
+    use_pd_kv_transfer: bool = False
+    """Auto-set for disaggregated P/D: emit the NIXL transfer connector. Persisted into the per-node config (which drops ``deployment``) so the connector is still built per worker. Not meant to be set by hand."""
 
     enable_return_routed_experts: bool = False
     """Return routed experts in responses. Forwarded as ``--enable-return-routed-experts``."""
 
-    enable_fp32_lm_head: bool = False
+    enable_fp32_lm_head: bool = True
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented as a monkey-patch over vLLM's LogitsProcessor, activated by setting ``additional_config["fp32_lm_head"] = True`` on the vLLM config."""
 
     vllm_extra: dict[str, Any] = {}
@@ -289,8 +365,8 @@ class InferenceConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):
-        if self.deployment.type == "multi_node" and self.slurm is None:
-            raise ValueError("Must use SLURM for multi-node deployment.")
+        if self.deployment.type in ("multi_node", "disaggregated") and self.slurm is None:
+            raise ValueError("Must use SLURM for multi-node / disaggregated deployment.")
         return self
 
     @model_validator(mode="after")
@@ -307,6 +383,7 @@ class InferenceConfig(BaseConfig):
     def auto_setup_disaggregated(self):
         """Auto-configure inference for disaggregated P/D: enable EP and compute DP."""
         if self.deployment.type == "disaggregated":
+            self.use_pd_kv_transfer = True
             if "enable_expert_parallel" not in self.model_fields_set:
                 self.enable_expert_parallel = True
             if "enable_eplb" not in self.model_fields_set:
@@ -368,6 +445,35 @@ class InferenceConfig(BaseConfig):
             self.api_server_count = 1  # LoRA requires only one API server
         return self
 
+    def build_kv_transfer_config(self) -> dict[str, Any] | None:
+        """Build the single vLLM ``kv_transfer_config`` from the transfer + offload connectors.
+
+        Disaggregated P/D always uses NIXL for prefill→decode transfer. KV cache offload (if
+        configured) contributes its own connector. When both are present they are composed via
+        ``MultiConnector``. Returns None when neither applies.
+        """
+        connectors: list[dict[str, Any]] = []
+        if self.use_pd_kv_transfer:
+            connectors.append(
+                {
+                    "kv_connector": "NixlConnector",
+                    "kv_role": "kv_both",
+                    "kv_connector_extra_config": {"num_threads": 1},
+                }
+            )
+        if self.kv_cache_offload is not None:
+            connectors.append(self.kv_cache_offload.to_connector_dict())
+
+        if not connectors:
+            return None
+        if len(connectors) == 1:
+            return connectors[0]
+        return {
+            "kv_connector": "MultiConnector",
+            "kv_role": "kv_both",
+            "kv_connector_extra_config": {"connectors": connectors},
+        }
+
     def to_vllm(self) -> Namespace:
         """Convert InferenceConfig to vLLM-compatible Namespace."""
         namespace = Namespace()
@@ -411,18 +517,9 @@ class InferenceConfig(BaseConfig):
         # Set `logprobs_mode` to `processed_logprobs` by default
         rsetattr(namespace, "logprobs_mode", "processed_logprobs")
 
-        if self.kv_cache_offload is not None:
-            rsetattr(
-                namespace,
-                "kv_transfer_config",
-                {
-                    "kv_connector": "OffloadingConnector",
-                    "kv_role": "kv_both",
-                    "kv_connector_extra_config": {
-                        "cpu_bytes_to_use": int(self.kv_cache_offload.cpu_bytes),
-                    },
-                },
-            )
+        kv_transfer_config = self.build_kv_transfer_config()
+        if kv_transfer_config is not None:
+            rsetattr(namespace, "kv_transfer_config", kv_transfer_config)
 
         # Pass prime-rl-specific flags through vLLM's additional_config dict;
         # workers read these via get_current_vllm_config().additional_config.

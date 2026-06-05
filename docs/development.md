@@ -129,3 +129,12 @@ What to look for:
 - **Loss reasonable.** Not NaN, not stuck.
 
 Don't expect reward to climb meaningfully in 20 steps on a random model.
+
+### Requirements for merging a new model
+
+Before merging a new model, you need to ensure the following:
+
+- The model is correctly registered and defines and all the required methods - such as `convert_hf_layer_to_tt` and `convert_tt_layer_to_hf`.
+- The small smoke test passes.
+
+In the PR that adds the new model, you also need to provide a table covering the KL mismatch across 20 steps on `math` environment with `batch_size=64`. All the entries in the table must lower than 0.015. If this is not met, the PR will not be merged (unless reasonable justification is provided). This is to ensure all our models are consistent and their implementations match the implementations in the inference framework.
