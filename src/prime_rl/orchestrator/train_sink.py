@@ -18,7 +18,7 @@ import functools
 import uuid
 from collections import defaultdict
 
-from prime_rl.configs.losses import apply_echo_override
+from prime_rl.configs.losses import apply_term_override, is_primary, merge_echo_terms
 from prime_rl.configs.orchestrator import AdvantageConfig, OrchestratorConfig
 from prime_rl.orchestrator.advantage import assign_advantages, setup_advantage_fn
 from prime_rl.orchestrator.echo import build_echo_annotations
@@ -167,24 +167,21 @@ class TrainSink:
         return None
 
     def _resolve_echo(self, env_name: str):
-        """Resolve the env's enabled echo term (with per-env overrides applied) and
-        its bound filter fn, cached per env. At most one echo term may be enabled."""
+        """Resolve the env's enabled echo (ce) terms into one merged ``EchoLossConfig`` (per-env
+        overrides applied, same-core terms merged) and its bound filter fn, cached per env."""
         if env_name not in self._echo_cache:
             env_config = self.train_envs.get(env_name).config
             enabled = env_config.enabled_losses
-            echo_terms = [
-                term for term in self.config.losses if term.type == "echo" and (enabled is None or term.name in enabled)
+            ce_terms = [
+                term
+                for term in self.config.losses
+                if term.loss.type == "ce" and (enabled is None or term.name in enabled)
             ]
-            if len(echo_terms) > 1:
-                raise ValueError(
-                    f"At most one echo term may be enabled per env (env {env_name!r}): "
-                    f"{[term.name for term in echo_terms]}"
-                )
-            term = echo_terms[0] if echo_terms else None
-            if term is not None:
-                override = env_config.loss_overrides.get(term.name)
-                if override:
-                    term = apply_echo_override(term, override)
+            ce_terms = [
+                apply_term_override(t, env_config.loss_overrides[t.name]) if t.name in env_config.loss_overrides else t
+                for t in ce_terms
+            ]
+            term = merge_echo_terms(ce_terms, where=f"env {env_name!r}")
             filter_fn = None
             if term is not None and term.filter is not None:
                 fn = import_object(term.filter.import_path)
@@ -201,7 +198,7 @@ class TrainSink:
             if self.config.training_mode != "rl":
                 self._primary_cache[env_name] = True
             else:
-                primary = next((term for term in self.config.losses if term.type in ("rl", "custom")), None)
+                primary = next((term for term in self.config.losses if is_primary(term)), None)
                 enabled = self.train_envs.get(env_name).config.enabled_losses
                 self._primary_cache[env_name] = primary is not None and (enabled is None or primary.name in enabled)
         return self._primary_cache[env_name]

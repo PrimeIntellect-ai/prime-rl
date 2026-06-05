@@ -6,7 +6,8 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
-from prime_rl.configs.losses import LossTermConfig, RLLossConfig
+from prime_rl.configs.losses import LossTerm as LossTermConfig
+from prime_rl.configs.losses import RLLossConfig, is_primary, to_rl_loss_config
 from prime_rl.utils.utils import import_object
 
 
@@ -293,31 +294,32 @@ def setup_loss_fns(losses: list[LossTermConfig]) -> dict[str, LossFn]:
 
     - ``"sft"``  → ``sft_loss_fn`` (masked NLL)
     - ``"opd"``  → ``opd_loss_fn`` (teacher KL as gradient signal, fixed knobs)
-    - ``"rl"``   → ``default_loss_fn`` configured by the ``rl`` term, or a
-      ``custom`` term's imported function.
+    - ``"rl"``   → ``default_loss_fn`` configured by the primary ``dppo_kl`` term, or a
+      ``custom`` core's imported function.
     - ``"echo"`` → ``echo_loss_fn`` (weighted CE), applied by additive echo terms.
 
-    Only the ``rl``/``custom`` term affects the rl path; sft/opd/echo cores are fixed.
+    Only the primary (dppo_kl/custom core) term affects the rl path; sft/opd/echo cores are fixed.
     """
-    rl_term = next((term for term in losses if term.type in ("rl", "custom")), None)
-    if rl_term is None:
-        # No rl/custom term: don't fabricate a default. An rl-mode batch erroring here is
+    primary = next((term for term in losses if is_primary(term)), None)
+    if primary is None:
+        # No primary term: don't fabricate a default. An rl-mode batch erroring here is
         # the trainer-side complement to the orchestrator's training_mode/losses validation.
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             raise ValueError(
-                "rl-mode batch received but `losses` has no rl/custom term. Add one, or set "
+                "rl-mode batch received but `losses` has no primary (dppo_kl/custom) term. Add one, or set "
                 "the orchestrator's training_mode to match the configured terms."
             )
-    elif rl_term.type == "custom":
-        custom_fn = import_object(rl_term.import_path)
-        kwargs = rl_term.kwargs
+    elif primary.loss.type == "custom":
+        custom_fn = import_object(primary.loss.import_path)
+        kwargs = primary.loss.kwargs
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return custom_fn(inputs, **kwargs)
     else:
+        rl_loss_config = to_rl_loss_config(primary)
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
-            return default_loss_fn(inputs, rl_term)
+            return default_loss_fn(inputs, rl_loss_config)
 
     return {"sft": sft_loss_fn, "opd": opd_loss_fn, "rl": rl_fn, "echo": echo_loss_fn}
 

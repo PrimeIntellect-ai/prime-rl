@@ -9,10 +9,12 @@ from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.losses import (
     LossList,
-    apply_echo_override,
+    apply_term_override,
     check_enabled_losses,
     check_loss_overrides,
     default_losses,
+    is_primary,
+    merge_echo_terms,
 )
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -534,8 +536,8 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_enabled_losses(self):
         loss_names = {term.name for term in self.losses}
-        echo_names = {term.name for term in self.losses if term.type == "echo"}
-        echo_by_name = {term.name: term for term in self.losses if term.type == "echo"}
+        echo_names = {term.name for term in self.losses if term.loss.type == "ce"}
+        terms_by_name = {term.name: term for term in self.losses}
         for env in self.train.env:
             where = f"env {env.resolved_name!r}"
             if env.enabled_losses is not None and not env.enabled_losses:
@@ -543,21 +545,25 @@ class OrchestratorConfig(BaseConfig):
                     f"{where}: enabled_losses is empty — the env would train nothing. Omit the field "
                     f"to enable all terms, or list the terms to apply."
                 )
-            # None means "all terms" — validate as the full list so the >1-echo check fires.
             enabled = env.enabled_losses if env.enabled_losses is not None else sorted(loss_names)
-            check_enabled_losses(loss_names, echo_names, enabled, where)
+            check_enabled_losses(loss_names, enabled, where)
             check_loss_overrides(loss_names, echo_names, env.loss_overrides, where)
-            # Build the merged echo config now so a malformed override (unknown field, bad shape,
-            # non-float alpha) fails during dry-run, not mid-run when the orchestrator resolves it.
-            for name, override in env.loss_overrides.items():
-                apply_echo_override(echo_by_name[name], override)
+            # Apply overrides + merge the enabled echo terms now, so a malformed override or an
+            # unmergeable echo set (overlapping roles, >1 filter) fails during dry-run, not mid-run.
+            enabled_terms = [
+                apply_term_override(terms_by_name[n], env.loss_overrides[n]) if n in env.loss_overrides else terms_by_name[n]
+                for n in enabled
+            ]
+            merge_echo_terms(enabled_terms, where)
 
         # Prompt-role echo needs renderer-provided prompt_attribution; MITO (renderer=None,
         # including sft mode which forces renderer=None later) won't have it, so system/user/
         # tool echo silently no-ops. Warn, don't hard-fail.
         if self.renderer is None or self.training_mode == "sft":
             for term in self.losses:
-                if term.type == "echo" and (term.system or term.user or term.tool):
+                if term.loss.type == "ce" and any(
+                    f.type == "role" and any(r in ("system", "user", "tool") for r in f.roles) for f in term.filters
+                ):
                     warnings.warn(
                         f"Echo term {term.name!r} supervises prompt roles (system/user/tool), which require "
                         f"renderer prompt_attribution; with renderer=None (MITO) those echo tokens become no-ops.",
@@ -567,10 +573,12 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_primary_loss(self):
-        # The rl-mode primary core comes from the rl/custom term; sft/opd dispatch to fixed
-        # cores by training_mode and need no matching term in `losses` (default losses=[rl] is fine).
-        if self.training_mode == "rl" and not any(term.type in ("rl", "custom") for term in self.losses):
-            raise ValueError("training_mode='rl' requires an rl or custom loss term in `losses`, but found none.")
+        # The rl-mode primary core comes from the dppo_kl/custom term; sft/opd dispatch to fixed
+        # cores by training_mode and need no primary term (the default rl term is simply dormant).
+        if self.training_mode == "rl" and not any(is_primary(term) for term in self.losses):
+            raise ValueError(
+                "training_mode='rl' requires a primary loss term (dppo_kl or custom core) in `losses`, found none."
+            )
         return self
 
     tokenizer: TokenizerConfig = TokenizerConfig()

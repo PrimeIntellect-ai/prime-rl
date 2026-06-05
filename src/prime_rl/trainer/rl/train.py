@@ -18,6 +18,7 @@ from prime_rl.trainer.multi_ckpt import setup_multi_checkpoint_manager
 from prime_rl.trainer.optim import setup_optimizer, setup_multi_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
 from prime_rl.configs.trainer import TrainerConfig
+from prime_rl.configs.losses import to_rl_loss_config
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
     gather_for_cp,
@@ -166,8 +167,9 @@ def train(config: TrainerConfig):
     # Set up the loss function
     logger.info(f"Setting up loss functions ({config.losses})")
     loss_fns = setup_loss_fns(config.losses)
-    # The rl term configures token-export's DPPO threshold annotations.
-    rl_loss_config = next((term for term in config.losses if term.type == "rl"), None)
+    # The dppo_kl primary term configures token-export's DPPO threshold annotations.
+    rl_term = next((term for term in config.losses if term.loss.type == "dppo_kl"), None)
+    rl_loss_config = to_rl_loss_config(rl_term) if rl_term is not None else None
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")

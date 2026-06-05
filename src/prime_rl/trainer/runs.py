@@ -14,7 +14,7 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_stable_ckpt_steps
 
 if TYPE_CHECKING:
-    from prime_rl.configs.losses import LossTermConfig
+    from prime_rl.configs.losses import LossTerm
     from prime_rl.configs.orchestrator import OrchestratorConfig
     from prime_rl.trainer.models.layers.lora import MultiLoRALinear
 
@@ -498,7 +498,7 @@ def setup_multi_run_manager(
     max_runs: int,
     device: torch.device,
     lora_config: LoRAConfig | None = None,
-    losses: "list[LossTermConfig] | None" = None,
+    losses: "list[LossTerm] | None" = None,
 ) -> MultiRunManager:
     """Initialize the MultiRunManager singleton.
 

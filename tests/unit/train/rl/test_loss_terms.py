@@ -9,7 +9,15 @@ behavior-preserving: the summed result equals the per-sample core loss divided b
 import pytest
 import torch
 
-from prime_rl.configs.losses import AssistantRoleEchoConfig, EchoLossConfig, RLLossConfig
+from prime_rl.configs.losses import (
+    AdvantageWeightConfig,
+    CECoreConfig,
+    ConstantWeightConfig,
+    DPPOKLCoreConfig,
+    LossTerm,
+    RLLossConfig,
+    RoleFilterConfig,
+)
 from prime_rl.trainer.rl.loss import (
     ExtraTerm,
     LossInputs,
@@ -21,6 +29,20 @@ from prime_rl.trainer.rl.loss import (
     setup_loss_fns,
     sft_loss_fn,
 )
+
+
+def _rl_term() -> LossTerm:
+    """The default RL term; converts to ``RLLossConfig()`` for the direct-core reference."""
+    return LossTerm(name="rl", loss=DPPOKLCoreConfig(), weight=AdvantageWeightConfig())
+
+
+def _echo_term(roles: list[str], alpha: float) -> LossTerm:
+    return LossTerm(
+        name="echo",
+        loss=CECoreConfig(),
+        filters=[RoleFilterConfig(roles=roles)],
+        weight=ConstantWeightConfig(alpha=alpha),
+    )
 
 
 def _inputs(seq_lens: list[int], seed: int):
@@ -53,7 +75,7 @@ def test_rl_term_matches_direct_core():
         teacher,
         advantages,
         loss_mask=loss_mask,
-        loss_fns=setup_loss_fns([cfg]),
+        loss_fns=setup_loss_fns([_rl_term()]),
         loss_scale=loss_scale,
         training_mode="rl",
     )
@@ -83,7 +105,7 @@ def test_sft_term_matches_direct_core():
         teacher,
         advantages,
         loss_mask=loss_mask,
-        loss_fns=setup_loss_fns([RLLossConfig()]),
+        loss_fns=setup_loss_fns([_rl_term()]),
         loss_scale=loss_scale,
         training_mode="sft",
     )
@@ -102,7 +124,7 @@ def test_opd_term_matches_direct_core():
         teacher,
         advantages,
         loss_mask=loss_mask,
-        loss_fns=setup_loss_fns([RLLossConfig()]),
+        loss_fns=setup_loss_fns([_rl_term()]),
         loss_scale=loss_scale,
         training_mode="opd",
     )
@@ -112,7 +134,7 @@ def test_opd_term_matches_direct_core():
 
 
 def test_build_loss_terms_is_singleton():
-    cores = setup_loss_fns([RLLossConfig()])
+    cores = setup_loss_fns([_rl_term()])
     terms = build_loss_terms("rl", cores)
     assert len(terms) == 1
     assert terms[0].name == "rl"
@@ -120,7 +142,7 @@ def test_build_loss_terms_is_singleton():
 
 
 def test_build_loss_terms_unknown_mode_raises():
-    cores = setup_loss_fns([RLLossConfig()])
+    cores = setup_loss_fns([_rl_term()])
     with pytest.raises(ValueError, match="No loss fn available"):
         build_loss_terms("nope", cores)
 
@@ -153,7 +175,7 @@ def test_extra_echo_term_adds_scaled_contribution():
         teacher,
         advantages,
         loss_mask=loss_mask,
-        loss_fns=setup_loss_fns([cfg]),
+        loss_fns=setup_loss_fns([_rl_term()]),
         loss_scale=loss_scale,
         training_mode="rl",
         extra_terms=[echo_term],
@@ -172,11 +194,10 @@ def test_extra_echo_term_adds_scaled_contribution():
 
 
 def test_extra_terms_none_matches_rl_only():
-    cfg = RLLossConfig()
     trainer, inference, teacher, advantages, loss_mask = _inputs([5, 5], seed=7)
     kwargs = dict(
         loss_mask=loss_mask,
-        loss_fns=setup_loss_fns([cfg]),
+        loss_fns=setup_loss_fns([_rl_term()]),
         loss_scale=8,
         training_mode="rl",
     )
@@ -186,8 +207,8 @@ def test_extra_terms_none_matches_rl_only():
 
 
 def test_no_rl_term_makes_rl_core_raise():
-    # No rl/custom term: the rl core must error when applied, not fabricate a default loss.
-    loss_fns = setup_loss_fns([EchoLossConfig(assistant=AssistantRoleEchoConfig(alpha=0.5))])
+    # No primary term: the rl core must error when applied, not fabricate a default loss.
+    loss_fns = setup_loss_fns([_echo_term(["assistant"], 0.5)])
     inputs = LossInputs(torch.zeros(3), torch.zeros(3), None, torch.zeros(3), torch.ones(3, dtype=torch.bool))
-    with pytest.raises(ValueError, match="no rl/custom term"):
+    with pytest.raises(ValueError, match="no primary"):
         loss_fns["rl"](inputs)

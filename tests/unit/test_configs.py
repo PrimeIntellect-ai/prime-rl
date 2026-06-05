@@ -252,18 +252,29 @@ def test_shared_and_sub_tokenizer_name_conflict_raises():
         )
 
 
+def _rl(**loss_kwargs):
+    return {"name": "rl", "loss": {"type": "dppo_kl", **loss_kwargs}, "weight": {"type": "advantage"}}
+
+
+def _echo(name="echo", roles=("assistant",), alpha=None):
+    term = {"name": name, "loss": {"type": "ce"}, "filters": [{"type": "role", "roles": list(roles)}]}
+    if alpha is not None:
+        term["weight"] = {"type": "constant", "alpha": alpha}
+    return term
+
+
 def test_shared_losses_propagate_to_subconfigs():
     config = RLConfig.model_validate(
         {
             "model": {"name": "my-model"},
-            "losses": [{"type": "rl", "kl_tau": 0.01}, {"type": "echo", "system": {"alpha": 0.5}}],
+            "losses": [_rl(kl_tau=0.01), _echo()],
             "trainer": {},
             "orchestrator": {"renderer": None},
         }
     )
-    assert [t.type for t in config.trainer.losses] == ["rl", "echo"]
-    assert [t.type for t in config.orchestrator.losses] == ["rl", "echo"]
-    assert config.trainer.losses[0].kl_tau == 0.01
+    assert [t.loss.type for t in config.trainer.losses] == ["dppo_kl", "ce"]
+    assert [t.loss.type for t in config.orchestrator.losses] == ["dppo_kl", "ce"]
+    assert config.trainer.losses[0].loss.kl_tau == 0.01
 
 
 def test_duplicate_loss_names_rejected():
@@ -271,7 +282,7 @@ def test_duplicate_loss_names_rejected():
         RLConfig.model_validate(
             {
                 "model": {"name": "my-model"},
-                "losses": [{"type": "rl", "name": "x"}, {"type": "echo", "name": "x", "assistant": {"alpha": 0.5}}],
+                "losses": [_rl(), _echo(name="rl")],
                 "trainer": {},
                 "orchestrator": {"renderer": None},
             }
@@ -283,7 +294,7 @@ def test_enabled_losses_unknown_name_rejected():
         RLConfig.model_validate(
             {
                 "model": {"name": "my-model"},
-                "losses": [{"type": "rl"}],
+                "losses": [_rl()],
                 "trainer": {},
                 "orchestrator": {
                     "renderer": None,
@@ -293,16 +304,13 @@ def test_enabled_losses_unknown_name_rejected():
         )
 
 
-def test_multiple_echo_terms_per_env_rejected():
-    with pytest.raises(ValidationError, match="at most one echo term"):
+def test_overlapping_echo_roles_rejected():
+    # Two enabled echo terms covering the same role can't be merged into one stream (Phase 1).
+    with pytest.raises(ValidationError, match="disjoint roles"):
         RLConfig.model_validate(
             {
                 "model": {"name": "my-model"},
-                "losses": [
-                    {"type": "rl"},
-                    {"type": "echo", "name": "e1", "system": {"alpha": 0.5}},
-                    {"type": "echo", "name": "e2", "user": {"alpha": 0.5}},
-                ],
+                "losses": [_rl(), _echo(name="e1", roles=("assistant",)), _echo(name="e2", roles=("assistant",))],
                 "trainer": {},
                 "orchestrator": {
                     "renderer": None,
@@ -312,12 +320,25 @@ def test_multiple_echo_terms_per_env_rejected():
         )
 
 
+def test_disjoint_echo_terms_accepted():
+    # Multiple echo terms with disjoint roles are allowed; they merge into one echo stream.
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "losses": [_rl(), _echo(name="e1", roles=("assistant",)), _echo(name="e2", roles=("tool",))],
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+        }
+    )
+    assert sum(1 for t in config.orchestrator.losses if t.loss.type == "ce") == 2
+
+
 def test_empty_enabled_losses_rejected():
     with pytest.raises(ValidationError, match="enabled_losses is empty"):
         RLConfig.model_validate(
             {
                 "model": {"name": "my-model"},
-                "losses": [{"type": "rl"}],
+                "losses": [_rl()],
                 "trainer": {},
                 "orchestrator": {
                     "renderer": None,
@@ -329,12 +350,12 @@ def test_empty_enabled_losses_rejected():
 
 def test_malformed_loss_override_rejected():
     # An override targeting a real echo term but with a bad alpha is caught at config time
-    # (built via apply_echo_override), not deferred to the orchestrator's resolve step.
+    # (built via apply_term_override), not deferred to the orchestrator's resolve step.
     with pytest.raises(ValidationError):
         RLConfig.model_validate(
             {
                 "model": {"name": "my-model"},
-                "losses": [{"type": "rl"}, {"type": "echo", "name": "echo", "assistant": {"alpha": 0.5}}],
+                "losses": [_rl(), _echo()],
                 "trainer": {},
                 "orchestrator": {
                     "renderer": None,
@@ -343,7 +364,7 @@ def test_malformed_loss_override_rejected():
                             {
                                 "id": "reverse-text",
                                 "enabled_losses": ["rl", "echo"],
-                                "loss_overrides": {"echo": {"assistant": {"alpha": "not-a-float"}}},
+                                "loss_overrides": {"echo": {"weight": {"alpha": "not-a-float"}}},
                             }
                         ]
                     },
@@ -357,24 +378,7 @@ def test_losses_under_trainer_only_conflict_raises():
         RLConfig.model_validate(
             {
                 "model": {"name": "my-model"},
-                "trainer": {"losses": [{"type": "rl"}, {"type": "echo", "system": {"alpha": 0.5}}]},
-                "orchestrator": {"renderer": None},
-            }
-        )
-
-
-def test_two_echo_terms_default_enabled_rejected():
-    # enabled_losses unset → "all terms" → two echo terms enabled → rejected at config time.
-    with pytest.raises(ValidationError, match="at most one echo term"):
-        RLConfig.model_validate(
-            {
-                "model": {"name": "my-model"},
-                "losses": [
-                    {"type": "rl"},
-                    {"type": "echo", "name": "e1", "system": {"alpha": 0.5}},
-                    {"type": "echo", "name": "e2", "user": {"alpha": 0.5}},
-                ],
-                "trainer": {},
+                "trainer": {"losses": [_rl(), _echo()]},
                 "orchestrator": {"renderer": None},
             }
         )
@@ -385,26 +389,26 @@ def test_loss_overrides_unknown_key_rejected():
         RLConfig.model_validate(
             {
                 "model": {"name": "my-model"},
-                "losses": [{"type": "rl"}, {"type": "echo", "system": {"alpha": 0.5}}],
+                "losses": [_rl(), _echo()],
                 "trainer": {},
                 "orchestrator": {
                     "renderer": None,
-                    "train": {"env": [{"id": "reverse-text", "loss_overrides": {"nope": {"system": {"alpha": 0.1}}}}]},
+                    "train": {"env": [{"id": "reverse-text", "loss_overrides": {"nope": {"weight": {"alpha": 0.1}}}}]},
                 },
             }
         )
 
 
 def test_loss_overrides_non_echo_term_rejected():
-    with pytest.raises(ValidationError, match="only to echo terms"):
+    with pytest.raises(ValidationError, match="only to echo"):
         RLConfig.model_validate(
             {
                 "model": {"name": "my-model"},
-                "losses": [{"type": "rl"}, {"type": "echo", "system": {"alpha": 0.5}}],
+                "losses": [_rl(), _echo()],
                 "trainer": {},
                 "orchestrator": {
                     "renderer": None,
-                    "train": {"env": [{"id": "reverse-text", "loss_overrides": {"rl": {"kl_tau": 0.1}}}]},
+                    "train": {"env": [{"id": "reverse-text", "loss_overrides": {"rl": {"weight": {"tau": 0.1}}}}]},
                 },
             }
         )
@@ -415,7 +419,7 @@ def test_mito_prompt_role_echo_warns():
         RLConfig.model_validate(
             {
                 "model": {"name": "my-model"},
-                "losses": [{"type": "rl"}, {"type": "echo", "system": {"alpha": 0.5}}],
+                "losses": [_rl(), _echo(roles=("system",))],
                 "trainer": {},
                 "orchestrator": {"renderer": None},
             }
@@ -423,12 +427,12 @@ def test_mito_prompt_role_echo_warns():
 
 
 def test_training_mode_without_matching_primary_rejected():
-    # training_mode=rl (default) but losses has only an echo term → no rl/custom primary.
-    with pytest.raises(ValidationError, match="requires an rl or custom loss term"):
+    # training_mode=rl (default) but losses has only an echo (ce) term → no primary core.
+    with pytest.raises(ValidationError, match="requires a primary loss term"):
         RLConfig.model_validate(
             {
                 "model": {"name": "my-model"},
-                "losses": [{"type": "echo", "assistant": {"alpha": 0.5}}],
+                "losses": [_echo()],
                 "trainer": {},
                 "orchestrator": {"renderer": None},
             }
@@ -440,20 +444,20 @@ def test_two_primary_terms_rejected():
         RLConfig.model_validate(
             {
                 "model": {"name": "my-model"},
-                "losses": [{"type": "rl", "name": "a"}, {"type": "rl", "name": "b"}],
+                "losses": [_rl(), {"name": "b", "loss": {"type": "dppo_kl"}, "weight": {"type": "advantage"}}],
                 "trainer": {},
                 "orchestrator": {"renderer": None},
             }
         )
 
 
-def test_sft_loss_term_type_rejected():
-    # sft/opd are training_mode paths with fixed cores, not loss-list terms — reject in `losses`.
+def test_sft_core_type_rejected():
+    # sft/opd are training_mode paths with fixed cores, not loss cores — "sft" isn't a core type.
     with pytest.raises(ValidationError):
         RLConfig.model_validate(
             {
                 "model": {"name": "my-model"},
-                "losses": [{"type": "sft"}],
+                "losses": [{"name": "x", "loss": {"type": "sft"}}],
                 "trainer": {},
                 "orchestrator": {"renderer": None},
             }
