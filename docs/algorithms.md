@@ -74,25 +74,49 @@ $$
 
 $\mu$ is the policy that generated the rollout (inference), $\pi$ is the current policy (trainer), $\hat{A}_{i,t}$ is the token-level advantage, $\epsilon_{\text{low}}$ / $\epsilon_{\text{high}}$ are the DPPO masking thresholds (`dppo_mask_low` / `dppo_mask_high`), and $\tau_{KL}$ is the KL temperature. The mask drops trust-region violators — an upweighted token ($\hat{A}>0$) that has already grown too likely, or a downweighted token ($\hat{A}<0$) that has already grown too unlikely — so a stale rollout doesn't produce a runaway gradient.
 
-The knobs (on the `rl` loss term — a `[[losses]]` entry with `type = "rl"`):
+A `losses` entry is composed of three axes — a **core** (`loss`), token **filters** (which tokens are eligible), and a per-token **weight**. The default RL term is:
 
-| Knob | Default | What it does |
-|---|---|---|
-| `dppo_mask_low` / `dppo_mask_high` | 0.2 / 0.2 | Lower / upper thresholds for DPPO-style token-level masking. |
-| `adv_tau` | 1.0 | Temperature on the advantage term. Set to 0 for pure distillation (no RL signal). |
-| `kl_tau` | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
+```toml
+[[losses]]
+name    = "rl"
+loss    = { type = "dppo_kl", kl_tau = 1e-3, dppo_mask_low = 0.2, dppo_mask_high = 0.2 }
+filters = [ { type = "completion" } ]          # the sampled completion tokens
+weight  = { type = "advantage", tau = 1.0 }    # the GRPO advantage
+```
 
-The trainer dispatches automatically based on the batch's training mode (set by the orchestrator via `orchestrator.training_mode`):
+| Knob | Lives on | Default | What it does |
+|---|---|---|---|
+| `dppo_mask_low` / `dppo_mask_high` | `dppo_kl` core | 0.2 / 0.2 | Lower / upper thresholds for DPPO token-level masking. |
+| `kl_tau` | `dppo_kl` core | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
+| `tau` | `advantage` weight | 1.0 | Temperature on the advantage. Set to 0 for pure distillation (no RL signal). |
 
-- `rl` mode → DPPO + KL with the advantage signal.
-- `opd` mode → KL distillation against the teacher's per-token logprobs. The teacher must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
+The trainer dispatches the **primary** loss by the batch's training mode (set via `orchestrator.training_mode`):
+
+- `rl` mode → the `losses` primary: the completion-filtered, advantage-weighted term (`dppo_kl` by default).
+- `opd` mode → KL distillation against the teacher's per-token logprobs. The teacher must be a vLLM server (the only one that exposes `prompt_logprobs`).
 - `sft` mode → standard token-level NLL on teacher-generated rollouts.
 
-The default `losses = [{ type = "rl" }]` applies this loss to rl-mode batches; configure via the knobs above. SFT and OPD modes ignore the policy-gradient–specific fields. Add more terms (e.g. an `echo` overlay) to the `losses` list and select them per env via `orchestrator.train.env.enabled_losses`.
+The default `losses` is a single `rl` term, so default training is DPPO+KL. sft/opd dispatch fixed cores and ignore the `losses` primary.
 
-### Custom Loss
+### Overlays
 
-The loss is computed **per sequence**: you write a function that takes one sequence's tensors and returns a scalar loss. The trainer iterates and aggregates.
+Beyond the primary, `losses` may carry **overlay** terms — additive losses over *context* tokens (system / user / tool / assistant) that are summed into the total over one shared forward/backward. Each overlay is the same three axes: a `ce` (cross-entropy) or `custom` core, one or more `role` filters (optionally narrowed by a `custom` filter), and a `weight`:
+
+```toml
+[[losses]]
+name    = "echo"
+loss    = { type = "ce" }
+filters = [ { type = "role", roles = ["assistant"] } ]
+weight  = { type = "constant", alpha = 0.5 }   # 0 = supervise with no gradient; negative = suppress
+```
+
+- **weight** is `constant` (a fixed `alpha`), `advantage` (the rollout's GRPO advantage × `tau`, resolved per-rollout), or `custom` (a per-rollout resolver `fn(sample, **kwargs) -> list[float]`).
+- **filters** chain by intersection: `role` selects context tokens (prompt roles need a renderer that emits `prompt_attribution`; under MITO they no-op and config validation warns), and an optional `custom` filter (`fn(rollout) -> list[list[bool]]`) narrows further. `tool` filters take an optional `tool_names` set.
+- Per env, `orchestrator.train.env.enabled_losses` selects which terms apply (default: all) and `loss_overrides` deep-merges per-env tweaks into a named overlay term (e.g. a different `alpha`).
+
+### Custom cores
+
+Any axis takes a `custom` preset with a dotted `import_path` (+ optional `kwargs`). A custom **core** is computed **per sequence** — a function taking one sequence's tensors and returning a scalar loss; the trainer iterates and aggregates. `inputs.advantages` carries the term's resolved per-token **weight** (the GRPO advantage for the rl primary, the alpha/resolver output for an overlay) and `inputs.loss_mask` is the term's **filter** mask.
 
 ```python
 # my_module.py
@@ -113,15 +137,17 @@ def ppo_clip_loss(inputs: LossInputs, clip_eps: float = 0.2) -> LossOutputs:
     )
 ```
 
-Wire it up:
+Wire it as the primary core (completion-filtered, advantage-weighted) — or as an overlay core (role-filtered):
 
 ```toml
 [[losses]]
-type = "custom"
-name = "ppo"
-import_path = "my_module.ppo_clip_loss"
-kwargs = { clip_eps = 0.2 }
+name    = "ppo"
+loss    = { type = "custom", import_path = "my_module.ppo_clip_loss", kwargs = { clip_eps = 0.2 } }
+filters = [ { type = "completion" } ]
+weight  = { type = "advantage" }
 ```
+
+Custom **filters** and **weights** plug in the same way — `filters = [{ type = "custom", import_path = "...", kwargs = {...} }]` (a `fn(rollout) -> list[list[bool]]` per-step token mask) and `weight = { type = "custom", import_path = "...", kwargs = {...} }` (a `fn(sample, **kwargs) -> list[float]` per-token weight, resolved per rollout).
 
 The dataclasses:
 
@@ -131,8 +157,8 @@ class LossInputs:
     trainer_logprobs: Float[Tensor, "seq"]      # current policy
     inference_logprobs: Float[Tensor, "seq"]    # rollout-time policy
     teacher_logprobs: Float[Tensor, "seq"] | None  # only set in OPD mode
-    advantages: Float[Tensor, "seq"]
-    loss_mask: Bool[Tensor, "seq"]
+    advantages: Float[Tensor, "seq"]            # the term's per-token weight (GRPO advantage for the rl primary)
+    loss_mask: Bool[Tensor, "seq"]              # the term's filter mask
 
 @dataclass
 class LossOutputs:
