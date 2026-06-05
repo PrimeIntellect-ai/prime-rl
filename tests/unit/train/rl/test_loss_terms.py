@@ -190,7 +190,7 @@ def test_extra_echo_term_adds_scaled_contribution():
 
     expected = rl_total / loss_scale + echo_total / echo_scale
     assert torch.allclose(loss, expected)
-    assert "echo_nll" in metrics and "echo_token_count" in metrics
+    assert "echo/echo_nll" in metrics and "echo/echo_token_count" in metrics
 
 
 def test_extra_terms_none_matches_rl_only():

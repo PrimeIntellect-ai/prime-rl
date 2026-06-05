@@ -540,6 +540,31 @@ def test_loss_override_unsupported_field_rejected():
         )
 
 
+def test_loss_overrides_disabled_term_rejected():
+    # An override on a term the env doesn't enable is a silent no-op (_resolve_overlays skips disabled
+    # terms before applying overrides), so it's rejected rather than passing as a stale config.
+    with pytest.raises(ValidationError, match="not in enabled_losses"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [_rl(), _echo()],
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": None,
+                    "train": {
+                        "env": [
+                            {
+                                "id": "reverse-text",
+                                "enabled_losses": ["rl"],
+                                "loss_overrides": {"echo": {"weight": {"alpha": 0.1}}},
+                            }
+                        ]
+                    },
+                },
+            }
+        )
+
+
 def test_disjoint_role_filters_rejected():
     # Filters chain by AND, so role filters sharing no role select nothing -> rejected at config time.
     with pytest.raises(ValidationError, match="intersect to no roles"):
@@ -552,6 +577,30 @@ def test_disjoint_role_filters_rejected():
                         "name": "e",
                         "loss": {"type": "ce"},
                         "filters": [{"type": "role", "roles": ["system"]}, {"type": "role", "roles": ["user"]}],
+                    },
+                ],
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
+def test_disjoint_tool_names_rejected():
+    # tool_names chain by AND too: two tool filters with disjoint tool_names select no tools -> rejected
+    # at config time (else to_echo_config builds an empty-set ToolRoleEchoConfig that crashes at runtime).
+    with pytest.raises(ValidationError, match="share no tool_names"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [
+                    _rl(),
+                    {
+                        "name": "e",
+                        "loss": {"type": "ce"},
+                        "filters": [
+                            {"type": "role", "roles": ["tool"], "tool_names": ["a"]},
+                            {"type": "role", "roles": ["tool"], "tool_names": ["b"]},
+                        ],
                     },
                 ],
                 "trainer": {},

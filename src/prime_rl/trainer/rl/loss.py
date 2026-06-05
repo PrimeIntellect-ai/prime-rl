@@ -435,7 +435,9 @@ def compute_loss(
             )
             result = term.core(inputs)
             term_total = term_total + result.loss
-            _accumulate_metrics(all_metrics, result.metrics)
+            # Namespace overlay metrics by term so multiple overlays (or custom cores) can't collide
+            # with each other or with the primary's metrics.
+            _accumulate_metrics(all_metrics, {f"{term.name}/{k}": v for k, v in result.metrics.items()})
         scaled_loss = scaled_loss + term_total / term.scale
 
     aggregated: dict[str, Any] = {}

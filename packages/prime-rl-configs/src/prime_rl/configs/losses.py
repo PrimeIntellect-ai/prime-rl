@@ -239,10 +239,22 @@ class LossTerm(BaseConfig):
                 )
             # Filters chain by AND, so role filters must share at least one role (else they select nothing).
             role_filters = [f for f in self.filters if f.type == "role"]
-            if not set.intersection(*(set(f.roles) for f in role_filters)):
+            roles = set.intersection(*(set(f.roles) for f in role_filters))
+            if not roles:
                 raise ValueError(
                     f"loss term {self.name!r}: its role filters intersect to no roles (filters chain by AND)."
                 )
+            # tool_names chain by AND too: if "tool" survives the role intersection, the filters that
+            # constrain tool_names must share at least one (else the overlay selects no tools and
+            # to_echo_config would build an empty-set ToolRoleEchoConfig that crashes at resolution).
+            if "tool" in roles:
+                tool_name_sets = [
+                    set(f.tool_names) for f in role_filters if "tool" in f.roles and f.tool_names is not None
+                ]
+                if tool_name_sets and not set.intersection(*tool_name_sets):
+                    raise ValueError(
+                        f"loss term {self.name!r}: its tool role filters share no tool_names (filters chain by AND)."
+                    )
             # Overlay weight may be constant, advantage, or a custom per-rollout resolver (all OK).
         return self
 
@@ -285,19 +297,27 @@ def check_enabled_losses(loss_names: set[str], enabled: list[str], where: str) -
 def check_loss_overrides(
     loss_names: set[str],
     overlay_names: set[str],
+    enabled: list[str],
     overrides: dict[str, dict],
     terms_by_name: dict[str, LossTerm],
     where: str,
 ) -> None:
-    """Raise if ``overrides`` references unknown/non-overlay terms, or overrides fields the orchestrator
-    can't apply per env. Only the role/custom ``filters`` and a *constant* weight's ``alpha`` are
-    resolved per env; ``weight`` type/tau/custom, ``loss`` (core), and ``name`` are resolved globally,
-    so overriding them would validate but be silently ignored — reject them."""
+    """Raise if ``overrides`` references unknown/non-overlay/disabled terms, or overrides fields the
+    orchestrator can't apply per env. Only the role/custom ``filters`` and a *constant* weight's
+    ``alpha`` are resolved per env; ``weight`` type/tau/custom, ``loss`` (core), and ``name`` are
+    resolved globally, so overriding them would validate but be silently ignored — reject them. An
+    override on a term the env doesn't enable is also a silent no-op (``_resolve_overlays`` skips
+    disabled terms before applying overrides), so reject that too."""
     for name, override in overrides.items():
         if name not in loss_names:
             raise ValueError(f"{where}: loss_overrides key {name!r} not found in losses {sorted(loss_names)}.")
         if name not in overlay_names:
             raise ValueError(f"{where}: loss_overrides currently applies only to overlay terms, got {name!r}.")
+        if name not in enabled:
+            raise ValueError(
+                f"{where}: loss_overrides[{name!r}] targets a term not in enabled_losses {sorted(enabled)}; "
+                f"the override would be silently ignored. Add it to enabled_losses or drop the override."
+            )
         unsupported = set(override) - {"filters", "weight"}
         if unsupported:
             raise ValueError(
