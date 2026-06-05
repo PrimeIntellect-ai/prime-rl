@@ -584,6 +584,19 @@ def test_multiple_filters_accepted():
     assert sum(1 for f in echo.filters if f.type == "custom") == 1
 
 
+def test_reserved_loss_term_name_rejected():
+    # sft/opd/rl are trainer dispatch keys; an overlay using one would clobber a fixed/primary core.
+    with pytest.raises(ValidationError, match="reserved"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [_rl(), _echo(name="opd")],
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
 def test_tokenizer_name_falls_back_to_model_name_when_unset():
     config = RLConfig.model_validate(
         {
