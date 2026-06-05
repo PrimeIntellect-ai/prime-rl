@@ -318,6 +318,33 @@ def test_multiple_overlay_terms_accepted():
     assert sum(1 for t in config.orchestrator.losses if t.loss.type == "ce") == 2
 
 
+def test_advantage_weighted_overlay_accepted():
+    # An overlay may be weighted by the GRPO advantage (scaled per-rollout once advantages exist).
+    term = {
+        "name": "adv",
+        "loss": {"type": "ce"},
+        "filters": [{"type": "role", "roles": ["assistant"]}],
+        "weight": {"type": "advantage", "tau": 0.5},
+    }
+    config = RLConfig.model_validate(
+        {"model": {"name": "my-model"}, "losses": [_rl(), term], "trainer": {}, "orchestrator": {"renderer": None}}
+    )
+    assert config.orchestrator.losses[1].weight.type == "advantage"
+
+
+def test_custom_overlay_weight_rejected():
+    term = {
+        "name": "cw",
+        "loss": {"type": "ce"},
+        "filters": [{"type": "role", "roles": ["assistant"]}],
+        "weight": {"type": "custom", "import_path": "x.y"},
+    }
+    with pytest.raises(ValidationError, match="custom overlay weight"):
+        RLConfig.model_validate(
+            {"model": {"name": "my-model"}, "losses": [_rl(), term], "trainer": {}, "orchestrator": {"renderer": None}}
+        )
+
+
 def test_empty_enabled_losses_rejected():
     with pytest.raises(ValidationError, match="enabled_losses is empty"):
         RLConfig.model_validate(

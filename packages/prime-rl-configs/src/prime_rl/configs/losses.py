@@ -177,34 +177,34 @@ class LossTerm(BaseConfig):
 
     @model_validator(mode="after")
     def validate_supported(self) -> "LossTerm":
-        # The engine runs one advantage-weighted primary (dppo_kl/custom core over the completion) plus
-        # constant-weighted overlays (ce/custom core over role/custom-filtered context tokens). Custom or
-        # advantage *weight* on an overlay needs the weight resolver (later phase) and is rejected here.
+        # The primary (rl objective) is the completion-filtered dppo_kl/custom term weighted by the
+        # advantage; everything else is an additive overlay over role/custom-filtered context tokens
+        # (ce/custom core, constant- or advantage-weighted). Custom *weight* needs the weight resolver
+        # (later phase) and is rejected here.
         core = self.loss.type
         weight = self.weight.type
         filter_types = [f.type for f in self.filters]
-        if weight == "advantage":  # the rl objective (primary)
-            if core not in ("dppo_kl", "custom") or filter_types != ["completion"]:
+        if "completion" in filter_types:  # the rl objective (primary)
+            if filter_types != ["completion"] or core not in ("dppo_kl", "custom") or weight != "advantage":
                 raise ValueError(
-                    f"loss term {self.name!r}: an advantage-weighted (primary) term needs a dppo_kl/custom "
-                    f"core over filters=[{{type='completion'}}]."
+                    f"loss term {self.name!r}: a completion-filtered (primary) term needs a dppo_kl/custom core, "
+                    f"weight=advantage, and no other filters."
                 )
-        elif weight == "constant":  # additive overlay
+        else:  # additive overlay over context tokens
             if core not in ("ce", "custom"):
-                raise ValueError(f"loss term {self.name!r}: a constant-weighted overlay needs a ce or custom core.")
-            if any(t not in ("role", "custom") for t in filter_types) or "role" not in filter_types:
+                raise ValueError(f"loss term {self.name!r}: an overlay needs a ce or custom core.")
+            if "role" not in filter_types or any(t not in ("role", "custom") for t in filter_types):
                 raise ValueError(
-                    f"loss term {self.name!r}: an overlay needs at least one role filter (plus optional custom "
-                    f"filters); overlays over the completion are not supported yet."
+                    f"loss term {self.name!r}: an overlay needs at least one role filter (plus optional custom filters)."
                 )
-        else:  # custom weight
-            raise ValueError(f"loss term {self.name!r}: custom weight is not supported yet (later phase).")
+            if weight == "custom":
+                raise ValueError(f"loss term {self.name!r}: custom overlay weight is not supported yet (later phase).")
         return self
 
 
 def is_primary(term: LossTerm) -> bool:
-    """The rl objective is the advantage-weighted term; additive overlays use a constant/custom weight."""
-    return term.weight.type == "advantage"
+    """The rl objective trains the sampled completion (completion filter); overlays target context tokens."""
+    return any(f.type == "completion" for f in term.filters)
 
 
 def validate_loss_list(losses: list[LossTerm]) -> list[LossTerm]:
@@ -352,10 +352,11 @@ def overlay_terms(losses: list[LossTerm]) -> list[LossTerm]:
 
 
 def to_echo_config(term: LossTerm) -> EchoLossConfig:
-    """Resolve one constant-weighted overlay term (role + optional custom filters) into an
-    ``EchoLossConfig`` for the orchestrator's per-token alpha builder. Every selected role gets the
-    term's constant weight; the term's core (ce/custom) is applied trainer-side, not here."""
-    alpha = term.weight.alpha
+    """Resolve one overlay term (role + optional custom filters) into an ``EchoLossConfig`` for the
+    orchestrator's per-token alpha builder. The term's core (ce/custom) is applied trainer-side, not
+    here. Constant weight bakes its alpha in directly; advantage weight uses 1.0 as an eligibility
+    marker that the orchestrator scales by the rollout's advantage (x tau) once advantages exist."""
+    alpha = term.weight.alpha if term.weight.type == "constant" else 1.0
     roles: set[str] = set()
     tool_names: set[str] | None = None
     echo_filter: EchoFilterConfig | None = None

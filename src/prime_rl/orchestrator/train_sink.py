@@ -73,6 +73,12 @@ class TrainSink:
         self.train_envs = train_envs
         self._overlay_cache: dict[str, list] = {}
         self._primary_cache: dict[str, bool] = {}
+        # Advantage-weighted overlay terms: name -> tau. Their per-token alpha ships as a 1.0
+        # eligibility marker (resolved at tokenization, before advantages) and is scaled by the
+        # rollout's advantage x tau once advantages are assigned (see process_group).
+        self._advantage_overlay_taus: dict[str, float] = {
+            term.name: term.weight.tau for term in overlay_terms(config.losses) if term.weight.type == "advantage"
+        }
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
@@ -275,6 +281,14 @@ class TrainSink:
                 sample.env_name = r.env_name
                 sample.training_mode = self.config.training_mode
                 sample.completion_temperatures = [temperature] * len(sample.completion_ids)
+                # Scale advantage-weighted overlays by this rollout's advantage (x tau); their alpha
+                # arrives as a 1.0 eligibility marker since overlay tokens are resolved before advantages.
+                if self._advantage_overlay_taus and sample.overlay_alphas is not None and r.advantage is not None:
+                    for name, tau in self._advantage_overlay_taus.items():
+                        alphas = sample.overlay_alphas.get(name)
+                        if alphas is not None:
+                            scale = r.advantage * tau
+                            sample.overlay_alphas[name] = [a * scale if a is not None else None for a in alphas]
 
         if self.pre_filters:
             apply_filters(self.pre_filters, survivors)
