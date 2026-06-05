@@ -51,10 +51,10 @@ class RLExperimentalConfig(BaseConfig):
 
 class SharedLogConfig(BaseConfig):
     level: str | None = None
-    """Log level for trainer and orchestrator. When unset, each sub-config's own log level applies (defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``)."""
+    """Log level for trainer, orchestrator, and inference. When unset, each sub-config's own log level applies (defaults to ``$PRIME_LOG_LEVEL`` if set, else ``info``)."""
 
     json_logging: bool = False
-    """Emit newline-delimited JSON logs for aggregation (Loki, Grafana, etc.)."""
+    """Emit newline-delimited JSON logs for aggregation (Loki, Grafana, etc.). Propagated to trainer, orchestrator, and inference."""
 
 
 class SharedWandbConfig(BaseConfig):
@@ -548,11 +548,14 @@ class RLConfig(BaseConfig):
                     self.inference.api_server_count = dp_per_node
 
             if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
-                # Compute inference_world_size from actual worker count per server:
-                # each api_server runs tp workers that participate in collective_rpc.
-                api_server_count = self.inference.api_server_count if self.inference else 1
-                tp = self.inference.parallel.tp if self.inference else 1
-                total_infer_workers = self.deployment.total_infer_nodes * api_server_count * tp
+                # Every allocated inference GPU is a NCCL rank in the weight broadcast.
+                # The external-LB launcher starts dp_per_node (= gpus_per_node / tp)
+                # TP-sharded servers per node, i.e. gpus_per_node workers per node, so use
+                # the GPU count directly. Deriving it from api_server_count double-counts:
+                # api_server_count can resolve to the *global* DP size, making the node
+                # factor count twice and NCCL wait for ranks that never connect. Matches
+                # the disaggregated path below.
+                total_infer_workers = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
                 assert self.trainer.weight_broadcast.type == "nccl"
                 self.trainer.weight_broadcast.host = "0.0.0.0"
                 self.trainer.weight_broadcast.inference_world_size = total_infer_workers
@@ -580,7 +583,13 @@ class RLConfig(BaseConfig):
 
         total_infer_gpus = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
         if "inference_metrics_roles" not in self.orchestrator.model_fields_set:
-            role_order = ["prefill"] * infer_deploy.num_prefill_nodes + ["decode"] * infer_deploy.num_decode_nodes
+            # External-LB: one admin client per DP rank, so roles expand per rank
+            # (stride = dp_local = gpus_per_node / tp). ADMIN_URLS lists all prefill
+            # ranks, then all decode ranks, per replica — match that order.
+            stride = self.deployment.gpus_per_node // self.inference.parallel.tp
+            role_order = ["prefill"] * (infer_deploy.num_prefill_nodes * stride) + ["decode"] * (
+                infer_deploy.num_decode_nodes * stride
+            )
             self.orchestrator.inference_metrics_roles = role_order * self.deployment.num_infer_replicas
         if self.weight_broadcast is not None and self.weight_broadcast.type == "nccl":
             assert self.trainer.weight_broadcast.type == "nccl"

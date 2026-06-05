@@ -65,8 +65,8 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
             num_decode_replicas=config.deployment.num_decode_replicas,
             prefill_port=config.deployment.prefill_port,
             decode_port=config.deployment.decode_port,
-            router_port=config.deployment.router_port,
-            router_policy=config.deployment.router_policy,
+            router_port=config.deployment.router.port,
+            router_policy=config.deployment.router.policy,
             data_parallel_rpc_port=config.data_parallel_rpc_port,
             use_deep_gemm=config.use_deep_gemm,
             prefill_env_overrides=config.deployment.prefill_env_overrides,
@@ -74,9 +74,11 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, script_path: 
         )
     elif is_multi_node:
         template_vars.update(
-            router_port=config.deployment.router_port,
+            router_port=config.deployment.router.port,
             backend_port=config.deployment.backend_port,
-            router_policy=config.deployment.router_policy,
+            router_policy=config.deployment.router.policy,
+            data_parallel_rpc_port=config.data_parallel_rpc_port,
+            enable_expert_parallel=config.enable_expert_parallel,
         )
 
     script = template.render(**template_vars)
@@ -89,7 +91,7 @@ def inference_slurm(config: InferenceConfig):
     """Run inference via SLURM."""
     assert config.slurm is not None
 
-    logger = setup_logger("info")
+    logger = setup_logger(config.log.level, json_logging=config.log.json_logging)
 
     config_dir = get_config_dir(config.output_dir)
     exclude = (
@@ -125,7 +127,7 @@ def inference_local(config: InferenceConfig):
     """Run inference locally."""
     from prime_rl.inference.server import setup_vllm_env
 
-    logger = setup_logger("info")
+    logger = setup_logger(config.log.level, json_logging=config.log.json_logging)
 
     if config.dry_run:
         logger.success("Dry run complete. To start inference locally, remove --dry-run from your command.")

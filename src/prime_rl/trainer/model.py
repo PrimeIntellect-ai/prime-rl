@@ -79,7 +79,7 @@ def _patch_qwen3_5_moe_conversion_mapping():
     incorrectly maps qwen3_5_moe → qwen2_moe, which assumes per-expert 2D checkpoint weights,
     causing revert_weight_conversion to produce wrong shapes during weight broadcasting.
 
-    Remove once the pinned transformers commit fixes this.
+    Remove once an official Transformers release fixes this.
     """
     from transformers.conversion_mapping import (
         get_checkpoint_conversion_mapping,
@@ -99,7 +99,7 @@ def _patch_qwen3_5_text_position_ids():
     """Fix Qwen3.5 passing 3D MRoPE position_ids to decoder layers instead of 2D text_position_ids.
 
     Upstream fix: https://github.com/huggingface/transformers/pull/44399
-    Remove once the pinned transformers commit includes this fix.
+    Remove once an official Transformers release includes this fix.
     """
     import inspect
 
@@ -517,6 +517,15 @@ def get_model(
     # The FSDP MixedPrecisionPolicy handles compute dtype separately.
 
     logger.debug(f"Loaded model config ({model_config.to_dict()})")
+
+    # NemotronH: transformers' Mamba2 mixer __init__ calls lazy_load_kernel("mamba-ssm" /
+    # "causal-conv1d") whenever config.use_mamba_kernels is set. That hub-kernel path is gated only
+    # by whether the `kernels` package is importable (NOT by USE_HUB_KERNELS) and resolves from the
+    # HF Hub, which hard-crashes under HF_HUB_OFFLINE=1. prime-rl swaps in its own mamba_ssm Triton
+    # SSD kernels via _patch_mamba2_use_triton_ssd, so the hub kernels are redundant; disable them
+    # to keep model init offline-safe.
+    if getattr(model_config, "model_type", "") == "nemotron_h":
+        model_config.use_mamba_kernels = False
 
     if config.debug.num_layers is not None:
         # VLM configs nest num_hidden_layers under text_config
