@@ -184,6 +184,8 @@ prime-tunnel = false
 prime-evals = false
 verifiers = false
 renderers = false
+tasksets = false
+harnesses = false
 prime-pydantic-config = false
 # Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
 vllm-router = false
