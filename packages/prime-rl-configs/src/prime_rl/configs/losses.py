@@ -220,8 +220,7 @@ class LossTerm(BaseConfig):
     def validate_supported(self) -> "LossTerm":
         # The primary (rl objective) is the completion-filtered dppo_kl/custom term weighted by the
         # advantage; everything else is an additive overlay over role/custom-filtered context tokens
-        # (ce/custom core, constant- or advantage-weighted). Custom *weight* needs the weight resolver
-        # (later phase) and is rejected here.
+        # (ce/custom core, weighted by a constant, the advantage, or a custom per-rollout resolver).
         core = self.loss.type
         weight = self.weight.type
         filter_types = [f.type for f in self.filters]
