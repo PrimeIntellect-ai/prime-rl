@@ -346,6 +346,51 @@ def test_custom_overlay_weight_accepted():
     assert config.orchestrator.losses[1].weight.type == "custom"
 
 
+def test_rl_preset_shorthand_expands():
+    # `{type = "rl", ...}` expands to the canonical dppo_kl + completion + advantage term.
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "losses": [{"type": "rl", "kl_tau": 0.02}],
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+        }
+    )
+    (rl,) = config.trainer.losses
+    assert rl.name == "rl"
+    assert rl.loss.type == "dppo_kl" and rl.loss.kl_tau == 0.02
+    assert [f.type for f in rl.filters] == ["completion"]
+    assert rl.weight.type == "advantage"
+
+
+def test_echo_preset_shorthand_expands():
+    # `{type = "echo", ...}` expands to a ce + role + constant overlay (roles default to assistant).
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "losses": [{"type": "rl"}, {"type": "echo", "alpha": 0.3}],
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+        }
+    )
+    echo = config.trainer.losses[1]
+    assert echo.name == "echo" and echo.loss.type == "ce"
+    assert echo.filters[0].type == "role" and echo.filters[0].roles == ["assistant"]
+    assert echo.weight.type == "constant" and echo.weight.alpha == 0.3
+
+
+def test_loss_preset_unknown_kwarg_rejected():
+    with pytest.raises(ValidationError, match="unexpected kwargs"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [{"type": "rl", "dppo_mask": 0.2}],
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
 def test_empty_enabled_losses_rejected():
     with pytest.raises(ValidationError, match="enabled_losses is empty"):
         RLConfig.model_validate(

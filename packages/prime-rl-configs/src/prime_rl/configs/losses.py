@@ -175,6 +175,51 @@ class LossTerm(BaseConfig):
     weight: WeightConfig = Field(default_factory=ConstantWeightConfig)
     """Per-token weight. Default: constant ``1.0``."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def _expand_preset(cls, data: Any) -> Any:
+        """Expand the one-line preset sugar — ``{type = "rl", ...}`` / ``{type = "echo", ...}`` — into
+        the canonical core/filters/weight form. The full three-axis form (no top-level ``type``) and
+        already-built terms pass through unchanged; ``custom`` lives only on the individual axes."""
+        if not isinstance(data, dict) or "type" not in data:
+            return data
+        data = dict(data)
+        preset = data.pop("type")
+        if preset == "rl":
+            core: dict[str, Any] = {"type": "dppo_kl"}
+            for k in ("kl_tau", "dppo_mask_low", "dppo_mask_high"):
+                if k in data:
+                    core[k] = data.pop(k)
+            weight: dict[str, Any] = {"type": "advantage"}
+            if "tau" in data:
+                weight["tau"] = data.pop("tau")
+            expanded = {
+                "name": data.pop("name", "rl"),
+                "loss": core,
+                "filters": [{"type": "completion"}],
+                "weight": weight,
+            }
+        elif preset == "echo":
+            role_filter: dict[str, Any] = {"type": "role", "roles": data.pop("roles", ["assistant"])}
+            if "tool_names" in data:
+                role_filter["tool_names"] = data.pop("tool_names")
+            constant: dict[str, Any] = {"type": "constant"}
+            if "alpha" in data:
+                constant["alpha"] = data.pop("alpha")
+            expanded = {
+                "name": data.pop("name", "echo"),
+                "loss": {"type": "ce"},
+                "filters": [role_filter],
+                "weight": constant,
+            }
+        else:
+            raise ValueError(
+                f"unknown loss preset type {preset!r}; use 'rl', 'echo', or the full core/filters/weight form."
+            )
+        if data:
+            raise ValueError(f"unexpected kwargs for the {preset!r} loss preset: {sorted(data)}.")
+        return expanded
+
     @model_validator(mode="after")
     def validate_supported(self) -> "LossTerm":
         # The primary (rl objective) is the completion-filtered dppo_kl/custom term weighted by the

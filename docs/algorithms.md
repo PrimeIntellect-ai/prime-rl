@@ -74,21 +74,20 @@ $$
 
 $\mu$ is the policy that generated the rollout (inference), $\pi$ is the current policy (trainer), $\hat{A}_{i,t}$ is the token-level advantage, $\epsilon_{\text{low}}$ / $\epsilon_{\text{high}}$ are the DPPO masking thresholds (`dppo_mask_low` / `dppo_mask_high`), and $\tau_{KL}$ is the KL temperature. The mask drops trust-region violators — an upweighted token ($\hat{A}>0$) that has already grown too likely, or a downweighted token ($\hat{A}<0$) that has already grown too unlikely — so a stale rollout doesn't produce a runaway gradient.
 
-A `losses` entry is composed of three axes — a **core** (`loss`), token **filters** (which tokens are eligible), and a per-token **weight**. The default RL term is:
+Common losses are **one-line presets**: set a `type` and tune its kwargs — you don't spell out the axes. RL is the default, so for plain RL you write nothing; you only add a term to tune it:
 
 ```toml
 [[losses]]
-name    = "rl"
-loss    = { type = "dppo_kl", kl_tau = 1e-3, dppo_mask_low = 0.2, dppo_mask_high = 0.2 }
-filters = [ { type = "completion" } ]          # the sampled completion tokens
-weight  = { type = "advantage", tau = 1.0 }    # the GRPO advantage
+type = "rl"   # all kwargs optional
 ```
 
-| Knob | Lives on | Default | What it does |
-|---|---|---|---|
-| `dppo_mask_low` / `dppo_mask_high` | `dppo_kl` core | 0.2 / 0.2 | Lower / upper thresholds for DPPO token-level masking. |
-| `kl_tau` | `dppo_kl` core | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
-| `tau` | `advantage` weight | 1.0 | Temperature on the advantage. Set to 0 for pure distillation (no RL signal). |
+| `rl` preset kwarg | Default | What it does |
+|---|---|---|
+| `kl_tau` | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
+| `dppo_mask_low` / `dppo_mask_high` | 0.2 / 0.2 | Lower / upper thresholds for DPPO token-level masking. |
+| `tau` | 1.0 | Temperature on the advantage. Set to 0 for pure distillation (no RL signal). |
+
+The preset expands to the full three-axis form — a `dppo_kl` core over the `completion` filter, `advantage`-weighted (see [Custom cores](#custom-cores)). You only write the axes out for custom losses.
 
 The trainer dispatches the **primary** loss by the batch's training mode (set via `orchestrator.training_mode`):
 
@@ -100,15 +99,16 @@ The default `losses` is a single `rl` term, so default training is DPPO+KL. sft/
 
 ### Overlays
 
-Beyond the primary, `losses` may carry **overlay** terms — additive losses over *context* tokens (system / user / tool / assistant) that are summed into the total over one shared forward/backward. Each overlay is the same three axes: a `ce` (cross-entropy) or `custom` core, one or more `role` filters (optionally narrowed by a `custom` filter), and a `weight`:
+Beyond the primary, `losses` may carry **overlay** terms — additive losses over *context* tokens (system / user / tool / assistant), summed into the total over one shared forward/backward. The standard echo overlay is a one-line preset too:
 
 ```toml
 [[losses]]
-name    = "echo"
-loss    = { type = "ce" }
-filters = [ { type = "role", roles = ["assistant"] } ]
-weight  = { type = "constant", alpha = 0.5 }   # 0 = supervise with no gradient; negative = suppress
+type  = "echo"
+roles = ["assistant"]   # any of system / user / tool / assistant (default: ["assistant"])
+alpha = 0.5             # constant per-token weight (default 1.0; 0 = supervise/no-grad, negative = suppress)
 ```
+
+`echo` expands to a `ce` core over a `role` filter with a `constant` weight. For advantage- or custom-weighted overlays, a custom filter, or a custom core, write the full three-axis form (each overlay is a `ce`/`custom` core, one or more `role` filters optionally narrowed by a `custom` filter, and a `weight`):
 
 - **weight** is `constant` (a fixed `alpha`), `advantage` (the rollout's GRPO advantage × `tau`, resolved per-rollout), or `custom` (a per-rollout resolver `fn(sample, **kwargs) -> list[float]`).
 - **filters** chain by intersection: `role` selects context tokens (prompt roles need a renderer that emits `prompt_attribution`; under MITO they no-op and config validation warns), and an optional `custom` filter (`fn(rollout) -> list[list[bool]]`) narrows further. `tool` filters take an optional `tool_names` set.
