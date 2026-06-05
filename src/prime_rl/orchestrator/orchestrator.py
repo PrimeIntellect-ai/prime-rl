@@ -54,7 +54,6 @@ from prime_rl.orchestrator.patches import (
     monkey_patch_oai_iterable_types,
 )
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
-from prime_rl.orchestrator.token_export_metrics import collect_next_token_export_metrics
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
@@ -346,10 +345,6 @@ class Orchestrator:
         else:
             get_logger().info("Training from scratch")
 
-        # Token-export metrics are read back from the trainer's exports one step
-        # behind; start from the resumed step so we don't re-log past steps.
-        self.last_token_export_metrics_step_logged = self.progress.step - 1
-
         # SFT generates rollouts via the teacher (the student is trained on
         # the teacher's outputs); RL / OPD generate via the student
         if config.training_mode == "sft":
@@ -385,7 +380,7 @@ class Orchestrator:
             max_off_policy_steps=config.max_off_policy_steps,
             training_mode=config.training_mode,
         )
-        self.metrics = MetricsBuilder(config)
+        self.metrics = MetricsBuilder(config, start_step=self.progress.step)
         self.train_sink = TrainSink(
             config,
             tokenizer=self.tokenizer,
@@ -596,20 +591,6 @@ class Orchestrator:
             pre_filter_dropped=self.train_sink.pre_filter_dropped,
             pre_filter_dropped_by_name=dict(self.train_sink.pre_filter_dropped_by_name),
         )
-
-        token_export_metrics = collect_next_token_export_metrics(
-            self.config.output_dir,
-            last_logged_step=self.last_token_export_metrics_step_logged,
-            max_step=step - 1,
-        )
-        if token_export_metrics is not None:
-            metrics.update(token_export_metrics.metrics)
-            # The exports lag the W&B step they're logged under (the trainer is
-            # behind the orchestrator). Stamp the trainer step they actually belong to
-            # so the token-export metrics can be plotted against a lag-corrected axis.
-            metrics["trainer/step"] = token_export_metrics.step
-            self.last_token_export_metrics_step_logged = token_export_metrics.step
-
         self.monitor.log(metrics, step=step)
         self.monitor.log_samples(rollout_dicts, step=step)
         self.monitor.log_distributions(

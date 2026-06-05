@@ -1,4 +1,9 @@
-"""MetricsBuilder: assembles the per-step W&B dict. No I/O, no side effects."""
+"""MetricsBuilder: assembles the per-step W&B dict.
+
+The only I/O / state is the trainer's token-export metrics, which lag the
+orchestrator: ``build`` folds in the oldest unlogged stable step it finds on
+disk and tracks the last step logged so it never re-logs one.
+"""
 
 from __future__ import annotations
 
@@ -7,12 +12,16 @@ from typing import Any
 import pandas as pd
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.orchestrator.token_export_metrics import collect_next_token_export_metrics
 from prime_rl.orchestrator.types import Progress, TrainBatchMetrics, TrainRollout
 
 
 class MetricsBuilder:
-    def __init__(self, config: OrchestratorConfig) -> None:
+    def __init__(self, config: OrchestratorConfig, start_step: int = 0) -> None:
         self.config = config
+        # Token exports are read back one step behind the orchestrator; track the
+        # last run step whose metrics we've folded in so we never re-log a step.
+        self._last_token_export_step_logged = start_step - 1
 
     def build(
         self,
@@ -178,6 +187,20 @@ class MetricsBuilder:
             to_log["pre_filters/all/dropped_rate"] = pre_filter_dropped / pre_filter_seen
             for name, count in pre_filter_dropped_by_name.items():
                 to_log[f"pre_filters/all/{name}/rate"] = count / pre_filter_seen
+
+        # Fold in the trainer's token-export metrics for the oldest unlogged stable
+        # step (<= step - 1, since exports lag the orchestrator). They're namespaced
+        # under trainer/ and stamped with trainer/step (the run step they belong to)
+        # so they can be plotted against a lag-corrected axis.
+        token_export = collect_next_token_export_metrics(
+            self.config.output_dir,
+            last_logged_step=self._last_token_export_step_logged,
+            max_step=step - 1,
+        )
+        if token_export is not None:
+            to_log.update({f"trainer/{key}": value for key, value in token_export.metrics.items()})
+            to_log["trainer/step"] = token_export.step
+            self._last_token_export_step_logged = token_export.step
 
         return to_log
 
