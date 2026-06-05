@@ -1,7 +1,7 @@
 #inspired from https://github.com/astral-sh/uv-docker-example/blob/main/multistage.Dockerfile
 
 # Build stage - multi-arch base (supports amd64 + arm64)
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 AS builder
 LABEL maintainer="prime intellect"
 LABEL repository="prime-rl"
 

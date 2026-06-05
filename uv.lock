@@ -26,10 +26,12 @@ flash-attn-3 = false
 prime-tunnel = false
 deep-gemm = false
 prime-evals = false
+tasksets = false
 tokenspeed-mla = false
 deep-ep = false
 prime-sandboxes = false
 renderers = false
+harnesses = false
 prime = false
 
 [manifest]
