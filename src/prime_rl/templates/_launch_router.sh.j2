@@ -1,0 +1,17 @@
+{# Shared router launch helper, included once per template and called by the
+   replica-head rank. vllm-router today; an llm-d (EPP+Envoy) branch can slot in
+   here so the call sites stay router-agnostic. #}
+# launch_router <mode:pd|regular> <worker_args> <port> <policy> <log_file> [replica_idx]
+launch_router() {
+    local mode="$1" worker_args="$2" port="$3" policy="$4" log="$5" replica="${6:-}"
+    local tag="vllm-router"; [ "$mode" = pd ] && tag="vllm-router (PD)"
+    echo "Starting $tag on $LOCAL_IP:$port${replica:+ for replica $replica}" | tee "$log"
+    local -a cmd=(vllm-router --policy "$policy" --host 0.0.0.0 --port "$port"
+        --worker-startup-timeout-secs 4200 --log-level debug)
+    if [ "$mode" = pd ]; then
+        cmd+=(--vllm-pd-disaggregation $worker_args)
+    else
+        cmd+=(--worker-urls $worker_args)
+    fi
+    "${cmd[@]}" >> "$log" 2>&1 &
+}

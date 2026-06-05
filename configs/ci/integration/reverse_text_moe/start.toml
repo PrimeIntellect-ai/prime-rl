@@ -14,7 +14,7 @@ impl = "custom"
 
 [orchestrator]
 batch_size = 128
-rollouts_per_example = 16
+group_size = 16
 
 [orchestrator.train.sampling]
 max_completion_tokens = 128

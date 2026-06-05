@@ -68,6 +68,14 @@ class BenchConfig(BaseConfig):
     """Path to write benchmark results as JSON. If unset, results are only printed to the console."""
 
 
+class IndexCacheConfig(BaseConfig):
+    topk_freq: int = Field(1, ge=1)
+    """Recompute DSA top-k indices every N layers; intervening layers reuse the cached indices. ``1`` recomputes every layer (effectively no reuse). Mirrors vLLM's ``index_topk_freq`` HF override."""
+
+    topk_pattern: str | None = None
+    """Optional per-layer schedule that overrides ``topk_freq``. ``'F'`` computes fresh indices for that layer; ``'S'`` reuses the previously cached indices. Length should match the number of decoder layers."""
+
+
 class LoRAConfig(BaseConfig):
     rank: int = Field(16, ge=1)
     """Rank of the low-rank decomposition matrices."""
@@ -167,6 +175,9 @@ class ModelConfig(BaseModelConfig):
 
     fp8: bool = False
     """FP8 training via DeepGEMM. Replaces ``nn.Linear`` with FP8 blockwise linear and uses FP8 grouped GEMM for MoE experts. Requires SM90 (Hopper) GPUs and ``model.impl='custom'``."""
+
+    index_cache: IndexCacheConfig | None = None
+    """DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices."""
 
     freeze_moe_router: bool = False
     """Freeze MoE router parameters during training."""
@@ -479,8 +490,13 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 ]
 
 
+class TokenExportConfig(BaseConfig):
+    """Configures per-token rollout exports from the RL trainer."""
+
+
 class TrainerExperimentalConfig(BaseConfig):
-    pass
+    token_export: TokenExportConfig | None = None
+    """Opt-in per-token JSONL export for rollout debugging. When enabled, writes token ids and aligned trainer metrics after each forward pass."""
 
 
 class TrainerConfig(BaseConfig):
@@ -518,9 +534,6 @@ class TrainerConfig(BaseConfig):
 
     max_steps: int | None = None
     """Maximum number of training steps. If None, runs indefinitely."""
-
-    max_async_level: int = Field(1, ge=0)
-    """Maximum steps inference can be ahead of training (how off-policy inference can be). Higher values yield better throughput via async execution at the cost of policy lag; ``0`` is fully synchronous."""
 
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
@@ -611,12 +624,6 @@ class TrainerConfig(BaseConfig):
                     "save_adapter_separately=True requires LoRA to be enabled. "
                     "Set model.lora or disable save_adapter_separately."
                 )
-        return self
-
-    @model_validator(mode="after")
-    def validate_weight_broadcast_type(self):
-        if self.weight_broadcast.type == "nccl" and self.max_async_level != 1:
-            raise ValueError("NCCL weight broadcast only works with async level 1")
         return self
 
     @model_validator(mode="after")

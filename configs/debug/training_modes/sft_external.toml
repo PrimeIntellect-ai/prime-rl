@@ -17,7 +17,7 @@ name = "debug-sft-external"
 [orchestrator]
 training_mode = "sft"
 batch_size = 128
-rollouts_per_example = 4
+group_size = 4
 
 [orchestrator.train.sampling]
 max_completion_tokens = 2048

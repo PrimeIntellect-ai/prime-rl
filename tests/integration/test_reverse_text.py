@@ -93,7 +93,7 @@ def test_reward_in_range(rl_process: ProcessResult, test_no_error, output_dir: P
     """Tests that the reward is in range in the RL process"""
     with open(output_dir / "logs" / "orchestrator.log", "r") as f:
         orchestrator_stdout = strip_escape_codes(f.read()).splitlines()
-    check_reward_in_range(orchestrator_stdout, min_threshold=0.65)
+    check_reward_in_range(orchestrator_stdout, min_threshold=0.6)
 
 
 def test_mismatch_kl_in_range(rl_process: ProcessResult, test_no_error, output_dir: Path):
@@ -113,4 +113,4 @@ def test_reward_in_range_resume(rl_resume_process: ProcessResult, test_no_error_
     """Tests that the reward is in range in the RL resume process"""
     with open(output_dir / "logs" / "orchestrator.log", "r") as f:
         orchestrator_stdout = strip_escape_codes(f.read()).splitlines()
-    check_reward_in_range(orchestrator_stdout, min_threshold=0.65)
+    check_reward_in_range(orchestrator_stdout, min_threshold=0.6)

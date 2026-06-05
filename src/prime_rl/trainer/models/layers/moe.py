@@ -387,6 +387,16 @@ class GptOssGroupedExperts(nn.Module):
         nn.init.zeros_(self.down_proj_bias)
 
 
+def _selected_probability_mass_sum(
+    scores: torch.Tensor, top_scores: torch.Tensor, score_func: Literal["softmax", "sigmoid"]
+) -> torch.Tensor:
+    with torch.no_grad():
+        if score_func == "softmax":
+            return top_scores.sum()
+        selected_prob_mass = top_scores / (scores.sum(dim=-1, keepdim=True) + 1e-20)
+        return selected_prob_mass.sum(dim=-1).sum()
+
+
 class TokenChoiceTopKRouter(nn.Module):
     """This class implements token-choice routing. In token-choice top-K routing, each token is
         routed to top K experts based on the router scores.
@@ -420,7 +430,7 @@ class TokenChoiceTopKRouter(nn.Module):
 
     def forward(
         self, x: torch.Tensor, expert_bias: torch.Tensor | None = None, routed_experts: torch.Tensor | None = None
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
             x (torch.Tensor): Input tensor with shape ``(bs*slen, dim)``.
@@ -429,13 +439,15 @@ class TokenChoiceTopKRouter(nn.Module):
             routed_experts (torch.Tensor | None, optional): Optional tensor with shape ``(bs * slen, top_k)``.
 
         Returns:
-            tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
                 - top_scores (torch.Tensor):
                     Routing scores for selected experts with shape ``(bs*slen, top_k)``.
                 - selected_experts_indices (torch.Tensor):
                     Expert indices selected for each token with shape ``(bs*slen, top_k)``.
                 - num_tokens_per_expert (torch.Tensor):
                     Number of tokens assigned to each expert with shape ``(num_experts,)``.
+                - routing_confidence_sum (torch.Tensor):
+                    Sum over tokens of the selected-expert probability mass before route normalization/scaling.
         """
         # scores shape (bs*slen, num_experts)
         assert routed_experts is None or routed_experts.shape[-1] == self.top_k, (
@@ -469,6 +481,8 @@ class TokenChoiceTopKRouter(nn.Module):
         else:
             top_scores, selected_experts_indices = torch.topk(scores, k=self.top_k, dim=1)
 
+        routing_confidence_sum = _selected_probability_mass_sum(scores, top_scores, self.score_func)
+
         if self.route_norm:
             denominator = top_scores.sum(dim=-1, keepdim=True) + 1e-20
             top_scores = top_scores / denominator
@@ -482,7 +496,7 @@ class TokenChoiceTopKRouter(nn.Module):
             max=self.num_experts,
         )
 
-        return top_scores, selected_experts_indices, num_tokens_per_expert
+        return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.gate.weight, mean=0.0, std=init_std)
@@ -600,6 +614,7 @@ class MoE(nn.Module):
             torch.zeros(num_experts, dtype=torch.float32),
             persistent=False,
         )
+        self.register_buffer("routing_confidence_sum", torch.tensor(0.0, dtype=torch.float32), persistent=False)
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
@@ -718,6 +733,7 @@ class MoE(nn.Module):
             top_scores,
             selected_experts_indices,
             num_tokens_per_expert,
+            routing_confidence_sum,
         ) = self.router(x, self.expert_bias, routed_experts=routed_experts)
 
         # tokens_per_expert will be used to update the expert bias for load balancing.
@@ -727,6 +743,7 @@ class MoE(nn.Module):
         # routed expert compute below.
         with torch.no_grad():
             self.tokens_per_expert.add_(num_tokens_per_expert)
+            self.routing_confidence_sum.add_(routing_confidence_sum)
 
         if self.ep_comm_backend == "deepep":
             routed_output = self._run_deepep_routed_experts(x, selected_experts_indices, top_scores)
@@ -774,6 +791,7 @@ class MoE(nn.Module):
 
         with torch.device(buffer_device):
             self.tokens_per_expert = torch.zeros(self.experts.num_experts, dtype=torch.float32)
+            self.routing_confidence_sum = torch.tensor(0.0, dtype=torch.float32)
             if self.load_balance_coeff is not None:
                 self.expert_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)
 
@@ -938,7 +956,7 @@ class NemotronHRouter(nn.Module):
 
     def forward(
         self, x: torch.Tensor, expert_bias: torch.Tensor | None = None
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         scores = F.linear(x.float(), self.gate.float()).sigmoid()
         scores_for_choice = scores + self.e_score_correction_bias
 
@@ -964,6 +982,7 @@ class NemotronHRouter(nn.Module):
 
         selected_experts_indices = torch.topk(scores_for_choice, k=self.top_k, dim=-1, sorted=False)[1]
         top_scores = scores.gather(1, selected_experts_indices)
+        routing_confidence_sum = _selected_probability_mass_sum(scores, top_scores, "sigmoid")
 
         if self.norm_topk_prob:
             denominator = top_scores.sum(dim=-1, keepdim=True) + 1e-20
@@ -976,7 +995,7 @@ class NemotronHRouter(nn.Module):
             max=self.num_experts,
         )
 
-        return top_scores, selected_experts_indices, num_tokens_per_expert
+        return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.gate, mean=0.0, std=init_std)
@@ -1067,6 +1086,7 @@ class LatentMoE(nn.Module):
             torch.zeros(num_experts, dtype=torch.float32),
             persistent=False,
         )
+        self.register_buffer("routing_confidence_sum", torch.tensor(0.0, dtype=torch.float32), persistent=False)
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
@@ -1161,10 +1181,13 @@ class LatentMoE(nn.Module):
         bs, slen, dim = x.shape
         x_flat = x.view(-1, dim)
 
-        top_scores, selected_experts_indices, num_tokens_per_expert = self.router(x_flat, self.expert_bias)
+        top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum = self.router(
+            x_flat, self.expert_bias
+        )
 
         with torch.no_grad():
             self.tokens_per_expert.add_(num_tokens_per_expert)
+            self.routing_confidence_sum.add_(routing_confidence_sum)
 
         if self.ep_comm_backend == "deepep":
             routed_output = self._run_deepep_routed_experts(x_flat, selected_experts_indices, top_scores)
@@ -1196,5 +1219,6 @@ class LatentMoE(nn.Module):
 
         with torch.device(buffer_device):
             self.tokens_per_expert = torch.zeros(self.experts.num_experts, dtype=torch.float32)
+            self.routing_confidence_sum = torch.tensor(0.0, dtype=torch.float32)
             if self.load_balance_coeff is not None:
                 self.expert_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)

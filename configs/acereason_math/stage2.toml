@@ -18,7 +18,7 @@ name = "stage2"
 
 [orchestrator]
 batch_size = 2048
-rollouts_per_example = 16
+group_size = 16
 
 [orchestrator.train.sampling]
 temperature = 0.6
@@ -33,15 +33,15 @@ interval = 50
 
 [[orchestrator.eval.env]]
 id = "math500"
-rollouts_per_example = 1
+group_size = 1
 
 [[orchestrator.eval.env]]
 id = "aime2024"
-rollouts_per_example = 32
+group_size = 32
 
 [[orchestrator.eval.env]]
 id = "aime2025"
-rollouts_per_example = 32
+group_size = 32
 
 [trainer.model.ac]
 

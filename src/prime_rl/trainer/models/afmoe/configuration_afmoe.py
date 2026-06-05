@@ -43,7 +43,7 @@ class AfmoeConfig(PretrainedConfig):
         route_norm=True,
         route_scale=1.0,
         score_before_experts: bool = False,
-        load_balance_coeff: float | None = None,
+        load_balance_coeff: float = 5e-4,
         use_grouped_mm: bool = True,
         global_attn_every_n_layers=4,
         sliding_window=1024,

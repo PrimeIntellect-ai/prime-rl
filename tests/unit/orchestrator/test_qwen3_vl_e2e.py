@@ -14,10 +14,12 @@ sampling tokens, and returning them) is exercised in real rollouts.
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
 _HF_CACHE = Path("~/.cache/huggingface/hub").expanduser()
@@ -54,7 +56,7 @@ class _FakeOpenAI:
         self.calls.append({"path": path, "body": body, "options": options})
         # Reply with two sampled tokens + <|im_end|>. The renderer's
         # parse_response slices the content tokens.
-        return {
+        payload = {
             "request_id": "qwen-vl-e2e",
             "choices": [
                 {
@@ -71,6 +73,7 @@ class _FakeOpenAI:
                 },
             ],
         }
+        return httpx.Response(200, content=json.dumps(payload).encode())
 
 
 def test_renderer_client_qwen3_vl_e2e_features_payload_roundtrips_through_vllm():

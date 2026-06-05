@@ -17,7 +17,7 @@ interval = 100
 
 [orchestrator]
 batch_size = 1024
-rollouts_per_example = 8
+group_size = 8
 
 [orchestrator.train.sampling]
 temperature = 0.6

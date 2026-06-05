@@ -79,7 +79,7 @@ def _patch_qwen3_5_moe_conversion_mapping():
     incorrectly maps qwen3_5_moe → qwen2_moe, which assumes per-expert 2D checkpoint weights,
     causing revert_weight_conversion to produce wrong shapes during weight broadcasting.
 
-    Remove once the pinned transformers commit fixes this.
+    Remove once an official Transformers release fixes this.
     """
     from transformers.conversion_mapping import (
         get_checkpoint_conversion_mapping,
@@ -99,7 +99,7 @@ def _patch_qwen3_5_text_position_ids():
     """Fix Qwen3.5 passing 3D MRoPE position_ids to decoder layers instead of 2D text_position_ids.
 
     Upstream fix: https://github.com/huggingface/transformers/pull/44399
-    Remove once the pinned transformers commit includes this fix.
+    Remove once an official Transformers release includes this fix.
     """
     import inspect
 
@@ -393,6 +393,7 @@ def get_load_balance_stats(
     model: nn.Module, reset_stats: bool = True, try_to_avoid_padding_experts: bool = True
 ) -> dict[str, Tensor | None]:
     per_layer_max_vio = []
+    per_layer_routing_confidence = []
     language_model = get_language_model(model)
     for transformer_block in language_model.layers:
         # This is necessary for models that have mixed dense layers
@@ -400,16 +401,25 @@ def get_load_balance_stats(
         if block_mlp is None or not hasattr(block_mlp, "tokens_per_expert"):
             continue
         tokens_per_expert: torch.Tensor = block_mlp.tokens_per_expert
+        num_routed_tokens = tokens_per_expert.sum() / block_mlp.router.top_k
         if try_to_avoid_padding_experts:
             tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[block_mlp.router.top_k :]
         balanced_load = tokens_per_expert.mean()
         max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
-        per_layer_max_vio.append(max_vio.item())
+        per_layer_max_vio.append(max_vio.detach())
+
+        routing_confidence = block_mlp.routing_confidence_sum / num_routed_tokens
+        per_layer_routing_confidence.append(routing_confidence.detach())
+
         if reset_stats:
             block_mlp.tokens_per_expert.zero_()
+            block_mlp.routing_confidence_sum.zero_()
     if len(per_layer_max_vio) == 0:
-        return {"max_vio": None}
-    return {"max_vio": torch.tensor(per_layer_max_vio, device=torch.device("cuda"))}
+        return {"max_vio": None, "routing_confidence": None}
+    return {
+        "max_vio": torch.stack(per_layer_max_vio),
+        "routing_confidence": torch.stack(per_layer_routing_confidence),
+    }
 
 
 def get_model(
@@ -472,6 +482,11 @@ def get_model(
     model_config.use_grouped_mm = config.moe_use_grouped_mm
     model_config.fp8 = config.fp8
 
+    if config.index_cache is not None:
+        model_config.use_index_cache = True
+        model_config.index_topk_freq = config.index_cache.topk_freq
+        model_config.index_topk_pattern = config.index_cache.topk_pattern
+
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
     # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
     if not hasattr(model_config, "pad_token_id") or model_config.pad_token_id is None:
@@ -502,6 +517,15 @@ def get_model(
     # The FSDP MixedPrecisionPolicy handles compute dtype separately.
 
     logger.debug(f"Loaded model config ({model_config.to_dict()})")
+
+    # NemotronH: transformers' Mamba2 mixer __init__ calls lazy_load_kernel("mamba-ssm" /
+    # "causal-conv1d") whenever config.use_mamba_kernels is set. That hub-kernel path is gated only
+    # by whether the `kernels` package is importable (NOT by USE_HUB_KERNELS) and resolves from the
+    # HF Hub, which hard-crashes under HF_HUB_OFFLINE=1. prime-rl swaps in its own mamba_ssm Triton
+    # SSD kernels via _patch_mamba2_use_triton_ssd, so the hub kernels are redundant; disable them
+    # to keep model init offline-safe.
+    if getattr(model_config, "model_type", "") == "nemotron_h":
+        model_config.use_mamba_kernels = False
 
     if config.debug.num_layers is not None:
         # VLM configs nest num_hidden_layers under text_config

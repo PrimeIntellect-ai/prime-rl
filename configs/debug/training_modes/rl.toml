@@ -11,7 +11,7 @@ name = "debug-rl"
 [orchestrator]
 training_mode = "rl"
 batch_size = 128
-rollouts_per_example = 16
+group_size = 16
 
 [orchestrator.renderer]
 name = "qwen3"

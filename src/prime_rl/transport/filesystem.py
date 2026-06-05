@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from time import time
 
@@ -18,11 +19,14 @@ class FileSystemTrainingBatchSender(TrainingBatchSender):
         super().__init__(output_dir)
         self.rollout_dir = get_rollout_dir(output_dir)
 
-    def send(self, batch: TrainingBatch) -> None:
-        """Send a batch by writing it to disk"""
+    async def send(self, batch: TrainingBatch) -> None:
+        """Send a batch by writing it to disk. Encode + write run in a worker
+        thread so the orch event loop stays responsive during step transitions."""
         step_path = get_step_path(self.rollout_dir, batch.step)
         step_path.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(self._encode_and_write, batch, step_path)
 
+    def _encode_and_write(self, batch: TrainingBatch, step_path: Path) -> None:
         buffer = self.encoder.encode(batch)
         tmp_path = step_path / BATCH_FILE_TMP_NAME
         with open(tmp_path, "wb") as f:

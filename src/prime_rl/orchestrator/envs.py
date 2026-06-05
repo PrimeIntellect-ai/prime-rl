@@ -16,12 +16,11 @@ from verifiers.utils.serve_utils import get_free_port
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
 from prime_rl.orchestrator.eval_utils import compute_pass_at_k
-from prime_rl.orchestrator.vf_utils import get_completion_len
 from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize
 
-REQUIRED_STATE_COLUMNS = ["trajectory", "sampling_args"]
+REQUIRED_STATE_COLUMNS = ["trajectory"]
 
 
 class Env:
@@ -31,7 +30,7 @@ class Env:
         self.config = config
         self.sampling_args: dict = {}
 
-        get_logger().info(f"Initializing {config.resolved_name} ({config})")
+        get_logger().debug(f"Initializing {config.resolved_name} ({config})")
         self._env: vf.Environment = vf.load_environment(config.stripped_id, **config.args)
         self._env_client: ZMQEnvClient | None = None
         self._env_server_process: BaseProcess | None = None
@@ -104,18 +103,29 @@ class Env:
         self._env_server_process = process
         return address
 
-    def _sampling_args_with_salt(self, cache_salt: str) -> dict:
+    def _sampling_args_with_salt(self, cache_salt: str | None) -> dict:
         sampling_args = {**self.sampling_args}
+        if cache_salt is None:
+            return sampling_args
         extra_body = {**sampling_args.get("extra_body", {}), "cache_salt": cache_salt}
         sampling_args["extra_body"] = extra_body
         return sampling_args
+
+    @property
+    def state_columns(self) -> list[str]:
+        """Required columns plus any extras configured on the env, deduped (required first)."""
+        merged: list[str] = []
+        for col in (*REQUIRED_STATE_COLUMNS, *self.config.state_columns):
+            if col not in merged:
+                merged.append(col)
+        return merged
 
     async def run_rollout(
         self,
         client: vf.ClientConfig,
         example: dict,
         model_name: str,
-        cache_salt: str,
+        cache_salt: str | None,
     ) -> vf.RolloutOutput:
         """Run a single rollout for an example."""
         return await self.env.run_rollout(
@@ -124,7 +134,7 @@ class Env:
             model=model_name,
             sampling_args=self._sampling_args_with_salt(cache_salt),
             max_retries=self.config.max_retries,
-            state_columns=REQUIRED_STATE_COLUMNS,
+            state_columns=self.state_columns,
             env_client=self.env_client,
         )
 
@@ -133,17 +143,17 @@ class Env:
         client: vf.ClientConfig,
         example: dict,
         model_name: str,
-        rollouts_per_example: int,
-        cache_salt: str,
+        group_size: int,
+        cache_salt: str | None,
     ) -> list[vf.RolloutOutput]:
         """Run a group of rollouts for an example. Required for group-scoring envs."""
         return await self.env.run_group(
-            [vf.RolloutInput(**example) for _ in range(rollouts_per_example)],
+            [vf.RolloutInput(**example) for _ in range(group_size)],
             client=client,
             model=model_name,
             sampling_args=self._sampling_args_with_salt(cache_salt),
             max_retries=self.config.max_retries,
-            state_columns=REQUIRED_STATE_COLUMNS,
+            state_columns=self.state_columns,
             env_client=self.env_client,
         )
 
@@ -177,35 +187,34 @@ class EvalEnv(Env):
         self,
         model_name: str,
         get_client: Callable[[], Awaitable[vf.ClientConfig]],
-        ckpt_step: int,
         step: int,
         cache_salt: str,
     ) -> list[vf.RolloutOutput]:
         num_examples = len(self.examples)
-        rollouts_per_example = self.config.rollouts_per_example
-        get_logger().info(f"Evaluating {self.name} ({num_examples=}, {rollouts_per_example=})")
-        total_rollouts = num_examples * rollouts_per_example
+        group_size = self.config.group_size
+        get_logger().info(f"Evaluating {self.name} ({num_examples=}, {group_size=})")
+        total_rollouts = num_examples * group_size
         pbar = ProgressTracker(total=total_rollouts, desc=f"Evaluating {self.name}")
         eval_start = time.perf_counter()
 
         if self.requires_group_scoring:
 
             async def run_with_progress(example: dict) -> list[vf.RolloutOutput] | None:
-                """Run rollouts_per_example rollouts as a scored group for one example."""
+                """Run group_size rollouts as a scored group for one example."""
                 try:
                     client = await get_client()
                     outputs = await self.run_group(
                         client=client,
                         example=example,
                         model_name=model_name,
-                        rollouts_per_example=rollouts_per_example,
+                        group_size=group_size,
                         cache_salt=cache_salt,
                     )
-                    pbar.update(rollouts_per_example)
+                    pbar.update(group_size)
                     return outputs
                 except Exception as e:
                     get_logger().warning(f"Group failed: {e}")
-                    pbar.update(rollouts_per_example)
+                    pbar.update(group_size)
                     return None
 
             coros = [run_with_progress(example) for example in self.examples]
@@ -226,7 +235,7 @@ class EvalEnv(Env):
                     pbar.update(1)
                     return None
 
-            coros = [run_with_progress(example) for example in self.examples for _ in range(rollouts_per_example)]
+            coros = [run_with_progress(example) for example in self.examples for _ in range(group_size)]
 
         try:
             results = await asyncio.gather(*coros)
@@ -247,7 +256,6 @@ class EvalEnv(Env):
             get_monitor().log(
                 {
                     f"eval/{self.name}/failed_rollouts": failed_count / total_rollouts,
-                    "progress/ckpt_step": ckpt_step,
                     "step": step,
                 },
                 step=step,
@@ -261,7 +269,7 @@ class EvalEnv(Env):
             {
                 "example_id": o["example_id"],
                 "reward": o["reward"],
-                "completion_len": get_completion_len(o),
+                "completion_len": o["token_usage"]["final_output_tokens"],
                 "is_truncated": o["is_truncated"],
                 "has_error": o.get("error") is not None,
                 "no_response": not o.get("completion"),
@@ -282,9 +290,7 @@ class EvalEnv(Env):
             pass_at_k = None
             get_logger().warning("Skipping computing pass@k rates because the task rewards appear to be non-binary")
 
-        message = (
-            f"Evaluated {self.name} in {eval_time:.2f}s (Avg@{rollouts_per_example}={results_df.reward.mean():.4f}"
-        )
+        message = f"Evaluated {self.name} in {eval_time:.2f}s (Avg@{group_size}={results_df.reward.mean():.4f}"
         if could_be_binary:
             assert pass_at_k is not None
             for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
@@ -298,7 +304,7 @@ class EvalEnv(Env):
         get_logger().success(message)
 
         eval_metrics = {
-            f"avg@{rollouts_per_example}": float(results_df.reward.mean()),
+            f"avg@{group_size}": float(results_df.reward.mean()),
             "no_response/mean": float(results_df.no_response.mean()),
             "no_response/count": int(results_df.no_response.sum()),
             "completion_len/mean": results_df.completion_len.mean().item(),
@@ -312,7 +318,7 @@ class EvalEnv(Env):
             assert pass_at_k is not None
             eval_metrics.update(pd.Series(pass_at_k.mean()).to_dict())
         eval_metrics = {f"eval/{self.name}/{key}": v for key, v in eval_metrics.items()}
-        eval_metrics.update({"progress/ckpt_step": ckpt_step, "step": step})
+        eval_metrics["step"] = step
         monitor.log(eval_metrics, step=step)
         monitor.log_eval_samples(successful_outputs, env_name=self.name, step=step)
 
@@ -365,7 +371,7 @@ class Envs(Generic[EnvT]):
         if not processes:
             return
         logger = get_logger()
-        logger.info(f"Shutting down {len(processes)} env server(s), waiting for sandbox cleanup...")
+        logger.debug(f"Shutting down {len(processes)} env server(s)")
         for p in processes:
             p.terminate()
         for p in processes:

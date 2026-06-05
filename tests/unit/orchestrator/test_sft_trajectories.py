@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 import verifiers as vf
 
-from prime_rl.orchestrator.trajectories import interleave_rollout, pretokenize_rollout_trajectory
+from prime_rl.orchestrator.trajectories import backfill_rollout_tokens, interleave_rollout
 
 
 class SimpleChatTokenizer:
@@ -56,7 +56,7 @@ def test_interleave_rollout_missing_tokens_returns_none():
     assert interleave_rollout(output) is None
 
 
-def test_pretokenize_rollout_trajectory_for_sft():
+def test_backfill_rollout_tokens_for_sft():
     tokenizer = SimpleChatTokenizer()
     output = vf.RolloutOutput(
         example_id=42,
@@ -93,7 +93,7 @@ def test_pretokenize_rollout_trajectory_for_sft():
         error=None,
     )
 
-    pretokenize_rollout_trajectory(output, tokenizer)
+    backfill_rollout_tokens(output, tokenizer)
 
     rollouts = interleave_rollout(output)
     assert rollouts is not None

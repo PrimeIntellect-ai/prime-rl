@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Mapping
 from itertools import cycle
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -10,10 +11,21 @@ import httpx
 import verifiers as vf
 from httpx import AsyncClient
 from openai import NotFoundError
+from renderers import RendererConfig
 from tenacity import retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
+
+# Identity tuple used by ``select_train_client`` to key load counts. ``api_base_url``
+# distinguishes servers; ``X-data-parallel-rank`` distinguishes DP shards within a
+# server, since the router uses that header to route to specific GPU ranks.
+ClientIdentity = tuple[str, str | None]
+
+
+def client_identity(client: vf.ClientConfig) -> ClientIdentity:
+    """Stable identity for load balancing across inference clients."""
+    return (client.api_base_url, client.extra_headers.get("X-data-parallel-rank"))
 
 
 @runtime_checkable
@@ -43,6 +55,15 @@ class InferencePool(Protocol):
         """Get next eval client in round-robin fashion."""
         ...
 
+    async def select_train_client(self, load: Mapping[ClientIdentity, int]) -> vf.ClientConfig:
+        """Pick the train client with lowest in-flight load.
+
+        Waits for at least one train client to be available, then returns
+        the one with the smallest ``load[client_identity(client)]``. The
+        caller owns the in-flight counter; the pool just picks against it.
+        """
+        ...
+
     async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
         """Wait for inference pool to be ready."""
         ...
@@ -69,24 +90,16 @@ class StaticInferencePool:
         model_name: str,
         train_client_type: str = "openai_chat_completions",
         eval_client_type: str = "openai_chat_completions",
-        renderer_name: str = "auto",
-        tool_parser: str | None = None,
-        reasoning_parser: str | None = None,
-        renderer_pool_size: int | None = None,
-        preserve_all_thinking: bool = False,
-        preserve_thinking_between_tool_calls: bool = False,
+        renderer_config: RendererConfig | None = None,
+        pool_size: int | None = None,
     ):
         renderer_model_name = model_name if train_client_type == "renderer" else None
         self._train_clients = setup_clients(
             client_config,
             client_type=train_client_type,
-            renderer_name=renderer_name,
+            renderer_config=renderer_config,
             renderer_model_name=renderer_model_name,
-            tool_parser=tool_parser,
-            reasoning_parser=reasoning_parser,
-            renderer_pool_size=renderer_pool_size,
-            preserve_all_thinking=preserve_all_thinking,
-            preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
+            pool_size=pool_size,
         )
         self._eval_clients = setup_clients(client_config, client_type=eval_client_type)
         self._admin_clients = setup_admin_clients(client_config)
@@ -113,6 +126,11 @@ class StaticInferencePool:
     async def get_eval_client(self) -> vf.ClientConfig:
         return next(self._eval_cycle)
 
+    async def select_train_client(self, load: Mapping[ClientIdentity, int]) -> vf.ClientConfig:
+        while not self.train_clients:
+            await asyncio.sleep(0.5)
+        return min(self.train_clients, key=lambda c: load[client_identity(c)])
+
     async def wait_for_ready(self, model_name: str, timeout: int | None = None) -> None:
         await check_health(
             self._admin_clients, timeout=timeout if timeout is not None else self._wait_for_ready_timeout
@@ -134,12 +152,8 @@ async def setup_inference_pool(
     model_name: str,
     train_client_type: str = "openai_chat_completions",
     eval_client_type: str = "openai_chat_completions",
-    renderer_name: str = "auto",
-    tool_parser: str | None = None,
-    reasoning_parser: str | None = None,
-    renderer_pool_size: int | None = None,
-    preserve_all_thinking: bool = False,
-    preserve_thinking_between_tool_calls: bool = False,
+    renderer_config: RendererConfig | None = None,
+    pool_size: int | None = None,
 ) -> InferencePool:
     """Create an inference pool from config (static or elastic)."""
     if client_config.is_elastic:
@@ -150,12 +164,8 @@ async def setup_inference_pool(
             model_name=model_name,
             train_client_type=train_client_type,
             eval_client_type=eval_client_type,
-            renderer_name=renderer_name,
-            tool_parser=tool_parser,
-            reasoning_parser=reasoning_parser,
-            renderer_pool_size=renderer_pool_size,
-            preserve_all_thinking=preserve_all_thinking,
-            preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
+            renderer_config=renderer_config,
+            pool_size=pool_size,
         )
 
     return StaticInferencePool(
@@ -163,36 +173,28 @@ async def setup_inference_pool(
         model_name=model_name,
         train_client_type=train_client_type,
         eval_client_type=eval_client_type,
-        renderer_name=renderer_name,
-        tool_parser=tool_parser,
-        reasoning_parser=reasoning_parser,
-        renderer_pool_size=renderer_pool_size,
-        preserve_all_thinking=preserve_all_thinking,
-        preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
+        renderer_config=renderer_config,
+        pool_size=pool_size,
     )
 
 
 def setup_clients(
     client_config: ClientConfig,
     client_type: str = "openai_chat_completions",
-    renderer_name: str = "auto",
+    renderer_config: RendererConfig | None = None,
     renderer_model_name: str | None = None,
-    tool_parser: str | None = None,
-    reasoning_parser: str | None = None,
-    renderer_pool_size: int | None = None,
-    preserve_all_thinking: bool = False,
-    preserve_thinking_between_tool_calls: bool = False,
+    pool_size: int | None = None,
 ) -> list[vf.ClientConfig]:
     clients = []
     client_idx = 0
-    # Only forward preserve flags when the client actually uses a renderer —
-    # MITO/TITO clients ignore them and the verifiers ClientConfig may reject
-    # unknown extras on older versions.
+    # Only forward the renderer config when the client actually uses a
+    # renderer — MITO/TITO clients ignore it.
     renderer_extra: dict = {}
     if client_type == "renderer":
         renderer_extra = {
-            "preserve_all_thinking": preserve_all_thinking,
-            "preserve_thinking_between_tool_calls": preserve_thinking_between_tool_calls,
+            "renderer_config": renderer_config,
+            "renderer_model_name": renderer_model_name,
+            "renderer_pool_size": pool_size,
         }
     env_headers = {
         k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
@@ -206,11 +208,6 @@ def setup_clients(
                 vf.ClientConfig(
                     client_idx=client_idx,
                     client_type=client_type,
-                    renderer=renderer_name,
-                    renderer_model_name=renderer_model_name,
-                    renderer_pool_size=renderer_pool_size,
-                    tool_parser=tool_parser,
-                    reasoning_parser=reasoning_parser,
                     api_base_url=base_url,
                     api_key_var=client_config.api_key_var,
                     timeout=client_config.timeout,
@@ -306,17 +303,50 @@ async def check_health(
 NCCL_READY_MARKER = "NCCL_READY"
 
 
-async def _pause_engines(admin_clients: list[AsyncClient]) -> None:
+def _is_retryable_pause_error(exception: BaseException) -> bool:
+    """Check if an exception should trigger a retry for pausing engines."""
+    if isinstance(exception, httpx.HTTPStatusError):
+        # Retry on transient server errors (5xx, e.g. engine briefly unresponsive);
+        # client errors (4xx) won't fix themselves on retry.
+        return exception.response.status_code >= 500
+    # Retry on transport-level failures (timeouts, connection resets, etc.) so the
+    # per-attempt read timeout below turns a stuck server into a bounded retry loop
+    # instead of hanging forever on the global timeout=None admin client.
+    if isinstance(exception, (httpx.TimeoutException, httpx.TransportError)):
+        return True
+    return False
+
+
+# Per-attempt and total bounds for `/pause`. Pausing drains in-flight requests
+# (mode="keep"), so a single attempt can legitimately take a while, but the global
+# admin AsyncClient uses `timeout=None`, so a stuck server would hang the weight
+# update forever. `_READ_TIMEOUT` converts a hang into a TimeoutException so
+# tenacity retries; `_TOTAL` is the wall-clock budget across all retries.
+PAUSE_READ_TIMEOUT_S = 120.0
+PAUSE_TOTAL_TIMEOUT_S = 300.0
+
+
+async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None:
     """Pause all inference engines, waiting for in-flight requests to drain."""
     logger = get_logger()
-    logger.info("Pausing inference engines for weight update")
+    logger.info(f"Updating policy in-flight to v{step}")
 
+    @retry(
+        retry=retry_if_exception(_is_retryable_pause_error),
+        stop=stop_after_delay(PAUSE_TOTAL_TIMEOUT_S) | stop_after_attempt(10),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        reraise=True,
+    )
     async def _pause(client: AsyncClient) -> None:
-        response = await client.post("/pause", params={"mode": "keep", "clear_cache": "false"})
+        response = await client.post(
+            "/pause",
+            params={"mode": "keep", "clear_cache": "false"},
+            timeout=httpx.Timeout(connect=10.0, read=PAUSE_READ_TIMEOUT_S, write=60.0, pool=10.0),
+        )
         response.raise_for_status()
 
     await asyncio.gather(*[_pause(client) for client in admin_clients])
-    logger.info("All inference engines paused")
+    logger.debug("All inference engines paused")
 
 
 async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
@@ -328,7 +358,7 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
         response.raise_for_status()
 
     await asyncio.gather(*[_resume(client) for client in admin_clients])
-    logger.info("All inference engines resumed")
+    logger.debug("All inference engines resumed")
 
 
 async def update_weights(
@@ -359,7 +389,7 @@ async def update_weights(
             response.raise_for_status()
 
         # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
-        await _pause_engines(admin_clients)
+        await _pause_engines(admin_clients, step=step)
 
         try:
             # Create ready marker before servers enter receive path (used by NCCL broadcast)

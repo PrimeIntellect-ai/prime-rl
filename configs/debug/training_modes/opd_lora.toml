@@ -18,7 +18,7 @@ name = "debug-opd-lora"
 [orchestrator]
 training_mode = "opd"
 batch_size = 128
-rollouts_per_example = 16
+group_size = 16
 
 [orchestrator.renderer]
 name = "qwen3"
