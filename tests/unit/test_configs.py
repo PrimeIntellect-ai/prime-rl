@@ -412,8 +412,8 @@ def test_loss_overrides_unknown_key_rejected():
         )
 
 
-def test_loss_overrides_non_echo_term_rejected():
-    with pytest.raises(ValidationError, match="only to echo"):
+def test_loss_overrides_non_overlay_term_rejected():
+    with pytest.raises(ValidationError, match="only to overlay"):
         RLConfig.model_validate(
             {
                 "model": {"name": "my-model"},
