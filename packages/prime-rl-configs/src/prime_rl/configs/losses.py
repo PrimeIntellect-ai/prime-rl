@@ -5,16 +5,17 @@ Each term is a free composition of three independently-chosen axes, every one a 
 preset (``type`` + kwargs) with a ``custom`` import-path escape hatch:
 
 - ``loss``    — the core (trainer-side): ``dppo_kl`` (RL) · ``ce`` (echo / NLL) · ``custom``.
-- ``filters`` — token eligibility → mask (orchestrator-side): ``completion`` · ``role`` · ``custom``.
+- ``filters`` — token eligibility → mask (orchestrator-side): ``completion`` · ``role`` · ``custom``;
+  the chain intersects (AND).
 - ``weight``  — per-token weight (orchestrator-side): ``constant`` · ``advantage`` · ``custom``.
 
-The terms are summed over one shared forward → one backward. Default ``losses`` reproduces today's
-DPPO+KL training. sft/opd remain separate ``training_mode`` paths with fixed cores.
-
-**Phase 1**: the 3-axis schema is the surface, but the execution engine is unchanged (one rl/custom
-primary + one merged echo stream). The supported combos are mapped onto that engine via the resolved
-internal types (``RLLossConfig`` / ``EchoLossConfig``) below; combos the engine can't run yet are
-rejected at validation. Phase 2 generalizes the wire + trainer and removes the conversion.
+Common losses are one-line presets — ``{type = "rl", ...}`` / ``{type = "echo", ...}`` — that expand
+into the canonical three-axis form (see ``LossTerm._expand_preset``). The **primary** (rl objective)
+is the completion-filtered, advantage-weighted term, dispatched by ``training_mode``; every other term
+is an additive **overlay** over context tokens. Terms are summed over one shared forward → one
+backward. Default ``losses`` reproduces today's DPPO+KL. sft/opd remain separate ``training_mode``
+paths with fixed cores. ``RLLossConfig`` / ``EchoLossConfig`` below are the resolved internal forms
+the orchestrator/trainer consume.
 """
 
 from typing import Annotated, Any, Literal, TypeAlias
@@ -245,6 +246,12 @@ class LossTerm(BaseConfig):
                 raise ValueError(
                     f"loss term {self.name!r}: an overlay needs at least one role filter (plus optional custom filters)."
                 )
+            # Filters chain by AND, so role filters must share at least one role (else they select nothing).
+            role_filters = [f for f in self.filters if f.type == "role"]
+            if not set.intersection(*(set(f.roles) for f in role_filters)):
+                raise ValueError(
+                    f"loss term {self.name!r}: its role filters intersect to no roles (filters chain by AND)."
+                )
             # Overlay weight may be constant, advantage, or a custom per-rollout resolver (all OK).
         return self
 
@@ -284,13 +291,34 @@ def check_enabled_losses(loss_names: set[str], enabled: list[str], where: str) -
         raise ValueError(f"{where}: enabled_losses {unknown} not found in losses {sorted(loss_names)}.")
 
 
-def check_loss_overrides(loss_names: set[str], overlay_names: set[str], overrides: dict[str, dict], where: str) -> None:
-    """Raise if ``overrides`` references unknown terms or any non-overlay (primary) term."""
-    for name in overrides:
+def check_loss_overrides(
+    loss_names: set[str],
+    overlay_names: set[str],
+    overrides: dict[str, dict],
+    terms_by_name: dict[str, LossTerm],
+    where: str,
+) -> None:
+    """Raise if ``overrides`` references unknown/non-overlay terms, or overrides fields the orchestrator
+    can't apply per env. Only the role/custom ``filters`` and a *constant* weight's ``alpha`` are
+    resolved per env; ``weight`` type/tau/custom, ``loss`` (core), and ``name`` are resolved globally,
+    so overriding them would validate but be silently ignored — reject them."""
+    for name, override in overrides.items():
         if name not in loss_names:
             raise ValueError(f"{where}: loss_overrides key {name!r} not found in losses {sorted(loss_names)}.")
         if name not in overlay_names:
             raise ValueError(f"{where}: loss_overrides currently applies only to overlay terms, got {name!r}.")
+        unsupported = set(override) - {"filters", "weight"}
+        if unsupported:
+            raise ValueError(
+                f"{where}: loss_overrides[{name!r}] may only override 'filters' and a constant "
+                f"'weight.alpha' per env, not {sorted(unsupported)}."
+            )
+        if "weight" in override and (
+            terms_by_name[name].weight.type != "constant" or set(override["weight"]) - {"alpha"}
+        ):
+            raise ValueError(
+                f"{where}: loss_overrides[{name!r}] may only override a constant weight's 'alpha' per env."
+            )
 
 
 def deep_merge(base: dict, override: dict) -> dict:
@@ -392,7 +420,8 @@ class EchoLossConfig(BaseConfig):
     user: UserRoleEchoConfig | None = None
     assistant: AssistantRoleEchoConfig | None = None
     tool: ToolRoleEchoConfig | None = None
-    filter: EchoFilterConfig | None = None
+    filters: list[EchoFilterConfig] = Field(default_factory=list)
+    """Custom token filters, intersected (AND) on top of the role baseline."""
 
     @model_validator(mode="after")
     def validate_roles(self) -> "EchoLossConfig":
@@ -412,21 +441,24 @@ def to_echo_config(term: LossTerm) -> EchoLossConfig:
     here. Constant weight bakes its alpha in directly; advantage weight uses 1.0 as an eligibility
     marker that the orchestrator scales by the rollout's advantage (x tau) once advantages exist."""
     alpha = term.weight.alpha if term.weight.type == "constant" else 1.0
-    roles: set[str] = set()
+    # Filters chain by AND: role filters intersect their role sets (and tool_names), and every custom
+    # filter is kept (the orchestrator intersects their masks on top of the role baseline).
+    roles: set[str] | None = None
     tool_names: set[str] | None = None
-    echo_filter: EchoFilterConfig | None = None
+    custom_filters: list[EchoFilterConfig] = []
     for f in term.filters:
         if f.type == "role":
-            roles.update(f.roles)
-            if "tool" in f.roles:
-                tool_names = f.tool_names
+            roles = set(f.roles) if roles is None else (roles & set(f.roles))
+            if "tool" in f.roles and f.tool_names is not None:
+                tool_names = set(f.tool_names) if tool_names is None else (tool_names & f.tool_names)
         elif f.type == "custom":
-            echo_filter = EchoFilterConfig(import_path=f.import_path, kwargs=f.kwargs)
+            custom_filters.append(EchoFilterConfig(import_path=f.import_path, kwargs=f.kwargs))
+    roles = roles or set()
     return EchoLossConfig(
         name=term.name,
         system=SystemRoleEchoConfig(alpha=alpha) if "system" in roles else None,
         user=UserRoleEchoConfig(alpha=alpha) if "user" in roles else None,
         assistant=AssistantRoleEchoConfig(alpha=alpha) if "assistant" in roles else None,
         tool=ToolRoleEchoConfig(alpha=alpha, tool_names=tool_names) if "tool" in roles else None,
-        filter=echo_filter,
+        filters=custom_filters,
     )

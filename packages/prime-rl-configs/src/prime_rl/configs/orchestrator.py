@@ -546,7 +546,7 @@ class OrchestratorConfig(BaseConfig):
                 )
             enabled = env.enabled_losses if env.enabled_losses is not None else sorted(loss_names)
             check_enabled_losses(loss_names, enabled, where)
-            check_loss_overrides(loss_names, overlay_names, env.loss_overrides, where)
+            check_loss_overrides(loss_names, overlay_names, env.loss_overrides, terms_by_name, where)
             # Construct each overridden term now so a malformed override fails during dry-run, not mid-run.
             for name, override in env.loss_overrides.items():
                 apply_term_override(terms_by_name[name], override)

@@ -211,11 +211,8 @@ class TrainSink:
                 if term.name in env_config.loss_overrides:
                     term = apply_term_override(term, env_config.loss_overrides[term.name])
                 echo_config = to_echo_config(term)
-                filter_fn = None
-                if echo_config.filter is not None:
-                    fn = import_object(echo_config.filter.import_path)
-                    filter_fn = functools.partial(fn, **echo_config.filter.kwargs)
-                resolved.append((term.name, echo_config, filter_fn))
+                filter_fns = [functools.partial(import_object(f.import_path), **f.kwargs) for f in echo_config.filters]
+                resolved.append((term.name, echo_config, filter_fns))
             self._overlay_cache[env_name] = resolved
         return self._overlay_cache[env_name]
 
@@ -245,8 +242,8 @@ class TrainSink:
             await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
 
         overlay_annotations = {}
-        for name, echo_config, filter_fn in self._resolve_overlays(rollout.env_name):
-            ann = await asyncio.to_thread(build_echo_annotations, raw, echo_config, filter_fn)
+        for name, echo_config, filter_fns in self._resolve_overlays(rollout.env_name):
+            ann = await asyncio.to_thread(build_echo_annotations, raw, echo_config, filter_fns)
             if ann is not None:
                 overlay_annotations[name] = ann
 

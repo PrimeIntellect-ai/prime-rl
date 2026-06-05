@@ -522,6 +522,68 @@ def test_sft_core_type_rejected():
         )
 
 
+def test_loss_override_unsupported_field_rejected():
+    # Only filters + a constant weight.alpha apply per env; loss/name/weight.tau are global -> rejected.
+    with pytest.raises(ValidationError, match="may only override"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [_rl(), _echo()],
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": None,
+                    "train": {"env": [{"id": "reverse-text", "loss_overrides": {"echo": {"loss": {"type": "ce"}}}}]},
+                },
+            }
+        )
+
+
+def test_disjoint_role_filters_rejected():
+    # Filters chain by AND, so role filters sharing no role select nothing -> rejected at config time.
+    with pytest.raises(ValidationError, match="intersect to no roles"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [
+                    _rl(),
+                    {
+                        "name": "e",
+                        "loss": {"type": "ce"},
+                        "filters": [{"type": "role", "roles": ["system"]}, {"type": "role", "roles": ["user"]}],
+                    },
+                ],
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
+def test_multiple_filters_accepted():
+    # Multiple role + custom filters with intersecting roles are allowed (composed by AND at runtime).
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "losses": [
+                _rl(),
+                {
+                    "name": "e",
+                    "loss": {"type": "ce"},
+                    "filters": [
+                        {"type": "role", "roles": ["assistant", "user"]},
+                        {"type": "role", "roles": ["assistant"]},
+                        {"type": "custom", "import_path": "x.y"},
+                    ],
+                },
+            ],
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+        }
+    )
+    echo = config.orchestrator.losses[1]
+    assert sum(1 for f in echo.filters if f.type == "role") == 2
+    assert sum(1 for f in echo.filters if f.type == "custom") == 1
+
+
 def test_tokenizer_name_falls_back_to_model_name_when_unset():
     config = RLConfig.model_validate(
         {

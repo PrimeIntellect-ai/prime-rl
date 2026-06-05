@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import verifiers as vf
@@ -24,7 +24,7 @@ class EchoAnnotations:
 def build_echo_annotations(
     rollout: vf.RolloutOutput,
     echo_config: EchoLossConfig | None,
-    filter_fn: Callable[..., list[list[bool]]] | None = None,
+    filter_fns: Sequence[Callable[..., list[list[bool]]]] = (),
 ) -> EchoAnnotations | None:
     if echo_config is None:
         return None
@@ -37,7 +37,7 @@ def build_echo_annotations(
             return None
         step_tokens.append(tokens)
 
-    filter_masks = apply_echo_filter(rollout, filter_fn) if filter_fn is not None and trajectory else None
+    filter_masks = _apply_echo_filters(rollout, filter_fns) if filter_fns and trajectory else None
     return EchoAnnotations(
         step_alpha=[
             _build_step_echo_alpha(
@@ -99,6 +99,18 @@ def _build_step_echo_alpha(
         out = [alpha if keep else None for alpha, keep in zip(out, filter_mask, strict=True)]
 
     return out
+
+
+def _apply_echo_filters(
+    rollout: vf.RolloutOutput,
+    filter_fns: Sequence[Callable[..., list[list[bool]]]],
+) -> list[list[bool]]:
+    """Apply each custom filter (validated) and intersect (AND) their per-step token masks."""
+    masks = [apply_echo_filter(rollout, fn) for fn in filter_fns]
+    combined = masks[0]
+    for other in masks[1:]:
+        combined = [[a and b for a, b in zip(cs, os, strict=True)] for cs, os in zip(combined, other, strict=True)]
+    return combined
 
 
 def apply_echo_filter(
