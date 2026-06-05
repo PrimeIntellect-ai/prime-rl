@@ -198,6 +198,13 @@ class TrainSink:
 
         assign_advantages(survivors, self.train_envs.get(env_name).advantage_fn)
 
+        # Feedback hook: let this env's sampler learn from the finished, scored
+        # group (advantages now assigned). No-op for the default cursor sampler;
+        # curriculum / replay samplers override ``observe``.
+        sampler = self.train_envs.get(env_name).sampler
+        if sampler is not None:
+            sampler.observe(survivors)
+
         # Propagate to the pre-tokenized samples so the orchestrator can
         # collect samples at ship time without re-walking rollouts. The env
         # has a single sampling temperature; fan it out across each sample's
