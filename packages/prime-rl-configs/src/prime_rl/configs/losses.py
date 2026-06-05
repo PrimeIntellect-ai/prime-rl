@@ -176,35 +176,35 @@ class LossTerm(BaseConfig):
     """Per-token weight. Default: constant ``1.0``."""
 
     @model_validator(mode="after")
-    def validate_phase1_support(self) -> "LossTerm":
-        # Phase 1 maps onto today's engine: one rl/custom primary over the completion with the
-        # advantage, plus ce echo overlays over roles with a constant weight. Reject the rest with a
-        # clear message until the general wire/trainer lands (Phase 2/3).
+    def validate_supported(self) -> "LossTerm":
+        # The engine runs one advantage-weighted primary (dppo_kl/custom core over the completion) plus
+        # constant-weighted overlays (ce/custom core over role/custom-filtered context tokens). Custom or
+        # advantage *weight* on an overlay needs the weight resolver (later phase) and is rejected here.
         core = self.loss.type
+        weight = self.weight.type
         filter_types = [f.type for f in self.filters]
-        if core in ("dppo_kl", "custom"):
-            if filter_types != ["completion"] or self.weight.type != "advantage":
+        if weight == "advantage":  # the rl objective (primary)
+            if core not in ("dppo_kl", "custom") or filter_types != ["completion"]:
                 raise ValueError(
-                    f"loss term {self.name!r}: a {core!r} core (the rl objective) currently requires "
-                    f"filters=[{{type='completion'}}] and weight={{type='advantage'}}; richer "
-                    f"composition lands in a later phase."
+                    f"loss term {self.name!r}: an advantage-weighted (primary) term needs a dppo_kl/custom "
+                    f"core over filters=[{{type='completion'}}]."
                 )
-        elif core == "ce":
-            if any(t not in ("role", "custom") for t in filter_types):
+        elif weight == "constant":  # additive overlay
+            if core not in ("ce", "custom"):
+                raise ValueError(f"loss term {self.name!r}: a constant-weighted overlay needs a ce or custom core.")
+            if any(t not in ("role", "custom") for t in filter_types) or "role" not in filter_types:
                 raise ValueError(
-                    f"loss term {self.name!r}: a ce (echo) core currently supports only role/custom "
-                    f"filters (ce over the completion = SFT, which is a training_mode, not a term yet)."
+                    f"loss term {self.name!r}: an overlay needs at least one role filter (plus optional custom "
+                    f"filters); overlays over the completion are not supported yet."
                 )
-            if "role" not in filter_types:
-                raise ValueError(f"loss term {self.name!r}: a ce (echo) core needs at least one role filter.")
-            if self.weight.type != "constant":
-                raise ValueError(f"loss term {self.name!r}: a ce (echo) core currently requires weight=constant.")
+        else:  # custom weight
+            raise ValueError(f"loss term {self.name!r}: custom weight is not supported yet (later phase).")
         return self
 
 
 def is_primary(term: LossTerm) -> bool:
-    """Whether the term is the rl objective (its core drives the rl-mode primary loss)."""
-    return term.loss.type in ("dppo_kl", "custom")
+    """The rl objective is the advantage-weighted term; additive overlays use a constant/custom weight."""
+    return term.weight.type == "advantage"
 
 
 def validate_loss_list(losses: list[LossTerm]) -> list[LossTerm]:
@@ -230,13 +230,13 @@ def check_enabled_losses(loss_names: set[str], enabled: list[str], where: str) -
         raise ValueError(f"{where}: enabled_losses {unknown} not found in losses {sorted(loss_names)}.")
 
 
-def check_loss_overrides(loss_names: set[str], echo_names: set[str], overrides: dict[str, dict], where: str) -> None:
-    """Raise if ``overrides`` references unknown terms or any non-echo (non-ce) term."""
+def check_loss_overrides(loss_names: set[str], overlay_names: set[str], overrides: dict[str, dict], where: str) -> None:
+    """Raise if ``overrides`` references unknown terms or any non-overlay (primary) term."""
     for name in overrides:
         if name not in loss_names:
             raise ValueError(f"{where}: loss_overrides key {name!r} not found in losses {sorted(loss_names)}.")
-        if name not in echo_names:
-            raise ValueError(f"{where}: loss_overrides currently applies only to echo (ce) terms, got {name!r}.")
+        if name not in overlay_names:
+            raise ValueError(f"{where}: loss_overrides currently applies only to overlay terms, got {name!r}.")
 
 
 def deep_merge(base: dict, override: dict) -> dict:
@@ -346,39 +346,31 @@ class EchoLossConfig(BaseConfig):
         return self
 
 
-def merge_echo_terms(terms: list[LossTerm], where: str = "losses") -> EchoLossConfig | None:
-    """Merge ``ce`` echo terms (role filter + constant weight) into one resolved ``EchoLossConfig``.
+def overlay_terms(losses: list[LossTerm]) -> list[LossTerm]:
+    """The additive (non-primary, constant-weighted) overlay terms, in list order."""
+    return [term for term in losses if not is_primary(term)]
 
-    Phase 1 maps the general per-term echo onto today's single per-role echo stream: each role may be
-    covered by at most one enabled term, and at most one custom echo filter is allowed.
-    """
-    ce_terms = [t for t in terms if t.loss.type == "ce"]
-    if not ce_terms:
-        return None
-    role_alpha: dict[str, float] = {}
+
+def to_echo_config(term: LossTerm) -> EchoLossConfig:
+    """Resolve one constant-weighted overlay term (role + optional custom filters) into an
+    ``EchoLossConfig`` for the orchestrator's per-token alpha builder. Every selected role gets the
+    term's constant weight; the term's core (ce/custom) is applied trainer-side, not here."""
+    alpha = term.weight.alpha
+    roles: set[str] = set()
     tool_names: set[str] | None = None
     echo_filter: EchoFilterConfig | None = None
-    for term in ce_terms:
-        alpha = term.weight.alpha  # constant weight (validated on the term)
-        for f in term.filters:
-            if f.type == "role":
-                for role in f.roles:
-                    if role in role_alpha:
-                        raise ValueError(
-                            f"{where}: role {role!r} is echoed by more than one enabled term; "
-                            f"Phase 1 needs disjoint roles across echo terms."
-                        )
-                    role_alpha[role] = alpha
-                    if role == "tool":
-                        tool_names = f.tool_names
-            elif f.type == "custom":
-                if echo_filter is not None:
-                    raise ValueError(f"{where}: more than one custom echo filter is enabled; Phase 1 supports one.")
-                echo_filter = EchoFilterConfig(import_path=f.import_path, kwargs=f.kwargs)
+    for f in term.filters:
+        if f.type == "role":
+            roles.update(f.roles)
+            if "tool" in f.roles:
+                tool_names = f.tool_names
+        elif f.type == "custom":
+            echo_filter = EchoFilterConfig(import_path=f.import_path, kwargs=f.kwargs)
     return EchoLossConfig(
-        system=SystemRoleEchoConfig(alpha=role_alpha["system"]) if "system" in role_alpha else None,
-        user=UserRoleEchoConfig(alpha=role_alpha["user"]) if "user" in role_alpha else None,
-        assistant=AssistantRoleEchoConfig(alpha=role_alpha["assistant"]) if "assistant" in role_alpha else None,
-        tool=ToolRoleEchoConfig(alpha=role_alpha["tool"], tool_names=tool_names) if "tool" in role_alpha else None,
+        name=term.name,
+        system=SystemRoleEchoConfig(alpha=alpha) if "system" in roles else None,
+        user=UserRoleEchoConfig(alpha=alpha) if "user" in roles else None,
+        assistant=AssistantRoleEchoConfig(alpha=alpha) if "assistant" in roles else None,
+        tool=ToolRoleEchoConfig(alpha=alpha, tool_names=tool_names) if "tool" in roles else None,
         filter=echo_filter,
     )

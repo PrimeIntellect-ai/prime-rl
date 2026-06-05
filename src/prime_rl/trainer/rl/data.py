@@ -46,9 +46,9 @@ class TensorMicroBatch(TypedDict):
     # sft → sft loss). All samples in a micro batch share the same mode.
     training_mode: str
 
-    # Echo overlay (parallel to input_ids); None when no sample in the batch echoes.
-    echo_mask: Bool[Tensor, "batch seq"] | None
-    echo_weight: Float[Tensor, "batch seq"] | None
+    # Per-term overlays (parallel to input_ids), keyed by loss-term name; None when no overlays.
+    overlay_masks: dict[str, Bool[Tensor, "batch seq"]] | None
+    overlay_weights: dict[str, Float[Tensor, "batch seq"]] | None
 
 
 class FakeDataLoader:
@@ -124,8 +124,8 @@ class FakeDataLoader:
             "mm_kwargs": None,
             "mm_token_type_ids": None,
             "training_mode": "rl",
-            "echo_mask": None,
-            "echo_weight": None,
+            "overlay_masks": None,
+            "overlay_weights": None,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -154,8 +154,8 @@ class FakeDataLoader:
             "mm_kwargs": None,
             "mm_token_type_ids": None,
             "training_mode": "rl",
-            "echo_mask": None,
-            "echo_weight": None,
+            "overlay_masks": None,
+            "overlay_weights": None,
         }
 
 
@@ -251,11 +251,15 @@ class DataLoader:
             else None,
             routed_experts=routed_experts,
             training_mode=micro_batch.training_mode,
-            echo_mask=torch.tensor(micro_batch.echo_mask, dtype=torch.bool).unsqueeze(0)
-            if micro_batch.echo_mask is not None
+            overlay_masks={
+                k: torch.tensor(v, dtype=torch.bool).unsqueeze(0) for k, v in micro_batch.overlay_masks.items()
+            }
+            if micro_batch.overlay_masks is not None
             else None,
-            echo_weight=torch.tensor(micro_batch.echo_weight, dtype=torch.float).unsqueeze(0)
-            if micro_batch.echo_weight is not None
+            overlay_weights={
+                k: torch.tensor(v, dtype=torch.float).unsqueeze(0) for k, v in micro_batch.overlay_weights.items()
+            }
+            if micro_batch.overlay_weights is not None
             else None,
         )
 

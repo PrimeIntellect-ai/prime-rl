@@ -207,7 +207,7 @@ def interleave_rollout(
     mm_token_type_ids_mapping: dict[int, int] | None = None,
     *,
     env_name: str = "",
-    echo_annotations: EchoAnnotations | None = None,
+    overlay_annotations: dict[str, EchoAnnotations] | None = None,
 ) -> list[TrainingSample] | None:
     """
     Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
@@ -310,7 +310,9 @@ def interleave_rollout(
             env_name=env_name,
             mm_token_type_ids=None,
             routed_experts=None,  # deferred — finalized at end of interleave_rollout
-            echo_alpha=echo_annotations.initial_sample_alpha(step_idx) if echo_annotations is not None else None,
+            overlay_alphas={name: list(ann.step_alpha[step_idx]) for name, ann in overlay_annotations.items()}
+            if overlay_annotations
+            else None,
         )
         # Initialize routed-experts state for this sample. First chunk is the
         # raw step routed_experts (no pad, no copy). running_len is the
@@ -388,14 +390,10 @@ def interleave_rollout(
             sample.completion_mask.extend(tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
 
-        if echo_annotations is not None:
+        if overlay_annotations:
             step_prompt_len = len(tokens["prompt_ids"])
-            extension = echo_annotations.extension_alpha(step_idx, prefix_len, step_prompt_len)
-            if any(a is not None for a in extension) or sample.echo_alpha is not None:
-                if sample.echo_alpha is None:
-                    existing_len = len(sample.prompt_ids) + len(sample.completion_ids) - len(extension)
-                    sample.echo_alpha = [None] * existing_len
-                sample.echo_alpha.extend(extension)
+            for name, ann in overlay_annotations.items():
+                sample.overlay_alphas[name].extend(ann.extension_alpha(step_idx, prefix_len, step_prompt_len))
 
         step_routed = tokens.get("routed_experts")
         state = sample_routed_state.get(id(sample))

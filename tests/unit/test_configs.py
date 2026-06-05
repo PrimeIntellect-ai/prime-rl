@@ -304,28 +304,13 @@ def test_enabled_losses_unknown_name_rejected():
         )
 
 
-def test_overlapping_echo_roles_rejected():
-    # Two enabled echo terms covering the same role can't be merged into one stream (Phase 1).
-    with pytest.raises(ValidationError, match="disjoint roles"):
-        RLConfig.model_validate(
-            {
-                "model": {"name": "my-model"},
-                "losses": [_rl(), _echo(name="e1", roles=("assistant",)), _echo(name="e2", roles=("assistant",))],
-                "trainer": {},
-                "orchestrator": {
-                    "renderer": None,
-                    "train": {"env": [{"id": "reverse-text", "enabled_losses": ["rl", "e1", "e2"]}]},
-                },
-            }
-        )
-
-
-def test_disjoint_echo_terms_accepted():
-    # Multiple echo terms with disjoint roles are allowed; they merge into one echo stream.
+def test_multiple_overlay_terms_accepted():
+    # Overlay terms are independent additive terms (one per-term stream each); their roles may even
+    # overlap (gradients sum), so there is no disjointness constraint.
     config = RLConfig.model_validate(
         {
             "model": {"name": "my-model"},
-            "losses": [_rl(), _echo(name="e1", roles=("assistant",)), _echo(name="e2", roles=("tool",))],
+            "losses": [_rl(), _echo(name="e1", roles=("assistant",)), _echo(name="e2", roles=("assistant",))],
             "trainer": {},
             "orchestrator": {"renderer": None},
         }

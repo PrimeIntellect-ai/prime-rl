@@ -64,6 +64,19 @@ def _extend_optional_token_field(current, values, existing_len: int, new_len: in
     return current
 
 
+def _extend_overlay_dict(current, values, existing_len: int, new_len: int, fill_value):
+    """Extend a per-term overlay dict across a packed boundary, unioning term keys and back-filling
+    terms present on only one side (so an overlay used by only some packed samples stays aligned)."""
+    if current is None and values is None:
+        return None
+    current = current or {}
+    values = values or {}
+    out: dict = {}
+    for name in set(current) | set(values):
+        out[name] = current.get(name, [fill_value] * existing_len) + values.get(name, [fill_value] * new_len)
+    return out
+
+
 def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch:
     """
     Prepare a problem for sequence packing training.
@@ -80,25 +93,29 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
     env_names = [training_example.env_name] * len(input_ids)
 
-    # Echo overlay: token 0 has no valid shifted current-token logprob, so it stays
-    # unmasked even if the producer supplied an alpha there. echo_mask/echo_weight
+    # Per-term overlays: token 0 has no valid shifted current-token logprob, so it stays
+    # unmasked even if the producer supplied an alpha there. overlay_masks/overlay_weights
     # stay separate from loss_mask/advantages — terms may overlap and their grads sum.
-    echo_alpha = training_example.echo_alpha
-    echo_mask: list[bool] | None = None
-    echo_weight: list[float] | None = None
-    if echo_alpha is not None:
-        if len(echo_alpha) != len(input_ids):
-            raise ValueError(
-                f"echo_alpha length must match prompt_ids + completion_ids length "
-                f"({len(echo_alpha)} != {len(input_ids)}) for env {training_example.env_name!r}"
-            )
-        echo_mask = [False] * len(input_ids)
-        echo_weight = [0.0] * len(input_ids)
-        for k, alpha in enumerate(echo_alpha[1:], start=1):
-            if alpha is None:
-                continue
-            echo_mask[k] = True
-            echo_weight[k] = alpha
+    overlay_alphas = training_example.overlay_alphas
+    overlay_masks: dict[str, list[bool]] | None = None
+    overlay_weights: dict[str, list[float]] | None = None
+    if overlay_alphas is not None:
+        overlay_masks = {}
+        overlay_weights = {}
+        for name, alpha in overlay_alphas.items():
+            if len(alpha) != len(input_ids):
+                raise ValueError(
+                    f"overlay_alphas[{name!r}] length must match prompt_ids + completion_ids length "
+                    f"({len(alpha)} != {len(input_ids)}) for env {training_example.env_name!r}"
+                )
+            mask = [False] * len(input_ids)
+            weight = [0.0] * len(input_ids)
+            for k, a in enumerate(alpha[1:], start=1):
+                if a is not None:
+                    mask[k] = True
+                    weight[k] = a
+            overlay_masks[name] = mask
+            overlay_weights[name] = weight
 
     # Per-token temperatures: prompt tokens use first completion temp (masked out anyway)
     # Default to 1.0 if completion is empty (e.g., model generated only tool calls with no text)
@@ -127,9 +144,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:seq_len]
         env_names = env_names[:seq_len]
-        if echo_mask is not None:
-            echo_mask = echo_mask[:seq_len]
-            echo_weight = echo_weight[:seq_len]
+        if overlay_masks is not None:
+            overlay_masks = {name: m[:seq_len] for name, m in overlay_masks.items()}
+            overlay_weights = {name: w[:seq_len] for name, w in overlay_weights.items()}
 
     assert (
         len(input_ids)
@@ -171,8 +188,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         env_names=env_names,
         mm_kwargs=training_example.mm_kwargs,
         training_mode=training_example.training_mode,
-        echo_mask=echo_mask,
-        echo_weight=echo_weight,
+        overlay_masks=overlay_masks,
+        overlay_weights=overlay_weights,
     )
 
 
@@ -218,11 +235,11 @@ def packed_samples_into_micro_bs(
             ):
                 existing_len = len(bin_content.input_ids)
                 sample_len = len(sample.input_ids)
-                bin_content.echo_mask = _extend_optional_token_field(
-                    bin_content.echo_mask, sample.echo_mask, existing_len, sample_len, False
+                bin_content.overlay_masks = _extend_overlay_dict(
+                    bin_content.overlay_masks, sample.overlay_masks, existing_len, sample_len, False
                 )
-                bin_content.echo_weight = _extend_optional_token_field(
-                    bin_content.echo_weight, sample.echo_weight, existing_len, sample_len, 0.0
+                bin_content.overlay_weights = _extend_overlay_dict(
+                    bin_content.overlay_weights, sample.overlay_weights, existing_len, sample_len, 0.0
                 )
                 bin_content.input_ids.extend(sample.input_ids)
                 bin_content.loss_mask.extend(sample.loss_mask)
@@ -301,10 +318,12 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
         micro_batch.mm_token_type_ids.extend([0] * padding_size)
     if micro_batch.routed_experts is not None:
         _pad_routed_experts(micro_batch, padding_size)
-    if micro_batch.echo_mask is not None:
-        micro_batch.echo_mask.extend([False] * padding_size)
-    if micro_batch.echo_weight is not None:
-        micro_batch.echo_weight.extend([0.0] * padding_size)
+    if micro_batch.overlay_masks is not None:
+        for m in micro_batch.overlay_masks.values():
+            m.extend([False] * padding_size)
+    if micro_batch.overlay_weights is not None:
+        for w in micro_batch.overlay_weights.values():
+            w.extend([0.0] * padding_size)
     micro_batch.env_names.extend([""] * padding_size)
 
     return micro_batch
@@ -315,10 +334,10 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy = copy.deepcopy(source)
     dummy.advantages = [0.0] * len(dummy.input_ids)
     dummy.loss_mask = [False] * len(dummy.input_ids)
-    if dummy.echo_mask is not None:
-        dummy.echo_mask = [False] * len(dummy.input_ids)
-    if dummy.echo_weight is not None:
-        dummy.echo_weight = [0.0] * len(dummy.input_ids)
+    if dummy.overlay_masks is not None:
+        dummy.overlay_masks = {name: [False] * len(dummy.input_ids) for name in dummy.overlay_masks}
+    if dummy.overlay_weights is not None:
+        dummy.overlay_weights = {name: [0.0] * len(dummy.input_ids) for name in dummy.overlay_weights}
     return dummy
 
 

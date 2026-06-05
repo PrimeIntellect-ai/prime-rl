@@ -18,7 +18,7 @@ from prime_rl.trainer.multi_ckpt import setup_multi_checkpoint_manager
 from prime_rl.trainer.optim import setup_optimizer, setup_multi_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.configs.losses import to_rl_loss_config
+from prime_rl.configs.losses import overlay_terms, to_rl_loss_config
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
     gather_for_cp,
@@ -170,6 +170,8 @@ def train(config: TrainerConfig):
     # The dppo_kl primary term configures token-export's DPPO threshold annotations.
     rl_term = next((term for term in config.losses if term.loss.type == "dppo_kl"), None)
     rl_loss_config = to_rl_loss_config(rl_term) if rl_term is not None else None
+    # Overlay term names (config order) — the additive non-primary terms, each its own summed core.
+    overlay_term_names = [term.name for term in overlay_terms(config.losses)]
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -373,19 +375,23 @@ def train(config: TrainerConfig):
         # tokens implicitly upweight their per-token gradient contribution after FSDP averaging.
         # FSDP's per-rank divide is undone after the microbatch loop via fsdp_gradient_divide_factor.
         local_loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
-        # Echo tokens get their own global denominator so the echo CE term is a true
-        # per-token mean and neither dilutes nor is diluted by the RL term. Both scales
-        # ride one all-reduce so every rank issues the same collective.
-        local_echo_scale = sum(
-            micro_batch["echo_mask"].sum().item()
-            for micro_batch in micro_batches
-            if micro_batch.get("echo_mask") is not None
-        )
-        global_loss_scales = torch.tensor([local_loss_scale, local_echo_scale], dtype=torch.int64, device="cuda")
+        # Each overlay term gets its own global denominator so its core is a true per-token mean and
+        # neither dilutes nor is diluted by the others. All scales ride one all-reduce (a fixed-order
+        # vector: [primary, *overlay_term_names]) so every rank issues the same collective.
+        local_scales = [local_loss_scale]
+        for name in overlay_term_names:
+            local_scales.append(
+                sum(
+                    micro_batch["overlay_masks"][name].sum().item()
+                    for micro_batch in micro_batches
+                    if micro_batch.get("overlay_masks") is not None and name in micro_batch["overlay_masks"]
+                )
+            )
+        global_loss_scales = torch.tensor(local_scales, dtype=torch.int64, device="cuda")
         dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
         dist.all_reduce(global_loss_scales, op=dist.ReduceOp.SUM, group=dp_cp_group)
         loss_scale = max(global_loss_scales[0].item(), 1)
-        echo_loss_scale = max(global_loss_scales[1].item(), 1)
+        overlay_scales = {name: max(global_loss_scales[i + 1].item(), 1) for i, name in enumerate(overlay_term_names)}
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
@@ -399,8 +405,8 @@ def train(config: TrainerConfig):
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
-            echo_mask = micro_batch["echo_mask"].to("cuda") if micro_batch.get("echo_mask") is not None else None
-            echo_weight = micro_batch["echo_weight"].to("cuda") if micro_batch.get("echo_weight") is not None else None
+            overlay_masks = micro_batch.get("overlay_masks")
+            overlay_weights = micro_batch.get("overlay_weights")
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
             teacher_logprobs = (
                 micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
@@ -503,16 +509,23 @@ def train(config: TrainerConfig):
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
             extra_terms = []
-            if echo_mask is not None and echo_weight is not None:
-                extra_terms.append(
-                    ExtraTerm(
-                        name="echo",
-                        core=loss_fns["echo"],
-                        scale=echo_loss_scale,
-                        masks=echo_mask.squeeze().split(response_lengths),
-                        weights=echo_weight.squeeze().split(response_lengths),
+            combined_overlay = None
+            if overlay_masks is not None and overlay_weights is not None:
+                for name in overlay_term_names:
+                    if name not in overlay_masks:
+                        continue
+                    om = overlay_masks[name].to("cuda")
+                    ow = overlay_weights[name].to("cuda")
+                    combined_overlay = om if combined_overlay is None else (combined_overlay | om)
+                    extra_terms.append(
+                        ExtraTerm(
+                            name=name,
+                            core=loss_fns[name],
+                            scale=overlay_scales[name],
+                            masks=om.squeeze().split(response_lengths),
+                            weights=ow.squeeze().split(response_lengths),
+                        )
                     )
-                )
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
@@ -532,9 +545,9 @@ def train(config: TrainerConfig):
                 loss.backward()
 
             # Add relevant tensors to tensor dict for logging purposes. Entropy/env metrics span the
-            # primary (completion) mask plus the echo overlay, so primary-disabled / echo-only envs
-            # stay visible instead of logging empty/nan (metric_mask == loss_mask when no echo).
-            metric_mask = loss_mask if echo_mask is None else (loss_mask | echo_mask)
+            # primary (completion) mask plus all overlay masks, so primary-disabled / overlay-only envs
+            # stay visible instead of logging empty/nan (metric_mask == loss_mask when no overlays).
+            metric_mask = loss_mask if combined_overlay is None else (loss_mask | combined_overlay)
             entropy = out["entropy"][metric_mask].detach().to("cpu")
             tensors["entropy/all"].append(entropy)
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))

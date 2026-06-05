@@ -12,7 +12,7 @@ from prime_rl.configs.losses import RLLossConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.loss import compute_importance_ratio_and_mismatch_kl
 
-# v2 adds the additive echo_mask / echo_weight columns (v1 consumers reading by name still work).
+# v2 adds the additive overlay_mask / overlay_weight columns (v1 consumers reading by name still work).
 SCHEMA_VERSION = 2
 
 
@@ -57,7 +57,7 @@ class TokenExporter:
         for micro_sequence_idx, length in enumerate(response_lengths):
             raw_end = start + length
             end = _trim_padding(columns, start, raw_end)
-            if end > start and (any(columns["loss_mask"][start:end]) or any(columns["echo_mask"][start:end])):
+            if end > start and (any(columns["loss_mask"][start:end]) or any(columns["overlay_mask"][start:end])):
                 self._write(
                     {
                         "schema_version": SCHEMA_VERSION,
@@ -131,8 +131,8 @@ def _export_columns(
         "token_ids": token_ids,
         "position_ids": _tensor_to_ints(micro_batch["position_ids"]),
         "loss_mask": _tensor_to_bools(micro_batch["loss_mask"]),
-        "echo_mask": _optional_tensor_to_bools(micro_batch.get("echo_mask"), seq_len),
-        "echo_weight": _optional_tensor_to_floats(micro_batch.get("echo_weight"), seq_len),
+        "overlay_mask": _overlay_combined_mask(micro_batch.get("overlay_masks"), seq_len),
+        "overlay_weight": _overlay_combined_weight(micro_batch.get("overlay_weights"), seq_len),
         "advantages": _tensor_to_floats(micro_batch["advantages"]),
         "rewards": _optional_tensor_to_floats(micro_batch.get("rewards"), seq_len),
         "inference_logprobs": _tensor_to_floats(micro_batch["inference_logprobs"]),
@@ -147,6 +147,26 @@ def _export_columns(
         "is_masked_low": _optional_tensor_to_bools(export_tensors["is_masked_low"], seq_len),
         "env_names": list(micro_batch["env_names"]),
     }
+
+
+def _overlay_combined_mask(overlay_masks: "dict[str, Tensor] | None", seq_len: int) -> list[bool]:
+    """OR of all per-term overlay masks (any term echoes the token); all-False when no overlays."""
+    if not overlay_masks:
+        return [False] * seq_len
+    combined: Tensor | None = None
+    for m in overlay_masks.values():
+        combined = m if combined is None else (combined | m)
+    return _tensor_to_bools(combined)
+
+
+def _overlay_combined_weight(overlay_weights: "dict[str, Tensor] | None", seq_len: int) -> list[float]:
+    """Sum of all per-term overlay weights (diagnostic only); all-zero when no overlays."""
+    if not overlay_weights:
+        return [0.0] * seq_len
+    combined: Tensor | None = None
+    for w in overlay_weights.values():
+        combined = w if combined is None else (combined + w)
+    return _tensor_to_floats(combined)
 
 
 def _compute_export_tensors(

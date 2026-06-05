@@ -18,7 +18,7 @@ import functools
 import uuid
 from collections import defaultdict
 
-from prime_rl.configs.losses import apply_term_override, is_primary, merge_echo_terms
+from prime_rl.configs.losses import apply_term_override, is_primary, overlay_terms, to_echo_config
 from prime_rl.configs.orchestrator import AdvantageConfig, OrchestratorConfig
 from prime_rl.orchestrator.advantage import assign_advantages, setup_advantage_fn
 from prime_rl.orchestrator.echo import build_echo_annotations
@@ -41,8 +41,10 @@ def _sample_has_trainable_tokens(sample: TrainingSample) -> bool:
     trainer (the first token has no shifted current-token logprob)."""
     if any(sample.completion_mask):
         return True
-    echo_alpha = sample.echo_alpha
-    return echo_alpha is not None and any(a is not None for a in echo_alpha[1:])
+    overlays = sample.overlay_alphas
+    if overlays is None:
+        return False
+    return any(any(a is not None for a in alphas[1:]) for alphas in overlays.values())
 
 
 class TrainSink:
@@ -69,7 +71,7 @@ class TrainSink:
         self.tokenizer = tokenizer
         self.renderer = renderer
         self.train_envs = train_envs
-        self._echo_cache: dict[str, tuple] = {}
+        self._overlay_cache: dict[str, list] = {}
         self._primary_cache: dict[str, bool] = {}
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size
@@ -166,28 +168,26 @@ class TrainSink:
             return self.process_batch()
         return None
 
-    def _resolve_echo(self, env_name: str):
-        """Resolve the env's enabled echo (ce) terms into one merged ``EchoLossConfig`` (per-env
-        overrides applied, same-core terms merged) and its bound filter fn, cached per env."""
-        if env_name not in self._echo_cache:
+    def _resolve_overlays(self, env_name: str):
+        """Resolve the env's enabled overlay terms (per-env overrides applied) into a list of
+        ``(term_name, resolved EchoLossConfig, bound filter fn)``, cached per env."""
+        if env_name not in self._overlay_cache:
             env_config = self.train_envs.get(env_name).config
             enabled = env_config.enabled_losses
-            ce_terms = [
-                term
-                for term in self.config.losses
-                if term.loss.type == "ce" and (enabled is None or term.name in enabled)
-            ]
-            ce_terms = [
-                apply_term_override(t, env_config.loss_overrides[t.name]) if t.name in env_config.loss_overrides else t
-                for t in ce_terms
-            ]
-            term = merge_echo_terms(ce_terms, where=f"env {env_name!r}")
-            filter_fn = None
-            if term is not None and term.filter is not None:
-                fn = import_object(term.filter.import_path)
-                filter_fn = functools.partial(fn, **term.filter.kwargs)
-            self._echo_cache[env_name] = (term, filter_fn)
-        return self._echo_cache[env_name]
+            resolved = []
+            for term in overlay_terms(self.config.losses):
+                if enabled is not None and term.name not in enabled:
+                    continue
+                if term.name in env_config.loss_overrides:
+                    term = apply_term_override(term, env_config.loss_overrides[term.name])
+                echo_config = to_echo_config(term)
+                filter_fn = None
+                if echo_config.filter is not None:
+                    fn = import_object(echo_config.filter.import_path)
+                    filter_fn = functools.partial(fn, **echo_config.filter.kwargs)
+                resolved.append((term.name, echo_config, filter_fn))
+            self._overlay_cache[env_name] = resolved
+        return self._overlay_cache[env_name]
 
     def _primary_enabled(self, env_name: str) -> bool:
         """Whether the rl-mode primary (the rl/custom term) is enabled for this env. sft/opd
@@ -214,15 +214,18 @@ class TrainSink:
         if needs_backfill:
             await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
 
-        echo_term, echo_filter_fn = self._resolve_echo(rollout.env_name)
-        echo_annotations = await asyncio.to_thread(build_echo_annotations, raw, echo_term, echo_filter_fn)
+        overlay_annotations = {}
+        for name, echo_config, filter_fn in self._resolve_overlays(rollout.env_name):
+            ann = await asyncio.to_thread(build_echo_annotations, raw, echo_config, filter_fn)
+            if ann is not None:
+                overlay_annotations[name] = ann
 
         samples = await asyncio.to_thread(
             interleave_rollout,
             raw,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             env_name=rollout.env_name,
-            echo_annotations=echo_annotations,
+            overlay_annotations=overlay_annotations,
         )
         rollout.samples = samples or []
         # Offload base64 image bytes to disk as soon as the rollout is

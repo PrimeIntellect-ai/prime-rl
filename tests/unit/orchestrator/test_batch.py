@@ -47,13 +47,13 @@ def test_prepare_sample_builds_echo_mask_and_weight():
         completion_temperatures=[1.0, 1.0],
         advantage=1.0,
         env_name="test-env",
-        echo_alpha=[0.9, 0.5, None, 0.3],
+        overlay_alphas={"echo": [0.9, 0.5, None, 0.3]},
     )
     mb = prepare_sample(example, seq_len=8)
     # Token 0 is excluded (no valid shifted current-token logprob) even though it
     # carries an alpha; None positions are not echoed.
-    assert mb.echo_mask == [False, True, False, True]
-    assert mb.echo_weight == [0.0, 0.5, 0.0, 0.3]
+    assert mb.overlay_masks["echo"] == [False, True, False, True]
+    assert mb.overlay_weights["echo"] == [0.0, 0.5, 0.0, 0.3]
     # Echo stays separate from the RL signals: loss_mask and advantages untouched.
     assert mb.loss_mask == [False, False, True, True]
     assert mb.advantages == [1.0, 1.0, 1.0, 1.0]

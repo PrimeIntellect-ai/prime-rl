@@ -56,10 +56,10 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # taus), sft uses sft_loss_fn. Stamped by the orchestrator from training_mode.
     training_mode: TrainingMode = "rl"
 
-    # Per-token echo alpha parallel to prompt_ids + completion_ids. Field None
-    # means no echo; per-token None means ordinary RL only; a float means the
-    # token also gets an echo CE term with that weight. ``0.0`` is distinct from None.
-    echo_alpha: list[float | None] | None = None
+    # Per-term overlay alphas, keyed by loss-term name; each parallel to prompt_ids +
+    # completion_ids. Field None means no overlays; per-token None means that term does not
+    # apply at that token; a float means the token gets that term's core with that weight.
+    overlay_alphas: dict[str, list[float | None]] | None = None
 
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -95,8 +95,8 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     training_mode: TrainingMode = "rl"
     rewards: list[float] | None = None
 
-    # Echo overlay, parallel to input_ids. echo_mask is True where the token gets
-    # an echo CE term; echo_weight carries its per-token alpha (0.0 elsewhere).
-    # Both survive packing/padding like loss_mask; None if no sample echoes.
-    echo_mask: list[bool] | None = None
-    echo_weight: list[float] | None = None
+    # Per-term overlays, keyed by loss-term name, parallel to input_ids. For each term,
+    # overlay_masks is True where the token gets that term's core; overlay_weights carries
+    # its per-token alpha (0.0 elsewhere). Survive packing/padding; None if no overlays.
+    overlay_masks: dict[str, list[bool]] | None = None
+    overlay_weights: dict[str, list[float]] | None = None

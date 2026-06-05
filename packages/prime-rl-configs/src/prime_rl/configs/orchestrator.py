@@ -14,7 +14,6 @@ from prime_rl.configs.losses import (
     check_loss_overrides,
     default_losses,
     is_primary,
-    merge_echo_terms,
 )
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -536,7 +535,7 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_enabled_losses(self):
         loss_names = {term.name for term in self.losses}
-        echo_names = {term.name for term in self.losses if term.loss.type == "ce"}
+        overlay_names = {term.name for term in self.losses if not is_primary(term)}
         terms_by_name = {term.name: term for term in self.losses}
         for env in self.train.env:
             where = f"env {env.resolved_name!r}"
@@ -547,28 +546,21 @@ class OrchestratorConfig(BaseConfig):
                 )
             enabled = env.enabled_losses if env.enabled_losses is not None else sorted(loss_names)
             check_enabled_losses(loss_names, enabled, where)
-            check_loss_overrides(loss_names, echo_names, env.loss_overrides, where)
-            # Apply overrides + merge the enabled echo terms now, so a malformed override or an
-            # unmergeable echo set (overlapping roles, >1 filter) fails during dry-run, not mid-run.
-            enabled_terms = [
-                apply_term_override(terms_by_name[n], env.loss_overrides[n])
-                if n in env.loss_overrides
-                else terms_by_name[n]
-                for n in enabled
-            ]
-            merge_echo_terms(enabled_terms, where)
+            check_loss_overrides(loss_names, overlay_names, env.loss_overrides, where)
+            # Construct each overridden term now so a malformed override fails during dry-run, not mid-run.
+            for name, override in env.loss_overrides.items():
+                apply_term_override(terms_by_name[name], override)
 
-        # Prompt-role echo needs renderer-provided prompt_attribution; MITO (renderer=None,
-        # including sft mode which forces renderer=None later) won't have it, so system/user/
-        # tool echo silently no-ops. Warn, don't hard-fail.
+        # Prompt-role overlays need renderer-provided prompt_attribution; under MITO (renderer=None,
+        # forced in sft mode) system/user/tool tokens silently no-op. Warn, don't hard-fail.
         if self.renderer is None or self.training_mode == "sft":
             for term in self.losses:
-                if term.loss.type == "ce" and any(
+                if any(
                     f.type == "role" and any(r in ("system", "user", "tool") for r in f.roles) for f in term.filters
                 ):
                     warnings.warn(
-                        f"Echo term {term.name!r} supervises prompt roles (system/user/tool), which require "
-                        f"renderer prompt_attribution; with renderer=None (MITO) those echo tokens become no-ops.",
+                        f"Loss term {term.name!r} supervises prompt roles (system/user/tool), which require "
+                        f"renderer prompt_attribution; with renderer=None (MITO) those tokens become no-ops.",
                         stacklevel=2,
                     )
         return self

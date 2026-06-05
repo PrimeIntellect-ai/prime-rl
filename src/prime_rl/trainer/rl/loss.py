@@ -287,6 +287,16 @@ def echo_loss_fn(inputs: LossInputs) -> LossOutputs:
     return LossOutputs(loss=loss, metrics=metrics)
 
 
+def _make_custom_core(import_path: str, kwargs: dict) -> LossFn:
+    """Wrap an imported ``core(inputs, **kwargs) -> LossOutputs`` into a no-kwargs ``LossFn``."""
+    fn = import_object(import_path)
+
+    def core(inputs: LossInputs) -> LossOutputs:
+        return fn(inputs, **kwargs)
+
+    return core
+
+
 def setup_loss_fns(losses: list[LossTermConfig]) -> dict[str, LossFn]:
     """Build the per-training-mode core registry from the loss-term list.
 
@@ -310,18 +320,23 @@ def setup_loss_fns(losses: list[LossTermConfig]) -> dict[str, LossFn]:
                 "the orchestrator's training_mode to match the configured terms."
             )
     elif primary.loss.type == "custom":
-        custom_fn = import_object(primary.loss.import_path)
-        kwargs = primary.loss.kwargs
-
-        def rl_fn(inputs: LossInputs) -> LossOutputs:
-            return custom_fn(inputs, **kwargs)
+        rl_fn = _make_custom_core(primary.loss.import_path, primary.loss.kwargs)
     else:
         rl_loss_config = to_rl_loss_config(primary)
 
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return default_loss_fn(inputs, rl_loss_config)
 
-    return {"sft": sft_loss_fn, "opd": opd_loss_fn, "rl": rl_fn, "echo": echo_loss_fn}
+    # sft/opd/rl are the training_mode-dispatched primary cores; each remaining (overlay) term
+    # contributes an additive core keyed by its name (ce → weighted masked NLL; custom → imported fn).
+    cores: dict[str, LossFn] = {"sft": sft_loss_fn, "opd": opd_loss_fn, "rl": rl_fn}
+    for term in losses:
+        if is_primary(term):
+            continue
+        cores[term.name] = (
+            echo_loss_fn if term.loss.type == "ce" else _make_custom_core(term.loss.import_path, term.loss.kwargs)
+        )
+    return cores
 
 
 def build_loss_terms(training_mode: str, cores: dict[str, LossFn]) -> list[LossTerm]:
