@@ -53,6 +53,20 @@ static_resources:
         use_http_header: true
         http_header_name: x-gateway-destination-endpoint
       connect_timeout: 5s
+      # Default circuit breakers (~1024) overflow at high inflight concurrency (>=1536),
+      # causing "reset reason: overflow" 500s. Raise far above the max concurrent rollouts.
+      circuit_breakers:
+        thresholds:
+          - priority: DEFAULT
+            max_connections: 100000
+            max_pending_requests: 100000
+            max_requests: 100000
+            max_retries: 1000
+          - priority: HIGH
+            max_connections: 100000
+            max_pending_requests: 100000
+            max_requests: 100000
+            max_retries: 1000
     - name: epp_cluster
       type: STRICT_DNS
       typed_extension_protocol_options:
@@ -67,3 +81,17 @@ static_resources:
               - endpoint:
                   address: { socket_address: { address: 127.0.0.1, port_value: 9002 } }
       connect_timeout: 5s
+      # ext_proc (EPP) connection pool overflows at high concurrency without this — the
+      # gRPC ext_proc calls are 1:1 with inflight requests, so cap well above max rollouts.
+      circuit_breakers:
+        thresholds:
+          - priority: DEFAULT
+            max_connections: 100000
+            max_pending_requests: 100000
+            max_requests: 100000
+            max_retries: 1000
+          - priority: HIGH
+            max_connections: 100000
+            max_pending_requests: 100000
+            max_requests: 100000
+            max_retries: 1000

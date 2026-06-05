@@ -45,9 +45,11 @@ LLMD_EOF
     cat > "$LLMD_DIR/envoy.yaml" <<LLMD_EOF
 {% include 'llmd/envoy.yaml.j2' %}
 LLMD_EOF
+    # grpc-health-port avoids 9003: mooncake_master runs its metrics server on 9003 and
+    # shares the replica-head node with the EPP, so 9003 would fail to bind and kill the EPP.
     epp --pool-name prime-rl --pool-namespace slurm \
         --config-file "$LLMD_DIR/epp.yaml" \
-        --grpc-port 9002 --grpc-health-port 9003 --metrics-port 9090 \
+        --grpc-port 9002 --grpc-health-port 9013 --metrics-port 9090 \
         --secure-serving=false --metrics-endpoint-auth=false --tracing=false \
         >> "$log" 2>&1 &
     envoy -c "$LLMD_DIR/envoy.yaml" >> "$log" 2>&1 &

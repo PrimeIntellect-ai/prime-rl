@@ -264,7 +264,9 @@ srun --kill-on-bad-exit=1 bash -c '
 {%- if router.type == "llm-d" %}
     # pd-sidecar on each decode node: EPP routes decode -> sidecar (DECODE_SIDECAR_PORT
     # + rank) -> vLLM decode (DECODE_PORT + rank) after orchestrating remote prefill.
-    if [ "$ROLE" = "decode" ] && [ "$ROLE_RANK" -eq 0 ]; then
+    # Every decode node fronts its own local ranks, so launch on each (not just the
+    # replica head), or decode nodes beyond the head get advertised but unserved endpoints.
+    if [ "$ROLE" = "decode" ]; then
         SIDECAR_LOG="$OUTPUT_DIR/logs/inference/sidecar_${INFER_NODE_RANK}.log"
         echo "Starting pd-sidecar on $LOCAL_IP:$DECODE_SIDECAR_PORT(+rank) -> vLLM $DECODE_PORT(+rank)" | tee $SIDECAR_LOG
         export PATH="$PROJECT_DIR/third_party/llmd/bin:$PATH"
