@@ -604,6 +604,10 @@ class Orchestrator:
         )
         if token_export_metrics is not None:
             metrics.update(token_export_metrics.metrics)
+            # The exports lag the W&B step they're logged under (the trainer is
+            # behind the orchestrator). Stamp the trainer step they actually belong to
+            # so the token-export metrics can be plotted against a lag-corrected axis.
+            metrics["trainer/step"] = token_export_metrics.step
             self.last_token_export_metrics_step_logged = token_export_metrics.step
 
         self.monitor.log(metrics, step=step)
