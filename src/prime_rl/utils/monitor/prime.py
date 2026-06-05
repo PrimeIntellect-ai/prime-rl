@@ -1,10 +1,12 @@
 import asyncio
 import base64
+import contextlib
 import io
 import json
 import math
 import mimetypes
 import os
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,6 +64,33 @@ _SAMPLE_SCHEMA = pa.schema(
 _DROPPED_JSON_VALUE = object()
 _FILE_URL_SCHEME = "file"
 _MAX_INLINE_SAMPLE_IMAGE_BYTES = 2 * 1024 * 1024
+
+# Multimodal sample parquets carry inlined base64 images and can be large; stream them
+# from disk with a generous write window instead of buffering the whole body in RAM.
+_R2_UPLOAD_TIMEOUT = httpx.Timeout(connect=30.0, write=600.0, read=300.0, pool=30.0)
+
+
+async def _aiter_handle(f, chunk_size: int = 65536):
+    """Async byte iterator over an open binary file. Async (not a sync file object) so an
+    AsyncClient can send it; small chunks bound each TLS write to avoid large allocations."""
+    while chunk := f.read(chunk_size):
+        yield chunk
+
+
+def _table_to_parquet_bytes(table: "pa.Table") -> bytes:
+    buf = io.BytesIO()
+    pq.write_table(table, buf, compression="snappy", use_dictionary=True, write_statistics=True)
+    return buf.getvalue()
+
+
+def _run_config_is_multimodal(run_config: Any) -> bool:
+    """True when the run trains a VLM. Handles trainer (``model``) and orchestrator
+    (``student.model``) config shapes; defaults False for anything else."""
+    candidates = (
+        getattr(run_config, "model", None),
+        getattr(getattr(run_config, "student", None), "model", None),
+    )
+    return any(getattr(model, "is_vlm", False) for model in candidates if model is not None)
 
 
 def _drop_non_finite_json_values(value: Any, dropped_paths: list[str], path: str = "") -> Any:
@@ -182,6 +211,7 @@ class PrimeMonitor(Monitor):
         self.history: list[dict[str, Any]] = []
         self._keep_full_history = keep_full_history
         self.output_dir = output_dir
+        self._is_multimodal = _run_config_is_multimodal(run_config)
         self._registered = False
         self._finalized = False
         self._closed = False
@@ -375,23 +405,30 @@ class PrimeMonitor(Monitor):
         self.logger.info(f"Logging {len(rollouts)} samples to Prime Intellect API at step {step}")
         start_time = time.perf_counter()
 
-        parquet_bytes = self._rollouts_to_parquet_bytes(rollouts, step)
-
-        if not parquet_bytes:
+        table = self._rollouts_to_parquet_table(rollouts, step)
+        if table is None:
             self.logger.warning(f"No samples to log at step {step}")
             return
 
-        self._pending_sample_steps.add(step)
+        # Multimodal parquets inline base64 images and can be large: write straight to a
+        # disk-backed temp file and stream the upload, so the serialized body is never held
+        # in RAM as bytes and nothing is retained during the async upload. Text runs stay inline.
+        if self._is_multimodal:
+            body: bytes | Path = self._spill_table_to_tempfile(table, step)
+        else:
+            body = _table_to_parquet_bytes(table)
+        del table
 
-        # Use presigned URL flow for uploading samples
-        self._upload_samples_via_presigned_url(parquet_bytes, step)
+        # Mark pending only once the body is built and ready to schedule.
+        self._pending_sample_steps.add(step)
+        self._upload_samples_via_presigned_url(body, step)
 
         self.logger.debug(
             f"Initiated samples upload at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
         )
 
-    def _rollouts_to_parquet_bytes(self, rollouts: list[vf.RolloutOutput], step: int) -> bytes | None:
-        """Convert rollouts directly to Parquet bytes for upload."""
+    def _rollouts_to_parquet_table(self, rollouts: list[vf.RolloutOutput], step: int) -> "pa.Table | None":
+        """Build the sample Parquet table from rollouts (None when there is nothing to log)."""
         now = datetime.now(timezone.utc)
         rows = []
         image_data_url_cache: dict[str, str | None] = {}
@@ -449,15 +486,26 @@ class PrimeMonitor(Monitor):
         if not rows:
             return None
 
-        table = pa.Table.from_pylist(rows, schema=_SAMPLE_SCHEMA)
-        buf = io.BytesIO()
-        pq.write_table(table, buf, compression="snappy", use_dictionary=True, write_statistics=True)
-        return buf.getvalue()
+        return pa.Table.from_pylist(rows, schema=_SAMPLE_SCHEMA)
 
-    def _upload_samples_via_presigned_url(self, parquet_bytes: bytes, step: int) -> None:
+    def _rollouts_to_parquet_bytes(self, rollouts: list[vf.RolloutOutput], step: int) -> bytes | None:
+        """Convert rollouts to in-memory Parquet bytes (inline upload path)."""
+        table = self._rollouts_to_parquet_table(rollouts, step)
+        return None if table is None else _table_to_parquet_bytes(table)
+
+    def _spill_table_to_tempfile(self, table: "pa.Table", step: int) -> Path:
+        """Write the sample Parquet straight to a disk-backed temp file, co-located with the
+        run's output dir to avoid a tmpfs ``/tmp``. The upload coroutine unlinks it when done."""
+        directory = str(self.output_dir) if self.output_dir else None
+        fd, name = tempfile.mkstemp(prefix=f"prime_samples_step{step}_", suffix=".parquet", dir=directory)
+        with os.fdopen(fd, "wb") as f:
+            pq.write_table(table, f, compression="snappy", use_dictionary=True, write_statistics=True)
+        return Path(name)
+
+    def _upload_samples_via_presigned_url(self, body: bytes | Path, step: int) -> None:
         """Upload Parquet samples using presigned URL flow (fire-and-forget)."""
         future = asyncio.run_coroutine_threadsafe(
-            self._upload_samples_via_presigned_url_async(parquet_bytes, step),
+            self._upload_samples_via_presigned_url_async(body, step),
             self._loop,
         )
         self._pending_futures.append(future)
@@ -465,36 +513,42 @@ class PrimeMonitor(Monitor):
         self._pending_futures = [f for f in self._pending_futures if not f.done()]
 
     async def _upload_samples_via_presigned_url_async(
-        self, parquet_bytes: bytes, step: int, max_retries: int = 3
+        self, body: bytes | Path, step: int, max_retries: int = 3
     ) -> None:
-        """Upload Parquet bytes via presigned URL flow."""
+        """Upload Parquet samples via presigned URL flow. A ``Path`` body (multimodal runs)
+        is streamed from disk under a concurrency gate; a ``bytes`` body is sent inline."""
+        # Streamed disk uploads are serialized; inline byte uploads keep their prior behavior.
+        gate = self._upload_semaphore if isinstance(body, Path) else contextlib.nullcontext()
         try:
-            presign_data = await self._request_presigned_url(step)
-            if not presign_data:
-                self.logger.warning(f"Failed to get presigned URL for samples at step {step}")
-                return
+            async with gate:
+                presign_data = await self._request_presigned_url(step)
+                if not presign_data:
+                    self.logger.warning(f"Failed to get presigned URL for samples at step {step}")
+                    return
 
-            presigned_url = presign_data["presigned_url"]
-            s3_key = presign_data["s3_key"]
+                presigned_url = presign_data["presigned_url"]
+                s3_key = presign_data["s3_key"]
 
-            upload_success = await self._upload_to_r2(
-                presigned_url, parquet_bytes, content_type="application/parquet", max_retries=max_retries
-            )
-            if not upload_success:
-                self.logger.warning(f"Failed to upload samples to R2 at step {step}")
-                return
+                upload_success = await self._upload_to_r2(
+                    presigned_url, body, content_type="application/parquet", max_retries=max_retries
+                )
+                if not upload_success:
+                    self.logger.warning(f"Failed to upload samples to R2 at step {step}")
+                    return
 
-            confirm_success = await self._confirm_samples_upload(step, s3_key)
-            if not confirm_success:
-                self.logger.warning(f"Failed to confirm samples upload at step {step}")
-                return
+                confirm_success = await self._confirm_samples_upload(step, s3_key)
+                if not confirm_success:
+                    self.logger.warning(f"Failed to confirm samples upload at step {step}")
+                    return
 
-            self.last_log_samples_step = step
-            self.logger.debug(f"Successfully completed samples upload at step {step}")
+                self.last_log_samples_step = step
+                self.logger.debug(f"Successfully completed samples upload at step {step}")
 
         except Exception as e:
             self.logger.warning(f"Failed to upload samples via presigned URL at step {step}: {type(e).__name__}: {e}")
         finally:
+            if isinstance(body, Path):
+                body.unlink(missing_ok=True)
             self._pending_sample_steps.discard(step)
 
     async def _request_presigned_url(self, step: int) -> dict[str, Any] | None:
@@ -516,12 +570,24 @@ class PrimeMonitor(Monitor):
             return None
 
     async def _upload_to_r2(
-        self, presigned_url: str, data: bytes, content_type: str = "application/json", max_retries: int = 3
+        self, presigned_url: str, body: bytes | Path, content_type: str = "application/json", max_retries: int = 3
     ) -> bool:
-        """Upload data to R2 using presigned URL."""
+        """Upload data to R2 using presigned URL. A ``Path`` is streamed from disk in chunks
+        (an explicit Content-Length keeps the presigned PUT on Content-Length rather than
+        chunked transfer-encoding, and bounds each TLS write); ``bytes`` is sent inline."""
         for attempt in range(max_retries):
+            f = None
             try:
-                response = await self._client.put(presigned_url, content=data, headers={"Content-Type": content_type})
+                if isinstance(body, Path):
+                    f = open(body, "rb")  # closed in finally; fresh handle rewinds on retry
+                    headers = {"Content-Type": content_type, "Content-Length": str(os.fstat(f.fileno()).st_size)}
+                    response = await self._client.put(
+                        presigned_url, content=_aiter_handle(f), headers=headers, timeout=_R2_UPLOAD_TIMEOUT
+                    )
+                else:
+                    response = await self._client.put(
+                        presigned_url, content=body, headers={"Content-Type": content_type}
+                    )
                 response.raise_for_status()
                 return True
             except Exception as e:
@@ -531,6 +597,9 @@ class PrimeMonitor(Monitor):
                 delay = 2**attempt
                 self.logger.debug(f"Retrying R2 upload in {delay}s (attempt {attempt + 1}/{max_retries})")
                 await asyncio.sleep(delay)
+            finally:
+                if f is not None:
+                    f.close()
 
     async def _confirm_samples_upload(self, step: int, s3_key: str, max_retries: int = 3) -> bool:
         """Confirm samples upload with the backend. Returns True on success."""
@@ -677,6 +746,8 @@ class PrimeMonitor(Monitor):
         self._thread.start()
         self._client = httpx.AsyncClient(timeout=30)
         self._pending_futures: list[asyncio.Future] = []
+        # Serialize multimodal sample uploads so large disk-streamed bodies don't pile up.
+        self._upload_semaphore = asyncio.Semaphore(1)
         if hasattr(self, "_pending_sample_steps") and self._pending_sample_steps:
             self._pending_sample_steps.clear()
 
