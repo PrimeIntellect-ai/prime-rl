@@ -135,7 +135,10 @@ class AdvantageWeightConfig(BaseConfig):
 
 
 class CustomWeightConfig(BaseConfig):
-    """A user weight resolved from a dotted import path; sees the rollout (incl. advantage)."""
+    """A user weight resolved per-rollout from a dotted import path. Signature:
+    ``fn(inputs: WeightInputs, **kwargs) -> list[float]`` (length = prompt + completion of the
+    sample). ``WeightInputs`` carries the sample and the full GRPO group's rollouts (each with its
+    advantage/reward/raw trajectory), so the resolver can compute group-relative weights."""
 
     type: Literal["custom"] = "custom"
 
@@ -260,6 +263,13 @@ def validate_loss_list(losses: list[LossTerm]) -> list[LossTerm]:
     primaries = [term.name for term in losses if is_primary(term)]
     if len(primaries) > 1:
         raise ValueError(f"At most one primary (dppo_kl/custom core) loss term is allowed, got {primaries}.")
+    # The trainer dispatches the per-run cores by these keys; an overlay sharing one would silently
+    # overwrite the dispatch core (sft/opd) or the rl primary, so reserve them.
+    for term in losses:
+        if term.name in ("sft", "opd"):
+            raise ValueError(f"loss term name {term.name!r} is reserved for the training_mode core; rename it.")
+        if term.name == "rl" and not is_primary(term):
+            raise ValueError("loss term name 'rl' is reserved for the rl primary; rename the overlay.")
     return losses
 
 
@@ -329,19 +339,20 @@ class RLLossConfig(BaseConfig):
 
     dppo_mask_low: float = Field(0.2, ge=0)
     dppo_mask_high: float = Field(0.2, ge=0)
-    adv_tau: float = Field(1.0, ge=0)
     kl_tau: float = Field(1e-3, ge=0)
+    # No adv_tau: the advantage weight (× tau) is resolved orchestrator-side, so the core just
+    # consumes the already-scaled advantage in LossInputs.advantages.
 
 
 def to_rl_loss_config(term: LossTerm) -> RLLossConfig:
-    """Resolve a ``dppo_kl`` primary term (+ its ``advantage`` weight) into ``RLLossConfig``."""
-    assert isinstance(term.loss, DPPOKLCoreConfig) and isinstance(term.weight, AdvantageWeightConfig)
+    """Resolve a ``dppo_kl`` primary term into ``RLLossConfig`` (core knobs only; the advantage
+    weight's ``tau`` is applied orchestrator-side, not here)."""
+    assert isinstance(term.loss, DPPOKLCoreConfig)
     return RLLossConfig(
         name=term.name,
         dppo_mask_low=term.loss.dppo_mask_low,
         dppo_mask_high=term.loss.dppo_mask_high,
         kl_tau=term.loss.kl_tau,
-        adv_tau=term.weight.tau,
     )
 
 

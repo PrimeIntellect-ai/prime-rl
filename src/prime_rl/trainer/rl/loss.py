@@ -183,7 +183,8 @@ def default_loss_fn(inputs: LossInputs, loss_config: RLLossConfig) -> LossOutput
     drop_mask = loss_mask & is_masked
     keep_mask = loss_mask & ~is_masked
 
-    advantages = loss_config.adv_tau * advantages
+    # advantages are already the resolved weight (GRPO advantage × the advantage-weight's tau,
+    # applied orchestrator-side), so the core consumes them directly.
     pg_loss = keep_mask * advantages * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
     loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()

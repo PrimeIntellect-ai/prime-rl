@@ -17,6 +17,7 @@ import asyncio
 import functools
 import uuid
 from collections import defaultdict
+from dataclasses import dataclass
 
 from prime_rl.configs.losses import apply_term_override, is_primary, overlay_terms, to_echo_config
 from prime_rl.configs.orchestrator import AdvantageConfig, OrchestratorConfig
@@ -35,16 +36,26 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import import_object
 
 
+@dataclass
+class WeightInputs:
+    """Inputs to a custom overlay weight resolver: returns a per-token weight list for ``sample``
+    (length = prompt + completion). ``rollouts`` is the full GRPO group (each with its
+    advantage/reward/raw trajectory), so the resolver can compute group-relative weights."""
+
+    sample: TrainingSample
+    rollouts: list[TrainRollout]
+
+
 def _sample_has_trainable_tokens(sample: TrainingSample) -> bool:
-    """Whether a sample contributes any gradient: a primary (completion) token after
-    any per-env zeroing, or an echo token. Echo position 0 is excluded to match the
-    trainer (the first token has no shifted current-token logprob)."""
+    """Whether a sample contributes any gradient: a primary (completion) token after any per-env
+    zeroing, or an overlay token with a nonzero weight. Position 0 is excluded to match the trainer
+    (no shifted current-token logprob); a zero weight contributes no gradient, so it doesn't count."""
     if any(sample.completion_mask):
         return True
     overlays = sample.overlay_alphas
     if overlays is None:
         return False
-    return any(any(a is not None for a in alphas[1:]) for alphas in overlays.values())
+    return any(any(a is not None and a != 0.0 for a in alphas[1:]) for alphas in overlays.values())
 
 
 class TrainSink:
@@ -86,6 +97,12 @@ class TrainSink:
             for term in overlay_terms(config.losses)
             if term.weight.type == "custom"
         }
+        # The primary's advantage weight tau is applied orchestrator-side (so any primary core, not
+        # just dppo_kl, gets the resolved advantage × tau). Default 1.0 = no-op = bit-identical RL.
+        _primary = next((term for term in config.losses if is_primary(term)), None)
+        self._primary_tau: float = (
+            _primary.weight.tau if _primary is not None and _primary.weight.type == "advantage" else 1.0
+        )
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
@@ -283,7 +300,8 @@ class TrainSink:
         temperature = env.sampling_args["temperature"]
         for r in survivors:
             for sample in r.samples:
-                sample.advantage = r.advantage
+                # The primary's per-token advantage is the GRPO advantage × the advantage-weight tau.
+                sample.advantage = r.advantage * self._primary_tau if r.advantage is not None else r.advantage
                 sample.reward = r.reward
                 sample.env_name = r.env_name
                 sample.training_mode = self.config.training_mode
@@ -302,7 +320,7 @@ class TrainSink:
                         alphas = sample.overlay_alphas.get(name)
                         if alphas is None:
                             continue
-                        weights = weight_fn(sample, **kwargs)
+                        weights = weight_fn(WeightInputs(sample=sample, rollouts=survivors), **kwargs)
                         if not isinstance(weights, list) or len(weights) != len(alphas):
                             raise ValueError(
                                 f"custom weight {name!r} must return list[float] of length {len(alphas)} "

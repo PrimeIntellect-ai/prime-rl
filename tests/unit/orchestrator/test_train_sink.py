@@ -30,6 +30,12 @@ def test_sample_not_trainable_without_primary_or_overlay():
     assert not _sample_has_trainable_tokens(_sample([False, False], overlay_alpha=[None, None, None, None]))
 
 
+def test_sample_zero_weight_overlay_not_trainable():
+    # A zero overlay weight (e.g. an advantage-weighted overlay scaled by zero advantage) yields no
+    # gradient, so it must not keep an otherwise-empty batch alive.
+    assert not _sample_has_trainable_tokens(_sample([False, False], overlay_alpha=[None, None, 0.0, None]))
+
+
 def test_sample_overlay_at_position_zero_is_not_trainable():
     # Position 0 has no shifted current-token logprob, so an alpha there never trains; matches the
     # trainer's overlay mask construction, which skips index 0.

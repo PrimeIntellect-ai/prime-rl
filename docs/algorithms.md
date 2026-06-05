@@ -110,7 +110,7 @@ alpha = 0.5             # constant per-token weight (default 1.0; 0 = supervise/
 
 `echo` expands to a `ce` core over a `role` filter with a `constant` weight. For advantage- or custom-weighted overlays, a custom filter, or a custom core, write the full three-axis form (each overlay is a `ce`/`custom` core, one or more `role` filters optionally narrowed by a `custom` filter, and a `weight`):
 
-- **weight** is `constant` (a fixed `alpha`), `advantage` (the rollout's GRPO advantage × `tau`, resolved per-rollout), or `custom` (a per-rollout resolver `fn(sample, **kwargs) -> list[float]`).
+- **weight** is `constant` (a fixed `alpha`), `advantage` (the rollout's GRPO advantage × `tau`, resolved per-rollout), or `custom` (a resolver `fn(WeightInputs, **kwargs) -> list[float]` that sees the sample **and its full GRPO group**).
 - **filters** chain by intersection: `role` selects context tokens (prompt roles need a renderer that emits `prompt_attribution`; under MITO they no-op and config validation warns), and an optional `custom` filter (`fn(rollout) -> list[list[bool]]`) narrows further. `tool` filters take an optional `tool_names` set.
 - Per env, `orchestrator.train.env.enabled_losses` selects which terms apply (default: all) and `loss_overrides` deep-merges per-env tweaks into a named overlay term (e.g. a different `alpha`).
 
@@ -147,7 +147,7 @@ filters = [ { type = "completion" } ]
 weight  = { type = "advantage" }
 ```
 
-Custom **filters** and **weights** plug in the same way — `filters = [{ type = "custom", import_path = "...", kwargs = {...} }]` (a `fn(rollout) -> list[list[bool]]` per-step token mask) and `weight = { type = "custom", import_path = "...", kwargs = {...} }` (a `fn(sample, **kwargs) -> list[float]` per-token weight, resolved per rollout).
+Custom **filters** and **weights** plug in the same way — `filters = [{ type = "custom", import_path = "...", kwargs = {...} }]` (a `fn(rollout) -> list[list[bool]]` per-step token mask) and `weight = { type = "custom", import_path = "...", kwargs = {...} }` (a `fn(WeightInputs, **kwargs) -> list[float]` per-token weight; `WeightInputs` carries the sample and its full GRPO group, resolved per rollout after advantages).
 
 The dataclasses:
 
