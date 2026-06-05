@@ -197,8 +197,7 @@ class LossTerm(BaseConfig):
                 raise ValueError(
                     f"loss term {self.name!r}: an overlay needs at least one role filter (plus optional custom filters)."
                 )
-            if weight == "custom":
-                raise ValueError(f"loss term {self.name!r}: custom overlay weight is not supported yet (later phase).")
+            # Overlay weight may be constant, advantage, or a custom per-rollout resolver (all OK).
         return self
 
 

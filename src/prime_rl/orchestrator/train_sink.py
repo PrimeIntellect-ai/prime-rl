@@ -79,6 +79,13 @@ class TrainSink:
         self._advantage_overlay_taus: dict[str, float] = {
             term.name: term.weight.tau for term in overlay_terms(config.losses) if term.weight.type == "advantage"
         }
+        # Custom-weighted overlay terms: name -> (resolver fn, kwargs). The resolver runs per-rollout
+        # in process_group (post-advantage) and fills the eligible tokens' per-token weights.
+        self._custom_weight_fns: dict[str, tuple] = {
+            term.name: (import_object(term.weight.import_path), term.weight.kwargs)
+            for term in overlay_terms(config.losses)
+            if term.weight.type == "custom"
+        }
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
@@ -289,6 +296,22 @@ class TrainSink:
                         if alphas is not None:
                             scale = r.advantage * tau
                             sample.overlay_alphas[name] = [a * scale if a is not None else None for a in alphas]
+                # Custom-weighted overlays: a per-rollout resolver fills the eligible tokens' weights.
+                if self._custom_weight_fns and sample.overlay_alphas is not None:
+                    for name, (weight_fn, kwargs) in self._custom_weight_fns.items():
+                        alphas = sample.overlay_alphas.get(name)
+                        if alphas is None:
+                            continue
+                        weights = weight_fn(sample, **kwargs)
+                        if not isinstance(weights, list) or len(weights) != len(alphas):
+                            raise ValueError(
+                                f"custom weight {name!r} must return list[float] of length {len(alphas)} "
+                                f"(prompt + completion), got {type(weights).__name__} of length "
+                                f"{len(weights) if isinstance(weights, list) else 'n/a'}"
+                            )
+                        sample.overlay_alphas[name] = [
+                            float(w) if m is not None else None for w, m in zip(weights, alphas)
+                        ]
 
         if self.pre_filters:
             apply_filters(self.pre_filters, survivors)

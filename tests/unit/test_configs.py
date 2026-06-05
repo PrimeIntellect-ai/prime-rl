@@ -332,17 +332,18 @@ def test_advantage_weighted_overlay_accepted():
     assert config.orchestrator.losses[1].weight.type == "advantage"
 
 
-def test_custom_overlay_weight_rejected():
+def test_custom_overlay_weight_accepted():
+    # A custom per-rollout weight resolver is allowed on overlays (resolved post-advantage).
     term = {
         "name": "cw",
         "loss": {"type": "ce"},
         "filters": [{"type": "role", "roles": ["assistant"]}],
         "weight": {"type": "custom", "import_path": "x.y"},
     }
-    with pytest.raises(ValidationError, match="custom overlay weight"):
-        RLConfig.model_validate(
-            {"model": {"name": "my-model"}, "losses": [_rl(), term], "trainer": {}, "orchestrator": {"renderer": None}}
-        )
+    config = RLConfig.model_validate(
+        {"model": {"name": "my-model"}, "losses": [_rl(), term], "trainer": {}, "orchestrator": {"renderer": None}}
+    )
+    assert config.orchestrator.losses[1].weight.type == "custom"
 
 
 def test_empty_enabled_losses_rejected():
