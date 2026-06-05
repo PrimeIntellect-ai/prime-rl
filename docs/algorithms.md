@@ -74,20 +74,26 @@ $$
 
 $\mu$ is the policy that generated the rollout (inference), $\pi$ is the current policy (trainer), $\hat{A}_{i,t}$ is the token-level advantage, $\epsilon_{\text{low}}$ / $\epsilon_{\text{high}}$ are the DPPO masking thresholds (`dppo_mask_low` / `dppo_mask_high`), and $\tau_{KL}$ is the KL temperature. The mask drops trust-region violators — an upweighted token ($\hat{A}>0$) that has already grown too likely, or a downweighted token ($\hat{A}<0$) that has already grown too unlikely — so a stale rollout doesn't produce a runaway gradient.
 
-Common losses are **one-line presets**: set a `type` and tune its kwargs — you don't spell out the axes. RL is the default, so for plain RL you write nothing; you only add a term to tune it:
+Common losses are **one-line presets**: `{type = "rl"}` / `{type = "echo"}` seed the three axes with sensible defaults. You tune a preset by overriding the relevant axis (`loss` / `filters` / `weight`) — exactly as in a full term, with unset fields keeping their defaults. RL is the default, so for plain RL you write nothing:
 
 ```toml
 [[losses]]
-type = "rl"   # all kwargs optional
+type = "rl"
+
+# to tune, override the axes (everything you don't set keeps its default):
+[[losses]]
+type   = "rl"
+loss   = { kl_tau = 5e-4 }   # dppo_mask_low/high stay at 0.2
+weight = { tau = 0.5 }       # advantage temperature
 ```
 
-| `rl` preset kwarg | Default | What it does |
-|---|---|---|
-| `kl_tau` | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
-| `dppo_mask_low` / `dppo_mask_high` | 0.2 / 0.2 | Lower / upper thresholds for DPPO token-level masking. |
-| `tau` | 1.0 | Temperature on the advantage. Set to 0 for pure distillation (no RL signal). |
+| Knob | Axis | Default | What it does |
+|---|---|---|---|
+| `kl_tau` | `loss` (`dppo_kl`) | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
+| `dppo_mask_low` / `dppo_mask_high` | `loss` (`dppo_kl`) | 0.2 / 0.2 | Lower / upper thresholds for DPPO token-level masking. |
+| `tau` | `weight` (`advantage`) | 1.0 | Temperature on the advantage. Set to 0 for pure distillation (no RL signal). |
 
-The preset expands to the full three-axis form — a `dppo_kl` core over the `completion` filter, `advantage`-weighted (see [Custom cores](#custom-cores)). You only write the axes out for custom losses.
+The preset expands to the full three-axis form — a `dppo_kl` core over the `completion` filter, `advantage`-weighted (see [Custom cores](#custom-cores)). You only write the axes out from scratch for custom losses.
 
 The trainer dispatches the **primary** loss by the batch's training mode (set via `orchestrator.training_mode`):
 
@@ -103,15 +109,19 @@ Beyond the primary, `losses` may carry **overlay** terms — additive losses ove
 
 ```toml
 [[losses]]
-type  = "echo"
-roles = ["assistant"]   # any of system / user / tool / assistant (default: ["assistant"])
-alpha = 0.5             # constant per-token weight (default 1.0; 0 = supervise/no-grad, negative = suppress)
+type = "echo"                                                # ce core · role(["assistant"]) · constant(1.0)
+
+# tune by overriding the axes (same as a full term):
+[[losses]]
+type    = "echo"
+weight  = { alpha = 0.5 }                                    # deep-merges → constant(0.5); 0 = no-grad, negative = suppress
+filters = [ { type = "role", roles = ["system", "user"] } ]  # replaces the default role filter
 ```
 
-`echo` expands to a `ce` core over a `role` filter with a `constant` weight. For advantage- or custom-weighted overlays, a custom filter, or a custom core, write the full three-axis form (each overlay is a `ce`/`custom` core, one or more `role` filters optionally narrowed by a `custom` filter, and a `weight`):
+`echo` seeds a `ce` core over a `role` filter with a `constant` weight; override the axes for advantage-/custom-weighted overlays, custom filters, or a custom core (each overlay is a `ce`/`custom` core, one or more `role` filters optionally narrowed by `custom` filters, and a `weight`):
 
 - **weight** is `constant` (a fixed `alpha`), `advantage` (the rollout's GRPO advantage × `tau`, resolved per-rollout), or `custom` (a resolver `fn(WeightInputs, **kwargs) -> list[float]` that sees the sample **and its full GRPO group**).
-- **filters** chain by intersection: `role` selects context tokens (prompt roles need a renderer that emits `prompt_attribution`; under MITO they no-op and config validation warns), and an optional `custom` filter (`fn(rollout) -> list[list[bool]]`) narrows further. `tool` filters take an optional `tool_names` set.
+- **filters** chain by **AND** (intersection): `role` selects context tokens (prompt roles need a renderer that emits `prompt_attribution`; under MITO they no-op and config validation warns), and `custom` filters (`fn(rollout) -> list[list[bool]]`) narrow further. `tool` filters take an optional `tool_names` set.
 - Per env, `orchestrator.train.env.enabled_losses` selects which terms apply (default: all) and `loss_overrides` deep-merges per-env tweaks into a named overlay term (e.g. a different `alpha`).
 
 ### Custom cores

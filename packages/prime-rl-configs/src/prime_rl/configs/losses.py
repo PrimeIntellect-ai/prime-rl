@@ -182,47 +182,39 @@ class LossTerm(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _expand_preset(cls, data: Any) -> Any:
-        """Expand the one-line preset sugar — ``{type = "rl", ...}`` / ``{type = "echo", ...}`` — into
-        the canonical core/filters/weight form. The full three-axis form (no top-level ``type``) and
-        already-built terms pass through unchanged; ``custom`` lives only on the individual axes."""
+        """Expand a one-line preset (``{type = "rl"|"echo", ...}``) into the full core/filters/weight
+        form. The preset seeds default axes; any explicit ``loss``/``filters``/``weight``/``name`` the
+        user sets is merged over them with the *same* semantics as a full term — dicts deep-merge (so
+        ``weight = {alpha = 0.5}`` keeps ``type = "constant"``), lists replace (``filters``). The full
+        form (no top-level ``type``) and already-built terms pass through unchanged."""
         if not isinstance(data, dict) or "type" not in data:
             return data
         data = dict(data)
         preset = data.pop("type")
         if preset == "rl":
-            core: dict[str, Any] = {"type": "dppo_kl"}
-            for k in ("kl_tau", "dppo_mask_low", "dppo_mask_high"):
-                if k in data:
-                    core[k] = data.pop(k)
-            weight: dict[str, Any] = {"type": "advantage"}
-            if "tau" in data:
-                weight["tau"] = data.pop("tau")
-            expanded = {
-                "name": data.pop("name", "rl"),
-                "loss": core,
+            defaults: dict[str, Any] = {
+                "name": "rl",
+                "loss": {"type": "dppo_kl"},
                 "filters": [{"type": "completion"}],
-                "weight": weight,
+                "weight": {"type": "advantage"},
             }
         elif preset == "echo":
-            role_filter: dict[str, Any] = {"type": "role", "roles": data.pop("roles", ["assistant"])}
-            if "tool_names" in data:
-                role_filter["tool_names"] = data.pop("tool_names")
-            constant: dict[str, Any] = {"type": "constant"}
-            if "alpha" in data:
-                constant["alpha"] = data.pop("alpha")
-            expanded = {
-                "name": data.pop("name", "echo"),
+            defaults = {
+                "name": "echo",
                 "loss": {"type": "ce"},
-                "filters": [role_filter],
-                "weight": constant,
+                "filters": [{"type": "role", "roles": ["assistant"]}],
+                "weight": {"type": "constant"},
             }
         else:
             raise ValueError(
                 f"unknown loss preset type {preset!r}; use 'rl', 'echo', or the full core/filters/weight form."
             )
-        if data:
-            raise ValueError(f"unexpected kwargs for the {preset!r} loss preset: {sorted(data)}.")
-        return expanded
+        unknown = set(data) - {"name", "loss", "filters", "weight"}
+        if unknown:
+            raise ValueError(
+                f"loss preset {preset!r}: override the axes (loss/filters/weight) or name, not {sorted(unknown)}."
+            )
+        return deep_merge(defaults, data)
 
     @model_validator(mode="after")
     def validate_supported(self) -> "LossTerm":

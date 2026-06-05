@@ -346,29 +346,30 @@ def test_custom_overlay_weight_accepted():
     assert config.orchestrator.losses[1].weight.type == "custom"
 
 
-def test_rl_preset_shorthand_expands():
-    # `{type = "rl", ...}` expands to the canonical dppo_kl + completion + advantage term.
+def test_rl_preset_expands_and_keeps_axis_defaults():
+    # `{type = "rl"}` seeds the dppo_kl + completion + advantage axes; an explicit `loss` deep-merges,
+    # keeping the axis's unset field defaults (dppo_mask_low/high) — same semantics as a full term.
     config = RLConfig.model_validate(
         {
             "model": {"name": "my-model"},
-            "losses": [{"type": "rl", "kl_tau": 0.02}],
+            "losses": [{"type": "rl", "loss": {"kl_tau": 0.02}}],
             "trainer": {},
             "orchestrator": {"renderer": None},
         }
     )
     (rl,) = config.trainer.losses
     assert rl.name == "rl"
-    assert rl.loss.type == "dppo_kl" and rl.loss.kl_tau == 0.02
+    assert rl.loss.type == "dppo_kl" and rl.loss.kl_tau == 0.02 and rl.loss.dppo_mask_low == 0.2
     assert [f.type for f in rl.filters] == ["completion"]
     assert rl.weight.type == "advantage"
 
 
-def test_echo_preset_shorthand_expands():
-    # `{type = "echo", ...}` expands to a ce + role + constant overlay (roles default to assistant).
+def test_echo_preset_weight_override_deep_merges():
+    # `weight = {alpha = 0.5}` deep-merges over the preset default, keeping `type = "constant"`.
     config = RLConfig.model_validate(
         {
             "model": {"name": "my-model"},
-            "losses": [{"type": "rl"}, {"type": "echo", "alpha": 0.3}],
+            "losses": [{"type": "rl"}, {"type": "echo", "weight": {"alpha": 0.3}}],
             "trainer": {},
             "orchestrator": {"renderer": None},
         }
@@ -379,12 +380,13 @@ def test_echo_preset_shorthand_expands():
     assert echo.weight.type == "constant" and echo.weight.alpha == 0.3
 
 
-def test_loss_preset_unknown_kwarg_rejected():
-    with pytest.raises(ValidationError, match="unexpected kwargs"):
+def test_loss_preset_flat_kwarg_rejected():
+    # Preset kwargs go on the axes (loss/filters/weight), not flat on the term.
+    with pytest.raises(ValidationError, match="override the axes"):
         RLConfig.model_validate(
             {
                 "model": {"name": "my-model"},
-                "losses": [{"type": "rl", "dppo_mask": 0.2}],
+                "losses": [{"type": "rl", "kl_tau": 0.02}],
                 "trainer": {},
                 "orchestrator": {"renderer": None},
             }
