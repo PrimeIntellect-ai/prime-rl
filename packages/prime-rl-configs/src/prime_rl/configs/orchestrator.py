@@ -551,7 +551,9 @@ class OrchestratorConfig(BaseConfig):
             # Apply overrides + merge the enabled echo terms now, so a malformed override or an
             # unmergeable echo set (overlapping roles, >1 filter) fails during dry-run, not mid-run.
             enabled_terms = [
-                apply_term_override(terms_by_name[n], env.loss_overrides[n]) if n in env.loss_overrides else terms_by_name[n]
+                apply_term_override(terms_by_name[n], env.loss_overrides[n])
+                if n in env.loss_overrides
+                else terms_by_name[n]
                 for n in enabled
             ]
             merge_echo_terms(enabled_terms, where)
