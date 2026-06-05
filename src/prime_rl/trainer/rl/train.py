@@ -541,7 +541,15 @@ def train(config: TrainerConfig):
                 micro_step_message += f" | Routing Conf. {tensors['routing_confidence'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
-        token_exporter.mark_stable()
+        # Only finalize token exports for runs whose step is fully consumed this
+        # trainer step (ready to take an optimizer step); a run step can otherwise
+        # span multiple trainer steps and be marked stable while still incomplete.
+        ready_run_ids = {
+            multi_run_manager.idx_2_id[idx]
+            for idx in multi_run_manager.ready_to_update_idxs
+            if idx in multi_run_manager.idx_2_id
+        }
+        token_exporter.mark_stable(ready_run_ids)
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
         # across dp_cp so the final gradient is the true per-token mean over the global batch.

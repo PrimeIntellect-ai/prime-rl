@@ -37,6 +37,10 @@ def test_token_exporter_marks_run_local_step_stable(tmp_path: Path):
     step_dir = tmp_path / "run_alpha" / "token_exports" / "step_7"
     assert not (step_dir / "STABLE").exists()
 
-    exporter.mark_stable()
+    # A run step can span multiple trainer steps; don't finalize until the run is
+    # reported ready (its step fully consumed). Marking with the run absent is a no-op.
+    exporter.mark_stable(ready_run_ids=set())
+    assert not (step_dir / "STABLE").exists()
 
+    exporter.mark_stable(ready_run_ids={"run_alpha"})
     assert (step_dir / "STABLE").exists()

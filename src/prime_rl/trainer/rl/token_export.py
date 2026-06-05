@@ -22,7 +22,7 @@ class DisabledTokenExporter:
     def export(self, *args: Any, **kwargs: Any) -> None:
         return
 
-    def mark_stable(self) -> None:
+    def mark_stable(self, ready_run_ids: set[str] | None = None) -> None:
         if self.participate_in_stable_marking:
             _mark_stable_dirs(set())
 
@@ -42,7 +42,7 @@ class TokenExporter:
         self._closed = False
         self._initialized_files: set[tuple[str | None, int, int]] = set()
         self._sequences_by_file: dict[tuple[str | None, int, int], int] = {}
-        self._pending_stable_dirs: set[Path] = set()
+        self._pending_stable_dirs: dict[str | None, set[Path]] = {}
         atexit.register(self.close)
 
     def export(
@@ -90,9 +90,17 @@ class TokenExporter:
             return
         self._closed = True
 
-    def mark_stable(self) -> None:
-        _mark_stable_dirs(self._pending_stable_dirs)
-        self._pending_stable_dirs.clear()
+    def mark_stable(self, ready_run_ids: set[str] | None = None) -> None:
+        # A single run step's sequences can span multiple trainer steps (the packer
+        # splits a run step across packs when it exceeds the token budget). Only
+        # finalize a run's export dir once that run step is fully consumed — the same
+        # `ready_to_update` signal that gates its optimizer step. ``run_id is None``
+        # is single-run export, where a step never spans trainer steps, so mark it now.
+        ready_run_ids = ready_run_ids or set()
+        dirs_to_mark: set[Path] = set()
+        for run_id in [rid for rid in self._pending_stable_dirs if rid is None or rid in ready_run_ids]:
+            dirs_to_mark |= self._pending_stable_dirs.pop(run_id)
+        _mark_stable_dirs(dirs_to_mark)
 
     def _export_dir(self, export_step: int, run_id: str | None) -> Path:
         if run_id is not None:
@@ -121,7 +129,7 @@ class TokenExporter:
         with export_file.open(mode, encoding="utf-8") as file:
             file.write(json.dumps(record, separators=(",", ":"), allow_nan=False) + "\n")
         self._initialized_files.add(file_key)
-        self._pending_stable_dirs.add(export_file.parent)
+        self._pending_stable_dirs.setdefault(run_id, set()).add(export_file.parent)
 
 
 def setup_token_exporter(
