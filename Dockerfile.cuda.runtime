@@ -1,0 +1,189 @@
+# Multi-stage Dockerfile for prime-rl with NVRTC support on GB200 (sm_100a).
+#
+# WHY THIS EXISTS (separate from Dockerfile.cuda):
+#   The original Dockerfile.cuda uses `python:3.12-slim` as the runtime base.
+#   That image has no CUDA toolkit, so tilelang's JIT path (which compiles the
+#   sparse-MLA kernels at runtime via NVRTC) fails with:
+#
+#       atomic.h(7): catastrophic error: cannot open source file "cuda/atomic"
+#
+#   `cuda/atomic` is a libcudacxx (CCCL) header. It is shipped only by the
+#   CUDA dev/devel toolkit, not by the `nvidia-cuda-*` pip wheels. Without it
+#   NVRTC cannot compile any kernel that pulls in tilelang's atomic.h.
+#
+#   This Dockerfile uses NVIDIA's cuda-dl-base (devel) image for both stages,
+#   so the runtime image carries the libcudacxx / CCCL headers tilelang needs
+#   and the wheels in /app/.venv keep their CUDA 12.x ABI.
+#
+# BASE IMAGE:
+#   nvcr.io/nvidia/cuda-dl-base:25.06-cuda12.9-devel-ubuntu24.04
+#     - matches dynamo/container/context.yaml `prime-rl.cuda12.9` entry
+#     - ships Python 3.12 by default (Ubuntu 24.04)
+#     - includes libcudacxx, CCCL, cuDNN, nvcc, and full CUDA dev headers
+#     - forward-compatible with the CUDA 12.8 wheels pinned in uv.lock
+#
+# USAGE:
+#   docker buildx build --platform linux/arm64 \
+#       --build-arg TARGETARCH=arm64 \
+#       -f Dockerfile.cuda.runtime -t <tag> .
+
+ARG BASE_IMAGE=nvcr.io/nvidia/cuda-dl-base
+ARG BASE_IMAGE_TAG=25.06-cuda12.9-devel-ubuntu24.04
+
+############################
+##### Build stage ##########
+############################
+FROM ${BASE_IMAGE}:${BASE_IMAGE_TAG} AS builder
+LABEL maintainer="prime intellect"
+LABEL repository="prime-rl"
+
+# Set en_US.UTF-8 locale by default
+RUN echo "LC_ALL=en_US.UTF-8" >> /etc/environment
+
+# CUDA_HOME / PATH from base image are already correct (/usr/local/cuda), but
+# pin them explicitly so downstream tooling (tilelang, flash-attn) sees them.
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=$PATH:/usr/local/cuda/bin
+
+# Install build tooling.
+ARG DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    sudo \
+    git \
+    ninja-build \
+    && apt-get clean autoclean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Install uv.
+ADD https://astral.sh/uv/install.sh /uv-installer.sh
+RUN INSTALLER_NO_MODIFY_PATH=1 UV_INSTALL_DIR="/usr/local/bin" sh /uv-installer.sh && rm /uv-installer.sh
+ENV PATH="/usr/local/bin:$PATH"
+ENV UV_PYTHON_INSTALL_DIR="/usr/local/share/uv/python"
+ENV UV_CACHE_DIR="/usr/local/share/uv/cache"
+
+# Install Python dependencies (gradual copies help with caching).
+WORKDIR /app
+
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
+
+COPY pyproject.toml /app/pyproject.toml
+COPY uv.lock /app/uv.lock
+COPY README.md /app/README.md
+COPY src/ /app/src/
+COPY packages/ /app/packages/
+COPY deps/ /app/deps/
+COPY configs /app/configs
+COPY examples /app/examples
+COPY benchmarks/scripts /app/benchmarks/scripts
+
+RUN --mount=type=cache,target=/app/.cache/uv \
+    uv sync --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra envs --extra gpt-oss --group mamba-ssm --locked --no-dev
+
+# arm64: build flash-attn + DeepGEMM from source.
+ARG TARGETARCH
+COPY scripts/docker-arm64-post-install.sh /app/scripts/docker-arm64-post-install.sh
+COPY scripts/install_deep_gemm.sh /app/scripts/install_deep_gemm.sh
+RUN if [ "$TARGETARCH" = "arm64" ]; then /app/scripts/docker-arm64-post-install.sh; fi
+
+# vLLM PR #39366 (two-phase DP pause) is native in vLLM 0.22 — no patch needed
+# (the rl-sdk-4 merge bumped vLLM 0.20.2 -> 0.22 and dropped this patch).
+
+############################
+##### Runtime stage ########
+############################
+# Same image so libcudacxx, CCCL headers, and the system Python 3.12 are all
+# present at runtime — the original Dockerfile.cuda switched to python:3.12-slim
+# here and lost the CUDA dev headers, which broke tilelang's NVRTC backend.
+FROM ${BASE_IMAGE}:${BASE_IMAGE_TAG}
+
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=/usr/local/cuda/bin:$PATH
+
+ARG DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    wget \
+    clang \
+    tmux \
+    iperf \
+    openssh-server \
+    git \
+    git-lfs \
+    gpg \
+    sudo \
+    iputils-ping \
+    net-tools \
+    curl \
+    vim \
+    libibverbs1 \
+    ibverbs-providers \
+    python3.12 \
+    python3.12-venv \
+    && apt-get clean autoclean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Ensure `python` / `python3` point at 3.12 (ubuntu24.04 ships 3.12 already,
+# but the symlinks aren't created by default).
+RUN ln -sf /usr/bin/python3.12 /usr/local/bin/python \
+ && ln -sf /usr/bin/python3.12 /usr/local/bin/python3 \
+ && ln -sf /usr/bin/python3.12 /usr/local/bin/python3.12
+
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+# Ubuntu 24.04 ships a default `ubuntu` user at uid 1000; remove it so the
+# explicit appuser keeps uid/gid 1000 (matches Dockerfile.cuda + k8s manifests).
+RUN userdel -r ubuntu 2>/dev/null || true \
+ && groupadd --gid $GROUP_ID appuser \
+ && useradd --uid $USER_ID --gid appuser --create-home --shell /bin/bash appuser \
+ && usermod -aG sudo appuser \
+ && echo "appuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Install uv for development use.
+ADD https://astral.sh/uv/install.sh /uv-installer.sh
+RUN INSTALLER_NO_MODIFY_PATH=1 UV_INSTALL_DIR="/usr/local/bin" sh /uv-installer.sh && rm /uv-installer.sh
+
+USER appuser
+ENV PATH="/usr/local/bin:$PATH"
+WORKDIR /app
+# Copy the application + venv from the builder.
+COPY --from=builder --chown=appuser:appuser /app /app
+
+# Copy and set up entrypoint script.
+COPY --chown=appuser:appuser scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
+# Repoint venv Python symlinks at the runtime-stage interpreter (the builder
+# used a uv-managed Python that does not exist here).
+RUN rm /app/.venv/bin/python && ln -s /usr/bin/python3.12 /app/.venv/bin/python
+RUN rm /app/.venv/bin/python3 && ln -s /usr/bin/python3.12 /app/.venv/bin/python3
+RUN rm /app/.venv/bin/python3.12 && ln -s /usr/bin/python3.12 /app/.venv/bin/python3.12
+
+# python3.12-dev: Python.h headers for vLLM's Triton CudaUtils JIT-compile at runtime.
+# Required by vLLM serving (dynamo.vllm / inference); absent from the cuda-dl-base
+# runtime, which crashed inference with `fatal error: Python.h: No such file or directory`.
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends python3.12-dev \
+ && apt-get clean autoclean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+USER appuser
+
+# Place executables in the environment at the front of the path.
+ENV PATH="/app/.venv/bin:$PATH"
+
+# HuggingFace Hub timeouts (defaults are 10s which causes issues on slow networks).
+ENV HF_HUB_ETAG_TIMEOUT=500
+ENV HF_HUB_DOWNLOAD_TIMEOUT=300
+
+# Enable FP8 grouped-GEMM kernels in vLLM MoE layers (requires DeepGEMM, built
+# during the arm64 post-install step above).
+ENV VLLM_USE_DEEP_GEMM=1
+ENV VLLM_MOE_USE_DEEP_GEMM=1
+
+# Use entrypoint for setup (ulimit, etc) but default to sleep infinity for K8s.
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["sleep", "infinity"]

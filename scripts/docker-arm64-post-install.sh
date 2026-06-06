@@ -42,3 +42,7 @@ echo "    target venv: $VENV_PATH"
 echo "=== reinstalling flash-attn-cute (flash-attn overwrites it with a stub) ==="
 uv pip install --python "$VENV_PATH/bin/python" --reinstall --no-deps \
     "flash-attn-4 @ git+https://github.com/Dao-AILab/flash-attention.git@96bd151#subdirectory=flash_attn/cute"
+
+echo "=== building DeepGEMM from source (FP8 grouped-GEMM for SM100 / GB200) ==="
+# Runs from /app (WORKDIR), so uv auto-detects the project venv at /app/.venv.
+bash /app/scripts/install_deep_gemm.sh
