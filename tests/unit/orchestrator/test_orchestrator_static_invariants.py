@@ -28,11 +28,7 @@ def _method(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
 
 
 def _calls(fn: ast.AST, target: str) -> list[ast.Call]:
-    return [
-        node
-        for node in ast.walk(fn)
-        if isinstance(node, ast.Call) and ast.unparse(node.func) == target
-    ]
+    return [node for node in ast.walk(fn) if isinstance(node, ast.Call) and ast.unparse(node.func) == target]
 
 
 def _call_kw(call: ast.Call, name: str) -> ast.keyword | None:
