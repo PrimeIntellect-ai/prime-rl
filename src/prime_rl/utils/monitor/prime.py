@@ -487,10 +487,12 @@ class PrimeMonitor(Monitor):
                 # preserve ordering; on success or permanent failure the item simply
                 # stays gone.
                 pending_step, pending_bytes = self._sample_upload_queue.popleft()
+                self._inflight_sample_step = pending_step
                 start = time.perf_counter()
                 try:
                     await self._upload_one_sample_step(pending_step, pending_bytes)
                 except Exception as e:
+                    self._inflight_sample_step = None
                     if _is_retryable_upload_error(e):
                         # Transient — keep at the head and arm the cooldown so other
                         # waiters don't immediately retry the same head.
@@ -516,6 +518,7 @@ class PrimeMonitor(Monitor):
 
                 # Success: bookkeeping (item is already popped). Clear any stale
                 # cooldown — R2 is healthy.
+                self._inflight_sample_step = None
                 self._retryable_cooldown_until = None
                 self._pending_sample_steps.discard(pending_step)
                 self.last_log_samples_step = pending_step
@@ -715,6 +718,10 @@ class PrimeMonitor(Monitor):
         # to the right asyncio loop after fork.
         self._sample_upload_queue: deque[tuple[int, bytes]] = deque()
         self._sample_upload_lock: asyncio.Lock | None = None
+        # Step currently mid-upload (popped from the queue, awaiting tenacity
+        # retries). Used by _flush to report in-flight loss accurately when the
+        # shutdown drain times out before the upload finishes.
+        self._inflight_sample_step: int | None = None
         # Set to a future monotonic timestamp after a retryable failure so queued
         # drains don't all reattempt the same failing head back-to-back.
         self._retryable_cooldown_until: float | None = None
@@ -762,9 +769,17 @@ class PrimeMonitor(Monitor):
             except Exception as e:
                 self.logger.warning(f"Final sample-upload drain failed: {type(e).__name__}: {e}")
             remaining = len(self._sample_upload_queue)
-            if remaining:
+            inflight = self._inflight_sample_step
+            if remaining or inflight is not None:
+                parts = []
+                if inflight is not None:
+                    parts.append(f"step {inflight} mid-upload")
+                if remaining:
+                    parts.append(f"{remaining} queued")
+                lost = remaining + (1 if inflight is not None else 0)
                 self.logger.warning(
-                    f"{remaining} sample upload(s) still in backlog at close — these samples will be lost"
+                    f"{lost} sample upload(s) lost at close ({', '.join(parts)}) — "
+                    "shutdown drain did not finish within timeout"
                 )
 
     async def _make_request_async(self, endpoint: str, data: dict[str, Any], max_retries: int = 3) -> None:
