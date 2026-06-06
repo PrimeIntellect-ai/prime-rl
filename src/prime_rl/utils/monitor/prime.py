@@ -447,6 +447,12 @@ class PrimeMonitor(Monitor):
             self._sample_upload_lock = asyncio.Lock()
 
         self._sample_upload_queue.append((step, parquet_bytes))
+        # Release the local reference so an eviction of our entry below — or
+        # later, while we're suspended on the drain lock — actually frees the
+        # parquet bytes. Without this, the suspended coroutine frame keeps the
+        # blob alive even after the deque drops it, defeating the bounded
+        # backlog during sustained outages.
+        del parquet_bytes
         while len(self._sample_upload_queue) > _MAX_PENDING_SAMPLE_UPLOADS:
             dropped_step, _ = self._sample_upload_queue.popleft()
             self._pending_sample_steps.discard(dropped_step)
