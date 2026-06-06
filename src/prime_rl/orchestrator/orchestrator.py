@@ -65,6 +65,7 @@ from prime_rl.orchestrator.types import (
     Progress,
     TrainBatch,
     TrainRollout,
+    rollouts_for_logging,
 )
 from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
@@ -566,7 +567,8 @@ class Orchestrator:
 
         # Materialize at the I/O boundary so prime-rl metadata travels with
         # the raw vf payload on disk + in wandb sample tables
-        rollout_dicts = [r.to_dict() for r in batch.rollouts]
+        log_rollouts = rollouts_for_logging(batch)
+        rollout_dicts = [r.to_dict() for r in log_rollouts]
         step_path = get_step_path(get_rollout_dir(config.output_dir), step)
         await asyncio.to_thread(
             save_rollouts,

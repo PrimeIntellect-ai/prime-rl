@@ -143,12 +143,34 @@ class TrainBatchMetrics:
 @dataclass
 class TrainBatch:
     """``samples`` is the trainer-bound payload (post-filter survivors);
-    ``rollouts`` is the full cohort kept for orchestrator-side I/O."""
+    ``rollouts`` is the trainer-unit cohort used for train metrics."""
 
     rollouts: list[TrainRollout]
     samples: list[TrainingSample]
     metrics: TrainBatchMetrics
     episode_rollouts: list[TrainRollout] | None = None
+
+
+def rollouts_for_logging(batch: TrainBatch) -> list[TrainRollout]:
+    """Use source episodes for multi-agent member rollouts, otherwise keep
+    the trainer-unit rollout. Mixed batches preserve batch order and dedupe
+    repeated members from the same episode."""
+    if batch.episode_rollouts is None:
+        return batch.rollouts
+
+    episodes_by_id = {r.rollout_id: r for r in batch.episode_rollouts}
+    seen_episodes: set[uuid.UUID] = set()
+    out: list[TrainRollout] = []
+    for rollout in batch.rollouts:
+        source_id = rollout.source_rollout_id
+        if source_id is None or source_id not in episodes_by_id:
+            out.append(rollout)
+            continue
+        if source_id in seen_episodes:
+            continue
+        seen_episodes.add(source_id)
+        out.append(episodes_by_id[source_id])
+    return out
 
 
 @dataclass
