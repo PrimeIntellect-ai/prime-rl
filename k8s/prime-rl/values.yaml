@@ -14,7 +14,14 @@ image:
 # Shared storage configuration
 storage:
   enabled: true
-  # PVC name will be automatically set to {{ .Release.Name }}-shared-data
+  # If existingClaim is set, the chart will not create a PVC and will instead
+  # mount the named claim. Useful for cluster-wide model caches (e.g. the
+  # auto-provisioned `shared-model-cache` PVC documented at
+  # work/ops/shared-model-cache.md) so models downloaded by other namespaces
+  # are reused with zero re-download.
+  existingClaim: ""
+  # Used only when existingClaim is empty (chart creates the PVC).
+  # Resulting PVC name: {{ .Release.Name }}-shared-data
   storageClassName: nfs
   accessModes:
     - ReadWriteMany
@@ -50,6 +57,19 @@ orchestrator:
   nodeSelector: {}
     # nvidia.com/gpu.present: "true"  # Orchestrator doesn't need GPUs
 
+  tolerations: []
+    # - key: "nvidia.com/gpu"
+    #   operator: "Exists"
+    #   effect: "NoSchedule"
+
+  imagePullSecrets: []
+    # - name: regcred
+
+  # Optional: name of an existing ConfigMap to mount at /configs in the
+  # orchestrator container. Useful for shipping TOML configs without rebuilding
+  # the image. Leave empty to skip.
+  configMap: ""
+
 # Inference component
 inference:
   enabled: true
@@ -63,6 +83,18 @@ inference:
     enabled: true
     count: 1
 
+  # Dynamic Resource Allocation (DRA) — see trainer.resourceClaim for semantics.
+  resourceClaim:
+    enabled: false
+    templateName: ""
+    name: "gpus"
+
+  # Optional: name of an existing ConfigMap to mount at /configs in the
+  # inference container. Symmetric with orchestrator.configMap and
+  # trainer.configMap. Lets a native vLLM inference server read its
+  # infer.toml from a ConfigMap.
+  configMap: ""
+
   resources:
     requests:
       memory: "4Gi"
@@ -74,6 +106,9 @@ inference:
     port: 8000
 
   runtimeClassName: nvidia
+
+  tolerations: []
+  imagePullSecrets: []
 
   # Health probes for inference server (/health for startup/readiness, /liveness for engine liveness)
   probes:
@@ -108,6 +143,22 @@ trainer:
     enabled: true
     count: 1
 
+  # Dynamic Resource Allocation (DRA) — for DRA-only node pools that reject the
+  # legacy `nvidia.com/gpu` device-plugin resource. When `resourceClaim.enabled`
+  # is true the chart will NOT emit `nvidia.com/gpu` requests/limits and will
+  # instead add a `spec.resourceClaims` entry to the pod and a `resources.claims`
+  # reference inside the container.
+  #   templateName: name of a pre-existing ResourceClaimTemplate in the same ns
+  #   name:         logical claim name used to link pod <-> container
+  resourceClaim:
+    enabled: false
+    templateName: ""
+    name: "gpus"
+
+  # Optional: name of an existing ConfigMap to mount at /configs in the
+  # trainer container. Symmetric with `orchestrator.configMap`.
+  configMap: ""
+
   resources:
     requests:
       memory: "4Gi"
@@ -122,6 +173,9 @@ trainer:
   env: []
 
   runtimeClassName: nvidia
+
+  tolerations: []
+  imagePullSecrets: []
 
   # Health probes for trainer (requires metrics_server config)
   probes:

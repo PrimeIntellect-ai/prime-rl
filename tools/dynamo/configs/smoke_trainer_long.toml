@@ -1,0 +1,19 @@
+# Prime-RL trainer config for long smoke test (20 steps)
+#
+# Usage: uv run torchrun --nproc-per-node=1 --rdzv-endpoint=localhost:29510 \
+#          -m prime_rl.trainer.rl.train @ tools/dynamo/configs/smoke_trainer_long.toml \
+#          --output-dir /tmp/dynamo_smoke_long
+
+max_steps = 20
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+seq_len = 512
+
+[wandb]
+offline = true
+
+[optim]
+lr = 3e-6
+
+[ckpt]
