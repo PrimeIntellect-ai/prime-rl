@@ -73,7 +73,7 @@ def test_collect_next_token_export_metrics_returns_oldest_unlogged_stable_step(t
         )
         (step_dir / "STABLE").touch()
 
-    result = collect_next_token_export_metrics(tmp_path, last_logged_step=0, max_step=2)
+    result = collect_next_token_export_metrics(tmp_path, last_logged_step=0)
 
     assert result is not None
     assert result.step == 1

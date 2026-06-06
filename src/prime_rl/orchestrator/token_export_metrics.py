@@ -44,9 +44,8 @@ def collect_next_token_export_metrics(
     output_dir: Path,
     *,
     last_logged_step: int,
-    max_step: int,
 ) -> TokenExportMetricsResult | None:
-    stable_steps = [step for step in _stable_token_export_steps(output_dir) if last_logged_step < step <= max_step]
+    stable_steps = [step for step in _stable_token_export_steps(output_dir) if step > last_logged_step]
     if not stable_steps:
         return None
 
