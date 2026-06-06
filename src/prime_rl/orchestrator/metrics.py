@@ -196,8 +196,8 @@ class MetricsBuilder:
             self.config.output_dir,
             last_logged_step=self._last_token_export_step_logged,
         )
-        to_log.update(token_export)
         if token_export:
+            to_log.update(token_export)
             self._last_token_export_step_logged = token_export["trainer/step"]
 
         return to_log
