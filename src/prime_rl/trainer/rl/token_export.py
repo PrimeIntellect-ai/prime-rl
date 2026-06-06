@@ -32,7 +32,6 @@ class TokenExporter:
         rank: int,
     ) -> None:
         self.rank = rank
-        self.root_output_dir = output_dir
         self.output_dir = output_dir / "token_exports"
         self._closed = False
         self._initialized_files: set[tuple[str | None, int, int]] = set()
@@ -99,7 +98,7 @@ class TokenExporter:
 
     def _export_dir(self, export_step: int, run_id: str | None) -> Path:
         if run_id is not None:
-            return self.root_output_dir / run_id / "token_exports" / f"step_{export_step}"
+            return self.output_dir.parent / run_id / "token_exports" / f"step_{export_step}"
         return self.output_dir / f"step_{export_step}"
 
     def _export_file(self, export_step: int, run_id: str | None) -> Path:
