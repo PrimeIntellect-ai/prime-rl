@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 import torch
-import torch.distributed as dist
 from torch import Tensor
 
 from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
@@ -16,15 +15,11 @@ SCHEMA_VERSION = 1
 
 
 class DisabledTokenExporter:
-    def __init__(self, participate_in_stable_marking: bool = False) -> None:
-        self.participate_in_stable_marking = participate_in_stable_marking
-
     def export(self, *args: Any, **kwargs: Any) -> None:
         return
 
     def mark_stable(self, ready_run_ids: set[str] | None = None) -> None:
-        if self.participate_in_stable_marking:
-            _mark_stable_dirs(set())
+        return
 
     def close(self) -> None:
         return
@@ -96,11 +91,11 @@ class TokenExporter:
         # finalize a run's export dir once that run step is fully consumed — the same
         # `ready_to_update` signal that gates its optimizer step. ``run_id is None``
         # is single-run export, where a step never spans trainer steps, so mark it now.
+        # The caller barriers first so a STABLE only lands after every rank flushed.
         ready_run_ids = ready_run_ids or set()
-        dirs_to_mark: set[Path] = set()
         for run_id in [rid for rid in self._pending_stable_dirs if rid is None or rid in ready_run_ids]:
-            dirs_to_mark |= self._pending_stable_dirs.pop(run_id)
-        _mark_stable_dirs(dirs_to_mark)
+            for stable_dir in self._pending_stable_dirs.pop(run_id):
+                (stable_dir / "STABLE").touch()
 
     def _export_dir(self, export_step: int, run_id: str | None) -> Path:
         if run_id is not None:
@@ -139,20 +134,11 @@ def setup_token_exporter(
     if token_export_config is None:
         return DisabledTokenExporter()
     if parallel_dims.cp_enabled and parallel_dims.world_mesh["cp"].get_local_rank() != 0:
-        return DisabledTokenExporter(participate_in_stable_marking=True)
+        return DisabledTokenExporter()
 
     exporter = TokenExporter(config.output_dir, world.rank)
     logger.info(f"Writing token exports under {exporter.output_dir}")
     return exporter
-
-
-def _mark_stable_dirs(local_dirs: set[Path]) -> None:
-    # Barrier so STABLE only lands once every rank has flushed its rank_*.jsonl,
-    # then each rank marks the dirs it wrote (touch is idempotent across ranks).
-    if dist.is_available() and dist.is_initialized():
-        dist.barrier()
-    for stable_dir in sorted(local_dirs):
-        (stable_dir / "STABLE").touch()
 
 
 def _export_columns(
