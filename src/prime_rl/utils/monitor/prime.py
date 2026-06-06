@@ -756,10 +756,20 @@ class PrimeMonitor(Monitor):
             self._pending_futures.clear()
 
         # Final shutdown drain of the sample backlog. Bypass the cooldown — this
-        # is our last chance before the loop stops.
-        if hasattr(self, "_sample_upload_queue") and self._sample_upload_queue:
+        # is our last chance before the loop stops. Note: an in-flight upload
+        # (popped into _inflight_sample_step before await) makes the queue look
+        # empty even though there is still data at risk, so we check both.
+        if hasattr(self, "_sample_upload_queue") and (
+            self._sample_upload_queue or self._inflight_sample_step is not None
+        ):
             backlog_size = len(self._sample_upload_queue)
-            self.logger.info(f"Final sample-upload drain on close ({backlog_size} step(s) queued)")
+            inflight_at_entry = self._inflight_sample_step
+            parts = []
+            if inflight_at_entry is not None:
+                parts.append(f"step {inflight_at_entry} mid-upload")
+            if backlog_size:
+                parts.append(f"{backlog_size} queued")
+            self.logger.info(f"Final sample-upload drain on close ({', '.join(parts)})")
             try:
                 future = asyncio.run_coroutine_threadsafe(
                     self._drain_sample_backlog(ignore_cooldown=True),
