@@ -18,6 +18,9 @@ def transformers_v5_compat():
     _patch_qwen35_lora()
     _patch_lora_key_prefix()
     monkey_patch_deep_gemm_silu_mul_quant_int64()
+    monkey_patch_deep_gemm_silu_mul_quant_packed_int64()
+    # monkey_patch_dp_engine_core_pause_resume_deadlock()  # DISABLED: use vLLM PR #39366-native two-phase pause (avoid double pause/resume fix)
+    monkey_patch_fp32_lm_head()
     monkey_patch_vllm_padded_input_scrub()
     monkey_patch_return_routed_experts_with_nixl_connector()
 
@@ -205,6 +208,207 @@ def monkey_patch_deep_gemm_silu_mul_quant_int64():
         )
 
     logger.warning("Enabled int64-addressing Triton patch for vLLM DeepGEMM SiLU/mul FP8 quant.")
+
+
+@triton.jit
+def _silu_mul_quant_fp8_packed_kernel_int64(
+    input_ptr,
+    output_q_ptr,
+    output_scale_ptr,
+    M: tl.int64,
+    input_stride_m: tl.int64,
+    output_q_stride_m: tl.int64,
+    output_scale_stride_k: tl.int64,
+    clamp_limit,
+    N: tl.constexpr,
+    NUM_GROUPS: tl.constexpr,
+    fp8_min: tl.constexpr,
+    fp8_max: tl.constexpr,
+    GROUP_SIZE: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    HAS_CLAMP: tl.constexpr,
+):
+    """int64-addressing variant of vLLM's _silu_mul_quant_fp8_packed_kernel.
+
+    Mirrors `vllm/model_executor/layers/quantization/utils/fp8_utils.py:152`
+    but casts row/column offsets to tl.int64 so the address arithmetic in
+    `base_row_offset = (m_offset + offs_m[:, None]) * input_stride_m` does not
+    overflow when M * input_stride_m exceeds 2**31 (e.g. Qwen3-235B profile_run
+    on EP=2 × DP=4 layouts, 128 experts × 6144 fused MoE dim).
+    """
+    N_2: tl.constexpr = N // 2
+
+    # Grid layout: dim0 = M-blocks (large, up to 2**31-1 on Blackwell),
+    # dim1 = packed groups (small, ~3-6). The upstream kernel placed the
+    # large M dim on grid Y, which is capped at 65,535 and produced
+    # `Triton Error [CUDA]: invalid argument` on Qwen3-235B profile_run.
+    pid_m = tl.program_id(0)
+    pid_pack = tl.program_id(1)
+    m_offset = (pid_m * BLOCK_M).to(tl.int64)
+
+    if m_offset >= M:
+        return
+
+    offs_m = tl.arange(0, BLOCK_M).to(tl.int64)
+    offs_n = tl.arange(0, GROUP_SIZE).to(tl.int64)
+    row_mask = (m_offset + offs_m) < M
+
+    base_row_offset = (m_offset + offs_m[:, None]) * input_stride_m
+    base_out_offset = (m_offset + offs_m[:, None]) * output_q_stride_m
+
+    packed_scale = tl.zeros((BLOCK_M,), dtype=tl.int32)
+
+    for pack_idx in tl.static_range(4):
+        group_id = pid_pack * 4 + pack_idx
+
+        if group_id < NUM_GROUPS:
+            n_offset = (group_id * GROUP_SIZE).to(tl.int64)
+
+            act_ptrs = input_ptr + base_row_offset + n_offset + offs_n[None, :]
+            act_in = tl.load(act_ptrs, mask=row_mask[:, None], other=0.0)
+
+            mul_ptrs = act_ptrs + N_2
+            mul_in = tl.load(mul_ptrs, mask=row_mask[:, None], other=0.0)
+
+            act_f32 = act_in.to(tl.float32)
+            mul_f32 = mul_in.to(tl.float32)
+
+            if HAS_CLAMP:
+                act_f32 = tl.minimum(act_f32, clamp_limit)
+                mul_f32 = tl.clamp(mul_f32, -clamp_limit, clamp_limit)
+
+            y = (act_f32 / (1.0 + tl.exp(-act_f32))) * mul_f32
+            # Round through bf16 to match unfused precision path
+            y = y.to(tl.bfloat16).to(tl.float32)
+
+            absmax = tl.max(tl.abs(y), axis=1)
+
+            scale_raw = tl.maximum(absmax / fp8_max, 1e-10)
+            exponent = tl.ceil(tl.log2(scale_raw))
+            scale = tl.math.exp2(exponent)
+
+            y_q = tl.clamp(y / scale[:, None], fp8_min, fp8_max)
+
+            out_q_ptrs = output_q_ptr + base_out_offset + n_offset + offs_n[None, :]
+            tl.store(
+                out_q_ptrs,
+                y_q.to(output_q_ptr.dtype.element_ty),
+                mask=row_mask[:, None],
+            )
+
+            exponent_biased = tl.clamp(exponent + 127.0, 0.0, 255.0).to(tl.int32)
+            packed_scale = packed_scale | (exponent_biased << (pack_idx * 8))
+
+    scale_ptrs = output_scale_ptr + pid_pack.to(tl.int64) * output_scale_stride_k + m_offset + offs_m
+    tl.store(scale_ptrs, packed_scale, mask=row_mask)
+
+
+def silu_mul_quant_fp8_packed_triton_int64(
+    input: torch.Tensor,
+    group_size: int = 128,
+    output_q: torch.Tensor | None = None,
+    clamp_limit: float | None = None,
+):
+    """int64-addressing variant of vLLM's silu_mul_quant_fp8_packed_triton.
+
+    Same semantics and return shape as the upstream function, but launches the
+    int64 kernel above. Required for Qwen3-235B FP8 inference with DeepGEMM
+    enabled — the upstream packed kernel overflows on row offsets at profile_run
+    shapes (see issues.md Issue 7 in work/bis-dev/may-26/01-qwen-235b-whiteffiber).
+    """
+    assert input.dim() == 2
+    assert input.is_contiguous()
+
+    M, N = input.shape
+    N_2 = N // 2
+
+    assert N_2 % group_size == 0
+
+    fp8_dtype = torch.float8_e4m3fn
+    finfo = torch.finfo(fp8_dtype)
+    fp8_min, fp8_max = finfo.min, finfo.max
+
+    num_groups_per_row = N_2 // group_size
+    num_packed_groups = (num_groups_per_row + 3) // 4
+    tma_aligned_M = ((M + 3) // 4) * 4
+
+    if output_q is None:
+        output_q = torch.empty((M, N_2), dtype=fp8_dtype, device=input.device)
+
+    output_scale_packed = torch.zeros(
+        (num_packed_groups, tma_aligned_M),
+        dtype=torch.int32,
+        device=input.device,
+    ).T[:M, :]
+
+    BLOCK_M = 8
+    # gridX gets the large M dim (Blackwell cap is 2**31-1); gridY gets
+    # the small packed-group dim (Blackwell cap is 65,535). Swapping vs.
+    # upstream avoids "invalid argument" when (M+7)//8 > 65,535
+    # (Qwen3-235B with 128 experts on EP=2 trips this in profile_run).
+    grid = ((M + BLOCK_M - 1) // BLOCK_M, num_packed_groups)
+
+    num_warps = max(4, group_size // 32)
+    num_stages = 2
+
+    has_clamp = clamp_limit is not None
+    _silu_mul_quant_fp8_packed_kernel_int64[grid](
+        input,
+        output_q,
+        output_scale_packed,
+        M,
+        input.stride(0),
+        output_q.stride(0),
+        output_scale_packed.stride(1),
+        clamp_limit if has_clamp else 0.0,
+        N=N,
+        NUM_GROUPS=num_groups_per_row,
+        fp8_min=fp8_min,
+        fp8_max=fp8_max,
+        GROUP_SIZE=group_size,
+        BLOCK_M=BLOCK_M,
+        HAS_CLAMP=has_clamp,
+        num_warps=num_warps,
+        num_stages=num_stages,
+    )
+
+    return output_q, output_scale_packed
+
+
+def monkey_patch_deep_gemm_silu_mul_quant_packed_int64():
+    """Replace vLLM's silu_mul_quant_fp8_packed_triton with our int64 variant.
+
+    The upstream packed kernel in vLLM 0.21.0 uses int32 arithmetic for row
+    offsets (`(m_offset + offs_m[:, None]) * input_stride_m`). For Qwen3-235B
+    FP8 inference with `VLLM_USE_DEEP_GEMM=1`, profile_run hits M*stride > 2**31
+    on the 128-expert layout and Triton emits CUDA "invalid argument".
+
+    We patch:
+      1. fp8_utils.silu_mul_quant_fp8_packed_triton (the public wrapper)
+      2. deep_gemm_moe.fused_silu_mul_fp8_quant_packed (the alias inside the
+         DeepGEMM MoE experts module — imported by name at module load)
+    """
+    import sys
+
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.quantization.utils import fp8_utils
+
+    logger = init_logger(__name__)
+
+    fp8_utils.silu_mul_quant_fp8_packed_triton = silu_mul_quant_fp8_packed_triton_int64
+
+    deep_gemm_moe_module = sys.modules.get("vllm.model_executor.layers.fused_moe.experts.deep_gemm_moe")
+    if deep_gemm_moe_module is not None:
+        # deep_gemm_moe.py re-exports the wrapper under the name
+        # `fused_silu_mul_fp8_quant_packed` (see line 208 in the upstream module).
+        if hasattr(deep_gemm_moe_module, "fused_silu_mul_fp8_quant_packed"):
+            deep_gemm_moe_module.fused_silu_mul_fp8_quant_packed = silu_mul_quant_fp8_packed_triton_int64
+        if hasattr(deep_gemm_moe_module, "silu_mul_quant_fp8_packed_triton"):
+            deep_gemm_moe_module.silu_mul_quant_fp8_packed_triton = silu_mul_quant_fp8_packed_triton_int64
+
+    logger.warning(
+        "Enabled int64-addressing Triton patch for vLLM DeepGEMM packed SiLU/mul FP8 quant."
+    )
 
 
 def _patch_qwen35_lora():
@@ -803,6 +1007,10 @@ def monkey_patch_fp32_lm_head():
 
     logger = init_logger(__name__)
 
+    if getattr(LogitsProcessor, "_prime_rl_fp32_lm_head_patch_installed", False):
+        logger.debug("fp32 lm_head patch already installed; skipping.")
+        return
+
     _original_init = LogitsProcessor.__init__
     _original_get_logits = LogitsProcessor._get_logits
 
@@ -835,4 +1043,5 @@ def monkey_patch_fp32_lm_head():
 
     LogitsProcessor.__init__ = _patched_init
     LogitsProcessor._get_logits = _patched_get_logits
+    LogitsProcessor._prime_rl_fp32_lm_head_patch_installed = True
     logger.info("Installed fp32 lm_head patch (native out_dtype=fp32 mm).")

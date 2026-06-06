@@ -35,7 +35,9 @@ if not hasattr(_mfau, "is_flash_attn_greater_or_equal_2_10"):
 # ---------------------------------------------------------------------------
 try:
     import transformers.integrations.hub_kernels as _hub_kernels
-except ImportError:
+    # AttributeError: module exists in some builds but lazy_load_kernel was added in 5.5
+    _ = _hub_kernels.lazy_load_kernel
+except (ImportError, AttributeError):
     _hub_kernels = None  # transformers < 5.5, no patch needed
 
 if _hub_kernels is not None:
