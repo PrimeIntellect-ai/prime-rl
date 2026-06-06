@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from prime_rl.utils.logger import get_logger
+
 TOKEN_EXPORT_METRIC_FIELDS = ("mismatch_kl", "entropy")
 
 
@@ -57,17 +59,28 @@ def collect_token_export_metrics(output_dir: Path, step: int) -> dict[str, float
 
     stats_by_key: dict[str, _Stats] = {}
     sequence_count = 0
+    skipped_count = 0
 
     for export_file in sorted(step_dir.glob("rank_*.jsonl")):
         with export_file.open(encoding="utf-8") as file:
             for line in file:
                 if not line.strip():
                     continue
-                record = json.loads(line)
+                # Token exports are best-effort monitoring; a malformed line or a
+                # length-mismatched record shouldn't abort the orchestrator step.
+                try:
+                    record = json.loads(line)
+                    values_by_field = {field: _loss_token_values(record, field) for field in TOKEN_EXPORT_METRIC_FIELDS}
+                except ValueError:
+                    skipped_count += 1
+                    continue
                 sequence_count += 1
-                for field in TOKEN_EXPORT_METRIC_FIELDS:
-                    for value in _loss_token_values(record, field):
+                for field, values in values_by_field.items():
+                    for value in values:
                         stats_by_key.setdefault(field, _Stats()).add(value)
+
+    if skipped_count:
+        get_logger().warning(f"Skipped {skipped_count} malformed token-export record(s) in {step_dir}")
 
     metrics: dict[str, float | int] = {}
     if sequence_count == 0:
