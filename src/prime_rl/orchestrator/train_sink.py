@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections import defaultdict
+from typing import cast
 
 import verifiers as vf
 
@@ -56,9 +57,6 @@ class TrainSink:
         pre_filters: list[RolloutFilter],
         post_filters: list[RolloutFilter],
     ) -> None:
-        assert (batch_size is None) != (token_batch_size is None), (
-            "Exactly one of batch_size / token_batch_size must be set"
-        )
         self.config = config
         self.tokenizer = tokenizer
         self.renderer = renderer
@@ -82,6 +80,7 @@ class TrainSink:
         # earlier group is still in flight
         self.pending_groups: dict[uuid.UUID, list[TrainRollout]] = defaultdict(list)
         self.pending_batch: list[TrainRollout] = []
+        self.pending_batch_tokens: int = 0
         self.pending_episode_rollouts: dict[uuid.UUID, TrainRollout] = {}
 
         # Reset by the orchestrator after each ship via ``reset_pre_filter_stats``
@@ -120,12 +119,7 @@ class TrainSink:
         reported separately by ``buffered_count()``."""
         if self.batch_size is not None:
             return len(self.pending_batch), self.batch_size, "rollouts"
-        assert self.token_batch_size is not None
-        tokens = sum(
-            r.raw["token_usage"]["final_input_tokens"] + r.raw["token_usage"]["final_output_tokens"]
-            for r in self.pending_batch
-        )
-        return tokens, self.token_batch_size, "tokens"
+        return self.pending_batch_tokens, cast(int, self.token_batch_size), "tokens"
 
     def buffered_count(self) -> int:
         """Rollouts that have arrived but sit in not-yet-complete groups
@@ -154,11 +148,7 @@ class TrainSink:
         ready = (
             len(self.pending_batch) >= self.batch_size
             if self.batch_size is not None
-            else sum(
-                r.raw["token_usage"]["final_input_tokens"] + r.raw["token_usage"]["final_output_tokens"]
-                for r in self.pending_batch
-            )
-            >= (self.token_batch_size or 0)
+            else self.pending_batch_tokens >= cast(int, self.token_batch_size)
         )
         if ready:
             return self.process_batch()
@@ -266,6 +256,7 @@ class TrainSink:
                         self.pending_episode_rollouts[episode.rollout_id] = episode
                         break
             self.pending_batch.append(r)
+            self.pending_batch_tokens += self.rollout_token_count(r)
 
         # Per-group summary. One line per finalized group; per-filter
         # detection breakdown lives at debug level in ``apply_filters``
@@ -346,17 +337,19 @@ class TrainSink:
         if self.batch_size is not None:
             cohort = self.pending_batch[: self.batch_size]
             self.pending_batch = self.pending_batch[self.batch_size :]
+            self.pending_batch_tokens -= sum(self.rollout_token_count(r) for r in cohort)
         else:
-            assert self.token_batch_size is not None
+            token_batch_size = cast(int, self.token_batch_size)
             cut = 0
             running = 0
             for i, r in enumerate(self.pending_batch):
-                running += r.raw["token_usage"]["final_input_tokens"] + r.raw["token_usage"]["final_output_tokens"]
+                running += self.rollout_token_count(r)
                 cut = i + 1
-                if running >= self.token_batch_size:
+                if running >= token_batch_size:
                     break
             cohort = self.pending_batch[:cut]
             self.pending_batch = self.pending_batch[cut:]
+            self.pending_batch_tokens -= running
 
         if self.post_filters:
             apply_filters(self.post_filters, cohort)
@@ -402,6 +395,11 @@ class TrainSink:
         self.arrivals_by_env.clear()
         self.errors_by_env.clear()
         return TrainBatch(rollouts=cohort, samples=samples, metrics=metrics, episode_rollouts=episode_rollouts)
+
+    @staticmethod
+    def rollout_token_count(rollout: TrainRollout) -> int:
+        usage = rollout.raw["token_usage"]
+        return int(usage["final_input_tokens"] + usage["final_output_tokens"])
 
     def pop_episode_rollouts_for(self, cohort: list[TrainRollout]) -> list[TrainRollout] | None:
         seen: set[uuid.UUID] = set()

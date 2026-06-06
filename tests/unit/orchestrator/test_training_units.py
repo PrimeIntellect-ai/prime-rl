@@ -44,6 +44,7 @@ def _rollout(
         sample.advantage = advantage
         sample.env_name = env_name
         sample.training_mode = "rl"
+    TrainSink._fill_token_usage_from_samples(rollout)
     return rollout
 
 
@@ -52,6 +53,7 @@ def _sink_for(rollouts: list[TrainRollout], episodes: list[TrainRollout] | None 
     sink.batch_size = len(rollouts)
     sink.token_batch_size = None
     sink.pending_batch = list(rollouts)
+    sink.pending_batch_tokens = sum(TrainSink.rollout_token_count(rollout) for rollout in rollouts)
     sink.post_filters = []
     sink.pending_episode_rollouts = {episode.rollout_id: episode for episode in episodes or []}
     sink.arrivals_by_env = defaultdict(int, {"debate": len(rollouts)})
@@ -104,3 +106,21 @@ def test_rollouts_for_logging_preserves_single_agent_rollouts_in_mixed_batches()
     batch = _sink_for([single_agent, member_a, member_b], episodes=[episode]).process_batch()
 
     assert rollouts_for_logging(batch) == [single_agent, episode]
+
+
+def test_process_batch_tracks_pending_tokens_for_token_batching():
+    first = _rollout(samples=[_sample(prompt_len=3, completion_mask=[True, True])])
+    second = _rollout(samples=[_sample(prompt_len=5, completion_mask=[True])])
+    third = _rollout(samples=[_sample(prompt_len=7, completion_mask=[True, True, True])])
+    sink = _sink_for([first, second, third])
+    sink.batch_size = None
+    sink.token_batch_size = 11
+
+    assert sink.batch_progress() == (21, 11, "tokens")
+    batch = sink.process_batch()
+
+    assert batch.rollouts == [first, second]
+    assert batch.metrics.num_prefill_tokens == 8
+    assert batch.metrics.num_decode_tokens == 3
+    assert sink.pending_batch == [third]
+    assert sink.batch_progress() == (10, 11, "tokens")
