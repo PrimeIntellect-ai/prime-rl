@@ -261,6 +261,42 @@ def _patch_qwen35_lora():
     MergedColumnParallelLinearWithShardedLoRA.slice_lora_a = slice_lora_a
 
 
+def patch_gemma4_moe_lora_support():
+    """Teach vLLM Gemma4 classes the MoE LoRA protocol they already model."""
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.fused_moe import fused_moe_make_expert_params_mapping
+    from vllm.model_executor.models.gemma4 import Gemma4ForCausalLM
+    from vllm.model_executor.models.gemma4_mm import Gemma4ForConditionalGeneration
+
+    if getattr(Gemma4ForCausalLM, "_prime_rl_moe_lora_protocol", False):
+        return
+
+    logger = init_logger(__name__)
+
+    def get_expert_mapping(self) -> list[tuple[str, str, int, str]]:
+        return fused_moe_make_expert_params_mapping(
+            self,
+            ckpt_gate_proj_name="gate_proj",
+            ckpt_down_proj_name="down_proj",
+            ckpt_up_proj_name="up_proj",
+            num_experts=getattr(self.config, "num_experts", 0),
+            num_redundant_experts=getattr(self, "num_redundant_experts", 0),
+        )
+
+    def get_conditional_expert_mapping(self) -> list[tuple[str, str, int, str]]:
+        return self.language_model.get_expert_mapping()
+
+    Gemma4ForCausalLM.is_3d_moe_weight = True
+    Gemma4ForCausalLM.get_expert_mapping = get_expert_mapping
+    Gemma4ForCausalLM._prime_rl_moe_lora_protocol = True
+
+    Gemma4ForConditionalGeneration.is_3d_moe_weight = True
+    Gemma4ForConditionalGeneration.get_expert_mapping = get_conditional_expert_mapping
+    Gemma4ForConditionalGeneration._prime_rl_moe_lora_protocol = True
+
+    logger.info("Enabled Gemma4 MoE LoRA protocol support for vLLM.")
+
+
 def _patch_lora_key_prefix():
     """Patch vLLM's LoRA loading to handle keys without base_model.model. prefix.
 

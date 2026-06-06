@@ -13,6 +13,7 @@ dependencies = [
     "loguru>=0.7.3",
     "pyarrow>=21.0.0",
     "numpy>=2.2.6",
+    "orjson>=3.11.0",
     "torch>=2.9.0",
     "torchvision",
     "torchaudio",
