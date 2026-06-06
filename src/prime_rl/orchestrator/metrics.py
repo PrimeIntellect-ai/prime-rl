@@ -189,17 +189,16 @@ class MetricsBuilder:
                 to_log[f"pre_filters/all/{name}/rate"] = count / pre_filter_seen
 
         # Fold in the trainer's token-export metrics for the oldest unlogged stable
-        # step (exports always lag the orchestrator, so this is a past step). They're
-        # namespaced under trainer/ and stamped with trainer/step (the run step they
-        # belong to) so they can be plotted against a lag-corrected axis.
+        # step (exports always lag the orchestrator, so this is a past step). They
+        # arrive log-ready under trainer/, including trainer/step (the run step they
+        # belong to) for plotting against a lag-corrected axis.
         token_export = collect_next_token_export_metrics(
             self.config.output_dir,
             last_logged_step=self._last_token_export_step_logged,
         )
-        if token_export is not None:
-            to_log.update({f"trainer/{key}": value for key, value in token_export.metrics.items()})
-            to_log["trainer/step"] = token_export.step
-            self._last_token_export_step_logged = token_export.step
+        to_log.update(token_export)
+        if token_export:
+            self._last_token_export_step_logged = token_export["trainer/step"]
 
         return to_log
 

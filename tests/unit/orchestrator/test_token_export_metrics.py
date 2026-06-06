@@ -75,6 +75,5 @@ def test_collect_next_token_export_metrics_returns_oldest_unlogged_stable_step(t
 
     result = collect_next_token_export_metrics(tmp_path, last_logged_step=0)
 
-    assert result is not None
-    assert result.step == 1
-    assert result.metrics["mismatch_kl/mean"] == 1.0
+    assert result["trainer/step"] == 1
+    assert result["trainer/mismatch_kl/mean"] == 1.0

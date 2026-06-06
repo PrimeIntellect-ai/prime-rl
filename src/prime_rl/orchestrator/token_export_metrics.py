@@ -10,12 +10,6 @@ TOKEN_EXPORT_METRIC_FIELDS = ("mismatch_kl", "entropy")
 
 
 @dataclass
-class TokenExportMetricsResult:
-    step: int
-    metrics: dict[str, float | int]
-
-
-@dataclass
 class _Stats:
     total: float = 0.0
     count: int = 0
@@ -40,18 +34,20 @@ class _Stats:
         }
 
 
-def collect_next_token_export_metrics(
-    output_dir: Path,
-    *,
-    last_logged_step: int,
-) -> TokenExportMetricsResult | None:
+def collect_next_token_export_metrics(output_dir: Path, *, last_logged_step: int) -> dict[str, float | int]:
+    """Log-ready metrics for the oldest unlogged stable step, namespaced under
+    ``trainer/`` and stamped with ``trainer/step`` (the run step they belong to).
+    Empty when there is no new stable step."""
     stable_steps = [step for step in _stable_token_export_steps(output_dir) if step > last_logged_step]
     if not stable_steps:
-        return None
+        return {}
 
     step = min(stable_steps)
-    metrics = collect_token_export_metrics(output_dir, step)
-    return TokenExportMetricsResult(step=step, metrics=metrics)
+    metrics: dict[str, float | int] = {
+        f"trainer/{key}": value for key, value in collect_token_export_metrics(output_dir, step).items()
+    }
+    metrics["trainer/step"] = step
+    return metrics
 
 
 def collect_token_export_metrics(output_dir: Path, step: int) -> dict[str, float | int]:
