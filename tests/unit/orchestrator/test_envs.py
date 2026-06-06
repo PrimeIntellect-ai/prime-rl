@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from prime_rl.configs.orchestrator import EvalEnvConfig, TrainSamplingConfig
+from prime_rl.configs.orchestrator import EvalEnvConfig, EvalSamplingConfig, TrainSamplingConfig
 from prime_rl.orchestrator.envs import EvalEnv
 
 
@@ -35,6 +35,7 @@ def _rollout(example_id: str) -> dict:
         "completion": "ok",
         "is_truncated": False,
         "error": None,
+        "token_usage": {"final_output_tokens": 1},
         "trajectory": [
             {
                 "tokens": {"prompt_ids": [1], "completion_ids": [2]},
@@ -63,6 +64,42 @@ def test_train_sampling_top_p_reaches_sampling_args():
     sampling_args = TrainSamplingConfig(top_p=0.95).to_sampling_args()
 
     assert sampling_args["top_p"] == 0.95
+
+
+def test_train_sampling_retains_vllm_thinking_knobs():
+    sampling_args = TrainSamplingConfig(
+        top_p=0.95,
+        top_k=20,
+        min_p=0.0,
+        presence_penalty=1.5,
+        thinking_token_budget=8192,
+    ).to_sampling_args()
+
+    assert sampling_args["top_p"] == 0.95
+    assert sampling_args["presence_penalty"] == 1.5
+    assert sampling_args["extra_body"] == {
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 1.5,
+        "thinking_token_budget": 8192,
+    }
+
+
+def test_eval_sampling_retains_vllm_thinking_knobs():
+    sampling_args = EvalSamplingConfig(
+        top_k=20,
+        min_p=0.0,
+        presence_penalty=1.5,
+        thinking_token_budget=8192,
+    ).to_sampling_args()
+
+    assert sampling_args["presence_penalty"] == 1.5
+    assert sampling_args["extra_body"] == {
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 1.5,
+        "thinking_token_budget": 8192,
+    }
 
 
 def test_eval_dynamic_refill_reuses_fast_client_without_exceeding_window():

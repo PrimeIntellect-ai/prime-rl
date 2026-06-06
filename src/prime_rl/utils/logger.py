@@ -246,3 +246,28 @@ class ProgressTracker:
             percent = int(100 * self.current / self.total)
             if percent > self._last_logged_percent:
                 self._emit_progress(percent)
+
+
+def format_time(seconds: float) -> str:
+    """
+    Format a time in seconds to a human-readable format:
+    - >1d -> Xd Yh
+    - >1h -> Xh Ym
+    - >1m -> Xm Ys
+    - <1s -> Xms
+    - Else: Xs
+    """
+    if seconds < 1:
+        return f"{seconds * 1000:.0f}ms"
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    if seconds < 3600:
+        m, s = divmod(seconds, 60)
+        return f"{int(m)}m {int(s)}s"
+    if seconds < 86400:
+        h, rem = divmod(seconds, 3600)
+        m = rem // 60
+        return f"{int(h)}h {int(m)}m"
+    d, rem = divmod(seconds, 86400)
+    h = rem // 3600
+    return f"{int(d)}d {int(h)}h"

@@ -46,7 +46,6 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
                 model.convert_to_hf(state_dict)
             else:
-                # For regular transformers models, revert internal format to original HF hub format
                 from transformers.core_model_loading import revert_weight_conversion
 
                 state_dict = revert_weight_conversion(model, state_dict)

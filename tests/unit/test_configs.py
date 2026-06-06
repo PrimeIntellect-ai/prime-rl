@@ -680,6 +680,41 @@ def test_orchestrator_renderer_auto_accepts_mapped_model():
     assert config.renderer.name == "auto"
 
 
+def test_orchestrator_batching_uses_env_group_size_for_capacity():
+    config = OrchestratorConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "batch_size": 16,
+            "group_size": 1,
+            "train": {
+                "env": [
+                    {"id": "reverse-text", "group_size": 8},
+                ],
+            },
+        }
+    )
+
+    assert config.train.env[0].group_size == 8
+    assert config.max_inflight_rollouts == 16
+
+
+def test_orchestrator_rejects_max_inflight_below_env_group_size():
+    with pytest.raises(ValidationError, match="largest train env group_size"):
+        OrchestratorConfig.model_validate(
+            {
+                "model": {"name": "Qwen/Qwen3-0.6B"},
+                "batch_size": 16,
+                "group_size": 1,
+                "max_inflight_rollouts": 4,
+                "train": {
+                    "env": [
+                        {"id": "reverse-text", "group_size": 8},
+                    ],
+                },
+            }
+        )
+
+
 def test_orchestrator_explicit_renderer_skips_unmapped_check():
     """Explicit renderer.name bypasses the auto-resolution check — user opted in."""
     config = OrchestratorConfig.model_validate(

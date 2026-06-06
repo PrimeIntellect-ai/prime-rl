@@ -38,10 +38,6 @@ args = { subset = "gpqa_diamond", judge_model = "gpt-4.1-mini", assignment_balan
 [orchestrator.advantage]
 type = "default"
 
-[orchestrator.buffer]
-easy_threshold = 1.0
-hard_threshold = 0.0
-
 [orchestrator.eval]
 interval = 25
 

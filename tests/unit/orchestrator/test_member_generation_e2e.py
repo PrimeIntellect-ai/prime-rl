@@ -106,6 +106,7 @@ class _FakeSingleAgentEval(EvalEnv):
             reward=1.0,
             completion=[{"role": "assistant", "content": "ok"}],
             is_truncated=False,
+            token_usage={"final_output_tokens": 1},
             trajectory=[],
         )
 

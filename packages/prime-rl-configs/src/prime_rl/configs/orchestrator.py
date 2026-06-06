@@ -50,8 +50,17 @@ class TrainSamplingConfig(BaseConfig):
     top_p: float = Field(1.0, ge=0, le=1)
     """Nucleus sampling threshold."""
 
+    top_k: int | None = None
+    """Top-k sampling. None defers to the inference server default."""
+
+    min_p: float | None = Field(None, ge=0)
+    """Min-p sampling threshold. None defers to the inference server default."""
+
     repetition_penalty: float = Field(1.0, ge=0)
     """Repetition penalty. Values > 1.0 discourage repetition, < 1.0 encourage it, 1.0 disables."""
+
+    presence_penalty: float | None = None
+    """Presence penalty. None defers to the inference server default."""
 
     max_completion_tokens: int | None = Field(
         None, validation_alias=AliasChoices("max_completion_tokens", "max_tokens")
@@ -60,6 +69,9 @@ class TrainSamplingConfig(BaseConfig):
 
     min_tokens: int = Field(0, ge=0)
     """Minimum output tokens per sequence."""
+
+    thinking_token_budget: int | None = Field(None, ge=0)
+    """Reasoning-token budget for servers that support Qwen-style thinking control."""
 
     seed: int | None = None
     """Random seed for sampling. If None, no seeding is used."""
@@ -79,15 +91,25 @@ class TrainSamplingConfig(BaseConfig):
         }
         if self.max_completion_tokens is not None:
             args["max_completion_tokens"] = self.max_completion_tokens
+        if self.presence_penalty is not None:
+            args["presence_penalty"] = self.presence_penalty
         if self.seed is not None:
             args["seed"] = self.seed
 
         # vLLM extra_body params
         extra_body = dict(self.extra_body)
+        if self.top_k is not None:
+            extra_body["top_k"] = self.top_k
+        if self.min_p is not None:
+            extra_body["min_p"] = self.min_p
+        if self.presence_penalty is not None:
+            extra_body["presence_penalty"] = self.presence_penalty
         if self.min_tokens > 0:
             extra_body["min_tokens"] = self.min_tokens
         if self.repetition_penalty != 1.0:
             extra_body["repetition_penalty"] = self.repetition_penalty
+        if self.thinking_token_budget is not None:
+            extra_body["thinking_token_budget"] = self.thinking_token_budget
         if extra_body:
             args["extra_body"] = extra_body
 
@@ -122,6 +144,9 @@ class EvalSamplingConfig(BaseConfig):
     min_p: float | None = Field(None, ge=0)
     """Min-p sampling threshold. None defers to the inference server default."""
 
+    presence_penalty: float | None = None
+    """Presence penalty. None defers to the inference server default."""
+
     max_completion_tokens: int | None = Field(
         None, validation_alias=AliasChoices("max_completion_tokens", "max_tokens")
     )
@@ -129,6 +154,9 @@ class EvalSamplingConfig(BaseConfig):
 
     min_tokens: int | None = Field(None, ge=0)
     """Minimum output tokens per sequence. None defers to the inference server default."""
+
+    thinking_token_budget: int | None = Field(None, ge=0)
+    """Reasoning-token budget for servers that support Qwen-style thinking control."""
 
     reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = None
     """Reasoning effort constraint for reasoning models."""
@@ -148,6 +176,8 @@ class EvalSamplingConfig(BaseConfig):
             args["top_p"] = self.top_p
         if self.max_completion_tokens is not None:
             args["max_completion_tokens"] = self.max_completion_tokens
+        if self.presence_penalty is not None:
+            args["presence_penalty"] = self.presence_penalty
         if self.reasoning_effort is not None:
             args["reasoning_effort"] = self.reasoning_effort
         if self.seed is not None:
@@ -158,10 +188,14 @@ class EvalSamplingConfig(BaseConfig):
             extra_body["top_k"] = self.top_k
         if self.min_p is not None:
             extra_body["min_p"] = self.min_p
+        if self.presence_penalty is not None:
+            extra_body["presence_penalty"] = self.presence_penalty
         if self.min_tokens is not None:
             extra_body["min_tokens"] = self.min_tokens
         if self.repetition_penalty is not None:
             extra_body["repetition_penalty"] = self.repetition_penalty
+        if self.thinking_token_budget is not None:
+            extra_body["thinking_token_budget"] = self.thinking_token_budget
         if extra_body:
             args["extra_body"] = extra_body
 
@@ -246,6 +280,10 @@ class EnvConfig(BaseConfig):
 class TrainEnvConfig(EnvConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
+
+    group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
+    """Rollouts generated per example for GRPO group-relative advantages.
+    Inherits from ``orchestrator.group_size`` when unset."""
 
 
 class EvalEnvConfig(EnvConfig):
@@ -345,6 +383,10 @@ class EvalConfig(BaseConfig):
     interval: int = Field(100, ge=1)
     """Step interval at which to evaluate the model."""
 
+    skip_first_step: bool = False
+    """If True, skip the startup eval that otherwise runs before any
+    train rollouts."""
+
     @model_validator(mode="after")
     def resolve_env_defaults(self):
         """Resolve per-env overrides: inherit group-level sampling, num_workers, max_retries, num_examples, seed, group_size, max_concurrent_rollouts_per_client, and interval. Then resolve auto num_workers."""
@@ -379,6 +421,16 @@ class EvalConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_non_empty_envs(self):
+        if not self.env:
+            raise ValueError(
+                "EvalConfig must define at least one env. Either drop the "
+                "[orchestrator.eval] block entirely (to disable eval) or "
+                "add a [[orchestrator.eval.env]] block."
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_unique_env_names(self):
         env_names = [env.resolved_name for env in self.env]
         duplicates = [n for n in env_names if env_names.count(n) > 1]
@@ -387,17 +439,6 @@ class EvalConfig(BaseConfig):
                 f"Duplicate evaluation environment names: {set(duplicates)}. Each env must have a unique name."
             )
         return self
-
-    eval_base_model: bool = True
-    """Evaluate the base model we are training on."""
-
-    skip_eval_on_resume: bool = Field(
-        True, validation_alias=AliasChoices("skip_eval_on_resume", "skip_eval_on_restart")
-    )
-    """When resuming the orchestrator from a checkpoint, skip the (potentially redundant) online eval that would otherwise run immediately at the resumed step."""
-
-    cancel_inflight_rollouts_on_eval: bool = False
-    """Cancel in-flight training rollouts before starting online evals. Avoids congestion (no training + eval rollouts at the same time) at the cost of slower training steps as the pipeline has to refill after each eval."""
 
 
 class CheckpointConfig(BaseConfig):
@@ -418,38 +459,6 @@ class CheckpointConfig(BaseConfig):
 
     skip_progress: bool = False
     """Skip loading the progress from checkpoint."""
-
-    skip_buffer: bool = False
-    """Skip loading the buffer from checkpoint."""
-
-
-class BufferConfig(BaseConfig):
-    seed: int | None = None
-    """Random seed for the buffer. When set, sampling from the buffer is deterministic."""
-
-    easy_threshold: float | None = None
-    """Average-reward threshold above which a problem is classified ``easy``."""
-
-    hard_threshold: float | None = None
-    """Average-reward threshold below which a problem is classified ``hard``."""
-
-    easy_fraction: float = Field(0.0, ge=0, le=1)
-    """Fraction of easy problems to convert to ``normal`` when resuming or starting training. Only problems with difficulty ``normal`` are sampled."""
-
-    hard_fraction: float = Field(0.0, ge=0, le=1)
-    """Fraction of hard problems to convert to ``normal`` when resuming or starting training. Only problems with difficulty ``normal`` are sampled."""
-
-    online_difficulty_filtering: bool = False
-    """Filter rollouts based on difficulty. When True, rollouts with average reward 0.0 or 1.0 are not added to the buffer."""
-
-    hash_keys: list[str] = Field(["env_name", "prompt"], min_length=1)
-    """Keys used to compute example hashes. Used to match examples from buffer checkpoints and determine buffer resume behavior."""
-
-    @model_validator(mode="after")
-    def validate_thresholds(self):
-        if self.easy_threshold is not None and self.hard_threshold is not None:
-            assert self.easy_threshold > self.hard_threshold, "easy_threshold must be greater than hard_threshold."
-        return self
 
 
 class TokensLengthPenaltyConfig(BaseConfig):
@@ -629,15 +638,28 @@ class OrchestratorConfig(BaseConfig):
     eval: EvalConfig | None = None
     """Evaluation configuration."""
 
-    buffer: BufferConfig = BufferConfig()
-
     advantage: AdvantageConfig | None = DefaultAdvantageConfig()
 
     multi_agent: MultiAgentConfig = MultiAgentConfig()
     """Runtime generation policy for Verifiers multi-agent environments."""
 
-    filters: list[FilterConfig] = [GibberishFilterConfig(), RepetitionFilterConfig(), ZeroAdvantageFilterConfig()]
-    """Rollout filters. Each filter can ``monitor`` (default) or ``enforce`` (skip rollouts)."""
+    pre_batch_filters: list[FilterConfig] = [
+        GibberishFilterConfig(enforce=False),
+        RepetitionFilterConfig(enforce=False),
+        ZeroAdvantageFilterConfig(enforce=False),
+    ]
+    """Filters applied *before* a rollout enters the training batch buffer.
+    All three filter types are registered in monitor mode by default; flip ``enforce=true`` per type
+    to drop matching rollouts before they consume a slot in the batch (e.g. a zero-advantage group
+    never makes it into a training batch)."""
+
+    post_batch_filters: list[FilterConfig] = [
+        GibberishFilterConfig(),
+        RepetitionFilterConfig(),
+        ZeroAdvantageFilterConfig(),
+    ]
+    """Filters applied *after* a batch has been assembled. Each filter annotates each rollout;
+    rollouts flagged by an enforcing filter are still recorded but not shipped to the trainer."""
 
     log: LogConfig = LogConfig()
 
@@ -704,9 +726,6 @@ class OrchestratorConfig(BaseConfig):
 
     bench: bool = False
     """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""
-
-    seed: int | None = 42
-    """Random seed for the orchestrator."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
@@ -830,9 +849,12 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_unique_filter_types(self):
-        types = [f.type for f in self.filters]
-        if len(types) != len(set(types)):
-            raise ValueError(f"Duplicate filter types: {types}. Each filter type may only appear once.")
+        for slot_name in ("pre_batch_filters", "post_batch_filters"):
+            types = [f.type for f in getattr(self, slot_name)]
+            if len(types) != len(set(types)):
+                raise ValueError(
+                    f"Duplicate filter types in {slot_name}: {types}. Each filter type may only appear once per slot."
+                )
         return self
 
     @model_validator(mode="after")
@@ -921,6 +943,13 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_batching(self):
+        # Propagate the top-level ``group_size`` into each train env that didn't set its own
+        # before any capacity checks that depend on actual per-env group sizes.
+        for env_cfg in self.train.env:
+            if "group_size" not in env_cfg.model_fields_set:
+                env_cfg.group_size = self.group_size
+        max_group_size = max(env_cfg.group_size for env_cfg in self.train.env)
+
         has_rollout_batch = self.batch_size is not None
         has_token_batch = self.token_batch_size is not None
 
@@ -937,11 +966,17 @@ class OrchestratorConfig(BaseConfig):
                 raise ValueError("max_inflight_rollouts must be set when token_batch_size is set")
         else:
             assert self.batch_size is not None
-            if self.batch_size % self.group_size != 0:
-                raise ValueError("Batch size must be divisible by the number of samples per problem")
+            indivisible_group_sizes = sorted(
+                {env_cfg.group_size for env_cfg in self.train.env if self.batch_size % env_cfg.group_size != 0}
+            )
+            if indivisible_group_sizes:
+                raise ValueError(
+                    "batch_size must be divisible by every training env group_size; "
+                    f"got batch_size={self.batch_size}, group_sizes={indivisible_group_sizes}"
+                )
             oversampling_factor = self.oversampling_factor if self.oversampling_factor is not None else 1.0
             resolved_max_inflight_rollouts = max(
-                self.group_size,
+                max_group_size,
                 int(self.batch_size * oversampling_factor),
             )
             if self.max_inflight_rollouts is not None and self.oversampling_factor is not None:
@@ -951,8 +986,8 @@ class OrchestratorConfig(BaseConfig):
             if self.max_inflight_rollouts is None:
                 self.max_inflight_rollouts = resolved_max_inflight_rollouts
 
-        if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < self.group_size:
-            raise ValueError("max_inflight_rollouts must be at least the number of rollouts per example")
+        if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < max_group_size:
+            raise ValueError("max_inflight_rollouts must be at least the largest train env group_size")
 
         # Resolve train env num_workers from max_inflight_rollouts
         for env_cfg in self.train.env:

@@ -84,8 +84,13 @@ def propagate_shared_fields(data: Any) -> Any:
     )
 
     # [log]
-    propagate("log.level", "trainer.log.level", "orchestrator.log.level")
-    propagate("log.json_logging", "trainer.log.json_logging", "orchestrator.log.json_logging")
+    propagate("log.level", "trainer.log.level", "orchestrator.log.level", "inference.log.level")
+    propagate(
+        "log.json_logging",
+        "trainer.log.json_logging",
+        "orchestrator.log.json_logging",
+        "inference.log.json_logging",
+    )
 
     # [ckpt] leaves. (Bare empty ``[ckpt]`` block enablement is at the end.)
     # ``orchestrator.ckpt`` has no ``output_dir`` field — trainer-only.
@@ -126,6 +131,12 @@ def propagate_shared_fields(data: Any) -> Any:
     # Top-level scalars.
     propagate("max_steps", "trainer.max_steps", "orchestrator.max_steps")
     propagate("seq_len", "trainer.model.seq_len", "orchestrator.seq_len")
+
+    # [slurm] → inference: a multi-node RL run drives its inference deployment under
+    # the same SLURM allocation, so the nested inference inherits [slurm]. This is
+    # what lets the nested InferenceConfig's multi-node / disaggregated SLURM check
+    # pass (the per-rank inference.toml drops slurm, so each rank still runs locally).
+    propagate("slurm", "inference.slurm")
 
     # output_dir: orchestrator gets a ``/run_default`` subdir so trainer +
     # orchestrator nest under the same experiment root without colliding.
