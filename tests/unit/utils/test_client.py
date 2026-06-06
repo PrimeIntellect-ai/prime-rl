@@ -6,7 +6,14 @@ import httpx
 import verifiers as vf
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.client import _is_retryable_lora_error, load_lora_adapter, setup_clients
+from prime_rl.utils.client import (
+    DynamoAdminAPI,
+    _dynamo_rl_discovery_base_urls,
+    _is_retryable_lora_error,
+    discover_dynamo_admin_base_urls,
+    load_lora_adapter,
+    setup_clients,
+)
 
 
 def test_is_retryable_lora_error_returns_true_for_404():
@@ -45,6 +52,32 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
     mock_client.post.assert_called_once_with(
         "/load_lora_adapter",
         json={"lora_name": "test-lora", "lora_path": "/test/path"},
+        timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
+    )
+
+
+def test_dynamo_load_lora_adapter_uses_existing_lora_engine_route():
+    mock_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json.return_value = {"status": "success"}
+    mock_client.post.return_value = mock_response
+
+    asyncio.run(
+        DynamoAdminAPI().load_lora_adapter(
+            mock_client,
+            "test-lora",
+            "/test/path",
+            timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
+        )
+    )
+
+    mock_client.post.assert_called_once_with(
+        "/engine/load_lora",
+        json={
+            "lora_name": "test-lora",
+            "source": {"uri": Path("/test/path").absolute().as_uri()},
+        },
         timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
     )
 
@@ -117,3 +150,70 @@ def test_setup_clients_preserves_chat_client_defaults():
             extra_headers_from_state={},
         )
     ]
+
+
+def test_dynamo_rl_discovery_base_urls_derive_from_base_url(monkeypatch):
+    monkeypatch.setenv("DYN_RL_PORT", "18001")
+    client_config = ClientConfig(
+        base_url=["http://frontend.local:8000/v1"],
+        backend="dynamo",
+    )
+
+    assert _dynamo_rl_discovery_base_urls(client_config) == ["http://frontend.local:18001"]
+
+
+def test_dynamo_rl_discovery_base_urls_honor_explicit_config():
+    client_config = ClientConfig(
+        base_url=["http://frontend.local:8000/v1"],
+        backend="dynamo",
+        rl_base_url=["http://frontend.local:8001/v1"],
+    )
+
+    assert _dynamo_rl_discovery_base_urls(client_config) == ["http://frontend.local:8001/v1"]
+
+
+def test_discover_dynamo_admin_base_urls_reads_workers(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "workers": [
+                    {"system_url": "http://worker-0:8081"},
+                    {"system_url": "http://worker-0:8081"},
+                    {"system_url": "http://worker-1:8081"},
+                    {},
+                ]
+            }
+
+    class FakeClient:
+        def __init__(self, *, base_url, headers, timeout):
+            calls.append(("init", base_url, headers, timeout))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, path):
+            calls.append(("get", path))
+            return FakeResponse()
+
+    monkeypatch.setattr("prime_rl.utils.client.httpx.Client", FakeClient)
+
+    client_config = ClientConfig(
+        base_url=["http://frontend.local:8000/v1"],
+        backend="dynamo",
+        rl_base_url=["http://frontend.local:8001/v1"],
+    )
+
+    assert discover_dynamo_admin_base_urls(client_config) == [
+        "http://worker-0:8081",
+        "http://worker-1:8081",
+    ]
+    assert calls[0][0:2] == ("init", "http://frontend.local:8001")
+    assert ("get", "/v1/rl/workers") in calls

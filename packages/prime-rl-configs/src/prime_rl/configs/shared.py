@@ -136,6 +136,12 @@ class ClientConfig(BaseConfig):
     elastic: ElasticConfig | None = None
     """Elastic inference pool config for DNS-based service discovery. When set, ``base_url`` is ignored and inference servers are discovered dynamically via DNS."""
 
+    rl_base_url: list[str] | None = None
+    """Dynamo RL worker discovery base URLs. Used only for backend='dynamo' when admin_base_url is unset. These URLs point at the Dynamo RL discovery listener (DYN_RL_PORT, default 8001), which serves GET /v1/rl/workers. If unset, prime-rl derives the discovery URL from base_url by replacing the port with DYN_RL_PORT or 8001."""
+
+    backend: Literal["vllm", "dynamo"] = "vllm"
+    """Inference backend selector. Picks the AdminAPI implementation used for pause/resume/update_weights/load_lora_adapter/list_models. Default 'vllm' matches prime-rl's bundled vLLM frontend. 'dynamo' targets NVIDIA Dynamo's worker /engine/* admin routes on admin_base_url and routes /v1/models to the OpenAI-compat base_url."""
+
     router_url: str | None = None
     """vllm-router URL for load-aware inference routing. With elastic mode, inference requests go through the router while admin ops still hit discovered pods directly."""
 
