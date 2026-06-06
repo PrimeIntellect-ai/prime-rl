@@ -19,7 +19,7 @@ uv run rl @ examples/hendrycks_sanity/rl.toml \
 Or schedule the same training via SLURM
 
 ```bash
-uv run rl @ examples/hendrycks_sanity/slurm_rl.toml \
+uv run rl @ examples/hendrycks_sanity/rl.toml @ examples/hendrycks_sanity/slurm_rl.toml \
   --wandb.project your-project \
   --wandb.name your-run
 ```

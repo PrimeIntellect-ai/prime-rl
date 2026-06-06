@@ -30,6 +30,7 @@ class MoEArgs:
     top_k: int = 1
     use_grouped_mm: bool = True  # grouped mm or for-loop for the experts computation
     load_balance_coeff: float | None = 1e-3
+    fp8: bool = False  # use FP8 grouped GEMM via DeepGEMM (requires SM90)
 
 
 # can be used as dense FFN layer or shared experts in MoE layers
@@ -144,20 +145,39 @@ def _run_experts_grouped_mm(
     return _run_experts_grouped_mm_impl(w1, w2, w3, x, num_tokens_per_expert)
 
 
-def _run_experts_grouped_mm_impl(
+@expert_parallel
+def _run_experts_fp8_grouped_mm(
     w1: torch.Tensor,
     w2: torch.Tensor,
     w3: torch.Tensor,
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
 ) -> torch.Tensor:
+    return _run_experts_grouped_mm_impl(w1, w2, w3, x, num_tokens_per_expert, fp8=True)
+
+
+def _run_experts_grouped_mm_impl(
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    w3: torch.Tensor,
+    x: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    fp8: bool = False,
+) -> torch.Tensor:
     offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
     # grouped mm between a 2D tensor and a 3D tensor
     assert x.dim() == 2
 
-    h = F.silu(torch._grouped_mm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offs=offsets))
-    h = h * torch._grouped_mm(x.bfloat16(), w3.bfloat16().transpose(-2, -1), offs=offsets)
-    out = torch._grouped_mm(h, w2.bfloat16().transpose(-2, -1), offs=offsets).type_as(x)
+    if fp8:
+        from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
+
+        h = F.silu(grouped_fp8_gemm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offsets))
+        h = h * grouped_fp8_gemm(x.bfloat16(), w3.bfloat16().transpose(-2, -1), offsets)
+        out = grouped_fp8_gemm(h, w2.bfloat16().transpose(-2, -1), offsets).type_as(x)
+    else:
+        h = F.silu(torch._grouped_mm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offs=offsets))
+        h = h * torch._grouped_mm(x.bfloat16(), w3.bfloat16().transpose(-2, -1), offs=offsets)
+        out = torch._grouped_mm(h, w2.bfloat16().transpose(-2, -1), offs=offsets).type_as(x)
 
     return out
 
@@ -169,6 +189,7 @@ class GroupedExperts(nn.Module):
         hidden_dim: int,
         num_experts: int,
         use_grouped_mm: bool,
+        fp8: bool = False,
     ):
         super().__init__()
         self.num_experts = num_experts
@@ -176,6 +197,7 @@ class GroupedExperts(nn.Module):
         self.w2 = nn.Parameter(torch.empty(num_experts, dim, hidden_dim))
         self.w3 = nn.Parameter(torch.empty(num_experts, hidden_dim, dim))
         self.use_grouped_mm = use_grouped_mm
+        self.fp8 = fp8
         self.ep_comm_backend: EPCommBackend = "torch"
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
@@ -186,7 +208,7 @@ class GroupedExperts(nn.Module):
         w2 = self.w2.to_local()
         w3 = self.w3.to_local()
         if self.use_grouped_mm:
-            return _run_experts_grouped_mm_impl(w1, w2, w3, x, num_tokens_per_expert)
+            return _run_experts_grouped_mm_impl(w1, w2, w3, x, num_tokens_per_expert, fp8=self.fp8)
         return _run_experts_for_loop_impl(w1, w2, w3, x, num_tokens_per_expert)
 
     def forward(
@@ -198,6 +220,8 @@ class GroupedExperts(nn.Module):
             return self._forward_deepep(x, num_tokens_per_expert)
 
         if self.use_grouped_mm:
+            if self.fp8:
+                return _run_experts_fp8_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
             return _run_experts_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
         else:
             return _run_experts_for_loop(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
@@ -363,6 +387,16 @@ class GptOssGroupedExperts(nn.Module):
         nn.init.zeros_(self.down_proj_bias)
 
 
+def _selected_probability_mass_sum(
+    scores: torch.Tensor, top_scores: torch.Tensor, score_func: Literal["softmax", "sigmoid"]
+) -> torch.Tensor:
+    with torch.no_grad():
+        if score_func == "softmax":
+            return top_scores.sum()
+        selected_prob_mass = top_scores / (scores.sum(dim=-1, keepdim=True) + 1e-20)
+        return selected_prob_mass.sum(dim=-1).sum()
+
+
 class TokenChoiceTopKRouter(nn.Module):
     """This class implements token-choice routing. In token-choice top-K routing, each token is
         routed to top K experts based on the router scores.
@@ -396,7 +430,7 @@ class TokenChoiceTopKRouter(nn.Module):
 
     def forward(
         self, x: torch.Tensor, expert_bias: torch.Tensor | None = None, routed_experts: torch.Tensor | None = None
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
             x (torch.Tensor): Input tensor with shape ``(bs*slen, dim)``.
@@ -405,13 +439,15 @@ class TokenChoiceTopKRouter(nn.Module):
             routed_experts (torch.Tensor | None, optional): Optional tensor with shape ``(bs * slen, top_k)``.
 
         Returns:
-            tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
                 - top_scores (torch.Tensor):
                     Routing scores for selected experts with shape ``(bs*slen, top_k)``.
                 - selected_experts_indices (torch.Tensor):
                     Expert indices selected for each token with shape ``(bs*slen, top_k)``.
                 - num_tokens_per_expert (torch.Tensor):
                     Number of tokens assigned to each expert with shape ``(num_experts,)``.
+                - routing_confidence_sum (torch.Tensor):
+                    Sum over tokens of the selected-expert probability mass before route normalization/scaling.
         """
         # scores shape (bs*slen, num_experts)
         assert routed_experts is None or routed_experts.shape[-1] == self.top_k, (
@@ -445,6 +481,8 @@ class TokenChoiceTopKRouter(nn.Module):
         else:
             top_scores, selected_experts_indices = torch.topk(scores, k=self.top_k, dim=1)
 
+        routing_confidence_sum = _selected_probability_mass_sum(scores, top_scores, self.score_func)
+
         if self.route_norm:
             denominator = top_scores.sum(dim=-1, keepdim=True) + 1e-20
             top_scores = top_scores / denominator
@@ -458,7 +496,7 @@ class TokenChoiceTopKRouter(nn.Module):
             max=self.num_experts,
         )
 
-        return top_scores, selected_experts_indices, num_tokens_per_expert
+        return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.gate.weight, mean=0.0, std=init_std)
@@ -534,6 +572,7 @@ class MoE(nn.Module):
             hidden_dim=hidden_dim,
             num_experts=num_experts,
             use_grouped_mm=moe_args.use_grouped_mm,
+            fp8=moe_args.fp8,
         )
         self.ep_comm_backend: EPCommBackend = "torch"
         self.experts.set_ep_comm_backend(self.ep_comm_backend)
@@ -575,6 +614,7 @@ class MoE(nn.Module):
             torch.zeros(num_experts, dtype=torch.float32),
             persistent=False,
         )
+        self.register_buffer("routing_confidence_sum", torch.tensor(0.0, dtype=torch.float32), persistent=False)
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
@@ -693,6 +733,7 @@ class MoE(nn.Module):
             top_scores,
             selected_experts_indices,
             num_tokens_per_expert,
+            routing_confidence_sum,
         ) = self.router(x, self.expert_bias, routed_experts=routed_experts)
 
         # tokens_per_expert will be used to update the expert bias for load balancing.
@@ -702,6 +743,7 @@ class MoE(nn.Module):
         # routed expert compute below.
         with torch.no_grad():
             self.tokens_per_expert.add_(num_tokens_per_expert)
+            self.routing_confidence_sum.add_(routing_confidence_sum)
 
         if self.ep_comm_backend == "deepep":
             routed_output = self._run_deepep_routed_experts(x, selected_experts_indices, top_scores)
@@ -749,6 +791,7 @@ class MoE(nn.Module):
 
         with torch.device(buffer_device):
             self.tokens_per_expert = torch.zeros(self.experts.num_experts, dtype=torch.float32)
+            self.routing_confidence_sum = torch.tensor(0.0, dtype=torch.float32)
             if self.load_balance_coeff is not None:
                 self.expert_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)
 
@@ -799,12 +842,19 @@ def _run_nongated_experts_grouped_mm_impl(
     _w3: torch.Tensor,
     x: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
+    fp8: bool = False,
 ) -> torch.Tensor:
     offsets = torch.cumsum(num_tokens_per_expert, dim=0, dtype=torch.int32)
     assert x.dim() == 2
 
-    h = relu2(torch._grouped_mm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offs=offsets))
-    out = torch._grouped_mm(h, w2.bfloat16().transpose(-2, -1), offs=offsets).type_as(x)
+    if fp8:
+        from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
+
+        h = relu2(grouped_fp8_gemm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offsets))
+        out = grouped_fp8_gemm(h, w2.bfloat16().transpose(-2, -1), offsets).type_as(x)
+    else:
+        h = relu2(torch._grouped_mm(x.bfloat16(), w1.bfloat16().transpose(-2, -1), offs=offsets))
+        out = torch._grouped_mm(h, w2.bfloat16().transpose(-2, -1), offs=offsets).type_as(x)
     return out
 
 
@@ -819,6 +869,17 @@ def _run_nongated_experts_grouped_mm(
     return _run_nongated_experts_grouped_mm_impl(w1, w2, _w3, x, num_tokens_per_expert)
 
 
+@expert_parallel
+def _run_nongated_experts_fp8_grouped_mm(
+    w1: torch.Tensor,
+    w2: torch.Tensor,
+    _w3: torch.Tensor,
+    x: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+) -> torch.Tensor:
+    return _run_nongated_experts_grouped_mm_impl(w1, w2, _w3, x, num_tokens_per_expert, fp8=True)
+
+
 class NonGatedGroupedExperts(nn.Module):
     def __init__(
         self,
@@ -826,6 +887,7 @@ class NonGatedGroupedExperts(nn.Module):
         intermediate_dim: int,
         num_experts: int,
         use_grouped_mm: bool,
+        fp8: bool = False,
     ):
         super().__init__()
         self.num_experts = num_experts
@@ -834,6 +896,7 @@ class NonGatedGroupedExperts(nn.Module):
         # Dummy w3 for @expert_parallel decorator compatibility (expects w1, w2, w3 signature)
         self.w3 = nn.Parameter(torch.empty(0))
         self.use_grouped_mm = use_grouped_mm
+        self.fp8 = fp8
         self.ep_comm_backend: EPCommBackend = "torch"
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
@@ -844,7 +907,7 @@ class NonGatedGroupedExperts(nn.Module):
         w2 = self.w2.to_local()
         w3 = self.w3.to_local()
         if self.use_grouped_mm:
-            return _run_nongated_experts_grouped_mm_impl(w1, w2, w3, x, num_tokens_per_expert)
+            return _run_nongated_experts_grouped_mm_impl(w1, w2, w3, x, num_tokens_per_expert, fp8=self.fp8)
         return _run_nongated_experts_for_loop_impl(w1, w2, w3, x, num_tokens_per_expert)
 
     def forward(
@@ -855,6 +918,8 @@ class NonGatedGroupedExperts(nn.Module):
         if self.ep_comm_backend == "deepep":
             return self._forward_deepep(x, num_tokens_per_expert)
         if self.use_grouped_mm:
+            if self.fp8:
+                return _run_nongated_experts_fp8_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
             return _run_nongated_experts_grouped_mm(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
         else:
             return _run_nongated_experts_for_loop(self.w1, self.w2, self.w3, x, num_tokens_per_expert)
@@ -891,7 +956,7 @@ class NemotronHRouter(nn.Module):
 
     def forward(
         self, x: torch.Tensor, expert_bias: torch.Tensor | None = None
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         scores = F.linear(x.float(), self.gate.float()).sigmoid()
         scores_for_choice = scores + self.e_score_correction_bias
 
@@ -917,6 +982,7 @@ class NemotronHRouter(nn.Module):
 
         selected_experts_indices = torch.topk(scores_for_choice, k=self.top_k, dim=-1, sorted=False)[1]
         top_scores = scores.gather(1, selected_experts_indices)
+        routing_confidence_sum = _selected_probability_mass_sum(scores, top_scores, "sigmoid")
 
         if self.norm_topk_prob:
             denominator = top_scores.sum(dim=-1, keepdim=True) + 1e-20
@@ -929,7 +995,7 @@ class NemotronHRouter(nn.Module):
             max=self.num_experts,
         )
 
-        return top_scores, selected_experts_indices, num_tokens_per_expert
+        return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.gate, mean=0.0, std=init_std)
@@ -971,6 +1037,7 @@ class LatentMoE(nn.Module):
         routed_scaling_factor: float,
         use_grouped_mm: bool,
         load_balance_coeff: float | None,
+        fp8: bool = False,
     ):
         super().__init__()
         effective_latent_dim = latent_dim if latent_dim is not None else dim
@@ -988,6 +1055,7 @@ class LatentMoE(nn.Module):
             intermediate_dim=moe_intermediate_size,
             num_experts=num_experts,
             use_grouped_mm=use_grouped_mm,
+            fp8=fp8,
         )
         self.ep_comm_backend: EPCommBackend = "torch"
         self.experts.set_ep_comm_backend(self.ep_comm_backend)
@@ -1018,6 +1086,7 @@ class LatentMoE(nn.Module):
             torch.zeros(num_experts, dtype=torch.float32),
             persistent=False,
         )
+        self.register_buffer("routing_confidence_sum", torch.tensor(0.0, dtype=torch.float32), persistent=False)
 
     def set_ep_comm_backend(self, backend: EPCommBackend) -> None:
         self.ep_comm_backend = backend
@@ -1112,10 +1181,13 @@ class LatentMoE(nn.Module):
         bs, slen, dim = x.shape
         x_flat = x.view(-1, dim)
 
-        top_scores, selected_experts_indices, num_tokens_per_expert = self.router(x_flat, self.expert_bias)
+        top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum = self.router(
+            x_flat, self.expert_bias
+        )
 
         with torch.no_grad():
             self.tokens_per_expert.add_(num_tokens_per_expert)
+            self.routing_confidence_sum.add_(routing_confidence_sum)
 
         if self.ep_comm_backend == "deepep":
             routed_output = self._run_deepep_routed_experts(x_flat, selected_experts_indices, top_scores)
@@ -1147,5 +1219,6 @@ class LatentMoE(nn.Module):
 
         with torch.device(buffer_device):
             self.tokens_per_expert = torch.zeros(self.experts.num_experts, dtype=torch.float32)
+            self.routing_confidence_sum = torch.tensor(0.0, dtype=torch.float32)
             if self.load_balance_coeff is not None:
                 self.expert_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)

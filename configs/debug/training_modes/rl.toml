@@ -1,0 +1,41 @@
+max_steps = 20
+seq_len = 2048
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+project = "reverse-text-debug"
+name = "debug-rl"
+
+[orchestrator]
+training_mode = "rl"
+batch_size = 128
+group_size = 16
+
+[orchestrator.renderer]
+name = "qwen3"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.train.env]]
+id = "reverse-text"
+
+[orchestrator.eval]
+interval = 1
+num_examples = 128
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.eval.env]]
+id = "reverse-text"
+
+[trainer.optim]
+lr = 3e-6
+
+[ckpt]
+
+[inference]
+gpu_memory_utilization = 0.5

@@ -36,6 +36,10 @@ def test_convert_tt_layer_to_vllm_kernel_no_fp8():
 
     assert "model.layers.0.self_attn.fused_qkv_a_proj.weight" in out
     assert out["model.layers.0.self_attn.fused_qkv_a_proj.weight"].shape == (7, 6)
+    assert "model.layers.0.self_attn.indexer.wk_weights_proj.weight" in out
+    assert out["model.layers.0.self_attn.indexer.wk_weights_proj.weight"].shape == (6, 6)
+    assert "model.layers.0.self_attn.indexer.wk.weight" not in out
+    assert "model.layers.0.self_attn.indexer.weights_proj.weight" not in out
 
     assert "model.layers.0.mlp.gate_up_proj.weight" in out
     assert out["model.layers.0.mlp.gate_up_proj.weight"].shape == (16, 6)
@@ -55,6 +59,8 @@ def test_convert_tt_layer_to_vllm_kernel_with_fp8():
 
     assert out["model.layers.0.self_attn.fused_qkv_a_proj.weight"].dtype == torch.float8_e4m3fn
     assert out["model.layers.0.self_attn.fused_qkv_a_proj.weight_scale_inv"].dtype == torch.float32
+    assert out["model.layers.0.self_attn.indexer.wk_weights_proj.weight"].dtype == torch.float32
+    assert "model.layers.0.self_attn.indexer.wk.weight_scale_inv" not in out
 
     assert out["model.layers.0.mlp.experts.w13_weight"].dtype == torch.float8_e4m3fn
     assert out["model.layers.0.mlp.experts.w13_weight_scale_inv"].dtype == torch.float32

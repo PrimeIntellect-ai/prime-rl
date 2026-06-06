@@ -4,6 +4,8 @@ import time
 from contextlib import nullcontext
 from datetime import timedelta
 
+from renderers.base import create_renderer
+from renderers.default import DefaultRenderer
 from ring_flash_attn import substitute_hf_flash_attn
 from torch.nn import CrossEntropyLoss
 
@@ -20,7 +22,7 @@ from prime_rl.configs.sft import SFTConfig
 from prime_rl.utils.cp import setup_cp_params, shard_for_cp
 from prime_rl.trainer.runs import Progress, get_multi_run_manager, setup_multi_run_manager
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
-from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
@@ -107,8 +109,17 @@ def train(config: SFTConfig):
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
         cp_group = parallel_dims.world_mesh["cp"].get_group()
         cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
-        substitute_hf_flash_attn(cp_group, heads_k_stride=1)
-        substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.model.attn)
+        if config.model.cp_style == "ring":
+            substitute_hf_flash_attn(cp_group, heads_k_stride=1)
+            substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.model.attn)
+        else:
+            from prime_rl.trainer.models.layers.ulysses_attn import (
+                substitute_hf_ulysses_attn,
+                substitute_ulysses_attn,
+            )
+
+            substitute_hf_ulysses_attn(cp_group)
+            substitute_ulysses_attn(cp_group, attn_impl=config.model.attn)
         from prime_rl.utils.cp import setup_hybrid_cp, setup_nemotron_h_cp, setup_sparse_mla_cp
 
     # Set up checkpoint manager
@@ -129,9 +140,16 @@ def train(config: SFTConfig):
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later, fused_cross_entropy=fused_cross_entropy)
 
     if parallel_dims.cp_enabled:
-        setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
+        from prime_rl.utils.cp import assert_cp_style_supports_model
+
+        assert_cp_style_supports_model(config.model.cp_style, model)
+        # sparse MLA is softmax (works with both ring and ulysses).
         setup_sparse_mla_cp(model, cp_group, cp_rank, parallel_dims.cp)
-        setup_nemotron_h_cp(model, cp_group, cp_rank, parallel_dims.cp)
+        # Linear-attn / Mamba layers are only configured under ulysses; with ring
+        # we'd have already raised above.
+        if config.model.cp_style == "ulysses":
+            setup_hybrid_cp(model, cp_group, cp_rank, parallel_dims.cp)
+            setup_nemotron_h_cp(model, cp_group, cp_rank, parallel_dims.cp)
 
     if config.model.lora is not None:
         multi_run_manager = get_multi_run_manager()
@@ -140,6 +158,19 @@ def train(config: SFTConfig):
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
+
+    renderer = None
+    if config.renderer is not None:
+        renderer = create_renderer(tokenizer, config.renderer)
+        if isinstance(renderer, DefaultRenderer):
+            raise ValueError(
+                f"renderer set for {config.tokenizer.name!r} resolved to DefaultRenderer. "
+                "DefaultRenderer falls back to incremental apply_chat_template and does NOT "
+                "fix position-dependent chat templates — the bug the renderer client is meant to solve. "
+                "Either use a model with a hand-coded renderer (see renderers.base.MODEL_RENDERER_MAP), "
+                "set [renderer] name=<hand-coded renderer> explicitly, or remove the [renderer] block."
+            )
+        logger.info(f"Initialized {type(renderer).__name__} for {config.tokenizer.name}")
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -159,7 +190,7 @@ def train(config: SFTConfig):
 
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
-    dataset = setup_dataset(tokenizer, config.data, config.model.cp)
+    dataset = setup_dataset(tokenizer, config.data, config.model.cp, renderer=renderer)
     dataloader = setup_dataloader(dataset, config.data)
     dataiter = iter(dataloader)
 
@@ -213,7 +244,9 @@ def train(config: SFTConfig):
         loss_mask = micro_batch["loss_mask"].to("cuda")
 
         if cp_enabled:
-            input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, cp_group)
+            input_ids, position_ids = setup_cp_params(
+                input_ids, position_ids, cp_rank, cp_size, cp_group, cp_style=config.model.cp_style
+            )
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
 
@@ -247,8 +280,19 @@ def train(config: SFTConfig):
         total_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
         nan_count = torch.tensor(0, device="cuda")
 
+        # Variable-length packing yields different per-rank batch counts. Under FSDP
+        # every forward is a collective, so all ranks must agree on when to stop —
+        # otherwise the first rank to exit deadlocks the rest in the next all-gather.
+        # Sync per batch and exit together as soon as any rank exhausts its iterator.
+        data_iter = iter(data_iter)
+
         with torch.no_grad():
-            for micro_batch in data_iter:
+            while True:
+                micro_batch = next(data_iter, None)
+                has_data = torch.tensor(micro_batch is not None, dtype=torch.int32, device="cuda")
+                dist.all_reduce(has_data, op=dist.ReduceOp.MIN)
+                if has_data.item() == 0:
+                    break
                 loss_sum, token_count = compute_loss(micro_batch)
                 if not torch.isnan(loss_sum.detach()):
                     total_loss_sum += loss_sum.detach()
@@ -265,7 +309,12 @@ def train(config: SFTConfig):
 
     def run_validation(step: int) -> None:
         val_dataset = setup_dataset(
-            tokenizer, config.val.data, config.model.cp, max_epochs=1, raw_dataset=val_raw_dataset
+            tokenizer,
+            config.val.data,
+            config.model.cp,
+            max_epochs=1,
+            raw_dataset=val_raw_dataset,
+            renderer=renderer,
         )
         val_dataloader = setup_dataloader(val_dataset, config.val.data)
 
@@ -276,7 +325,7 @@ def train(config: SFTConfig):
         if mean_loss != mean_loss:
             logger.warning(f"Validation at step {step} had no valid tokens")
         else:
-            logger.success(f"Validation | Step {step} | Loss: {mean_loss:.4f}")
+            logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
         monitor.log({"val/loss": mean_loss, "step": step}, step=step)
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
@@ -336,7 +385,15 @@ def train(config: SFTConfig):
         step_loss_sum = torch.tensor(0.0, device="cuda")
         step_local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
         nan_loss_count = torch.tensor(0, device="cuda")
-        batch_max_vio = torch.tensor(0.0, device="cuda")
+        is_moe_model = is_tt_moe_model(model)
+        moe_stats = (
+            {
+                "max_vio": torch.tensor(0.0, device="cuda"),
+                "routing_confidence": torch.tensor(0.0, device="cuda"),
+            }
+            if is_moe_model
+            else {}
+        )
         for micro_step in range(grad_accum_steps):
             micro_batch = next(dataiter)
 
@@ -361,12 +418,16 @@ def train(config: SFTConfig):
             with maybe_record_function("backward"):
                 scaled_loss.backward()
 
-            if is_tt_moe_model(model):
-                max_vio = get_load_balance_stats(model)["max_vio"]
-                if max_vio is not None:
-                    max_vio = max_vio.mean()
-                    dist.all_reduce(max_vio, op=dist.ReduceOp.MAX)
-                    batch_max_vio += max_vio / grad_accum_steps
+            if is_moe_model:
+                for name, values in get_load_balance_stats(model).items():
+                    if values is None:
+                        continue
+                    value = values.mean()
+                    reduce_op = dist.ReduceOp.MAX if name == "max_vio" else dist.ReduceOp.SUM
+                    dist.all_reduce(value, op=reduce_op)
+                    if reduce_op == dist.ReduceOp.SUM:
+                        value /= dist.get_world_size()
+                    moe_stats[name] += value / grad_accum_steps
 
         forward_backward_time = time.perf_counter() - forward_backward_start_time
 
@@ -422,9 +483,14 @@ def train(config: SFTConfig):
         if memory_profiler is not None:
             memory_profiler.step()
 
-        # Compute step metrics
-        # Divide by CP since those ranks process the same data
-        num_tokens = config.data.batch_size * config.data.seq_len // config.model.cp
+        # Compute step metrics. CP shards the same sequences across cp ranks
+        # (sequence-sharded data parallelism on the seq dim), so the unique
+        # training tokens per step is dp_size * (batch_per_dp_rank * seq).
+        # The `dp` mesh excludes cp by construction (parallel_dims.py), mirroring
+        # the RL trainer's accounting (rl/train.py).
+        dp_size = parallel_dims.get_mesh("dp").size()
+        num_local_tokens = config.data.seq_len * (config.data.batch_size // dp_size)
+        num_tokens = dp_size * num_local_tokens
         progress.total_tokens += num_tokens
         progress.total_samples = dataset.step
         perf_counter = get_perf_counter(model, config.data.seq_len)
@@ -435,12 +501,15 @@ def train(config: SFTConfig):
 
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {batch_loss:.4f}"
+        step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {batch_loss:.4f}"
         if grad_norm is not None:
-            step_message += f" | Grad. Norm: {grad_norm:.4f}"
-        step_message += f" | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
-        if is_tt_moe_model(model) and batch_max_vio.item() > 0:
-            step_message += f" | Max Vio: {batch_max_vio.item():.4f}"
+            step_message += f" | Grad. Norm {grad_norm:.4f}"
+        step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
+        if is_moe_model:
+            for name, label in (("max_vio", "Max Vio"), ("routing_confidence", "Routing Conf.")):
+                value = moe_stats[name].item()
+                if value > 0:
+                    step_message += f" | {label} {value:.4f}"
         logger.success(step_message)
 
         # Log progress metrics
@@ -508,8 +577,9 @@ def train(config: SFTConfig):
         disk_metrics["step"] = progress.step
         monitor.log(disk_metrics, step=progress.step)
 
-        if is_tt_moe_model(model) and batch_max_vio.item() > 0:
-            monitor.log({"max_vio/mean": batch_max_vio.item(), "step": progress.step}, step=progress.step)
+        moe_log_metrics = {f"{name}/mean": value.item() for name, value in moe_stats.items() if value.item() > 0}
+        if moe_log_metrics:
+            monitor.log({**moe_log_metrics, "step": progress.step}, step=progress.step)
 
         is_first_step = False
         progress.step += 1

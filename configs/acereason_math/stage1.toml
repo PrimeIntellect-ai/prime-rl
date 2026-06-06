@@ -17,7 +17,7 @@ name = "stage1"
 
 [orchestrator]
 batch_size = 1024
-rollouts_per_example = 8
+group_size = 8
 
 [orchestrator.train.sampling]
 temperature = 0.6
@@ -32,17 +32,22 @@ interval = 50
 
 [[orchestrator.eval.env]]
 id = "math500"
-rollouts_per_example = 1
+group_size = 1
 
 [[orchestrator.eval.env]]
 id = "aime2024"
-rollouts_per_example = 32
+group_size = 32
 
 [[orchestrator.eval.env]]
 id = "aime2025"
-rollouts_per_example = 32
+group_size = 32
 
 [trainer.model.ac]
 
 [inference.parallel]
 dp = 6
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"
+reasoning_parser = "think"

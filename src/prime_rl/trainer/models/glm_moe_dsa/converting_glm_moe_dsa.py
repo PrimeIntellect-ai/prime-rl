@@ -188,11 +188,18 @@ def convert_tt_layer_to_vllm_kernel(
         if key in state_dict:
             add_maybe_fp8(key, state_dict[key])
 
-    for suffix in ["indexer.wq_b.weight", "indexer.wk.weight"]:
-        key = f"{prefix}.self_attn.{suffix}"
-        if key in state_dict:
-            add_maybe_fp8(key, state_dict[key])
-    for suffix in ["indexer.k_norm.weight", "indexer.k_norm.bias", "indexer.weights_proj.weight"]:
+    indexer_wq_b_key = f"{prefix}.self_attn.indexer.wq_b.weight"
+    if indexer_wq_b_key in state_dict:
+        add_maybe_fp8(indexer_wq_b_key, state_dict[indexer_wq_b_key])
+
+    indexer_wk_key = f"{prefix}.self_attn.indexer.wk.weight"
+    indexer_weights_proj_key = f"{prefix}.self_attn.indexer.weights_proj.weight"
+    if indexer_wk_key in state_dict and indexer_weights_proj_key in state_dict:
+        add(
+            f"{prefix}.self_attn.indexer.wk_weights_proj.weight",
+            torch.cat([state_dict[indexer_wk_key], state_dict[indexer_weights_proj_key]], dim=0),
+        )
+    for suffix in ["indexer.k_norm.weight", "indexer.k_norm.bias"]:
         key = f"{prefix}.self_attn.{suffix}"
         if key in state_dict:
             add(key, state_dict[key])

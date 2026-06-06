@@ -31,7 +31,7 @@ target_modules = [
 
 [orchestrator]
 batch_size = 512
-rollouts_per_example = 16
+group_size = 16
 oversampling_factor = 2.0
 
 [orchestrator.model.lora]
@@ -40,8 +40,9 @@ name = "qwen3-4b-wiki-search"
 [orchestrator.train.sampling]
 max_completion_tokens = 512
 
-[orchestrator.buffer]
-online_difficulty_filtering = true
+[[orchestrator.pre_batch_filters]]
+type = "zero_advantage"
+enforce = true
 
 [[orchestrator.train.env]]
 id = "primeintellect/wiki-search"

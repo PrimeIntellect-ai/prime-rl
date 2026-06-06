@@ -1,5 +1,18 @@
 # Vendored from tile-ai/tilelang (Apache 2.0), modified for dynamic shapes.
 
+# TileLang ships a libcudart stub that proxies to the real CUDA runtime via
+# dlsym(RTLD_DEFAULT, ...).  If the stub's own symbols are the first ones found
+# (because nothing loaded the real libcudart globally yet), the self-check fails
+# and the stub calls abort().  Pre-loading the real library with RTLD_GLOBAL
+# ensures dlsym finds it before the stub's own exports.
+import ctypes as _ctypes
+
+try:
+    _ctypes.CDLL("libcudart.so", mode=_ctypes.RTLD_GLOBAL)
+except Exception:
+    # This is expected on CPU-only machines
+    pass
+
 import tilelang
 import torch
 from tilelang import language as T
@@ -78,7 +91,8 @@ def postprocess(
     pass_configs={
         tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
         tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-        tilelang.PassConfigKey.TL_ENABLE_AGGRESSIVE_SHARED_MEMORY_MERGE: True,
+        # Avoid TileLang MLA backward NaNs: https://github.com/tile-ai/tilelang/issues/2199
+        tilelang.PassConfigKey.TL_ENABLE_AGGRESSIVE_SHARED_MEMORY_MERGE: False,
     },
 )
 def bwd(

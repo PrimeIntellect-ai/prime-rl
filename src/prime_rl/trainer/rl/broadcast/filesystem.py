@@ -46,7 +46,6 @@ class FileSystemWeightBroadcast(WeightBroadcast):
             if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(state_dict):
                 model.convert_to_hf(state_dict)
             else:
-                # For regular transformers models, revert internal format to original HF hub format
                 from transformers.core_model_loading import revert_weight_conversion
 
                 state_dict = revert_weight_conversion(model, state_dict)
@@ -78,7 +77,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                     self.logger.debug(f"Saving weights for run {idx} to {save_dir}")
                     save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded, adapter=adapter_only)
                     if adapter_only:
-                        orch_lora = self.multi_run_manager.config[idx].model.lora
+                        orch_lora = self.multi_run_manager.config[idx].student.model.lora
                         save_lora_config(
                             model,
                             save_dir,
@@ -109,11 +108,10 @@ class FileSystemWeightBroadcast(WeightBroadcast):
         stable_file = save_dir / "STABLE"
         stable_file.touch()
 
-    def maybe_clean(self, max_async_level: int, interval_to_keep: int | None):
+    def maybe_clean(self, interval_to_keep: int | None):
         for idx in self.multi_run_manager.used_idxs:
             maybe_clean(
                 get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
                 self.multi_run_manager.progress[idx].step,
-                max_async_level,
                 interval_to_keep,
             )

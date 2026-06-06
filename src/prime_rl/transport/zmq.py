@@ -32,7 +32,7 @@ class ZMQTrainingBatchSender(TrainingBatchSender):
             f"endpoint=tcp://{transport.host}:{transport.port} hwm={transport.hwm}"
         )
 
-    def send(self, batch: TrainingBatch) -> None:
+    async def send(self, batch: TrainingBatch) -> None:
         payload = self.encoder.encode(batch)
         self.logger.debug(f"Sending batch {batch.step} to {self.sender_id}")
         self.socket.send_multipart([self.sender_id, payload], copy=False)

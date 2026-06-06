@@ -1,5 +1,5 @@
 import pickle
-from typing import TYPE_CHECKING, Callable, Generator, cast
+from typing import TYPE_CHECKING, Generator, cast
 
 import torch
 from torch.nn import Module
@@ -8,10 +8,9 @@ from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import (
-    load_weights_checkpoint,
+    load_weights_checkpoint_layerwise,
     load_weights_kernel,
-    postprocess_weights_checkpoint,
-    postprocess_weights_kernel,
+    update_mla_absorbed_weights,
 )
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
 
@@ -24,6 +23,37 @@ else:
     Worker = object
 
 logger = init_logger("vllm.inference.vllm.worker_nccl")
+
+# NemotronH mixer.D is dropped by vLLM 0.22's layerwise online-reload path (left uninitialized).
+_RELOAD_CORRUPTED_SUFFIXES = (".mixer.D",)
+
+
+def _restore_reload_corrupted_params(model: Module, received: dict[str, torch.Tensor]) -> None:
+    """Work around a vLLM 0.22 layerwise-reload bug for NemotronH.
+
+    The online reload drops the weight load for every Mamba layer's ``mixer.D`` (the SSD skip
+    connection), leaving it as uninitialized ``empty_strided`` memory -- it reads back as garbage
+    (NaN/inf) and the logits go NaN after a weight update. The received broadcast value is correct,
+    so restore D from it via the param's own ``weight_loader``. Remove once the upstream bug is fixed.
+    """
+
+    def _layer_key(name: str) -> str:
+        index = name.find("layers.")
+        return name[index:] if index >= 0 else name
+
+    received_by_key = {_layer_key(name): tensor for name, tensor in received.items()}
+    for name, param in model.named_parameters():
+        if not name.endswith(_RELOAD_CORRUPTED_SUFFIXES):
+            continue
+        tensor = received_by_key.get(_layer_key(name))
+        if tensor is None:
+            continue
+        tensor = tensor.to(device=param.device)
+        weight_loader = getattr(param, "weight_loader", None)
+        if weight_loader is not None:
+            weight_loader(param, tensor)
+        elif tensor.shape == param.shape:
+            param.data.copy_(tensor.to(param.dtype))
 
 
 def receive_integer(communicator: PyNcclCommunicator) -> int:
@@ -144,15 +174,25 @@ class NCCLWeightUpdateWorker(Worker):
         assert isinstance(model, Module)
 
         state_iter = self.nccl_broadcast_receiver.receive_state_dict()
-        device = next(model.parameters()).device
-        loader_fn: Callable[[Module, Generator[tuple[str, torch.Tensor], None, None]], None]
-        postprocess_fn: Callable[[Module, object, torch.device], None]
         if self.quantize_in_weight_transfer:
-            loader_fn = load_weights_kernel
-            postprocess_fn = postprocess_weights_kernel
-        else:
-            loader_fn = load_weights_checkpoint
-            postprocess_fn = postprocess_weights_checkpoint
+            load_weights_kernel(model, state_iter)
+            update_mla_absorbed_weights(model)
+            return
 
-        loader_fn(model, state_iter)
-        postprocess_fn(model, self.model_runner.model_config, device)
+        # vLLM 0.22's layerwise reload drops NemotronH mixer.D's weight load (see
+        # _restore_reload_corrupted_params). Capture the correct received value to restore after.
+        received_reload_fix: dict[str, torch.Tensor] = {}
+
+        def _capture_reload_fix(weights):
+            for name, tensor in weights:
+                if name.endswith(_RELOAD_CORRUPTED_SUFFIXES):
+                    received_reload_fix[name] = tensor.detach().to("cpu", copy=True)
+                yield name, tensor
+
+        load_weights_checkpoint_layerwise(
+            model,
+            _capture_reload_fix(state_iter),
+            self.model_runner.model_config,
+            self.vllm_config,
+        )
+        _restore_reload_corrupted_params(model, received_reload_fix)

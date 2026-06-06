@@ -17,7 +17,7 @@ interval = 100
 
 [orchestrator]
 batch_size = 1024
-rollouts_per_example = 8
+group_size = 8
 
 [orchestrator.train.sampling]
 temperature = 0.6
@@ -32,3 +32,8 @@ args = { dataset_name= "agentica-org/DeepScaleR-Preview-Dataset", dataset_subset
 
 [inference.parallel]
 dp = 6
+
+# Model not in MODEL_RENDERER_MAP — opt into DefaultRenderer (apply_chat_template).
+[orchestrator.renderer]
+name = "default"
+reasoning_parser = "think"
