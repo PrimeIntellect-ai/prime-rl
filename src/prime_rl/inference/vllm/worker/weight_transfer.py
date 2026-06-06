@@ -84,11 +84,120 @@ def build_expert_map(model: Module) -> dict[str, torch.Tensor]:
     return source_indices_by_module
 
 
+def _try_e8m0_scale_conversion(
+    name: str,
+    received_scale: torch.Tensor,
+    param: torch.Tensor,
+    params: dict[str, torch.Tensor],
+    updated_weights: set[str],
+) -> bool:
+    """Convert a trainer-format blockwise FP8 scale to vLLM's E8M0 TMA layout.
+
+    When DeepGEMM E8M0 is active (GB200 default), vLLM stores weight_scale_inv
+    tensors in a TMA-aligned [N, K/512] packed UE8M0 layout.  The trainer sends
+    [N/128, K/128] float32 blockwise scales.
+
+    This delegates to vLLM's own unified helper
+    ``deepgemm_post_process_fp8_weight_block``, which is the *exact* call vLLM
+    invokes at initial model load (via ``DeepGemmFp8BlockScaledMMKernel`` for
+    dense linears and ``prepare_fp8_moe_layer_for_deepgemm`` for MoE).  The
+    helper:
+
+      1. Re-quantises the FP8 weight to UE8M0 (power-of-two) scales in-place
+         (``requant_weight_ue8m0_inplace``).
+      2. Repacks the scale tensor to the TMA-aligned ``[..., N, K/512]`` layout
+         (``transform_sf_into_required_layout`` with recipe ``(1, 128, 128)``).
+      3. Handles 2D (dense) vs 3D (MoE) dispatch internally.
+
+    Reusing vLLM's wrapper guarantees the broadcast path produces the same
+    in-memory layout as vLLM's own startup load path — drift-free by
+    construction.
+
+    Returns True on success, False if conversion is not applicable or fails.
+    The caller is responsible for raising shape-mismatch errors for False returns.
+
+    ORDERING REQUIREMENT: the corresponding FP8 weight param must have been
+    updated (copied from the received tensor) before this function is called,
+    i.e. the weight must appear before its weight_scale_inv in the state iterator.
+    """
+    # Only handle weight_scale_inv tensors.
+    if not name.endswith("weight_scale_inv"):
+        return False
+
+    # Derive the corresponding weight parameter name.
+    # e.g. "...qkv_proj.weight_scale_inv" -> "...qkv_proj.weight"
+    #      "...w13_weight_scale_inv"      -> "...w13_weight"
+    weight_name = name[: -len("weight_scale_inv")] + "weight"
+    if weight_name not in params:
+        return False
+
+    # The weight must have been updated in this broadcast pass so that
+    # requant_weight_ue8m0_inplace dequantises the *new* FP8 values.
+    if weight_name not in updated_weights:
+        logger.warning(
+            "E8M0 scale conversion for %s: weight %s was not updated in this pass "
+            "(scale arrived before weight). Skipping conversion.",
+            name,
+            weight_name,
+        )
+        return False
+
+    try:
+        from vllm.model_executor.layers.quantization.utils.fp8_utils import (
+            deepgemm_post_process_fp8_weight_block,
+        )
+    except ImportError as exc:
+        logger.debug("E8M0 conversion unavailable: %s", exc)
+        return False
+
+    weight_param = params[weight_name]
+
+    try:
+        # Single unified call: re-quantises weight in-place with UE8M0 scales
+        # AND repacks the scale tensor to the TMA-aligned [..., N, K/512] layout
+        # that vLLM stores.  Handles 2D (dense) and 3D (MoE) dispatch internally.
+        # The first return value is the same underlying storage as weight_param
+        # (modified in-place); we only need the new scale tensor.
+        _wq, dg_scale = deepgemm_post_process_fp8_weight_block(
+            wq=weight_param,
+            ws=received_scale,
+            quant_block_shape=(128, 128),
+            use_e8m0=True,
+        )
+        param.copy_(dg_scale.view_as(param))
+        logger.debug("E8M0 scale conversion applied for %s", name)
+        return True
+
+    except Exception as exc:
+        logger.warning("E8M0 scale conversion failed for %s: %s", name, exc)
+        return False
+
+
 @torch.no_grad()
 def load_weights_kernel(model: Module, state_iter: Generator[tuple[str, torch.Tensor], None, None]) -> None:
-    """Load vLLM kernel-format tensors using in-place copy_ updates."""
+    """Load vLLM kernel-format tensors using in-place copy_ updates.
+
+    Handles the GB200 DeepGEMM E8M0 scale mismatch: the trainer broadcasts
+    blockwise [N/128, K/128] float32 scales, while vLLM with E8M0 enabled
+    stores weight_scale_inv in [N, K/512] TMA-aligned packed UE8M0 layout.
+    When is_deep_gemm_e8m0_used() is True, scale tensors with a shape mismatch
+    are automatically converted via requant_weight_ue8m0_inplace +
+    transform_sf_into_required_layout.
+    """
     params = dict(model.named_parameters())
     expert_source_indices = build_expert_map(model)
+
+    # Detect E8M0 once (cached call, cheap).
+    try:
+        from vllm.utils.deep_gemm import is_deep_gemm_e8m0_used
+        _use_e8m0 = is_deep_gemm_e8m0_used()
+    except ImportError:
+        _use_e8m0 = False
+
+    # Track which weight params have been updated in this call so we can
+    # safely call requant_weight_ue8m0_inplace on them (it must dequantise
+    # the *new* FP8 values, not the stale ones from the initial model load).
+    updated_weights: set[str] = set()
 
     loaded = 0
     skipped: list[str] = []
@@ -108,11 +217,19 @@ def load_weights_kernel(model: Module, state_iter: Generator[tuple[str, torch.Te
                 break
 
             if param.shape != tensor.shape:
+                # Attempt E8M0 scale conversion before declaring a mismatch.
+                if _use_e8m0 and _try_e8m0_scale_conversion(
+                    name, tensor, param, params, updated_weights
+                ):
+                    loaded += 1
+                    continue
+
                 shape_mismatches.append(f"{name}: param={list(param.shape)} != received={list(tensor.shape)}")
                 continue
 
         param.copy_(tensor)
         loaded += 1
+        updated_weights.add(name)
 
     if shape_mismatches:
         raise ValueError(f"Kernel weight transfer had {len(shape_mismatches)} shape mismatches: {shape_mismatches}")

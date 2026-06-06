@@ -1,6 +1,8 @@
 import torch
 from torch import Tensor
 
+from prime_rl.trainer.models.fp8 import quantize_to_fp8_blockwise
+
 
 def get_max_layer_num(state_dict: dict[str, Tensor]) -> int:
     """Get the maximum number of layers in the model."""
@@ -98,3 +100,104 @@ def convert_tt_to_hf_moe(state_dict: dict[str, Tensor]):
     num_layers = get_max_layer_num(state_dict)
     for i in range(num_layers):
         convert_tt_layer_to_hf(state_dict, i)
+
+
+def _emit_weight(out: dict[str, Tensor], name: str, tensor: Tensor, quantize_fp8: bool) -> None:
+    """Emit a 2D projection weight, optionally FP8-quantized with block scales."""
+    if quantize_fp8:
+        fp8_weight, scale = quantize_to_fp8_blockwise(tensor)
+        out[name] = fp8_weight
+        out[name.removesuffix(".weight") + ".weight_scale_inv"] = scale
+    else:
+        out[name] = tensor
+
+
+def _emit_moe_experts(
+    out: dict[str, Tensor],
+    prefix: str,
+    w1: Tensor,
+    w2: Tensor,
+    w3: Tensor,
+    quantize_fp8: bool,
+) -> None:
+    """Emit fused MoE expert weights in vLLM FusedMoE W13 layout.
+
+    vLLM's DEEPGEMM FP8 MoE path keeps weights in `[gate; up]` (W13) order;
+    FLASHINFER paths flip to W31 during `process_weights_after_loading`, so
+    inference must select the DEEPGEMM backend (`VLLM_USE_DEEP_GEMM=1`) for
+    RL weight reloads to stay valid across broadcasts.
+    """
+    w13 = torch.cat([w1, w3], dim=1)
+    if not quantize_fp8:
+        out[f"{prefix}.mlp.experts.w13_weight"] = w13
+        out[f"{prefix}.mlp.experts.w2_weight"] = w2
+        return
+
+    num_experts = w1.shape[0]
+    w13_fp8: list[Tensor] = []
+    w13_scales: list[Tensor] = []
+    w2_fp8: list[Tensor] = []
+    w2_scales: list[Tensor] = []
+    for expert_idx in range(num_experts):
+        q13, s13 = quantize_to_fp8_blockwise(w13[expert_idx])
+        q2, s2 = quantize_to_fp8_blockwise(w2[expert_idx])
+        w13_fp8.append(q13)
+        w13_scales.append(s13)
+        w2_fp8.append(q2)
+        w2_scales.append(s2)
+
+    out[f"{prefix}.mlp.experts.w13_weight"] = torch.stack(w13_fp8)
+    out[f"{prefix}.mlp.experts.w13_weight_scale_inv"] = torch.stack(w13_scales)
+    out[f"{prefix}.mlp.experts.w2_weight"] = torch.stack(w2_fp8)
+    out[f"{prefix}.mlp.experts.w2_weight_scale_inv"] = torch.stack(w2_scales)
+
+
+def _is_dense_layer(state_dict: dict[str, Tensor], layer_idx: int) -> bool:
+    """Dense MLP layers have a fused gate_proj; MoE layers route through mlp.router."""
+    return f"model.layers.{layer_idx}.mlp.gate_proj.weight" in state_dict
+
+
+def convert_tt_layer_to_vllm_kernel(
+    state_dict: dict[str, Tensor],
+    layer_idx: int,
+    quantize_fp8: bool = False,
+) -> dict[str, Tensor]:
+    """Convert a single Qwen3MoE layer from PrimeRL format to vLLM kernel format."""
+    prefix = f"model.layers.{layer_idx}"
+    out: dict[str, Tensor] = {
+        f"{prefix}.input_layernorm.weight": state_dict[f"{prefix}.input_layernorm.weight"],
+        f"{prefix}.post_attention_layernorm.weight": state_dict[f"{prefix}.post_attention_layernorm.weight"],
+        f"{prefix}.self_attn.q_norm.weight": state_dict[f"{prefix}.self_attn.q_norm.weight"],
+        f"{prefix}.self_attn.k_norm.weight": state_dict[f"{prefix}.self_attn.k_norm.weight"],
+    }
+
+    qkv = torch.cat(
+        [
+            state_dict[f"{prefix}.self_attn.q_proj.weight"],
+            state_dict[f"{prefix}.self_attn.k_proj.weight"],
+            state_dict[f"{prefix}.self_attn.v_proj.weight"],
+        ],
+        dim=0,
+    )
+    _emit_weight(out, f"{prefix}.self_attn.qkv_proj.weight", qkv, quantize_fp8)
+    _emit_weight(out, f"{prefix}.self_attn.o_proj.weight", state_dict[f"{prefix}.self_attn.o_proj.weight"], quantize_fp8)
+
+    if _is_dense_layer(state_dict, layer_idx):
+        gate_up = torch.cat(
+            [state_dict[f"{prefix}.mlp.gate_proj.weight"], state_dict[f"{prefix}.mlp.up_proj.weight"]],
+            dim=0,
+        )
+        _emit_weight(out, f"{prefix}.mlp.gate_up_proj.weight", gate_up, quantize_fp8)
+        _emit_weight(out, f"{prefix}.mlp.down_proj.weight", state_dict[f"{prefix}.mlp.down_proj.weight"], quantize_fp8)
+    else:
+        out[f"{prefix}.mlp.gate.weight"] = state_dict[f"{prefix}.mlp.router.gate.weight"]
+        _emit_moe_experts(
+            out,
+            prefix,
+            state_dict[f"{prefix}.mlp.experts.w1"],
+            state_dict[f"{prefix}.mlp.experts.w2"],
+            state_dict[f"{prefix}.mlp.experts.w3"],
+            quantize_fp8,
+        )
+
+    return out
