@@ -279,7 +279,14 @@ def train(config: TrainerConfig):
                 # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
                 if config.weight_broadcast.type == "filesystem":
                     interval_to_keep = config.ckpt and config.ckpt.interval
-                    weight_broadcast.maybe_clean(interval_to_keep)
+                    # Fallback retention when keep_recent unset: 2 (matches main's
+                    # original step-2 cleanup; trainer no longer carries max_async_level).
+                    retention = (
+                        config.weight_broadcast.keep_recent
+                        if config.weight_broadcast.keep_recent is not None
+                        else 2
+                    )
+                    weight_broadcast.maybe_clean(retention, interval_to_keep)
             else:
                 broadcast_weights_time = 0
                 # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.

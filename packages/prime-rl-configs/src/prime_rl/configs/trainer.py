@@ -457,12 +457,25 @@ class BaseWeightBroadcastConfig(BaseConfig):
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
-
-    save_sharded: bool = True
-    """Save the weight checkpoint in sharded format."""
-
-    save_format: Literal["safetensors", "torch"] = "safetensors"
-    """Weight checkpoint serialization format."""
+    save_sharded: Annotated[bool, Field(description="Whether to save the weight checkpoint in sharded format.")] = True
+    save_format: Annotated[
+        Literal["safetensors", "torch"], Field(description="The format to save the weight checkpoint in.")
+    ] = "safetensors"
+    keep_recent: Annotated[
+        int | None,
+        Field(
+            ge=0,
+            description=(
+                "Number of recent broadcast step directories to keep on disk. At trainer step N, "
+                "step_{N - keep_recent - 1} is deleted. If None (default), falls back to "
+                "trainer.max_async_level so retention matches the staleness window. Set this above "
+                "max_async_level for LoRA + filesystem broadcast: vLLM lazy-loads the adapter inside "
+                "_prepare_inputs, so a generate request admitted under an older adapter can page that "
+                "dir in *after* the orchestrator has moved on. A +1 or +2 buffer over max_async_level "
+                "is typical."
+            ),
+        ),
+    ] = None
 
 
 class NCCLWeightBroadcastConfig(BaseWeightBroadcastConfig):
@@ -625,6 +638,12 @@ class TrainerConfig(BaseConfig):
                     "Set model.lora or disable save_adapter_separately."
                 )
         return self
+
+    # NOTE: HEAD's validate_weight_broadcast_type (nccl => async level 1) and
+    # validate_broadcast_keep_recent (keep_recent >= max_async_level) were dropped
+    # in the rl-sdk-4 merge: main removed trainer.max_async_level (the staleness
+    # window is now orchestrator.max_off_policy_steps). Re-add equivalent guards at
+    # the RLConfig level (which sees both trainer + orchestrator) if needed.
 
     @model_validator(mode="after")
     def validate_opt_and_fsdp_offload(self):
