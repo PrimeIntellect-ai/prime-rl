@@ -111,12 +111,12 @@ class SinglePacker(BasePacker):
             idxs=[0] * len(batch.examples),
             num_loras=self.multi_run_manager.max_runs,
         )
-        if batch.run_idx is not None and batch.run_idx in self.multi_run_manager.idx_2_id:
-            run_id = self.multi_run_manager.idx_2_id[batch.run_idx]
-            for worker_batches in micro_batch_grid:
-                for micro_batch in worker_batches:
-                    micro_batch.run_id = run_id
-                    micro_batch.run_step = batch.step
+        # The receiver always stamps run_idx from used_idxs (a key of idx_2_id).
+        run_id = self.multi_run_manager.idx_2_id[batch.run_idx]
+        for worker_batches in micro_batch_grid:
+            for micro_batch in worker_batches:
+                micro_batch.run_id = run_id
+                micro_batch.run_step = batch.step
 
         self.sender.send(micro_batch_grid)
 
