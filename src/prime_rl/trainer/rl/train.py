@@ -541,12 +541,8 @@ def train(config: TrainerConfig):
                 micro_step_message += f" | Routing Conf. {tensors['routing_confidence'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
-        # Finalize token exports for runs whose step is fully consumed this trainer
-        # step (ready to take an optimizer step); a run step can otherwise span
-        # multiple trainer steps and be marked stable while still incomplete. Barrier
-        # first so a STABLE only lands once every rank has flushed its rank_*.jsonl.
         if config.experimental.token_export is not None:
-            dist.barrier()  # STABLE only lands once every rank has flushed its rank_*.jsonl
+            dist.barrier()
             ready_run_ids = {
                 multi_run_manager.idx_2_id[idx]
                 for idx in multi_run_manager.ready_to_update_idxs
