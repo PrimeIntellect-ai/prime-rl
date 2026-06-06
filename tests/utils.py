@@ -25,7 +25,7 @@ def check_number_goes_up_or_down(
     lines: list[str],
     start_step: int = 0,
     end_step: int = -1,
-    pattern: str = r"Reward:\s*(\d+\.\d{4})",
+    pattern: str = r"Reward:?\s+(\d+\.\d{4})",
     go_up: bool = True,
 ):
     """Helper to assert that a number in lines goes up from a specified start to end step"""
@@ -100,18 +100,18 @@ def check_metric_in_range(
 
 
 def check_reward_goes_up(lines: list[str]):
-    return check_number_goes_up_or_down(lines, go_up=True, pattern=r"Reward:\s*(\d+\.\d{4})")
+    return check_number_goes_up_or_down(lines, go_up=True, pattern=r"Reward:?\s+(\d+\.\d{4})")
 
 
 def check_loss_goes_down(lines: list[str]):
-    return check_number_goes_up_or_down(lines, go_up=False, pattern=r"Loss:\s*(\d+\.\d{4})")
+    return check_number_goes_up_or_down(lines, go_up=False, pattern=r"Loss:?\s+(\d+\.\d{4})")
 
 
 def check_eval_avg_goes_up(lines: list[str], env_name: str):
-    """Assert that the last `Evaluated {env_name} ... Avg@K=X.XXXX` line reports a
-    higher score than the first one. Use for smoke tests with `interval = 1`
-    evals."""
-    pattern = rf"Evaluated {re.escape(env_name)} .*Avg@\d+=(\d+\.\d{{4}})"
+    """Assert that the last `Evaluated {env_name} (Step N) | ... | Reward X.XXXX`
+    line reports a higher score than the first one. Use for smoke tests with
+    `interval = 1` evals."""
+    pattern = rf"Evaluated {re.escape(env_name)} .*Reward:?\s+(\d+\.\d{{4}})"
     eval_lines = [line for line in lines if "SUCCESS" in line and re.search(pattern, line)]
     assert len(eval_lines) >= 2, f"Need at least 2 eval lines for {env_name!r}, found {len(eval_lines)}"
     start = float(re.search(pattern, eval_lines[0]).group(1))
@@ -132,7 +132,7 @@ def check_reward_in_range(
     check_metric_in_range(
         lines,
         metric_name="Reward",
-        pattern=r"Reward:\s*(\d+\.\d{4})",
+        pattern=r"Reward:?\s+(\d+\.\d{4})",
         step=step,
         min_threshold=min_threshold,
         max_threshold=max_threshold,
@@ -146,7 +146,7 @@ def check_avg_reward_in_range(
     max_threshold: float | None = None,
 ):
     """Helper to assert that the average reward over the last N steps is within a threshold"""
-    pattern = r"Reward:\s*(\d+\.\d{4})"
+    pattern = r"Reward:?\s+(\d+\.\d{4})"
     step_lines = [line for line in lines if "SUCCESS" in line and "Step" in line and re.search(pattern, line)]
     assert len(step_lines) >= last_n_steps, (
         f"Not enough step lines found. Expected at least {last_n_steps}, got {len(step_lines)}"
@@ -179,7 +179,7 @@ def check_avg_mismatch_kl_in_range(
     max_threshold: float | None = None,
 ):
     """Helper to assert that the average mismatch KL over the last N steps is within a threshold"""
-    pattern = r"Mismatch KL:\s*(\d+\.\d{4})"
+    pattern = r"Mismatch KL:?\s+(\d+\.\d{4})"
     step_lines = [line for line in lines if "SUCCESS" in line and "Step" in line and re.search(pattern, line)]
     assert len(step_lines) >= last_n_steps, (
         f"Not enough step lines found. Expected at least {last_n_steps}, got {len(step_lines)}"
@@ -215,7 +215,7 @@ def check_mismatch_kl_in_range(
     check_metric_in_range(
         lines,
         metric_name="Mismatch KL",
-        pattern=r"Mismatch KL:\s*(\d+\.\d{4})",
+        pattern=r"Mismatch KL:?\s+(\d+\.\d{4})",
         step=step,
         min_threshold=min_threshold,
         max_threshold=max_threshold,

@@ -79,10 +79,6 @@ id = "math-env"
 name = "hendrycks-math"
 args = { dataset_name = "PrimeIntellect/Hendrycks-Math", dataset_subset = "default", math_verify_max_workers = 64, math_verify_timeout = 30 }
 
-[orchestrator.buffer]
-easy_threshold = 1.0
-hard_threshold = 0.0
-
 [inference]
 gpu_memory_utilization = 0.9
 

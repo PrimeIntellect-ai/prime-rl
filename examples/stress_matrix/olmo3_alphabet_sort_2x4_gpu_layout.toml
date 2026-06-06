@@ -28,7 +28,7 @@ oversampling_factor = 1.0
 pool_size = 4
 
 [orchestrator.renderer]
-name = "olmo3"
+name = "default"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 256

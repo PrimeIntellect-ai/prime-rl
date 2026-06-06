@@ -78,6 +78,9 @@ import_path = "prime_rl.orchestrator.advantage.maxrl_advantage_fn"
 [orchestrator.advantage.kwargs]
 eps = 1e-8
 
+[orchestrator.renderer]
+name = "default"
+
 [orchestrator.train]
 num_workers = 2
 
@@ -91,19 +94,12 @@ id = "omni_math2_singleturn"
 name = "omni-math2-train"
 args = { dataset_name = "json", data_files = "benchmarks/datasets/omni_math2/omni_math2_train_excluding_baseline600_seed42.jsonl", dataset_split = "train", question_key = "problem", answer_key = "answer", example_id_key = "id", task_name = "omni_math2", prompts_ref = "configs/baselines/omni_math2_prompt_pack.yaml", use_judge_fallback = true, judge_model = "gpt-5.4-mini", judge_persistent_cache_path = "outputs/judge-cache/omni_math2_rlvr_gpt54mini.sqlite3", math_verify_max_workers = 50, math_verify_timeout_seconds = 5 }
 
-[orchestrator.buffer]
-easy_threshold = 1.0
-online_difficulty_filtering = true
-seed = 42
-
 [orchestrator.eval]
 interval = 10
 num_examples = 100
 seed = 42
 rollouts_per_example = 8
 num_workers = 128
-eval_base_model = false
-cancel_inflight_rollouts_on_eval = false
 
 [orchestrator.eval.sampling]
 temperature = 0.6

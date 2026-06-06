@@ -48,8 +48,6 @@ api_key_var = "OPENROUTER_API_KEY"
 request_mode = "chat"
 sampling = { temperature = 0.0, max_completion_tokens = 1024 }
 
-[orchestrator.buffer]
-
 [orchestrator.eval]
 interval = 25
 

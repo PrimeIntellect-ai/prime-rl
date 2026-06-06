@@ -31,10 +31,6 @@ id = "gpqa-rlvr"
 name = "gpqa-rlvr"
 args = { subset = "gpqa_diamond" }
 
-[orchestrator.buffer]
-easy_threshold = 1.0
-hard_threshold = 0.0
-
 [orchestrator.eval]
 interval = 50
 

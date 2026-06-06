@@ -84,13 +84,15 @@ batch_size = 512
 max_inflight_rollouts = 512
 rollouts_per_example = 8
 max_off_policy_steps = 1
-filters = [{ type = "zero_advantage", enforce = true }]
 
 [orchestrator.advantage]
 type = "default"
 
 [orchestrator.advantage.length_penalty]
 type = "tokens"
+
+[orchestrator.renderer]
+name = "default"
 
 [orchestrator.train]
 num_workers = 12
@@ -106,13 +108,6 @@ id = "omni_math2_singleturn"
 name = "omni-math2-train"
 args = { dataset_name = "joanvelja/omni-math2-olmo3-perfectible-seed42", dataset_split = "train", question_key = "problem", answer_key = "answer", example_id_key = "id", task_name = "omni_math2", prompts_ref = "configs/baselines/omni_math2_prompt_pack.yaml", use_judge_fallback = true, judge_model = "gpt-5.4-mini", judge_cache_enabled = false, judge_cache_size = 0, math_verify_max_workers = 50, math_verify_timeout_seconds = 5 }
 
-[orchestrator.buffer]
-easy_threshold = 1.0
-easy_fraction = 0.0
-hard_fraction = 0.0
-online_difficulty_filtering = true
-seed = 42
-
 [orchestrator.eval]
 interval = 50
 num_examples = 340
@@ -120,9 +115,6 @@ seed = 42
 rollouts_per_example = 8
 max_concurrent_rollouts_per_client = 32
 num_workers = 96
-eval_base_model = true
-skip_eval_on_resume = false
-cancel_inflight_rollouts_on_eval = true
 
 [orchestrator.eval.sampling]
 temperature = 0.6

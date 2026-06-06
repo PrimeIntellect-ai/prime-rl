@@ -1,21 +1,9 @@
-"""Static invariants on ``orchestrate`` that can't run end-to-end here.
+"""Static invariants for componentized orchestrator wiring.
 
-The orchestrator function pulls in vLLM, scheduler, weight broadcast, and
-torch — none of which load from this venv. These tests instead parse the
-source AST and assert structural properties that a smoke run would catch
-in production but only after burning hours of GPU time.
-
-P1 reproducer (historical, fix landed 1e013eee0): ``is_ma`` (was
-``use_rae``) must be assigned before any read. Python local-scope rule:
-any function-level assignment makes the name local throughout the
-function body, so an earlier read raises ``UnboundLocalError`` for EVERY
-orchestrate invocation, single-agent or multi-agent.
-
-P2 reproducer (historical, fix landed 1e013eee0): the final
-``ckpt_manager.save`` (after the loop ends) must pass ``rae_state=`` so
-multi-agent runs ending on a non-interval step write a complete final
-checkpoint. Otherwise resume from the final ckpt hits the load-side
-``FileNotFoundError`` that ckpt.py raises by design.
+These checks catch integration regressions that otherwise show up only after
+starting a GPU smoke run: multi-agent config must reach the dispatcher, RAE
+state must be shared with the train sink, and checkpoints must round-trip that
+same state whenever it is active.
 """
 
 from __future__ import annotations
@@ -26,126 +14,83 @@ from pathlib import Path
 ORCHESTRATOR_SRC = Path(__file__).resolve().parents[3] / "src" / "prime_rl" / "orchestrator" / "orchestrator.py"
 
 
-def _async_fn(name: str) -> ast.AsyncFunctionDef:
-    tree = ast.parse(ORCHESTRATOR_SRC.read_text())
-    for node in ast.walk(tree):
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == name:
-            return node
-    raise AssertionError(f"`async def {name}` not found in orchestrator.py")
+def _tree() -> ast.Module:
+    return ast.parse(ORCHESTRATOR_SRC.read_text())
 
 
-def _orchestrate_fn() -> ast.AsyncFunctionDef:
-    return _async_fn("orchestrate")
+def _method(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    for node in ast.walk(_tree()):
+        if isinstance(node, ast.ClassDef) and node.name == "Orchestrator":
+            for body_item in node.body:
+                if isinstance(body_item, ast.FunctionDef | ast.AsyncFunctionDef) and body_item.name == name:
+                    return body_item
+    raise AssertionError(f"`Orchestrator.{name}` not found")
 
 
-def _assert_assigned_before_first_use(fn: ast.AsyncFunctionDef, name: str) -> None:
-    """Python local scoping: any function-level assignment promotes the
-    name to local throughout. First Load (by source line) must come no
-    earlier than first Store, else ``UnboundLocalError``. ``ast.walk`` is
-    BFS — take ``min`` of linenumbers, not first-encountered."""
-    store_lines = [
-        n.lineno for n in ast.walk(fn) if isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store)
-    ]
-    load_lines = [
-        n.lineno for n in ast.walk(fn) if isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load)
-    ]
-    if not store_lines and not load_lines:
-        return  # name not present, nothing to check
-    assert store_lines, f"{name} read but never assigned in orchestrate()"
-    assert load_lines, f"{name} assigned but never read in orchestrate()"
-    first_store = min(store_lines)
-    first_load = min(load_lines)
-    assert first_store <= first_load, (
-        f"{name} first read at line {first_load} but first assigned at line "
-        f"{first_store} → UnboundLocalError on every orchestrate() call"
-    )
-
-
-def test_is_ma_assigned_before_first_use():
-    _assert_assigned_before_first_use(_orchestrate_fn(), "is_ma")
-
-
-def test_advantage_state_assigned_before_first_use():
-    _assert_assigned_before_first_use(_orchestrate_fn(), "advantage_state")
-
-
-def test_advantage_type_assigned_before_first_use():
-    _assert_assigned_before_first_use(_orchestrate_fn(), "advantage_type")
-
-
-def _assert_all_calls_pass_kwarg(fn: ast.AsyncFunctionDef, receiver: str, method: str, kwarg: str) -> None:
-    """Every ``receiver.method(...)`` call inside ``fn`` must include
-    ``kwarg=``. Used to enforce that all ``ckpt_manager.save / load`` calls
-    pass ``rae_state=`` so single-source-of-truth advantage state is
-    consistently round-tripped."""
-    call_lines: list[int] = []
-    calls_with_kwarg: list[int] = []
-    for node in ast.walk(fn):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if not (
-            isinstance(func, ast.Attribute)
-            and func.attr == method
-            and isinstance(func.value, ast.Name)
-            and func.value.id == receiver
-        ):
-            continue
-        call_lines.append(node.lineno)
-        if any(kw.arg == kwarg for kw in node.keywords):
-            calls_with_kwarg.append(node.lineno)
-    missing = sorted(set(call_lines) - set(calls_with_kwarg))
-    assert not missing, (
-        f"{receiver}.{method}(...) call(s) missing {kwarg}= kwarg at line(s) "
-        f"{missing}; advantage state will silently desync"
-    )
-
-
-def test_all_ckpt_saves_pass_rae_state_kwarg():
-    _assert_all_calls_pass_kwarg(_orchestrate_fn(), "ckpt_manager", "save", "rae_state")
-
-
-def test_all_ckpt_loads_pass_rae_state_kwarg():
-    _assert_all_calls_pass_kwarg(_orchestrate_fn(), "ckpt_manager", "load", "rae_state")
-
-
-def test_rollout_persistence_keeps_dump_trajectory_gate():
-    fn = _async_fn("persist_rollouts_and_debate_metrics")
-    assert any(arg.arg == "dump_trajectory" for arg in fn.args.kwonlyargs)
-
-    save_calls = [
+def _calls(fn: ast.AST, target: str) -> list[ast.Call]:
+    return [
         node
         for node in ast.walk(fn)
-        if isinstance(node, ast.Call)
-        and node.args
-        and isinstance(node.args[0], ast.Name)
-        and node.args[0].id == "save_rollouts"
+        if isinstance(node, ast.Call) and ast.unparse(node.func) == target
     ]
-    assert len(save_calls) == 1
-    exclude_kw = next((kw for kw in save_calls[0].keywords if kw.arg == "exclude_keys"), None)
-    assert exclude_kw is not None
-    value = exclude_kw.value
-    assert isinstance(value, ast.IfExp)
-    assert isinstance(value.test, ast.Name) and value.test.id == "dump_trajectory"
-    assert isinstance(value.body, ast.Constant) and value.body.value is None
-    assert isinstance(value.orelse, ast.Set)
-    assert [elt.value for elt in value.orelse.elts if isinstance(elt, ast.Constant)] == ["trajectory"]
 
 
-def test_orchestrate_passes_dump_trajectory_to_rollout_persistence():
+def _call_kw(call: ast.Call, name: str) -> ast.keyword | None:
+    return next((kw for kw in call.keywords if kw.arg == name), None)
+
+
+def test_setup_passes_multi_agent_config_to_dispatcher():
+    calls = _calls(_method("setup"), "RolloutDispatcher")
+    assert len(calls) == 1
+    multi_agent_kw = _call_kw(calls[0], "multi_agent")
+    assert multi_agent_kw is not None
+    assert ast.unparse(multi_agent_kw.value) == "config.multi_agent"
+
+
+def test_setup_passes_shared_rae_state_to_train_sink():
+    calls = _calls(_method("setup"), "TrainSink")
+    assert len(calls) == 1
+    rae_state_kw = _call_kw(calls[0], "rae_state")
+    assert rae_state_kw is not None
+    assert ast.unparse(rae_state_kw.value) == "self.rae_state"
+
+
+def test_all_ckpt_save_load_paths_pass_rae_state():
+    missing: list[int] = []
+    for method_name in ("setup", "start", "maybe_save_ckpt"):
+        for node in ast.walk(_method(method_name)):
+            if not isinstance(node, ast.Call):
+                continue
+            target = ast.unparse(node.func)
+            direct_ckpt = target in {"self.ckpt_manager.save", "self.ckpt_manager.load"}
+            threaded_ckpt = (
+                target == "asyncio.to_thread"
+                and node.args
+                and ast.unparse(node.args[0]) in {"self.ckpt_manager.save", "self.ckpt_manager.load"}
+            )
+            if (direct_ckpt or threaded_ckpt) and _call_kw(node, "rae_state") is None:
+                missing.append(node.lineno)
+    assert not missing, f"ckpt save/load call(s) missing rae_state= at line(s) {missing}"
+
+
+def test_train_rollout_persistence_honors_dump_trajectory():
     calls = [
         node
-        for node in ast.walk(_orchestrate_fn())
+        for node in ast.walk(_method("finalize_train_batch"))
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "persist_rollouts_and_debate_metrics"
+        and ast.unparse(node.func) == "asyncio.to_thread"
+        and node.args
+        and ast.unparse(node.args[0]) == "save_rollouts"
     ]
-    assert calls
-    missing = [
-        node.lineno
-        for node in calls
-        if not any(
-            kw.arg == "dump_trajectory" and ast.unparse(kw.value) == "config.dump_trajectory" for kw in node.keywords
-        )
-    ]
-    assert not missing
+    assert len(calls) == 1
+    exclude_kw = _call_kw(calls[0], "exclude_keys")
+    assert exclude_kw is not None
+    assert ast.unparse(exclude_kw.value) == "None if config.dump_trajectory else {'trajectory'}"
+
+
+def test_eval_rollout_persistence_honors_dump_trajectory():
+    calls = _calls(_method("finalize_eval_batch"), "save_rollouts")
+    assert len(calls) == 1
+    exclude_kw = _call_kw(calls[0], "exclude_keys")
+    assert exclude_kw is not None
+    assert ast.unparse(exclude_kw.value) == "None if self.config.dump_trajectory else {'trajectory'}"

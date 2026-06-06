@@ -123,10 +123,6 @@ prompts_ref = "selfplay"
 subset = "gpqa_diamond"
 truth_member = "debater_a"   # measurement designation only; reward is judge-only
 
-[orchestrator.buffer]
-easy_threshold = 1.0      # permissive: zero-sum debate avg_reward ~ 0 => nothing filtered
-hard_threshold = -1.0
-
 [inference]
 gpu_memory_utilization = 0.85
 enable_lora = true

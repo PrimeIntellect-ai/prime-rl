@@ -21,7 +21,7 @@ from prime_rl.configs.sft import SFTConfig
 from prime_rl.utils.cp import setup_cp_params, shard_for_cp
 from prime_rl.trainer.runs import Progress, get_multi_run_manager, setup_multi_run_manager
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
-from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
@@ -328,7 +328,7 @@ def train(config: SFTConfig):
         if mean_loss != mean_loss:
             logger.warning(f"Validation at step {step} had no valid tokens")
         else:
-            logger.success(f"Validation | Step {step} | Loss: {mean_loss:.4f}")
+            logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
         monitor.log({"val/loss": mean_loss, "step": step}, step=step)
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
@@ -504,15 +504,15 @@ def train(config: SFTConfig):
 
         # Log step metrics
         step_time = time.perf_counter() - step_start_time
-        step_message = f"Step {progress.step} | Time: {step_time:.2f}s | Loss: {batch_loss:.4f}"
+        step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {batch_loss:.4f}"
         if grad_norm is not None:
-            step_message += f" | Grad. Norm: {grad_norm:.4f}"
-        step_message += f" | LR: {current_lr:.2e} | Throughput: {throughput:.0f} tokens/s | MFU: {mfu:.1f}% | Peak Mem.: {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
+            step_message += f" | Grad. Norm {grad_norm:.4f}"
+        step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
         if is_moe_model:
             for name, label in (("max_vio", "Max Vio"), ("routing_confidence", "Routing Conf.")):
                 value = moe_stats[name].item()
                 if value > 0:
-                    step_message += f" | {label}: {value:.4f}"
+                    step_message += f" | {label} {value:.4f}"
         logger.success(step_message)
 
         # Log progress metrics

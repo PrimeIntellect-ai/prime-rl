@@ -35,6 +35,9 @@ class SlurmConfig(BaseConfig):
     pre_run_command: str | None = None
     """Shell command to run on the head node after cd, .env sourcing, and venv activation. Useful for cleanup like ``sudo pkill -f vllm``; wrap with ``srun bash -c '...'`` to fan out to all nodes."""
 
+    cleanup_grace_period: int = Field(3600, ge=0)
+    """Seconds to wait before tearing down a multi-node RL job that hit a non-zero exit, letting in-flight checkpoints flush. Set to 0 to tear down immediately."""
+
     @property
     def template_vars(self) -> dict:
         """Common template variables for all SLURM templates."""
@@ -47,6 +50,7 @@ class SlurmConfig(BaseConfig):
             "account": self.account,
             "time": self.time,
             "pre_run_command": self.pre_run_command,
+            "cleanup_grace_period": self.cleanup_grace_period,
         }
 
     @model_validator(mode="after")
@@ -153,6 +157,9 @@ class LogConfig(BaseConfig):
 
     log_data: bool = False
     """Log the first data sample at startup."""
+
+    interval: float = Field(10.0, gt=0)
+    """Interval (seconds) for periodic logs across components."""
 
 
 class TrainerLogConfig(LogConfig):

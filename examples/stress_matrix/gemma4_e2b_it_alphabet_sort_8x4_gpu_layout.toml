@@ -58,13 +58,15 @@ oversampling_factor = 1.0
 pool_size = 28
 
 [orchestrator.renderer]
-name = "gemma4"
+name = "default"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 256
 
 [inference]
 gpu_memory_utilization = 0.75
+
+[inference.vllm_extra]
 language_model_only = true
 
 [inference.model]
