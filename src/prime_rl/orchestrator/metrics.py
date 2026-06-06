@@ -189,18 +189,27 @@ class MetricsBuilder:
                 to_log[f"pre_filters/all/{name}/rate"] = count / pre_filter_seen
 
         # Fold in the trainer's token-export metrics for the oldest unlogged stable
-        # step (exports always lag the orchestrator, so this is a past step). They
-        # arrive log-ready under trainer/, including trainer/step (the run step they
-        # belong to) for plotting against a lag-corrected axis.
+        # step (exports always lag the orchestrator, so this is a past step).
+        to_log.update(self.next_token_export_metrics())
+
+        return to_log
+
+    @property
+    def last_token_export_step_logged(self) -> int:
+        return self._last_token_export_step_logged
+
+    def next_token_export_metrics(self) -> dict[str, float | int]:
+        """Log-ready token-export metrics for the next unlogged stable step (empty if
+        none), advancing the cursor. They arrive under trainer/, including trainer/step
+        (the run step they belong to) for plotting against a lag-corrected axis. Shared
+        by build() and the orchestrator's end-of-run drain."""
         token_export = collect_next_token_export_metrics(
             self.config.output_dir,
             last_logged_step=self._last_token_export_step_logged,
         )
         if token_export:
-            to_log.update(token_export)
             self._last_token_export_step_logged = token_export["trainer/step"]
-
-        return to_log
+        return token_export
 
     @staticmethod
     def timing_df(rollouts: list[TrainRollout]) -> pd.DataFrame:
