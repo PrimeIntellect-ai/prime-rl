@@ -110,6 +110,15 @@ source $HOME/.local/bin/env
 uv sync --extra all --extra envs --extra gpt-oss --extra modelexpress --group dev
 ```
 
+4.1. On aarch64 hosts: build flash-attn from source for your GPU
+
+> *NOTE*: aarch64 has no prebuilt flash-attn wheel. This step compiles the CUDA extension for your local GPU (~20-30 minutes). Compute capability is auto-detected from `nvidia-smi`; override with `TORCH_CUDA_ARCH_LIST=9.0` (Hopper) / `10.0` (Blackwell) if needed.
+> *NOTE*: After this step, you can't run `uv sync --all-extras` or `uv run` as it will uninstall the package, you can avoid it by running `uv sync --inexact` or `uv run --no-sync`.
+
+```bash
+bash scripts/docker-arm64-post-install.sh
+```
+
 3.1. Optional: Install Flash Attention 3 (on Hopper GPUs only, for flash_attention_3 attention backend)
 
 > *NOTE*: On `x86_64`, this installs a prebuilt wheel. On `aarch64` Hopper, this builds the FA3 extension from source, so expect it to take a while.
