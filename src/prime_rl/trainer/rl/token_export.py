@@ -147,20 +147,11 @@ def setup_token_exporter(
 
 
 def _mark_stable_dirs(local_dirs: set[Path]) -> None:
-    local_dir_names = [str(path) for path in local_dirs]
+    # Barrier so STABLE only lands once every rank has flushed its rank_*.jsonl,
+    # then each rank marks the dirs it wrote (touch is idempotent across ranks).
     if dist.is_available() and dist.is_initialized():
-        gathered_dir_names: list[list[str] | None] = [None] * dist.get_world_size()
-        dist.all_gather_object(gathered_dir_names, local_dir_names)
-        if dist.get_rank() != 0:
-            return
-        stable_dirs = {
-            Path(path) for rank_dir_names in gathered_dir_names if rank_dir_names is not None for path in rank_dir_names
-        }
-    else:
-        stable_dirs = set(local_dirs)
-
-    for stable_dir in sorted(stable_dirs):
-        stable_dir.mkdir(parents=True, exist_ok=True)
+        dist.barrier()
+    for stable_dir in sorted(local_dirs):
         (stable_dir / "STABLE").touch()
 
 
