@@ -2,6 +2,7 @@ from pathlib import Path
 from time import time
 
 import zmq
+import zmq.asyncio
 
 from prime_rl.configs.shared import ZMQTransportConfig
 from prime_rl.trainer.runs import get_multi_run_manager
@@ -20,8 +21,8 @@ class ZMQTrainingBatchSender(TrainingBatchSender):
     def __init__(self, output_dir: Path, transport: ZMQTransportConfig):
         super().__init__(output_dir)
 
-        self.context = zmq.Context.instance()
-        self.socket: zmq.Socket = self.context.socket(zmq.PUSH)
+        self.context = zmq.asyncio.Context.instance()
+        self.socket: zmq.asyncio.Socket = self.context.socket(zmq.PUSH)
         self.socket.setsockopt(zmq.SNDHWM, transport.hwm)
         self.socket.connect(f"tcp://{transport.host}:{transport.port}")
 
@@ -35,7 +36,7 @@ class ZMQTrainingBatchSender(TrainingBatchSender):
     async def send(self, batch: TrainingBatch) -> None:
         payload = self.encoder.encode(batch)
         self.logger.debug(f"Sending batch {batch.step} to {self.sender_id}")
-        self.socket.send_multipart([self.sender_id, payload], copy=False)
+        await self.socket.send_multipart([self.sender_id, payload], copy=False)
 
     def close(self) -> None:
         try:

@@ -485,6 +485,7 @@ class Orchestrator:
         to the train / eval sink. Both sinks return a finalized batch (or
         ``None``) from ``add()``; we just dispatch on the result."""
         while not self.stopped.is_set():
+            self.check_component_tasks()
             if self.draining and self.dispatcher.is_idle:
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
@@ -499,7 +500,7 @@ class Orchestrator:
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
                 eval_batch = self.eval_sink.add(rollout)
                 if eval_batch is not None:
-                    self.finalize_eval_batch(eval_batch)
+                    await self.finalize_eval_batch(eval_batch)
                 continue
 
             assert isinstance(rollout, TrainRollout)
@@ -508,6 +509,17 @@ class Orchestrator:
             # don't want to ship past ``max_steps``
             if train_batch is not None and not self.draining and not self.stopped.is_set():
                 await self.finalize_train_batch(train_batch)
+
+    def check_component_tasks(self) -> None:
+        """Surface failures from background component loops in the main task."""
+        for task in self.component_tasks:
+            if not task.done() or task.cancelled():
+                continue
+            exc = task.exception()
+            if exc is None:
+                continue
+            name = task.get_name()
+            raise RuntimeError(f"Orchestrator component task {name!r} failed") from exc
 
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O
@@ -761,7 +773,7 @@ class Orchestrator:
             )
         get_logger().success("\n\t\t ".join(lines))
 
-    def finalize_eval_batch(self, batch: EvalBatch) -> None:
+    async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch (save_rollouts,
         monitor.log_eval_samples, monitor.log)."""
         if not batch.rollouts:
@@ -770,13 +782,22 @@ class Orchestrator:
 
         rollout_dicts = [r.to_dict() for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(self.config.output_dir), batch.step)
-        save_rollouts(
+        await asyncio.to_thread(
+            save_rollouts,
             rollout_dicts,
             step_path / f"eval_rollouts_{batch.env_name}.jsonl",
             exclude_keys={"trajectory"},
         )
         self.monitor.log_eval_samples(rollout_dicts, env_name=batch.env_name, step=batch.step)
-        self.monitor.log(batch.metrics.to_wandb_dict(env_name=batch.env_name, step=batch.step), step=batch.step)
+        policy_versions = sorted({r.policy_version for r in batch.rollouts})
+        policy_version = policy_versions[0]
+        if len(policy_versions) > 1:
+            get_logger().warning(
+                f"Eval {batch.env_name} step {batch.step} had mixed policy versions: {policy_versions}"
+            )
+        metrics = batch.metrics.to_wandb_dict(env_name=batch.env_name, step=batch.step)
+        metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
+        self.monitor.log(metrics, step=batch.step)
 
         n_total = batch.metrics.n_rollouts
         error_rate = ((batch.metrics.n_cancelled + batch.metrics.n_errored) / n_total) if n_total else 0.0
@@ -786,7 +807,7 @@ class Orchestrator:
 
         get_logger().success(
             f"Evaluated {batch.env_name} (Step {batch.step}) | "
-            f"{format_time(elapsed):>7} | Reward {batch.metrics.reward_mean:.4f} | "
+            f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {batch.metrics.reward_mean:.4f} | "
             f"Turns {batch.metrics.num_turns_mean:.1f} | Max Off-Policy {max_off_policy} | "
             f"Error {error_rate:.1%} | Truncation {batch.metrics.truncation_rate:.1%}"
         )
