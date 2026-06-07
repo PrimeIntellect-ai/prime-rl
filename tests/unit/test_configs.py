@@ -102,6 +102,13 @@ def test_defaults():
     assert config.variant.alpha == 0.1
 
 
+def test_trainer_data_balance_by_flops_can_be_disabled():
+    assert cli(TrainerConfig, args=[]).data.balance_by_flops is True
+
+    config = cli(TrainerConfig, args=["--data.balance-by-flops", "false"])
+    assert config.data.balance_by_flops is False
+
+
 def test_toml_partial_nested_override(tmp_path):
     """Partially overriding a nested model preserves unset field defaults."""
     write_toml(tmp_path / "cfg.toml", {"nested": {"lr": 3e-4}})
