@@ -38,9 +38,7 @@ def _calculate_qkv_projection_flops(config: Any, seqlen: int) -> float:
         )
     else:
         q_head_dim = (
-            getattr(config, "qk_head_dim", 0) + getattr(config, "qk_pos_emb_head_dim", 0)
-            if is_mla
-            else kv_channels
+            getattr(config, "qk_head_dim", 0) + getattr(config, "qk_pos_emb_head_dim", 0) if is_mla else kv_channels
         )
         q_flops = 2 * seqlen * hidden_size * num_attention_heads * q_head_dim
 
@@ -50,12 +48,17 @@ def _calculate_qkv_projection_flops(config: Any, seqlen: int) -> float:
             * seqlen
             * (
                 config.kv_lora_rank
-                * (hidden_size + num_attention_heads * (getattr(config, "qk_head_dim", 0) + getattr(config, "v_head_dim", 0)))
+                * (
+                    hidden_size
+                    + num_attention_heads * (getattr(config, "qk_head_dim", 0) + getattr(config, "v_head_dim", 0))
+                )
                 + hidden_size * getattr(config, "qk_pos_emb_head_dim", 0)
             )
         )
     else:
-        num_query_groups = getattr(config, "num_query_groups", getattr(config, "num_key_value_heads", num_attention_heads))
+        num_query_groups = getattr(
+            config, "num_query_groups", getattr(config, "num_key_value_heads", num_attention_heads)
+        )
         kv_flops = 4 * seqlen * hidden_size * num_query_groups * kv_channels
     return q_flops + kv_flops
 
@@ -64,8 +67,11 @@ def _calculate_attention_flops(config: Any, seqlen: int) -> float:
     num_attention_heads = config.num_attention_heads
     kv_channels = getattr(config, "kv_channels", getattr(config, "head_dim", config.hidden_size // num_attention_heads))
     if _is_mla(config):
-        flops = num_attention_heads * seqlen * seqlen * (
-            getattr(config, "qk_head_dim", 0) + getattr(config, "qk_pos_emb_head_dim", 0)
+        flops = (
+            num_attention_heads
+            * seqlen
+            * seqlen
+            * (getattr(config, "qk_head_dim", 0) + getattr(config, "qk_pos_emb_head_dim", 0))
         )
         flops += num_attention_heads * seqlen * seqlen * getattr(config, "v_head_dim", kv_channels)
     else:
@@ -86,7 +92,9 @@ def _calculate_layer_flops(config: Any, seqlen: int, ffn_hidden_size: int) -> fl
 def calculate_packing_fwd_flops(seqlens: list[int], config: Any) -> float:
     """Model-aware forward FLOP estimate copied in spirit from slime."""
     num_experts = getattr(config, "num_experts", getattr(config, "n_routed_experts", None))
-    dense_ffn = getattr(config, "ffn_hidden_size", getattr(config, "intermediate_size", getattr(config, "moe_intermediate_size", 0)))
+    dense_ffn = getattr(
+        config, "ffn_hidden_size", getattr(config, "intermediate_size", getattr(config, "moe_intermediate_size", 0))
+    )
     if num_experts is None:
         num_dense_layers = config.num_hidden_layers
         num_moe_layers = 0
@@ -296,6 +304,7 @@ class _MicroBatchBin:
             right, sum(len(sample.input_ids) for _, sample in right)
         )
 
+
 def _materialize_bin(bin_content: _MicroBatchBin, num_loras: int) -> MicroBatch:
     has_rewards = any(sample.rewards is not None for _, sample in bin_content.samples)
     has_teacher_logprobs = any(sample.teacher_logprobs is not None for _, sample in bin_content.samples)
@@ -466,7 +475,9 @@ def _improve_partitions_by_swapping(weights: list[float], partitions: list[list[
 def _expand_bins_by_splitting(bins: list[_MicroBatchBin], target_count: int, flops_config: Any | None) -> None:
     while len(bins) < target_count:
         candidates = [
-            (bin_content.workload(flops_config), idx) for idx, bin_content in enumerate(bins) if len(bin_content.samples) > 1
+            (bin_content.workload(flops_config), idx)
+            for idx, bin_content in enumerate(bins)
+            if len(bin_content.samples) > 1
         ]
         if not candidates:
             break
