@@ -236,7 +236,6 @@ def train(config: TrainerConfig):
             config.model.seq_len,
             config.model.cp,
             tokenizer,
-            model.config if config.data.balance_by_flops else None,
             config.rollout_transport,
         )
 

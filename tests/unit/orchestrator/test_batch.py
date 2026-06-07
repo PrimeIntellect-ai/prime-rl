@@ -1,10 +1,7 @@
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 
 from prime_rl.trainer.batch import (
-    calculate_packing_fwd_flops,
     pad_micro_batch,
     prepare_batch,
     prepare_sample,
@@ -63,24 +60,8 @@ def _flatten_batches(batches_per_gpu):
     return [batch for worker_batches in batches_per_gpu for batch in worker_batches]
 
 
-def _worker_token_sums(batches_per_gpu) -> list[int]:
-    return [sum(len(batch.input_ids) for batch in worker_batches) for worker_batches in batches_per_gpu]
-
-
 def _has_loss_tokens(batch: MicroBatch) -> bool:
     return any(batch.loss_mask)
-
-
-def make_flops_config():
-    return SimpleNamespace(
-        hidden_size=16,
-        num_attention_heads=2,
-        num_key_value_heads=2,
-        vocab_size=32,
-        intermediate_size=64,
-        num_hidden_layers=2,
-        head_dim=8,
-    )
 
 
 def test_randomized_packing_invariants():
@@ -92,7 +73,6 @@ def test_randomized_packing_invariants():
         num_samples = int(rng.integers(1, 65))
         lengths = [int(x) for x in rng.integers(1, seq_len + 1, size=num_samples)]
         examples = [make_sized_training_example(length, env_name=f"env-{case_idx}") for length in lengths]
-        flops_config = make_flops_config() if case_idx % 2 == 0 else None
 
         batches_per_gpu = prepare_batch(
             rollouts=examples,
@@ -100,7 +80,6 @@ def test_randomized_packing_invariants():
             num_train_workers=num_train_workers,
             idxs=[0] * len(examples),
             num_loras=1,
-            flops_config=flops_config,
         )
         flat_batches = _flatten_batches(batches_per_gpu)
         real_batches = [batch for batch in flat_batches if _has_loss_tokens(batch)]
@@ -190,23 +169,8 @@ def test_split_to_align_avoids_dummy_micro_batches():
     assert len(_flatten_batches(batches_per_gpu)) == 4
 
 
-def test_pack_first_then_balance_distributes_micro_batches_by_tokens_without_model_config():
-    examples = [make_sized_training_example(length) for length in [100, 90, 80, 70]]
-
-    balanced = prepare_batch(
-        rollouts=examples,
-        seq_len=100,
-        num_train_workers=2,
-        idxs=[0] * len(examples),
-        num_loras=1,
-    )
-
-    assert _worker_token_sums(balanced) == [170, 170]
-
-
-def test_flop_aware_balancing_pairs_long_and_short_sequence_workloads():
+def test_pack_first_then_balance_pairs_long_and_short_sequence_workloads():
     examples = [make_sized_training_example(length) for length in [32, 32, 16, 16, 16, 16]]
-    flops_config = make_flops_config()
 
     balanced = prepare_batch(
         rollouts=examples,
@@ -214,15 +178,13 @@ def test_flop_aware_balancing_pairs_long_and_short_sequence_workloads():
         num_train_workers=2,
         idxs=[0] * len(examples),
         num_loras=1,
-        flops_config=flops_config,
     )
 
     assert sorted([sorted(batch.sequence_lengths) for batch in balanced[0]]) == [[16, 16], [32]]
     assert sorted([sorted(batch.sequence_lengths) for batch in balanced[1]]) == [[16, 16], [32]]
-    assert calculate_packing_fwd_flops([32], flops_config) > calculate_packing_fwd_flops([16, 16], flops_config)
 
 
-def test_flop_aware_split_to_align_splits_heaviest_flop_bin():
+def test_split_to_align_splits_heaviest_bin():
     examples = [make_sized_training_example(length) for length in [20, 18, 9, 9, 8, 8, 8]]
 
     batches_per_gpu = prepare_batch(
@@ -231,13 +193,13 @@ def test_flop_aware_split_to_align_splits_heaviest_flop_bin():
         num_train_workers=4,
         idxs=[0] * len(examples),
         num_loras=1,
-        flops_config=make_flops_config(),
     )
 
     real_batches = [batch for batch in _flatten_batches(batches_per_gpu) if _has_loss_tokens(batch)]
     assert len(real_batches) == 4
     assert sorted(length for batch in real_batches for length in batch.sequence_lengths) == [8, 8, 8, 9, 9, 18, 20]
-    assert sum(len(batch.sequence_lengths) > 1 for batch in real_batches) == 3
+    # The two longest samples land alone after splitting the heaviest bin by n^2 workload.
+    assert any(batch.sequence_lengths == [20] for batch in real_batches)
 
 
 def test_prepare_sample_truncates_routed_experts():

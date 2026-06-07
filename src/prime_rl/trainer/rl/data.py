@@ -167,7 +167,6 @@ class DataLoader:
         seq_len: int,
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
-        flops_config,
         config: TransportConfig,
     ):
         self.world = get_world()
@@ -179,7 +178,6 @@ class DataLoader:
                 tokenizer=tokenizer,
                 transport_config=config,
                 pad_to_multiple_of=pad_to_multiple_of,
-                flops_config=flops_config,
                 start_step=start_step,
             )
 
