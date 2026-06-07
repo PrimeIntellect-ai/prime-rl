@@ -345,13 +345,14 @@ class Orchestrator:
         else:
             get_logger().info("Training from scratch")
 
-        # SFT generates rollouts via the teacher (the student is trained on
-        # the teacher's outputs); RL / OPD generate via the student
-        if config.training_mode == "sft":
-            assert self.teacher_inference is not None, "sft mode requires teacher inference"
+        # SFT train rollouts come from the teacher when configured; otherwise
+        # they use the existing student rollout pool.
+        if config.training_mode == "sft" and self.teacher_inference is not None:
             rollout_inference = self.teacher_inference
+            use_cache_salt = False
         else:
             rollout_inference = self.student_inference
+            use_cache_salt = True
 
         self.train_source = TrainSource(self.train_envs, seed=42)
         self.eval_source: EvalSource | None = (
@@ -379,6 +380,7 @@ class Orchestrator:
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
             training_mode=config.training_mode,
+            use_cache_salt=use_cache_salt,
         )
         self.metrics = MetricsBuilder(config)
         self.train_sink = TrainSink(
