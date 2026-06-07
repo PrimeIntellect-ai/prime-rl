@@ -8,7 +8,13 @@ from prime_rl.trainer.models.kernels.fp8_utils import (
     per_token_cast_to_fp8_triton,
 )
 
-pytestmark = [pytest.mark.gpu]
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(
+        not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9,
+        reason="block-fp8 cast kernels use Triton fp8e4nv (e4m3), only supported on Hopper (SM90) and newer",
+    ),
+]
 
 
 @pytest.mark.parametrize("rows,cols", [(256, 256), (256, 512), (512, 256), (1024, 768), (384, 128)])
