@@ -44,8 +44,6 @@ class _FP8BlockwiseMM(torch.autograd.Function):
         grad_x = grad_weight = None
         if ctx.needs_input_grad[0]:
             grad_output_fp8 = per_token_cast_to_fp8_triton(grad_output_2d, False, block_size)
-            # Fused transpose+cast: block-fp8 of weight.T without materializing the
-            # contiguous transpose (128x128 block quant is transpose-symmetric).
             weight_dx_fp8 = per_block_cast_to_fp8_tp_triton(weight, False, block_size)
             grad_x_2d = torch.empty_like(x_2d)
             deep_gemm.fp8_gemm_nt(grad_output_fp8, weight_dx_fp8, grad_x_2d)

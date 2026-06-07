@@ -555,16 +555,7 @@ def per_block_cast_to_fp8_triton(
 def per_block_cast_to_fp8_tp_triton(
     x: torch.Tensor, use_ue8m0: bool, gran_k: int = GROUP_ALIGNMENT
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Block-fp8 cast of ``x.T`` without materializing the transpose.
-
-    Returns ``(fp8(x.T), block_scales)`` shaped ``[cols, rows]`` and
-    ``[cols/128, rows/128]``. Because 128x128 block quantization is
-    transpose-symmetric (a tile and its transpose share an amax, hence one
-    scale), this is bit-identical to ``per_block_cast_to_fp8_triton(
-    x.transpose(0, 1).contiguous())`` but skips the intermediate contiguous bf16
-    buffer: it reuses the per-block kernel, reading ``x`` once and writing the
-    transposed fp8 and scales via swapped output strides.
-    """
+    """Block-fp8 cast of ``x.T`` without materializing the transpose."""
     assert x.dim() == 2
     assert gran_k == GROUP_ALIGNMENT
     rows, cols = x.shape
