@@ -55,7 +55,6 @@ from prime_rl.trainer.utils import (
     get_ckpt_disk_metrics,
     setup_torch_distributed,
     print_benchmark,
-    get_response_lengths,
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.runs import setup_multi_run_manager, Progress, get_multi_run_manager
@@ -237,6 +236,7 @@ def train(config: TrainerConfig):
             config.model.seq_len,
             config.model.cp,
             tokenizer,
+            model.config,
             config.rollout_transport,
         )
 
@@ -472,15 +472,15 @@ def train(config: TrainerConfig):
             )
 
             # Compute loss
-            response_lengths = get_response_lengths(position_ids)
+            sequence_lengths = micro_batch["sequence_lengths"]
             loss, loss_tensors = compute_loss(
-                trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
-                inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
-                teacher_logprobs=teacher_logprobs.squeeze().split(response_lengths)
+                trainer_logprobs=out["logprobs"].squeeze().split(sequence_lengths),
+                inference_logprobs=inference_logprobs.squeeze().split(sequence_lengths),
+                teacher_logprobs=teacher_logprobs.squeeze().split(sequence_lengths)
                 if teacher_logprobs is not None
                 else None,
-                advantages=advantages.squeeze().split(response_lengths),
-                loss_mask=loss_mask.squeeze().split(response_lengths),
+                advantages=advantages.squeeze().split(sequence_lengths),
+                loss_mask=loss_mask.squeeze().split(sequence_lengths),
                 loss_fns=loss_fns,
                 loss_scale=loss_scale,
                 training_mode=micro_batch["training_mode"],
@@ -512,7 +512,7 @@ def train(config: TrainerConfig):
                 for env_name, indices in env_to_indices.items():
                     tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
-            token_exporter.export(progress.step, micro_step, micro_batch, out, response_lengths, config.loss)
+            token_exporter.export(progress.step, micro_step, micro_batch, out, sequence_lengths, config.loss)
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)

@@ -42,7 +42,7 @@ class TokenExporter:
         micro_step: int,
         micro_batch: Mapping[str, Any],
         model_output: Mapping[str, Tensor],
-        response_lengths: list[int],
+        sequence_lengths: list[int],
         loss_config: Any,
     ) -> None:
         if self._current_step != step:
@@ -52,7 +52,7 @@ class TokenExporter:
         _check_lengths(columns)
 
         start = 0
-        for micro_sequence_idx, length in enumerate(response_lengths):
+        for micro_sequence_idx, length in enumerate(sequence_lengths):
             raw_end = start + length
             end = _trim_padding(columns, start, raw_end)
             if end > start and any(columns["loss_mask"][start:end]):
