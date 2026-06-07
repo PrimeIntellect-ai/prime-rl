@@ -587,3 +587,34 @@ def per_block_cast_to_fp8_tp_triton(
         num_warps=8,
     )
     return out, sf
+
+
+def per_token_cast_to_fp8_tp_triton(
+    x: torch.Tensor, use_ue8m0: bool, gran_k: int = GROUP_ALIGNMENT
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Per-token fp8 cast of ``x.T`` without materializing the transpose."""
+    assert x.dim() == 2
+    assert gran_k == GROUP_ALIGNMENT
+    rows, cols = x.shape
+    out = torch.empty((cols, rows), device=x.device, dtype=torch.float8_e4m3fn)
+    sf = torch.empty((cols, ceil_div(rows, gran_k)), device=x.device, dtype=torch.float32)
+    grid = lambda meta: (ceil_div(cols, meta["BLOCK_M"]), ceil_div(rows, meta["BLOCK_K"]))
+    _per_token_fp8_kernel[grid](
+        x,
+        out,
+        sf,
+        cols,
+        rows,
+        # transposed read: the kernel's per-row amax reduces over x's rows
+        x.stride(1),
+        x.stride(0),
+        out.stride(0),
+        out.stride(1),
+        sf.stride(0),
+        sf.stride(1),
+        USE_UE8M0=use_ue8m0,
+        BLOCK_M=8,
+        BLOCK_K=gran_k,
+        num_warps=4,
+    )
+    return out, sf
