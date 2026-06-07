@@ -550,3 +550,49 @@ def per_block_cast_to_fp8_triton(
         gran_k,
     )
     return out[0], sf[0]
+
+
+def per_block_cast_to_fp8_tp_triton(
+    x: torch.Tensor, use_ue8m0: bool, gran_k: int = GROUP_ALIGNMENT
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Block-fp8 cast of ``x.T`` without materializing the transpose.
+
+    Returns ``(fp8(x.T), block_scales)`` shaped ``[cols, rows]`` and
+    ``[cols/128, rows/128]``. Because 128x128 block quantization is
+    transpose-symmetric (a tile and its transpose share an amax, hence one
+    scale), this is bit-identical to ``per_block_cast_to_fp8_triton(
+    x.transpose(0, 1).contiguous())`` but skips the intermediate contiguous bf16
+    buffer: it reuses the per-block kernel, reading ``x`` once and writing the
+    transposed fp8 and scales via swapped output strides.
+    """
+    assert x.dim() == 2
+    assert gran_k == GROUP_ALIGNMENT
+    rows, cols = x.shape
+    x3 = x.unsqueeze(0)
+    out = torch.empty((cols, rows), device=x.device, dtype=torch.float8_e4m3fn)
+    sf = torch.empty((ceil_div(cols, gran_k), ceil_div(rows, gran_k)), device=x.device, dtype=torch.float32)
+    grid = (1, ceil_div(rows, gran_k), ceil_div(cols, gran_k))
+    _grouped_per_block_fp8_kernel[grid](
+        x3,
+        out,
+        sf,
+        1,
+        rows,
+        cols,
+        x3.stride(0),
+        x3.stride(1),
+        x3.stride(2),
+        # transposed output: x's element (row, col) lands at out[col, row]
+        cols * rows,
+        1,
+        rows,
+        # transposed scales: x's tile (pid_m, pid_n) lands at sf[pid_n, pid_m]
+        ceil_div(cols, gran_k) * ceil_div(rows, gran_k),
+        1,
+        ceil_div(rows, gran_k),
+        USE_UE8M0=use_ue8m0,
+        BLOCK_M=gran_k,
+        BLOCK_N=gran_k,
+        num_warps=8,
+    )
+    return out, sf
