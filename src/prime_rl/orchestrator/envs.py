@@ -15,10 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import inspect
 import multiprocessing as mp
 import queue
-import typing
 from collections.abc import Iterator, Sequence
 from multiprocessing.process import BaseProcess
 from pathlib import Path
@@ -36,19 +34,6 @@ from prime_rl.utils.logger import get_logger
 ENV_SERVER_SPAWN_TIMEOUT = 600.0
 
 
-def resolve_task_type(env_id: str) -> type[vf.Task]:
-    """The env's ``Task`` subclass, read off ``load_taskset``'s return type
-    (``Taskset[TaskT, ConfigT]``) — same introspection the eval CLI uses for the
-    taskset config. Imports the env module (not its dataset/runtime); falls back to
-    the base ``Task`` if no subclass is found."""
-    taskset_type = inspect.signature(vf.import_env(env_id).load_taskset).return_annotation
-    for base in getattr(taskset_type, "__orig_bases__", ()):
-        for arg in typing.get_args(base):
-            if isinstance(arg, type) and issubclass(arg, vf.Task):
-                return arg
-    return vf.Task
-
-
 class Env:
     """Wraps a vf-nano env server + client. The orchestrator never loads the env."""
 
@@ -59,7 +44,7 @@ class Env:
         self.requires_group_scoring: bool = False
         # Typed Trace for this env (Trace parametrized with the env's Task subclass),
         # used to validate the wire trace into a real vf.Trace with typed task fields.
-        self.trace_type = vf.Trace[resolve_task_type(config.stripped_id)]
+        self.trace_type = vf.Trace[vf.task_type(config.stripped_id)]
         self._env_client: EnvClient | None = None
         self._env_server_process: BaseProcess | None = None
 
