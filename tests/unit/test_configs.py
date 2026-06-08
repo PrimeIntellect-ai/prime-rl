@@ -586,7 +586,7 @@ def test_disjoint_role_filters_rejected():
 
 
 def test_tool_names_requires_tool_role():
-    with pytest.raises(ValidationError, match="tool_names requires"):
+    with pytest.raises(ValidationError, match="to include 'tool'"):
         RLConfig.model_validate(
             {
                 "model": {"name": "my-model"},
