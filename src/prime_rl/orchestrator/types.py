@@ -55,7 +55,7 @@ class GroupState:
 
     kind: RolloutKind
     env_name: str
-    example: dict
+    task_idx: int
     rollouts_to_schedule: int
     target_rollouts: int
     emitted: int = 0
@@ -69,28 +69,15 @@ class FinishedRollout:
     """A completed rollout the sink receives. ``trace`` is the env's typed
     ``vf.Trace``; prime-rl metadata lives on typed fields. Train vs
     eval is discriminated via ``isinstance``. ``rollout_id`` is the only
-    safe key for tracing one rollout — ``(env_name, example_id)`` collides
+    safe key for tracing one rollout — ``(env_name, task_idx)`` collides
     on re-sampling and ``group_id`` covers a whole group."""
 
     trace: vf.Trace
     env_name: str
-    example_id: int | str
     group_id: uuid.UUID
     policy_version: int
     off_policy_steps: int
     rollout_id: uuid.UUID = field(default_factory=uuid.uuid4)
-
-    @property
-    def error(self) -> vf.Error | None:
-        return self.trace.error
-
-    @property
-    def reward(self) -> float:
-        return float(self.trace.reward)
-
-    @property
-    def is_truncated(self) -> bool:
-        return bool(self.trace.is_truncated)
 
     def to_dict(self) -> dict:
         """The Trace (full ``model_dump``, incl. computed fields) + metadata, merged

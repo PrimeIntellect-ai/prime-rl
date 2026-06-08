@@ -21,7 +21,7 @@ from prime_rl.configs.orchestrator import AdvantageConfig, OrchestratorConfig
 from prime_rl.orchestrator.advantage import assign_advantages, setup_advantage_fn
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
-from prime_rl.orchestrator.trajectories import trace_to_samples, trace_total_tokens
+from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import TrainBatch, TrainBatchMetrics, TrainRollout
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
@@ -60,8 +60,8 @@ class TrainSink:
         self.pre_filters = pre_filters
         self.post_filters = post_filters
 
-        # Keyed by the dispatcher's group UUID. ``(env_name, example_id)``
-        # isn't unique — the same example can be re-sampled while an
+        # Keyed by the dispatcher's group UUID. ``(env_name, task_idx)``
+        # isn't unique — the same task can be re-sampled while an
         # earlier group is still in flight
         self.pending_groups: dict[uuid.UUID, list[TrainRollout]] = defaultdict(list)
         self.pending_batch: list[TrainRollout] = []
@@ -103,7 +103,7 @@ class TrainSink:
         if self.batch_size is not None:
             return len(self.pending_batch), self.batch_size, "rollouts"
         assert self.token_batch_size is not None
-        tokens = sum(trace_total_tokens(r.trace) for r in self.pending_batch)
+        tokens = sum(r.trace.total_tokens for r in self.pending_batch)
         return tokens, self.token_batch_size, "tokens"
 
     def buffered_count(self) -> int:
@@ -125,7 +125,7 @@ class TrainSink:
         await self.process_rollout(rollout)
         env_name = rollout.env_name
         self.arrivals_by_env[env_name] += 1
-        if rollout.error is not None:
+        if rollout.trace.has_error:
             self.errors_by_env[env_name] += 1
         self.pending_groups[rollout.group_id].append(rollout)
         if len(self.pending_groups[rollout.group_id]) >= self.group_size_for(env_name):
@@ -133,7 +133,7 @@ class TrainSink:
         ready = (
             len(self.pending_batch) >= self.batch_size
             if self.batch_size is not None
-            else sum(trace_total_tokens(r.trace) for r in self.pending_batch) >= (self.token_batch_size or 0)
+            else sum(r.trace.total_tokens for r in self.pending_batch) >= (self.token_batch_size or 0)
         )
         if ready:
             return self.process_batch()
@@ -144,7 +144,7 @@ class TrainSink:
         env's renderer client already produced token ids/logprobs, so there's no
         orchestrator-side tokenization. Errored rollouts are dropped at the group
         level, so skip them here."""
-        if rollout.error is not None:
+        if rollout.trace.has_error:
             return
         samples = await asyncio.to_thread(trace_to_samples, rollout.trace, env_name=rollout.env_name)
         rollout.samples = samples or []
@@ -157,8 +157,8 @@ class TrainSink:
         if not group:
             return
         env_name = group[0].env_name
-        example_id = group[0].example_id
-        survivors = [r for r in group if r.error is None]
+        task_idx = group[0].trace.task.idx
+        survivors = [r for r in group if not r.trace.has_error]
         num_errored = len(group) - len(survivors)
 
         # Group-scoring envs: any failure makes survivors' rewards unsafe
@@ -166,13 +166,13 @@ class TrainSink:
         env = self.train_envs.get(env_name)
         if num_errored > 0 and env.requires_group_scoring:
             get_logger().debug(
-                f"Finished group | env={env_name} example_id={example_id} | "
+                f"Finished group | env={env_name} task_idx={task_idx} | "
                 f"rollouts={len(group)} (errored={num_errored}) | dropped: group-scored partial"
             )
             return
         if not survivors:
             get_logger().debug(
-                f"Finished group | env={env_name} example_id={example_id} | "
+                f"Finished group | env={env_name} task_idx={task_idx} | "
                 f"rollouts={len(group)} (errored={num_errored}) | dropped: all failed"
             )
             return
@@ -187,7 +187,7 @@ class TrainSink:
         for r in survivors:
             for sample in r.samples:
                 sample.advantage = r.advantage
-                sample.reward = r.reward
+                sample.reward = r.trace.reward
                 sample.env_name = r.env_name
                 sample.training_mode = self.config.training_mode
                 sample.completion_temperatures = [temperature] * len(sample.completion_ids)
@@ -213,11 +213,11 @@ class TrainSink:
 
         # Per-group summary. One line per finalized group; per-filter
         # detection breakdown lives at debug level in ``apply_filters``
-        rewards = [r.reward for r in survivors]
+        rewards = [r.trace.reward for r in survivors]
         avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
         filter_str = ", ".join(f"{n}={c}" for n, c in filtered_by_name.items()) if filtered_by_name else "—"
         get_logger().debug(
-            f"Finished group | env={env_name} example_id={example_id} | "
+            f"Finished group | env={env_name} task_idx={task_idx} | "
             f"rollouts={len(group)} (errored={num_errored}, filtered={num_filtered}) | "
             f"reward={avg_reward:.4f} | filters: {filter_str}"
         )
@@ -236,7 +236,7 @@ class TrainSink:
             cut = 0
             running = 0
             for i, r in enumerate(self.pending_batch):
-                running += trace_total_tokens(r.trace)
+                running += r.trace.total_tokens
                 cut = i + 1
                 if running >= self.token_batch_size:
                     break

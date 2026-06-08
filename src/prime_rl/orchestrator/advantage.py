@@ -141,7 +141,7 @@ def assign_advantages(
     """
     if advantage_fn is None:
         for rollout in rollouts:
-            rollout.advantage = rollout.reward
+            rollout.advantage = rollout.trace.reward
         return
     result = advantage_fn(AdvantageInputs(rollouts=[r.trace for r in rollouts]))
     for rollout, advantage in zip(rollouts, result.advantages):

@@ -112,13 +112,13 @@ class WandbMonitor(Monitor):
         if config is not None and isinstance(config, WandbWithExtrasConfig) and config.log_extras:
             if config.log_extras.samples:
                 self.last_log_samples_step = -1
-                self.samples_cols = ["step", "env_name", "task", "example_id", "messages", "input_ids", "reward"]
+                self.samples_cols = ["step", "env_name", "task", "task_idx", "messages", "input_ids", "reward"]
                 self.samples_table = wandb.Table(
                     columns=self.samples_cols,
                     log_mode="INCREMENTAL",
                 )
                 self.tokenizer = tokenizer
-                self.eval_samples_cols = ["step", "env", "task", "example_id", "completion", "reward"]
+                self.eval_samples_cols = ["step", "env", "task", "task_idx", "completion", "reward"]
                 self.eval_samples_table = wandb.Table(
                     columns=self.eval_samples_cols,
                     log_mode="INCREMENTAL",
@@ -182,7 +182,7 @@ class WandbMonitor(Monitor):
                 "step": step,
                 "env_name": rollout.get("env_name"),
                 "task": rollout.get("task"),
-                "example_id": rollout["example_id"],
+                "task_idx": rollout["task"]["idx"],
                 "messages": messages_text,
                 "input_ids": str(full_ids),
                 "reward": rollout["reward"],
@@ -221,7 +221,7 @@ class WandbMonitor(Monitor):
                 "step": step,
                 "env": env_name,
                 "task": rollout.get("task"),
-                "example_id": rollout["example_id"],
+                "task_idx": rollout["task"]["idx"],
                 "completion": completion,
                 "reward": rollout["reward"],
             }

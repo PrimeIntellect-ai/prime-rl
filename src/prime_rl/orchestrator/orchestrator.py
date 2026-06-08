@@ -53,7 +53,6 @@ from prime_rl.orchestrator.patches import (
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
-from prime_rl.orchestrator.trajectories import trace_total_tokens
 from prime_rl.orchestrator.types import (
     EvalBatch,
     EvalRollout,
@@ -201,8 +200,9 @@ class Orchestrator:
         with open(config_dir / "orch.toml", "wb") as f:
             tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
 
-        # vf-nano envs are local packages installed in this venv (no prime-env
-        # hub install); the env server imports them in its own child process.
+        # TODO(vf-nano, experimental): temporary. vf-nano envs are local packages
+        # installed in this venv (no prime-env hub install); the env server imports
+        # them in its own child process.
 
         get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
         self.tokenizer = setup_tokenizer(config.tokenizer)
@@ -587,7 +587,7 @@ class Orchestrator:
         self.monitor.log_samples(rollout_dicts, step=step)
         self.monitor.log_distributions(
             distributions={
-                "rewards": [r.reward for r in batch.rollouts],
+                "rewards": [r.trace.reward for r in batch.rollouts],
                 "advantages": [r.advantage for r in batch.rollouts if r.advantage is not None],
             },
             step=step,
@@ -606,7 +606,7 @@ class Orchestrator:
 
         num_rollouts = len(batch.rollouts)
         num_unique_examples = len({r.group_id for r in batch.rollouts})
-        num_tokens = sum(trace_total_tokens(r.trace) for r in batch.rollouts)
+        num_tokens = sum(r.trace.total_tokens for r in batch.rollouts)
         self.progress.total_tokens += num_tokens
         self.progress.total_samples += num_rollouts
         self.progress.total_problems += num_unique_examples
@@ -711,10 +711,10 @@ class Orchestrator:
         n_trainable = batch.metrics.n_trainable
         error_rate = (n_errors_total / n_arrivals_total) if n_arrivals_total else 0.0
         trainable_rate = (n_trainable / n_survivors) if n_survivors else 0.0
-        reward_mean = sum(r.reward for r in batch.rollouts) / max(n_survivors, 1)
+        reward_mean = sum(r.trace.reward for r in batch.rollouts) / max(n_survivors, 1)
         max_off_policy = max((r.off_policy_steps for r in batch.rollouts), default=0)
         turns_mean = sum(r.trace.num_turns for r in batch.rollouts) / max(n_survivors, 1)
-        truncation_rate = sum(1 for r in batch.rollouts if r.is_truncated) / max(n_survivors, 1)
+        truncation_rate = sum(1 for r in batch.rollouts if r.trace.is_truncated) / max(n_survivors, 1)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {reward_mean:.4f} | "
@@ -735,10 +735,12 @@ class Orchestrator:
             n_env_errors = batch.metrics.errors_by_env.get(env_name, 0)
             ratio = (n_env_arrivals / n_arrivals_total) if n_arrivals_total else 0.0
             env_error_rate = (n_env_errors / n_env_arrivals) if n_env_arrivals else 0.0
-            env_reward = (sum(r.reward for r in env_rollouts) / len(env_rollouts)) if env_rollouts else 0.0
+            env_reward = (sum(r.trace.reward for r in env_rollouts) / len(env_rollouts)) if env_rollouts else 0.0
             env_max_off_policy = max((r.off_policy_steps for r in env_rollouts), default=0)
             env_turns = sum(r.trace.num_turns for r in env_rollouts) / len(env_rollouts) if env_rollouts else 0.0
-            env_truncation = sum(1 for r in env_rollouts if r.is_truncated) / len(env_rollouts) if env_rollouts else 0.0
+            env_truncation = (
+                sum(1 for r in env_rollouts if r.trace.is_truncated) / len(env_rollouts) if env_rollouts else 0.0
+            )
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_reward:.4f} | "
                 f"Turns {env_turns:.1f} | Max Off-Policy {env_max_off_policy} | "

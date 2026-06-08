@@ -7,7 +7,6 @@ from typing import Any
 import pandas as pd
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.trajectories import trace_total_tokens
 from prime_rl.orchestrator.types import Progress, TrainBatchMetrics, TrainRollout
 
 
@@ -33,18 +32,18 @@ class MetricsBuilder:
         existing dashboards / alerts keep working."""
         num_rollouts = len(rollouts)
         num_unique_examples = len({r.group_id for r in rollouts})
-        num_tokens = sum(trace_total_tokens(r.trace) for r in rollouts)
+        num_tokens = sum(r.trace.total_tokens for r in rollouts)
 
         results_df = pd.DataFrame(
             {
                 "group_id": [r.group_id for r in rollouts],
-                "example_id": [r.example_id for r in rollouts],
+                "task_idx": [r.trace.task.idx for r in rollouts],
                 "env_name": [r.env_name for r in rollouts],
-                "reward": [r.reward for r in rollouts],
-                "is_truncated": [r.is_truncated for r in rollouts],
+                "reward": [r.trace.reward for r in rollouts],
+                "is_truncated": [r.trace.is_truncated for r in rollouts],
                 "is_filtered": [r.is_filtered for r in rollouts],
                 "stop_condition": [r.trace.stop_condition for r in rollouts],
-                "seq_len": [trace_total_tokens(r.trace) for r in rollouts],
+                "seq_len": [r.trace.total_tokens for r in rollouts],
                 "prefill_len": metrics.rollout_prefill_lens,
                 "decode_len": metrics.rollout_decode_lens,
                 "samples_per_rollout": metrics.samples_per_rollout,

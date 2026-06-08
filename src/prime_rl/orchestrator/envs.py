@@ -115,11 +115,11 @@ class Env:
         return vf.SamplingConfig(**sampling)
 
     async def run_rollout(
-        self, client: vf.ClientConfig, example: dict, model_name: str, cache_salt: str | None
+        self, client: vf.ClientConfig, task_idx: int, model_name: str, cache_salt: str | None
     ) -> vf.Trace:
-        """Run a single rollout for ``example`` (by task index); return a typed Trace."""
+        """Run a single rollout for ``task_idx``; return a typed Trace."""
         wire = await self.env_client.run_rollout(
-            task_idx=example["example_id"],
+            task_idx=task_idx,
             client_config=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
@@ -127,11 +127,11 @@ class Env:
         return self.trace_type.model_validate(wire)
 
     async def run_group(
-        self, client: vf.ClientConfig, example: dict, model_name: str, group_size: int, cache_salt: str | None
+        self, client: vf.ClientConfig, task_idx: int, model_name: str, group_size: int, cache_salt: str | None
     ) -> list[vf.Trace]:
-        """Run a group of rollouts for ``example`` (group-scoring envs); return typed Traces."""
+        """Run a group of rollouts for ``task_idx`` (group-scoring envs); return typed Traces."""
         wires = await self.env_client.run_group(
-            task_idx=example["example_id"],
+            task_idx=task_idx,
             n=group_size,
             client_config=client,
             model=model_name,
@@ -165,7 +165,7 @@ class EvalEnv(Env):
     async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
         await super().start(log_dir=log_dir, log_level=log_level, json_logging=json_logging)
         n = self.num_tasks if self.config.num_examples < 0 else min(self.config.num_examples, self.num_tasks)
-        self.examples = [{"example_id": i} for i in range(n)]
+        self.examples = [{"task_idx": i} for i in range(n)]
 
 
 EnvT = TypeVar("EnvT", bound=Env)

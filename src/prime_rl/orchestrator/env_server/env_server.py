@@ -13,7 +13,8 @@ from prime_rl.utils.utils import clean_exit
 def run_server(config: EnvServerConfig):
     setup_logger(config.log.level, json_logging=config.log.json_logging)
 
-    # vf-nano envs are local packages (installed in this venv); no hub install.
+    # TODO(vf-nano, experimental): temporary. vf-nano envs are local packages
+    # (installed in this venv); no hub install.
     server = EnvServer(
         env_id=config.env.stripped_id,
         taskset_args=config.env.args,

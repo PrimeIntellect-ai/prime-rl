@@ -366,7 +366,7 @@ class RolloutDispatcher:
         return GroupState(
             kind=kind,
             env_name=env_name,
-            example=example,
+            task_idx=example["task_idx"],
             rollouts_to_schedule=group_size,
             target_rollouts=group_size,
             eval_step=eval_step,
@@ -423,7 +423,7 @@ class RolloutDispatcher:
             task: asyncio.Task = asyncio.create_task(
                 env.run_group(
                     client=client,
-                    example=group.example,
+                    task_idx=group.task_idx,
                     model_name=model_name,
                     group_size=permits,
                     cache_salt=cache_salt,
@@ -436,7 +436,7 @@ class RolloutDispatcher:
             task = asyncio.create_task(
                 env.run_rollout(
                     client=client,
-                    example=group.example,
+                    task_idx=group.task_idx,
                     model_name=model_name,
                     cache_salt=cache_salt,
                 )
@@ -485,7 +485,7 @@ class RolloutDispatcher:
             return
         except Exception as exc:
             get_logger().warning(f"Rollout task failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
-            task_idx = group.example["example_id"] if group is not None else -1
+            task_idx = group.task_idx if group is not None else -1
             rollouts = [
                 self.error_rollout_output(task_idx=task_idx, error_type=type(exc).__name__, error_repr=repr(exc))
                 for _ in range(meta.rollout_count)
@@ -493,14 +493,14 @@ class RolloutDispatcher:
             is_synth_exception = True
 
         for r in rollouts:
-            if r.error is None and len(r.trajectory) == 0:
+            if not r.has_error and len(r.trajectory) == 0:
                 # Empty trajectory: promote to an explicit error so the sink
                 # treats it like any other failure
                 r.error = vf.Error(
                     type="EmptyTrajectory", message="Rollout returned with no trajectory steps", traceback=""
                 )
                 get_logger().warning(f"Empty trajectory in group {meta.group_id} ({meta.env_name})")
-            if r.error is not None:
+            if r.has_error:
                 self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
                 if not is_synth_exception:
                     get_logger().warning(
@@ -513,11 +513,9 @@ class RolloutDispatcher:
         Pops the group from ``self.groups`` once every member has been emitted."""
         eval_step = meta.eval_step
         policy_version = meta.policy_version
-        example_id = None
         if group is not None:
             eval_step = group.eval_step
             policy_version = group.policy_version_at_start
-            example_id = group.example["example_id"]
             group.emitted += 1
             if group.emitted >= group.target_rollouts:
                 self.groups.pop(meta.group_id, None)
@@ -525,7 +523,6 @@ class RolloutDispatcher:
         common = dict(
             trace=trace,
             env_name=meta.env_name,
-            example_id=example_id if example_id is not None else -1,
             group_id=meta.group_id,
             policy_version=policy_version,
             off_policy_steps=meta.off_policy_steps,

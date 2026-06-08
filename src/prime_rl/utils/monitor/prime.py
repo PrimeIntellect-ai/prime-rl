@@ -339,9 +339,9 @@ class PrimeMonitor(Monitor):
             if prompt is None or completion is None or not trajectory:
                 continue
 
-            example_id = rollout.get("example_id")
+            task_idx = (rollout.get("task") or {}).get("idx")
             try:
-                problem_id = int(example_id) if example_id is not None else sample_id
+                problem_id = int(task_idx) if task_idx is not None else sample_id
             except (TypeError, ValueError):
                 problem_id = sample_id
 

@@ -14,7 +14,7 @@ class TrainSource:
     """``next_example(available_permits)`` picks a weighted-RR env and
     returns its next example (or ``None`` when the env's per-call permit
     cost doesn't fit — the dispatch loop retries when permits free up).
-    Returned dicts carry ``env_name`` + ``example_id``."""
+    Returned dicts carry ``env_name`` + ``task_idx``."""
 
     def __init__(self, train_envs: TrainEnvs, *, seed: int | None) -> None:
         self.rng = random.Random(seed)
@@ -30,7 +30,7 @@ class TrainSource:
         for env in self.envs:
             # The orchestrator never loads the env: sample over the task-index
             # range the server reported via info() (num_tasks).
-            rows: list[dict] = [{"example_id": i, "env_name": env.name} for i in range(env.num_tasks)]
+            rows: list[dict] = [{"task_idx": i, "env_name": env.name} for i in range(env.num_tasks)]
             self.rng.shuffle(rows)
             self.examples[env.name] = rows
             self.cursors[env.name] = 0
