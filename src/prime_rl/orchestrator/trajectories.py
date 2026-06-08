@@ -11,9 +11,43 @@ only grew), each turn carrying `tokens` (`prompt_ids` / `completion_ids` /
 from __future__ import annotations
 
 import verifiers.nano as vf
+from verifiers.nano.clients.openai import message_to_wire
 
 from prime_rl.transport import TrainingSample
+from prime_rl.utils.chat_template import (
+    common_prefix_len,
+    deserialize_tool_calls,
+    normalize_messages,
+    render_messages,
+    strip_message_content,
+)
 from prime_rl.utils.logger import get_logger
+
+
+def backfill_rollout_tokens(trace: vf.Trace, tokenizer) -> None:
+    """Populate per-turn ``tokens`` for turns the env returned without them — e.g. SFT
+    against an external teacher whose chat client carries no token ids. Renders each
+    turn's prompt + assistant response with the student chat template and splits on the
+    longest common prefix; masks/logprobs are filled by ``trace_to_samples``. Mutates the
+    trace in place. (Tools aren't re-supplied here, so this targets text turns.)
+    """
+    for turn in trace.trajectory:
+        if turn.tokens is not None:
+            continue
+        prompt = strip_message_content(
+            deserialize_tool_calls(normalize_messages([message_to_wire(m) for m in turn.prompt], "user"))
+        )
+        completion = strip_message_content(
+            deserialize_tool_calls(normalize_messages([message_to_wire(turn.response.message)], "assistant"))
+        )
+        prompt_ids = render_messages(tokenizer, prompt, add_generation_prompt=True)
+        full_ids = render_messages(tokenizer, prompt + completion)
+        split_idx = common_prefix_len(prompt_ids, full_ids)
+        turn.tokens = vf.TurnTokens(
+            prompt_ids=full_ids[:split_idx],
+            completion_ids=full_ids[split_idx:],
+            completion_logprobs=[0.0] * (len(full_ids) - split_idx),
+        )
 
 
 def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSample]:

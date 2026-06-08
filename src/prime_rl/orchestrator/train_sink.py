@@ -21,7 +21,7 @@ from prime_rl.configs.orchestrator import AdvantageConfig, OrchestratorConfig
 from prime_rl.orchestrator.advantage import assign_advantages, setup_advantage_fn
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
-from prime_rl.orchestrator.trajectories import trace_to_samples
+from prime_rl.orchestrator.trajectories import backfill_rollout_tokens, trace_to_samples
 from prime_rl.orchestrator.types import TrainBatch, TrainBatchMetrics, TrainRollout
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
@@ -141,11 +141,14 @@ class TrainSink:
 
     async def process_rollout(self, rollout: TrainRollout) -> None:
         """Build training samples from the rollout's Trace (one per branch). The
-        env's renderer client already produced token ids/logprobs, so there's no
-        orchestrator-side tokenization. Errored rollouts are dropped at the group
+        renderer client already produced token ids/logprobs; when it didn't (SFT
+        against an external teacher's chat client), backfill them from the messages
+        with the student chat template. Errored rollouts are dropped at the group
         level, so skip them here."""
         if rollout.trace.has_error:
             return
+        if any(turn.tokens is None for turn in rollout.trace.trajectory):
+            await asyncio.to_thread(backfill_rollout_tokens, rollout.trace, self.tokenizer)
         samples = await asyncio.to_thread(trace_to_samples, rollout.trace, env_name=rollout.env_name)
         rollout.samples = samples or []
 
