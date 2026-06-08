@@ -9,6 +9,7 @@ from prime_rl.orchestrator.trajectories import (
     _deserialize_tool_calls,
     align_routed_experts,
     interleave_rollout,
+    step_token_roles,
 )
 
 _interleave_rollout = interleave_rollout
@@ -1378,3 +1379,25 @@ def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
     assert _decode_mm_thw(sample) == [[1, 2, 3], [1, 4, 4]]
     # mm_token_type_ids: image at token 2, video at token 5, rest 0.
     assert sample.mm_token_type_ids == [0, 1, 0, 0, 2, 0, 0]
+
+
+def test_step_token_roles_attributes_prompt_and_completion():
+    tokens = {
+        "prompt_ids": [10, 11, 12, 13],
+        "completion_ids": [20, 21],
+        "prompt_attribution": {
+            "message_roles": ["system", "user", "tool"],
+            "message_indices": [0, 1, 2, 2],
+            "is_content": [True, True, True, True],
+            "message_tool_names": [None, None, "calc"],
+        },
+    }
+    roles, tool_names = step_token_roles(tokens)
+    assert roles == ["system", "user", "tool", "tool", "assistant", "assistant"]
+    assert tool_names == [None, None, "calc", "calc", None, None]
+
+
+def test_step_token_roles_without_attribution():
+    roles, tool_names = step_token_roles({"prompt_ids": [1, 2], "completion_ids": [3]})
+    assert roles == [None, None, "assistant"]
+    assert tool_names == [None, None, None]

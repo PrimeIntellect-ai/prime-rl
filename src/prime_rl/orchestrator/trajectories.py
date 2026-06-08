@@ -202,6 +202,37 @@ def backfill_rollout_tokens(
     return True
 
 
+def step_token_roles(tokens: dict[str, Any]) -> tuple[list[str | None], list[str | None]]:
+    """Per-token ``(role, tool_name)`` for one trajectory step's ``prompt_ids + completion_ids``.
+
+    Prompt tokens are attributed via ``prompt_attribution`` (``message_roles[message_indices]`` over
+    ``is_content``, with ``message_tool_names`` for tool messages); the sampled completion tokens are
+    role ``"assistant"``. Tokens with no attribution stay ``None`` (e.g. prompt roles when the renderer
+    didn't emit ``prompt_attribution``). This is the per-token attribution that ``RenderHints`` exposes
+    to the advantage_fns — the same parsing the echo alpha builder does, but emitting roles, not alphas.
+    """
+    prompt_len = len(tokens["prompt_ids"])
+    completion_len = len(tokens["completion_ids"])
+    roles: list[str | None] = [None] * prompt_len + ["assistant"] * completion_len
+    tool_names: list[str | None] = [None] * (prompt_len + completion_len)
+
+    attribution = tokens.get("prompt_attribution")
+    if attribution is not None:
+        message_roles = attribution.get("message_roles")
+        message_indices = attribution.get("message_indices")
+        is_content = attribution.get("is_content")
+        message_tool_names = attribution.get("message_tool_names") or []
+        if message_roles is not None and is_content and message_indices:
+            if len(is_content) == prompt_len and len(message_indices) == prompt_len:
+                for k, mi in enumerate(message_indices):
+                    if mi < 0 or not is_content[k] or mi >= len(message_roles):
+                        continue
+                    roles[k] = message_roles[mi]
+                    if message_roles[mi] == "tool" and mi < len(message_tool_names):
+                        tool_names[k] = message_tool_names[mi]
+    return roles, tool_names
+
+
 def interleave_rollout(
     output: vf.RolloutOutput,
     mm_token_type_ids_mapping: dict[int, int] | None = None,
