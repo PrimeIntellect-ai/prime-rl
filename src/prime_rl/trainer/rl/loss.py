@@ -1,3 +1,4 @@
+import functools
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -202,6 +203,72 @@ def default_loss_fn(inputs: LossInputs, loss_config: RLLossConfig) -> LossOutput
     return LossOutputs(loss=loss, metrics=metrics)
 
 
+def pg_loss_fn(
+    inputs: LossInputs,
+    *,
+    use_importance_ratio: bool = True,
+    clip: tuple[float, float] | None = (0.2, 0.2),
+    kl_weight: float = 1e-3,
+) -> LossOutputs:
+    """Parameterizable policy-gradient core — the single core that rl / echo / sft collapse into.
+
+    - ``use_importance_ratio``: weight the per-token gradient by the importance ratio
+      ``exp(trainer_lp - inference_lp)`` (on-policy RL) when True, or by the raw ``trainer_lp``
+      (weighted masked NLL) when False.
+    - ``clip=(low, high)``: apply the DPPO trust-region mask (advantage-sign-conditioned); ``None``
+      disables it.
+    - ``kl_weight``: scale of the squared-KL regularizer (``0`` disables it).
+
+    At ``(True, (dppo_mask_low, dppo_mask_high), kl_tau)`` this is bit-identical to ``default_loss_fn``;
+    at ``(False, None, 0.0)`` it is ``echo_loss_fn`` (and ``sft_loss_fn`` at unit weight). The advantage
+    is the resolved per-token weight (computed orchestrator-side) and is consumed directly.
+    """
+    trainer_logprobs = inputs.trainer_logprobs
+    inference_logprobs = inputs.inference_logprobs
+    advantages = inputs.advantages
+    loss_mask = inputs.loss_mask
+
+    log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
+        trainer_logprobs, inference_logprobs
+    )
+    # On-policy RL weights the gradient by the importance ratio; NLL (echo/sft) by the raw logprob.
+    policy_term = importance_ratio if use_importance_ratio else trainer_logprobs
+
+    if clip is not None:
+        dppo_mask_low, dppo_mask_high = clip
+        probs_diff = torch.exp(trainer_logprobs) - torch.exp(inference_logprobs)
+        dppo_invalid_mask_high = probs_diff > dppo_mask_high
+        dppo_invalid_mask_low = probs_diff < -dppo_mask_low
+        positive_advantages = advantages > 0
+        negative_advantages = advantages < 0
+        is_masked = torch.where(positive_advantages, dppo_invalid_mask_high, dppo_invalid_mask_low)
+        is_masked_high = positive_advantages & dppo_invalid_mask_high
+        is_masked_low = negative_advantages & dppo_invalid_mask_low
+        keep_mask = loss_mask & ~is_masked
+        drop_mask = loss_mask & is_masked
+        metrics = {
+            "masked_mismatch_kl": _safe_mean(mismatch_kl, drop_mask),
+            "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
+            "is_masked": _safe_mean(is_masked, loss_mask),
+            "is_masked_low": _safe_mean(is_masked_low, loss_mask),
+            "is_masked_high": _safe_mean(is_masked_high, loss_mask),
+            "masked_advantage_positive": _safe_mean(positive_advantages, drop_mask),
+            "masked_advantage_negative": _safe_mean(negative_advantages, drop_mask),
+        }
+    else:
+        keep_mask = loss_mask
+        metrics = {}
+        if loss_mask.any():
+            metrics["nll"] = _safe_mean(-trainer_logprobs, loss_mask)
+            metrics["token_count"] = loss_mask.sum().float()
+
+    pg_loss = keep_mask * advantages * policy_term
+    loss = -pg_loss
+    if kl_weight != 0.0:
+        loss = loss + kl_weight * (loss_mask * log_importance_ratio**2)
+    return LossOutputs(loss=loss.sum(), metrics=metrics)
+
+
 def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
     """
     On-policy distillation loss: the default DPPO+KL math with the tau knobs
@@ -324,9 +391,14 @@ def setup_loss_fns(losses: list[LossTermConfig]) -> dict[str, LossFn]:
         rl_fn = _make_custom_core(primary.loss.import_path, primary.loss.kwargs)
     else:
         rl_loss_config = to_rl_loss_config(primary)
-
-        def rl_fn(inputs: LossInputs) -> LossOutputs:
-            return default_loss_fn(inputs, rl_loss_config)
+        # The rl core is the parameterizable pg core at the rl preset — bit-identical to the historical
+        # default_loss_fn (guarded by test_pg_core_matches_default_loss_fn_at_rl_preset).
+        rl_fn = functools.partial(
+            pg_loss_fn,
+            use_importance_ratio=True,
+            clip=(rl_loss_config.dppo_mask_low, rl_loss_config.dppo_mask_high),
+            kl_weight=rl_loss_config.kl_tau,
+        )
 
     # sft/opd/rl are the training_mode-dispatched primary cores; each remaining (overlay) term
     # contributes an additive core keyed by its name (ce → weighted masked NLL; custom → imported fn).

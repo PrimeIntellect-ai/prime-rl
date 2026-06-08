@@ -26,6 +26,7 @@ from prime_rl.trainer.rl.loss import (
     default_loss_fn,
     echo_loss_fn,
     opd_loss_fn,
+    pg_loss_fn,
     setup_loss_fns,
     sft_loss_fn,
 )
@@ -157,6 +158,60 @@ def test_echo_loss_fn_is_weighted_masked_nll():
     # -(weight * logprobs)[mask].sum() = -((0.5 * -1) + (2.0 * -3)) = 6.5
     assert torch.allclose(out.loss, torch.tensor(6.5))
     assert torch.allclose(out.metrics["echo_token_count"], torch.tensor(2.0))
+
+
+def test_pg_core_matches_default_loss_fn_at_rl_preset():
+    """The rl preset of the parameterizable core is bit-identical to default_loss_fn (loss + metrics)."""
+    g = torch.Generator().manual_seed(11)
+    n = 12
+    inputs = LossInputs(
+        trainer_logprobs=torch.randn(n, generator=g, dtype=torch.float32),
+        inference_logprobs=torch.randn(n, generator=g, dtype=torch.float32),
+        teacher_logprobs=None,
+        advantages=torch.randn(n, generator=g, dtype=torch.float32),
+        loss_mask=torch.randint(0, 2, (n,), generator=g).bool(),
+    )
+    cfg = RLLossConfig()
+    expected = default_loss_fn(inputs, cfg)
+    got = pg_loss_fn(
+        inputs, use_importance_ratio=True, clip=(cfg.dppo_mask_low, cfg.dppo_mask_high), kl_weight=cfg.kl_tau
+    )
+    assert torch.equal(got.loss, expected.loss)
+    assert got.metrics.keys() == expected.metrics.keys()
+    for k in expected.metrics:
+        assert torch.equal(got.metrics[k], expected.metrics[k]), k
+
+
+def test_pg_core_matches_echo_loss_fn_at_echo_preset():
+    """The echo preset (no importance ratio, no clip, no KL) is bit-identical to echo_loss_fn."""
+    g = torch.Generator().manual_seed(13)
+    n = 10
+    inputs = LossInputs(
+        trainer_logprobs=torch.randn(n, generator=g, dtype=torch.float32),
+        inference_logprobs=torch.randn(n, generator=g, dtype=torch.float32),
+        teacher_logprobs=None,
+        advantages=torch.randn(n, generator=g, dtype=torch.float32),
+        loss_mask=torch.randint(0, 2, (n,), generator=g).bool(),
+    )
+    expected = echo_loss_fn(inputs)
+    got = pg_loss_fn(inputs, use_importance_ratio=False, clip=None, kl_weight=0.0)
+    assert torch.equal(got.loss, expected.loss)
+
+
+def test_pg_core_matches_sft_loss_fn_at_sft_preset():
+    """The sft preset (echo preset at unit weight) is bit-identical to sft_loss_fn."""
+    g = torch.Generator().manual_seed(17)
+    n = 9
+    inputs = LossInputs(
+        trainer_logprobs=torch.randn(n, generator=g, dtype=torch.float32),
+        inference_logprobs=torch.zeros(n, dtype=torch.float32),
+        teacher_logprobs=None,
+        advantages=torch.ones(n, dtype=torch.float32),
+        loss_mask=torch.randint(0, 2, (n,), generator=g).bool(),
+    )
+    expected = sft_loss_fn(inputs)
+    got = pg_loss_fn(inputs, use_importance_ratio=False, clip=None, kl_weight=0.0)
+    assert torch.equal(got.loss, expected.loss)
 
 
 def test_extra_echo_term_adds_scaled_contribution():
