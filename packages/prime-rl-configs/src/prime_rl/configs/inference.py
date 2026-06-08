@@ -1,12 +1,11 @@
 from argparse import Namespace
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 from pydantic import Field, model_validator
-from pydantic_config import BaseConfig
 
 from prime_rl.configs.shared import BaseModelConfig, LogConfig, SlurmConfig
-from prime_rl.utils.config import find_package_resource, rgetattr, rsetattr
+from prime_rl.utils.config import BaseConfig, find_package_resource, rgetattr, rsetattr
 from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
 
 # TODO: Set thinking/ solution budget
@@ -270,6 +269,7 @@ class InferenceExperimentalConfig(BaseConfig):
 
 
 class InferenceConfig(BaseConfig):
+    env_prefix: ClassVar[str] = "PRIME_RL_INFER_"
     server: ServerConfig = ServerConfig()
 
     model: ModelConfig = Field(default_factory=ModelConfig)

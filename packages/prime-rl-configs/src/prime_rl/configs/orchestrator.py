@@ -1,7 +1,7 @@
 import math
 import warnings
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 from pydantic import AliasChoices, Field, model_serializer, model_validator
 from pydantic_core.core_schema import SerializerFunctionWrapHandler
@@ -500,6 +500,7 @@ class RolloutModelConfig(BaseConfig):
 
 
 class OrchestratorConfig(BaseConfig):
+    env_prefix: ClassVar[str] = "PRIME_RL_ORCH_"
     training_mode: Literal["rl", "opd", "sft"] = "rl"
     """Training mode. ``rl``: student generates rollouts, no teacher. ``opd``: student generates rollouts, teacher computes logprobs (teacher_tau > 0). ``sft``: teacher generates rollouts, student inference pool used for evals and weight sync."""
 

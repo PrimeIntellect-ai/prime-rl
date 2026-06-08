@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import ClassVar
 
 from pydantic import model_validator
 
@@ -8,6 +9,7 @@ from prime_rl.utils.config import BaseConfig
 
 
 class EnvServerConfig(BaseConfig):
+    env_prefix: ClassVar[str] = "PRIME_RL_ENV_SERVER_"
     env: EnvConfig = EnvConfig()
 
     log: LogConfig = LogConfig()

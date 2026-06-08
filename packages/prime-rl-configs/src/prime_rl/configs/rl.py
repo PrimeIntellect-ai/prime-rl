@@ -1,6 +1,6 @@
 import warnings
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
@@ -178,6 +178,7 @@ DeploymentConfig: TypeAlias = Annotated[
 
 
 class RLConfig(BaseConfig):
+    env_prefix: ClassVar[str] = "PRIME_RL_"
     trainer: TrainerConfig
 
     orchestrator: OrchestratorConfig

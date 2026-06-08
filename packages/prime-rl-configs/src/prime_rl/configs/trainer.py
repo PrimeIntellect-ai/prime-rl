@@ -1,6 +1,6 @@
 import warnings
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
@@ -500,6 +500,7 @@ class TrainerExperimentalConfig(BaseConfig):
 
 
 class TrainerConfig(BaseConfig):
+    env_prefix: ClassVar[str] = "PRIME_RL_TRAINER_"
     model: ModelConfig = ModelConfig()
 
     tokenizer: TokenizerConfig = TokenizerConfig()

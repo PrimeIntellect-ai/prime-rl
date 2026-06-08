@@ -1,6 +1,6 @@
 import warnings
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, ClassVar, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 from renderers import RendererConfig
@@ -171,6 +171,7 @@ class SFTExperimentalConfig(BaseConfig):
 
 
 class SFTConfig(BaseConfig):
+    env_prefix: ClassVar[str] = "PRIME_RL_SFT_"
     model: ModelConfig = ModelConfig()
 
     tokenizer: TokenizerConfig = TokenizerConfig()
