@@ -22,9 +22,9 @@ max_completion_tokens = 128
 
 [[orchestrator.train.env]]
 id = "reverse-text"
-# Swappable agent/runtime inherited from vf-nano. reverse-text is a pure-text
+# Swappable harness/runtime inherited from vf-nano. reverse-text is a pure-text
 # single-turn env, so the subprocess runtime (no docker) is enough.
-agent = { type = "default", runtime = { type = "subprocess" } }
+harness = { type = "default", runtime = { type = "subprocess" } }
 
 # No eval block, mirroring examples/reverse_text/rl.toml — this is a train-only
 # smoke. Add an [orchestrator.eval] block (with an interval) to exercise eval.

@@ -21,8 +21,8 @@ def run_server(config: EnvServerConfig):
     server = EnvServer(
         env_id=config.env.stripped_id,
         taskset_args=config.env.args,
-        agent_config=config.env.agent,
-        agent_timeout=config.env.timeout,
+        harness_config=config.env.harness,
+        harness_timeout=config.env.timeout,
         max_turns=config.env.max_turns,
         address=config.env.address or "tcp://127.0.0.1:5000",
     )

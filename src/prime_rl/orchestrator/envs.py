@@ -112,7 +112,7 @@ class Env:
                 json_logging=json_logging,
                 env_id=self.config.stripped_id,
                 taskset_args=self.config.args,
-                agent_config=self.config.agent,
+                harness_config=self.config.harness,
                 max_turns=self.config.max_turns,
                 address="tcp://127.0.0.1:0",
                 address_queue=address_queue,

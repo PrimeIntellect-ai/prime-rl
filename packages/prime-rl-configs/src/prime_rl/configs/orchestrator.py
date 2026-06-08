@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import AliasChoices, Field, model_serializer, model_validator
 from pydantic_core.core_schema import SerializerFunctionWrapHandler
 from renderers import AutoRendererConfig, RendererConfig
-from verifiers.nano.agents import AgentConfig, DefaultAgentConfig
+from verifiers.nano.harnesses import DefaultHarnessConfig, HarnessConfig
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -154,10 +154,10 @@ class EnvConfig(BaseConfig):
     args: dict = {}
     """Keyword arguments forwarded to the env's ``load_taskset`` (the taskset config). See the environment's docstring for accepted args."""
 
-    agent: AgentConfig = DefaultAgentConfig()
-    """The agent that drives rollouts, inherited from vf-nano (swappable agent +
-    runtime, e.g. ``agent.type`` / ``agent.runtime.type``). The env server runs
-    this agent; the orchestrator only forwards the config."""
+    harness: HarnessConfig = DefaultHarnessConfig()
+    """The harness that drives rollouts, inherited from vf-nano (swappable harness +
+    runtime, e.g. ``harness.type`` / ``harness.runtime.type``). The env server runs
+    this harness; the orchestrator only forwards the config."""
 
     max_turns: int | None = None
     """Max model turns per rollout (framework-enforced by the env server). None = no limit."""
