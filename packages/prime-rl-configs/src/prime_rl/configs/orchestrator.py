@@ -150,9 +150,6 @@ class EnvConfig(vf.EnvConfig):
     prime-rl's orchestration knobs. Timeouts come from ``vf.TimeoutConfig``
     (``timeout.rollout`` / ``timeout.scoring``)."""
 
-    taskset: vf.TasksetConfig = Field(default_factory=lambda: vf.taskset_config_type("reverse-text")())
-    """The env's taskset, resolved to its specific config by ``id`` (defaults to reverse-text)."""
-
     name: str | None = None
     """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
 
@@ -178,7 +175,9 @@ class EnvConfig(vf.EnvConfig):
         return self.name or self.id
 
     @model_validator(mode="after")
-    def validate_env_name(self):
+    def validate_env(self):
+        if not self.taskset.id:
+            raise ValueError('no taskset configured for this env — set taskset = { id = "<env-id>" }')
         if self.resolved_name == "all":
             raise ValueError(
                 'Environment name "all" is reserved for global metric aggregation. Use a different name or id.'
@@ -210,7 +209,7 @@ class EvalEnvConfig(EnvConfig):
 
 
 class TrainConfig(BaseConfig):
-    env: list[TrainEnvConfig] = [TrainEnvConfig()]
+    env: list[TrainEnvConfig] = Field(default_factory=list)
     """Training environments."""
 
     sampling: TrainSamplingConfig = TrainSamplingConfig()
@@ -259,7 +258,7 @@ class TrainConfig(BaseConfig):
 
 
 class EvalConfig(BaseConfig):
-    env: list[EvalEnvConfig] = [EvalEnvConfig()]
+    env: list[EvalEnvConfig] = Field(default_factory=list)
     """Evaluation environments."""
 
     sampling: EvalSamplingConfig = Field(default_factory=EvalSamplingConfig)
