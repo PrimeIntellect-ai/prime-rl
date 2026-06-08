@@ -21,6 +21,8 @@ class ZMQTrainingBatchSender(TrainingBatchSender):
     def __init__(self, output_dir: Path, transport: ZMQTransportConfig):
         super().__init__(output_dir)
 
+        # Async context so ``send`` yields instead of blocking the orchestrator
+        # event loop when the trainer is slow and we hit SNDHWM.
         self.context = zmq.asyncio.Context.instance()
         self.socket: zmq.asyncio.Socket = self.context.socket(zmq.PUSH)
         self.socket.setsockopt(zmq.SNDHWM, transport.hwm)

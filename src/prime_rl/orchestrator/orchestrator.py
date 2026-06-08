@@ -485,7 +485,6 @@ class Orchestrator:
         to the train / eval sink. Both sinks return a finalized batch (or
         ``None``) from ``add()``; we just dispatch on the result."""
         while not self.stopped.is_set():
-            self.check_component_tasks()
             if self.draining and self.dispatcher.is_idle:
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
@@ -509,17 +508,6 @@ class Orchestrator:
             # don't want to ship past ``max_steps``
             if train_batch is not None and not self.draining and not self.stopped.is_set():
                 await self.finalize_train_batch(train_batch)
-
-    def check_component_tasks(self) -> None:
-        """Surface failures from background component loops in the main task."""
-        for task in self.component_tasks:
-            if not task.done() or task.cancelled():
-                continue
-            exc = task.exception()
-            if exc is None:
-                continue
-            name = task.get_name()
-            raise RuntimeError(f"Orchestrator component task {name!r} failed") from exc
 
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O
@@ -789,11 +777,11 @@ class Orchestrator:
             exclude_keys={"trajectory"},
         )
         self.monitor.log_eval_samples(rollout_dicts, env_name=batch.env_name, step=batch.step)
-        policy_versions = sorted({r.policy_version for r in batch.rollouts})
-        policy_version = policy_versions[0]
+        policy_versions = {r.policy_version for r in batch.rollouts}
+        policy_version = min(policy_versions)
         if len(policy_versions) > 1:
             get_logger().warning(
-                f"Eval {batch.env_name} step {batch.step} had mixed policy versions: {policy_versions}"
+                f"Eval {batch.env_name} step {batch.step} had mixed policy versions: {sorted(policy_versions)}"
             )
         metrics = batch.metrics.to_wandb_dict(env_name=batch.env_name, step=batch.step)
         metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
@@ -801,14 +789,13 @@ class Orchestrator:
 
         n_total = batch.metrics.n_rollouts
         error_rate = ((batch.metrics.n_cancelled + batch.metrics.n_errored) / n_total) if n_total else 0.0
-        max_off_policy = max((r.off_policy_steps for r in batch.rollouts), default=0)
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
 
         get_logger().success(
             f"Evaluated {batch.env_name} (Step {batch.step}) | "
             f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {batch.metrics.reward_mean:.4f} | "
-            f"Turns {batch.metrics.num_turns_mean:.1f} | Max Off-Policy {max_off_policy} | "
+            f"Turns {batch.metrics.num_turns_mean:.1f} | "
             f"Error {error_rate:.1%} | Truncation {batch.metrics.truncation_rate:.1%}"
         )
 

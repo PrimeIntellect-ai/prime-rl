@@ -287,10 +287,10 @@ class RolloutDispatcher:
 
     async def fill_inflight(self) -> None:
         """Schedule new rollouts up to ``max_inflight``, honoring
-        ``self.mode``. When ``PREFER_EVAL``'s source exhausts we flip back
-        to ``PREFER_TRAIN`` so the eval tail drains alongside fresh train."""
-        if not self.dispatch_allowed.is_set() and self.mode != DispatcherMode.PREFER_EVAL:
-            return
+        ``self.mode``. Eval scheduling ignores the orchestrator's dispatch
+        gate (evals are version-pinned measurements); only train scheduling
+        respects it. When ``PREFER_EVAL``'s source exhausts we flip back to
+        ``PREFER_TRAIN`` so the eval tail drains alongside fresh train."""
         while True:
             if self.available_permits <= 0:
                 return
@@ -307,13 +307,11 @@ class RolloutDispatcher:
                     # to PREFER_TRAIN so any remaining permits go to train
                     # while the in-flight eval tail completes naturally
                     self.switch_mode(DispatcherMode.PREFER_TRAIN, reason="the eval queue drained")
-                    if not self.dispatch_allowed.is_set():
-                        return
                     continue
                 scheduled = await self.try_schedule("eval")
                 if not scheduled:
                     return
-            else:  # PREFER_TRAIN
+            else:  # PREFER_TRAIN — respects the orchestrator's dispatch gate
                 if not self.dispatch_allowed.is_set():
                     return
                 scheduled = await self.try_schedule("train")
