@@ -5,7 +5,7 @@ and drives the pipeline. Components are single-purpose:
 
 - ``RolloutDispatcher`` schedules rollouts; emits ``TrainRollout`` /
   ``EvalRollout`` on its queue.
-- ``TrainSink`` ingests train rollouts (tokenize → advantages → filters)
+- ``TrainSink`` ingests train rollouts (tokenize → advantages → detectors / advantage filter)
   and returns a ``TrainBatch`` when the threshold is met.
 - ``EvalSink`` ingests eval rollouts and returns an ``EvalBatch`` (with
   per-env metrics) on epoch completion.
@@ -42,11 +42,11 @@ from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
+from prime_rl.orchestrator.detectors import setup_detectors
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
-from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.metrics import MetricsBuilder
 from prime_rl.orchestrator.patches import (
@@ -99,7 +99,7 @@ monkey_patch_chat_completion_logprobs()
 SHUTDOWN_TIMEOUT_S = 300
 
 # Abort after this many consecutive train batches drop all rollouts to
-# post-batch filters — usually a misconfigured filter or homogeneous-reward
+# the advantage filter — usually a very high threshold or homogeneous-reward
 # dataset; fail loudly instead of spinning
 MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 
@@ -258,9 +258,12 @@ class Orchestrator:
         if usage_base_url and usage_api_key:
             self.usage_reporter = UsageReporter()
 
-        # Filters apply to train rollouts only
-        pre_filters = setup_filters(config.pre_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="pre-batch")
-        post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="post-batch")
+        # Detectors annotate train rollouts only; evals are logged without detector metadata.
+        detectors = setup_detectors(vocab_size=self.tokenizer.vocab_size)
+        if config.advantage_filter is not None:
+            get_logger().info(
+                f"Configured advantage filter (threshold={config.advantage_filter.threshold}; excludes advantage <= threshold)"
+            )
 
         get_logger().info("Loading training environments")
         self.train_envs = TrainEnvs(config.train.env)
@@ -390,8 +393,8 @@ class Orchestrator:
             batch_size=config.batch_size,
             token_batch_size=config.token_batch_size,
             advantage_config=config.advantage,
-            pre_filters=pre_filters,
-            post_filters=post_filters,
+            detectors=detectors,
+            advantage_filter=config.advantage_filter,
         )
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         self.watcher = WeightWatcher(
@@ -539,20 +542,20 @@ class Orchestrator:
         if batch.metrics.n_trainable == 0:
             self.consecutive_empty_batches += 1
             get_logger().warning(
-                f"Step {step}: post-batch filters dropped all {len(batch.rollouts)} rollouts "
+                f"Step {step}: advantage filter excluded all {len(batch.rollouts)} rollouts "
                 f"(consecutive empty batches: {self.consecutive_empty_batches}/{MAX_CONSECUTIVE_EMPTY_BATCHES})"
             )
             if self.consecutive_empty_batches >= MAX_CONSECUTIVE_EMPTY_BATCHES:
                 raise RuntimeError(
                     f"{self.consecutive_empty_batches} consecutive zero-trainable batches — "
-                    "check filter config (pre_batch_filters / post_batch_filters) or task difficulty."
+                    "check orchestrator.advantage_filter or task difficulty."
                 )
             return
         self.consecutive_empty_batches = 0
         if batch.metrics.n_trainable / len(batch.rollouts) <= 0.1:
             get_logger().warning(
                 f"Only {batch.metrics.n_trainable}/{len(batch.rollouts)} rollouts in the batch are trainable "
-                f"({batch.metrics.n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
+                f"({batch.metrics.n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / advantage_filter"
             )
 
         # Materialize at the I/O boundary so prime-rl metadata travels with
@@ -587,9 +590,6 @@ class Orchestrator:
             step_time=step_time,
             save_ckpt_time=save_ckpt_time,
             teacher_logprobs_time=teacher_logprobs_time,
-            pre_filter_seen=self.train_sink.pre_filter_seen,
-            pre_filter_dropped=self.train_sink.pre_filter_dropped,
-            pre_filter_dropped_by_name=dict(self.train_sink.pre_filter_dropped_by_name),
         )
         self.monitor.log(metrics, step=step)
         self.monitor.log_samples(rollout_dicts, step=step)
@@ -624,7 +624,6 @@ class Orchestrator:
 
         self.log_train_batch(batch, step=step, step_time=step_time)
 
-        self.train_sink.reset_pre_filter_stats()
         self.progress.step += 1
         self.maybe_trigger_eval(self.progress.step)
 

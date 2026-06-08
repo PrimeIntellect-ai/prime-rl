@@ -40,10 +40,6 @@ name = "qwen3-4b-wiki-search"
 [orchestrator.train.sampling]
 max_completion_tokens = 512
 
-[[orchestrator.pre_batch_filters]]
-type = "zero_advantage"
-enforce = true
-
 [[orchestrator.train.env]]
 id = "primeintellect/wiki-search"
 

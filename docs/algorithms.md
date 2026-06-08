@@ -1,6 +1,6 @@
 # Algorithms
 
-This page covers the math and the configurable algorithmic components: how off-policy training works, the default loss and advantage functions, how to plug in your own, the filters applied between rollout and training, and how multi-turn rollouts get merged into training samples.
+This page covers the math and the configurable algorithmic components: how off-policy training works, the default loss and advantage functions, how to plug in your own, how rollout detectors and advantage filtering work, and how multi-turn rollouts get merged into training samples.
 
 ## Table of Contents
 
@@ -11,9 +11,7 @@ This page covers the math and the configurable algorithmic components: how off-p
 - [Advantage](#advantage)
   - [Default Advantage](#default-advantage)
   - [Custom Advantage](#custom-advantage)
-- [Filters](#filters)
-- [Difficulty Pools](#difficulty-pools)
-- [Online Difficulty Filtering](#online-difficulty-filtering)
+- [Detectors And Advantage Filtering](#detectors-and-advantage-filtering)
 - [Multi-Turn Trajectories](#multi-turn-trajectories)
   - [Extension Property](#extension-property)
   - [Best-Effort Interleaving](#best-effort-interleaving)
@@ -138,8 +136,8 @@ This is intentionally simple — it does the right thing for most envs. Switch t
 
 Two built-in **length penalties** can be layered on top of any advantage to discourage rambling:
 
-- `[orchestrator.length_penalty] type = "tokens"` — penalizes long completions in tokens, with configurable target and slope.
-- `[orchestrator.length_penalty] type = "turns"` — penalizes long multi-turn rollouts by turn count.
+- `[orchestrator.advantage.length_penalty] type = "tokens"` — penalizes long completions in tokens, with configurable target and slope.
+- `[orchestrator.advantage.length_penalty] type = "turns"` — penalizes long multi-turn rollouts by turn count.
 
 
 ### Custom Advantage
@@ -167,67 +165,28 @@ kwargs = { eps = 1e-8 }
 
 `AdvantageInputs.rollouts` is a list of `verifiers.RolloutOutput`, so you have access to the full rollout (turns, tool calls, custom metadata) — not just the reward. Use this for anything reward-shaping-like that needs trajectory context.
 
-## Filters
+## Detectors And Advantage Filtering
 
-Filters drop rollouts between scoring and training. Built-ins (composable):
+Gibberish and repetition checks are built-in detectors, not training filters. They always annotate train rollouts, appear in saved rollout metadata under `detections`, and emit W&B metrics under `detections/...`; detected rollouts are still eligible for training.
 
-| Filter | Effect |
-|---|---|
-| `gibberish` | Drops rollouts whose mean log-prob fall below a threshold — usually a sign of degenerate output. |
-| `repetition` | Drops rollouts with high n-gram repetition. |
-| `zero_advantage` | Drops rollouts whose advantage is zero, so the trainer doesn't waste tokens on them. |
+The detectors are:
 
-The default `[orchestrator]` config already includes all three filters with their defaults. To override, set `filters` explicitly — the list replaces the defaults wholesale:
+- `gibberish` — detects tokens in the top 25% of token IDs sampled at very low logprob.
+- `repetition` — detects long high-confidence token streaks.
 
-```toml
-[[orchestrator.filters]]
-type = "zero_advantage"
-
-[[orchestrator.filters]]
-type = "repetition"
-threshold = 0.4
-```
-
-Filtered rollouts still appear in W&B distributions, just not in the trainer batch — useful for spotting whether filtering is doing its job.
-
-## Difficulty Pools
-
-Difficulty pools gradually retire problems the model has solved or never solves. After each rollout, the average reward across a problem's group is compared to two thresholds:
-
-- `buffer.easy_threshold` — at or above this, the problem moves into the `easy` pool and is no longer sampled.
-- `buffer.hard_threshold` — at or below this, the problem moves into the `hard` pool and is no longer sampled.
-- Otherwise the problem stays in `normal` and remains in the sampling rotation.
-
-Pool assignments persist across checkpoints (`easy_examples.jsonl` / `hard_examples.jsonl` under each step's orchestrator checkpoint). When you resume — or want to broaden the curriculum mid-run — `buffer.easy_fraction` / `buffer.hard_fraction` randomly lift that fraction of pooled problems back into `normal` so they re-enter sampling.
+The only built-in rollout exclusion is the standalone advantage filter. It logs excluded rollouts, but does not send their samples to the trainer. By default, rollouts with advantage `<= 0.0` are excluded:
 
 ```toml
-[orchestrator.buffer]
-easy_threshold = 0.95
-hard_threshold = 0.05
-easy_fraction = 0.0   # default; bump on resume to bring some easy problems back
-hard_fraction = 0.0   # default; bump on resume to bring some hard problems back
+[orchestrator.advantage_filter]
+threshold = 0.0
 ```
 
-Watch `pool/{env}/{easy,normal,hard}` (current pool ratios) and `evicted_examples/{env}/{easy,hard}` (per-step eviction rate).
-
-## Online Difficulty Filtering
-
-Online difficulty filtering (ODF) drops collapsed-advantage groups on the way *into* the buffer. Set `buffer.online_difficulty_filtering = true` (default `false`) to enable:
-
-- Average reward across the group is **0.0** (every rollout failed) → drop the group, count under `filtered_rollouts/{env}/hard`.
-- Average reward **1.0** (every rollout succeeded) → drop, count under `filtered_rollouts/{env}/easy`.
-- Otherwise → into the buffer.
-
-These are exactly the groups whose within-group advantage collapses to zero — DR-GRPO produces no gradient signal for them, so the trainer would burn step time on tokens it can't learn from.
+Raise the threshold to require a stronger positive advantage signal, lower it to allow weak negative-advantage rollouts through, or disable the filter entirely with:
 
 ```toml
-[orchestrator.buffer]
-online_difficulty_filtering = true
+[orchestrator]
+advantage_filter = "None"
 ```
-
-**Tradeoff: trainer stability vs. inference speed.** With ODF on, every rollout that reaches the trainer carries non-zero advantage — each trainer step's effective batch is predictable and the gradient signal is denser. The cost is paid on the inference side: rollouts get produced and then thrown away, so the orchestrator has to oversample to keep the trainer fed. If the orchestrator is your bottleneck (`time/wait_for_batch` high on the trainer), ODF can starve the loop. Bump `orchestrator.oversampling_factor` so inference produces enough groups per step to absorb the drops.
-
-ODF is orthogonal to the [pools](#difficulty-pools): ODF reacts to the *current* group's reward distribution, the pools track the *running* per-problem average. Many configs use both — ODF for per-step density, pools for long-horizon curriculum cleanup.
 
 ## Multi-Turn Trajectories
 

@@ -100,9 +100,6 @@ class FinishedRollout:
             if f.name in ("raw", "samples"):
                 continue
             val = getattr(self, f.name)
-            if f.name == "filter_results":
-                out["filters"] = dict(val)
-                continue
             out[f.name] = str(val) if isinstance(val, uuid.UUID) else val
         return out
 
@@ -112,7 +109,7 @@ class TrainRollout(FinishedRollout):
     samples: list[TrainingSample] = field(default_factory=list)
     advantage: float | None = None
     is_filtered: bool = False
-    filter_results: dict[str, bool] = field(default_factory=dict)
+    detections: dict[str, bool] = field(default_factory=dict)
 
 
 @dataclass

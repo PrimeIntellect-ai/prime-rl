@@ -24,9 +24,6 @@ class MetricsBuilder:
         step_time: float,
         save_ckpt_time: float,
         teacher_logprobs_time: float,
-        pre_filter_seen: int,
-        pre_filter_dropped: int,
-        pre_filter_dropped_by_name: dict[str, int],
     ) -> dict[str, Any]:
         """Builds the per-step W&B dict. Stable metric names so
         existing dashboards / alerts keep working."""
@@ -56,7 +53,7 @@ class MetricsBuilder:
             }
         )
         metrics_df = pd.DataFrame([(r.raw.get("metrics") or {}) for r in rollouts])
-        filter_df = pd.DataFrame([r.filter_results for r in rollouts])
+        detection_df = pd.DataFrame([r.detections for r in rollouts])
         timing_df = self.timing_df(rollouts)
 
         # Each group's full-solve threshold is its own env's group_size (envs
@@ -125,8 +122,8 @@ class MetricsBuilder:
             "time/step": step_time,
             "time/teacher_logprobs": teacher_logprobs_time,
             "time/save_ckpt": save_ckpt_time,
-            "filters/all/is_filtered": results_df.is_filtered.astype(float).mean(),
-            **{f"filters/all/{name}": filter_df[name].astype(float).mean() for name in filter_df.columns},
+            "advantage_filter/all/is_filtered": results_df.is_filtered.astype(float).mean(),
+            **{f"detections/all/{name}": detection_df[name].astype(float).mean() for name in detection_df.columns},
             "step": step,
         }
 
@@ -167,18 +164,13 @@ class MetricsBuilder:
             env_metrics_df = metrics_df.loc[env_df.index] if not metrics_df.empty else metrics_df
             for metric in metrics_df.columns:
                 to_log[f"metrics/{env}/{metric}"] = env_metrics_df.groupby(env_df["group_id"])[metric].mean().mean()
-            to_log[f"filters/{env}/is_filtered"] = env_df.is_filtered.astype(float).mean()
-            env_filter_df = filter_df.loc[env_df.index] if not filter_df.empty else filter_df
-            for name in filter_df.columns:
-                to_log[f"filters/{env}/{name}"] = env_filter_df[name].astype(float).mean()
+            to_log[f"advantage_filter/{env}/is_filtered"] = env_df.is_filtered.astype(float).mean()
+            env_detection_df = detection_df.loc[env_df.index] if not detection_df.empty else detection_df
+            for name in detection_df.columns:
+                to_log[f"detections/{env}/{name}"] = env_detection_df[name].astype(float).mean()
 
         # Dispatcher / watcher gauges live on the ``_timestamp`` axis via
         # the periodic logger — keep this dict step-axis only
-        if pre_filter_seen > 0:
-            to_log["pre_filters/all/dropped_rate"] = pre_filter_dropped / pre_filter_seen
-            for name, count in pre_filter_dropped_by_name.items():
-                to_log[f"pre_filters/all/{name}/rate"] = count / pre_filter_seen
-
         return to_log
 
     @staticmethod
