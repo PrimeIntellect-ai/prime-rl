@@ -162,6 +162,74 @@ WeightConfig: TypeAlias = Annotated[
 ]
 
 # --------------------------------------------------------------------------------------------------
+# The advantage axis — the per-token advantage_fn (orchestrator-side). Produces one float per token
+# (0 = masked); supersedes the filters + weight axes above. Resolved to a callable over a group of
+# ``RenderHints`` by ``orchestrator.advantage.resolve_advantage_fn``.
+# --------------------------------------------------------------------------------------------------
+
+
+class GRPOAdvantageConfig(BaseConfig):
+    """GRPO advantage (the RL objective / primary): the per-rollout reward-baseline advantage (× tau)
+    broadcast over the sampled tokens, 0 elsewhere."""
+
+    type: Literal["grpo"] = "grpo"
+
+    tau: float = Field(1.0, ge=0)
+    """Temperature on the advantage."""
+
+
+class EchoAdvantageConfig(BaseConfig):
+    """Echo advantage (overlay): ``alpha`` on role-matched context tokens, 0 elsewhere. ``by_advantage``
+    multiplies it by the rollout's advantage (× ``tau``) for advantage-weighted echo."""
+
+    type: Literal["echo"] = "echo"
+
+    roles: list[Role] = Field(min_length=1)
+    """Roles whose content tokens are echoed."""
+
+    tool_names: set[str] | None = Field(None, min_length=1)
+    """When ``"tool"`` is among the roles, restrict to these tool function names; None = all tools."""
+
+    alpha: float = Field(1.0, allow_inf_nan=False)
+    """Per-token weight (0 disables; negative is anti-echo)."""
+
+    by_advantage: bool = False
+    """Multiply ``alpha`` by the rollout's advantage × ``tau`` (advantage-weighted echo)."""
+
+    tau: float = Field(1.0, ge=0)
+    """Temperature on the advantage when ``by_advantage``."""
+
+
+class SFTAdvantageConfig(BaseConfig):
+    """SFT advantage: a constant ``alpha`` on the sampled tokens, 0 elsewhere (masked NLL)."""
+
+    type: Literal["sft"] = "sft"
+
+    alpha: float = Field(1.0, allow_inf_nan=False)
+    """Per-token weight."""
+
+
+class CustomAdvantageFnConfig(BaseConfig):
+    """A user advantage_fn resolved from a dotted import path. Signature:
+    ``fn(group: list[RenderHints], **kwargs) -> list[list[float]]`` (one list/unit, one float/token;
+    ``0`` masks). The group's ``RenderHints`` carry each unit's reward/advantage/rollout + per-token
+    attribution, so the fn can compute group-relative, advantage-weighted, or attribution-based signals."""
+
+    type: Literal["custom"] = "custom"
+
+    import_path: str
+    """Dotted import path to the advantage_fn."""
+
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    """Keyword arguments forwarded to the fn as ``**kwargs``."""
+
+
+AdvantageFnConfig: TypeAlias = Annotated[
+    GRPOAdvantageConfig | EchoAdvantageConfig | SFTAdvantageConfig | CustomAdvantageFnConfig,
+    Field(discriminator="type"),
+]
+
+# --------------------------------------------------------------------------------------------------
 # The term: a free composition of the three axes.
 # --------------------------------------------------------------------------------------------------
 

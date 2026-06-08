@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
@@ -9,6 +10,7 @@ from jaxtyping import Float
 from torch import Tensor
 
 if TYPE_CHECKING:
+    from prime_rl.configs.losses import AdvantageFnConfig
     from prime_rl.orchestrator.types import TrainRollout
     from prime_rl.transport import TrainingSample
 
@@ -193,17 +195,25 @@ def echo_advantage(
     roles: list[str],
     tool_names: set[str] | None = None,
     alpha: float = 1.0,
+    by_advantage: bool = False,
+    tau: float = 1.0,
 ) -> list[list[float]]:
     """Per-token echo signal: ``alpha`` on tokens whose role matches (and, for ``tool``, whose
-    ``tool_name`` is allowed), ``0`` elsewhere."""
+    ``tool_name`` is allowed), ``0`` elsewhere. ``by_advantage`` multiplies the weight by the unit's
+    advantage × ``tau`` (advantage-weighted echo)."""
     role_set = set(roles)
-    return [
-        [
-            alpha if (role in role_set and (role != "tool" or tool_names is None or tool_name in tool_names)) else 0.0
-            for role, tool_name in zip(h.role, h.tool_name)
-        ]
-        for h in group
-    ]
+    out: list[list[float]] = []
+    for h in group:
+        scale = alpha * ((h.advantage or 0.0) * tau if by_advantage else 1.0)
+        out.append(
+            [
+                scale
+                if (role in role_set and (role != "tool" or tool_names is None or tool_name in tool_names))
+                else 0.0
+                for role, tool_name in zip(h.role, h.tool_name)
+            ]
+        )
+    return out
 
 
 def sft_advantage(group: list[RenderHints], *, alpha: float = 1.0) -> list[list[float]]:
@@ -238,3 +248,23 @@ def build_render_hints(
         advantage=advantage,
         rollout=rollout,
     )
+
+
+def resolve_advantage_fn(config: AdvantageFnConfig) -> Callable[[list[RenderHints]], list[list[float]]]:
+    """Resolve a loss term's ``advantage`` axis config to a per-token advantage_fn over a group of
+    ``RenderHints`` (the orchestrator runs it per group in ``process_group``)."""
+    if config.type == "grpo":
+        return functools.partial(grpo_advantage, tau=config.tau)
+    if config.type == "echo":
+        return functools.partial(
+            echo_advantage,
+            roles=config.roles,
+            tool_names=config.tool_names,
+            alpha=config.alpha,
+            by_advantage=config.by_advantage,
+            tau=config.tau,
+        )
+    if config.type == "sft":
+        return functools.partial(sft_advantage, alpha=config.alpha)
+    fn = import_object(config.import_path)
+    return functools.partial(fn, **config.kwargs)

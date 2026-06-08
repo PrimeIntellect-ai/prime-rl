@@ -3,6 +3,7 @@ import uuid
 
 import pytest
 
+from prime_rl.configs.losses import EchoAdvantageConfig, GRPOAdvantageConfig
 from prime_rl.configs.orchestrator import (
     CustomAdvantageConfig,
     DefaultAdvantageConfig,
@@ -18,6 +19,7 @@ from prime_rl.orchestrator.advantage import (
     default_advantage_fn,
     echo_advantage,
     grpo_advantage,
+    resolve_advantage_fn,
     setup_advantage_fn,
     sft_advantage,
 )
@@ -402,3 +404,21 @@ def test_build_render_hints_uses_sample_roles():
     h = build_render_hints(sample)
     assert h.role == ["system", "user", "assistant", "assistant"]
     assert h.tool_name == [None, None, None, None]
+
+
+def test_resolve_advantage_fn_grpo_broadcasts_advantage():
+    fn = resolve_advantage_fn(GRPOAdvantageConfig(tau=0.5))
+    group = [_hints([None, "assistant"], [False, True], advantage=0.4)]
+    assert fn(group) == [[0.0, 0.2]]
+
+
+def test_resolve_advantage_fn_echo_masks_roles():
+    fn = resolve_advantage_fn(EchoAdvantageConfig(roles=["system"], alpha=0.5))
+    group = [_hints(["system", "user"], [False, False])]
+    assert fn(group) == [[0.5, 0.0]]
+
+
+def test_echo_advantage_by_advantage_scales_by_rollout_advantage():
+    group = [_hints(["system"], [False], advantage=0.5)]
+    # alpha * (advantage * tau) = 1.0 * (0.5 * 2.0) = 1.0
+    assert echo_advantage(group, roles=["system"], alpha=1.0, by_advantage=True, tau=2.0) == [[1.0]]
