@@ -1,15 +1,26 @@
 import math
 import uuid
+from types import SimpleNamespace
 
 from prime_rl.configs.orchestrator import GibberishFilterConfig, RepetitionFilterConfig
 from prime_rl.orchestrator.filters import (
     GibberishFilter,
     RepetitionFilter,
+    ZeroAdvantageFilter,
     apply_filters,
     setup_filter,
     setup_filters,
 )
 from prime_rl.orchestrator.types import TrainRollout
+
+
+def test_zero_advantage_filter_gated_by_primary_active():
+    rollout = SimpleNamespace(advantage=0.0, env_name="e")
+    # Default (always active): zero advantage is flagged.
+    assert ZeroAdvantageFilter(name="zero_advantage").check(rollout).detected
+    # rl-disabled env (primary inactive, e.g. echo-only): zero advantage is NOT flagged.
+    gated = ZeroAdvantageFilter(name="zero_advantage", primary_active=lambda env_name: False)
+    assert not gated.check(rollout).detected
 
 
 def _make_rollout(

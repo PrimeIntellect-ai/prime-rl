@@ -46,7 +46,7 @@ from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, 
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
-from prime_rl.orchestrator.filters import setup_filters
+from prime_rl.orchestrator.filters import ZeroAdvantageFilter, setup_filters
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.metrics import MetricsBuilder
 from prime_rl.orchestrator.patches import (
@@ -393,6 +393,11 @@ class Orchestrator:
             pre_filters=pre_filters,
             post_filters=post_filters,
         )
+        # Zero-advantage filtering is an RL-primary concern; gate it on whether the env trains
+        # the rl primary so echo-only / rl-disabled envs and non-rl modes aren't dropped.
+        for filt in (*pre_filters, *post_filters):
+            if isinstance(filt, ZeroAdvantageFilter):
+                filt.primary_active = self.train_sink._rl_primary_enabled
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         self.watcher = WeightWatcher(
             config,

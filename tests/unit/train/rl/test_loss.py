@@ -1,10 +1,14 @@
 import pytest
 import torch
 
-from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig
+from prime_rl.configs.losses import CustomCoreConfig, DPPOKLCoreConfig, GRPOAdvantageConfig, LossTerm
 from prime_rl.trainer.rl.loss import LossInputs, LossOutputs, compute_entropy, compute_loss, setup_loss_fns
 
 pytestmark = [pytest.mark.gpu]
+
+
+def _rl_term(**core_kwargs) -> LossTerm:
+    return LossTerm(name="rl", loss=DPPOKLCoreConfig(**core_kwargs), advantage=GRPOAdvantageConfig())
 
 
 def test_grpo_loss():
@@ -14,7 +18,7 @@ def test_grpo_loss():
     advantages = [torch.randn(50).cuda(), torch.randn(30).cuda()]
     loss_mask = [torch.ones(50, dtype=torch.bool).cuda(), torch.ones(30, dtype=torch.bool).cuda()]
 
-    loss_fns = setup_loss_fns(DefaultLossConfig(dppo_mask_high=10.0))
+    loss_fns = setup_loss_fns([_rl_term(dppo_mask_high=10.0)])
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
@@ -34,7 +38,7 @@ def test_gspo_loss():
     advantages = [torch.randn(40).cuda(), torch.randn(60).cuda()]
     loss_mask = [torch.ones(40, dtype=torch.bool).cuda(), torch.ones(60, dtype=torch.bool).cuda()]
 
-    loss_fns = setup_loss_fns(DefaultLossConfig(dppo_mask_high=10.0))
+    loss_fns = setup_loss_fns([_rl_term(dppo_mask_high=10.0)])
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
@@ -54,12 +58,16 @@ def test_entropy_loss():
 
 
 def test_setup_loss_fns_with_custom_config():
-    """Test setup_loss_fns with CustomLossConfig importing a custom loss."""
-    loss_config = CustomLossConfig(
-        import_path="tests.unit.train.rl.test_loss._dummy_custom_loss",
-        kwargs={"multiplier": 2.0},
+    """Test setup_loss_fns with a custom loss term importing a custom loss."""
+    loss_config = LossTerm(
+        name="custom",
+        loss=CustomCoreConfig(
+            import_path="tests.unit.train.rl.test_loss._dummy_custom_loss",
+            kwargs={"multiplier": 2.0},
+        ),
+        advantage=GRPOAdvantageConfig(),
     )
-    loss_fns = setup_loss_fns(loss_config)
+    loss_fns = setup_loss_fns([loss_config])
 
     inputs = LossInputs(
         trainer_logprobs=torch.randn(50, dtype=torch.float32).cuda(),
@@ -81,7 +89,7 @@ def test_sft_loss_matches_masked_nll():
     advantages = [torch.zeros(3, dtype=torch.float32).cuda()]
     loss_mask = [torch.tensor([True, False, True], dtype=torch.bool).cuda()]
 
-    loss_fns = setup_loss_fns(DefaultLossConfig())
+    loss_fns = setup_loss_fns([_rl_term()])
     loss, metrics = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
@@ -104,7 +112,7 @@ def test_sft_loss_override_uses_masked_nll_with_default_loss_config():
     advantages = [torch.ones(3, dtype=torch.float32).cuda()]
     loss_mask = [torch.tensor([True, False, True], dtype=torch.bool).cuda()]
 
-    loss_fns = setup_loss_fns(DefaultLossConfig())
+    loss_fns = setup_loss_fns([_rl_term()])
     loss, metrics = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,

@@ -14,7 +14,7 @@ uv run rl @ examples/reverse_text/rl.toml                                  # sin
 uv run rl @ examples/reverse_text/rl.toml --max-steps 50                   # CLI override
 uv run rl @ base.toml @ overlay.toml                                       # left-to-right merge
 uv run rl --model @ model.toml --data @ data.toml                          # nested section files
-uv run rl @ base.toml --trainer @ trainer.toml --trainer.lr 1e-3           # mixed
+uv run rl @ base.toml --trainer @ trainer.toml --trainer.optim.lr 1e-3     # mixed
 ```
 
 Resolution order: CLI > config files (left-to-right) > class defaults. Merging is deep — unset fields in an overlay are preserved from the base.
@@ -41,15 +41,15 @@ Incompatible combinations (e.g. CP requires flash attention) must raise in a `mo
 **Lists** — TOML uses array of tables; later config files replace lists wholesale, so overlays must include the full desired list:
 
 ```toml
-[[orchestrator.env]]
+[[orchestrator.train.env]]
 id = "reverse-text"
 ```
 
-CLI: `--env.0.id reverse-text --env.1.id math-env`.
+CLI: `--orchestrator.train.env.0.id reverse-text --orchestrator.train.env.1.id math-env`.
 
 **Dicts** — TOML uses a section; CLI takes a JSON string: `--vllm-extra '{"key1": "value1"}'`.
 
-**Discriminated unions** — set the `type` field to pick the variant (`[trainer.loss] type = "sft"`). Omit `type` to keep the default variant.
+**Discriminated unions** — set the `type` field to pick the variant (`[trainer.optim] type = "muon"`). Omit `type` to keep the default variant.
 
 **`BaseModel | None` fields** — bare flag enables defaults; nested override enables and sets:
 
@@ -62,7 +62,7 @@ In TOML, an empty section header (`[ckpt]`) does the same.
 
 ## RL trainer token exports
 
-For rollout debugging, enable trainer-side token export under `trainer.experimental.token_export` (or `experimental.token_export` when running the trainer entrypoint directly). It writes one JSONL record per exported sequence under `output_dir/token_exports/step_<step>/rank_<rank>.jsonl`. Each record stores aligned per-token arrays for token ids, loss mask, advantage, reward, entropy, mismatch KL, inference/trainer logprobs, importance ratios, probability deltas, and masking diagnostics. It does not decode token text in the trainer.
+For rollout debugging, enable trainer-side token export under `trainer.experimental.token_export` (or `experimental.token_export` when running the trainer entrypoint directly). It writes one JSONL record per exported sequence under `output_dir/token_exports/step_<step>/rank_<rank>.jsonl`. Each record stores aligned per-token arrays for token ids, loss mask, advantage, reward, entropy, mismatch KL, inference/trainer logprobs, importance ratios, probability deltas, masking diagnostics, and the combined overlay diagnostics `overlay_mask` / `overlay_weight` (schema v2). It does not decode token text in the trainer.
 
 ```toml
 [trainer.experimental.token_export]

@@ -8,7 +8,7 @@ verifies KL mismatch through the loss pipeline.
 import pytest
 import torch
 
-from prime_rl.configs.trainer import DefaultLossConfig
+from prime_rl.configs.losses import RLLossConfig
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
 from prime_rl.trainer.rl.loss import (
@@ -103,7 +103,7 @@ def test_kl_zero_when_identical():
             advantages=advantages,
             loss_mask=loss_mask,
         )
-        result = default_loss_fn(inputs, DefaultLossConfig())
+        result = default_loss_fn(inputs, RLLossConfig())
 
         assert result.metrics["unmasked_mismatch_kl"].item() == pytest.approx(0.0, abs=1e-6), (
             f"Expected zero KL for identical models, got {result.metrics['unmasked_mismatch_kl'].item()}"
@@ -137,7 +137,7 @@ def test_kl_positive_after_perturbation():
             advantages=advantages,
             loss_mask=loss_mask,
         )
-        result = default_loss_fn(inputs, DefaultLossConfig())
+        result = default_loss_fn(inputs, RLLossConfig())
         kl = result.metrics["unmasked_mismatch_kl"].item()
 
         assert kl > 0, f"Expected positive KL after perturbation, got {kl}"

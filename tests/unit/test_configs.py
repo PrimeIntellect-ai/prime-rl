@@ -252,6 +252,351 @@ def test_shared_and_sub_tokenizer_name_conflict_raises():
         )
 
 
+def _rl(**loss_kwargs):
+    return {"name": "rl", "loss": {"type": "dppo_kl", **loss_kwargs}, "advantage": {"type": "grpo"}}
+
+
+def _echo(name="echo", roles=("assistant",), alpha=None):
+    advantage = {"type": "echo", "roles": list(roles)}
+    if alpha is not None:
+        advantage["alpha"] = alpha
+    return {"name": name, "loss": {"type": "ce"}, "advantage": advantage}
+
+
+def test_shared_losses_propagate_to_subconfigs():
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "losses": [_rl(kl_tau=0.01), _echo()],
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+        }
+    )
+    assert [t.loss.type for t in config.trainer.losses] == ["dppo_kl", "ce"]
+    assert [t.loss.type for t in config.orchestrator.losses] == ["dppo_kl", "ce"]
+    assert config.trainer.losses[0].loss.kl_tau == 0.01
+
+
+def test_duplicate_loss_names_rejected():
+    with pytest.raises(ValidationError, match="Duplicate loss term names"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [_rl(), _echo(name="rl")],
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
+def test_enabled_losses_unknown_name_rejected():
+    with pytest.raises(ValidationError, match="not found in losses"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [_rl()],
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": None,
+                    "train": {"env": [{"id": "reverse-text", "enabled_losses": ["nope"]}]},
+                },
+            }
+        )
+
+
+def test_multiple_overlay_terms_accepted():
+    # Overlay terms are independent additive terms (one per-term stream each); their roles may even
+    # overlap (gradients sum), so there is no disjointness constraint.
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "losses": [_rl(), _echo(name="e1", roles=("assistant",)), _echo(name="e2", roles=("assistant",))],
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+        }
+    )
+    assert sum(1 for t in config.orchestrator.losses if t.loss.type == "ce") == 2
+
+
+def test_advantage_weighted_overlay_accepted():
+    # An overlay echo may be scaled by the rollout's GRPO advantage (× tau) via by_advantage.
+    term = {
+        "name": "adv",
+        "loss": {"type": "ce"},
+        "advantage": {"type": "echo", "roles": ["assistant"], "by_advantage": True, "tau": 0.5},
+    }
+    config = RLConfig.model_validate(
+        {"model": {"name": "my-model"}, "losses": [_rl(), term], "trainer": {}, "orchestrator": {"renderer": None}}
+    )
+    assert config.orchestrator.losses[1].advantage.type == "echo"
+    assert config.orchestrator.losses[1].advantage.by_advantage is True
+
+
+def test_custom_overlay_advantage_accepted():
+    # A custom per-token advantage_fn is allowed on overlays (resolved per group, post-advantage).
+    term = {
+        "name": "cw",
+        "loss": {"type": "ce"},
+        "advantage": {"type": "custom", "import_path": "x.y"},
+    }
+    config = RLConfig.model_validate(
+        {"model": {"name": "my-model"}, "losses": [_rl(), term], "trainer": {}, "orchestrator": {"renderer": None}}
+    )
+    assert config.orchestrator.losses[1].advantage.type == "custom"
+
+
+def test_rl_preset_expands_and_keeps_axis_defaults():
+    # `{type = "rl"}` seeds the dppo_kl core + grpo advantage axes; an explicit `loss` deep-merges,
+    # keeping the axis's unset field defaults (dppo_mask_low/high) — same semantics as a full term.
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "losses": [{"type": "rl", "loss": {"kl_tau": 0.02}}],
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+        }
+    )
+    (rl,) = config.trainer.losses
+    assert rl.name == "rl"
+    assert rl.loss.type == "dppo_kl" and rl.loss.kl_tau == 0.02 and rl.loss.dppo_mask_low == 0.2
+    assert rl.advantage.type == "grpo"
+
+
+def test_echo_preset_advantage_override_deep_merges():
+    # `advantage = {alpha = 0.3}` deep-merges over the preset default, keeping `type = "echo"` + roles.
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "losses": [{"type": "rl"}, {"type": "echo", "advantage": {"alpha": 0.3}}],
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+        }
+    )
+    echo = config.trainer.losses[1]
+    assert echo.name == "echo" and echo.loss.type == "ce"
+    assert echo.advantage.type == "echo" and echo.advantage.roles == ["assistant"]
+    assert echo.advantage.alpha == 0.3
+
+
+def test_loss_preset_flat_kwarg_rejected():
+    # Preset kwargs go on the axes (loss/advantage), not flat on the term.
+    with pytest.raises(ValidationError, match="override the axes"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [{"type": "rl", "kl_tau": 0.02}],
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
+def test_loss_term_lambda_and_reduce_parse():
+    # λ + reduce are per-term knobs (default 1.0 / global mean); presets accept them as overrides too.
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "losses": [
+                _rl(),
+                {"type": "echo", "lambda_weight": 0.5, "reduce": {"type": "custom", "import_path": "x.y"}},
+            ],
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+        }
+    )
+    rl, echo = config.trainer.losses
+    assert rl.lambda_weight == 1.0 and rl.reduce.type == "mean"
+    assert echo.lambda_weight == 0.5
+    assert echo.reduce.type == "custom" and echo.reduce.import_path == "x.y"
+
+
+def test_empty_enabled_losses_rejected():
+    with pytest.raises(ValidationError, match="enabled_losses is empty"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [_rl()],
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": None,
+                    "train": {"env": [{"id": "reverse-text", "enabled_losses": []}]},
+                },
+            }
+        )
+
+
+def test_malformed_loss_override_rejected():
+    # An override targeting a real echo term but with a bad alpha is caught at config time
+    # (built via apply_term_override), not deferred to the orchestrator's resolve step.
+    with pytest.raises(ValidationError):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [_rl(), _echo()],
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": None,
+                    "train": {
+                        "env": [
+                            {
+                                "id": "reverse-text",
+                                "enabled_losses": ["rl", "echo"],
+                                "loss_overrides": {"echo": {"advantage": {"alpha": "not-a-float"}}},
+                            }
+                        ]
+                    },
+                },
+            }
+        )
+
+
+def test_losses_under_trainer_only_conflict_raises():
+    with pytest.raises(ValidationError, match="losses differ"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "trainer": {"losses": [_rl(), _echo()]},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
+def test_loss_overrides_unknown_key_rejected():
+    with pytest.raises(ValidationError, match="loss_overrides key"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [_rl(), _echo()],
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": None,
+                    "train": {
+                        "env": [{"id": "reverse-text", "loss_overrides": {"nope": {"advantage": {"alpha": 0.1}}}}]
+                    },
+                },
+            }
+        )
+
+
+def test_loss_overrides_non_overlay_term_rejected():
+    with pytest.raises(ValidationError, match="only to overlay"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [_rl(), _echo()],
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": None,
+                    "train": {"env": [{"id": "reverse-text", "loss_overrides": {"rl": {"advantage": {"tau": 0.1}}}}]},
+                },
+            }
+        )
+
+
+def test_mito_prompt_role_echo_warns():
+    with pytest.warns(UserWarning, match="renderer=None"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [_rl(), _echo(roles=("system",))],
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
+def test_training_mode_without_matching_primary_rejected():
+    # training_mode=rl (default) but losses has only an echo (ce) term → no primary core.
+    with pytest.raises(ValidationError, match="requires a primary loss term"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [_echo()],
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
+def test_two_primary_terms_rejected():
+    with pytest.raises(ValidationError, match="At most one primary"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [_rl(), {"name": "b", "loss": {"type": "dppo_kl"}, "advantage": {"type": "grpo"}}],
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
+def test_sft_core_type_rejected():
+    # sft/opd are training_mode paths with fixed cores, not loss cores — "sft" isn't a core type.
+    with pytest.raises(ValidationError):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [{"name": "x", "loss": {"type": "sft"}}],
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
+def test_loss_override_unsupported_field_rejected():
+    # Only the advantage axis applies per env; loss (the core) and name are global -> rejected.
+    with pytest.raises(ValidationError, match="may only override"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [_rl(), _echo()],
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": None,
+                    "train": {"env": [{"id": "reverse-text", "loss_overrides": {"echo": {"loss": {"type": "ce"}}}}]},
+                },
+            }
+        )
+
+
+def test_loss_overrides_disabled_term_rejected():
+    # An override on a term the env doesn't enable is a silent no-op (_resolve_overlays skips disabled
+    # terms before applying overrides), so it's rejected rather than passing as a stale config.
+    with pytest.raises(ValidationError, match="not in enabled_losses"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [_rl(), _echo()],
+                "trainer": {},
+                "orchestrator": {
+                    "renderer": None,
+                    "train": {
+                        "env": [
+                            {
+                                "id": "reverse-text",
+                                "enabled_losses": ["rl"],
+                                "loss_overrides": {"echo": {"advantage": {"alpha": 0.1}}},
+                            }
+                        ]
+                    },
+                },
+            }
+        )
+
+
+def test_reserved_loss_term_name_rejected():
+    # sft/opd/rl are trainer dispatch keys; an overlay using one would clobber a fixed/primary core.
+    with pytest.raises(ValidationError, match="reserved"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [_rl(), _echo(name="opd")],
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
 def test_tokenizer_name_falls_back_to_model_name_when_unset():
     config = RLConfig.model_validate(
         {

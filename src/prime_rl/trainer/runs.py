@@ -14,6 +14,7 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_stable_ckpt_steps
 
 if TYPE_CHECKING:
+    from prime_rl.configs.losses import LossTerm
     from prime_rl.configs.orchestrator import OrchestratorConfig
     from prime_rl.trainer.models.layers.lora import MultiLoRALinear
 
@@ -493,7 +494,11 @@ def get_multi_run_manager() -> MultiRunManager:
 
 
 def setup_multi_run_manager(
-    output_dir: Path, max_runs: int, device: torch.device, lora_config: LoRAConfig | None = None
+    output_dir: Path,
+    max_runs: int,
+    device: torch.device,
+    lora_config: LoRAConfig | None = None,
+    losses: "list[LossTerm] | None" = None,
 ) -> MultiRunManager:
     """Initialize the MultiRunManager singleton.
 
@@ -536,5 +541,20 @@ def setup_multi_run_manager(
 
         _MULTI_RUN_MANAGER.register_config_validation_hook(validate_lora_rank)
         _MULTI_RUN_MANAGER.register_discovered_hook(on_run_discovered)
+
+    # Each run's loss terms must match the trainer's (the trainer builds its cores once from
+    # its own startup `losses`; per-run loss params/custom cores aren't otherwise honored).
+    if losses is not None and _MULTI_RUN_MANAGER.world.is_master:
+        trainer_losses_dump = [term.model_dump() for term in losses]
+
+        def validate_losses(orch_config: "OrchestratorConfig") -> tuple[bool, str]:
+            if [term.model_dump() for term in orch_config.losses] != trainer_losses_dump:
+                return (
+                    False,
+                    "run's `losses` differ from the trainer's `losses`; they must match for multi-run training",
+                )
+            return True, ""
+
+        _MULTI_RUN_MANAGER.register_config_validation_hook(validate_losses)
 
     return _MULTI_RUN_MANAGER

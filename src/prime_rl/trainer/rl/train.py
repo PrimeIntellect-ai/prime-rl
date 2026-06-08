@@ -18,6 +18,7 @@ from prime_rl.trainer.multi_ckpt import setup_multi_checkpoint_manager
 from prime_rl.trainer.optim import setup_optimizer, setup_multi_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
 from prime_rl.configs.trainer import TrainerConfig
+from prime_rl.configs.losses import overlay_terms, to_rl_loss_config
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
     gather_for_cp,
@@ -27,11 +28,14 @@ from prime_rl.utils.cp import (
 )
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.rl.loss import (
+    ExtraTerm,
     compute_entropy,
     compute_loss,
     compute_importance_ratio_and_mismatch_kl,
+    mean_reduce,
     selective_log_softmax,
     setup_loss_fns,
+    setup_reduce,
     shift_tensor_left,
     shift_tensor_right,
 )
@@ -68,6 +72,15 @@ from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
 from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
+
+
+def _mask_env_indices(env_names: list[str], mask: torch.Tensor) -> dict[str, list[int]]:
+    """Group per-token env names by env, in the order ``mask`` selects them."""
+    selected = [env_name for env_name, keep in zip(env_names, mask.flatten().tolist()) if keep]
+    indices: dict[str, list[int]] = {}
+    for idx, env_name in enumerate(selected):
+        indices.setdefault(env_name, []).append(idx)
+    return indices
 
 
 @clean_exit
@@ -118,7 +131,11 @@ def train(config: TrainerConfig):
 
     # Setup multi run manager and offsets (including LoRA validation/scaling hooks if applicable)
     multi_run_manager = setup_multi_run_manager(
-        config.output_dir, config.max_concurrent_runs, torch.device("cuda", world.local_rank), config.model.lora
+        config.output_dir,
+        config.max_concurrent_runs,
+        torch.device("cuda", world.local_rank),
+        config.model.lora,
+        losses=config.losses,
     )
 
     # Initialize parallel dimensions
@@ -150,8 +167,20 @@ def train(config: TrainerConfig):
     tokenizer = setup_tokenizer(config.tokenizer)
 
     # Set up the loss function
-    logger.info(f"Setting up loss function ({config.loss})")
-    loss_fns = setup_loss_fns(config.loss)
+    logger.info(f"Setting up loss functions ({config.losses})")
+    loss_fns = setup_loss_fns(config.losses)
+    # The dppo_kl primary term configures token-export's DPPO threshold annotations.
+    rl_term = next((term for term in config.losses if term.loss.type == "dppo_kl"), None)
+    rl_loss_config = to_rl_loss_config(rl_term) if rl_term is not None else None
+    # Overlay term names (config order) — the additive non-primary terms, each its own summed core.
+    overlay_term_names = [term.name for term in overlay_terms(config.losses)]
+    # Per-term λ + reduce (trainer-side normalization), resolved once from config. Overlays apply theirs
+    # via their ExtraTerm; the primary (rl) applies via compute_loss. sft/opd (no rl_term) keep the
+    # defaults (λ=1.0, global per-token mean).
+    term_lambdas = {term.name: term.lambda_weight for term in config.losses}
+    term_reduces = {term.name: setup_reduce(term.reduce) for term in config.losses}
+    primary_lambda = term_lambdas.get(rl_term.name, 1.0) if rl_term is not None else 1.0
+    primary_reduce = term_reduces.get(rl_term.name, mean_reduce) if rl_term is not None else mean_reduce
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -355,10 +384,23 @@ def train(config: TrainerConfig):
         # tokens implicitly upweight their per-token gradient contribution after FSDP averaging.
         # FSDP's per-rank divide is undone after the microbatch loop via fsdp_gradient_divide_factor.
         local_loss_scale = sum(micro_batch["loss_mask"].sum().item() for micro_batch in micro_batches)
-        global_loss_scale = torch.tensor(local_loss_scale, dtype=torch.int64, device="cuda")
+        # Each overlay term gets its own global denominator so its core is a true per-token mean and
+        # neither dilutes nor is diluted by the others. All scales ride one all-reduce (a fixed-order
+        # vector: [primary, *overlay_term_names]) so every rank issues the same collective.
+        local_scales = [local_loss_scale]
+        for name in overlay_term_names:
+            local_scales.append(
+                sum(
+                    micro_batch["overlay_masks"][name].sum().item()
+                    for micro_batch in micro_batches
+                    if micro_batch.get("overlay_masks") is not None and name in micro_batch["overlay_masks"]
+                )
+            )
+        global_loss_scales = torch.tensor(local_scales, dtype=torch.int64, device="cuda")
         dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
-        dist.all_reduce(global_loss_scale, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        loss_scale = max(global_loss_scale.item(), 1)
+        dist.all_reduce(global_loss_scales, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        loss_scale = max(global_loss_scales[0].item(), 1)
+        overlay_scales = {name: max(global_loss_scales[i + 1].item(), 1) for i, name in enumerate(overlay_term_names)}
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
@@ -372,6 +414,8 @@ def train(config: TrainerConfig):
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
+            overlay_masks = micro_batch.get("overlay_masks")
+            overlay_weights = micro_batch.get("overlay_weights")
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
             teacher_logprobs = (
                 micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
@@ -473,6 +517,26 @@ def train(config: TrainerConfig):
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
+            extra_terms = []
+            combined_overlay = None
+            if overlay_masks is not None and overlay_weights is not None:
+                for name in overlay_term_names:
+                    if name not in overlay_masks:
+                        continue
+                    om = overlay_masks[name].to("cuda")
+                    ow = overlay_weights[name].to("cuda")
+                    combined_overlay = om if combined_overlay is None else (combined_overlay | om)
+                    extra_terms.append(
+                        ExtraTerm(
+                            name=name,
+                            core=loss_fns[name],
+                            scale=overlay_scales[name],
+                            masks=om.squeeze().split(response_lengths),
+                            weights=ow.squeeze().split(response_lengths),
+                            lambda_weight=term_lambdas[name],
+                            reduce=term_reduces[name],
+                        )
+                    )
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
@@ -484,24 +548,25 @@ def train(config: TrainerConfig):
                 loss_fns=loss_fns,
                 loss_scale=loss_scale,
                 training_mode=micro_batch["training_mode"],
+                extra_terms=extra_terms or None,
+                reduce=primary_reduce,
+                primary_lambda=primary_lambda,
             )
 
             # Backward pass
             with maybe_record_function("backward"):
                 loss.backward()
 
-            # Add relevant tensors to tensor dict for logging purposes
-            entropy = out["entropy"][loss_mask].detach().to("cpu")
+            # Add relevant tensors to tensor dict for logging purposes. Entropy/env metrics span the
+            # primary (completion) mask plus all overlay masks, so primary-disabled / overlay-only envs
+            # stay visible instead of logging empty/nan (metric_mask == loss_mask when no overlays).
+            metric_mask = loss_mask if combined_overlay is None else (loss_mask | combined_overlay)
+            entropy = out["entropy"][metric_mask].detach().to("cpu")
             tensors["entropy/all"].append(entropy)
             tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
 
             env_names = micro_batch["env_names"]
-            masked_env_names = [env_name for env_name, keep in zip(env_names, loss_mask.flatten().tolist()) if keep]
-            env_to_indices: dict[str, list[int]] = {}
-            for idx, env_name in enumerate(masked_env_names):
-                env_to_indices.setdefault(env_name, []).append(idx)
-
-            for env_name, indices in env_to_indices.items():
+            for env_name, indices in _mask_env_indices(env_names, metric_mask).items():
                 tensors[f"entropy/{env_name}"].append(entropy[indices])
 
             if micro_batch["training_mode"] != "sft":
@@ -509,10 +574,11 @@ def train(config: TrainerConfig):
                     _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(out["logprobs"], inference_logprobs)
                 mismatch_kl = mismatch_kl[loss_mask].detach().to("cpu")
                 tensors["mismatch_kl/all"].append(mismatch_kl)
-                for env_name, indices in env_to_indices.items():
+                # mismatch_kl is an RL diagnostic over completion tokens, so it indexes by loss_mask.
+                for env_name, indices in _mask_env_indices(env_names, loss_mask).items():
                     tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
-            token_exporter.export(progress.step, micro_step, micro_batch, out, response_lengths, config.loss)
+            token_exporter.export(progress.step, micro_step, micro_batch, out, response_lengths, rl_loss_config)
 
             if is_tt_moe_model(model):
                 load_balance_stats = get_load_balance_stats(model)

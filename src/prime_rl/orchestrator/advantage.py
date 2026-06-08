@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
@@ -9,7 +10,9 @@ from jaxtyping import Float
 from torch import Tensor
 
 if TYPE_CHECKING:
+    from prime_rl.configs.losses import AdvantageFnConfig
     from prime_rl.orchestrator.types import TrainRollout
+    from prime_rl.transport import TrainingSample
 
 from prime_rl.configs.orchestrator import (
     AdvantageConfig,
@@ -145,3 +148,123 @@ def assign_advantages(
     result = advantage_fn(AdvantageInputs(rollouts=[r.raw for r in rollouts]))
     for rollout, advantage in zip(rollouts, result.advantages):
         rollout.advantage = advantage
+
+
+# --------------------------------------------------------------------------------------------------
+# Layer 2 — the per-term, per-token advantage (the loss-term ``advantage`` axis). One float per token
+# (``0`` = masked); built orchestrator-side from ``RenderHints`` + the group's rewards. ``grpo`` reuses
+# Layer 1 above (reward -> per-rollout scalar); ``echo``/``sft`` read attribution only.
+# --------------------------------------------------------------------------------------------------
+
+
+@dataclass
+class RenderHints:
+    """All per-token render info for one training unit (rollout/sample), aligned to
+    ``prompt_ids + completion_ids``.
+
+    Built orchestrator-side from the rollout's tokens + ``prompt_attribution``; passed to the term
+    ``advantage_fn`` (and, via the shipped slice, to trainer-side cores/hooks). ``rollout`` is the raw
+    renderer output for anything not pre-parsed (orchestrator-side only).
+    """
+
+    token_id: list[int]
+    role: list[str | None]  # per token; None = unattributed
+    tool_name: list[str | None]  # per token; set when role == "tool"
+    is_sampled: list[bool]  # the sampled completion tokens (today's loss_mask)
+    inference_logprob: list[float]  # sampled logprob; 0.0 on prompt tokens
+    reward: float | None = None
+    advantage: float | None = None  # per-rollout scalar from Layer 1 (assign_advantages); grpo broadcasts it
+    rollout: vf.RolloutOutput | None = None
+
+
+TermAdvantageFn = Callable[..., list[list[float]]]
+"""A loss term's advantage axis. Signature: ``fn(group: list[RenderHints], **kwargs) -> list[list[float]]``
+— one inner list per unit, one float per token; ``0`` masks the token."""
+
+
+def grpo_advantage(group: list[RenderHints], *, tau: float = 1.0) -> list[list[float]]:
+    """Per-token GRPO advantage: each unit's per-rollout scalar advantage — computed by Layer 1 in
+    ``assign_advantages`` (GRPO baseline, length penalty, or a custom fn) and carried on
+    ``RenderHints.advantage`` — broadcast over its sampled tokens x ``tau``, ``0`` elsewhere."""
+    return [[(h.advantage or 0.0) * tau if sampled else 0.0 for sampled in h.is_sampled] for h in group]
+
+
+def echo_advantage(
+    group: list[RenderHints],
+    *,
+    roles: list[str],
+    tool_names: set[str] | None = None,
+    alpha: float = 1.0,
+    by_advantage: bool = False,
+    tau: float = 1.0,
+) -> list[list[float]]:
+    """Per-token echo signal: ``alpha`` on tokens whose role matches (and, for ``tool``, whose
+    ``tool_name`` is allowed), ``0`` elsewhere. ``by_advantage`` multiplies the weight by the unit's
+    advantage × ``tau`` (advantage-weighted echo)."""
+    role_set = set(roles)
+    out: list[list[float]] = []
+    for h in group:
+        scale = alpha * ((h.advantage or 0.0) * tau if by_advantage else 1.0)
+        out.append(
+            [
+                scale
+                if (role in role_set and (role != "tool" or tool_names is None or tool_name in tool_names))
+                else 0.0
+                for role, tool_name in zip(h.role, h.tool_name)
+            ]
+        )
+    return out
+
+
+def sft_advantage(group: list[RenderHints], *, alpha: float = 1.0) -> list[list[float]]:
+    """Per-token SFT signal: ``alpha`` on the sampled tokens, ``0`` elsewhere."""
+    return [[alpha if sampled else 0.0 for sampled in h.is_sampled] for h in group]
+
+
+def build_render_hints(
+    sample: TrainingSample, rollout: vf.RolloutOutput | None = None, advantage: float | None = None
+) -> RenderHints:
+    """Build a sample's ``RenderHints`` from the finished (interleaved) ``TrainingSample``.
+
+    ``token_id``, ``is_sampled`` (prompt + completion masks), and ``inference_logprob`` are exact
+    derivations. Per-token ``role``/``tool_name`` come from interleave_rollout's alignment
+    (``sample.roles``); samples built outside interleave fall back to assistant-on-sampled.
+    ``advantage`` is the per-rollout scalar from Layer 1 (raw, pre-tau), carried so ``grpo_advantage``
+    can broadcast it.
+    """
+    n_prompt = len(sample.prompt_ids)
+    token_id = list(sample.prompt_ids) + list(sample.completion_ids)
+    is_sampled = [False] * n_prompt + [bool(m) for m in sample.completion_mask]
+    inference_logprob = [0.0] * n_prompt + list(sample.completion_logprobs)
+    role = list(sample.roles) if sample.roles is not None else ["assistant" if s else None for s in is_sampled]
+    tool_name = list(sample.tool_names) if sample.tool_names is not None else [None] * len(token_id)
+    return RenderHints(
+        token_id=token_id,
+        role=role,
+        tool_name=tool_name,
+        is_sampled=is_sampled,
+        inference_logprob=inference_logprob,
+        reward=rollout.get("reward") if rollout is not None else None,
+        advantage=advantage,
+        rollout=rollout,
+    )
+
+
+def resolve_advantage_fn(config: AdvantageFnConfig) -> Callable[[list[RenderHints]], list[list[float]]]:
+    """Resolve a loss term's ``advantage`` axis config to a per-token advantage_fn over a group of
+    ``RenderHints`` (the orchestrator runs it per group in ``process_group``)."""
+    if config.type == "grpo":
+        return functools.partial(grpo_advantage, tau=config.tau)
+    if config.type == "echo":
+        return functools.partial(
+            echo_advantage,
+            roles=config.roles,
+            tool_names=config.tool_names,
+            alpha=config.alpha,
+            by_advantage=config.by_advantage,
+            tau=config.tau,
+        )
+    if config.type == "sft":
+        return functools.partial(sft_advantage, alpha=config.alpha)
+    fn = import_object(config.import_path)
+    return functools.partial(fn, **config.kwargs)

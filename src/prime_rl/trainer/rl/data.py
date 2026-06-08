@@ -46,6 +46,10 @@ class TensorMicroBatch(TypedDict):
     # sft → sft loss). All samples in a micro batch share the same mode.
     training_mode: str
 
+    # Per-term overlays (parallel to input_ids), keyed by loss-term name; None when no overlays.
+    overlay_masks: dict[str, Bool[Tensor, "batch seq"]] | None
+    overlay_weights: dict[str, Float[Tensor, "batch seq"]] | None
+
 
 class FakeDataLoader:
     def __init__(self, config: FakeDataLoaderConfig, seq_len: int, dp_world_size: int):
@@ -120,6 +124,8 @@ class FakeDataLoader:
             "mm_kwargs": None,
             "mm_token_type_ids": None,
             "training_mode": "rl",
+            "overlay_masks": None,
+            "overlay_weights": None,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -148,6 +154,8 @@ class FakeDataLoader:
             "mm_kwargs": None,
             "mm_token_type_ids": None,
             "training_mode": "rl",
+            "overlay_masks": None,
+            "overlay_weights": None,
         }
 
 
@@ -243,6 +251,16 @@ class DataLoader:
             else None,
             routed_experts=routed_experts,
             training_mode=micro_batch.training_mode,
+            overlay_masks={
+                k: torch.tensor(v, dtype=torch.bool).unsqueeze(0) for k, v in micro_batch.overlay_masks.items()
+            }
+            if micro_batch.overlay_masks is not None
+            else None,
+            overlay_weights={
+                k: torch.tensor(v, dtype=torch.float).unsqueeze(0) for k, v in micro_batch.overlay_weights.items()
+            }
+            if micro_batch.overlay_weights is not None
+            else None,
         )
 
 

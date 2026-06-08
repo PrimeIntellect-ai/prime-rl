@@ -3,6 +3,7 @@ import uuid
 
 import pytest
 
+from prime_rl.configs.losses import EchoAdvantageConfig, GRPOAdvantageConfig
 from prime_rl.configs.orchestrator import (
     CustomAdvantageConfig,
     DefaultAdvantageConfig,
@@ -12,11 +13,18 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.orchestrator.advantage import (
     AdvantageInputs,
     AdvantageOutputs,
+    RenderHints,
     assign_advantages,
+    build_render_hints,
     default_advantage_fn,
+    echo_advantage,
+    grpo_advantage,
+    resolve_advantage_fn,
     setup_advantage_fn,
+    sft_advantage,
 )
 from prime_rl.orchestrator.types import TrainRollout
+from prime_rl.transport import TrainingSample
 
 
 def _make_rollout(
@@ -307,3 +315,110 @@ def test_setup_advantage_fn_with_custom_config():
 def _dummy_custom_advantage(inputs: AdvantageInputs, scale: float = 1.0) -> AdvantageOutputs:
     """A simple custom advantage for testing."""
     return AdvantageOutputs(advantages=[r["reward"] * scale for r in inputs.rollouts])
+
+
+# --- Layer 2: per-token term advantage (RenderHints + grpo/echo/sft presets) ----------------------
+
+
+def _hints(roles, is_sampled, *, tool_names=None, reward=None, advantage=None):
+    n = len(roles)
+    return RenderHints(
+        token_id=list(range(n)),
+        role=roles,
+        tool_name=tool_names if tool_names is not None else [None] * n,
+        is_sampled=is_sampled,
+        inference_logprob=[0.0] * n,
+        reward=reward,
+        advantage=advantage,
+        rollout={"reward": reward} if reward is not None else None,
+    )
+
+
+def test_grpo_advantage_broadcasts_scalar_over_sampled_tokens():
+    group = [
+        _hints([None, "assistant", "assistant"], [False, True, True], advantage=0.5),
+        _hints([None, "assistant", "assistant"], [False, True, True], advantage=-0.5),
+    ]
+    # the precomputed per-rollout scalar (Layer 1) is broadcast over sampled tokens, 0 on prompt
+    assert grpo_advantage(group, tau=1.0) == [[0.0, 0.5, 0.5], [0.0, -0.5, -0.5]]
+
+
+def test_grpo_advantage_tau_scales():
+    group = [
+        _hints([None, "assistant"], [False, True], advantage=0.5),
+        _hints([None, "assistant"], [False, True], advantage=-0.5),
+    ]
+    assert grpo_advantage(group, tau=0.5) == [[0.0, 0.25], [0.0, -0.25]]
+
+
+def test_echo_advantage_alpha_on_matching_roles():
+    group = [_hints(["system", "user", "assistant", None], [False, False, True, False])]
+    assert echo_advantage(group, roles=["system", "user"], alpha=0.5) == [[0.5, 0.5, 0.0, 0.0]]
+
+
+def test_echo_advantage_tool_names_filter():
+    group = [_hints(["tool", "tool", "assistant"], [False, False, True], tool_names=["a", "b", None])]
+    assert echo_advantage(group, roles=["tool"], tool_names={"a"}, alpha=2.0) == [[2.0, 0.0, 0.0]]
+
+
+def test_sft_advantage_on_sampled_tokens():
+    group = [_hints([None, "assistant", "assistant"], [False, True, True])]
+    assert sft_advantage(group, alpha=1.0) == [[0.0, 1.0, 1.0]]
+
+
+def test_build_render_hints_from_sample():
+    # completion token at index 1 is an interleaved non-sampled token (completion_mask False).
+    sample = TrainingSample(
+        prompt_ids=[1, 2],
+        prompt_mask=[False, False],
+        completion_ids=[3, 4, 5],
+        completion_mask=[True, False, True],
+        completion_logprobs=[-0.1, -0.2, -0.3],
+        completion_temperatures=[1.0, 1.0, 1.0],
+        env_name="e",
+        reward=0.7,
+    )
+    h = build_render_hints(sample, rollout={"reward": 0.7}, advantage=0.3)
+    assert h.token_id == [1, 2, 3, 4, 5]
+    assert h.is_sampled == [False, False, True, False, True]
+    assert h.inference_logprob == [0.0, 0.0, -0.1, -0.2, -0.3]
+    assert h.role == [None, None, "assistant", None, "assistant"]
+    assert h.tool_name == [None, None, None, None, None]
+    assert h.reward == 0.7
+    assert h.advantage == 0.3
+
+
+def test_build_render_hints_uses_sample_roles():
+    # When interleave_rollout has aligned per-token roles, build_render_hints exposes them verbatim.
+    sample = TrainingSample(
+        prompt_ids=[1, 2],
+        prompt_mask=[False, False],
+        completion_ids=[3, 4],
+        completion_mask=[True, True],
+        completion_logprobs=[-0.1, -0.2],
+        completion_temperatures=[1.0, 1.0],
+        env_name="e",
+        roles=["system", "user", "assistant", "assistant"],
+        tool_names=[None, None, None, None],
+    )
+    h = build_render_hints(sample)
+    assert h.role == ["system", "user", "assistant", "assistant"]
+    assert h.tool_name == [None, None, None, None]
+
+
+def test_resolve_advantage_fn_grpo_broadcasts_advantage():
+    fn = resolve_advantage_fn(GRPOAdvantageConfig(tau=0.5))
+    group = [_hints([None, "assistant"], [False, True], advantage=0.4)]
+    assert fn(group) == [[0.0, 0.2]]
+
+
+def test_resolve_advantage_fn_echo_masks_roles():
+    fn = resolve_advantage_fn(EchoAdvantageConfig(roles=["system"], alpha=0.5))
+    group = [_hints(["system", "user"], [False, False])]
+    assert fn(group) == [[0.5, 0.0]]
+
+
+def test_echo_advantage_by_advantage_scales_by_rollout_advantage():
+    group = [_hints(["system"], [False], advantage=0.5)]
+    # alpha * (advantage * tau) = 1.0 * (0.5 * 2.0) = 1.0
+    assert echo_advantage(group, roles=["system"], alpha=1.0, by_advantage=True, tau=2.0) == [[1.0]]

@@ -7,6 +7,14 @@ from pydantic import AliasChoices, Field, model_serializer, model_validator
 from pydantic_core.core_schema import SerializerFunctionWrapHandler
 from renderers import AutoRendererConfig, RendererConfig
 
+from prime_rl.configs.losses import (
+    LossList,
+    apply_term_override,
+    check_enabled_losses,
+    check_loss_overrides,
+    default_losses,
+    is_primary,
+)
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
@@ -213,6 +221,14 @@ class TrainEnvConfig(EnvConfig):
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Rollouts generated per example for GRPO group-relative advantages.
     Inherits from ``orchestrator.group_size`` when unset."""
+
+    enabled_losses: list[str] | None = None
+    """Names of loss terms (from ``losses``) to apply to this env. None = all terms.
+    Echo terms produce a per-role CE overlay only where enabled here."""
+
+    loss_overrides: dict[str, dict] = Field(default_factory=dict)
+    """Per-env overrides keyed by term name, deep-merged into that term's config
+    (currently consumed by echo terms — orchestrator-side params like alpha)."""
 
 
 class EvalEnvConfig(EnvConfig):
@@ -511,6 +527,53 @@ class OrchestratorConfig(BaseConfig):
 
     train: TrainConfig = TrainConfig()
 
+    losses: LossList = Field(default_factory=default_losses)
+    """Composable loss terms (see ``configs.losses``). Shared at the RL level and
+    propagated here; the orchestrator builds the echo overlay for echo terms that
+    each env's ``enabled_losses`` selects."""
+
+    @model_validator(mode="after")
+    def validate_enabled_losses(self):
+        loss_names = {term.name for term in self.losses}
+        overlay_names = {term.name for term in self.losses if not is_primary(term)}
+        terms_by_name = {term.name: term for term in self.losses}
+        for env in self.train.env:
+            where = f"env {env.resolved_name!r}"
+            if env.enabled_losses is not None and not env.enabled_losses:
+                raise ValueError(
+                    f"{where}: enabled_losses is empty — the env would train nothing. Omit the field "
+                    f"to enable all terms, or list the terms to apply."
+                )
+            enabled = env.enabled_losses if env.enabled_losses is not None else sorted(loss_names)
+            check_enabled_losses(loss_names, enabled, where)
+            check_loss_overrides(loss_names, overlay_names, enabled, env.loss_overrides, where)
+            # Construct each overridden term now so a malformed override fails during dry-run, not mid-run.
+            for name, override in env.loss_overrides.items():
+                apply_term_override(terms_by_name[name], override)
+
+        # Prompt-role overlays need renderer-provided prompt_attribution; under MITO (renderer=None,
+        # forced in sft mode) prompt-side system/user/tool tokens silently no-op. Warn, don't hard-fail.
+        if self.renderer is None or self.training_mode == "sft":
+            for term in self.losses:
+                adv = term.advantage
+                if adv.type == "echo" and any(r in ("system", "user", "tool") for r in adv.roles):
+                    warnings.warn(
+                        f"Loss term {term.name!r} supervises prompt roles (system/user/tool), which require "
+                        f"renderer prompt_attribution; with renderer=None (MITO) those tokens become no-ops.",
+                        stacklevel=2,
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def validate_primary_loss(self):
+        # The rl-mode primary core comes from the dppo_kl/custom term; sft/opd dispatch to fixed
+        # cores by training_mode and need no primary term (the default rl term is simply dormant).
+        if self.training_mode == "rl" and not any(is_primary(term) for term in self.losses):
+            raise ValueError(
+                "training_mode='rl' requires a primary loss term (dppo_kl or custom core) in `losses`, found none."
+            )
+        return self
+
     tokenizer: TokenizerConfig = TokenizerConfig()
 
     renderer: RendererConfig | None = AutoRendererConfig()
@@ -559,10 +622,13 @@ class OrchestratorConfig(BaseConfig):
     post_batch_filters: list[FilterConfig] = [
         GibberishFilterConfig(),
         RepetitionFilterConfig(),
-        ZeroAdvantageFilterConfig(),
+        ZeroAdvantageFilterConfig(enforce=False),
     ]
     """Filters applied *after* a batch has been assembled. Each filter annotates each rollout;
-    rollouts flagged by an enforcing filter are still recorded but not shipped to the trainer."""
+    rollouts flagged by an enforcing filter are still recorded but not shipped to the trainer.
+    ``zero_advantage`` is monitor-only: zero-advantage rollouts are dismissed *emergently* by the
+    sink (their primary loss is masked, so a rollout with no other applicable loss term ships
+    nothing) rather than hard-dropped here — set ``enforce=true`` to restore the hard drop."""
 
     log: LogConfig = LogConfig()
 

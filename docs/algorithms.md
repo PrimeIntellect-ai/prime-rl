@@ -49,8 +49,21 @@ $$
 \mathcal{J}_{\text{PG}}(\theta)
 = \frac{1}{\sum_{j,i} |y_i^{(j)}|}
 \sum_{j,i,t}
-\min\!\left(\frac{\pi(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}{\mu(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}, \delta\right) \hat{A}^{(j)}_{i,t}
+m_{i,t}^{(j)}\,\hat{A}^{(j)}_{i,t}\,\frac{\pi(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}{\mu(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}
 $$
+
+with a DPPO trust-region mask $m_{i,t}^{(j)}\in\{0,1\}$ that zeroes tokens whose per-token probability has already moved too far in the advantage's direction:
+
+$$
+m_{i,t}^{(j)} =
+\begin{cases}
+0, & \hat{A}^{(j)}_{i,t} > 0 \;\text{ and }\; \pi - \mu > \epsilon_{\text{high}}\\
+0, & \hat{A}^{(j)}_{i,t} < 0 \;\text{ and }\; \pi - \mu < -\epsilon_{\text{low}}\\
+1, & \text{otherwise}
+\end{cases}
+$$
+
+where $\pi - \mu$ is the difference of the per-token probabilities (not the log-ratio).
 
 and the KL regularizer penalizes drift between trainer and inference policies via the squared log importance ratio:
 
@@ -59,27 +72,61 @@ $$
 \sum_{j,i,t} \log^2\!\left(\frac{\pi(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}{\mu(y_{i,t}^{(j)}\mid x_j, y_{i,<t}^{(j)})}\right).
 $$
 
-$\mu$ is the policy that generated the rollout (inference), $\pi$ is the current policy (trainer), $\hat{A}_{i,t}$ is the token-level advantage, $\delta$ is the importance-sampling clipping ratio, and $\tau_{KL}$ is the KL temperature. The `min` clamps the importance ratio from above so a stale rollout assigning very low probability to a high-reward token doesn't produce a runaway gradient.
+$\mu$ is the policy that generated the rollout (inference), $\pi$ is the current policy (trainer), $\hat{A}_{i,t}$ is the token-level advantage, $\epsilon_{\text{low}}$ / $\epsilon_{\text{high}}$ are the DPPO masking thresholds (`dppo_mask_low` / `dppo_mask_high`), and $\tau_{KL}$ is the KL temperature. The mask drops trust-region violators — an upweighted token ($\hat{A}>0$) that has already grown too likely, or a downweighted token ($\hat{A}<0$) that has already grown too unlikely — so a stale rollout doesn't produce a runaway gradient.
 
-The knobs (under `[trainer.loss]` with `type = "default"`):
+Common losses are **one-line presets**: `{type = "rl"}` / `{type = "echo"}` seed the three axes with sensible defaults. You tune a preset by overriding the relevant axis (`loss` / `filters` / `weight`) — exactly as in a full term, with unset fields keeping their defaults. RL is the default, so for plain RL you write nothing:
 
-| Knob | Default | What it does |
-|---|---|---|
-| `dppo_mask_low` / `dppo_mask_high` | 0.2 / 0.2 | Lower / upper thresholds for DPPO-style token-level masking. |
-| `adv_tau` | 1.0 | Temperature on the advantage term. Set to 0 for pure distillation (no RL signal). |
-| `kl_tau` | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
+```toml
+[[losses]]
+type = "rl"
 
-The trainer dispatches automatically based on the batch's training mode (set by the orchestrator via `orchestrator.training_mode`):
+# to tune, override the axes (everything you don't set keeps its default):
+[[losses]]
+type   = "rl"
+loss   = { kl_tau = 5e-4 }   # dppo_mask_low/high stay at 0.2
+weight = { tau = 0.5 }       # advantage temperature
+```
 
-- `rl` mode → DPPO + KL with the advantage signal.
-- `opd` mode → KL distillation against the teacher's per-token logprobs. The teacher must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
+| Knob | Axis | Default | What it does |
+|---|---|---|---|
+| `kl_tau` | `loss` (`dppo_kl`) | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
+| `dppo_mask_low` / `dppo_mask_high` | `loss` (`dppo_kl`) | 0.2 / 0.2 | Lower / upper thresholds for DPPO token-level masking. |
+| `tau` | `weight` (`advantage`) | 1.0 | Temperature on the advantage. Set to 0 to disable the policy-gradient term; with `kl_tau > 0`, training becomes KL-only. |
+
+The preset expands to the full three-axis form — a `dppo_kl` core over the `completion` filter, `advantage`-weighted (see [Custom cores](#custom-cores)). You only write the axes out from scratch for custom losses.
+
+The trainer dispatches the **primary** loss by the batch's training mode (set via `orchestrator.training_mode`):
+
+- `rl` mode → the `losses` primary: the completion-filtered, advantage-weighted term (`dppo_kl` by default).
+- `opd` mode → KL distillation against the teacher's per-token logprobs. The teacher must be a vLLM server (the only one that exposes `prompt_logprobs`).
 - `sft` mode → standard token-level NLL on teacher-generated rollouts.
 
-Set `[trainer.loss] type = "default"` and configure via the knobs above. SFT and OPD modes ignore the policy-gradient–specific fields.
+The default `losses` is a single `rl` term, so default training is DPPO+KL. sft/opd dispatch fixed cores and ignore the `losses` primary. Prompt-side role supervision needs renderer `prompt_attribution`; only assistant completion tokens are always available.
 
-### Custom Loss
+### Overlays
 
-The loss is computed **per sequence**: you write a function that takes one sequence's tensors and returns a scalar loss. The trainer iterates and aggregates.
+Beyond the primary, `losses` may carry **overlay** terms — additive losses over *context* tokens (system / user / tool / assistant), summed into the total over one shared forward/backward. The standard echo overlay is a one-line preset too:
+
+```toml
+[[losses]]
+type = "echo"                                                # ce core · role(["assistant"]) · constant(1.0)
+
+# tune by overriding the axes (same as a full term):
+[[losses]]
+type    = "echo"
+weight  = { alpha = 0.5 }                                    # deep-merges → constant(0.5); 0 = no-grad, negative = suppress
+filters = [ { type = "role", roles = ["system", "user"] } ]  # replaces the default role filter
+```
+
+`echo` seeds a `ce` core over a `role` filter with a `constant` weight; override the axes for advantage-/custom-weighted overlays, custom filters, or a custom core (each overlay is a `ce`/`custom` core, one or more `role` filters optionally narrowed by `custom` filters, and a `weight`):
+
+- **weight** is `constant` (a fixed `alpha`), `advantage` (the rollout's GRPO advantage × `tau`, resolved per-rollout), or `custom` (a resolver `fn(WeightInputs, **kwargs) -> list[float]` that sees the sample **and its full GRPO group**).
+- **filters** chain by **AND** (intersection): `role` selects context tokens (prompt roles need a renderer that emits `prompt_attribution`; under MITO they no-op and config validation warns), and `custom` filters (`fn(rollout) -> list[list[bool]]`) narrow further. `tool` filters take an optional `tool_names` set.
+- Per env, `orchestrator.train.env.enabled_losses` selects which terms apply (default: all) and `loss_overrides` deep-merges per-env tweaks into a named overlay term (e.g. a different `alpha`).
+
+### Custom cores
+
+Any axis takes a `custom` preset with a dotted `import_path` (+ optional `kwargs`). A custom **core** is computed **per sequence** — a function taking one sequence's tensors and returning a scalar loss; the trainer iterates and aggregates. `inputs.advantages` carries the term's resolved per-token **weight** (the GRPO advantage for the rl primary, the alpha/resolver output for an overlay) and `inputs.loss_mask` is the term's **filter** mask.
 
 ```python
 # my_module.py
@@ -100,14 +147,17 @@ def ppo_clip_loss(inputs: LossInputs, clip_eps: float = 0.2) -> LossOutputs:
     )
 ```
 
-Wire it up:
+Wire it as the primary core (completion-filtered, advantage-weighted) — or as an overlay core (role-filtered):
 
 ```toml
-[trainer.loss]
-type = "custom"
-import_path = "my_module.ppo_clip_loss"
-kwargs = { clip_eps = 0.2 }
+[[losses]]
+name    = "ppo"
+loss    = { type = "custom", import_path = "my_module.ppo_clip_loss", kwargs = { clip_eps = 0.2 } }
+filters = [ { type = "completion" } ]
+weight  = { type = "advantage" }
 ```
+
+Custom **filters** and **weights** plug in the same way — `filters = [{ type = "custom", import_path = "...", kwargs = {...} }]` (a `fn(rollout) -> list[list[bool]]` per-step token mask) and `weight = { type = "custom", import_path = "...", kwargs = {...} }` (a `fn(WeightInputs, **kwargs) -> list[float]` per-token weight; `WeightInputs` carries the sample and its full GRPO group, resolved per rollout after advantages).
 
 The dataclasses:
 
@@ -117,8 +167,8 @@ class LossInputs:
     trainer_logprobs: Float[Tensor, "seq"]      # current policy
     inference_logprobs: Float[Tensor, "seq"]    # rollout-time policy
     teacher_logprobs: Float[Tensor, "seq"] | None  # only set in OPD mode
-    advantages: Float[Tensor, "seq"]
-    loss_mask: Bool[Tensor, "seq"]
+    advantages: Float[Tensor, "seq"]            # the term's per-token weight (GRPO advantage for the rl primary)
+    loss_mask: Bool[Tensor, "seq"]              # the term's filter mask
 
 @dataclass
 class LossOutputs:
@@ -138,8 +188,8 @@ This is intentionally simple — it does the right thing for most envs. Switch t
 
 Two built-in **length penalties** can be layered on top of any advantage to discourage rambling:
 
-- `[orchestrator.length_penalty] type = "tokens"` — penalizes long completions in tokens, with configurable target and slope.
-- `[orchestrator.length_penalty] type = "turns"` — penalizes long multi-turn rollouts by turn count.
+- `[orchestrator.advantage.length_penalty] type = "tokens"` — penalizes long completions in tokens, with configurable target and slope.
+- `[orchestrator.advantage.length_penalty] type = "turns"` — penalizes long multi-turn rollouts by turn count.
 
 
 ### Custom Advantage
@@ -175,17 +225,17 @@ Filters drop rollouts between scoring and training. Built-ins (composable):
 |---|---|
 | `gibberish` | Drops rollouts whose mean log-prob fall below a threshold — usually a sign of degenerate output. |
 | `repetition` | Drops rollouts with high n-gram repetition. |
-| `zero_advantage` | Drops rollouts whose advantage is zero, so the trainer doesn't waste tokens on them. |
+| `zero_advantage` | Flags rollouts whose advantage is zero (monitor-only by default). Such rollouts are dismissed *emergently*: the trainer masks their primary loss, so a rollout with no other applicable loss term contributes nothing and is dropped. Set `enforce=true` to hard-drop them at the filter instead. |
 
-The default `[orchestrator]` config already includes all three filters with their defaults. To override, set `filters` explicitly — the list replaces the defaults wholesale:
+The default `[orchestrator]` config registers all three filters in both `pre_batch_filters` and `post_batch_filters`, all monitor-only. To override, set the relevant list explicitly — each replaces its defaults wholesale:
 
 ```toml
-[[orchestrator.filters]]
+[[orchestrator.post_batch_filters]]
 type = "zero_advantage"
 
-[[orchestrator.filters]]
+[[orchestrator.post_batch_filters]]
 type = "repetition"
-threshold = 0.4
+prob_threshold = 0.95
 ```
 
 Filtered rollouts still appear in W&B distributions, just not in the trainer batch — useful for spotting whether filtering is doing its job.

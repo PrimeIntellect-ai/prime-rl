@@ -131,6 +131,7 @@ def propagate_shared_fields(data: Any) -> Any:
     # Top-level scalars.
     propagate("max_steps", "trainer.max_steps", "orchestrator.max_steps")
     propagate("seq_len", "trainer.model.seq_len", "orchestrator.seq_len")
+    propagate("losses", "trainer.losses", "orchestrator.losses")
 
     # [slurm] → inference: a multi-node RL run drives its inference deployment under
     # the same SLURM allocation, so the nested inference inherits [slurm]. This is
@@ -214,6 +215,17 @@ def validate_shared_ckpt_config(
     if trainer.ckpt and orchestrator.ckpt and trainer.ckpt.resume_step != orchestrator.ckpt.resume_step:
         raise ValueError(
             f"Trainer checkpoint resume step ({trainer.ckpt.resume_step}) and orchestrator checkpoint resume step ({orchestrator.ckpt.resume_step}) are not the same. Please specify the same checkpoint resume step for both."
+        )
+
+
+def validate_shared_losses(
+    trainer: TrainerConfig,
+    orchestrator: OrchestratorConfig,
+) -> None:
+    if [term.model_dump() for term in trainer.losses] != [term.model_dump() for term in orchestrator.losses]:
+        raise ValueError(
+            "trainer.losses and orchestrator.losses differ. Set `losses` once at the top level "
+            "(it propagates to both) rather than under [trainer]/[orchestrator] separately."
         )
 
 

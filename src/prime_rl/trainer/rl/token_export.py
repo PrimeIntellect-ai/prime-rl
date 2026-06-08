@@ -8,10 +8,12 @@ from typing import Any
 import torch
 from torch import Tensor
 
-from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
+from prime_rl.configs.losses import RLLossConfig
+from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.loss import compute_importance_ratio_and_mismatch_kl
 
-SCHEMA_VERSION = 1
+# v3 adds per-term overlay_mask/<name> and overlay_weight/<name> columns.
+SCHEMA_VERSION = 3
 
 
 class DisabledTokenExporter:
@@ -55,7 +57,7 @@ class TokenExporter:
         for micro_sequence_idx, length in enumerate(response_lengths):
             raw_end = start + length
             end = _trim_padding(columns, start, raw_end)
-            if end > start and any(columns["loss_mask"][start:end]):
+            if end > start and (any(columns["loss_mask"][start:end]) or any(columns["overlay_mask"][start:end])):
                 self._write(
                     {
                         "schema_version": SCHEMA_VERSION,
@@ -125,10 +127,12 @@ def _export_columns(
     trainer_logprobs = model_output["logprobs"]
     export_tensors = _compute_export_tensors(micro_batch, trainer_logprobs, loss_config)
 
-    return {
+    columns = {
         "token_ids": token_ids,
         "position_ids": _tensor_to_ints(micro_batch["position_ids"]),
         "loss_mask": _tensor_to_bools(micro_batch["loss_mask"]),
+        "overlay_mask": _overlay_combined_mask(micro_batch.get("overlay_masks"), seq_len),
+        "overlay_weight": _overlay_combined_weight(micro_batch.get("overlay_weights"), seq_len),
         "advantages": _tensor_to_floats(micro_batch["advantages"]),
         "rewards": _optional_tensor_to_floats(micro_batch.get("rewards"), seq_len),
         "inference_logprobs": _tensor_to_floats(micro_batch["inference_logprobs"]),
@@ -143,6 +147,41 @@ def _export_columns(
         "is_masked_low": _optional_tensor_to_bools(export_tensors["is_masked_low"], seq_len),
         "env_names": list(micro_batch["env_names"]),
     }
+    columns.update(_overlay_term_columns(micro_batch.get("overlay_masks"), micro_batch.get("overlay_weights"), seq_len))
+    return columns
+
+
+def _overlay_combined_mask(overlay_masks: "dict[str, Tensor] | None", seq_len: int) -> list[bool]:
+    """OR of all per-term overlay masks (any term echoes the token); all-False when no overlays."""
+    if not overlay_masks:
+        return [False] * seq_len
+    combined: Tensor | None = None
+    for m in overlay_masks.values():
+        combined = m if combined is None else (combined | m)
+    return _tensor_to_bools(combined)
+
+
+def _overlay_combined_weight(overlay_weights: "dict[str, Tensor] | None", seq_len: int) -> list[float]:
+    """Sum of all per-term overlay weights (diagnostic only); all-zero when no overlays."""
+    if not overlay_weights:
+        return [0.0] * seq_len
+    combined: Tensor | None = None
+    for w in overlay_weights.values():
+        combined = w if combined is None else (combined + w)
+    return _tensor_to_floats(combined)
+
+
+def _overlay_term_columns(
+    overlay_masks: "dict[str, Tensor] | None", overlay_weights: "dict[str, Tensor] | None", seq_len: int
+) -> dict[str, list[bool] | list[float | None]]:
+    names = sorted(set(overlay_masks or {}) | set(overlay_weights or {}))
+    columns: dict[str, list[bool] | list[float | None]] = {}
+    for name in names:
+        mask = None if overlay_masks is None else overlay_masks.get(name)
+        weight = None if overlay_weights is None else overlay_weights.get(name)
+        columns[f"overlay_mask/{name}"] = _tensor_to_bools(mask) if mask is not None else [False] * seq_len
+        columns[f"overlay_weight/{name}"] = _tensor_to_floats(weight) if weight is not None else [0.0] * seq_len
+    return columns
 
 
 def _compute_export_tensors(
@@ -170,7 +209,7 @@ def _compute_export_tensors(
         fields["importance_ratio"] = ratio
         fields["mismatch_kl"] = mismatch_kl
         fields["prob_delta"] = prob_delta
-        if isinstance(loss_config, DefaultLossConfig):
+        if isinstance(loss_config, RLLossConfig):
             invalid_high = prob_delta > loss_config.dppo_mask_high
             invalid_low = prob_delta < -loss_config.dppo_mask_low
             positive_advantages = advantages > 0

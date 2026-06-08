@@ -17,8 +17,14 @@ import asyncio
 import uuid
 from collections import defaultdict
 
+from prime_rl.configs.losses import apply_term_override, is_primary, overlay_terms
 from prime_rl.configs.orchestrator import AdvantageConfig, OrchestratorConfig
-from prime_rl.orchestrator.advantage import assign_advantages, setup_advantage_fn
+from prime_rl.orchestrator.advantage import (
+    assign_advantages,
+    build_render_hints,
+    resolve_advantage_fn,
+    setup_advantage_fn,
+)
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.trajectories import (
@@ -29,6 +35,20 @@ from prime_rl.orchestrator.trajectories import (
 from prime_rl.orchestrator.types import TrainBatch, TrainBatchMetrics, TrainRollout
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
+
+
+def _sample_has_trainable_tokens(sample: TrainingSample) -> bool:
+    """Whether a sample contributes any gradient: a primary (completion) token after any per-env
+    zeroing, or an overlay token with a nonzero weight. Position 0 is excluded to match the trainer
+    (no shifted current-token logprob); a zero weight contributes no gradient, so it doesn't count."""
+    if any(sample.completion_mask):
+        return True
+    terms = sample.term_advantages
+    if terms is None:
+        return False
+    # Overlays are the non-primary entries (the primary is keyed by training_mode and already covered
+    # by completion_mask above); a term is trainable if it has a nonzero advantage past position 0.
+    return any(any(a != 0.0 for a in advs[1:]) for name, advs in terms.items() if name != sample.training_mode)
 
 
 class TrainSink:
@@ -55,6 +75,14 @@ class TrainSink:
         self.tokenizer = tokenizer
         self.renderer = renderer
         self.train_envs = train_envs
+        self._overlay_cache: dict[str, list] = {}
+        self._rl_primary_cache: dict[str, bool] = {}
+        # The primary's advantage_fn (rl mode) is resolved from its advantage axis; the orchestrator
+        # runs it per group in process_group (overlays' fns are resolved per env in _resolve_overlays).
+        _primary = next((term for term in config.losses if is_primary(term)), None)
+        self._primary_fn = (
+            resolve_advantage_fn(_primary.advantage) if _primary is not None and config.training_mode == "rl" else None
+        )
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
@@ -150,6 +178,34 @@ class TrainSink:
             return self.process_batch()
         return None
 
+    def _resolve_overlays(self, env_name: str):
+        """Resolve the env's enabled overlay terms (per-env overrides applied) into a list of
+        ``(term_name, advantage_fn)``, cached per env. Each fn computes its per-token signal from the
+        sample's RenderHints in ``process_group``."""
+        if env_name not in self._overlay_cache:
+            env_config = self.train_envs.get(env_name).config
+            enabled = env_config.enabled_losses
+            resolved = []
+            for term in overlay_terms(self.config.losses):
+                if enabled is not None and term.name not in enabled:
+                    continue
+                if term.name in env_config.loss_overrides:
+                    term = apply_term_override(term, env_config.loss_overrides[term.name])
+                resolved.append((term.name, resolve_advantage_fn(term.advantage)))
+            self._overlay_cache[env_name] = resolved
+        return self._overlay_cache[env_name]
+
+    def _rl_primary_enabled(self, env_name: str) -> bool:
+        """Whether this env trains the rl-mode primary term."""
+        if env_name not in self._rl_primary_cache:
+            if self.config.training_mode != "rl":
+                self._rl_primary_cache[env_name] = False
+            else:
+                primary = next((term for term in self.config.losses if is_primary(term)), None)
+                enabled = self.train_envs.get(env_name).config.enabled_losses
+                self._rl_primary_cache[env_name] = primary is not None and (enabled is None or primary.name in enabled)
+        return self._rl_primary_cache[env_name]
+
     async def process_rollout(self, rollout: TrainRollout) -> None:
         """Tokenize the rollout eagerly. Backfills tokens if the env didn't
         return them (SFT against external teacher APIs); errored rollouts
@@ -160,6 +216,7 @@ class TrainSink:
         needs_backfill = any(s["tokens"] is None for s in raw.get("trajectory") or [])
         if needs_backfill:
             await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
+
         samples = await asyncio.to_thread(
             interleave_rollout,
             raw,
@@ -207,9 +264,21 @@ class TrainSink:
         # has a single sampling temperature; fan it out across each sample's
         # completion tokens here (interleave leaves it empty).
         temperature = env.sampling_args["temperature"]
+        overlays = self._resolve_overlays(env_name)
         for r in survivors:
             for sample in r.samples:
+                # One per-token advantage stream per loss term, from each term's advantage_fn over this
+                # sample's RenderHints: the primary (keyed by training_mode) is the GRPO scalar over the
+                # sampled tokens; each overlay is its role-masked / advantage-weighted / custom signal.
+                # The fn emits 0.0 for non-eligible tokens (the trainer treats 0.0 as masked).
                 sample.advantage = r.advantage
+                hints = build_render_hints(sample, r.raw, advantage=r.advantage)
+                term_advantages: dict[str, list[float]] = {}
+                if self._primary_fn is not None and r.advantage is not None:
+                    term_advantages[self.config.training_mode] = self._primary_fn([hints])[0]
+                for name, fn in overlays:
+                    term_advantages[name] = fn([hints])[0]
+                sample.term_advantages = term_advantages or None
                 sample.reward = r.reward
                 sample.env_name = r.env_name
                 sample.training_mode = self.config.training_mode
@@ -277,23 +346,39 @@ class TrainSink:
         samples_per_rollout: list[int] = []
         num_prefill = 0
         num_decode = 0
+        n_trainable = 0
         for r in cohort:
             samples_per_rollout.append(len(r.samples))
             prefill = 0
             decode = 0
+            rollout_trainable = False
             for sample in r.samples:
                 sample_decode = sum(sample.completion_mask)
                 sample_prefill = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode
                 decode += sample_decode
                 prefill += sample_prefill
                 if not r.is_filtered:
-                    samples.append(sample)
+                    # The primary (rl) term applies to a sample iff it's enabled for the env AND the
+                    # rollout has nonzero advantage; otherwise mask its completion (out of loss_mask =>
+                    # out of loss_scale, no KL). Zero-advantage dismissal is emergent here, not a
+                    # special filter. (After the decode/prefill metric so throughput stays accurate.)
+                    if self.config.training_mode == "rl" and not (
+                        self._rl_primary_enabled(r.env_name) and r.advantage != 0.0
+                    ):
+                        sample.completion_mask = [False] * len(sample.completion_mask)
+                    # Ship a sample iff some term still applies (primary or an overlay); the
+                    # no-gradient remainder (e.g. a zero-advantage rollout with no overlay) is dropped.
+                    if _sample_has_trainable_tokens(sample):
+                        samples.append(sample)
+                        rollout_trainable = True
             prefill_lens.append(prefill)
             decode_lens.append(decode)
             num_prefill += prefill
             num_decode += decode
-
-        n_trainable = sum(1 for r in cohort if not r.is_filtered)
+            # Count a rollout as trainable only if it ships at least one loss-bearing token
+            # (primary or echo) — a primary-disabled env with no echo tokens contributes nothing.
+            if rollout_trainable:
+                n_trainable += 1
 
         metrics = TrainBatchMetrics(
             n_trainable=n_trainable,

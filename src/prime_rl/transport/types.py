@@ -56,6 +56,19 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # taus), sft uses sft_loss_fn. Stamped by the orchestrator from training_mode.
     training_mode: TrainingMode = "rl"
 
+    # Per-term per-token advantage (each loss term's advantage_fn output), keyed by term name and
+    # parallel to prompt_ids + completion_ids. The primary term is keyed by ``training_mode``
+    # ("rl"/"sft"/"opd"); overlays by their config names. 0.0 = masked at that token (no gradient for
+    # that term). Field None (or a missing primary key in sft/opd) -> the trainer broadcasts the
+    # scalar ``advantage`` over the sequence for the primary and applies no overlays.
+    term_advantages: dict[str, list[float]] | None = None
+
+    # Per-token (role, tool_name), parallel to prompt_ids + completion_ids, aligned across multi-step
+    # trajectories by interleave_rollout. RenderHints exposes these to the advantage_fns; None on
+    # samples not built via interleave (build_render_hints falls back to assistant-on-sampled).
+    roles: list[str | None] | None = None
+    tool_names: list[str | None] | None = None
+
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A batch of training examples with metadata for transport."""
@@ -89,3 +102,9 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # sft → sft loss). All samples packed into a micro batch share the same mode.
     training_mode: TrainingMode = "rl"
     rewards: list[float] | None = None
+
+    # Per-term overlays, keyed by loss-term name, parallel to input_ids. For each term,
+    # overlay_masks is True where the token gets that term's core; overlay_weights carries
+    # its per-token alpha (0.0 elsewhere). Survive packing/padding; None if no overlays.
+    overlay_masks: dict[str, list[bool]] | None = None
+    overlay_weights: dict[str, list[float]] | None = None
