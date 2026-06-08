@@ -21,11 +21,7 @@ from prime_rl.configs.orchestrator import AdvantageConfig, OrchestratorConfig
 from prime_rl.orchestrator.advantage import assign_advantages, setup_advantage_fn
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
-from prime_rl.orchestrator.trajectories import (
-    backfill_rollout_tokens,
-    interleave_rollout,
-    offload_images_to_disk,
-)
+from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import TrainBatch, TrainBatchMetrics, TrainRollout
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
@@ -151,26 +147,14 @@ class TrainSink:
         return None
 
     async def process_rollout(self, rollout: TrainRollout) -> None:
-        """Tokenize the rollout eagerly. Backfills tokens if the env didn't
-        return them (SFT against external teacher APIs); errored rollouts
-        skip tokenization and get dropped at the group level."""
+        """Build training samples from the rollout's Trace (one per branch). The
+        env's renderer client already produced token ids/logprobs, so there's no
+        orchestrator-side tokenization. Errored rollouts are dropped at the group
+        level, so skip them here."""
         if rollout.error is not None:
             return
-        raw = rollout.raw
-        needs_backfill = any(s["tokens"] is None for s in raw.get("trajectory") or [])
-        if needs_backfill:
-            await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
-        samples = await asyncio.to_thread(
-            interleave_rollout,
-            raw,
-            mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
-            env_name=rollout.env_name,
-        )
+        samples = await asyncio.to_thread(trace_to_samples, rollout.raw, env_name=rollout.env_name)
         rollout.samples = samples or []
-        # Offload base64 image bytes to disk as soon as the rollout is
-        # tokenized, so memory stays flat instead of holding every buffered
-        # rollout's images until the batch ships (no-op for text-only).
-        await asyncio.to_thread(offload_images_to_disk, [raw], self.config.output_dir)
 
     def process_group(self, group_id: uuid.UUID) -> None:
         """Finalize one GRPO group: drop errored rollouts (the whole group

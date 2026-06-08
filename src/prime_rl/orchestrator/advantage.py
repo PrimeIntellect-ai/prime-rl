@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
 import torch
-import verifiers as vf
 from jaxtyping import Float
 from torch import Tensor
 
@@ -26,7 +25,7 @@ from prime_rl.utils.utils import import_object
 class AdvantageInputs:
     """Inputs for advantage computation of a single group (one example × N rollouts)."""
 
-    rollouts: list[vf.RolloutOutput]
+    rollouts: list[dict]
 
 
 @dataclass
@@ -135,7 +134,7 @@ def assign_advantages(
     """Compute and assign advantages for one finished group of rollouts
     (``TrainSink.process_group`` hands in a single group's surviving rollouts).
     ``advantage_fn=None`` is the trivial case (advantage = reward); a custom
-    ``advantage_fn`` receives the raw ``vf.RolloutOutput``\\ s via
+    ``advantage_fn`` receives the raw ``dict``\\ s via
     ``AdvantageInputs.rollouts``.
     """
     if advantage_fn is None:

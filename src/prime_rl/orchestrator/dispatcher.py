@@ -26,7 +26,6 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Literal
 
-import verifiers as vf
 from aiolimiter import AsyncLimiter
 
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -480,7 +479,7 @@ class RolloutDispatcher:
         is_synth_exception = False
         try:
             result = task.result()
-            rollouts: list[vf.RolloutOutput] = result if isinstance(result, list) else [result]
+            rollouts: list[dict] = result if isinstance(result, list) else [result]
         except asyncio.CancelledError:
             return
         except Exception as exc:
@@ -511,7 +510,7 @@ class RolloutDispatcher:
                     )
             await self.emit_rollout(meta, group, r)
 
-    async def emit_rollout(self, meta: InflightRollout, group: GroupState | None, raw: vf.RolloutOutput) -> None:
+    async def emit_rollout(self, meta: InflightRollout, group: GroupState | None, raw: dict) -> None:
         """Build a ``TrainRollout`` / ``EvalRollout`` and put it on ``out_q``.
         Pops the group from ``self.groups`` once every member has been emitted."""
         eval_step = meta.eval_step
@@ -542,10 +541,10 @@ class RolloutDispatcher:
         await self.out_q.put(rollout)
 
     @staticmethod
-    def error_rollout_output(*, error_type: str, error_repr: str) -> vf.RolloutOutput:
-        """Minimal ``vf.RolloutOutput`` for rollouts that never produced
+    def error_rollout_output(*, error_type: str, error_repr: str) -> dict:
+        """Minimal ``dict`` for rollouts that never produced
         real output (task exception, off-policy cancel)."""
-        out: vf.RolloutOutput = vf.RolloutOutput()
+        out: dict = dict()
         out["error"] = {
             "error": error_type,
             "error_chain_repr": error_repr,

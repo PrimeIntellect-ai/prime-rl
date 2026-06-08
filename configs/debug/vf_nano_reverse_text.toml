@@ -1,0 +1,46 @@
+# Debug RL run on the vf-nano env server (reverse-text starter).
+# The orchestrator spawns a vf-nano EnvServer per env (it never loads the env
+# itself), dispatches rollouts by task index, and trains on the returned Traces
+# (renderer-tokenized). Light settings for a quick end-to-end smoke.
+
+max_steps = 5
+seq_len = 2048
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[orchestrator]
+training_mode = "rl"
+batch_size = 16
+group_size = 8
+
+[orchestrator.renderer]
+name = "qwen3"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.train.env]]
+id = "reverse-text"
+# Swappable agent/runtime inherited from vf-nano. reverse-text is a pure-text
+# single-turn env, so the subprocess runtime (no docker) is enough.
+agent = { type = "default", runtime = { type = "subprocess" } }
+
+[orchestrator.eval]
+num_examples = 8
+group_size = 2
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.eval.env]]
+id = "reverse-text"
+agent = { type = "default", runtime = { type = "subprocess" } }
+
+[trainer.optim]
+lr = 3e-6
+
+[ckpt]
+
+[inference]
+gpu_memory_utilization = 0.5

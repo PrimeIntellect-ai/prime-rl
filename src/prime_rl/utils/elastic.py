@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Literal
 
 import httpx
-import verifiers as vf
+import verifiers.nano as vf
 from httpx import AsyncClient
 from renderers import RendererConfig
 

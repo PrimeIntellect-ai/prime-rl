@@ -2,8 +2,6 @@ import random
 from abc import ABC, abstractmethod
 from typing import Any
 
-import verifiers as vf
-
 
 def sample_items_for_logging(items: list[Any], sample_ratio: float | None) -> list[Any]:
     """Apply monitor sample_ratio semantics to a batch of items.
@@ -39,11 +37,11 @@ class Monitor(ABC):
         pass
 
     @abstractmethod
-    def log_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> None:
+    def log_samples(self, rollouts: list[dict], step: int) -> None:
         pass
 
     @abstractmethod
-    def log_eval_samples(self, rollouts: list[vf.RolloutOutput], env_name: str, step: int) -> None:
+    def log_eval_samples(self, rollouts: list[dict], env_name: str, step: int) -> None:
         pass
 
     @abstractmethod
@@ -72,10 +70,10 @@ class NoOpMonitor(Monitor):
         else:
             self.history = [metrics]
 
-    def log_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> None:
+    def log_samples(self, rollouts: list[dict], step: int) -> None:
         pass
 
-    def log_eval_samples(self, rollouts: list[vf.RolloutOutput], env_name: str, step: int) -> None:
+    def log_eval_samples(self, rollouts: list[dict], env_name: str, step: int) -> None:
         pass
 
     def save_final_summary(self, filename: str = "final_summary.json") -> None:

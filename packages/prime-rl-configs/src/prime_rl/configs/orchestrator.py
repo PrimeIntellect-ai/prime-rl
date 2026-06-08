@@ -6,6 +6,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import AliasChoices, Field, model_serializer, model_validator
 from pydantic_core.core_schema import SerializerFunctionWrapHandler
 from renderers import AutoRendererConfig, RendererConfig
+from verifiers.nano.agents import AgentConfig, DefaultAgentConfig
 
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -145,13 +146,21 @@ class EvalSamplingConfig(BaseConfig):
 
 class EnvConfig(BaseConfig):
     id: str = "reverse-text"
-    """Registered verifiers environment ID (e.g. ``math-env``, ``primeintellect/math-env``). May include an ``@version`` suffix for installation."""
+    """vf-nano environment id (the example/package name, e.g. ``reverse-text``)."""
 
     name: str | None = None
     """Display name for this environment in logs, metrics, and buffer keys. Defaults to the ``id`` without ``@version``. Must be unique across all envs in the same group."""
 
     args: dict = {}
-    """Keyword arguments forwarded to ``vf.load_environment``. See the environment's docstring for accepted args."""
+    """Keyword arguments forwarded to the env's ``load_taskset`` (the taskset config). See the environment's docstring for accepted args."""
+
+    agent: AgentConfig = DefaultAgentConfig()
+    """The agent that drives rollouts, inherited from vf-nano (swappable agent +
+    runtime, e.g. ``agent.type`` / ``agent.runtime.type``). The env server runs
+    this agent; the orchestrator only forwards the config."""
+
+    max_turns: int | None = None
+    """Max model turns per rollout (framework-enforced by the env server). None = no limit."""
 
     extra_env_kwargs: dict[str, Any] = {}
     """Extra kwargs passed to the env (e.g. ``seq_len``, ``max_total_completion_tokens``). Auto-populated by the orchestrator; user overrides are generally discouraged. The main use case is matching ``extra_env_kwargs`` when running an env in an isolated environment server."""

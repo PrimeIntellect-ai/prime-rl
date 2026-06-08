@@ -12,7 +12,6 @@ from typing import Any
 import httpx
 import pyarrow as pa
 import pyarrow.parquet as pq
-import verifiers as vf
 from prime_cli.core.config import Config as PrimeConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 
@@ -285,7 +284,7 @@ class PrimeMonitor(Monitor):
             },
         )
 
-    def log_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> None:
+    def log_samples(self, rollouts: list[dict], step: int) -> None:
         """Logs rollouts to Prime Intellect API using presigned URLs for direct R2 upload."""
         if not self.is_master:
             return
@@ -328,7 +327,7 @@ class PrimeMonitor(Monitor):
             f"Initiated samples upload at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
         )
 
-    def _rollouts_to_parquet_bytes(self, rollouts: list[vf.RolloutOutput], step: int) -> bytes | None:
+    def _rollouts_to_parquet_bytes(self, rollouts: list[dict], step: int) -> bytes | None:
         """Convert rollouts directly to Parquet bytes for upload."""
         now = datetime.now(timezone.utc)
         rows = []
@@ -491,7 +490,7 @@ class PrimeMonitor(Monitor):
                 await asyncio.sleep(delay)
         return False
 
-    def log_eval_samples(self, rollouts: list[vf.RolloutOutput], env_name: str, step: int) -> None:
+    def log_eval_samples(self, rollouts: list[dict], env_name: str, step: int) -> None:
         pass
 
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:

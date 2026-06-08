@@ -8,16 +8,17 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import httpx
-import verifiers as vf
+import verifiers.nano as vf
 from httpx import AsyncClient
 from openai import NotFoundError
 from renderers import RendererConfig
 from tenacity import retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
+from verifiers.nano.clients.config import OpenAIClientConfig, RendererClientConfig
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
 
-# Identity tuple used by ``select_train_client`` to key load counts. ``api_base_url``
+# Identity tuple used by ``select_train_client`` to key load counts. ``base_url``
 # distinguishes servers; ``X-data-parallel-rank`` distinguishes DP shards within a
 # server, since the router uses that header to route to specific GPU ranks.
 ClientIdentity = tuple[str, str | None]
@@ -25,7 +26,7 @@ ClientIdentity = tuple[str, str | None]
 
 def client_identity(client: vf.ClientConfig) -> ClientIdentity:
     """Stable identity for load balancing across inference clients."""
-    return (client.api_base_url, client.extra_headers.get("X-data-parallel-rank"))
+    return (client.base_url, client.headers.get("X-data-parallel-rank"))
 
 
 @runtime_checkable
@@ -185,42 +186,22 @@ def setup_clients(
     renderer_model_name: str | None = None,
     pool_size: int | None = None,
 ) -> list[vf.ClientConfig]:
-    clients = []
-    client_idx = 0
-    # Only forward the renderer config when the client actually uses a
-    # renderer — MITO/TITO clients ignore it.
-    renderer_extra: dict = {}
-    if client_type == "renderer":
-        renderer_extra = {
-            "renderer_config": renderer_config,
-            "renderer_model_name": renderer_model_name,
-            "renderer_pool_size": pool_size,
-        }
+    """Build vf-nano client configs (one per base_url × DP rank). ``client_type``
+    ``renderer`` → token-in/out (``RendererClientConfig``, the env server's
+    renderer auto-resolves from the model); otherwise plain chat-completions
+    (``OpenAIClientConfig``). The renderer args are vestigial (the env server owns
+    the renderer) and ignored here."""
+    config_cls = RendererClientConfig if client_type == "renderer" else OpenAIClientConfig
     env_headers = {
         k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
     }
+    clients: list[vf.ClientConfig] = []
     for base_url in client_config.base_url:
         for dp_rank in range(client_config.dp_rank_count):
             headers = {**client_config.headers, **env_headers}
             if client_config.dp_rank_count > 1:
                 headers["X-data-parallel-rank"] = str(dp_rank)
-            clients.append(
-                vf.ClientConfig(
-                    client_idx=client_idx,
-                    client_type=client_type,
-                    api_base_url=base_url,
-                    api_key_var=client_config.api_key_var,
-                    timeout=client_config.timeout,
-                    connect_timeout=client_config.connect_timeout,
-                    max_connections=8192,
-                    max_keepalive_connections=8192,
-                    max_retries=10,
-                    extra_headers=headers,
-                    extra_headers_from_state=client_config.extra_headers_from_state,
-                    **renderer_extra,
-                )
-            )
-            client_idx += 1
+            clients.append(config_cls(base_url=base_url, api_key_var=client_config.api_key_var, headers=headers))
     return clients
 
 

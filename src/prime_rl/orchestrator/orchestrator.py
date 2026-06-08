@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
-import logging
 import os
 import time
 from typing import TYPE_CHECKING
@@ -37,8 +36,6 @@ if TYPE_CHECKING:
     from prime_rl.transport.base import TrainingBatchSender
     from prime_rl.utils.client import InferencePool
     from prime_rl.utils.monitor.base import Monitor
-from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
-
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
@@ -76,7 +73,7 @@ from prime_rl.orchestrator.utils import (
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
-from prime_rl.utils.async_utils import safe_cancel
+from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.client import init_nccl_broadcast, setup_inference_pool
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
@@ -85,8 +82,6 @@ from prime_rl.utils.pathing import get_log_dir, get_rollout_dir, get_step_path
 from prime_rl.utils.usage_reporter import UsageReporter
 from prime_rl.utils.utils import (
     clean_exit,
-    get_env_ids_to_install,
-    install_env,
     resolve_latest_ckpt_step,
 )
 
@@ -153,10 +148,9 @@ class Orchestrator:
     def __init__(self, config: OrchestratorConfig) -> None:
         self.config = config
         setup_logger(config.log.level, json_logging=config.log.json_logging)
-        # Silence in-process ``verifiers.*`` library noise but keep
-        # ``verifiers.serve`` (env-server lifecycle) through our handler
-        logging.getLogger("verifiers").setLevel(logging.CRITICAL + 1)
-        intercept_vf_logging(logger="verifiers.serve", level="WARN")
+        # Route the in-process vf-nano library logging through our handler. The
+        # env server runs in a child process, so its logging is separate.
+        intercept_vf_logging(logger="verifiers.nano", level="WARN")
         get_logger().info(f"Starting orchestrator ({config.training_mode})")
 
         if config.bench:
@@ -206,11 +200,8 @@ class Orchestrator:
         with open(config_dir / "orch.toml", "wb") as f:
             tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
 
-        env_ids_to_install = set(get_env_ids_to_install(config.train.env))
-        if config.eval is not None:
-            env_ids_to_install.update(get_env_ids_to_install(config.eval.env))
-        for env_id in env_ids_to_install:
-            install_env(env_id, prerelease=config.env_install_prerelease)
+        # vf-nano envs are local packages installed in this venv (no prime-env
+        # hub install); the env server imports them in its own child process.
 
         get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
         self.tokenizer = setup_tokenizer(config.tokenizer)

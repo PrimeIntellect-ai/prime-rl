@@ -28,11 +28,9 @@ class TrainSource:
         # per-rollout envs need 1
         self.env_costs: dict[str, int] = {}
         for env in self.envs:
-            rows: list[dict] = []
-            for row in env.get_dataset(seed=seed):
-                ex = dict(row)
-                ex["env_name"] = env.name
-                rows.append(ex)
+            # The orchestrator never loads the env: sample over the task-index
+            # range the server reported via info() (num_tasks).
+            rows: list[dict] = [{"example_id": i, "env_name": env.name} for i in range(env.num_tasks)]
             self.rng.shuffle(rows)
             self.examples[env.name] = rows
             self.cursors[env.name] = 0

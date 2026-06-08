@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass, field, fields
 from typing import Literal, Protocol
 
-import verifiers as vf
+import verifiers.nano as vf
 
 from prime_rl.transport import TrainingSample
 
@@ -67,12 +67,12 @@ class GroupState:
 @dataclass
 class FinishedRollout:
     """A completed rollout the sink receives. ``raw`` is the env's untouched
-    ``vf.RolloutOutput``; prime-rl metadata lives on typed fields. Train vs
+    ``dict``; prime-rl metadata lives on typed fields. Train vs
     eval is discriminated via ``isinstance``. ``rollout_id`` is the only
     safe key for tracing one rollout — ``(env_name, example_id)`` collides
     on re-sampling and ``group_id`` covers a whole group."""
 
-    raw: vf.RolloutOutput
+    raw: dict
     env_name: str
     example_id: int | str
     group_id: uuid.UUID
@@ -92,10 +92,10 @@ class FinishedRollout:
     def is_truncated(self) -> bool:
         return bool(self.raw.get("is_truncated", False))
 
-    def to_dict(self) -> vf.RolloutOutput:
+    def to_dict(self) -> dict:
         """``raw`` + metadata merged for I/O (``save_rollouts``,
         ``monitor.log_samples``). Shallow copy; never mutates ``self.raw``."""
-        out: vf.RolloutOutput = dict(self.raw)  # type: ignore[assignment]
+        out: dict = dict(self.raw)  # type: ignore[assignment]
         for f in fields(self):
             if f.name in ("raw", "samples"):
                 continue

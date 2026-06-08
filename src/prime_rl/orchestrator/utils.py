@@ -1,14 +1,13 @@
 import asyncio
 import logging
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from itertools import cycle
 from pathlib import Path
 
 import orjson
-import verifiers as vf
-from verifiers.utils.client_utils import setup_openai_client
-from verifiers.utils.save_utils import make_serializable
+import verifiers.nano as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.transport import TrainingSample
@@ -22,45 +21,31 @@ from prime_rl.utils.utils import (
 
 
 async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer):
-    """Build the student inference pool + matching renderer. Returns
-    ``(renderer | None, inference_pool)``; ``renderer`` is ``None`` on the
-    MITO path (``config.renderer is None``)."""
-    from renderers.base import create_renderer
-
+    """Build the student inference pool. Returns ``(None, inference_pool)`` — the
+    renderer now lives in the env server (vf-nano's renderer client auto-resolves
+    it from the model), so the orchestrator builds no renderer. ``train_client_type``
+    selects the env server's client: ``renderer`` (token-in/out) when a renderer is
+    configured, else ``openai_chat_completions``."""
     client_config = config.student.client
     model_name = config.student.model.name
-
-    if config.renderer is not None:
-        renderer = create_renderer(tokenizer, config.renderer)
-        get_logger().info(f"Initialized {type(renderer).__name__} for {model_name}")
-        inference_pool = await setup_inference_pool(
-            client_config,
-            model_name=model_name,
-            train_client_type="renderer",
-            eval_client_type="openai_chat_completions",
-            renderer_config=config.renderer,
-            pool_size=config.pool_size,
-        )
-        get_logger().info("Using direct renderer rollout client")
-        return renderer, inference_pool
-
-    get_logger().info("Using MITO (openai_chat_completions) for rollouts")
+    train_client_type = "renderer" if config.renderer is not None else "openai_chat_completions"
+    get_logger().info(f"Using {train_client_type} rollout client")
     inference_pool = await setup_inference_pool(
         client_config,
         model_name=model_name,
-        train_client_type="openai_chat_completions",
+        train_client_type=train_client_type,
         eval_client_type="openai_chat_completions",
     )
     return None, inference_pool
 
 
-def get_model_completion_len(output: vf.RolloutOutput) -> int:
+def get_model_completion_len(output: dict) -> int:
     """Sum of model-generated completion tokens across all turns (excludes
     environment-injected tokens between turns)."""
-    return sum(len(step["tokens"]["completion_ids"]) for step in output["trajectory"] if step.get("tokens"))
+    return sum(len(step["tokens"]["completion_ids"]) for step in (output.get("trajectory") or []) if step.get("tokens"))
 
 
-def get_tool_response_len(output: vf.RolloutOutput) -> int:
+def get_tool_response_len(output: dict) -> int:
     """Total tool-response tokens consumed across the whole rollout, read from a
     harness-emitted metric (e.g. RLM's `rlm_total_tool_response_tokens`, deduped
     across turns/branches/sub-RLMs). Returns 0 when no such metric is present."""
@@ -71,14 +56,14 @@ def get_tool_response_len(output: vf.RolloutOutput) -> int:
     return 0
 
 
-def save_rollouts(rollouts: list[vf.RolloutOutput], path: Path, exclude_keys: set[str] | None = None) -> None:
-    """Save rollouts to a JSONL file using verifiers serialization."""
+def save_rollouts(rollouts: list[dict], path: Path, exclude_keys: set[str] | None = None) -> None:
+    """Save rollouts (Trace dicts, already JSON-serializable) to a JSONL file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     opts = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
     with open(path, "wb") as f:
         for rollout in rollouts:
             row = {k: v for k, v in rollout.items() if k not in exclude_keys} if exclude_keys else rollout
-            f.write(orjson.dumps(row, default=make_serializable, option=opts))
+            f.write(orjson.dumps(row, default=str, option=opts))
 
 
 def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):
@@ -103,10 +88,15 @@ async def compute_teacher_logprobs(
 ) -> list[list[float]]:
     """Compute teacher model logprobs for a batch of training samples via prefill."""
     import httpx
+    from openai import AsyncOpenAI
     from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
 
     async def _compute_single(client_config: vf.ClientConfig, sample: TrainingSample) -> list[float]:
-        client = setup_openai_client(client_config)
+        client = AsyncOpenAI(
+            base_url=client_config.base_url,
+            api_key=os.environ.get(client_config.api_key_var, "EMPTY"),
+            default_headers=client_config.headers or None,
+        )
 
         # Two escape hatches from ``AsyncOpenAI.post``:
         #   1. URL — ``/inference/v1/generate`` is mounted at server root, not
