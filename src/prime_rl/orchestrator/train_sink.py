@@ -14,7 +14,6 @@ save_rollouts, monitor.log, teacher logprobs) live on the orchestrator.
 from __future__ import annotations
 
 import asyncio
-import functools
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
@@ -24,10 +23,10 @@ from prime_rl.configs.orchestrator import AdvantageConfig, OrchestratorConfig
 from prime_rl.orchestrator.advantage import (
     assign_advantages,
     build_render_hints,
+    echo_advantage,
     grpo_advantage,
     setup_advantage_fn,
 )
-from prime_rl.orchestrator.echo import build_echo_annotations
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.trajectories import (
@@ -205,7 +204,8 @@ class TrainSink:
 
     def _resolve_overlays(self, env_name: str):
         """Resolve the env's enabled overlay terms (per-env overrides applied) into a list of
-        ``(term_name, resolved EchoLossConfig, bound filter fn)``, cached per env."""
+        ``(term_name, echo_advantage kwargs)``, cached per env. The advantage_fn computes each term's
+        per-token signal from the sample's RenderHints in ``process_group``."""
         if env_name not in self._overlay_cache:
             env_config = self.train_envs.get(env_name).config
             enabled = env_config.enabled_losses
@@ -216,8 +216,15 @@ class TrainSink:
                 if term.name in env_config.loss_overrides:
                     term = apply_term_override(term, env_config.loss_overrides[term.name])
                 echo_config = to_echo_config(term)
-                filter_fns = [functools.partial(import_object(f.import_path), **f.kwargs) for f in echo_config.filters]
-                resolved.append((term.name, echo_config, filter_fns))
+                if echo_config.filters:
+                    raise ValueError(
+                        f"loss term {term.name!r}: custom token filters are not yet supported via the "
+                        f"advantage_fn; express the narrowing as a custom advantage core instead."
+                    )
+                roles = [r for r in ("system", "user", "assistant", "tool") if getattr(echo_config, r) is not None]
+                alpha = next(getattr(echo_config, r).alpha for r in roles)
+                tool_names = echo_config.tool.tool_names if echo_config.tool is not None else None
+                resolved.append((term.name, {"roles": roles, "tool_names": tool_names, "alpha": alpha}))
             self._overlay_cache[env_name] = resolved
         return self._overlay_cache[env_name]
 
@@ -243,18 +250,11 @@ class TrainSink:
         if needs_backfill:
             await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
 
-        overlay_annotations = {}
-        for name, echo_config, filter_fns in self._resolve_overlays(rollout.env_name):
-            ann = await asyncio.to_thread(build_echo_annotations, raw, echo_config, filter_fns)
-            if ann is not None:
-                overlay_annotations[name] = ann
-
         samples = await asyncio.to_thread(
             interleave_rollout,
             raw,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             env_name=rollout.env_name,
-            overlay_annotations=overlay_annotations,
         )
         rollout.samples = samples or []
         # Offload base64 image bytes to disk as soon as the rollout is
@@ -297,6 +297,7 @@ class TrainSink:
         # has a single sampling temperature; fan it out across each sample's
         # completion tokens here (interleave leaves it empty).
         temperature = env.sampling_args["temperature"]
+        overlays = self._resolve_overlays(env_name)
         for r in survivors:
             for sample in r.samples:
                 # RL resolves the primary per-token advantage as GRPO advantage × tau.
@@ -305,12 +306,18 @@ class TrainSink:
                     if r.advantage is not None and self.config.training_mode == "rl"
                     else r.advantage
                 )
-                # The primary's per-token advantage via the advantage_fn: the GRPO scalar broadcast
-                # over the sampled tokens x tau. Bit-identical to broadcasting the scalar, since the
-                # loss only reads it on the (sampled) completion mask.
+                # Per-token signals from the advantage_fns over this sample's RenderHints: the GRPO
+                # scalar broadcast over the sampled tokens (primary), and each overlay's role-masked
+                # alpha. echo_advantage emits 0.0 for non-eligible tokens; map to None to match the
+                # wire's "ineligible" sentinel (so the weight scaling below and the trainer are unchanged).
+                hints = build_render_hints(sample, r.raw, advantage=r.advantage)
                 if r.advantage is not None and self.config.training_mode == "rl":
-                    hints = build_render_hints(sample, r.raw, advantage=r.advantage)
                     sample.token_advantages = grpo_advantage([hints], tau=self._primary_tau)[0]
+                if overlays:
+                    sample.overlay_alphas = {
+                        name: [a if a != 0.0 else None for a in echo_advantage([hints], **kwargs)[0]]
+                        for name, kwargs in overlays
+                    }
                 sample.reward = r.reward
                 sample.env_name = r.env_name
                 sample.training_mode = self.config.training_mode
