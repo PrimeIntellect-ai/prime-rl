@@ -239,103 +239,59 @@ def _default_filters() -> list[TokenFilterConfig]:
 
 
 class LossTerm(BaseConfig):
-    """A single loss term — one core, one filter chain, one weight — summed into the total loss."""
+    """A single loss term — a core and an advantage_fn — summed into the total loss."""
 
     name: str
     """Unique term name (referenced by per-env ``enabled_losses`` / ``loss_overrides``)."""
 
     loss: LossCoreConfig
-    """The core (required)."""
+    """The core (trainer-side, required)."""
 
-    filters: list[TokenFilterConfig] = Field(default_factory=_default_filters)
-    """Token eligibility; the chain intersects (each filter narrows). Default: the completion."""
-
-    weight: WeightConfig = Field(default_factory=ConstantWeightConfig)
-    """Per-token weight. Default: constant ``1.0``."""
+    advantage: AdvantageFnConfig
+    """The advantage_fn (orchestrator-side, required): the per-token signal, ``0`` = masked."""
 
     @model_validator(mode="before")
     @classmethod
     def _expand_preset(cls, data: Any) -> Any:
-        """Expand a one-line preset (``{type = "rl"|"echo", ...}``) into the full core/filters/weight
-        form. The preset seeds default axes; any explicit ``loss``/``filters``/``weight``/``name`` the
-        user sets is merged over them with the *same* semantics as a full term — dicts deep-merge (so
-        ``weight = {alpha = 0.5}`` keeps ``type = "constant"``), lists replace (``filters``). The full
-        form (no top-level ``type``) and already-built terms pass through unchanged."""
+        """Expand a one-line preset (``{type = "rl"|"echo", ...}``) into the full loss/advantage form.
+        The preset seeds default axes; any explicit ``loss``/``advantage``/``name`` the user sets is
+        deep-merged over them with the *same* semantics as a full term (so ``advantage = {alpha = 0.5}``
+        keeps ``type = "echo"``). The full form (no top-level ``type``) and built terms pass through."""
         if not isinstance(data, dict) or "type" not in data:
             return data
         data = dict(data)
         preset = data.pop("type")
         if preset == "rl":
-            defaults: dict[str, Any] = {
-                "name": "rl",
-                "loss": {"type": "dppo_kl"},
-                "filters": [{"type": "completion"}],
-                "weight": {"type": "advantage"},
-            }
+            defaults: dict[str, Any] = {"name": "rl", "loss": {"type": "dppo_kl"}, "advantage": {"type": "grpo"}}
         elif preset == "echo":
-            defaults = {
-                "name": "echo",
-                "loss": {"type": "ce"},
-                "filters": [{"type": "role", "roles": ["assistant"]}],
-                "weight": {"type": "constant"},
-            }
+            defaults = {"name": "echo", "loss": {"type": "ce"}, "advantage": {"type": "echo", "roles": ["assistant"]}}
         else:
-            raise ValueError(
-                f"unknown loss preset type {preset!r}; use 'rl', 'echo', or the full core/filters/weight form."
-            )
-        unknown = set(data) - {"name", "loss", "filters", "weight"}
+            raise ValueError(f"unknown loss preset type {preset!r}; use 'rl', 'echo', or the full loss/advantage form.")
+        unknown = set(data) - {"name", "loss", "advantage"}
         if unknown:
             raise ValueError(
-                f"loss preset {preset!r}: override the axes (loss/filters/weight) or name, not {sorted(unknown)}."
+                f"loss preset {preset!r}: override the axes (loss/advantage) or name, not {sorted(unknown)}."
             )
         return deep_merge(defaults, data)
 
     @model_validator(mode="after")
     def validate_supported(self) -> "LossTerm":
-        # The primary (rl objective) is the completion-filtered dppo_kl/custom term weighted by the
-        # advantage; everything else is an additive overlay over role/custom-filtered context tokens
-        # (ce/custom core, weighted by a constant, the advantage, or a custom per-rollout resolver).
+        # The primary (rl objective) is the grpo-advantage term with a dppo_kl/custom core; every other
+        # advantage (echo / sft / custom) is an additive overlay with a ce/custom core.
         core = self.loss.type
-        weight = self.weight.type
-        filter_types = [f.type for f in self.filters]
-        if "completion" in filter_types:  # the rl objective (primary)
-            if filter_types != ["completion"] or core not in ("dppo_kl", "custom") or weight != "advantage":
-                raise ValueError(
-                    f"loss term {self.name!r}: a completion-filtered (primary) term needs a dppo_kl/custom core, "
-                    f"weight=advantage, and no other filters."
-                )
-        else:  # additive overlay over context tokens
-            if core not in ("ce", "custom"):
-                raise ValueError(f"loss term {self.name!r}: an overlay needs a ce or custom core.")
-            if "role" not in filter_types or any(t not in ("role", "custom") for t in filter_types):
-                raise ValueError(
-                    f"loss term {self.name!r}: an overlay needs at least one role filter (plus optional custom filters)."
-                )
-            # Filters chain by AND, so role filters must share at least one role (else they select nothing).
-            role_filters = [f for f in self.filters if f.type == "role"]
-            roles = set.intersection(*(set(f.roles) for f in role_filters))
-            if not roles:
-                raise ValueError(
-                    f"loss term {self.name!r}: its role filters intersect to no roles (filters chain by AND)."
-                )
-            # tool_names chain by AND too: if "tool" survives the role intersection, the filters that
-            # constrain tool_names must share at least one (else the overlay selects no tools and
-            # to_echo_config would build an empty-set ToolRoleEchoConfig that crashes at resolution).
-            if "tool" in roles:
-                tool_name_sets = [
-                    set(f.tool_names) for f in role_filters if "tool" in f.roles and f.tool_names is not None
-                ]
-                if tool_name_sets and not set.intersection(*tool_name_sets):
-                    raise ValueError(
-                        f"loss term {self.name!r}: its tool role filters share no tool_names (filters chain by AND)."
-                    )
-            # Overlay weight may be constant, advantage, or a custom per-rollout resolver (all OK).
+        if self.advantage.type == "grpo":
+            if core not in ("dppo_kl", "custom"):
+                raise ValueError(f"loss term {self.name!r}: a grpo (primary) advantage needs a dppo_kl or custom core.")
+        elif core not in ("ce", "custom"):
+            raise ValueError(
+                f"loss term {self.name!r}: a {self.advantage.type} (overlay) advantage needs a ce or custom core."
+            )
         return self
 
 
 def is_primary(term: LossTerm) -> bool:
-    """The rl objective trains the sampled completion (completion filter); overlays target context tokens."""
-    return any(f.type == "completion" for f in term.filters)
+    """The rl objective is the grpo-advantage term; every other advantage is an additive overlay."""
+    return term.advantage.type == "grpo"
 
 
 def validate_loss_list(losses: list[LossTerm]) -> list[LossTerm]:
@@ -373,15 +329,13 @@ def check_loss_overrides(
     overlay_names: set[str],
     enabled: list[str],
     overrides: dict[str, dict],
-    terms_by_name: dict[str, LossTerm],
     where: str,
 ) -> None:
-    """Raise if ``overrides`` references unknown/non-overlay/disabled terms, or overrides fields the
-    orchestrator can't apply per env. Only the role/custom ``filters`` and a *constant* weight's
-    ``alpha`` are resolved per env; ``weight`` type/tau/custom, ``loss`` (core), and ``name`` are
-    resolved globally, so overriding them would validate but be silently ignored — reject them. An
-    override on a term the env doesn't enable is also a silent no-op (``_resolve_overlays`` skips
-    disabled terms before applying overrides), so reject that too."""
+    """Raise if ``overrides`` references unknown/non-overlay/disabled terms, or overrides anything but
+    the ``advantage`` axis. The advantage_fn is resolved per env (orchestrator-side); ``loss`` (the
+    core) and ``name`` are global, so overriding them would validate but be silently ignored. An
+    override on a term the env doesn't enable is a silent no-op too (``_resolve_overlays`` skips
+    disabled terms before applying overrides), so reject that as well."""
     for name, override in overrides.items():
         if name not in loss_names:
             raise ValueError(f"{where}: loss_overrides key {name!r} not found in losses {sorted(loss_names)}.")
@@ -392,17 +346,11 @@ def check_loss_overrides(
                 f"{where}: loss_overrides[{name!r}] targets a term not in enabled_losses {sorted(enabled)}; "
                 f"the override would be silently ignored. Add it to enabled_losses or drop the override."
             )
-        unsupported = set(override) - {"filters", "weight"}
+        unsupported = set(override) - {"advantage"}
         if unsupported:
             raise ValueError(
-                f"{where}: loss_overrides[{name!r}] may only override 'filters' and a constant "
-                f"'weight.alpha' per env, not {sorted(unsupported)}."
-            )
-        if "weight" in override and (
-            terms_by_name[name].weight.type != "constant" or set(override["weight"]) - {"alpha"}
-        ):
-            raise ValueError(
-                f"{where}: loss_overrides[{name!r}] may only override a constant weight's 'alpha' per env."
+                f"{where}: loss_overrides[{name!r}] may only override the 'advantage' axis per env, "
+                f"not {sorted(unsupported)}."
             )
 
 
@@ -428,14 +376,7 @@ def apply_term_override(term: LossTerm, override: dict) -> LossTerm:
 
 def default_losses() -> list[LossTerm]:
     """Default loss list: RL only (reproduces the pre-``losses`` default)."""
-    return [
-        LossTerm(
-            name="rl",
-            loss=DPPOKLCoreConfig(),
-            filters=[CompletionFilterConfig()],
-            weight=AdvantageWeightConfig(),
-        )
-    ]
+    return [LossTerm(name="rl", loss=DPPOKLCoreConfig(), advantage=GRPOAdvantageConfig())]
 
 
 # --------------------------------------------------------------------------------------------------

@@ -1,14 +1,14 @@
 import pytest
 import torch
 
-from prime_rl.configs.losses import AdvantageWeightConfig, CustomCoreConfig, DPPOKLCoreConfig, LossTerm
+from prime_rl.configs.losses import CustomCoreConfig, DPPOKLCoreConfig, GRPOAdvantageConfig, LossTerm
 from prime_rl.trainer.rl.loss import LossInputs, LossOutputs, compute_entropy, compute_loss, setup_loss_fns
 
 pytestmark = [pytest.mark.gpu]
 
 
 def _rl_term(**core_kwargs) -> LossTerm:
-    return LossTerm(name="rl", loss=DPPOKLCoreConfig(**core_kwargs), weight=AdvantageWeightConfig())
+    return LossTerm(name="rl", loss=DPPOKLCoreConfig(**core_kwargs), advantage=GRPOAdvantageConfig())
 
 
 def test_grpo_loss():
@@ -65,7 +65,7 @@ def test_setup_loss_fns_with_custom_config():
             import_path="tests.unit.train.rl.test_loss._dummy_custom_loss",
             kwargs={"multiplier": 2.0},
         ),
-        weight=AdvantageWeightConfig(),
+        advantage=GRPOAdvantageConfig(),
     )
     loss_fns = setup_loss_fns([loss_config])
 

@@ -253,14 +253,14 @@ def test_shared_and_sub_tokenizer_name_conflict_raises():
 
 
 def _rl(**loss_kwargs):
-    return {"name": "rl", "loss": {"type": "dppo_kl", **loss_kwargs}, "weight": {"type": "advantage"}}
+    return {"name": "rl", "loss": {"type": "dppo_kl", **loss_kwargs}, "advantage": {"type": "grpo"}}
 
 
 def _echo(name="echo", roles=("assistant",), alpha=None):
-    term = {"name": name, "loss": {"type": "ce"}, "filters": [{"type": "role", "roles": list(roles)}]}
+    advantage = {"type": "echo", "roles": list(roles)}
     if alpha is not None:
-        term["weight"] = {"type": "constant", "alpha": alpha}
-    return term
+        advantage["alpha"] = alpha
+    return {"name": name, "loss": {"type": "ce"}, "advantage": advantage}
 
 
 def test_shared_losses_propagate_to_subconfigs():
@@ -319,35 +319,34 @@ def test_multiple_overlay_terms_accepted():
 
 
 def test_advantage_weighted_overlay_accepted():
-    # An overlay may be weighted by the GRPO advantage (scaled per-rollout once advantages exist).
+    # An overlay echo may be scaled by the rollout's GRPO advantage (× tau) via by_advantage.
     term = {
         "name": "adv",
         "loss": {"type": "ce"},
-        "filters": [{"type": "role", "roles": ["assistant"]}],
-        "weight": {"type": "advantage", "tau": 0.5},
+        "advantage": {"type": "echo", "roles": ["assistant"], "by_advantage": True, "tau": 0.5},
     }
     config = RLConfig.model_validate(
         {"model": {"name": "my-model"}, "losses": [_rl(), term], "trainer": {}, "orchestrator": {"renderer": None}}
     )
-    assert config.orchestrator.losses[1].weight.type == "advantage"
+    assert config.orchestrator.losses[1].advantage.type == "echo"
+    assert config.orchestrator.losses[1].advantage.by_advantage is True
 
 
-def test_custom_overlay_weight_accepted():
-    # A custom per-rollout weight resolver is allowed on overlays (resolved post-advantage).
+def test_custom_overlay_advantage_accepted():
+    # A custom per-token advantage_fn is allowed on overlays (resolved per group, post-advantage).
     term = {
         "name": "cw",
         "loss": {"type": "ce"},
-        "filters": [{"type": "role", "roles": ["assistant"]}],
-        "weight": {"type": "custom", "import_path": "x.y"},
+        "advantage": {"type": "custom", "import_path": "x.y"},
     }
     config = RLConfig.model_validate(
         {"model": {"name": "my-model"}, "losses": [_rl(), term], "trainer": {}, "orchestrator": {"renderer": None}}
     )
-    assert config.orchestrator.losses[1].weight.type == "custom"
+    assert config.orchestrator.losses[1].advantage.type == "custom"
 
 
 def test_rl_preset_expands_and_keeps_axis_defaults():
-    # `{type = "rl"}` seeds the dppo_kl + completion + advantage axes; an explicit `loss` deep-merges,
+    # `{type = "rl"}` seeds the dppo_kl core + grpo advantage axes; an explicit `loss` deep-merges,
     # keeping the axis's unset field defaults (dppo_mask_low/high) — same semantics as a full term.
     config = RLConfig.model_validate(
         {
@@ -360,28 +359,27 @@ def test_rl_preset_expands_and_keeps_axis_defaults():
     (rl,) = config.trainer.losses
     assert rl.name == "rl"
     assert rl.loss.type == "dppo_kl" and rl.loss.kl_tau == 0.02 and rl.loss.dppo_mask_low == 0.2
-    assert [f.type for f in rl.filters] == ["completion"]
-    assert rl.weight.type == "advantage"
+    assert rl.advantage.type == "grpo"
 
 
-def test_echo_preset_weight_override_deep_merges():
-    # `weight = {alpha = 0.5}` deep-merges over the preset default, keeping `type = "constant"`.
+def test_echo_preset_advantage_override_deep_merges():
+    # `advantage = {alpha = 0.3}` deep-merges over the preset default, keeping `type = "echo"` + roles.
     config = RLConfig.model_validate(
         {
             "model": {"name": "my-model"},
-            "losses": [{"type": "rl"}, {"type": "echo", "weight": {"alpha": 0.3}}],
+            "losses": [{"type": "rl"}, {"type": "echo", "advantage": {"alpha": 0.3}}],
             "trainer": {},
             "orchestrator": {"renderer": None},
         }
     )
     echo = config.trainer.losses[1]
     assert echo.name == "echo" and echo.loss.type == "ce"
-    assert echo.filters[0].type == "role" and echo.filters[0].roles == ["assistant"]
-    assert echo.weight.type == "constant" and echo.weight.alpha == 0.3
+    assert echo.advantage.type == "echo" and echo.advantage.roles == ["assistant"]
+    assert echo.advantage.alpha == 0.3
 
 
 def test_loss_preset_flat_kwarg_rejected():
-    # Preset kwargs go on the axes (loss/filters/weight), not flat on the term.
+    # Preset kwargs go on the axes (loss/advantage), not flat on the term.
     with pytest.raises(ValidationError, match="override the axes"):
         RLConfig.model_validate(
             {
@@ -424,7 +422,7 @@ def test_malformed_loss_override_rejected():
                             {
                                 "id": "reverse-text",
                                 "enabled_losses": ["rl", "echo"],
-                                "loss_overrides": {"echo": {"weight": {"alpha": "not-a-float"}}},
+                                "loss_overrides": {"echo": {"advantage": {"alpha": "not-a-float"}}},
                             }
                         ]
                     },
@@ -453,7 +451,9 @@ def test_loss_overrides_unknown_key_rejected():
                 "trainer": {},
                 "orchestrator": {
                     "renderer": None,
-                    "train": {"env": [{"id": "reverse-text", "loss_overrides": {"nope": {"weight": {"alpha": 0.1}}}}]},
+                    "train": {
+                        "env": [{"id": "reverse-text", "loss_overrides": {"nope": {"advantage": {"alpha": 0.1}}}}]
+                    },
                 },
             }
         )
@@ -468,7 +468,7 @@ def test_loss_overrides_non_overlay_term_rejected():
                 "trainer": {},
                 "orchestrator": {
                     "renderer": None,
-                    "train": {"env": [{"id": "reverse-text", "loss_overrides": {"rl": {"weight": {"tau": 0.1}}}}]},
+                    "train": {"env": [{"id": "reverse-text", "loss_overrides": {"rl": {"advantage": {"tau": 0.1}}}}]},
                 },
             }
         )
@@ -504,7 +504,7 @@ def test_two_primary_terms_rejected():
         RLConfig.model_validate(
             {
                 "model": {"name": "my-model"},
-                "losses": [_rl(), {"name": "b", "loss": {"type": "dppo_kl"}, "weight": {"type": "advantage"}}],
+                "losses": [_rl(), {"name": "b", "loss": {"type": "dppo_kl"}, "advantage": {"type": "grpo"}}],
                 "trainer": {},
                 "orchestrator": {"renderer": None},
             }
@@ -525,7 +525,7 @@ def test_sft_core_type_rejected():
 
 
 def test_loss_override_unsupported_field_rejected():
-    # Only filters + a constant weight.alpha apply per env; loss/name/weight.tau are global -> rejected.
+    # Only the advantage axis applies per env; loss (the core) and name are global -> rejected.
     with pytest.raises(ValidationError, match="may only override"):
         RLConfig.model_validate(
             {
@@ -556,102 +556,13 @@ def test_loss_overrides_disabled_term_rejected():
                             {
                                 "id": "reverse-text",
                                 "enabled_losses": ["rl"],
-                                "loss_overrides": {"echo": {"weight": {"alpha": 0.1}}},
+                                "loss_overrides": {"echo": {"advantage": {"alpha": 0.1}}},
                             }
                         ]
                     },
                 },
             }
         )
-
-
-def test_disjoint_role_filters_rejected():
-    # Filters chain by AND, so role filters sharing no role select nothing -> rejected at config time.
-    with pytest.raises(ValidationError, match="intersect to no roles"):
-        RLConfig.model_validate(
-            {
-                "model": {"name": "my-model"},
-                "losses": [
-                    _rl(),
-                    {
-                        "name": "e",
-                        "loss": {"type": "ce"},
-                        "filters": [{"type": "role", "roles": ["system"]}, {"type": "role", "roles": ["user"]}],
-                    },
-                ],
-                "trainer": {},
-                "orchestrator": {"renderer": None},
-            }
-        )
-
-
-def test_tool_names_requires_tool_role():
-    with pytest.raises(ValidationError, match="to include 'tool'"):
-        RLConfig.model_validate(
-            {
-                "model": {"name": "my-model"},
-                "losses": [
-                    _rl(),
-                    {
-                        "name": "e",
-                        "loss": {"type": "ce"},
-                        "filters": [{"type": "role", "roles": ["assistant"], "tool_names": ["a"]}],
-                    },
-                ],
-                "trainer": {},
-                "orchestrator": {"renderer": None},
-            }
-        )
-
-
-def test_disjoint_tool_names_rejected():
-    # tool_names chain by AND too: two tool filters with disjoint tool_names select no tools -> rejected
-    # at config time (else to_echo_config builds an empty-set ToolRoleEchoConfig that crashes at runtime).
-    with pytest.raises(ValidationError, match="share no tool_names"):
-        RLConfig.model_validate(
-            {
-                "model": {"name": "my-model"},
-                "losses": [
-                    _rl(),
-                    {
-                        "name": "e",
-                        "loss": {"type": "ce"},
-                        "filters": [
-                            {"type": "role", "roles": ["tool"], "tool_names": ["a"]},
-                            {"type": "role", "roles": ["tool"], "tool_names": ["b"]},
-                        ],
-                    },
-                ],
-                "trainer": {},
-                "orchestrator": {"renderer": None},
-            }
-        )
-
-
-def test_multiple_filters_accepted():
-    # Multiple role + custom filters with intersecting roles are allowed (composed by AND at runtime).
-    config = RLConfig.model_validate(
-        {
-            "model": {"name": "my-model"},
-            "losses": [
-                _rl(),
-                {
-                    "name": "e",
-                    "loss": {"type": "ce"},
-                    "filters": [
-                        {"type": "role", "roles": ["assistant", "user"]},
-                        {"type": "role", "roles": ["assistant"]},
-                        {"type": "custom", "import_path": "x.y"},
-                    ],
-                },
-            ],
-            "trainer": {},
-            "orchestrator": {"renderer": None},
-        }
-    )
-    echo = config.orchestrator.losses[1]
-    assert sum(1 for f in echo.filters if f.type == "role") == 2
-    assert sum(1 for f in echo.filters if f.type == "custom") == 1
 
 
 def test_reserved_loss_term_name_rejected():

@@ -546,7 +546,7 @@ class OrchestratorConfig(BaseConfig):
                 )
             enabled = env.enabled_losses if env.enabled_losses is not None else sorted(loss_names)
             check_enabled_losses(loss_names, enabled, where)
-            check_loss_overrides(loss_names, overlay_names, enabled, env.loss_overrides, terms_by_name, where)
+            check_loss_overrides(loss_names, overlay_names, enabled, env.loss_overrides, where)
             # Construct each overridden term now so a malformed override fails during dry-run, not mid-run.
             for name, override in env.loss_overrides.items():
                 apply_term_override(terms_by_name[name], override)
@@ -555,9 +555,8 @@ class OrchestratorConfig(BaseConfig):
         # forced in sft mode) prompt-side system/user/tool tokens silently no-op. Warn, don't hard-fail.
         if self.renderer is None or self.training_mode == "sft":
             for term in self.losses:
-                if any(
-                    f.type == "role" and any(r in ("system", "user", "tool") for r in f.roles) for f in term.filters
-                ):
+                adv = term.advantage
+                if adv.type == "echo" and any(r in ("system", "user", "tool") for r in adv.roles):
                     warnings.warn(
                         f"Loss term {term.name!r} supervises prompt roles (system/user/tool), which require "
                         f"renderer prompt_attribution; with renderer=None (MITO) those tokens become no-ops.",

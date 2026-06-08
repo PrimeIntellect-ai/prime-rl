@@ -10,13 +10,12 @@ import pytest
 import torch
 
 from prime_rl.configs.losses import (
-    AdvantageWeightConfig,
     CECoreConfig,
-    ConstantWeightConfig,
     DPPOKLCoreConfig,
+    EchoAdvantageConfig,
+    GRPOAdvantageConfig,
     LossTerm,
     RLLossConfig,
-    RoleFilterConfig,
 )
 from prime_rl.trainer.rl.loss import (
     ExtraTerm,
@@ -34,16 +33,11 @@ from prime_rl.trainer.rl.loss import (
 
 def _rl_term() -> LossTerm:
     """The default RL term; converts to ``RLLossConfig()`` for the direct-core reference."""
-    return LossTerm(name="rl", loss=DPPOKLCoreConfig(), weight=AdvantageWeightConfig())
+    return LossTerm(name="rl", loss=DPPOKLCoreConfig(), advantage=GRPOAdvantageConfig())
 
 
 def _echo_term(roles: list[str], alpha: float) -> LossTerm:
-    return LossTerm(
-        name="echo",
-        loss=CECoreConfig(),
-        filters=[RoleFilterConfig(roles=roles)],
-        weight=ConstantWeightConfig(alpha=alpha),
-    )
+    return LossTerm(name="echo", loss=CECoreConfig(), advantage=EchoAdvantageConfig(roles=roles, alpha=alpha))
 
 
 def _inputs(seq_lens: list[int], seed: int):

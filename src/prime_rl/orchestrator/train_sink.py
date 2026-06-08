@@ -18,13 +18,12 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass
 
-from prime_rl.configs.losses import apply_term_override, is_primary, overlay_terms, to_echo_config
+from prime_rl.configs.losses import apply_term_override, is_primary, overlay_terms
 from prime_rl.configs.orchestrator import AdvantageConfig, OrchestratorConfig
 from prime_rl.orchestrator.advantage import (
     assign_advantages,
     build_render_hints,
-    echo_advantage,
-    grpo_advantage,
+    resolve_advantage_fn,
     setup_advantage_fn,
 )
 from prime_rl.orchestrator.envs import TrainEnvs
@@ -37,7 +36,6 @@ from prime_rl.orchestrator.trajectories import (
 from prime_rl.orchestrator.types import TrainBatch, TrainBatchMetrics, TrainRollout
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import import_object
 
 
 @dataclass
@@ -88,24 +86,11 @@ class TrainSink:
         self.train_envs = train_envs
         self._overlay_cache: dict[str, list] = {}
         self._rl_primary_cache: dict[str, bool] = {}
-        # Advantage-weighted overlay terms: name -> tau. Their per-token alpha ships as a 1.0
-        # eligibility marker (resolved at tokenization, before advantages) and is scaled by the
-        # rollout's advantage x tau once advantages are assigned (see process_group).
-        self._advantage_overlay_taus: dict[str, float] = {
-            term.name: term.weight.tau for term in overlay_terms(config.losses) if term.weight.type == "advantage"
-        }
-        # Custom-weighted overlay terms: name -> (resolver fn, kwargs). The resolver runs per-rollout
-        # in process_group (post-advantage) and fills the eligible tokens' per-token weights.
-        self._custom_weight_fns: dict[str, tuple] = {
-            term.name: (import_object(term.weight.import_path), term.weight.kwargs)
-            for term in overlay_terms(config.losses)
-            if term.weight.type == "custom"
-        }
-        # The primary's advantage weight tau is applied orchestrator-side (so any primary core, not
-        # just dppo_kl, gets the resolved advantage × tau). Default 1.0 = no-op = bit-identical RL.
+        # The primary's advantage_fn (rl mode) is resolved from its advantage axis; the orchestrator
+        # runs it per group in process_group (overlays' fns are resolved per env in _resolve_overlays).
         _primary = next((term for term in config.losses if is_primary(term)), None)
-        self._primary_tau: float = (
-            _primary.weight.tau if _primary is not None and _primary.weight.type == "advantage" else 1.0
+        self._primary_fn = (
+            resolve_advantage_fn(_primary.advantage) if _primary is not None and config.training_mode == "rl" else None
         )
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size
@@ -204,8 +189,8 @@ class TrainSink:
 
     def _resolve_overlays(self, env_name: str):
         """Resolve the env's enabled overlay terms (per-env overrides applied) into a list of
-        ``(term_name, echo_advantage kwargs)``, cached per env. The advantage_fn computes each term's
-        per-token signal from the sample's RenderHints in ``process_group``."""
+        ``(term_name, advantage_fn)``, cached per env. Each fn computes its per-token signal from the
+        sample's RenderHints in ``process_group``."""
         if env_name not in self._overlay_cache:
             env_config = self.train_envs.get(env_name).config
             enabled = env_config.enabled_losses
@@ -215,16 +200,7 @@ class TrainSink:
                     continue
                 if term.name in env_config.loss_overrides:
                     term = apply_term_override(term, env_config.loss_overrides[term.name])
-                echo_config = to_echo_config(term)
-                if echo_config.filters:
-                    raise ValueError(
-                        f"loss term {term.name!r}: custom token filters are not yet supported via the "
-                        f"advantage_fn; express the narrowing as a custom advantage core instead."
-                    )
-                roles = [r for r in ("system", "user", "assistant", "tool") if getattr(echo_config, r) is not None]
-                alpha = next(getattr(echo_config, r).alpha for r in roles)
-                tool_names = echo_config.tool.tool_names if echo_config.tool is not None else None
-                resolved.append((term.name, {"roles": roles, "tool_names": tool_names, "alpha": alpha}))
+                resolved.append((term.name, resolve_advantage_fn(term.advantage)))
             self._overlay_cache[env_name] = resolved
         return self._overlay_cache[env_name]
 
@@ -300,52 +276,22 @@ class TrainSink:
         overlays = self._resolve_overlays(env_name)
         for r in survivors:
             for sample in r.samples:
-                # RL resolves the primary per-token advantage as GRPO advantage × tau.
-                sample.advantage = (
-                    r.advantage * self._primary_tau
-                    if r.advantage is not None and self.config.training_mode == "rl"
-                    else r.advantage
-                )
-                # Per-token signals from the advantage_fns over this sample's RenderHints: the GRPO
-                # scalar broadcast over the sampled tokens (primary), and each overlay's role-masked
-                # alpha. echo_advantage emits 0.0 for non-eligible tokens; map to None to match the
-                # wire's "ineligible" sentinel (so the weight scaling below and the trainer are unchanged).
+                # Each term's per-token signal comes from its advantage_fn over this sample's
+                # RenderHints: the GRPO scalar over the sampled tokens (primary), and each overlay's
+                # role-masked / advantage-weighted / custom signal. The fn emits 0.0 for non-eligible
+                # tokens; map overlays to None to match the wire's "ineligible" sentinel.
+                sample.advantage = r.advantage
                 hints = build_render_hints(sample, r.raw, advantage=r.advantage)
-                if r.advantage is not None and self.config.training_mode == "rl":
-                    sample.token_advantages = grpo_advantage([hints], tau=self._primary_tau)[0]
+                if self._primary_fn is not None and r.advantage is not None:
+                    sample.token_advantages = self._primary_fn([hints])[0]
                 if overlays:
                     sample.overlay_alphas = {
-                        name: [a if a != 0.0 else None for a in echo_advantage([hints], **kwargs)[0]]
-                        for name, kwargs in overlays
+                        name: [a if a != 0.0 else None for a in fn([hints])[0]] for name, fn in overlays
                     }
                 sample.reward = r.reward
                 sample.env_name = r.env_name
                 sample.training_mode = self.config.training_mode
                 sample.completion_temperatures = [temperature] * len(sample.completion_ids)
-                # Scale advantage-weighted overlays by this rollout's advantage (x tau); their alpha
-                # arrives as a 1.0 eligibility marker since overlay tokens are resolved before advantages.
-                if self._advantage_overlay_taus and sample.overlay_alphas is not None and r.advantage is not None:
-                    for name, tau in self._advantage_overlay_taus.items():
-                        alphas = sample.overlay_alphas.get(name)
-                        if alphas is not None:
-                            scale = r.advantage * tau
-                            sample.overlay_alphas[name] = [a * scale if a is not None else None for a in alphas]
-                # Custom-weighted overlays: a per-rollout resolver fills the eligible tokens' weights.
-                if self._custom_weight_fns and sample.overlay_alphas is not None:
-                    for name, (weight_fn, kwargs) in self._custom_weight_fns.items():
-                        alphas = sample.overlay_alphas.get(name)
-                        if alphas is None:
-                            continue
-                        weights = weight_fn(WeightInputs(sample=sample, rollouts=survivors), **kwargs)
-                        if not isinstance(weights, list) or len(weights) != len(alphas):
-                            raise ValueError(
-                                f"custom weight {name!r} must return list[float] of length {len(alphas)} "
-                                f"(prompt + completion), got {type(weights).__name__} of length "
-                                f"{len(weights) if isinstance(weights, list) else 'n/a'}"
-                            )
-                        sample.overlay_alphas[name] = [
-                            float(w) if m is not None else None for w, m in zip(weights, alphas)
-                        ]
 
         if self.pre_filters:
             apply_filters(self.pre_filters, survivors)
