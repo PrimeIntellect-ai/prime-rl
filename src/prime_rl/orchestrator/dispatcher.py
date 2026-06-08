@@ -492,21 +492,21 @@ class RolloutDispatcher:
 
         for r in rollouts:
             if r.get("error") is None and len(r.get("trajectory") or []) == 0:
-                # Empty trajectory: promote to an explicit error so the sink
-                # treats it like any other failure
+                # Empty trajectory: promote to an explicit error (vf-nano Trace
+                # error shape) so the sink treats it like any other failure
                 r["error"] = {
-                    "error": "EmptyTrajectory",
-                    "error_chain_repr": "Rollout returned with no trajectory steps",
-                    "error_chain_str": "",
+                    "type": "EmptyTrajectory",
+                    "message": "Rollout returned with no trajectory steps",
+                    "traceback": "",
                 }
                 get_logger().warning(f"Empty trajectory in group {meta.group_id} ({meta.env_name})")
             if r.get("error") is not None:
-                err_type = r["error"].get("error", "Unknown")
+                err_type = r["error"].get("type", "Unknown")
                 self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
                 if not is_synth_exception:
                     get_logger().warning(
                         f"Rollout failed in group {meta.group_id} ({meta.env_name}) — "
-                        f"{r['error'].get('error_chain_repr', err_type)}"
+                        f"{err_type}: {r['error'].get('message', '')}"
                     )
             await self.emit_rollout(meta, group, r)
 
@@ -542,27 +542,19 @@ class RolloutDispatcher:
 
     @staticmethod
     def error_rollout_output(*, error_type: str, error_repr: str) -> dict:
-        """Minimal ``dict`` for rollouts that never produced
+        """Minimal vf-nano-Trace-shaped dict for rollouts that never produced
         real output (task exception, off-policy cancel)."""
-        out: dict = dict()
-        out["error"] = {
-            "error": error_type,
-            "error_chain_repr": error_repr,
-            "error_chain_str": error_repr,
+        return {
+            "error": {"type": error_type, "message": error_repr, "traceback": error_repr},
+            "trajectory": [],
+            "branches": [],
+            "rewards": {},
+            "reward": 0.0,
+            "metrics": {},
+            "is_truncated": False,
+            "stop_condition": "error",
+            "num_turns": 0,
         }
-        out["trajectory"] = []
-        out["completion"] = None
-        out["reward"] = 0.0
-        out["is_truncated"] = False
-        out["metrics"] = {}
-        out["stop_condition"] = None
-        out["token_usage"] = {
-            "input_tokens": 0.0,
-            "output_tokens": 0.0,
-            "final_input_tokens": 0.0,
-            "final_output_tokens": 0.0,
-        }
-        return out
 
     async def drop_group(self, group_id: uuid.UUID) -> int:
         """Cancel remaining in-flight tasks for this group and emit a

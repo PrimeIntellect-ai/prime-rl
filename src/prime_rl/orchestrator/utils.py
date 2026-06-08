@@ -22,10 +22,11 @@ from prime_rl.utils.utils import (
 
 async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer):
     """Build the student inference pool. Returns ``(None, inference_pool)`` — the
-    renderer now lives in the env server (vf-nano's renderer client auto-resolves
-    it from the model), so the orchestrator builds no renderer. ``train_client_type``
-    selects the env server's client: ``renderer`` (token-in/out) when a renderer is
-    configured, else ``openai_chat_completions``."""
+    renderer now lives in the env server (vf-nano's renderer client), so the
+    orchestrator builds no renderer; it just forwards ``config.renderer`` so the env
+    server uses the model-specific renderer (not the tool-less default fallback).
+    ``train_client_type`` selects the env server's client: ``renderer`` (token-in/out)
+    when a renderer is configured, else ``openai_chat_completions``."""
     client_config = config.student.client
     model_name = config.student.model.name
     train_client_type = "renderer" if config.renderer is not None else "openai_chat_completions"
@@ -35,6 +36,8 @@ async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer)
         model_name=model_name,
         train_client_type=train_client_type,
         eval_client_type="openai_chat_completions",
+        renderer_config=config.renderer,
+        pool_size=config.pool_size,
     )
     return None, inference_pool
 

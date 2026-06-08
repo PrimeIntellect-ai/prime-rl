@@ -187,11 +187,17 @@ def setup_clients(
     pool_size: int | None = None,
 ) -> list[vf.ClientConfig]:
     """Build vf-nano client configs (one per base_url × DP rank). ``client_type``
-    ``renderer`` → token-in/out (``RendererClientConfig``, the env server's
-    renderer auto-resolves from the model); otherwise plain chat-completions
-    (``OpenAIClientConfig``). The renderer args are vestigial (the env server owns
-    the renderer) and ignored here."""
-    config_cls = RendererClientConfig if client_type == "renderer" else OpenAIClientConfig
+    ``renderer`` → token-in/out (``RendererClientConfig``, with the renderer the env
+    server should use forwarded as a serialized config so it doesn't fall back to the
+    default renderer); otherwise plain chat-completions (``OpenAIClientConfig``)."""
+    is_renderer = client_type == "renderer"
+    config_cls = RendererClientConfig if is_renderer else OpenAIClientConfig
+    renderer_extra: dict = {}
+    if is_renderer:
+        # Pass the shared renderers.RendererConfig straight through (vf-nano's
+        # RendererClientConfig.renderer is the same type; pydantic round-trips it
+        # over the wire). prime-rl and vf-nano share one renderer config.
+        renderer_extra = {"renderer": renderer_config, "pool_size": pool_size or 1}
     env_headers = {
         k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
     }
@@ -201,7 +207,9 @@ def setup_clients(
             headers = {**client_config.headers, **env_headers}
             if client_config.dp_rank_count > 1:
                 headers["X-data-parallel-rank"] = str(dp_rank)
-            clients.append(config_cls(base_url=base_url, api_key_var=client_config.api_key_var, headers=headers))
+            clients.append(
+                config_cls(base_url=base_url, api_key_var=client_config.api_key_var, headers=headers, **renderer_extra)
+            )
     return clients
 
 

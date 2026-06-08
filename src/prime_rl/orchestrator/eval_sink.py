@@ -18,6 +18,7 @@ from collections import defaultdict
 
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.eval_utils import compute_pass_at_k
+from prime_rl.orchestrator.trajectories import trace_completion_len, trace_has_response
 from prime_rl.orchestrator.types import EvalBatch, EvalBatchMetrics, EvalRollout
 from prime_rl.utils.logger import get_logger
 
@@ -120,7 +121,7 @@ class EvalSink:
         rollouts = self.pending_batches.pop(key, [])
 
         n_total = len(rollouts)
-        n_cancelled = sum(1 for r in rollouts if (r.error or {}).get("error") == "Cancelled")
+        n_cancelled = sum(1 for r in rollouts if (r.error or {}).get("type") == "Cancelled")
         n_errored = sum(1 for r in rollouts if r.error is not None) - n_cancelled
         valid = [r for r in rollouts if r.error is None]
         metrics = EvalBatchMetrics(
@@ -131,14 +132,14 @@ class EvalSink:
 
         if valid:
             rewards = [r.reward for r in valid]
-            lens = [r.raw["token_usage"]["final_output_tokens"] for r in valid]
+            lens = [trace_completion_len(r.raw) for r in valid]
             metrics.group_size = self.group_size_for(env_name)
             metrics.reward_mean = float(sum(rewards) / len(rewards))
             metrics.completion_len_mean = float(sum(lens) / len(lens))
             metrics.completion_len_max = float(max(lens))
             metrics.completion_len_min = float(min(lens))
             metrics.truncation_rate = float(sum(1 for r in valid if r.is_truncated) / len(valid))
-            metrics.no_response_rate = float(sum(1 for r in valid if not r.raw.get("completion")) / len(valid))
+            metrics.no_response_rate = float(sum(1 for r in valid if not trace_has_response(r.raw)) / len(valid))
             num_turns = [len(r.raw.get("trajectory") or []) for r in valid]
             metrics.num_turns_mean = float(sum(num_turns) / len(num_turns))
             metrics.num_turns_min = float(min(num_turns))

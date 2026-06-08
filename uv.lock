@@ -3830,6 +3830,7 @@ dependencies = [
     { name = "prime-pydantic-config", extra = ["toml"], marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pydantic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pyzmq", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "renderers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "rich", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tomli-w", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
@@ -3847,11 +3848,11 @@ requires-dist = [
     { name = "prime-tunnel", marker = "extra == 'prime'", specifier = ">=0.1.6" },
     { name = "pydantic", specifier = ">=2.11.9" },
     { name = "pyzmq", specifier = ">=27.0.0" },
-    { name = "renderers", marker = "extra == 'renderers'", specifier = ">=0.1.8.dev28" },
+    { name = "renderers", specifier = ">=0.1.8.dev28" },
     { name = "rich", specifier = ">=13.0.0" },
     { name = "tomli-w", specifier = ">=1.0.0" },
 ]
-provides-extras = ["prime", "renderers"]
+provides-extras = ["prime"]
 
 [package.metadata.requires-dev]
 examples = [

@@ -3,7 +3,7 @@
 # itself), dispatches rollouts by task index, and trains on the returned Traces
 # (renderer-tokenized). Light settings for a quick end-to-end smoke.
 
-max_steps = 5
+max_steps = 20
 seq_len = 2048
 
 [model]
@@ -44,3 +44,9 @@ lr = 3e-6
 
 [inference]
 gpu_memory_utilization = 0.5
+
+# vf-nano's default agent always offers a `bash` tool, so vLLM must accept
+# tool requests. This fine-tune doesn't auto-resolve a parser, so set it
+# (Qwen3 uses the hermes tool-call format).
+[inference.model]
+tool_call_parser = "hermes"

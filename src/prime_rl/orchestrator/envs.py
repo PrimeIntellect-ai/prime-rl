@@ -22,7 +22,6 @@ import verifiers.nano as vf
 from verifiers.nano.serve import EnvClient, EnvServer
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
-from prime_rl.orchestrator.trajectories import trace_to_output
 from prime_rl.utils.logger import get_logger
 
 
@@ -98,31 +97,27 @@ class Env:
     async def run_rollout(
         self, client: vf.ClientConfig, example: dict, model_name: str, cache_salt: str | None
     ) -> dict:
-        """Run a single rollout for ``example`` (by task index); return an adapted Trace dict."""
-        task_idx = example["example_id"]
-        trace = await self.env_client.run_rollout(
-            task_idx=task_idx,
+        """Run a single rollout for ``example`` (by task index); return the vf-nano Trace dict."""
+        return await self.env_client.run_rollout(
+            task_idx=example["example_id"],
             client_config=client.model_dump(),
             model=model_name,
             sampling=self._sampling(cache_salt),
             timeout=self.config.timeout,
         )
-        return trace_to_output(trace, task_idx)
 
     async def run_group(
         self, client: vf.ClientConfig, example: dict, model_name: str, group_size: int, cache_salt: str | None
     ) -> list[dict]:
-        """Run a group of rollouts for ``example`` (group-scoring envs)."""
-        task_idx = example["example_id"]
-        traces = await self.env_client.run_group(
-            task_idx=task_idx,
+        """Run a group of rollouts for ``example`` (group-scoring envs); return Trace dicts."""
+        return await self.env_client.run_group(
+            task_idx=example["example_id"],
             n=group_size,
             client_config=client.model_dump(),
             model=model_name,
             sampling=self._sampling(cache_salt),
             timeout=self.config.timeout,
         )
-        return [trace_to_output(trace, task_idx) for trace in traces]
 
     def shutdown(self) -> None:
         if self._env_server_process is None:
