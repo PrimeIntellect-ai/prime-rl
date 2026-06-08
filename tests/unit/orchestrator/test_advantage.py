@@ -384,3 +384,21 @@ def test_build_render_hints_from_sample():
     assert h.tool_name == [None, None, None, None, None]
     assert h.reward == 0.7
     assert h.advantage == 0.3
+
+
+def test_build_render_hints_uses_sample_roles():
+    # When interleave_rollout has aligned per-token roles, build_render_hints exposes them verbatim.
+    sample = TrainingSample(
+        prompt_ids=[1, 2],
+        prompt_mask=[False, False],
+        completion_ids=[3, 4],
+        completion_mask=[True, True],
+        completion_logprobs=[-0.1, -0.2],
+        completion_temperatures=[1.0, 1.0],
+        env_name="e",
+        roles=["system", "user", "assistant", "assistant"],
+        tool_names=[None, None, None, None],
+    )
+    h = build_render_hints(sample)
+    assert h.role == ["system", "user", "assistant", "assistant"]
+    assert h.tool_name == [None, None, None, None]

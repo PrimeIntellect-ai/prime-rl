@@ -304,11 +304,13 @@ def interleave_rollout(
         return None
 
     prepared_steps: list[dict[str, Any]] = []
+    step_roles: list[tuple[list[str | None], list[str | None]]] = []
     for step_idx, step in enumerate(trajectory):
         prepared = prepare_step_tokens(step, step_idx)
         if prepared is None:
             return None
         prepared_steps.append(prepared)
+        step_roles.append(step_token_roles(step["tokens"]))
 
     # Deferred routed_experts state per sample: O(N) chunk list concatenated
     # once at finalize, replacing the prior O(N²) per-extension unpack/repack.
@@ -344,6 +346,8 @@ def interleave_rollout(
             overlay_alphas={name: list(ann.step_alpha[step_idx]) for name, ann in overlay_annotations.items()}
             if overlay_annotations
             else None,
+            roles=list(step_roles[step_idx][0]),
+            tool_names=list(step_roles[step_idx][1]),
         )
         # Initialize routed-experts state for this sample. First chunk is the
         # raw step routed_experts (no pad, no copy). running_len is the
@@ -421,10 +425,16 @@ def interleave_rollout(
             sample.completion_mask.extend(tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
 
+        step_prompt_len = len(tokens["prompt_ids"])
         if overlay_annotations:
-            step_prompt_len = len(tokens["prompt_ids"])
             for name, ann in overlay_annotations.items():
                 sample.overlay_alphas[name].extend(ann.extension_alpha(step_idx, prefix_len, step_prompt_len))
+
+        # Per-token roles align like overlay alphas: new prompt tokens after the shared prefix, then
+        # the completion (mirrors EchoAnnotations.extension_alpha).
+        roles, tool_names = step_roles[step_idx]
+        sample.roles.extend(roles[prefix_len:step_prompt_len] + roles[step_prompt_len:])
+        sample.tool_names.extend(tool_names[prefix_len:step_prompt_len] + tool_names[step_prompt_len:])
 
         step_routed = tokens.get("routed_experts")
         state = sample_routed_state.get(id(sample))

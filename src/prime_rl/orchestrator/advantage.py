@@ -216,20 +216,22 @@ def build_render_hints(
 ) -> RenderHints:
     """Build a sample's ``RenderHints`` from the finished (interleaved) ``TrainingSample``.
 
-    The sample-derivable fields are exact: ``token_id``, ``is_sampled`` (prompt + completion masks),
-    ``inference_logprob``. Sampled (model-generated) tokens get role ``"assistant"``; prompt-side roles
-    (system/user/tool) are not attributed here yet — that needs the per-step interleave alignment and
-    is added when prompt-role advantage_fns are wired. ``advantage`` is the per-rollout scalar from
-    Layer 1 (raw, pre-tau), carried so ``grpo_advantage`` can broadcast it.
+    ``token_id``, ``is_sampled`` (prompt + completion masks), and ``inference_logprob`` are exact
+    derivations. Per-token ``role``/``tool_name`` come from interleave_rollout's alignment
+    (``sample.roles``); samples built outside interleave fall back to assistant-on-sampled.
+    ``advantage`` is the per-rollout scalar from Layer 1 (raw, pre-tau), carried so ``grpo_advantage``
+    can broadcast it.
     """
     n_prompt = len(sample.prompt_ids)
     token_id = list(sample.prompt_ids) + list(sample.completion_ids)
     is_sampled = [False] * n_prompt + [bool(m) for m in sample.completion_mask]
     inference_logprob = [0.0] * n_prompt + list(sample.completion_logprobs)
+    role = list(sample.roles) if sample.roles is not None else ["assistant" if s else None for s in is_sampled]
+    tool_name = list(sample.tool_names) if sample.tool_names is not None else [None] * len(token_id)
     return RenderHints(
         token_id=token_id,
-        role=["assistant" if sampled else None for sampled in is_sampled],
-        tool_name=[None] * len(token_id),
+        role=role,
+        tool_name=tool_name,
         is_sampled=is_sampled,
         inference_logprob=inference_logprob,
         reward=rollout.get("reward") if rollout is not None else None,

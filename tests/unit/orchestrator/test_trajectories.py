@@ -1401,3 +1401,53 @@ def test_step_token_roles_without_attribution():
     roles, tool_names = step_token_roles({"prompt_ids": [1, 2], "completion_ids": [3]})
     assert roles == [None, None, "assistant"]
     assert tool_names == [None, None, None]
+
+
+def test_interleave_rollout_aligns_per_token_roles():
+    # Two-step extension: step 1's prompt extends step 0 ([1,2]+[3,4]) with a new user message [5,6];
+    # the interleaved sample's per-token roles must follow the attribution, not collapse to assistant.
+    output = {
+        "example_id": 0,
+        "error": None,
+        "sampling_args": {"temperature": 1.0},
+        "trajectory": [
+            {
+                "tokens": {
+                    "prompt_ids": [1, 2],
+                    "prompt_mask": [0, 0],
+                    "completion_ids": [3, 4],
+                    "completion_mask": [1, 1],
+                    "completion_logprobs": [-0.1, -0.2],
+                    "prompt_attribution": {
+                        "message_roles": ["user"],
+                        "message_indices": [0, 0],
+                        "is_content": [True, True],
+                        "message_tool_names": [],
+                    },
+                },
+            },
+            {
+                "tokens": {
+                    "prompt_ids": [1, 2, 3, 4, 5, 6],
+                    "prompt_mask": [0, 0, 0, 0, 0, 0],
+                    "completion_ids": [7, 8],
+                    "completion_mask": [1, 1],
+                    "completion_logprobs": [-0.3, -0.4],
+                    "prompt_attribution": {
+                        "message_roles": ["user", "assistant", "user"],
+                        "message_indices": [0, 0, 1, 1, 2, 2],
+                        "is_content": [True, True, True, True, True, True],
+                        "message_tool_names": [],
+                    },
+                },
+            },
+        ],
+    }
+    rollouts = interleave_rollout(output)
+    assert rollouts is not None and len(rollouts) == 1
+    s = rollouts[0]
+    assert s.prompt_ids == [1, 2]
+    assert s.completion_ids == [3, 4, 5, 6, 7, 8]
+    # The interleaved [5,6] tokens are the new user message — attributed "user", not "assistant".
+    assert s.roles == ["user", "user", "assistant", "assistant", "user", "user", "assistant", "assistant"]
+    assert s.tool_names == [None] * 8

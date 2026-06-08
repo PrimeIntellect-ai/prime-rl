@@ -66,6 +66,12 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # broadcasts the scalar ``advantage`` over the sequence.
     token_advantages: list[float] | None = None
 
+    # Per-token (role, tool_name), parallel to prompt_ids + completion_ids, aligned across multi-step
+    # trajectories by interleave_rollout. RenderHints exposes these to the advantage_fns; None on
+    # samples not built via interleave (build_render_hints falls back to assistant-on-sampled).
+    roles: list[str | None] | None = None
+    tool_names: list[str | None] | None = None
+
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A batch of training examples with metadata for transport."""
