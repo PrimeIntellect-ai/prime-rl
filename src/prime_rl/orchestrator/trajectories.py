@@ -9,7 +9,6 @@ import torch
 import verifiers as vf
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.orchestrator.echo import EchoAnnotations
 from prime_rl.transport import RoutedExperts, TrainingSample
 from prime_rl.utils.chat_template import (
     common_prefix_len,
@@ -238,7 +237,6 @@ def interleave_rollout(
     mm_token_type_ids_mapping: dict[int, int] | None = None,
     *,
     env_name: str = "",
-    overlay_annotations: dict[str, EchoAnnotations] | None = None,
 ) -> list[TrainingSample] | None:
     """
     Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
@@ -343,9 +341,6 @@ def interleave_rollout(
             env_name=env_name,
             mm_token_type_ids=None,
             routed_experts=None,  # deferred — finalized at end of interleave_rollout
-            overlay_alphas={name: list(ann.step_alpha[step_idx]) for name, ann in overlay_annotations.items()}
-            if overlay_annotations
-            else None,
             roles=list(step_roles[step_idx][0]),
             tool_names=list(step_roles[step_idx][1]),
         )
@@ -426,12 +421,9 @@ def interleave_rollout(
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
 
         step_prompt_len = len(tokens["prompt_ids"])
-        if overlay_annotations:
-            for name, ann in overlay_annotations.items():
-                sample.overlay_alphas[name].extend(ann.extension_alpha(step_idx, prefix_len, step_prompt_len))
 
-        # Per-token roles align like overlay alphas: new prompt tokens after the shared prefix, then
-        # the completion (mirrors EchoAnnotations.extension_alpha).
+        # Per-token roles align across the extension: new prompt tokens after the shared prefix, then
+        # the completion.
         roles, tool_names = step_roles[step_idx]
         sample.roles.extend(roles[prefix_len:step_prompt_len] + roles[step_prompt_len:])
         sample.tool_names.extend(tool_names[prefix_len:step_prompt_len] + tool_names[step_prompt_len:])
