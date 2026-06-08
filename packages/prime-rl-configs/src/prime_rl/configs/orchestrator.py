@@ -146,15 +146,15 @@ class EvalSamplingConfig(BaseConfig):
 
 class EnvConfig(vf.EnvConfig):
     """A vf-nano environment — its ``taskset`` + ``harness`` (reused from ``vf.EnvConfig``,
-    each resolved to its specific config type by ``id`` so env-specific fields are validated
-    against the real config) plus prime-rl's orchestration knobs. Timeouts come from
-    ``vf.TimeoutConfig`` (``timeout.rollout`` / ``timeout.scoring``)."""
+    resolved to their specific config types by ``id`` via vf's shared validator) plus
+    prime-rl's orchestration knobs. Timeouts come from ``vf.TimeoutConfig``
+    (``timeout.rollout`` / ``timeout.scoring``)."""
+
+    taskset: vf.TasksetConfig = Field(default_factory=lambda: vf.taskset_config_type("reverse-text")())
+    """The env's taskset, resolved to its specific config by ``id`` (defaults to reverse-text)."""
 
     name: str | None = None
-    """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id without ``@version``. Must be unique across all envs in the same group."""
-
-    extra_env_kwargs: dict[str, Any] = {}
-    """Extra kwargs forwarded to the env server. Auto-populated by the orchestrator."""
+    """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
 
     address: str | None = None
     """ZMQ address of an external env server (e.g. ``tcp://host:5000``). When set, the orchestrator connects to this server instead of spawning one; when None, a subprocess env server is spawned automatically."""
@@ -168,43 +168,14 @@ class EnvConfig(vf.EnvConfig):
     max_retries: int = Field(3, ge=0)
     """Times the env server retries a failed rollout before returning an error."""
 
-    max_total_completion_tokens: int = -1
-    """Maximum total completion tokens across all turns in a multi-turn rollout. ``-1`` disables. Auto-populated into ``extra_env_kwargs``."""
-
-    state_columns: list[str] = []
-    """Extra ``State`` fields to persist into the saved rollout records (in addition to the always-saved ``trajectory`` and ``sampling_args``). Values must be JSON-serializable."""
-
     @property
     def id(self) -> str:
-        """The taskset id — the env id (e.g. ``reverse-text`` or ``org/name@version``)."""
+        """The taskset id — the env id (e.g. ``reverse-text``)."""
         return self.taskset.id
 
     @property
-    def stripped_id(self) -> str:
-        """Env id without the ``@version`` suffix."""
-        return self.taskset.id.split("@")[0]
-
-    @property
     def resolved_name(self) -> str:
-        return self.name or self.stripped_id
-
-    @model_validator(mode="before")
-    @classmethod
-    def _resolve_plugins(cls, data):
-        """Resolve the generic taskset/harness config to its specific type by ``id`` — so an
-        env-specific field is validated against the real config (no untyped ``args`` dict).
-        The orchestrator never runs the plugin; it only touches the config schema."""
-        if not isinstance(data, dict):
-            return data
-        for field, default in (("taskset", "reverse-text"), ("harness", "default")):
-            raw = data.get(field)
-            if isinstance(raw, (vf.TasksetConfig, vf.HarnessConfig)):
-                raw = raw.model_dump()
-            raw = dict(raw or {})
-            raw.setdefault("id", default)
-            resolve = vf.taskset_config_type if field == "taskset" else vf.harness_config_type
-            data[field] = resolve(raw["id"].split("@")[0]).model_validate(raw)
-        return data
+        return self.name or self.id
 
     @model_validator(mode="after")
     def validate_env_name(self):
@@ -212,11 +183,6 @@ class EnvConfig(vf.EnvConfig):
             raise ValueError(
                 'Environment name "all" is reserved for global metric aggregation. Use a different name or id.'
             )
-        return self
-
-    @model_validator(mode="after")
-    def resolve_max_total_completion_tokens(self):
-        self.extra_env_kwargs["max_total_completion_tokens"] = self.max_total_completion_tokens
         return self
 
 
@@ -914,12 +880,11 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_env_config(self):
-        """Populate extra_env_kwargs and vLLM sampling defaults from top-level fields."""
-        is_vllm = self.training_mode != "sft"
+        """Set vLLM sampling defaults on each train env from top-level fields."""
+        if self.training_mode == "sft":
+            return self
         for env in self.train.env:
-            env.extra_env_kwargs.update(max_seq_len=self.seq_len)
-            if is_vllm:
-                env.sampling.extra_body.setdefault("top_k", -1)
-                env.sampling.extra_body.setdefault("min_p", 0.0)
-                env.sampling.extra_body.setdefault("return_token_ids", True)
+            env.sampling.extra_body.setdefault("top_k", -1)
+            env.sampling.extra_body.setdefault("min_p", 0.0)
+            env.sampling.extra_body.setdefault("return_token_ids", True)
         return self

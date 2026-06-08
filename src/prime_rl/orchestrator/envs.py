@@ -61,7 +61,7 @@ class Env:
         self.requires_group_scoring: bool = False
         # Typed Trace for this env (Trace parametrized with the env's Task subclass),
         # used to validate the wire trace into a real vf.Trace with typed task fields.
-        self.trace_type = vf.Trace[vf.task_type(config.stripped_id)]
+        self.trace_type = vf.Trace[vf.task_type(config.id)]
         self._env_client: EnvClient | None = None
         self._env_server_process: BaseProcess | None = None
 
@@ -103,18 +103,14 @@ class Env:
         address_queue: mp.Queue = ctx.Queue()
         log_file = log_dir / f"{self.name}.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        get_logger().debug(f"Spawning env server {self.name} (id={self.config.stripped_id}, log={log_file})")
+        get_logger().debug(f"Spawning env server {self.name} (id={self.config.id}, log={log_file})")
         process = ctx.Process(
             target=_run_env_server,
             kwargs=dict(
                 log_file=str(log_file),
                 log_level=log_level,
                 json_logging=json_logging,
-                taskset_config=self.config.taskset,
-                harness_config=self.config.harness,
-                harness_timeout=self.config.timeout.rollout,
-                scoring_timeout=self.config.timeout.scoring,
-                max_turns=self.config.max_turns,
+                config=self.config,
                 address="tcp://127.0.0.1:0",
                 address_queue=address_queue,
             ),
