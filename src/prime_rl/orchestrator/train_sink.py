@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections import defaultdict
-from dataclasses import dataclass
 
 from prime_rl.configs.losses import apply_term_override, is_primary, overlay_terms
 from prime_rl.configs.orchestrator import AdvantageConfig, OrchestratorConfig
@@ -36,16 +35,6 @@ from prime_rl.orchestrator.trajectories import (
 from prime_rl.orchestrator.types import TrainBatch, TrainBatchMetrics, TrainRollout
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
-
-
-@dataclass
-class WeightInputs:
-    """Inputs to a custom overlay weight resolver: returns a per-token weight list for ``sample``
-    (length = prompt + completion). ``rollouts`` is the full GRPO group (each with its
-    advantage/reward/raw trajectory), so the resolver can compute group-relative weights."""
-
-    sample: TrainingSample
-    rollouts: list[TrainRollout]
 
 
 def _sample_has_trainable_tokens(sample: TrainingSample) -> bool:

@@ -1,21 +1,20 @@
 """Composable loss-term config DSL (the unified ``losses`` surface).
 
 A training run defines a list of named loss *terms*; per-env ``enabled_losses`` selects which apply.
-Each term is a free composition of three independently-chosen axes, every one a discriminated-union
-preset (``type`` + kwargs) with a ``custom`` import-path escape hatch:
+Each term is a free composition of two independently-chosen axes, each a discriminated-union preset
+(``type`` + kwargs) with a ``custom`` import-path escape hatch:
 
-- ``loss``    — the core (trainer-side): ``dppo_kl`` (RL) · ``ce`` (echo / NLL) · ``custom``.
-- ``filters`` — token eligibility → mask (orchestrator-side): ``completion`` · ``role`` · ``custom``;
-  the chain intersects (AND).
-- ``weight``  — per-token weight (orchestrator-side): ``constant`` · ``advantage`` · ``custom``.
+- ``loss``      — the core (trainer-side): ``dppo_kl`` (RL) · ``ce`` (echo / NLL) · ``custom``.
+- ``advantage`` — the per-token advantage_fn (orchestrator-side): ``grpo`` · ``echo`` · ``sft`` ·
+  ``custom``. It emits one float per token (``0`` = masked), so a single axis expresses both *which*
+  tokens a term trains and *how much* each counts.
 
 Common losses are one-line presets — ``{type = "rl", ...}`` / ``{type = "echo", ...}`` — that expand
-into the canonical three-axis form (see ``LossTerm._expand_preset``). The **primary** (rl objective)
-is the completion-filtered, advantage-weighted term, dispatched by ``training_mode``; every other term
-is an additive **overlay** over context tokens. Terms are summed over one shared forward → one
-backward. Default ``losses`` reproduces today's DPPO+KL. sft/opd remain separate ``training_mode``
-paths with fixed cores. ``RLLossConfig`` / ``EchoLossConfig`` below are the resolved internal forms
-the orchestrator/trainer consume.
+into the canonical loss/advantage form (see ``LossTerm._expand_preset``). The **primary** (rl
+objective) is the ``grpo``-advantage term, dispatched by ``training_mode``; every other term is an
+additive **overlay**. Terms are summed over one shared forward → one backward. Default ``losses``
+reproduces today's DPPO+KL. sft/opd remain separate ``training_mode`` paths with fixed cores.
+``RLLossConfig`` below is the resolved internal form the trainer consumes.
 """
 
 from typing import Annotated, Any, Literal, TypeAlias
@@ -69,97 +68,10 @@ LossCoreConfig: TypeAlias = Annotated[
 ]
 
 # --------------------------------------------------------------------------------------------------
-# Axis 2 — filters: orchestrator-side token eligibility (a chain; filters intersect).
+# Roles — token attribution used by the ``echo`` advantage.
 # --------------------------------------------------------------------------------------------------
 
 Role: TypeAlias = Literal["system", "user", "assistant", "tool"]
-
-
-class CompletionFilterConfig(BaseConfig):
-    """The sampled completion tokens (the RL loss mask)."""
-
-    type: Literal["completion"] = "completion"
-
-
-class RoleFilterConfig(BaseConfig):
-    """Context tokens attributed to the given roles (prompt-side roles need renderer
-    ``prompt_attribution``; assistant completion tokens are always available)."""
-
-    type: Literal["role"] = "role"
-
-    roles: list[Role] = Field(min_length=1)
-    """Roles whose content tokens are eligible."""
-
-    tool_names: set[str] | None = Field(None, min_length=1)
-    """When ``"tool"`` is among the roles, restrict to these tool function names; None = all tools."""
-
-    @model_validator(mode="after")
-    def validate_tool_names(self) -> "RoleFilterConfig":
-        if self.tool_names is not None and "tool" not in self.roles:
-            raise ValueError("role filter `tool_names` requires `roles` to include 'tool'.")
-        return self
-
-
-class CustomTokenFilterConfig(BaseConfig):
-    """A user filter resolved from a dotted import path; narrows the tokens selected so far."""
-
-    type: Literal["custom"] = "custom"
-
-    import_path: str
-    """Dotted import path to the filter callable."""
-
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Keyword arguments forwarded to the filter as ``**kwargs``."""
-
-
-TokenFilterConfig: TypeAlias = Annotated[
-    CompletionFilterConfig | RoleFilterConfig | CustomTokenFilterConfig,
-    Field(discriminator="type"),
-]
-
-# --------------------------------------------------------------------------------------------------
-# Axis 3 — weight: orchestrator-side per-token weight (resolved per-group, after advantages).
-# --------------------------------------------------------------------------------------------------
-
-
-class ConstantWeightConfig(BaseConfig):
-    """A fixed per-token weight (echo's alpha). ``0`` disables the token; negative suppresses it
-    (anti-echo)."""
-
-    type: Literal["constant"] = "constant"
-
-    alpha: float = Field(1.0, allow_inf_nan=False)
-    """Per-token weight."""
-
-
-class AdvantageWeightConfig(BaseConfig):
-    """Use the GRPO advantage (× ``tau``) as the per-token weight (the RL signal)."""
-
-    type: Literal["advantage"] = "advantage"
-
-    tau: float = Field(1.0, ge=0)
-    """Temperature on the advantage."""
-
-
-class CustomWeightConfig(BaseConfig):
-    """A user weight resolved per-rollout from a dotted import path. Signature:
-    ``fn(inputs: WeightInputs, **kwargs) -> list[float]`` (length = prompt + completion of the
-    sample). ``WeightInputs`` carries the sample and the full GRPO group's rollouts (each with its
-    advantage/reward/raw trajectory), so the resolver can compute group-relative weights."""
-
-    type: Literal["custom"] = "custom"
-
-    import_path: str
-    """Dotted import path to the weight callable."""
-
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Keyword arguments forwarded to the weight fn as ``**kwargs``."""
-
-
-WeightConfig: TypeAlias = Annotated[
-    ConstantWeightConfig | AdvantageWeightConfig | CustomWeightConfig,
-    Field(discriminator="type"),
-]
 
 # --------------------------------------------------------------------------------------------------
 # The advantage axis — the per-token advantage_fn (orchestrator-side). Produces one float per token
@@ -230,12 +142,8 @@ AdvantageFnConfig: TypeAlias = Annotated[
 ]
 
 # --------------------------------------------------------------------------------------------------
-# The term: a free composition of the three axes.
+# The term: a core and a per-token advantage_fn.
 # --------------------------------------------------------------------------------------------------
-
-
-def _default_filters() -> list[TokenFilterConfig]:
-    return [CompletionFilterConfig()]
 
 
 class LossTerm(BaseConfig):
@@ -410,81 +318,6 @@ def to_rl_loss_config(term: LossTerm) -> RLLossConfig:
     )
 
 
-class SystemRoleEchoConfig(BaseConfig):
-    alpha: float = Field(1.0, allow_inf_nan=False)
-
-
-class UserRoleEchoConfig(BaseConfig):
-    alpha: float = Field(1.0, allow_inf_nan=False)
-
-
-class AssistantRoleEchoConfig(BaseConfig):
-    alpha: float = Field(1.0, allow_inf_nan=False)
-
-
-class ToolRoleEchoConfig(BaseConfig):
-    alpha: float = Field(1.0, allow_inf_nan=False)
-    tool_names: set[str] | None = Field(None, min_length=1)
-
-
-class EchoFilterConfig(BaseConfig):
-    """A resolved echo token filter (from a ``custom`` filter on a ce term)."""
-
-    import_path: str
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-
-
-class EchoLossConfig(BaseConfig):
-    """Resolved per-role echo overlay consumed by the orchestrator's ``build_echo_annotations``.
-
-    Echo CE runs on the rollout's temperature-scaled logprobs (the same ones RL uses), not true
-    ``T=1`` NLL — scale ``alpha`` to compensate. Negative ``alpha`` suppresses tokens (anti-echo)."""
-
-    name: str = "echo"
-
-    system: SystemRoleEchoConfig | None = None
-    user: UserRoleEchoConfig | None = None
-    assistant: AssistantRoleEchoConfig | None = None
-    tool: ToolRoleEchoConfig | None = None
-    filters: list[EchoFilterConfig] = Field(default_factory=list)
-    """Custom token filters, intersected (AND) on top of the role baseline."""
-
-    @model_validator(mode="after")
-    def validate_roles(self) -> "EchoLossConfig":
-        if self.system is self.user is self.assistant is self.tool is None:
-            raise ValueError("EchoLossConfig requires at least one of system, user, assistant, or tool.")
-        return self
-
-
 def overlay_terms(losses: list[LossTerm]) -> list[LossTerm]:
-    """The additive (non-primary, constant-weighted) overlay terms, in list order."""
+    """The additive (non-primary) overlay terms, in list order."""
     return [term for term in losses if not is_primary(term)]
-
-
-def to_echo_config(term: LossTerm) -> EchoLossConfig:
-    """Resolve one overlay term (role + optional custom filters) into an ``EchoLossConfig`` for the
-    orchestrator's per-token alpha builder. The term's core (ce/custom) is applied trainer-side, not
-    here. Constant weight bakes its alpha in directly; advantage weight uses 1.0 as an eligibility
-    marker that the orchestrator scales by the rollout's advantage (x tau) once advantages exist."""
-    alpha = term.weight.alpha if term.weight.type == "constant" else 1.0
-    # Filters chain by AND: role filters intersect their role sets (and tool_names), and every custom
-    # filter is kept (the orchestrator intersects their masks on top of the role baseline).
-    roles: set[str] | None = None
-    tool_names: set[str] | None = None
-    custom_filters: list[EchoFilterConfig] = []
-    for f in term.filters:
-        if f.type == "role":
-            roles = set(f.roles) if roles is None else (roles & set(f.roles))
-            if "tool" in f.roles and f.tool_names is not None:
-                tool_names = set(f.tool_names) if tool_names is None else (tool_names & f.tool_names)
-        elif f.type == "custom":
-            custom_filters.append(EchoFilterConfig(import_path=f.import_path, kwargs=f.kwargs))
-    roles = roles or set()
-    return EchoLossConfig(
-        name=term.name,
-        system=SystemRoleEchoConfig(alpha=alpha) if "system" in roles else None,
-        user=UserRoleEchoConfig(alpha=alpha) if "user" in roles else None,
-        assistant=AssistantRoleEchoConfig(alpha=alpha) if "assistant" in roles else None,
-        tool=ToolRoleEchoConfig(alpha=alpha, tool_names=tool_names) if "tool" in roles else None,
-        filters=custom_filters,
-    )
