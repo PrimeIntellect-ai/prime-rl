@@ -66,13 +66,13 @@ class GroupState:
 
 @dataclass
 class FinishedRollout:
-    """A completed rollout the sink receives. ``raw`` is the env's typed
+    """A completed rollout the sink receives. ``trace`` is the env's typed
     ``vf.Trace``; prime-rl metadata lives on typed fields. Train vs
     eval is discriminated via ``isinstance``. ``rollout_id`` is the only
     safe key for tracing one rollout — ``(env_name, example_id)`` collides
     on re-sampling and ``group_id`` covers a whole group."""
 
-    raw: vf.Trace
+    trace: vf.Trace
     env_name: str
     example_id: int | str
     group_id: uuid.UUID
@@ -82,22 +82,22 @@ class FinishedRollout:
 
     @property
     def error(self) -> vf.Error | None:
-        return self.raw.error
+        return self.trace.error
 
     @property
     def reward(self) -> float:
-        return float(self.raw.reward)
+        return float(self.trace.reward)
 
     @property
     def is_truncated(self) -> bool:
-        return bool(self.raw.is_truncated)
+        return bool(self.trace.is_truncated)
 
     def to_dict(self) -> dict:
         """The Trace (full ``model_dump``, incl. computed fields) + metadata, merged
         for I/O (``save_rollouts``, ``monitor.log_samples``)."""
-        out: dict = self.raw.model_dump(mode="json")
+        out: dict = self.trace.model_dump(mode="json")
         for f in fields(self):
-            if f.name in ("raw", "samples"):
+            if f.name in ("trace", "samples"):
                 continue
             val = getattr(self, f.name)
             if f.name == "filter_results":

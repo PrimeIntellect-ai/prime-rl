@@ -103,7 +103,7 @@ class TrainSink:
         if self.batch_size is not None:
             return len(self.pending_batch), self.batch_size, "rollouts"
         assert self.token_batch_size is not None
-        tokens = sum(trace_total_tokens(r.raw) for r in self.pending_batch)
+        tokens = sum(trace_total_tokens(r.trace) for r in self.pending_batch)
         return tokens, self.token_batch_size, "tokens"
 
     def buffered_count(self) -> int:
@@ -133,7 +133,7 @@ class TrainSink:
         ready = (
             len(self.pending_batch) >= self.batch_size
             if self.batch_size is not None
-            else sum(trace_total_tokens(r.raw) for r in self.pending_batch) >= (self.token_batch_size or 0)
+            else sum(trace_total_tokens(r.trace) for r in self.pending_batch) >= (self.token_batch_size or 0)
         )
         if ready:
             return self.process_batch()
@@ -146,7 +146,7 @@ class TrainSink:
         level, so skip them here."""
         if rollout.error is not None:
             return
-        samples = await asyncio.to_thread(trace_to_samples, rollout.raw, env_name=rollout.env_name)
+        samples = await asyncio.to_thread(trace_to_samples, rollout.trace, env_name=rollout.env_name)
         rollout.samples = samples or []
 
     def process_group(self, group_id: uuid.UUID) -> None:
@@ -236,7 +236,7 @@ class TrainSink:
             cut = 0
             running = 0
             for i, r in enumerate(self.pending_batch):
-                running += trace_total_tokens(r.raw)
+                running += trace_total_tokens(r.trace)
                 cut = i + 1
                 if running >= self.token_batch_size:
                     break

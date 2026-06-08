@@ -51,7 +51,7 @@ class GibberishFilter:
 
     def check(self, rollout: "TrainRollout") -> FilterResult:
         global_idx = 0
-        for turn in rollout.raw.trajectory:
+        for turn in rollout.trace.trajectory:
             tokens = turn.tokens
             if tokens is None:
                 continue
@@ -82,7 +82,7 @@ class RepetitionFilter:
     def check(self, rollout: "TrainRollout") -> FilterResult:
         consecutive = 0
         global_idx = 0
-        for turn in rollout.raw.trajectory:
+        for turn in rollout.trace.trajectory:
             tokens = turn.tokens
             if tokens is None:
                 continue

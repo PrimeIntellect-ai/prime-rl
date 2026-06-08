@@ -33,7 +33,7 @@ class MetricsBuilder:
         existing dashboards / alerts keep working."""
         num_rollouts = len(rollouts)
         num_unique_examples = len({r.group_id for r in rollouts})
-        num_tokens = sum(trace_total_tokens(r.raw) for r in rollouts)
+        num_tokens = sum(trace_total_tokens(r.trace) for r in rollouts)
 
         results_df = pd.DataFrame(
             {
@@ -43,15 +43,15 @@ class MetricsBuilder:
                 "reward": [r.reward for r in rollouts],
                 "is_truncated": [r.is_truncated for r in rollouts],
                 "is_filtered": [r.is_filtered for r in rollouts],
-                "stop_condition": [r.raw.stop_condition for r in rollouts],
-                "seq_len": [trace_total_tokens(r.raw) for r in rollouts],
+                "stop_condition": [r.trace.stop_condition for r in rollouts],
+                "seq_len": [trace_total_tokens(r.trace) for r in rollouts],
                 "prefill_len": metrics.rollout_prefill_lens,
                 "decode_len": metrics.rollout_decode_lens,
                 "samples_per_rollout": metrics.samples_per_rollout,
-                "num_turns": [r.raw.num_turns for r in rollouts],
+                "num_turns": [r.trace.num_turns for r in rollouts],
             }
         )
-        metrics_df = pd.DataFrame([r.raw.metrics for r in rollouts])
+        metrics_df = pd.DataFrame([r.trace.metrics for r in rollouts])
         filter_df = pd.DataFrame([r.filter_results for r in rollouts])
         timing_df = self.timing_df(rollouts)
 
@@ -182,7 +182,7 @@ class MetricsBuilder:
         """Per-rollout timing from the vf-nano Trace (`generation`/`scoring` spans)."""
         rows = []
         for r in rollouts:
-            timing = r.raw.timing
+            timing = r.trace.timing
             generation, scoring = timing.generation.duration, timing.scoring.duration
             rows.append({"total": generation + scoring, "generation": generation, "scoring": scoring})
         return pd.DataFrame(rows)

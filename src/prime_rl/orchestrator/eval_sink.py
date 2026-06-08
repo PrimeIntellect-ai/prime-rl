@@ -132,15 +132,15 @@ class EvalSink:
 
         if valid:
             rewards = [r.reward for r in valid]
-            lens = [trace_completion_len(r.raw) for r in valid]
+            lens = [trace_completion_len(r.trace) for r in valid]
             metrics.group_size = self.group_size_for(env_name)
             metrics.reward_mean = float(sum(rewards) / len(rewards))
             metrics.completion_len_mean = float(sum(lens) / len(lens))
             metrics.completion_len_max = float(max(lens))
             metrics.completion_len_min = float(min(lens))
             metrics.truncation_rate = float(sum(1 for r in valid if r.is_truncated) / len(valid))
-            metrics.no_response_rate = float(sum(1 for r in valid if not trace_has_response(r.raw)) / len(valid))
-            num_turns = [r.raw.num_turns for r in valid]
+            metrics.no_response_rate = float(sum(1 for r in valid if not trace_has_response(r.trace)) / len(valid))
+            num_turns = [r.trace.num_turns for r in valid]
             metrics.num_turns_mean = float(sum(num_turns) / len(num_turns))
             metrics.num_turns_min = float(min(num_turns))
             metrics.num_turns_max = float(max(num_turns))

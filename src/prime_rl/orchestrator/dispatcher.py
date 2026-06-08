@@ -6,7 +6,7 @@
 - Emit-everything invariant: every dispatched rollout eventually reaches
   ``out_q`` exactly once as a ``TrainRollout`` / ``EvalRollout``. Failures
   (env error, empty trajectory, task exception, off-policy cancel) carry
-  ``raw["error"]`` set; sinks decide drop / partial-train policy.
+  ``trace.error`` set; sinks decide drop / partial-train policy.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
   schedule next. Transitions are level-triggered (driven by the eval
   source's emptiness), so in-flight rollouts of the opposite kind drain
@@ -508,7 +508,7 @@ class RolloutDispatcher:
                     )
             await self.emit_rollout(meta, group, r)
 
-    async def emit_rollout(self, meta: InflightRollout, group: GroupState | None, raw: vf.Trace) -> None:
+    async def emit_rollout(self, meta: InflightRollout, group: GroupState | None, trace: vf.Trace) -> None:
         """Build a ``TrainRollout`` / ``EvalRollout`` and put it on ``out_q``.
         Pops the group from ``self.groups`` once every member has been emitted."""
         eval_step = meta.eval_step
@@ -523,7 +523,7 @@ class RolloutDispatcher:
                 self.groups.pop(meta.group_id, None)
 
         common = dict(
-            raw=raw,
+            trace=trace,
             env_name=meta.env_name,
             example_id=example_id if example_id is not None else -1,
             group_id=meta.group_id,
@@ -574,8 +574,8 @@ class RolloutDispatcher:
         last_meta: InflightRollout | None = claimed[-1][1] if claimed else None
         for _, meta in claimed:
             for _ in range(meta.rollout_count):
-                raw = self.error_rollout_output(error_type="Cancelled", error_repr="Off-policy cancel")
-                await self.emit_rollout(meta, group, raw)
+                trace = self.error_rollout_output(error_type="Cancelled", error_repr="Off-policy cancel")
+                await self.emit_rollout(meta, group, trace)
 
         # For non-group-scoring envs, the group may have rollouts that
         # were never dispatched (``rollouts_to_schedule > 0``). Emit
@@ -596,8 +596,8 @@ class RolloutDispatcher:
             )
             unscheduled_cancelled = group.rollouts_to_schedule
             for _ in range(unscheduled_cancelled):
-                raw = self.error_rollout_output(error_type="Cancelled", error_repr="Off-policy cancel")
-                await self.emit_rollout(fallback_meta, group, raw)
+                trace = self.error_rollout_output(error_type="Cancelled", error_repr="Off-policy cancel")
+                await self.emit_rollout(fallback_meta, group, trace)
 
         cancelled = inflight_cancelled + unscheduled_cancelled
         if cancelled > 0:

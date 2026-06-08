@@ -136,13 +136,13 @@ def assign_advantages(
     """Compute and assign advantages for one finished group of rollouts
     (``TrainSink.process_group`` hands in a single group's surviving rollouts).
     ``advantage_fn=None`` is the trivial case (advantage = reward); a custom
-    ``advantage_fn`` receives the raw ``vf.Trace``\\ s via
+    ``advantage_fn`` receives the ``vf.Trace``\\ s via
     ``AdvantageInputs.rollouts``.
     """
     if advantage_fn is None:
         for rollout in rollouts:
             rollout.advantage = rollout.reward
         return
-    result = advantage_fn(AdvantageInputs(rollouts=[r.raw for r in rollouts]))
+    result = advantage_fn(AdvantageInputs(rollouts=[r.trace for r in rollouts]))
     for rollout, advantage in zip(rollouts, result.advantages):
         rollout.advantage = advantage

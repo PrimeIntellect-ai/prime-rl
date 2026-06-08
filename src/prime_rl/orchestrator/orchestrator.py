@@ -548,7 +548,7 @@ class Orchestrator:
             )
 
         # Materialize at the I/O boundary so prime-rl metadata travels with
-        # the raw vf payload on disk + in wandb sample tables
+        # the vf trace payload on disk + in wandb sample tables
         rollout_dicts = [r.to_dict() for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(config.output_dir), step)
         await asyncio.to_thread(
@@ -606,7 +606,7 @@ class Orchestrator:
 
         num_rollouts = len(batch.rollouts)
         num_unique_examples = len({r.group_id for r in batch.rollouts})
-        num_tokens = sum(trace_total_tokens(r.raw) for r in batch.rollouts)
+        num_tokens = sum(trace_total_tokens(r.trace) for r in batch.rollouts)
         self.progress.total_tokens += num_tokens
         self.progress.total_samples += num_rollouts
         self.progress.total_problems += num_unique_examples
@@ -713,7 +713,7 @@ class Orchestrator:
         trainable_rate = (n_trainable / n_survivors) if n_survivors else 0.0
         reward_mean = sum(r.reward for r in batch.rollouts) / max(n_survivors, 1)
         max_off_policy = max((r.off_policy_steps for r in batch.rollouts), default=0)
-        turns_mean = sum(r.raw.num_turns for r in batch.rollouts) / max(n_survivors, 1)
+        turns_mean = sum(r.trace.num_turns for r in batch.rollouts) / max(n_survivors, 1)
         truncation_rate = sum(1 for r in batch.rollouts if r.is_truncated) / max(n_survivors, 1)
 
         head = (
@@ -737,7 +737,7 @@ class Orchestrator:
             env_error_rate = (n_env_errors / n_env_arrivals) if n_env_arrivals else 0.0
             env_reward = (sum(r.reward for r in env_rollouts) / len(env_rollouts)) if env_rollouts else 0.0
             env_max_off_policy = max((r.off_policy_steps for r in env_rollouts), default=0)
-            env_turns = sum(r.raw.num_turns for r in env_rollouts) / len(env_rollouts) if env_rollouts else 0.0
+            env_turns = sum(r.trace.num_turns for r in env_rollouts) / len(env_rollouts) if env_rollouts else 0.0
             env_truncation = sum(1 for r in env_rollouts if r.is_truncated) / len(env_rollouts) if env_rollouts else 0.0
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_reward:.4f} | "
