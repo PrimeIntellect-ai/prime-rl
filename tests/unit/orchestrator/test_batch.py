@@ -4,11 +4,11 @@ import numpy as np
 import pytest
 
 from prime_rl.trainer.batch import (
-    calculate_packing_fwd_flops,
     pad_micro_batch,
     prepare_batch,
     prepare_sample,
 )
+from prime_rl.trainer.cost_model import build_bin_cost
 from prime_rl.transport.types import MicroBatch, RoutedExperts, TrainingSample
 
 
@@ -92,7 +92,7 @@ def test_randomized_packing_invariants():
         num_samples = int(rng.integers(1, 65))
         lengths = [int(x) for x in rng.integers(1, seq_len + 1, size=num_samples)]
         examples = [make_sized_training_example(length, env_name=f"env-{case_idx}") for length in lengths]
-        flops_config = make_flops_config() if case_idx % 2 == 0 else None
+        bin_cost = build_bin_cost(make_flops_config() if case_idx % 2 == 0 else None)
 
         batches_per_gpu = prepare_batch(
             rollouts=examples,
@@ -100,7 +100,7 @@ def test_randomized_packing_invariants():
             num_train_workers=num_train_workers,
             idxs=[0] * len(examples),
             num_loras=1,
-            flops_config=flops_config,
+            bin_cost=bin_cost,
         )
         flat_batches = _flatten_batches(batches_per_gpu)
         real_batches = [batch for batch in flat_batches if _has_loss_tokens(batch)]
@@ -131,6 +131,7 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
         num_train_workers=1,
         idxs=[0, 0],
         num_loras=1,
+        bin_cost=build_bin_cost(None),
     )
 
     flat_batches = _flatten_batches(batches_per_gpu)
@@ -167,6 +168,7 @@ def test_prepare_batch_does_not_pack_mixed_training_mode(make_training_example):
         num_train_workers=1,
         idxs=[0, 0],
         num_loras=1,
+        bin_cost=build_bin_cost(None),
     )
 
     flat_batches = _flatten_batches(batches_per_gpu)
@@ -184,6 +186,7 @@ def test_split_to_align_avoids_dummy_micro_batches():
         num_train_workers=4,
         idxs=[0] * len(examples),
         num_loras=1,
+        bin_cost=build_bin_cost(None),
     )
 
     assert all(_has_loss_tokens(batch) for batch in _flatten_batches(batches_per_gpu))
@@ -199,6 +202,7 @@ def test_pack_first_then_balance_distributes_micro_batches_by_tokens_without_mod
         num_train_workers=2,
         idxs=[0] * len(examples),
         num_loras=1,
+        bin_cost=build_bin_cost(None),
     )
 
     assert _worker_token_sums(balanced) == [170, 170]
@@ -206,7 +210,7 @@ def test_pack_first_then_balance_distributes_micro_batches_by_tokens_without_mod
 
 def test_flop_aware_balancing_pairs_long_and_short_sequence_workloads():
     examples = [make_sized_training_example(length) for length in [32, 32, 16, 16, 16, 16]]
-    flops_config = make_flops_config()
+    bin_cost = build_bin_cost(make_flops_config())
 
     balanced = prepare_batch(
         rollouts=examples,
@@ -214,12 +218,12 @@ def test_flop_aware_balancing_pairs_long_and_short_sequence_workloads():
         num_train_workers=2,
         idxs=[0] * len(examples),
         num_loras=1,
-        flops_config=flops_config,
+        bin_cost=bin_cost,
     )
 
     assert sorted([sorted(batch.sequence_lengths) for batch in balanced[0]]) == [[16, 16], [32]]
     assert sorted([sorted(batch.sequence_lengths) for batch in balanced[1]]) == [[16, 16], [32]]
-    assert calculate_packing_fwd_flops([32], flops_config) > calculate_packing_fwd_flops([16, 16], flops_config)
+    assert bin_cost([32]) > bin_cost([16, 16])
 
 
 def test_flop_aware_split_to_align_splits_heaviest_flop_bin():
@@ -231,7 +235,7 @@ def test_flop_aware_split_to_align_splits_heaviest_flop_bin():
         num_train_workers=4,
         idxs=[0] * len(examples),
         num_loras=1,
-        flops_config=make_flops_config(),
+        bin_cost=build_bin_cost(make_flops_config()),
     )
 
     real_batches = [batch for batch in _flatten_batches(batches_per_gpu) if _has_loss_tokens(batch)]

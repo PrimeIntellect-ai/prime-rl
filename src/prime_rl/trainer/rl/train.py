@@ -43,6 +43,7 @@ from prime_rl.trainer.model import (
     is_tt_moe_model,
     get_load_balance_stats,
 )
+from prime_rl.trainer.cost_model import build_bin_cost
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
@@ -236,7 +237,7 @@ def train(config: TrainerConfig):
             config.model.seq_len,
             config.model.cp,
             tokenizer,
-            model.config,
+            build_bin_cost(model.config),
             config.rollout_transport,
         )
 

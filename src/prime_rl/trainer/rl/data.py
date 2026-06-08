@@ -1,3 +1,4 @@
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TypedDict
 
@@ -167,7 +168,7 @@ class DataLoader:
         seq_len: int,
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
-        flops_config,
+        bin_cost: Callable[[Sequence[int]], int],
         config: TransportConfig,
     ):
         self.world = get_world()
@@ -179,7 +180,7 @@ class DataLoader:
                 tokenizer=tokenizer,
                 transport_config=config,
                 pad_to_multiple_of=pad_to_multiple_of,
-                flops_config=flops_config,
+                bin_cost=bin_cost,
                 start_step=start_step,
             )
 
