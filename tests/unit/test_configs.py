@@ -391,6 +391,25 @@ def test_loss_preset_flat_kwarg_rejected():
         )
 
 
+def test_loss_term_lambda_and_reduce_parse():
+    # λ + reduce are per-term knobs (default 1.0 / global mean); presets accept them as overrides too.
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "losses": [
+                _rl(),
+                {"type": "echo", "lambda_weight": 0.5, "reduce": {"type": "custom", "import_path": "x.y"}},
+            ],
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+        }
+    )
+    rl, echo = config.trainer.losses
+    assert rl.lambda_weight == 1.0 and rl.reduce.type == "mean"
+    assert echo.lambda_weight == 0.5
+    assert echo.reduce.type == "custom" and echo.reduce.import_path == "x.y"
+
+
 def test_empty_enabled_losses_rejected():
     with pytest.raises(ValidationError, match="enabled_losses is empty"):
         RLConfig.model_validate(

@@ -11,22 +11,27 @@ import torch
 
 from prime_rl.configs.losses import (
     CECoreConfig,
+    CustomReduceConfig,
     DPPOKLCoreConfig,
     EchoAdvantageConfig,
     GRPOAdvantageConfig,
     LossTerm,
+    MeanReduceConfig,
     RLLossConfig,
 )
 from prime_rl.trainer.rl.loss import (
     ExtraTerm,
     LossInputs,
+    ReduceInputs,
     build_loss_terms,
     compute_loss,
     default_loss_fn,
     echo_loss_fn,
+    mean_reduce,
     opd_loss_fn,
     pg_loss_fn,
     setup_loss_fns,
+    setup_reduce,
     sft_loss_fn,
 )
 
@@ -293,3 +298,22 @@ def test_no_rl_term_makes_rl_core_raise():
     inputs = LossInputs(torch.zeros(3), torch.zeros(3), None, torch.zeros(3), torch.ones(3, dtype=torch.bool))
     with pytest.raises(ValueError, match="no primary"):
         loss_fns["rl"](inputs)
+
+
+def _dummy_reduce(inputs: ReduceInputs, scale: float = 1.0):
+    """A custom reduce for testing: sum the per-sample losses × scale (ignores global_scale)."""
+    return sum(inputs.per_sample_losses) * scale
+
+
+def test_setup_reduce_resolves_mean_and_custom():
+    # `mean` resolves to the built-in mean_reduce; `custom` resolves the import path with its kwargs.
+    assert setup_reduce(MeanReduceConfig()) is mean_reduce
+    fn = setup_reduce(
+        CustomReduceConfig(import_path="tests.unit.train.rl.test_loss_terms._dummy_reduce", kwargs={"scale": 2.0})
+    )
+    inputs = ReduceInputs(
+        per_sample_losses=[torch.tensor(3.0), torch.tensor(1.0)],
+        per_sample_eligible=[torch.ones(1, dtype=torch.bool), torch.ones(1, dtype=torch.bool)],
+        global_scale=10,
+    )
+    assert torch.equal(fn(inputs), torch.tensor(8.0))  # (3 + 1) × 2, ignoring global_scale

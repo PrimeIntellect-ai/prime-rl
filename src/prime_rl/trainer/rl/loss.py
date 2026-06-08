@@ -8,7 +8,7 @@ from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
 from prime_rl.configs.losses import LossTerm as LossTermConfig
-from prime_rl.configs.losses import RLLossConfig, is_primary, to_rl_loss_config
+from prime_rl.configs.losses import ReduceConfig, RLLossConfig, is_primary, to_rl_loss_config
 from prime_rl.utils.utils import import_object
 
 
@@ -56,6 +56,15 @@ def mean_reduce(inputs: ReduceInputs) -> Tensor:
     Bit-identical to the historical ``total_loss / loss_scale`` normalization.
     """
     return sum(inputs.per_sample_losses) / inputs.global_scale
+
+
+def setup_reduce(config: ReduceConfig) -> Reduce:
+    """Resolve a loss term's ``reduce`` axis config to a normalization callable (the trainer runs it
+    per term in ``compute_loss``). ``mean`` is the global per-token mean; ``custom`` is an import path."""
+    if config.type == "mean":
+        return mean_reduce
+    fn = import_object(config.import_path)
+    return functools.partial(fn, **config.kwargs)
 
 
 LossFn = Callable[..., LossOutputs]

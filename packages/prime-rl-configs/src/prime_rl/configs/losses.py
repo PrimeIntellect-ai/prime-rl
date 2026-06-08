@@ -142,7 +142,37 @@ AdvantageFnConfig: TypeAlias = Annotated[
 ]
 
 # --------------------------------------------------------------------------------------------------
-# The term: a core and a per-token advantage_fn.
+# The reduce axis — the per-term normalization step (trainer-side). Resolved to a callable by
+# ``trainer.rl.loss.setup_reduce``.
+# --------------------------------------------------------------------------------------------------
+
+
+class MeanReduceConfig(BaseConfig):
+    """Global per-token mean over the term's eligible tokens (the default; matches today's
+    ``loss_scale`` normalization)."""
+
+    type: Literal["mean"] = "mean"
+
+
+class CustomReduceConfig(BaseConfig):
+    """A user reduce resolved from a dotted import path: ``fn(inputs: ReduceInputs, **kwargs) -> Tensor``."""
+
+    type: Literal["custom"] = "custom"
+
+    import_path: str
+    """Dotted import path to the reduce callable."""
+
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    """Keyword arguments forwarded to the reduce as ``**kwargs``."""
+
+
+ReduceConfig: TypeAlias = Annotated[
+    MeanReduceConfig | CustomReduceConfig,
+    Field(discriminator="type"),
+]
+
+# --------------------------------------------------------------------------------------------------
+# The term: a core, a per-token advantage_fn, and per-term λ + reduce.
 # --------------------------------------------------------------------------------------------------
 
 
@@ -157,6 +187,12 @@ class LossTerm(BaseConfig):
 
     advantage: AdvantageFnConfig
     """The advantage_fn (orchestrator-side, required): the per-token signal, ``0`` = masked."""
+
+    lambda_weight: float = Field(1.0, allow_inf_nan=False)
+    """Per-term coefficient λ on this term's contribution, applied pre-reduce. Default 1.0."""
+
+    reduce: ReduceConfig = Field(default_factory=MeanReduceConfig)
+    """The term's normalization step (trainer-side). Default: global per-token mean (= today)."""
 
     @model_validator(mode="before")
     @classmethod
@@ -175,10 +211,11 @@ class LossTerm(BaseConfig):
             defaults = {"name": "echo", "loss": {"type": "ce"}, "advantage": {"type": "echo", "roles": ["assistant"]}}
         else:
             raise ValueError(f"unknown loss preset type {preset!r}; use 'rl', 'echo', or the full loss/advantage form.")
-        unknown = set(data) - {"name", "loss", "advantage"}
+        unknown = set(data) - {"name", "loss", "advantage", "lambda_weight", "reduce"}
         if unknown:
             raise ValueError(
-                f"loss preset {preset!r}: override the axes (loss/advantage) or name, not {sorted(unknown)}."
+                f"loss preset {preset!r}: override the axes (loss/advantage/lambda_weight/reduce) or name, "
+                f"not {sorted(unknown)}."
             )
         return deep_merge(defaults, data)
 

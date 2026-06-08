@@ -32,8 +32,10 @@ from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
     compute_importance_ratio_and_mismatch_kl,
+    mean_reduce,
     selective_log_softmax,
     setup_loss_fns,
+    setup_reduce,
     shift_tensor_left,
     shift_tensor_right,
 )
@@ -172,6 +174,13 @@ def train(config: TrainerConfig):
     rl_loss_config = to_rl_loss_config(rl_term) if rl_term is not None else None
     # Overlay term names (config order) — the additive non-primary terms, each its own summed core.
     overlay_term_names = [term.name for term in overlay_terms(config.losses)]
+    # Per-term λ + reduce (trainer-side normalization), resolved once from config. Overlays apply theirs
+    # via their ExtraTerm; the primary (rl) applies via compute_loss. sft/opd (no rl_term) keep the
+    # defaults (λ=1.0, global per-token mean).
+    term_lambdas = {term.name: term.lambda_weight for term in config.losses}
+    term_reduces = {term.name: setup_reduce(term.reduce) for term in config.losses}
+    primary_lambda = term_lambdas.get(rl_term.name, 1.0) if rl_term is not None else 1.0
+    primary_reduce = term_reduces.get(rl_term.name, mean_reduce) if rl_term is not None else mean_reduce
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -524,6 +533,8 @@ def train(config: TrainerConfig):
                             scale=overlay_scales[name],
                             masks=om.squeeze().split(response_lengths),
                             weights=ow.squeeze().split(response_lengths),
+                            lambda_weight=term_lambdas[name],
+                            reduce=term_reduces[name],
                         )
                     )
             loss, loss_tensors = compute_loss(
@@ -538,6 +549,8 @@ def train(config: TrainerConfig):
                 loss_scale=loss_scale,
                 training_mode=micro_batch["training_mode"],
                 extra_terms=extra_terms or None,
+                reduce=primary_reduce,
+                primary_lambda=primary_lambda,
             )
 
             # Backward pass
