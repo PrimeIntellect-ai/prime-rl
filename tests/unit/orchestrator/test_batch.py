@@ -216,3 +216,20 @@ def test_prepare_sample_none_routed_experts():
 
     micro_batch = prepare_sample(sample, seq_len=8)
     assert micro_batch.routed_experts is None
+
+
+def test_prepare_sample_ignores_zero_weight_overlay():
+    example = TrainingSample(
+        prompt_ids=[1, 2],
+        prompt_mask=[False, False],
+        completion_ids=[3, 4],
+        completion_mask=[True, True],
+        completion_logprobs=[-0.1, -0.2],
+        completion_temperatures=[1.0, 1.0],
+        advantage=1.0,
+        env_name="test-env",
+        overlay_alphas={"echo": [None, 0.0, 0.5, 0.0]},
+    )
+    mb = prepare_sample(example, seq_len=8)
+    assert mb.overlay_masks["echo"] == [False, False, True, False]
+    assert mb.overlay_weights["echo"] == [0.0, 0.0, 0.5, 0.0]

@@ -1,4 +1,6 @@
-from prime_rl.orchestrator.train_sink import _sample_has_trainable_tokens
+from types import SimpleNamespace
+
+from prime_rl.orchestrator.train_sink import TrainSink, _sample_has_trainable_tokens
 from prime_rl.transport.types import TrainingSample
 
 
@@ -40,3 +42,15 @@ def test_sample_overlay_at_position_zero_is_not_trainable():
     # Position 0 has no shifted current-token logprob, so an alpha there never trains; matches the
     # trainer's overlay mask construction, which skips index 0.
     assert not _sample_has_trainable_tokens(_sample([False, False], overlay_alpha=[0.5, None, None, None]))
+
+
+def test_rl_primary_disabled_in_non_rl_modes():
+    sink = TrainSink.__new__(TrainSink)
+    sink._rl_primary_cache = {}
+    sink.config = SimpleNamespace(training_mode="sft")
+    assert not sink._rl_primary_enabled("test-env")
+
+    sink = TrainSink.__new__(TrainSink)
+    sink._rl_primary_cache = {}
+    sink.config = SimpleNamespace(training_mode="opd")
+    assert not sink._rl_primary_enabled("test-env")

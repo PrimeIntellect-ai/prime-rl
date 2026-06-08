@@ -83,7 +83,7 @@ class TrainSink:
         self.renderer = renderer
         self.train_envs = train_envs
         self._overlay_cache: dict[str, list] = {}
-        self._primary_cache: dict[str, bool] = {}
+        self._rl_primary_cache: dict[str, bool] = {}
         # Advantage-weighted overlay terms: name -> tau. Their per-token alpha ships as a 1.0
         # eligibility marker (resolved at tokenization, before advantages) and is scaled by the
         # rollout's advantage x tau once advantages are assigned (see process_group).
@@ -216,19 +216,16 @@ class TrainSink:
             self._overlay_cache[env_name] = resolved
         return self._overlay_cache[env_name]
 
-    def _primary_enabled(self, env_name: str) -> bool:
-        """Whether the rl-mode primary (the rl/custom term) is enabled for this env. sft/opd
-        dispatch to fixed cores and are always on; only rl-mode can be disabled per env via
-        enabled_losses, in which case that env's samples ship with a zeroed completion mask
-        (echo, which has its own mask, still applies)."""
-        if env_name not in self._primary_cache:
+    def _rl_primary_enabled(self, env_name: str) -> bool:
+        """Whether this env trains the rl-mode primary term."""
+        if env_name not in self._rl_primary_cache:
             if self.config.training_mode != "rl":
-                self._primary_cache[env_name] = True
+                self._rl_primary_cache[env_name] = False
             else:
                 primary = next((term for term in self.config.losses if is_primary(term)), None)
                 enabled = self.train_envs.get(env_name).config.enabled_losses
-                self._primary_cache[env_name] = primary is not None and (enabled is None or primary.name in enabled)
-        return self._primary_cache[env_name]
+                self._rl_primary_cache[env_name] = primary is not None and (enabled is None or primary.name in enabled)
+        return self._rl_primary_cache[env_name]
 
     async def process_rollout(self, rollout: TrainRollout) -> None:
         """Tokenize the rollout eagerly. Backfills tokens if the env didn't
@@ -297,8 +294,12 @@ class TrainSink:
         temperature = env.sampling_args["temperature"]
         for r in survivors:
             for sample in r.samples:
-                # The primary's per-token advantage is the GRPO advantage × the advantage-weight tau.
-                sample.advantage = r.advantage * self._primary_tau if r.advantage is not None else r.advantage
+                # RL resolves the primary per-token advantage as GRPO advantage × tau.
+                sample.advantage = (
+                    r.advantage * self._primary_tau
+                    if r.advantage is not None and self.config.training_mode == "rl"
+                    else r.advantage
+                )
                 sample.reward = r.reward
                 sample.env_name = r.env_name
                 sample.training_mode = self.config.training_mode
@@ -404,7 +405,7 @@ class TrainSink:
                 if not r.is_filtered:
                     # Disable the primary loss for this env by zeroing the completion mask
                     # (done after the decode/prefill metric above so throughput stays accurate).
-                    if not self._primary_enabled(r.env_name):
+                    if self.config.training_mode == "rl" and not self._rl_primary_enabled(r.env_name):
                         sample.completion_mask = [False] * len(sample.completion_mask)
                     samples.append(sample)
                     rollout_trainable = rollout_trainable or _sample_has_trainable_tokens(sample)

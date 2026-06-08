@@ -111,7 +111,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             mask = [False] * len(input_ids)
             weight = [0.0] * len(input_ids)
             for k, a in enumerate(alpha[1:], start=1):
-                if a is not None:
+                if a is not None and a != 0.0:
                     mask[k] = True
                     weight[k] = a
             overlay_masks[name] = mask

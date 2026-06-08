@@ -91,7 +91,7 @@ weight = { tau = 0.5 }       # advantage temperature
 |---|---|---|---|
 | `kl_tau` | `loss` (`dppo_kl`) | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
 | `dppo_mask_low` / `dppo_mask_high` | `loss` (`dppo_kl`) | 0.2 / 0.2 | Lower / upper thresholds for DPPO token-level masking. |
-| `tau` | `weight` (`advantage`) | 1.0 | Temperature on the advantage. Set to 0 for pure distillation (no RL signal). |
+| `tau` | `weight` (`advantage`) | 1.0 | Temperature on the advantage. Set to 0 to disable the policy-gradient term; with `kl_tau > 0`, training becomes KL-only. |
 
 The preset expands to the full three-axis form — a `dppo_kl` core over the `completion` filter, `advantage`-weighted (see [Custom cores](#custom-cores)). You only write the axes out from scratch for custom losses.
 
@@ -101,7 +101,7 @@ The trainer dispatches the **primary** loss by the batch's training mode (set vi
 - `opd` mode → KL distillation against the teacher's per-token logprobs. The teacher must be a vLLM server (the only one that exposes `prompt_logprobs`).
 - `sft` mode → standard token-level NLL on teacher-generated rollouts.
 
-The default `losses` is a single `rl` term, so default training is DPPO+KL. sft/opd dispatch fixed cores and ignore the `losses` primary.
+The default `losses` is a single `rl` term, so default training is DPPO+KL. sft/opd dispatch fixed cores and ignore the `losses` primary. Prompt-side role supervision needs renderer `prompt_attribution`; only assistant completion tokens are always available.
 
 ### Overlays
 
@@ -227,7 +227,7 @@ Filters drop rollouts between scoring and training. Built-ins (composable):
 | `repetition` | Drops rollouts with high n-gram repetition. |
 | `zero_advantage` | Drops rollouts whose advantage is zero, so the trainer doesn't waste tokens on them. |
 
-The default `[orchestrator]` config registers all three filters (in monitor mode) in both `pre_batch_filters` (applied before a rollout enters the batch buffer) and `post_batch_filters` (applied after the batch is assembled). To override, set the relevant list explicitly — each replaces its defaults wholesale:
+The default `[orchestrator]` config registers all three filters in `pre_batch_filters` (all monitor-only) and `post_batch_filters` (with `zero_advantage` enforcing by default, the others monitor-only). To override, set the relevant list explicitly — each replaces its defaults wholesale:
 
 ```toml
 [[orchestrator.post_batch_filters]]

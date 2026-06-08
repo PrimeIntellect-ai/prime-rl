@@ -82,8 +82,8 @@ class CompletionFilterConfig(BaseConfig):
 
 
 class RoleFilterConfig(BaseConfig):
-    """Context tokens attributed to the given roles (needs renderer prompt_attribution for prompt
-    roles; assistant/completion tokens are always available)."""
+    """Context tokens attributed to the given roles (prompt-side roles need renderer
+    ``prompt_attribution``; assistant completion tokens are always available)."""
 
     type: Literal["role"] = "role"
 
@@ -92,6 +92,12 @@ class RoleFilterConfig(BaseConfig):
 
     tool_names: set[str] | None = Field(None, min_length=1)
     """When ``"tool"`` is among the roles, restrict to these tool function names; None = all tools."""
+
+    @model_validator(mode="after")
+    def validate_tool_names(self) -> "RoleFilterConfig":
+        if self.tool_names is not None and "tool" not in self.roles:
+            raise ValueError("role filter `tool_names` requires `roles` to include 'tool'.")
+        return self
 
 
 class CustomTokenFilterConfig(BaseConfig):
@@ -117,8 +123,8 @@ TokenFilterConfig: TypeAlias = Annotated[
 
 
 class ConstantWeightConfig(BaseConfig):
-    """A fixed per-token weight (echo's alpha). ``0`` = supervise with zero gradient; negative
-    suppresses the tokens (anti-echo)."""
+    """A fixed per-token weight (echo's alpha). ``0`` disables the token; negative suppresses it
+    (anti-echo)."""
 
     type: Literal["constant"] = "constant"
 

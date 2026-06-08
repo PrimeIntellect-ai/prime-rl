@@ -12,8 +12,8 @@ from prime_rl.configs.losses import RLLossConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.loss import compute_importance_ratio_and_mismatch_kl
 
-# v2 adds the additive overlay_mask / overlay_weight columns (v1 consumers reading by name still work).
-SCHEMA_VERSION = 2
+# v3 adds per-term overlay_mask/<name> and overlay_weight/<name> columns.
+SCHEMA_VERSION = 3
 
 
 class DisabledTokenExporter:
@@ -127,7 +127,7 @@ def _export_columns(
     trainer_logprobs = model_output["logprobs"]
     export_tensors = _compute_export_tensors(micro_batch, trainer_logprobs, loss_config)
 
-    return {
+    columns = {
         "token_ids": token_ids,
         "position_ids": _tensor_to_ints(micro_batch["position_ids"]),
         "loss_mask": _tensor_to_bools(micro_batch["loss_mask"]),
@@ -147,6 +147,8 @@ def _export_columns(
         "is_masked_low": _optional_tensor_to_bools(export_tensors["is_masked_low"], seq_len),
         "env_names": list(micro_batch["env_names"]),
     }
+    columns.update(_overlay_term_columns(micro_batch.get("overlay_masks"), micro_batch.get("overlay_weights"), seq_len))
+    return columns
 
 
 def _overlay_combined_mask(overlay_masks: "dict[str, Tensor] | None", seq_len: int) -> list[bool]:
@@ -167,6 +169,19 @@ def _overlay_combined_weight(overlay_weights: "dict[str, Tensor] | None", seq_le
     for w in overlay_weights.values():
         combined = w if combined is None else (combined + w)
     return _tensor_to_floats(combined)
+
+
+def _overlay_term_columns(
+    overlay_masks: "dict[str, Tensor] | None", overlay_weights: "dict[str, Tensor] | None", seq_len: int
+) -> dict[str, list[bool] | list[float | None]]:
+    names = sorted(set(overlay_masks or {}) | set(overlay_weights or {}))
+    columns: dict[str, list[bool] | list[float | None]] = {}
+    for name in names:
+        mask = None if overlay_masks is None else overlay_masks.get(name)
+        weight = None if overlay_weights is None else overlay_weights.get(name)
+        columns[f"overlay_mask/{name}"] = _tensor_to_bools(mask) if mask is not None else [False] * seq_len
+        columns[f"overlay_weight/{name}"] = _tensor_to_floats(weight) if weight is not None else [0.0] * seq_len
+    return columns
 
 
 def _compute_export_tensors(

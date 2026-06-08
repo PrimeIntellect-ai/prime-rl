@@ -585,6 +585,25 @@ def test_disjoint_role_filters_rejected():
         )
 
 
+def test_tool_names_requires_tool_role():
+    with pytest.raises(ValidationError, match="tool_names requires"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [
+                    _rl(),
+                    {
+                        "name": "e",
+                        "loss": {"type": "ce"},
+                        "filters": [{"type": "role", "roles": ["assistant"], "tool_names": ["a"]}],
+                    },
+                ],
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
 def test_disjoint_tool_names_rejected():
     # tool_names chain by AND too: two tool filters with disjoint tool_names select no tools -> rejected
     # at config time (else to_echo_config builds an empty-set ToolRoleEchoConfig that crashes at runtime).

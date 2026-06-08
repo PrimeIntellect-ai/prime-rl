@@ -552,7 +552,7 @@ class OrchestratorConfig(BaseConfig):
                 apply_term_override(terms_by_name[name], override)
 
         # Prompt-role overlays need renderer-provided prompt_attribution; under MITO (renderer=None,
-        # forced in sft mode) system/user/tool tokens silently no-op. Warn, don't hard-fail.
+        # forced in sft mode) prompt-side system/user/tool tokens silently no-op. Warn, don't hard-fail.
         if self.renderer is None or self.training_mode == "sft":
             for term in self.losses:
                 if any(
