@@ -1,0 +1,58 @@
+env_id = "hf_singleturn"
+model = "outputs/isambard/calibration/gpqa_debate_5step/weights/step_5"
+output_dir = "outputs/isambard/calibration/gpqa_single_shot_after_debate_step5"
+protocol = "single_shot"
+dataset = "gpqa_open_ended"
+seed = 42
+num_examples = 8
+rollouts_per_example = 1
+max_concurrency = 8
+score_max_concurrency = 8
+ks = [1]
+success_threshold = 1.0
+api_key_var = "VLLM_API_KEY"
+verifiers_path = "/projects/a6r/joanv.a6r/tmp/verifiers-hf-task-envs"
+env_paths = ["/projects/a6r/joanv.a6r/tmp/verifiers-hf-task-envs/environments/hf_singleturn"]
+
+[env_args]
+dataset_name = "parquet"
+data_files = "hf://datasets/joanvelja/gpqa-open-ended/data/diamond-00000-of-00001.parquet"
+dataset_split = "train"
+task_type = "open_ended"
+question_key = "question"
+answer_key = "answer"
+example_id_key = "record_id"
+info_keys = ["domain", "subdomain", "conversion_type"]
+prompts_ref = "configs/baselines/gpqa_science_prompt_pack.yaml"
+prompt_role = "debater_a"
+prompt_phase = "propose"
+judge_base_url = "https://api.openai.com/v1"
+judge_api_key_var = "OPENAI_API_KEY"
+judge_cache_enabled = true
+judge_cache_size = 50000
+judge_max_retries = 2
+judge_retry_delay_s = 0.5
+judge_persistent_cache_path = "outputs/baselines/judge-cache/gpqa-openended-gpt54mini-reference-anchored-v1.sqlite3"
+judge_persistent_cache_min_samples = 1
+
+[sampling]
+temperature = 0.7
+top_p = 0.95
+max_tokens = 12288
+extra_body = { top_k = 20, min_p = 0.0, presence_penalty = 1.5, thinking_token_budget = 8192 }
+
+[launch]
+mode = "local"
+port = 8000
+gpus = "0,1,2,3"
+tp = 4
+dp = 1
+api_server_count = 1
+gpu_memory_utilization = 0.85
+max_model_len = 32768
+server_start_retries = 2
+wait_timeout_s = 1800
+
+[launch.vllm_extra]
+moe_backend = "triton"
+gdn_prefill_backend = "triton"

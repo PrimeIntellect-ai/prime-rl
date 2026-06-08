@@ -25,6 +25,20 @@ uv run rl @ configs/isambard/rl_2node_inalloc.toml
 
 With no `--deployment.hosts`, the whole allocation is treated as one run. Topology comes from the config (`num_train_nodes`, `num_infer_nodes`, `gpus_per_node = 4`).
 
+## GH200 GPU env repair
+
+For a broken GPU CI env on AIP2, repair the project env through the same CUDA
+13.1 path that `launch-script-mnode` / `cc-wrapper-mnode` uses: source
+`/lus/lfs1aip2/projects/a6r/joanv.a6r/scripts/primerl_env.sh`, set
+`UV_PROJECT_ENVIRONMENT=.venv-ci-gpu`, run the normal locked sync with the
+project extras, then run `scripts/docker-arm64-post-install.sh`. Do not bypass
+`exclude-newer` or hand-install a replacement torch stack.
+
+The arm64 post-install source-builds FA2, reinstalls FA4, and copies the Cutlass
+helper that FA4 expects. After that, validation commands against the repaired env
+should use `uv run --no-sync ...` so a fresh sync does not remove the
+source-built `flash-attn` package.
+
 ## Concurrent runs ("lanes")
 
 Split the pool into disjoint slices, one full run on each. A lane needs **exactly** `num_train_nodes + num_infer_nodes` nodes (the config's own topology). Each lane needs a disjoint host slice, a distinct `--deployment.port-base` (≥100 apart), and a distinct `--deployment.lane-tag`:

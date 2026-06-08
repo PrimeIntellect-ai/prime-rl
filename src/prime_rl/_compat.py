@@ -39,6 +39,7 @@ if importlib.util.find_spec("transformers") is not None:
         _hub_kernels = None  # transformers < 5.5, no patch needed
 
     if _hub_kernels is not None:
+        from huggingface_hub import constants as _hf_constants
         from huggingface_hub.errors import OfflineModeIsEnabled
 
         _original_lazy_load_kernel = _hub_kernels.lazy_load_kernel
@@ -51,5 +52,10 @@ if importlib.util.find_spec("transformers") is not None:
                 # _patch_mamba2_use_triton_ssd() uses mamba_ssm directly.
                 mapping[kernel_name] = None
                 return None
+            except ValueError as exc:
+                if _hf_constants.is_offline_mode() and "could not verify publisher trust status" in str(exc):
+                    mapping[kernel_name] = None
+                    return None
+                raise
 
         _hub_kernels.lazy_load_kernel = _patched_lazy_load_kernel

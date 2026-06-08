@@ -14,13 +14,14 @@ dependencies = [
     "pyarrow>=21.0.0",
     "numpy>=2.2.6",
     "orjson>=3.11.0",
-    "torch>=2.9.0",
+    "torch==2.11.0",
     "torchvision",
     "torchaudio",
     "torchdata>=0.11.0",
     "transformers==5.6.2",
     "vllm>=0.22.0",
-    "mooncake-transfer-engine>=0.3.10.post2",
+    "mooncake-transfer-engine==0.3.9 ; platform_machine == 'aarch64'",
+    "mooncake-transfer-engine>=0.3.10.post2 ; platform_machine != 'aarch64'",
     "wandb>=0.26.1",
     "ring-flash-attn>=0.1.8",
     "prime>=0.6.4",
@@ -146,10 +147,11 @@ environments = [
 # Override torch's pinned cuDNN to fix Conv3d performance regression (torch 2.9 + cuDNN 9.8-9.14)
 # See: https://github.com/pytorch/pytorch/issues/166122
 override-dependencies = [
-    "nvidia-cudnn-cu12>=9.15",
+    "nvidia-cudnn-cu12>=9.15 ; platform_machine == 'x86_64'",
+    "nvidia-cudnn-cu13>=9.15 ; platform_machine == 'aarch64'",
     "nvidia-cutlass-dsl>=4.4.1",
     "transformers==5.6.2",
-    "torch>=2.9.0",
+    "torch==2.11.0",
     "openenv-core",
 ]
 
@@ -194,6 +196,23 @@ dion = false
 deep-ep = false
 deep-gemm = false
 nixl-cu12 = false
+cuda-bindings = false
+cuda-toolkit = false
+nvidia-cublas = false
+nvidia-cuda-cupti = false
+nvidia-cuda-nvrtc = false
+nvidia-cuda-runtime = false
+nvidia-cudnn-cu13 = false
+nvidia-cufft = false
+nvidia-cufile = false
+nvidia-curand = false
+nvidia-cusolver = false
+nvidia-cusparse = false
+nvidia-cusparselt-cu13 = false
+nvidia-nccl-cu13 = false
+nvidia-nvjitlink = false
+nvidia-nvshmem-cu13 = false
+nvidia-nvtx = false
 
 [tool.uv.sources]
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
@@ -230,9 +249,18 @@ simpleqa-verified = { path = "deps/research-environments/environments/simpleqa_v
 tau2-bench = { path = "deps/research-environments/environments/tau2_bench", editable = true }
 wiki-search = { path = "deps/verifiers/environments/wiki_search", editable = true }
 wordle = { path = "deps/verifiers/environments/wordle", editable = true }
-torch = { index = "pytorch-cu128" }
-torchvision = { index = "pytorch-cu128" }
-torchaudio = { index = "pytorch-cu128" }
+torch = [
+    { index = "pytorch-cu128", marker = "platform_machine == 'x86_64'" },
+    { index = "pytorch-cu130", marker = "platform_machine == 'aarch64'" },
+]
+torchvision = [
+    { index = "pytorch-cu128", marker = "platform_machine == 'x86_64'" },
+    { index = "pytorch-cu130", marker = "platform_machine == 'aarch64'" },
+]
+torchaudio = [
+    { index = "pytorch-cu128", marker = "platform_machine == 'x86_64'" },
+    { index = "pytorch-cu130", marker = "platform_machine == 'aarch64'" },
+]
 torchtitan = { git = "https://github.com/pytorch/torchtitan", rev = "a1fdd7e" }
 dion = { git = "https://github.com/samsja/dion.git", rev = "d891eeb" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "96bd151" }
@@ -245,7 +273,10 @@ deep-ep = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/downlo
 deep-gemm = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" }
 nixl-cu12 = { url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/nixl_cu12-0.10.1-cp312-cp312-linux_x86_64.whl" }
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
-flash_attn_3 = { index = "pytorch-cu128-test" }
+flash_attn_3 = [
+    { index = "pytorch-cu128-test", marker = "platform_machine == 'x86_64'" },
+    { index = "pytorch-cu130-test", marker = "platform_machine == 'aarch64'" },
+]
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
@@ -263,6 +294,16 @@ explicit = true
 [[tool.uv.index]]
 name = "pytorch-cu128-test"
 url = "https://download.pytorch.org/whl/test/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130-test"
+url = "https://download.pytorch.org/whl/test/cu130"
 explicit = true
 
 [tool.ruff.lint]
