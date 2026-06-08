@@ -64,10 +64,14 @@ flash-attn-3 = ["flash_attn_3"]
 flash-attn-cute = [
     "flash-attn-4",
 ]
-# Experimental vf-nano branch: only vf-nano example envs are available (v1
-# verifiers is dropped, so v1/research env packages can't be installed).
+# Experimental vf-nano branch: vf-nano plugins (tasksets + harnesses) are installed as
+# packages, resolved by id (v1 verifiers is dropped). The shipped `default`/`rlm` harnesses
+# and the taskset(s) prime-rl runs live here.
 envs = [
     "reverse-text",
+    "gsm8k",
+    "default",
+    "rlm",
 ]
 disagg = [
     "deep-ep ; platform_machine == 'x86_64'",
@@ -184,6 +188,9 @@ prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 # vf-nano's reverse-text example.
 vf-nano = { path = "deps/vf-nano", editable = true }
 reverse-text = { path = "deps/vf-nano/examples/tasksets/reverse_text", editable = true }
+gsm8k = { path = "deps/vf-nano/examples/tasksets/gsm8k", editable = true }
+default = { path = "deps/vf-nano/packages/harnesses/default", editable = true }
+rlm = { path = "deps/vf-nano/packages/harnesses/rlm", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
 torch = { index = "pytorch-cu128" }

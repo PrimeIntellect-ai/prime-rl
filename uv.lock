@@ -541,6 +541,17 @@ wheels = [
 ]
 
 [[package]]
+name = "default"
+version = "0.1.0"
+source = { editable = "deps/vf-nano/packages/harnesses/default" }
+dependencies = [
+    { name = "vf-nano", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "vf-nano", editable = "deps/vf-nano" }]
+
+[[package]]
 name = "depyf"
 version = "0.20.0"
 source = { registry = "https://pypi.org/simple" }
@@ -968,6 +979,21 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/db/f0/a3deb5feba60d9538a962913e37bd2e69a195f1c3376a3dd44fe0427e996/grpcio-1.80.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:4e78c4ac0d97dc2e569b2f4bcbbb447491167cb358d1a389fc4af71ab6f70411", size = 6782121, upload-time = "2026-03-30T08:47:23.827Z" },
     { url = "https://files.pythonhosted.org/packages/ca/84/36c6dcfddc093e108141f757c407902a05085e0c328007cb090d56646cdf/grpcio-1.80.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:2ed770b4c06984f3b47eb0517b1c69ad0b84ef3f40128f51448433be904634cd", size = 7383811, upload-time = "2026-03-30T08:47:26.517Z" },
     { url = "https://files.pythonhosted.org/packages/9b/8d/9d4d27ed7f33d109c50d6b5ce578a9914aa68edab75d65869a17e630a8d1/grpcio-1.80.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:9a6284a5d907c37db53350645567c522be314bac859a64a7a5ca63b77bb7958f", size = 7830132, upload-time = "2026-03-30T08:47:33.254Z" },
+]
+
+[[package]]
+name = "gsm8k"
+version = "0.1.0"
+source = { editable = "deps/vf-nano/examples/tasksets/gsm8k" }
+dependencies = [
+    { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "vf-nano", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "vf-nano", editable = "deps/vf-nano" },
 ]
 
 [[package]]
@@ -2463,7 +2489,10 @@ disagg = [
     { name = "vllm-router", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 envs = [
+    { name = "default", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "gsm8k", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "reverse-text", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "rlm", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 flash-attn = [
     { name = "flash-attn", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -2504,11 +2533,13 @@ requires-dist = [
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "deep-ep", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" },
     { name = "deep-gemm", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" },
+    { name = "default", marker = "extra == 'envs'", editable = "deps/vf-nano/packages/harnesses/default" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=d891eeb" },
     { name = "flash-attn", marker = "platform_machine == 'x86_64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.4/flash_attn-2.8.3+cu128torch2.11-cp312-cp312-linux_x86_64.whl" },
     { name = "flash-attn-3", marker = "extra == 'flash-attn-3'", index = "https://download.pytorch.org/whl/test/cu128" },
     { name = "flash-attn-4", marker = "extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=96bd151" },
     { name = "flash-linear-attention", git = "https://github.com/fla-org/flash-linear-attention" },
+    { name = "gsm8k", marker = "extra == 'envs'", editable = "deps/vf-nano/examples/tasksets/gsm8k" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "kernels", marker = "extra == 'gpt-oss'" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
@@ -2538,6 +2569,7 @@ requires-dist = [
     { name = "reverse-text", marker = "extra == 'envs'", editable = "deps/vf-nano/examples/tasksets/reverse_text" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ring-flash-attn", specifier = ">=0.1.8" },
+    { name = "rlm", marker = "extra == 'envs'", editable = "deps/vf-nano/packages/harnesses/rlm" },
     { name = "setproctitle", specifier = ">=1.3.0" },
     { name = "tenacity", specifier = ">=8.2.0" },
     { name = "tilelang", specifier = ">=0.1.8" },
@@ -3156,6 +3188,17 @@ sdist = { url = "https://files.pythonhosted.org/packages/d9/33/97d7ee4f67b782ae1
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c1/02/18ba0727a1c755c528d6a52b363d62c0b7a8e64cf961b3030c046107db4d/ring_flash_attn-0.1.8-py3-none-any.whl", hash = "sha256:296c929516c3b21f7bcdaeca44a99bb541779a7b63979eb0f67837dcb18a2bb9", size = 25437, upload-time = "2025-09-10T11:53:07.565Z" },
 ]
+
+[[package]]
+name = "rlm"
+version = "0.1.0"
+source = { editable = "deps/vf-nano/packages/harnesses/rlm" }
+dependencies = [
+    { name = "vf-nano", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "vf-nano", editable = "deps/vf-nano" }]
 
 [[package]]
 name = "rpds-py"
@@ -3859,18 +3902,22 @@ requires-dist = [
 provides-extras = ["serve", "prime"]
 
 [package.metadata.requires-dev]
-harnesses = [{ name = "compact", editable = "deps/vf-nano/examples/harnesses/compact" }]
-tasksets = [
+examples = [
     { name = "code-golf", editable = "deps/vf-nano/examples/tasksets/code_golf" },
+    { name = "compact", editable = "deps/vf-nano/examples/harnesses/compact" },
     { name = "deepwiki", editable = "deps/vf-nano/examples/tasksets/deepwiki" },
     { name = "glossary", editable = "deps/vf-nano/examples/tasksets/glossary" },
     { name = "gsm8k", editable = "deps/vf-nano/examples/tasksets/gsm8k" },
-    { name = "harbor", editable = "deps/vf-nano/examples/tasksets/harbor" },
     { name = "hello-rlm", editable = "deps/vf-nano/examples/tasksets/hello_rlm" },
     { name = "reverse-text", editable = "deps/vf-nano/examples/tasksets/reverse_text" },
     { name = "wiki-search", editable = "deps/vf-nano/examples/tasksets/wiki_search" },
     { name = "wikispeedia", editable = "deps/vf-nano/examples/tasksets/wikispeedia" },
 ]
+harnesses = [
+    { name = "default", editable = "deps/vf-nano/packages/harnesses/default" },
+    { name = "rlm", editable = "deps/vf-nano/packages/harnesses/rlm" },
+]
+tasksets = [{ name = "harbor", editable = "deps/vf-nano/packages/tasksets/harbor" }]
 
 [[package]]
 name = "virtualenv"
