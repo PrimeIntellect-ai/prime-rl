@@ -92,6 +92,11 @@ over the mixed batch. No "call the loss N times on slices," no duplicated terms.
 
 ### Zero-advantage filtering & sample dismissal come for free (old ① / ⑤)
 
+> **Implemented (2026-06).** The default post-batch `zero_advantage` filter is now monitor-only;
+> `train_sink.process_batch` masks the primary on any zero-advantage rollout (`advantage == 0`) and
+> ships a sample iff some term still applies (`_sample_has_trainable_tokens`). Zero-advantage
+> dismissal is emergent — no special drop — exactly as below.
+
 - A term with **all-zero** advantage for a sample contributes nothing (out of its reduce denominator).
 - A sample where **every** term is all-zero is **dropped**; the **env sampler backfills** to keep the
   batch full of loss-bearing samples — which is why this avoids the empty-batch hazard that made a

@@ -358,12 +358,19 @@ class TrainSink:
                 decode += sample_decode
                 prefill += sample_prefill
                 if not r.is_filtered:
-                    # Disable the primary loss for this env by zeroing the completion mask
-                    # (done after the decode/prefill metric above so throughput stays accurate).
-                    if self.config.training_mode == "rl" and not self._rl_primary_enabled(r.env_name):
+                    # The primary (rl) term applies to a sample iff it's enabled for the env AND the
+                    # rollout has nonzero advantage; otherwise mask its completion (out of loss_mask =>
+                    # out of loss_scale, no KL). Zero-advantage dismissal is emergent here, not a
+                    # special filter. (After the decode/prefill metric so throughput stays accurate.)
+                    if self.config.training_mode == "rl" and not (
+                        self._rl_primary_enabled(r.env_name) and r.advantage != 0.0
+                    ):
                         sample.completion_mask = [False] * len(sample.completion_mask)
-                    samples.append(sample)
-                    rollout_trainable = rollout_trainable or _sample_has_trainable_tokens(sample)
+                    # Ship a sample iff some term still applies (primary or an overlay); the
+                    # no-gradient remainder (e.g. a zero-advantage rollout with no overlay) is dropped.
+                    if _sample_has_trainable_tokens(sample):
+                        samples.append(sample)
+                        rollout_trainable = True
             prefill_lens.append(prefill)
             decode_lens.append(decode)
             num_prefill += prefill

@@ -225,9 +225,9 @@ Filters drop rollouts between scoring and training. Built-ins (composable):
 |---|---|
 | `gibberish` | Drops rollouts whose mean log-prob fall below a threshold — usually a sign of degenerate output. |
 | `repetition` | Drops rollouts with high n-gram repetition. |
-| `zero_advantage` | Drops rollouts whose advantage is zero, so the trainer doesn't waste tokens on them. |
+| `zero_advantage` | Flags rollouts whose advantage is zero (monitor-only by default). Such rollouts are dismissed *emergently*: the trainer masks their primary loss, so a rollout with no other applicable loss term contributes nothing and is dropped. Set `enforce=true` to hard-drop them at the filter instead. |
 
-The default `[orchestrator]` config registers all three filters in `pre_batch_filters` (all monitor-only) and `post_batch_filters` (with `zero_advantage` enforcing by default, the others monitor-only). To override, set the relevant list explicitly — each replaces its defaults wholesale:
+The default `[orchestrator]` config registers all three filters in both `pre_batch_filters` and `post_batch_filters`, all monitor-only. To override, set the relevant list explicitly — each replaces its defaults wholesale:
 
 ```toml
 [[orchestrator.post_batch_filters]]

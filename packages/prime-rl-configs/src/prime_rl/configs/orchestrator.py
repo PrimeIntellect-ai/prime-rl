@@ -622,10 +622,13 @@ class OrchestratorConfig(BaseConfig):
     post_batch_filters: list[FilterConfig] = [
         GibberishFilterConfig(),
         RepetitionFilterConfig(),
-        ZeroAdvantageFilterConfig(),
+        ZeroAdvantageFilterConfig(enforce=False),
     ]
     """Filters applied *after* a batch has been assembled. Each filter annotates each rollout;
-    rollouts flagged by an enforcing filter are still recorded but not shipped to the trainer."""
+    rollouts flagged by an enforcing filter are still recorded but not shipped to the trainer.
+    ``zero_advantage`` is monitor-only: zero-advantage rollouts are dismissed *emergently* by the
+    sink (their primary loss is masked, so a rollout with no other applicable loss term ships
+    nothing) rather than hard-dropped here — set ``enforce=true`` to restore the hard drop."""
 
     log: LogConfig = LogConfig()
 
