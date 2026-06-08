@@ -120,7 +120,9 @@ class Env:
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        return self.trace_type.model_validate(wire)
+        # The server types the trace as Trace[WireTask] (env fields in model_extra);
+        # upgrade to this env's real Task subclass.
+        return self.trace_type.model_validate(wire.to_wire())
 
     async def run_group(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, group_size: int, cache_salt: str | None
@@ -133,7 +135,7 @@ class Env:
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        return [self.trace_type.model_validate(wire) for wire in wires]
+        return [self.trace_type.model_validate(wire.to_wire()) for wire in wires]
 
     def shutdown(self) -> None:
         if self._env_server_process is None:
