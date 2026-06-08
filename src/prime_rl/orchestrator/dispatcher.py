@@ -552,6 +552,7 @@ class RolloutDispatcher:
         (both in-flight and not-yet-scheduled). Returns the count for
         off-policy metrics."""
         group = self.groups.pop(group_id, None)
+        task_idx = group.task_idx if group is not None else -1
 
         # Sync claim phase: pop matching tasks from ``self.inflight`` and
         # release their permits in one non-yielding sweep. After this loop
@@ -571,7 +572,9 @@ class RolloutDispatcher:
         last_meta: InflightRollout | None = claimed[-1][1] if claimed else None
         for _, meta in claimed:
             for _ in range(meta.rollout_count):
-                trace = self.error_rollout_output(error_type="Cancelled", error_repr="Off-policy cancel")
+                trace = self.error_rollout_output(
+                    task_idx=task_idx, error_type="Cancelled", error_repr="Off-policy cancel"
+                )
                 await self.emit_rollout(meta, group, trace)
 
         # For non-group-scoring envs, the group may have rollouts that
@@ -593,7 +596,9 @@ class RolloutDispatcher:
             )
             unscheduled_cancelled = group.rollouts_to_schedule
             for _ in range(unscheduled_cancelled):
-                trace = self.error_rollout_output(error_type="Cancelled", error_repr="Off-policy cancel")
+                trace = self.error_rollout_output(
+                    task_idx=task_idx, error_type="Cancelled", error_repr="Off-policy cancel"
+                )
                 await self.emit_rollout(fallback_meta, group, trace)
 
         cancelled = inflight_cancelled + unscheduled_cancelled
