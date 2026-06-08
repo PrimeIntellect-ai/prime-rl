@@ -125,6 +125,9 @@ class Env:
             address = await asyncio.to_thread(address_queue.get, timeout=ENV_SERVER_SPAWN_TIMEOUT)
         except queue.Empty:
             raise RuntimeError(f"Env server {self.name} did not report its address within {ENV_SERVER_SPAWN_TIMEOUT}s")
+        finally:
+            address_queue.close()
+            address_queue.join_thread()
         get_logger().debug(f"Env server {self.name} bound at {address}")
         return address
 

@@ -26,16 +26,8 @@ id = "reverse-text"
 # single-turn env, so the subprocess runtime (no docker) is enough.
 agent = { type = "default", runtime = { type = "subprocess" } }
 
-[orchestrator.eval]
-interval = 1
-num_examples = 128
-
-[orchestrator.eval.sampling]
-max_completion_tokens = 128
-
-[[orchestrator.eval.env]]
-id = "reverse-text"
-agent = { type = "default", runtime = { type = "subprocess" } }
+# No eval block, mirroring examples/reverse_text/rl.toml — this is a train-only
+# smoke. Add an [orchestrator.eval] block (with an interval) to exercise eval.
 
 [trainer.optim]
 lr = 3e-6
