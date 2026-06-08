@@ -13,10 +13,11 @@ venv); the env's *runtime* still only ever executes in the server.
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import inspect
 import multiprocessing as mp
-import socket
+import queue
 import typing
 from collections.abc import Iterator, Sequence
 from multiprocessing.process import BaseProcess
@@ -29,14 +30,10 @@ from verifiers.nano.serve import EnvClient, EnvServer
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
 from prime_rl.utils.logger import get_logger
 
-
-def _get_free_port() -> int:
-    s = socket.socket()
-    try:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-    finally:
-        s.close()
+# Max wait for a spawned env server to bind and report its address. The child
+# loads the taskset (possibly downloading a dataset) before reporting, so this
+# is generous.
+ENV_SERVER_SPAWN_TIMEOUT = 600.0
 
 
 def resolve_task_type(env_id: str) -> type[vf.Task]:
@@ -78,10 +75,15 @@ class Env:
 
     async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
         """Spawn the env server (if needed), connect, and cache its ``info``."""
-        address = self.config.address or self._spawn()
+        external = self.config.address is not None
+        address = self.config.address or await self._spawn()
         get_logger().debug(f"Connecting {self.name} to env server {address}")
         self._env_client = EnvClient(address=address)
-        await self.env_client.wait_for_server_startup()
+        # A spawned server already reported its address *after* binding + loading,
+        # so it's up — the untimed ``info`` below is enough. An external server has
+        # no such handshake, so poll until it answers before we block on ``info``.
+        if external:
+            await self.env_client.wait_for_server_startup()
         info = await self.env_client.info()
         self.num_tasks = info.num_tasks
         self.requires_group_scoring = info.requires_group_scoring
@@ -89,23 +91,32 @@ class Env:
             f"Env {self.name} ready: num_tasks={self.num_tasks} group_scoring={self.requires_group_scoring}"
         )
 
-    def _spawn(self) -> str:
-        """Spawn a vf-nano EnvServer child process (it loads the env; we never do)."""
-        address = f"tcp://127.0.0.1:{_get_free_port()}"
-        get_logger().debug(f"Spawning env server {self.name} ({address=}, id={self.config.stripped_id})")
-        process = mp.get_context("spawn").Process(
+    async def _spawn(self) -> str:
+        """Spawn a vf-nano EnvServer child process (it loads the env; we never do).
+        The server binds an OS-assigned port (``:0``) and reports the concrete
+        address back over a queue — no free-port guess, no TOCTOU race."""
+        ctx = mp.get_context("spawn")
+        address_queue: mp.Queue = ctx.Queue()
+        get_logger().debug(f"Spawning env server {self.name} (id={self.config.stripped_id})")
+        process = ctx.Process(
             target=EnvServer.run_server,
             kwargs=dict(
                 env_id=self.config.stripped_id,
                 taskset_args=self.config.args,
                 agent_config=self.config.agent,
                 max_turns=self.config.max_turns,
-                address=address,
+                address="tcp://127.0.0.1:0",
+                address_queue=address_queue,
             ),
             daemon=False,
         )
         process.start()
         self._env_server_process = process
+        try:
+            address = await asyncio.to_thread(address_queue.get, timeout=ENV_SERVER_SPAWN_TIMEOUT)
+        except queue.Empty:
+            raise RuntimeError(f"Env server {self.name} did not report its address within {ENV_SERVER_SPAWN_TIMEOUT}s")
+        get_logger().debug(f"Env server {self.name} bound at {address}")
         return address
 
     def _sampling(self, cache_salt: str | None) -> vf.SamplingConfig:
@@ -194,11 +205,8 @@ class Envs(Generic[EnvT]):
         return len(self._envs)
 
     async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
-        """Spawn env servers (where needed) and connect, one at a time.
-
-        Serialized to avoid a TOCTOU port race: ``_get_free_port`` only holds the
-        port until it returns, so parallel spawns could hand the same port out twice.
-        """
+        """Spawn env servers (where needed) and connect, one at a time. Each server
+        binds an OS-assigned port and reports it back, so there's no port race."""
         for env in self:
             await env.start(log_dir=log_dir, log_level=log_level, json_logging=json_logging)
         atexit.register(self.shutdown)
