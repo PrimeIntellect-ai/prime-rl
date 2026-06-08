@@ -171,6 +171,7 @@ class RenderHints:
     is_sampled: list[bool]  # the sampled completion tokens (today's loss_mask)
     inference_logprob: list[float]  # sampled logprob; 0.0 on prompt tokens
     reward: float | None = None
+    advantage: float | None = None  # per-rollout scalar from Layer 1 (assign_advantages); grpo broadcasts it
     rollout: vf.RolloutOutput | None = None
 
 
@@ -179,18 +180,11 @@ TermAdvantageFn = Callable[..., list[list[float]]]
 — one inner list per unit, one float per token; ``0`` masks the token."""
 
 
-def grpo_advantage(
-    group: list[RenderHints],
-    *,
-    tau: float = 1.0,
-    length_penalty: LengthPenaltyConfig | None = None,
-) -> list[list[float]]:
-    """Per-token GRPO advantage: the per-rollout scalar (reward minus group baseline, optional length
-    penalty — Layer 1) broadcast over each unit's sampled tokens x ``tau``, ``0`` elsewhere."""
-    scalars = default_advantage_fn(
-        AdvantageInputs(rollouts=[h.rollout for h in group]), length_penalty=length_penalty
-    ).advantages
-    return [[scalar * tau if sampled else 0.0 for sampled in h.is_sampled] for h, scalar in zip(group, scalars)]
+def grpo_advantage(group: list[RenderHints], *, tau: float = 1.0) -> list[list[float]]:
+    """Per-token GRPO advantage: each unit's per-rollout scalar advantage — computed by Layer 1 in
+    ``assign_advantages`` (GRPO baseline, length penalty, or a custom fn) and carried on
+    ``RenderHints.advantage`` — broadcast over its sampled tokens x ``tau``, ``0`` elsewhere."""
+    return [[(h.advantage or 0.0) * tau if sampled else 0.0 for sampled in h.is_sampled] for h in group]
 
 
 def echo_advantage(
@@ -217,13 +211,16 @@ def sft_advantage(group: list[RenderHints], *, alpha: float = 1.0) -> list[list[
     return [[alpha if sampled else 0.0 for sampled in h.is_sampled] for h in group]
 
 
-def build_render_hints(sample: TrainingSample, rollout: vf.RolloutOutput | None = None) -> RenderHints:
+def build_render_hints(
+    sample: TrainingSample, rollout: vf.RolloutOutput | None = None, advantage: float | None = None
+) -> RenderHints:
     """Build a sample's ``RenderHints`` from the finished (interleaved) ``TrainingSample``.
 
     The sample-derivable fields are exact: ``token_id``, ``is_sampled`` (prompt + completion masks),
     ``inference_logprob``. Sampled (model-generated) tokens get role ``"assistant"``; prompt-side roles
     (system/user/tool) are not attributed here yet — that needs the per-step interleave alignment and
-    is added when prompt-role advantage_fns are wired.
+    is added when prompt-role advantage_fns are wired. ``advantage`` is the per-rollout scalar from
+    Layer 1 (raw, pre-tau), carried so ``grpo_advantage`` can broadcast it.
     """
     n_prompt = len(sample.prompt_ids)
     token_id = list(sample.prompt_ids) + list(sample.completion_ids)
@@ -236,5 +233,6 @@ def build_render_hints(sample: TrainingSample, rollout: vf.RolloutOutput | None 
         is_sampled=is_sampled,
         inference_logprob=inference_logprob,
         reward=rollout.get("reward") if rollout is not None else None,
+        advantage=advantage,
         rollout=rollout,
     )

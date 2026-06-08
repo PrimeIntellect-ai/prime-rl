@@ -318,7 +318,7 @@ def _dummy_custom_advantage(inputs: AdvantageInputs, scale: float = 1.0) -> Adva
 # --- Layer 2: per-token term advantage (RenderHints + grpo/echo/sft presets) ----------------------
 
 
-def _hints(roles, is_sampled, *, tool_names=None, reward=None):
+def _hints(roles, is_sampled, *, tool_names=None, reward=None, advantage=None):
     n = len(roles)
     return RenderHints(
         token_id=list(range(n)),
@@ -327,23 +327,24 @@ def _hints(roles, is_sampled, *, tool_names=None, reward=None):
         is_sampled=is_sampled,
         inference_logprob=[0.0] * n,
         reward=reward,
+        advantage=advantage,
         rollout={"reward": reward} if reward is not None else None,
     )
 
 
 def test_grpo_advantage_broadcasts_scalar_over_sampled_tokens():
     group = [
-        _hints([None, "assistant", "assistant"], [False, True, True], reward=1.0),
-        _hints([None, "assistant", "assistant"], [False, True, True], reward=0.0),
+        _hints([None, "assistant", "assistant"], [False, True, True], advantage=0.5),
+        _hints([None, "assistant", "assistant"], [False, True, True], advantage=-0.5),
     ]
-    # rewards 1,0 -> mean 0.5 -> per-rollout scalars 0.5, -0.5; broadcast over sampled tokens, 0 on prompt
+    # the precomputed per-rollout scalar (Layer 1) is broadcast over sampled tokens, 0 on prompt
     assert grpo_advantage(group, tau=1.0) == [[0.0, 0.5, 0.5], [0.0, -0.5, -0.5]]
 
 
 def test_grpo_advantage_tau_scales():
     group = [
-        _hints([None, "assistant"], [False, True], reward=1.0),
-        _hints([None, "assistant"], [False, True], reward=0.0),
+        _hints([None, "assistant"], [False, True], advantage=0.5),
+        _hints([None, "assistant"], [False, True], advantage=-0.5),
     ]
     assert grpo_advantage(group, tau=0.5) == [[0.0, 0.25], [0.0, -0.25]]
 
@@ -375,10 +376,11 @@ def test_build_render_hints_from_sample():
         env_name="e",
         reward=0.7,
     )
-    h = build_render_hints(sample, rollout={"reward": 0.7})
+    h = build_render_hints(sample, rollout={"reward": 0.7}, advantage=0.3)
     assert h.token_id == [1, 2, 3, 4, 5]
     assert h.is_sampled == [False, False, True, False, True]
     assert h.inference_logprob == [0.0, 0.0, -0.1, -0.2, -0.3]
     assert h.role == [None, None, "assistant", None, "assistant"]
     assert h.tool_name == [None, None, None, None, None]
     assert h.reward == 0.7
+    assert h.advantage == 0.3
