@@ -44,6 +44,7 @@ class InflightRollout:
     policy_version: int
     rollout_count: int
     client_config: vf.ClientConfig | None = None
+    teacher_client_config: vf.ClientConfig | None = None
     off_policy_steps: int = 0
     eval_step: int | None = None
 
@@ -61,6 +62,7 @@ class GroupState:
     emitted: int = 0
     eval_step: int | None = None
     pinned_client: vf.ClientConfig | None = None
+    pinned_teacher_client: vf.ClientConfig | None = None
     policy_version_at_start: int = 0
 
 

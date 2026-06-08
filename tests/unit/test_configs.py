@@ -548,10 +548,11 @@ def test_train_advantage_inherits_and_env_override_can_disable():
                     {"id": "env-a"},
                     {"id": "env-b", "advantage": "rloo"},
                     {"id": "env-c", "advantage": None},
+                    {"id": "env-d", "advantage": "my_pkg.module:my_advantage"},
                 ],
             },
             "renderer": None,
         }
     )
 
-    assert [env.advantage for env in config.train.env] == ["grpo", "rloo", None]
+    assert [env.advantage for env in config.train.env] == ["grpo", "rloo", None, "my_pkg.module:my_advantage"]

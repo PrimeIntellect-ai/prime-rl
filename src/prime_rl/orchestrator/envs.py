@@ -66,6 +66,17 @@ class Env:
             sampling_args=self._sampling_args_with_salt(cache_salt),
         )
 
+    def _v1_teacher_config(self, client: vf.ClientConfig | None, model_name: str | None):
+        if client is None or model_name is None:
+            return None
+        import verifiers.v1 as vf1
+
+        return vf1.ModelConfig(
+            client=client,
+            model=model_name,
+            sampling_args=self._sampling_args_with_salt(None),
+        )
+
     @staticmethod
     def _task_row(example: dict) -> dict:
         return {k: v for k, v in example.items() if k not in {"env_name", "eval_step"}}
@@ -197,6 +208,8 @@ class Env:
         example: dict,
         model_name: str,
         cache_salt: str | None,
+        teacher_client: vf.ClientConfig | None = None,
+        teacher_model_name: str | None = None,
     ) -> vf.RolloutOutput:
         """Run a single rollout for an example."""
         if self.is_v1:
@@ -204,9 +217,11 @@ class Env:
 
             task = self.env.taskset.to_task(cast(vf1.JsonData, self._task_row(example)))
             model = self._v1_model_config(client, model_name, cache_salt)
+            teacher = self._v1_teacher_config(teacher_client, teacher_model_name)
             state = await self.env.run_rollout(
                 task,
                 model=model,
+                teacher=teacher,
                 max_retries=self.config.max_retries,
             )
             return self._v1_output(task, state)
@@ -228,6 +243,8 @@ class Env:
         model_name: str,
         group_size: int,
         cache_salt: str | None,
+        teacher_client: vf.ClientConfig | None = None,
+        teacher_model_name: str | None = None,
     ) -> list[vf.RolloutOutput]:
         """Run a group of rollouts for an example. Required for group-scoring envs."""
         if self.is_v1:
@@ -236,18 +253,20 @@ class Env:
             base_task = self.env.taskset.to_task(cast(vf1.JsonData, self._task_row(example)))
             tasks, initial_states = await self.env.taskset.init_group(base_task, group_size)
             model = self._v1_model_config(client, model_name, cache_salt)
+            teacher = self._v1_teacher_config(teacher_client, teacher_model_name)
             states = await asyncio.gather(
                 *(
                     self.env.run_rollout(
                         task,
                         model=model,
+                        teacher=teacher,
                         state=state,
                         max_retries=self.config.max_retries,
                     )
                     for task, state in zip(tasks, initial_states, strict=True)
                 )
             )
-            states = await self.env.score_group(tasks, list(states), model=model)
+            states = await self.env.score_group(tasks, list(states), model=model, teacher=teacher)
             return [self._v1_output(task, state) for task, state in zip(tasks, states, strict=True)]
 
         return await self.env.run_group(

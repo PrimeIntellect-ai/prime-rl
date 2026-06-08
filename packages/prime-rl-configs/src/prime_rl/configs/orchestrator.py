@@ -215,7 +215,7 @@ class TrainEnvConfig(EnvConfig):
     Inherits from ``orchestrator.group_size`` when unset."""
 
     advantage: str | None = None
-    """Optional v1 env-owned advantage function. Unset inherits ``orchestrator.train.advantage``; explicit null disables inheritance."""
+    """Optional v1 env-owned advantage function. Built-in names (``grpo``, ``rloo``, ``reinforce``, ``sft``) resolve through ``verifiers.v1.advantages``; import refs such as ``my_pkg.module:my_advantage`` are also allowed. Unset inherits ``orchestrator.train.advantage``; explicit null disables inheritance."""
 
 
 class EvalEnvConfig(EnvConfig):
@@ -240,7 +240,7 @@ class TrainConfig(BaseConfig):
     """Shared training sampling configuration."""
 
     advantage: str | None = None
-    """Default v1 env-owned advantage function for training envs. Built-ins include ``grpo``, ``rloo``, and ``reinforce``."""
+    """Default v1 env-owned advantage function for training envs. Built-in names resolve through ``verifiers.v1.advantages``; import refs such as ``my_pkg.module:my_advantage`` are also allowed."""
 
     num_workers: int | Literal["auto"] = "auto"
     """Default worker processes for env servers. Can be overridden per env."""

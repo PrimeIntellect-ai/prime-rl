@@ -374,6 +374,7 @@ class Orchestrator:
             eval_source=self.eval_source,
             inference=rollout_inference,
             eval_inference=self.student_inference,
+            teacher_inference=self.teacher_inference,
             policy=self.policy,
             max_inflight_rollouts=config.max_inflight_rollouts,
             tasks_per_minute=config.tasks_per_minute,

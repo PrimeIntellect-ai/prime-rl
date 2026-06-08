@@ -126,6 +126,7 @@ class RolloutDispatcher:
         eval_source: EvalSource | None,
         inference: InferencePool,
         eval_inference: InferencePool,
+        teacher_inference: InferencePool | None,
         policy: Policy,
         max_inflight_rollouts: int,
         tasks_per_minute: float | None,
@@ -139,6 +140,7 @@ class RolloutDispatcher:
         # eval always evaluates the student, so it uses ``eval_inference``.
         self.inference = inference
         self.eval_inference = eval_inference
+        self.teacher_inference = teacher_inference
         self.train_source = train_source
         self.eval_source = eval_source
         self.training_mode = training_mode
@@ -416,6 +418,8 @@ class RolloutDispatcher:
         else:
             cache_salt = str(group.policy_version_at_start)
 
+        teacher_client, teacher_model_name = await self.select_teacher_client(group, env)
+
         if env.requires_group_scoring:
             permits = group.rollouts_to_schedule
             group.rollouts_to_schedule = 0
@@ -427,6 +431,8 @@ class RolloutDispatcher:
                     model_name=model_name,
                     group_size=permits,
                     cache_salt=cache_salt,
+                    teacher_client=teacher_client,
+                    teacher_model_name=teacher_model_name,
                 )
             )
         else:
@@ -439,6 +445,8 @@ class RolloutDispatcher:
                     example=group.example,
                     model_name=model_name,
                     cache_salt=cache_salt,
+                    teacher_client=teacher_client,
+                    teacher_model_name=teacher_model_name,
                 )
             )
 
@@ -449,9 +457,22 @@ class RolloutDispatcher:
             policy_version=group.policy_version_at_start,
             rollout_count=permits,
             client_config=client,
+            teacher_client_config=teacher_client,
             eval_step=group.eval_step,
         )
         return True
+
+    async def select_teacher_client(self, group: GroupState, env) -> tuple[vf.ClientConfig | None, str | None]:
+        if group.kind != "train" or self.teacher_inference is None or not env.is_v1:
+            return None, None
+        if group.pinned_teacher_client is None:
+            load = Counter(
+                client_identity(m.teacher_client_config)
+                for m in self.inflight.values()
+                if m.teacher_client_config is not None
+            )
+            group.pinned_teacher_client = await self.teacher_inference.select_train_client(load)
+        return group.pinned_teacher_client, self.teacher_inference.model_name
 
     async def acquire(self, n: int) -> None:
         """Reserve ``n`` permits + rate-limit each one. Caller must precheck

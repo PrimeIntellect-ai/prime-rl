@@ -5420,7 +5420,7 @@ dev = [
     { name = "ruff" },
     { name = "stagehand", specifier = ">=3.0.0" },
     { name = "tasksets", extras = ["openenv", "openreward", "ta"], editable = "deps/verifiers/packages/tasksets" },
-    { name = "ty", specifier = ">=0.0.1a29,<0.0.22" },
+    { name = "ty", specifier = ">=0.0.40,<0.0.41" },
 ]
 policy = [{ name = "semgrep", specifier = ">=1.150.0" }]
 
