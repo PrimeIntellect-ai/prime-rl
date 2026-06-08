@@ -450,9 +450,6 @@ class DataLoaderConfig(BaseConfig):
     fake: FakeDataLoaderConfig | None = None
     """Use a fake data loader sampling random micro-batches (for debugging)."""
 
-    balance_by_flops: bool = True
-    """Balance packed micro-batches across data-parallel ranks using model-estimated FLOPs."""
-
 
 class BaseWeightBroadcastConfig(BaseConfig):
     pass
