@@ -33,6 +33,10 @@ TRAINER_TOML = "trainer.toml"
 ORCHESTRATOR_TOML = "orchestrator.toml"
 INFERENCE_TOML = "inference.toml"
 
+# Gap between the train and eval env-server port blocks, so each kind has headroom
+# for many envs without the blocks overlapping (train: base+i; eval: base+stride+i).
+ENV_SERVER_KIND_STRIDE = 1000
+
 
 def get_physical_gpu_ids() -> list[int]:
     """Return physical GPU IDs visible to the launcher."""
@@ -69,36 +73,40 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
 
 
 def setup_env_servers(config: RLConfig, config_dir: Path) -> list[dict]:
-    """Give each env its own launcher-spawned ``env-server`` process: pick a free port,
+    """Give each env its own launcher-spawned ``env-server`` process on a fixed port,
     point the orchestrator at it (set ``env.address`` so it attaches instead of
-    sidecar-spawning), and write a per-env ``EnvServerConfig`` TOML. Envs that already
+    sidecar-spawning), and write a per-env ``EnvServerConfig`` TOML. Train envs bind
+    ``base_port + i``; eval envs bind ``base_port + ENV_SERVER_KIND_STRIDE + i``, so the
+    two kinds sit in separate blocks with headroom for many envs each. Envs that already
     set ``address`` (a user-managed external server) are left alone. Must run before
     ``write_subconfigs`` so the addresses land in the orchestrator config.
 
     Returns one spawn spec per server: ``{label, kind, name, toml}``.
     """
     config_dir.mkdir(parents=True, exist_ok=True)
-    envs = [("train", env) for env in config.orchestrator.train.env]
+    env_lists = [("train", config.orchestrator.train.env)]
     if config.orchestrator.eval is not None:
-        envs += [("eval", env) for env in config.orchestrator.eval.env]
+        env_lists.append(("eval", config.orchestrator.eval.env))
 
     specs: list[dict] = []
-    for kind, env in envs:
-        if env.address is not None:
-            continue  # user-managed external server — don't spawn one
-        env.address = f"tcp://127.0.0.1:{config.env_server_base_port + len(specs)}"
-        env_dict = {
-            k: v for k, v in env.model_dump(mode="json", exclude_none=True).items() if k in EnvConfig.model_fields
-        }
-        server_dict: dict = {"env": env_dict, "output_dir": config.output_dir.as_posix()}
-        if config.log.level is not None:
-            server_dict["log"] = {"level": config.log.level}
-        toml_path = config_dir / f"env_server_{kind}_{env.resolved_name}.toml"
-        with open(toml_path, "wb") as f:
-            tomli_w.dump(server_dict, f)
-        specs.append(
-            {"label": f"env-{kind}-{env.resolved_name}", "kind": kind, "name": env.resolved_name, "toml": toml_path}
-        )
+    for kind_index, (kind, env_list) in enumerate(env_lists):
+        for i, env in enumerate(env_list):
+            if env.address is not None:
+                continue  # user-managed external server — don't spawn one
+            port = config.env_server_base_port + kind_index * ENV_SERVER_KIND_STRIDE + i
+            env.address = f"tcp://127.0.0.1:{port}"
+            env_dict = {
+                k: v for k, v in env.model_dump(mode="json", exclude_none=True).items() if k in EnvConfig.model_fields
+            }
+            server_dict: dict = {"env": env_dict, "output_dir": config.output_dir.as_posix()}
+            if config.log.level is not None:
+                server_dict["log"] = {"level": config.log.level}
+            toml_path = config_dir / f"env_server_{kind}_{env.resolved_name}.toml"
+            with open(toml_path, "wb") as f:
+                tomli_w.dump(server_dict, f)
+            specs.append(
+                {"label": f"env-{kind}-{env.resolved_name}", "kind": kind, "name": env.resolved_name, "toml": toml_path}
+            )
     return specs
 
 
