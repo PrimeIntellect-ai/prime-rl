@@ -16,6 +16,7 @@ def transformers_v5_compat():
         Qwen3VLMoeTextConfig.tie_word_embeddings = False
 
     _patch_qwen35_lora()
+    _patch_qwen35_vlm_checkpoint_keys()
     _patch_lora_key_prefix()
     monkey_patch_deep_gemm_silu_mul_quant_int64()
     monkey_patch_vllm_padded_input_scrub()
@@ -259,6 +260,48 @@ def _patch_qwen35_lora():
         ]
 
     MergedColumnParallelLinearWithShardedLoRA.slice_lora_a = slice_lora_a
+
+
+def _patch_qwen35_vlm_checkpoint_keys():
+    """Allow Qwen3.5 VLM fine-tuned checkpoints to reload into vLLM.
+
+    PrimeRL VLM training stores the text tower under the configured language
+    model attr. For Qwen3.5 dense VLMs, the HF text tower itself is also nested,
+    so post-training checkpoints can contain keys like
+    ``model.language_model.language_model.language_model.layers...``. vLLM's
+    Qwen3.5 text loader is already responsible for mapping split HF weights into
+    packed inference parameters; it just needs those redundant wrapper prefixes
+    removed before matching names.
+    """
+    from vllm.logger import init_logger
+    from vllm.model_executor.models.qwen3_5 import (
+        Qwen3_5ForConditionalGeneration,
+        Qwen3_5MoeForConditionalGeneration,
+    )
+    from vllm.model_executor.models.utils import WeightsMapper
+
+    logger = init_logger(__name__)
+    nested_language_prefixes = {
+        "model.language_model.language_model.language_model.": "language_model.model.",
+        "model.language_model.language_model.": "language_model.model.",
+    }
+
+    patched_any = False
+    for model_cls in (Qwen3_5ForConditionalGeneration, Qwen3_5MoeForConditionalGeneration):
+        mapper = model_cls.hf_to_vllm_mapper
+        if all(mapper.orig_to_new_prefix.get(prefix) == target for prefix, target in nested_language_prefixes.items()):
+            continue
+
+        model_cls.hf_to_vllm_mapper = WeightsMapper(
+            orig_to_new_regex=mapper.orig_to_new_regex,
+            orig_to_new_substr=mapper.orig_to_new_substr,
+            orig_to_new_prefix={**nested_language_prefixes, **mapper.orig_to_new_prefix},
+            orig_to_new_suffix=mapper.orig_to_new_suffix,
+        )
+        patched_any = True
+
+    if patched_any:
+        logger.warning("Enabled Qwen3.5 VLM language checkpoint prefix mapping.")
 
 
 def _patch_lora_key_prefix():
