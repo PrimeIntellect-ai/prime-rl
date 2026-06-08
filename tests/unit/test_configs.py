@@ -168,6 +168,17 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+def test_trainer_data_balance_by_flops_default_and_cli():
+    config = cli(TrainerConfig, args=[])
+    assert config.data.balance_by_flops is True
+
+    config = cli(TrainerConfig, args=["--no-data.balance-by-flops"])
+    assert config.data.balance_by_flops is False
+
+    config = cli(TrainerConfig, args=["--data.balance-by-flops"])
+    assert config.data.balance_by_flops is True
+
+
 def test_orchestrator_vlm_requires_renderer():
     with pytest.raises(ValidationError, match="orchestrator.renderer must be set when model.vlm is set"):
         OrchestratorConfig.model_validate(

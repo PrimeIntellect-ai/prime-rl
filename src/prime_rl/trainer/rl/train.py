@@ -230,6 +230,7 @@ def train(config: TrainerConfig):
     if config.data.fake:
         dataloader = FakeDataLoader(config.data.fake, config.model.seq_len, parallel_dims.get_mesh("dp").size())
     else:
+        data_loader_model_config = model.config if config.data.balance_by_flops else None
         dataloader = DataLoader(
             config.output_dir,
             progress.step,
@@ -238,6 +239,7 @@ def train(config: TrainerConfig):
             config.model.cp,
             tokenizer,
             config.rollout_transport,
+            model_config=data_loader_model_config,
         )
 
     token_exporter = setup_token_exporter(config, parallel_dims, world, logger)
