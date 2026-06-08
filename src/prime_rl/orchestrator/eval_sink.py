@@ -121,7 +121,7 @@ class EvalSink:
         rollouts = self.pending_batches.pop(key, [])
 
         n_total = len(rollouts)
-        n_cancelled = sum(1 for r in rollouts if (r.error or {}).get("type") == "Cancelled")
+        n_cancelled = sum(1 for r in rollouts if r.error is not None and r.error.type == "Cancelled")
         n_errored = sum(1 for r in rollouts if r.error is not None) - n_cancelled
         valid = [r for r in rollouts if r.error is None]
         metrics = EvalBatchMetrics(
@@ -140,7 +140,7 @@ class EvalSink:
             metrics.completion_len_min = float(min(lens))
             metrics.truncation_rate = float(sum(1 for r in valid if r.is_truncated) / len(valid))
             metrics.no_response_rate = float(sum(1 for r in valid if not trace_has_response(r.raw)) / len(valid))
-            num_turns = [len(r.raw.get("trajectory") or []) for r in valid]
+            num_turns = [r.raw.num_turns for r in valid]
             metrics.num_turns_mean = float(sum(num_turns) / len(num_turns))
             metrics.num_turns_min = float(min(num_turns))
             metrics.num_turns_max = float(max(num_turns))

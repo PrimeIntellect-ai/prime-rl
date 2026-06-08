@@ -2,17 +2,22 @@
 
 Each ``Env`` owns a vf-nano ``EnvServer`` (spawned as a child process, or an
 external one given by ``config.address``) and an ``EnvClient`` to drive it. The
-orchestrator never loads an environment: it asks the server for ``info``
+orchestrator never *runs* an environment: it asks the server for ``info``
 (``num_tasks`` + whether group scoring is needed), then runs rollouts purely by
-**task index**. The server returns a ``Trace`` dict, which we adapt into the
-RolloutOutput-shaped dict the rest of the orchestrator consumes.
+**task index**. The server returns a ``Trace`` (minus its computed fields) which we
+validate into a typed ``Trace[EnvTask]`` — so the rest of the orchestrator works
+with a real ``vf.Trace`` (typed task fields included), never a loose dict. To type
+the task we import the env's ``Task`` subclass (the env package is installed in this
+venv); the env's *runtime* still only ever executes in the server.
 """
 
 from __future__ import annotations
 
 import atexit
+import inspect
 import multiprocessing as mp
 import socket
+import typing
 from collections.abc import Iterator, Sequence
 from multiprocessing.process import BaseProcess
 from pathlib import Path
@@ -34,6 +39,19 @@ def _get_free_port() -> int:
         s.close()
 
 
+def resolve_task_type(env_id: str) -> type[vf.Task]:
+    """The env's ``Task`` subclass, read off ``load_taskset``'s return type
+    (``Taskset[TaskT, ConfigT]``) — same introspection the eval CLI uses for the
+    taskset config. Imports the env module (not its dataset/runtime); falls back to
+    the base ``Task`` if no subclass is found."""
+    taskset_type = inspect.signature(vf.import_env(env_id).load_taskset).return_annotation
+    for base in getattr(taskset_type, "__orig_bases__", ()):
+        for arg in typing.get_args(base):
+            if isinstance(arg, type) and issubclass(arg, vf.Task):
+                return arg
+    return vf.Task
+
+
 class Env:
     """Wraps a vf-nano env server + client. The orchestrator never loads the env."""
 
@@ -42,6 +60,9 @@ class Env:
         self.sampling_args: dict = {}
         self.num_tasks: int = 0
         self.requires_group_scoring: bool = False
+        # Typed Trace for this env (Trace parametrized with the env's Task subclass),
+        # used to validate the wire trace into a real vf.Trace with typed task fields.
+        self.trace_type = vf.Trace[resolve_task_type(config.stripped_id)]
         self._env_client: EnvClient | None = None
         self._env_server_process: BaseProcess | None = None
 
@@ -62,8 +83,8 @@ class Env:
         self._env_client = EnvClient(address=address)
         await self.env_client.wait_for_server_startup()
         info = await self.env_client.info()
-        self.num_tasks = info["num_tasks"]
-        self.requires_group_scoring = info["requires_group_scoring"]
+        self.num_tasks = info.num_tasks
+        self.requires_group_scoring = info.requires_group_scoring
         get_logger().info(
             f"Env {self.name} ready: num_tasks={self.num_tasks} group_scoring={self.requires_group_scoring}"
         )
@@ -95,26 +116,28 @@ class Env:
 
     async def run_rollout(
         self, client: vf.ClientConfig, example: dict, model_name: str, cache_salt: str | None
-    ) -> dict:
-        """Run a single rollout for ``example`` (by task index); return the vf-nano Trace dict."""
-        return await self.env_client.run_rollout(
+    ) -> vf.Trace:
+        """Run a single rollout for ``example`` (by task index); return a typed Trace."""
+        wire = await self.env_client.run_rollout(
             task_idx=example["example_id"],
             client_config=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
+        return self.trace_type.model_validate(wire)
 
     async def run_group(
         self, client: vf.ClientConfig, example: dict, model_name: str, group_size: int, cache_salt: str | None
-    ) -> list[dict]:
-        """Run a group of rollouts for ``example`` (group-scoring envs); return Trace dicts."""
-        return await self.env_client.run_group(
+    ) -> list[vf.Trace]:
+        """Run a group of rollouts for ``example`` (group-scoring envs); return typed Traces."""
+        wires = await self.env_client.run_group(
             task_idx=example["example_id"],
             n=group_size,
             client_config=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
+        return [self.trace_type.model_validate(wire) for wire in wires]
 
     def shutdown(self) -> None:
         if self._env_server_process is None:

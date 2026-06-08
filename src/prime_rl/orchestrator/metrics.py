@@ -43,15 +43,15 @@ class MetricsBuilder:
                 "reward": [r.reward for r in rollouts],
                 "is_truncated": [r.is_truncated for r in rollouts],
                 "is_filtered": [r.is_filtered for r in rollouts],
-                "stop_condition": [r.raw.get("stop_condition") for r in rollouts],
+                "stop_condition": [r.raw.stop_condition for r in rollouts],
                 "seq_len": [trace_total_tokens(r.raw) for r in rollouts],
                 "prefill_len": metrics.rollout_prefill_lens,
                 "decode_len": metrics.rollout_decode_lens,
                 "samples_per_rollout": metrics.samples_per_rollout,
-                "num_turns": [len(r.raw["trajectory"]) for r in rollouts],
+                "num_turns": [r.raw.num_turns for r in rollouts],
             }
         )
-        metrics_df = pd.DataFrame([(r.raw.get("metrics") or {}) for r in rollouts])
+        metrics_df = pd.DataFrame([r.raw.metrics for r in rollouts])
         filter_df = pd.DataFrame([r.filter_results for r in rollouts])
         timing_df = self.timing_df(rollouts)
 
@@ -180,13 +180,9 @@ class MetricsBuilder:
     @staticmethod
     def timing_df(rollouts: list[TrainRollout]) -> pd.DataFrame:
         """Per-rollout timing from the vf-nano Trace (`generation`/`scoring` spans)."""
-
-        def span(timing: dict, key: str) -> float:
-            return float((timing.get(key) or {}).get("duration") or 0.0)
-
         rows = []
         for r in rollouts:
-            timing = r.raw.get("timing") or {}
-            generation, scoring = span(timing, "generation"), span(timing, "scoring")
+            timing = r.raw.timing
+            generation, scoring = timing.generation.duration, timing.scoring.duration
             rows.append({"total": generation + scoring, "generation": generation, "scoring": scoring})
         return pd.DataFrame(rows)

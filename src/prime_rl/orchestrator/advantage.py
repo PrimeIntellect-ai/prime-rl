@@ -8,6 +8,8 @@ from jaxtyping import Float
 from torch import Tensor
 
 if TYPE_CHECKING:
+    import verifiers.nano as vf
+
     from prime_rl.orchestrator.types import TrainRollout
 
 from prime_rl.configs.orchestrator import (
@@ -25,7 +27,7 @@ from prime_rl.utils.utils import import_object
 class AdvantageInputs:
     """Inputs for advantage computation of a single group (one example × N rollouts)."""
 
-    rollouts: list[dict]
+    rollouts: list["vf.Trace"]  # noqa: F821 (forward ref)
 
 
 @dataclass
@@ -56,7 +58,7 @@ def default_advantage_fn(
     `length_penalty` enables correctness-gated efficiency shaping over a per-rollout
     cost: tokens (weighted completion + tool-response) or trajectory turn count.
     """
-    rewards = torch.tensor([r["reward"] for r in inputs.rollouts], dtype=torch.float32)
+    rewards = torch.tensor([r.reward for r in inputs.rollouts], dtype=torch.float32)
 
     if isinstance(length_penalty, TokensLengthPenaltyConfig):
         w_c = length_penalty.completion_weight
@@ -67,7 +69,7 @@ def default_advantage_fn(
         )
         return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs).tolist())
     if isinstance(length_penalty, TurnsLengthPenaltyConfig):
-        costs = torch.tensor([len(r["trajectory"]) for r in inputs.rollouts], dtype=rewards.dtype)
+        costs = torch.tensor([len(r.trajectory) for r in inputs.rollouts], dtype=rewards.dtype)
         return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs).tolist())
 
     return AdvantageOutputs(advantages=(rewards - rewards.mean()).tolist())
@@ -134,7 +136,7 @@ def assign_advantages(
     """Compute and assign advantages for one finished group of rollouts
     (``TrainSink.process_group`` hands in a single group's surviving rollouts).
     ``advantage_fn=None`` is the trivial case (advantage = reward); a custom
-    ``advantage_fn`` receives the raw ``dict``\\ s via
+    ``advantage_fn`` receives the raw ``vf.Trace``\\ s via
     ``AdvantageInputs.rollouts``.
     """
     if advantage_fn is None:

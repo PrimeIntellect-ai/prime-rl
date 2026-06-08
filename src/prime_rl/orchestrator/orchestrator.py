@@ -713,7 +713,7 @@ class Orchestrator:
         trainable_rate = (n_trainable / n_survivors) if n_survivors else 0.0
         reward_mean = sum(r.reward for r in batch.rollouts) / max(n_survivors, 1)
         max_off_policy = max((r.off_policy_steps for r in batch.rollouts), default=0)
-        turns_mean = sum(len(r.raw.get("trajectory") or []) for r in batch.rollouts) / max(n_survivors, 1)
+        turns_mean = sum(r.raw.num_turns for r in batch.rollouts) / max(n_survivors, 1)
         truncation_rate = sum(1 for r in batch.rollouts if r.is_truncated) / max(n_survivors, 1)
 
         head = (
@@ -737,11 +737,7 @@ class Orchestrator:
             env_error_rate = (n_env_errors / n_env_arrivals) if n_env_arrivals else 0.0
             env_reward = (sum(r.reward for r in env_rollouts) / len(env_rollouts)) if env_rollouts else 0.0
             env_max_off_policy = max((r.off_policy_steps for r in env_rollouts), default=0)
-            env_turns = (
-                sum(len(r.raw.get("trajectory") or []) for r in env_rollouts) / len(env_rollouts)
-                if env_rollouts
-                else 0.0
-            )
+            env_turns = sum(r.raw.num_turns for r in env_rollouts) / len(env_rollouts) if env_rollouts else 0.0
             env_truncation = sum(1 for r in env_rollouts if r.is_truncated) / len(env_rollouts) if env_rollouts else 0.0
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_reward:.4f} | "

@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Literal
 
+import verifiers.nano as vf
 from aiolimiter import AsyncLimiter
 
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -479,43 +480,40 @@ class RolloutDispatcher:
         is_synth_exception = False
         try:
             result = task.result()
-            rollouts: list[dict] = result if isinstance(result, list) else [result]
+            rollouts: list[vf.Trace] = result if isinstance(result, list) else [result]
         except asyncio.CancelledError:
             return
         except Exception as exc:
             get_logger().warning(f"Rollout task failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
+            task_idx = group.example["example_id"] if group is not None else -1
             rollouts = [
-                self.error_rollout_output(error_type=type(exc).__name__, error_repr=repr(exc))
+                self.error_rollout_output(task_idx=task_idx, error_type=type(exc).__name__, error_repr=repr(exc))
                 for _ in range(meta.rollout_count)
             ]
             is_synth_exception = True
 
         for r in rollouts:
-            if r.get("error") is None and len(r.get("trajectory") or []) == 0:
-                # Empty trajectory: promote to an explicit error (vf-nano Trace
-                # error shape) so the sink treats it like any other failure
-                r["error"] = {
-                    "type": "EmptyTrajectory",
-                    "message": "Rollout returned with no trajectory steps",
-                    "traceback": "",
-                }
+            if r.error is None and len(r.trajectory) == 0:
+                # Empty trajectory: promote to an explicit error so the sink
+                # treats it like any other failure
+                r.error = vf.Error(
+                    type="EmptyTrajectory", message="Rollout returned with no trajectory steps", traceback=""
+                )
                 get_logger().warning(f"Empty trajectory in group {meta.group_id} ({meta.env_name})")
-            if r.get("error") is not None:
-                err_type = r["error"].get("type", "Unknown")
+            if r.error is not None:
                 self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
                 if not is_synth_exception:
                     get_logger().warning(
-                        f"Rollout failed in group {meta.group_id} ({meta.env_name}) — "
-                        f"{err_type}: {r['error'].get('message', '')}"
+                        f"Rollout failed in group {meta.group_id} ({meta.env_name}) — {r.error.type}: {r.error.message}"
                     )
             await self.emit_rollout(meta, group, r)
 
-    async def emit_rollout(self, meta: InflightRollout, group: GroupState | None, raw: dict) -> None:
+    async def emit_rollout(self, meta: InflightRollout, group: GroupState | None, raw: vf.Trace) -> None:
         """Build a ``TrainRollout`` / ``EvalRollout`` and put it on ``out_q``.
         Pops the group from ``self.groups`` once every member has been emitted."""
         eval_step = meta.eval_step
         policy_version = meta.policy_version
-        example_id = raw.get("example_id")
+        example_id = None
         if group is not None:
             eval_step = group.eval_step
             policy_version = group.policy_version_at_start
@@ -541,20 +539,15 @@ class RolloutDispatcher:
         await self.out_q.put(rollout)
 
     @staticmethod
-    def error_rollout_output(*, error_type: str, error_repr: str) -> dict:
-        """Minimal vf-nano-Trace-shaped dict for rollouts that never produced
-        real output (task exception, off-policy cancel)."""
-        return {
-            "error": {"type": error_type, "message": error_repr, "traceback": error_repr},
-            "trajectory": [],
-            "branches": [],
-            "rewards": {},
-            "reward": 0.0,
-            "metrics": {},
-            "is_truncated": False,
-            "stop_condition": "error",
-            "num_turns": 0,
-        }
+    def error_rollout_output(*, task_idx: int, error_type: str, error_repr: str) -> vf.Trace:
+        """Minimal error Trace for rollouts that never produced real output (task
+        exception, off-policy cancel) — a base Task placeholder is enough since the
+        rollout carries no real data."""
+        return vf.Trace(
+            task=vf.Task(idx=task_idx, instruction=""),
+            error=vf.Error(type=error_type, message=error_repr, traceback=error_repr),
+            stop_condition="error",
+        )
 
     async def drop_group(self, group_id: uuid.UUID) -> int:
         """Cancel remaining in-flight tasks for this group and emit a
