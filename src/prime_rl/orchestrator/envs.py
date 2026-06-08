@@ -16,7 +16,9 @@ from __future__ import annotations
 import asyncio
 import atexit
 import multiprocessing as mp
+import os
 import queue
+import sys
 from collections.abc import Iterator, Sequence
 from multiprocessing.process import BaseProcess
 from pathlib import Path
@@ -32,6 +34,21 @@ from prime_rl.utils.logger import get_logger
 # loads the taskset (possibly downloading a dataset) before reporting, so this
 # is generous.
 ENV_SERVER_SPAWN_TIMEOUT = 600.0
+
+
+def _run_env_server(*, log_file: str, log_level: str, json_logging: bool, **kwargs) -> None:
+    """Spawned-process entry point: send the env server's output (its logging + any
+    subprocess-runtime output) to ``log_file``, then serve. Top-level so it stays
+    picklable for the ``spawn`` start method."""
+    from prime_rl.orchestrator.utils import intercept_vf_logging
+    from prime_rl.utils.logger import setup_logger
+
+    fh = open(log_file, "w", buffering=1)
+    os.dup2(fh.fileno(), sys.stdout.fileno())
+    os.dup2(fh.fileno(), sys.stderr.fileno())
+    setup_logger(log_level, json_logging=json_logging)
+    intercept_vf_logging(logger="verifiers.nano", level=log_level)
+    EnvServer.run_server(**kwargs)
 
 
 class Env:
@@ -61,7 +78,7 @@ class Env:
     async def start(self, log_dir: Path, log_level: str | None = None, json_logging: bool = False) -> None:
         """Spawn the env server (if needed), connect, and cache its ``info``."""
         external = self.config.address is not None
-        address = self.config.address or await self._spawn()
+        address = self.config.address or await self._spawn(log_dir, log_level or "INFO", json_logging)
         get_logger().debug(f"Connecting {self.name} to env server {address}")
         self._env_client = EnvClient(address=address)
         # A spawned server already reported its address *after* binding + loading,
@@ -76,16 +93,22 @@ class Env:
             f"Env {self.name} ready: num_tasks={self.num_tasks} group_scoring={self.requires_group_scoring}"
         )
 
-    async def _spawn(self) -> str:
+    async def _spawn(self, log_dir: Path, log_level: str, json_logging: bool) -> str:
         """Spawn a vf-nano EnvServer child process (it loads the env; we never do).
         The server binds an OS-assigned port (``:0``) and reports the concrete
-        address back over a queue — no free-port guess, no TOCTOU race."""
+        address back over a queue — no free-port guess, no TOCTOU race. Its output
+        goes to ``<log_dir>/envs/<name>.log``."""
         ctx = mp.get_context("spawn")
         address_queue: mp.Queue = ctx.Queue()
-        get_logger().debug(f"Spawning env server {self.name} (id={self.config.stripped_id})")
+        log_file = log_dir / "envs" / f"{self.name}.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        get_logger().debug(f"Spawning env server {self.name} (id={self.config.stripped_id}, log={log_file})")
         process = ctx.Process(
-            target=EnvServer.run_server,
+            target=_run_env_server,
             kwargs=dict(
+                log_file=str(log_file),
+                log_level=log_level,
+                json_logging=json_logging,
                 env_id=self.config.stripped_id,
                 taskset_args=self.config.args,
                 agent_config=self.config.agent,

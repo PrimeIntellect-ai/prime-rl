@@ -11,8 +11,8 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [orchestrator]
 training_mode = "rl"
-batch_size = 16
-group_size = 8
+batch_size = 128
+group_size = 16
 
 [orchestrator.renderer]
 name = "qwen3"
@@ -27,8 +27,8 @@ id = "reverse-text"
 agent = { type = "default", runtime = { type = "subprocess" } }
 
 [orchestrator.eval]
-num_examples = 8
-group_size = 2
+interval = 1
+num_examples = 128
 
 [orchestrator.eval.sampling]
 max_completion_tokens = 128
