@@ -145,3 +145,72 @@ def assign_advantages(
     result = advantage_fn(AdvantageInputs(rollouts=[r.raw for r in rollouts]))
     for rollout, advantage in zip(rollouts, result.advantages):
         rollout.advantage = advantage
+
+
+# --------------------------------------------------------------------------------------------------
+# Layer 2 — the per-term, per-token advantage (the loss-term ``advantage`` axis). One float per token
+# (``0`` = masked); built orchestrator-side from ``RenderHints`` + the group's rewards. ``grpo`` reuses
+# Layer 1 above (reward -> per-rollout scalar); ``echo``/``sft`` read attribution only.
+# --------------------------------------------------------------------------------------------------
+
+
+@dataclass
+class RenderHints:
+    """All per-token render info for one training unit (rollout/sample), aligned to
+    ``prompt_ids + completion_ids``.
+
+    Built orchestrator-side from the rollout's tokens + ``prompt_attribution``; passed to the term
+    ``advantage_fn`` (and, via the shipped slice, to trainer-side cores/hooks). ``rollout`` is the raw
+    renderer output for anything not pre-parsed (orchestrator-side only).
+    """
+
+    token_id: list[int]
+    role: list[str | None]  # per token; None = unattributed
+    tool_name: list[str | None]  # per token; set when role == "tool"
+    is_sampled: list[bool]  # the sampled completion tokens (today's loss_mask)
+    inference_logprob: list[float]  # sampled logprob; 0.0 on prompt tokens
+    reward: float | None = None
+    rollout: vf.RolloutOutput | None = None
+
+
+TermAdvantageFn = Callable[..., list[list[float]]]
+"""A loss term's advantage axis. Signature: ``fn(group: list[RenderHints], **kwargs) -> list[list[float]]``
+— one inner list per unit, one float per token; ``0`` masks the token."""
+
+
+def grpo_advantage(
+    group: list[RenderHints],
+    *,
+    tau: float = 1.0,
+    length_penalty: LengthPenaltyConfig | None = None,
+) -> list[list[float]]:
+    """Per-token GRPO advantage: the per-rollout scalar (reward minus group baseline, optional length
+    penalty — Layer 1) broadcast over each unit's sampled tokens x ``tau``, ``0`` elsewhere."""
+    scalars = default_advantage_fn(
+        AdvantageInputs(rollouts=[h.rollout for h in group]), length_penalty=length_penalty
+    ).advantages
+    return [[scalar * tau if sampled else 0.0 for sampled in h.is_sampled] for h, scalar in zip(group, scalars)]
+
+
+def echo_advantage(
+    group: list[RenderHints],
+    *,
+    roles: list[str],
+    tool_names: set[str] | None = None,
+    alpha: float = 1.0,
+) -> list[list[float]]:
+    """Per-token echo signal: ``alpha`` on tokens whose role matches (and, for ``tool``, whose
+    ``tool_name`` is allowed), ``0`` elsewhere."""
+    role_set = set(roles)
+    return [
+        [
+            alpha if (role in role_set and (role != "tool" or tool_names is None or tool_name in tool_names)) else 0.0
+            for role, tool_name in zip(h.role, h.tool_name)
+        ]
+        for h in group
+    ]
+
+
+def sft_advantage(group: list[RenderHints], *, alpha: float = 1.0) -> list[list[float]]:
+    """Per-token SFT signal: ``alpha`` on the sampled tokens, ``0`` elsewhere."""
+    return [[alpha if sampled else 0.0 for sampled in h.is_sampled] for h in group]

@@ -12,9 +12,13 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.orchestrator.advantage import (
     AdvantageInputs,
     AdvantageOutputs,
+    RenderHints,
     assign_advantages,
     default_advantage_fn,
+    echo_advantage,
+    grpo_advantage,
     setup_advantage_fn,
+    sft_advantage,
 )
 from prime_rl.orchestrator.types import TrainRollout
 
@@ -307,3 +311,51 @@ def test_setup_advantage_fn_with_custom_config():
 def _dummy_custom_advantage(inputs: AdvantageInputs, scale: float = 1.0) -> AdvantageOutputs:
     """A simple custom advantage for testing."""
     return AdvantageOutputs(advantages=[r["reward"] * scale for r in inputs.rollouts])
+
+
+# --- Layer 2: per-token term advantage (RenderHints + grpo/echo/sft presets) ----------------------
+
+
+def _hints(roles, is_sampled, *, tool_names=None, reward=None):
+    n = len(roles)
+    return RenderHints(
+        token_id=list(range(n)),
+        role=roles,
+        tool_name=tool_names if tool_names is not None else [None] * n,
+        is_sampled=is_sampled,
+        inference_logprob=[0.0] * n,
+        reward=reward,
+        rollout={"reward": reward} if reward is not None else None,
+    )
+
+
+def test_grpo_advantage_broadcasts_scalar_over_sampled_tokens():
+    group = [
+        _hints([None, "assistant", "assistant"], [False, True, True], reward=1.0),
+        _hints([None, "assistant", "assistant"], [False, True, True], reward=0.0),
+    ]
+    # rewards 1,0 -> mean 0.5 -> per-rollout scalars 0.5, -0.5; broadcast over sampled tokens, 0 on prompt
+    assert grpo_advantage(group, tau=1.0) == [[0.0, 0.5, 0.5], [0.0, -0.5, -0.5]]
+
+
+def test_grpo_advantage_tau_scales():
+    group = [
+        _hints([None, "assistant"], [False, True], reward=1.0),
+        _hints([None, "assistant"], [False, True], reward=0.0),
+    ]
+    assert grpo_advantage(group, tau=0.5) == [[0.0, 0.25], [0.0, -0.25]]
+
+
+def test_echo_advantage_alpha_on_matching_roles():
+    group = [_hints(["system", "user", "assistant", None], [False, False, True, False])]
+    assert echo_advantage(group, roles=["system", "user"], alpha=0.5) == [[0.5, 0.5, 0.0, 0.0]]
+
+
+def test_echo_advantage_tool_names_filter():
+    group = [_hints(["tool", "tool", "assistant"], [False, False, True], tool_names=["a", "b", None])]
+    assert echo_advantage(group, roles=["tool"], tool_names={"a"}, alpha=2.0) == [[2.0, 0.0, 0.0]]
+
+
+def test_sft_advantage_on_sampled_tokens():
+    group = [_hints([None, "assistant", "assistant"], [False, True, True])]
+    assert sft_advantage(group, alpha=1.0) == [[0.0, 1.0, 1.0]]
