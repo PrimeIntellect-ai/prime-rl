@@ -61,6 +61,11 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # apply at that token; a float means the token gets that term's core with that weight.
     overlay_alphas: dict[str, list[float | None]] | None = None
 
+    # The primary term's per-token advantage (advantage_fn output), parallel to prompt_ids +
+    # completion_ids. Set in rl mode; the trainer uses it directly. None (sft/opd) -> the trainer
+    # broadcasts the scalar ``advantage`` over the sequence.
+    token_advantages: list[float] | None = None
+
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A batch of training examples with metadata for transport."""

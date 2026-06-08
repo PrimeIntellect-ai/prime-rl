@@ -233,3 +233,36 @@ def test_prepare_sample_ignores_zero_weight_overlay():
     mb = prepare_sample(example, seq_len=8)
     assert mb.overlay_masks["echo"] == [False, False, True, False]
     assert mb.overlay_weights["echo"] == [0.0, 0.0, 0.5, 0.0]
+
+
+def test_prepare_sample_uses_token_advantages():
+    # token_advantages (per-token, from the advantage_fn) is used directly, ignoring the scalar.
+    example = TrainingSample(
+        prompt_ids=[1, 2],
+        prompt_mask=[False, False],
+        completion_ids=[3, 4],
+        completion_mask=[True, True],
+        completion_logprobs=[-0.1, -0.2],
+        completion_temperatures=[1.0, 1.0],
+        advantage=0.9,
+        env_name="test-env",
+        token_advantages=[0.0, 0.0, 0.5, 0.5],
+    )
+    mb = prepare_sample(example, seq_len=8)
+    assert mb.advantages == [0.0, 0.0, 0.5, 0.5]
+
+
+def test_prepare_sample_broadcasts_scalar_advantage_without_token_advantages():
+    # No token_advantages -> fall back to broadcasting the scalar over the sequence (sft/opd path).
+    example = TrainingSample(
+        prompt_ids=[1, 2],
+        prompt_mask=[False, False],
+        completion_ids=[3, 4],
+        completion_mask=[True, True],
+        completion_logprobs=[-0.1, -0.2],
+        completion_temperatures=[1.0, 1.0],
+        advantage=0.9,
+        env_name="test-env",
+    )
+    mb = prepare_sample(example, seq_len=8)
+    assert mb.advantages == [0.9, 0.9, 0.9, 0.9]

@@ -85,7 +85,11 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     input_ids = training_example.prompt_ids + training_example.completion_ids
     loss_mask = training_example.prompt_mask + training_example.completion_mask
     inference_logprobs = [0.0] * len(training_example.prompt_ids) + training_example.completion_logprobs
-    advantages = [training_example.advantage] * len(input_ids)
+    advantages = (
+        list(training_example.token_advantages)
+        if training_example.token_advantages is not None
+        else [training_example.advantage] * len(input_ids)
+    )
     reward = training_example.reward if training_example.reward is not None else float("nan")
     rewards = [reward] * len(input_ids)
     position_ids = list(range(len(input_ids)))

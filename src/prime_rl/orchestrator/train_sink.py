@@ -21,7 +21,12 @@ from dataclasses import dataclass
 
 from prime_rl.configs.losses import apply_term_override, is_primary, overlay_terms, to_echo_config
 from prime_rl.configs.orchestrator import AdvantageConfig, OrchestratorConfig
-from prime_rl.orchestrator.advantage import assign_advantages, setup_advantage_fn
+from prime_rl.orchestrator.advantage import (
+    assign_advantages,
+    build_render_hints,
+    grpo_advantage,
+    setup_advantage_fn,
+)
 from prime_rl.orchestrator.echo import build_echo_annotations
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
@@ -300,6 +305,12 @@ class TrainSink:
                     if r.advantage is not None and self.config.training_mode == "rl"
                     else r.advantage
                 )
+                # The primary's per-token advantage via the advantage_fn: the GRPO scalar broadcast
+                # over the sampled tokens x tau. Bit-identical to broadcasting the scalar, since the
+                # loss only reads it on the (sampled) completion mask.
+                if r.advantage is not None and self.config.training_mode == "rl":
+                    hints = build_render_hints(sample, r.raw, advantage=r.advantage)
+                    sample.token_advantages = grpo_advantage([hints], tau=self._primary_tau)[0]
                 sample.reward = r.reward
                 sample.env_name = r.env_name
                 sample.training_mode = self.config.training_mode
