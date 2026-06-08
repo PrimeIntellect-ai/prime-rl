@@ -97,10 +97,11 @@ class Env:
         """Spawn a vf-nano EnvServer child process (it loads the env; we never do).
         The server binds an OS-assigned port (``:0``) and reports the concrete
         address back over a queue — no free-port guess, no TOCTOU race. Its output
-        goes to ``<log_dir>/envs/<name>.log``."""
+        goes to ``<log_dir>/<name>.log`` (``log_dir`` is already the train/eval-split
+        ``.../logs/envs/{train,eval}`` the orchestrator passes in)."""
         ctx = mp.get_context("spawn")
         address_queue: mp.Queue = ctx.Queue()
-        log_file = log_dir / "envs" / f"{self.name}.log"
+        log_file = log_dir / f"{self.name}.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
         get_logger().debug(f"Spawning env server {self.name} (id={self.config.stripped_id}, log={log_file})")
         process = ctx.Process(
