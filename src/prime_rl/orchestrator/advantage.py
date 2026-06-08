@@ -10,6 +10,7 @@ from torch import Tensor
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import TrainRollout
+    from prime_rl.transport import TrainingSample
 
 from prime_rl.configs.orchestrator import (
     AdvantageConfig,
@@ -214,3 +215,26 @@ def echo_advantage(
 def sft_advantage(group: list[RenderHints], *, alpha: float = 1.0) -> list[list[float]]:
     """Per-token SFT signal: ``alpha`` on the sampled tokens, ``0`` elsewhere."""
     return [[alpha if sampled else 0.0 for sampled in h.is_sampled] for h in group]
+
+
+def build_render_hints(sample: TrainingSample, rollout: vf.RolloutOutput | None = None) -> RenderHints:
+    """Build a sample's ``RenderHints`` from the finished (interleaved) ``TrainingSample``.
+
+    The sample-derivable fields are exact: ``token_id``, ``is_sampled`` (prompt + completion masks),
+    ``inference_logprob``. Sampled (model-generated) tokens get role ``"assistant"``; prompt-side roles
+    (system/user/tool) are not attributed here yet — that needs the per-step interleave alignment and
+    is added when prompt-role advantage_fns are wired.
+    """
+    n_prompt = len(sample.prompt_ids)
+    token_id = list(sample.prompt_ids) + list(sample.completion_ids)
+    is_sampled = [False] * n_prompt + [bool(m) for m in sample.completion_mask]
+    inference_logprob = [0.0] * n_prompt + list(sample.completion_logprobs)
+    return RenderHints(
+        token_id=token_id,
+        role=["assistant" if sampled else None for sampled in is_sampled],
+        tool_name=[None] * len(token_id),
+        is_sampled=is_sampled,
+        inference_logprob=inference_logprob,
+        reward=rollout.get("reward") if rollout is not None else None,
+        rollout=rollout,
+    )

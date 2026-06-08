@@ -14,6 +14,7 @@ from prime_rl.orchestrator.advantage import (
     AdvantageOutputs,
     RenderHints,
     assign_advantages,
+    build_render_hints,
     default_advantage_fn,
     echo_advantage,
     grpo_advantage,
@@ -21,6 +22,7 @@ from prime_rl.orchestrator.advantage import (
     sft_advantage,
 )
 from prime_rl.orchestrator.types import TrainRollout
+from prime_rl.transport import TrainingSample
 
 
 def _make_rollout(
@@ -359,3 +361,24 @@ def test_echo_advantage_tool_names_filter():
 def test_sft_advantage_on_sampled_tokens():
     group = [_hints([None, "assistant", "assistant"], [False, True, True])]
     assert sft_advantage(group, alpha=1.0) == [[0.0, 1.0, 1.0]]
+
+
+def test_build_render_hints_from_sample():
+    # completion token at index 1 is an interleaved non-sampled token (completion_mask False).
+    sample = TrainingSample(
+        prompt_ids=[1, 2],
+        prompt_mask=[False, False],
+        completion_ids=[3, 4, 5],
+        completion_mask=[True, False, True],
+        completion_logprobs=[-0.1, -0.2, -0.3],
+        completion_temperatures=[1.0, 1.0, 1.0],
+        env_name="e",
+        reward=0.7,
+    )
+    h = build_render_hints(sample, rollout={"reward": 0.7})
+    assert h.token_id == [1, 2, 3, 4, 5]
+    assert h.is_sampled == [False, False, True, False, True]
+    assert h.inference_logprob == [0.0, 0.0, -0.1, -0.2, -0.3]
+    assert h.role == [None, None, "assistant", None, "assistant"]
+    assert h.tool_name == [None, None, None, None, None]
+    assert h.reward == 0.7
