@@ -547,9 +547,8 @@ class Orchestrator:
                 f"({batch.metrics.n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
             )
 
-        # Materialize at the I/O boundary so prime-rl metadata travels with
-        # the vf trace payload on disk + in wandb sample tables
-        rollout_dicts = [r.to_dict() for r in batch.rollouts]
+        # Serialize the typed Trace at the I/O boundary (disk + wandb sample tables).
+        rollout_dicts = [r.trace.model_dump(mode="json") for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(config.output_dir), step)
         await asyncio.to_thread(
             save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
@@ -755,7 +754,7 @@ class Orchestrator:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no surviving rollouts, skipping log")
             return
 
-        rollout_dicts = [r.to_dict() for r in batch.rollouts]
+        rollout_dicts = [r.trace.model_dump(mode="json") for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(self.config.output_dir), batch.step)
         save_rollouts(
             rollout_dicts,

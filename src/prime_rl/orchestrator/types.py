@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 import verifiers.nano as vf
@@ -78,20 +78,6 @@ class FinishedRollout:
     policy_version: int
     off_policy_steps: int
     rollout_id: uuid.UUID = field(default_factory=uuid.uuid4)
-
-    def to_dict(self) -> dict:
-        """The Trace (full ``model_dump``, incl. computed fields) + metadata, merged
-        for I/O (``save_rollouts``, ``monitor.log_samples``)."""
-        out: dict = self.trace.model_dump(mode="json")
-        for f in fields(self):
-            if f.name in ("trace", "samples"):
-                continue
-            val = getattr(self, f.name)
-            if f.name == "filter_results":
-                out["filters"] = dict(val)
-                continue
-            out[f.name] = str(val) if isinstance(val, uuid.UUID) else val
-        return out
 
 
 @dataclass
