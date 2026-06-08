@@ -89,7 +89,7 @@ envs = [
     "science-env",
     "simpleqa-verified",
     "tau2-bench",
-    "tasksets[openenv,openreward,ta]",
+    "tasksets",
     "wiki-search",
     "wordle",
 ]
