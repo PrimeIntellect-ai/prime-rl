@@ -9,7 +9,7 @@ from typing import Any
 
 import torch
 from torch import Tensor, nn
-from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_dict
+from torch.distributed.checkpoint.state_dict import get_state_dict, set_model_state_dict, set_state_dict
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.checkpoint.state_dict_saver import save as dcp_save
 from torch.distributed.checkpoint.stateful import Stateful
@@ -67,8 +67,13 @@ class AppState(Stateful):
         """Extract base optimizers from wrappers like CPUOffloadOptimizer."""
         return [opt.base_optimizer if isinstance(opt, CPUOffloadOptimizer) else opt for opt in self.optimizers]
 
+    def _has_cpu_offload(self) -> bool:
+        return any(isinstance(opt, CPUOffloadOptimizer) for opt in self.optimizers)
+
     def state_dict(self) -> dict[str, Any]:
-        # Move CPU-offloaded states to GPU before checkpointing
+        # get_state_dict requires optimizer states to live on param.device. For an
+        # already-initialized CPU-offload optimizer that means staging back to GPU
+        # before the call; the matching offload happens after the dict is built.
         for opt in self.optimizers:
             if isinstance(opt, CPUOffloadOptimizer) and opt._initialized:
                 opt._move_states("cuda")
@@ -88,26 +93,53 @@ class AppState(Stateful):
             progress_state_dict = asdict(self.progress)
             state_dict["progress"] = progress_state_dict
 
-        # Move states back to CPU
+        # Offload optimizer states to CPU for every CPUOffloadOptimizer, including
+        # ones that were uninitialized on entry. dcp_load calls this method to build
+        # a template, and get_state_dict's internal _init_optim_state populates an
+        # empty optim.state with GPU tensors. Optimizer.state_dict() returns those
+        # values via shallow copy, so optimizer_state_dict["state"][fqn] is the same
+        # dict object as optim.state[param]. Replacing the entries with CPU tensors
+        # in place therefore flips the template too — dcp_load reads bytes from disk
+        # straight into CPU storage and optim.state is loaded by the time the load
+        # returns, without GPU optimizer state ever existing for the duration of the
+        # read.
+        has_cpu_offload = self._has_cpu_offload()
         for opt in self.optimizers:
-            if isinstance(opt, CPUOffloadOptimizer) and opt._initialized:
+            if isinstance(opt, CPUOffloadOptimizer):
                 opt._move_states("cpu")
+        if has_cpu_offload:
+            gc.collect()
+            torch.cuda.empty_cache()
 
         return state_dict
 
     def load_state_dict(self, state_dict: dict[str, Any]):
         base_optimizers = self._get_base_optimizers()
-        set_state_dict(
-            self.model, base_optimizers, model_state_dict=state_dict["model"], optim_state_dict=state_dict["optimizers"]
-        )
+        has_cpu_offload = self._has_cpu_offload()
 
-        # Re-initialize CPU offload wrappers after loading
-        has_cpu_offload = False
-        for opt in self.optimizers:
-            if isinstance(opt, CPUOffloadOptimizer):
-                opt._move_states("cpu")
-                opt._initialized = True
-                has_cpu_offload = True
+        if has_cpu_offload:
+            # When CPU offload is on, the optimizer is already loaded by the time we
+            # get here: state_dict() handed dcp_load a template whose tensors share
+            # storage with optim.state[p][k], and dcp_load wrote the checkpoint bytes
+            # directly into those tensors via target_tensor.copy_(...). Running
+            # set_state_dict on the optimizer would route the loaded CPU values
+            # through Optimizer.load_state_dict, whose _cast hook does
+            # value.to(param.dtype, param.device) and would allocate a fresh GPU
+            # copy of every state tensor — undoing the in-place CPU load and
+            # detaching optim.state from the tensors we just populated. So we only
+            # apply the model side here and flip the wrappers to initialized so
+            # subsequent steps take the steady-state path.
+            set_model_state_dict(self.model, model_state_dict=state_dict["model"])
+            for opt in self.optimizers:
+                if isinstance(opt, CPUOffloadOptimizer):
+                    opt._initialized = True
+        else:
+            set_state_dict(
+                self.model,
+                base_optimizers,
+                model_state_dict=state_dict["model"],
+                optim_state_dict=state_dict["optimizers"],
+            )
 
         if self.scheduler is not None:
             self.scheduler.load_state_dict(state_dict["scheduler"])
@@ -115,15 +147,13 @@ class AppState(Stateful):
             for key, value in state_dict["progress"].items():
                 setattr(self.progress, key, value)
 
-        # Reclaim GPU memory freed by moving optimizer states to CPU.
-        # After set_state_dict + _move_states("cpu"), the optimizer states live on CPU,
-        # but the state_dict (owned by dcp_load) still holds references to stale GPU
-        # optimizer tensors. Clearing them and flushing the CUDA cache prevents OOM on
-        # the first training step.
+        # state_dict is the same dict object that dcp_load held internally; clearing
+        # it drops the last references to the loaded tensor wrappers so the cuda
+        # allocator can release whatever blocks it cached during the read.
         if has_cpu_offload:
-            state_dict.clear()  # drop stale GPU tensor references from dcp_load
-            gc.collect()  # break any circular references so tensors are freed
-            torch.cuda.empty_cache()  # return freed GPU memory to CUDA
+            state_dict.clear()
+            gc.collect()
+            torch.cuda.empty_cache()
 
 
 class CheckpointManager:
