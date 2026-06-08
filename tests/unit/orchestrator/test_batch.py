@@ -47,11 +47,11 @@ def test_prepare_sample_builds_echo_mask_and_weight():
         completion_temperatures=[1.0, 1.0],
         advantage=1.0,
         env_name="test-env",
-        overlay_alphas={"echo": [0.9, 0.5, None, 0.3]},
+        term_advantages={"echo": [0.9, 0.5, 0.0, 0.3]},
     )
     mb = prepare_sample(example, seq_len=8)
     # Token 0 is excluded (no valid shifted current-token logprob) even though it
-    # carries an alpha; None positions are not echoed.
+    # carries an alpha; 0.0 positions are not echoed.
     assert mb.overlay_masks["echo"] == [False, True, False, True]
     assert mb.overlay_weights["echo"] == [0.0, 0.5, 0.0, 0.3]
     # Echo stays separate from the RL signals: loss_mask and advantages untouched.
@@ -228,15 +228,16 @@ def test_prepare_sample_ignores_zero_weight_overlay():
         completion_temperatures=[1.0, 1.0],
         advantage=1.0,
         env_name="test-env",
-        overlay_alphas={"echo": [None, 0.0, 0.5, 0.0]},
+        term_advantages={"echo": [0.0, 0.0, 0.5, 0.0]},
     )
     mb = prepare_sample(example, seq_len=8)
     assert mb.overlay_masks["echo"] == [False, False, True, False]
     assert mb.overlay_weights["echo"] == [0.0, 0.0, 0.5, 0.0]
 
 
-def test_prepare_sample_uses_token_advantages():
-    # token_advantages (per-token, from the advantage_fn) is used directly, ignoring the scalar.
+def test_prepare_sample_uses_primary_term_advantage():
+    # The primary term's per-token advantage (keyed by training_mode) is used directly as `advantages`,
+    # ignoring the scalar.
     example = TrainingSample(
         prompt_ids=[1, 2],
         prompt_mask=[False, False],
@@ -246,14 +247,15 @@ def test_prepare_sample_uses_token_advantages():
         completion_temperatures=[1.0, 1.0],
         advantage=0.9,
         env_name="test-env",
-        token_advantages=[0.0, 0.0, 0.5, 0.5],
+        training_mode="rl",
+        term_advantages={"rl": [0.0, 0.0, 0.5, 0.5]},
     )
     mb = prepare_sample(example, seq_len=8)
     assert mb.advantages == [0.0, 0.0, 0.5, 0.5]
 
 
-def test_prepare_sample_broadcasts_scalar_advantage_without_token_advantages():
-    # No token_advantages -> fall back to broadcasting the scalar over the sequence (sft/opd path).
+def test_prepare_sample_broadcasts_scalar_advantage_without_term_advantages():
+    # No term_advantages -> fall back to broadcasting the scalar over the sequence (sft/opd path).
     example = TrainingSample(
         prompt_ids=[1, 2],
         prompt_mask=[False, False],

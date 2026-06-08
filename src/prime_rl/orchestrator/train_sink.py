@@ -43,10 +43,12 @@ def _sample_has_trainable_tokens(sample: TrainingSample) -> bool:
     (no shifted current-token logprob); a zero weight contributes no gradient, so it doesn't count."""
     if any(sample.completion_mask):
         return True
-    overlays = sample.overlay_alphas
-    if overlays is None:
+    terms = sample.term_advantages
+    if terms is None:
         return False
-    return any(any(a is not None and a != 0.0 for a in alphas[1:]) for alphas in overlays.values())
+    # Overlays are the non-primary entries (the primary is keyed by training_mode and already covered
+    # by completion_mask above); a term is trainable if it has a nonzero advantage past position 0.
+    return any(any(a != 0.0 for a in advs[1:]) for name, advs in terms.items() if name != sample.training_mode)
 
 
 class TrainSink:
@@ -265,18 +267,18 @@ class TrainSink:
         overlays = self._resolve_overlays(env_name)
         for r in survivors:
             for sample in r.samples:
-                # Each term's per-token signal comes from its advantage_fn over this sample's
-                # RenderHints: the GRPO scalar over the sampled tokens (primary), and each overlay's
-                # role-masked / advantage-weighted / custom signal. The fn emits 0.0 for non-eligible
-                # tokens; map overlays to None to match the wire's "ineligible" sentinel.
+                # One per-token advantage stream per loss term, from each term's advantage_fn over this
+                # sample's RenderHints: the primary (keyed by training_mode) is the GRPO scalar over the
+                # sampled tokens; each overlay is its role-masked / advantage-weighted / custom signal.
+                # The fn emits 0.0 for non-eligible tokens (the trainer treats 0.0 as masked).
                 sample.advantage = r.advantage
                 hints = build_render_hints(sample, r.raw, advantage=r.advantage)
+                term_advantages: dict[str, list[float]] = {}
                 if self._primary_fn is not None and r.advantage is not None:
-                    sample.token_advantages = self._primary_fn([hints])[0]
-                if overlays:
-                    sample.overlay_alphas = {
-                        name: [a if a != 0.0 else None for a in fn([hints])[0]] for name, fn in overlays
-                    }
+                    term_advantages[self.config.training_mode] = self._primary_fn([hints])[0]
+                for name, fn in overlays:
+                    term_advantages[name] = fn([hints])[0]
+                sample.term_advantages = term_advantages or None
                 sample.reward = r.reward
                 sample.env_name = r.env_name
                 sample.training_mode = self.config.training_mode

@@ -85,10 +85,13 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     input_ids = training_example.prompt_ids + training_example.completion_ids
     loss_mask = training_example.prompt_mask + training_example.completion_mask
     inference_logprobs = [0.0] * len(training_example.prompt_ids) + training_example.completion_logprobs
+    # One per-token advantage stream per loss term, keyed by term name; the primary is keyed by
+    # training_mode and pairs with loss_mask in its core, so split it out as `advantages` (no primary
+    # entry, e.g. sft/opd -> broadcast the scalar). Every other entry is an additive overlay term.
+    term_advantages = training_example.term_advantages
+    primary_advantages = term_advantages.get(training_example.training_mode) if term_advantages is not None else None
     advantages = (
-        list(training_example.token_advantages)
-        if training_example.token_advantages is not None
-        else [training_example.advantage] * len(input_ids)
+        list(primary_advantages) if primary_advantages is not None else [training_example.advantage] * len(input_ids)
     )
     reward = training_example.reward if training_example.reward is not None else float("nan")
     rewards = [reward] * len(input_ids)
@@ -100,22 +103,26 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     # Per-term overlays: token 0 has no valid shifted current-token logprob, so it stays
     # unmasked even if the producer supplied an alpha there. overlay_masks/overlay_weights
     # stay separate from loss_mask/advantages — terms may overlap and their grads sum.
-    overlay_alphas = training_example.overlay_alphas
+    overlay_alphas = (
+        {name: advs for name, advs in term_advantages.items() if name != training_example.training_mode}
+        if term_advantages is not None
+        else None
+    )
     overlay_masks: dict[str, list[bool]] | None = None
     overlay_weights: dict[str, list[float]] | None = None
-    if overlay_alphas is not None:
+    if overlay_alphas:
         overlay_masks = {}
         overlay_weights = {}
         for name, alpha in overlay_alphas.items():
             if len(alpha) != len(input_ids):
                 raise ValueError(
-                    f"overlay_alphas[{name!r}] length must match prompt_ids + completion_ids length "
+                    f"term_advantages[{name!r}] length must match prompt_ids + completion_ids length "
                     f"({len(alpha)} != {len(input_ids)}) for env {training_example.env_name!r}"
                 )
             mask = [False] * len(input_ids)
             weight = [0.0] * len(input_ids)
             for k, a in enumerate(alpha[1:], start=1):
-                if a is not None and a != 0.0:
+                if a != 0.0:
                     mask[k] = True
                     weight[k] = a
             overlay_masks[name] = mask

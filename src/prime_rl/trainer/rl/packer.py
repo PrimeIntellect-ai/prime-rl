@@ -181,13 +181,13 @@ class MultiPacker(BasePacker):
                 False,
                 f"Run wrote a sample with teacher logprobs length != sample length ({len(sample.teacher_logprobs)} != {sample_length})",
             )
-        if sample.overlay_alphas is not None:
-            for name, alpha in sample.overlay_alphas.items():
-                if len(alpha) != sample_length:
+        if sample.term_advantages is not None:
+            for name, advs in sample.term_advantages.items():
+                if len(advs) != sample_length:
                     return (
                         False,
-                        f"Run wrote a sample with overlay_alphas[{name!r}] length != sample length "
-                        f"({len(alpha)} != {sample_length})",
+                        f"Run wrote a sample with term_advantages[{name!r}] length != sample length "
+                        f"({len(advs)} != {sample_length})",
                     )
         return True, None
 

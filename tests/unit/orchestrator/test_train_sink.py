@@ -4,7 +4,7 @@ from prime_rl.orchestrator.train_sink import TrainSink, _sample_has_trainable_to
 from prime_rl.transport.types import TrainingSample
 
 
-def _sample(completion_mask: list[bool], overlay_alpha: list[float | None] | None = None) -> TrainingSample:
+def _sample(completion_mask: list[bool], term_advantage: list[float] | None = None) -> TrainingSample:
     return TrainingSample(
         prompt_ids=[1, 2],
         prompt_mask=[False, False],
@@ -14,7 +14,7 @@ def _sample(completion_mask: list[bool], overlay_alpha: list[float | None] | Non
         completion_temperatures=[1.0, 1.0],
         advantage=1.0,
         env_name="test-env",
-        overlay_alphas={"echo": overlay_alpha} if overlay_alpha is not None else None,
+        term_advantages={"echo": term_advantage} if term_advantage is not None else None,
     )
 
 
@@ -24,24 +24,24 @@ def test_sample_trainable_with_primary_tokens():
 
 def test_sample_trainable_with_overlay_only():
     # No primary (completion) tokens, but an overlay token past position 0 -> still trains.
-    assert _sample_has_trainable_tokens(_sample([False, False], overlay_alpha=[None, None, 0.5, None]))
+    assert _sample_has_trainable_tokens(_sample([False, False], term_advantage=[0.0, 0.0, 0.5, 0.0]))
 
 
 def test_sample_not_trainable_without_primary_or_overlay():
     assert not _sample_has_trainable_tokens(_sample([False, False]))
-    assert not _sample_has_trainable_tokens(_sample([False, False], overlay_alpha=[None, None, None, None]))
+    assert not _sample_has_trainable_tokens(_sample([False, False], term_advantage=[0.0, 0.0, 0.0, 0.0]))
 
 
 def test_sample_zero_weight_overlay_not_trainable():
     # A zero overlay weight (e.g. an advantage-weighted overlay scaled by zero advantage) yields no
     # gradient, so it must not keep an otherwise-empty batch alive.
-    assert not _sample_has_trainable_tokens(_sample([False, False], overlay_alpha=[None, None, 0.0, None]))
+    assert not _sample_has_trainable_tokens(_sample([False, False], term_advantage=[0.0, 0.0, 0.0, 0.0]))
 
 
 def test_sample_overlay_at_position_zero_is_not_trainable():
     # Position 0 has no shifted current-token logprob, so an alpha there never trains; matches the
     # trainer's overlay mask construction, which skips index 0.
-    assert not _sample_has_trainable_tokens(_sample([False, False], overlay_alpha=[0.5, None, None, None]))
+    assert not _sample_has_trainable_tokens(_sample([False, False], term_advantage=[0.5, 0.0, 0.0, 0.0]))
 
 
 def test_rl_primary_disabled_in_non_rl_modes():

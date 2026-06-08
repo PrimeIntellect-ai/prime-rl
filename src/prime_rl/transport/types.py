@@ -56,15 +56,12 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # taus), sft uses sft_loss_fn. Stamped by the orchestrator from training_mode.
     training_mode: TrainingMode = "rl"
 
-    # Per-term overlay alphas, keyed by loss-term name; each parallel to prompt_ids +
-    # completion_ids. Field None means no overlays; per-token None means that term does not
-    # apply at that token; a float means the token gets that term's core with that weight.
-    overlay_alphas: dict[str, list[float | None]] | None = None
-
-    # The primary term's per-token advantage (advantage_fn output), parallel to prompt_ids +
-    # completion_ids. Set in rl mode; the trainer uses it directly. None (sft/opd) -> the trainer
-    # broadcasts the scalar ``advantage`` over the sequence.
-    token_advantages: list[float] | None = None
+    # Per-term per-token advantage (each loss term's advantage_fn output), keyed by term name and
+    # parallel to prompt_ids + completion_ids. The primary term is keyed by ``training_mode``
+    # ("rl"/"sft"/"opd"); overlays by their config names. 0.0 = masked at that token (no gradient for
+    # that term). Field None (or a missing primary key in sft/opd) -> the trainer broadcasts the
+    # scalar ``advantage`` over the sequence for the primary and applies no overlays.
+    term_advantages: dict[str, list[float]] | None = None
 
     # Per-token (role, tool_name), parallel to prompt_ids + completion_ids, aligned across multi-step
     # trajectories by interleave_rollout. RenderHints exposes these to the advantage_fns; None on
