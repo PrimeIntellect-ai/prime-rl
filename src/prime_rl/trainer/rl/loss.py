@@ -31,6 +31,33 @@ class LossOutputs:
     metrics: dict[str, Tensor]
 
 
+@dataclass
+class ReduceInputs:
+    """Inputs to a per-term reduce: the per-sample (already λ-weighted) summed losses, their
+    per-sample eligibility masks, and the global (all-reduced) eligible-token count.
+
+    ``mean_reduce`` (the default) uses ``global_scale`` for a true global per-token mean. A custom
+    reduce may instead use the per-sample data (e.g. normalize each sequence on its own), but is then
+    responsible for cross-rank normalization — ``global_scale`` is the only globally-reduced input.
+    """
+
+    per_sample_losses: list[Float[Tensor, ""]]
+    per_sample_eligible: list[Bool[Tensor, " seq"]]
+    global_scale: int
+
+
+Reduce = Callable[["ReduceInputs"], Tensor]
+"""Reduces a term's per-sample losses to one scalar — the term's normalization step."""
+
+
+def mean_reduce(inputs: ReduceInputs) -> Tensor:
+    """Global per-token mean: sum the per-sample losses and divide by the global eligible count.
+
+    Bit-identical to the historical ``total_loss / loss_scale`` normalization.
+    """
+    return sum(inputs.per_sample_losses) / inputs.global_scale
+
+
 LossFn = Callable[..., LossOutputs]
 """Type for a per-sample loss function.
 
@@ -60,7 +87,9 @@ class ExtraTerm:
     ``masks``/``weights`` are per packed sample (parallel to ``compute_loss``'s
     ``trainer_logprobs``). The core sees a ``LossInputs`` whose ``loss_mask`` is
     this term's token-selection mask and whose ``advantages`` carry this term's
-    per-token weight. ``scale`` is the term's own (global) token denominator.
+    per-token weight. ``scale`` is the term's own (global) token denominator;
+    ``lambda_weight`` scales its contribution (pre-reduce) and ``reduce`` is its
+    normalization step.
     """
 
     name: str
@@ -68,6 +97,8 @@ class ExtraTerm:
     scale: int
     masks: list[Bool[Tensor, " seq"]]
     weights: list[Float[Tensor, " seq"]]
+    lambda_weight: float = 1.0
+    reduce: Reduce = mean_reduce
 
 
 @jaxtyped(typechecker=typechecker)
@@ -438,15 +469,18 @@ def compute_loss(
     loss_scale: int,
     training_mode: str = "rl",
     extra_terms: list[ExtraTerm] | None = None,
+    reduce: Reduce = mean_reduce,
+    primary_lambda: float = 1.0,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
 
-    Loss dispatch is batch-driven: ``training_mode`` selects the loss term(s) via
-    ``build_loss_terms`` from the core registry ``loss_fns`` (built by
-    ``setup_loss_fns``). Every term is applied and summed before the single
-    backward; today there is exactly one term per sample. sft → sft_loss_fn,
-    opd → opd_loss_fn, rl → the configured default/custom loss.
+    Loss dispatch is batch-driven: ``training_mode`` selects the loss term(s) via ``build_loss_terms``
+    from the core registry ``loss_fns`` (built by ``setup_loss_fns``). Each term produces one summed
+    loss per sample, is scaled by its weight (``primary_lambda`` / ``ExtraTerm.lambda_weight``,
+    pre-reduce), and is reduced to a scalar by its ``reduce`` (default ``mean_reduce`` = divide by the
+    global token count). Terms are summed before the single backward; today there is exactly one
+    primary term per sample.
 
     Args:
         trainer_logprobs: Log probabilities for each sequence
@@ -455,17 +489,17 @@ def compute_loss(
         advantages: Advantages for each sequence
         loss_mask: Loss mask for each sequence
         loss_fns: Per-mode loss fn dispatch table from setup_loss_fns()
-        loss_scale: Scale factor to normalize the primary (training_mode) term
+        loss_scale: Global eligible-token count for the primary term's reduce
         training_mode: Selects which loss fn to apply
-        extra_terms: Additional terms (e.g. echo) summed alongside the primary
-            term; each carries its own per-sample mask/weight and scale.
+        extra_terms: Additional terms (e.g. echo) summed alongside the primary term; each carries its
+            own per-sample mask/weight, λ, scale, and reduce.
+        reduce: The primary term's reduce (normalization) step. Default: global per-token mean.
+        primary_lambda: Scalar weight on the primary term, applied pre-reduce. Default 1.0.
 
     Returns:
         Tuple of (scaled_loss, aggregated_metrics)
     """
     primary_terms = build_loss_terms(training_mode, loss_fns)
-
-    total_loss = 0.0
     all_metrics: dict[str, list[Tensor]] = {}
 
     if teacher_logprobs is None:
@@ -474,6 +508,11 @@ def compute_loss(
     # Materialized so extra terms can re-zip the shared per-sample inputs.
     samples = list(zip(trainer_logprobs, inference_logprobs, teacher_logprobs, advantages, loss_mask))
 
+    # Primary (training_mode) term: one summed loss per sample (x lambda), reduced to a scalar. The
+    # default mean_reduce divides by loss_scale, so the rl-only path stays bit-identical to the loss
+    # before the reduce/lambda seam.
+    primary_losses: list[Tensor] = []
+    primary_eligible: list[Tensor] = []
     for t_logp, i_logp, teach_logp, adv, mask in samples:
         inputs = LossInputs(
             trainer_logprobs=t_logp,
@@ -482,19 +521,20 @@ def compute_loss(
             advantages=adv,
             loss_mask=mask,
         )
+        sample_loss = 0.0
         for term in primary_terms:
             result = term.core(inputs)
-            total_loss = total_loss + result.loss
+            sample_loss = sample_loss + result.loss
             _accumulate_metrics(all_metrics, result.metrics)
+        primary_losses.append(primary_lambda * sample_loss)
+        primary_eligible.append(mask)
+    scaled_loss = reduce(ReduceInputs(primary_losses, primary_eligible, loss_scale))
 
-    # Primary term keeps the single global divide, so the rl-only path stays
-    # bit-identical to the pre-term-refactor loss.
-    scaled_loss = total_loss / loss_scale
-
-    # Extra terms (e.g. echo) carry their own per-token mask/weight and scale.
+    # Extra terms (e.g. echo) carry their own per-token mask/weight, lambda, scale, and reduce.
     # Every term differentiates the same shared forward -> one backward upstream.
     for term in extra_terms or []:
-        term_total = 0.0
+        term_losses: list[Tensor] = []
+        term_eligible: list[Tensor] = []
         for (t_logp, i_logp, teach_logp, _adv, _mask), term_mask, term_weight in zip(
             samples, term.masks, term.weights, strict=True
         ):
@@ -506,11 +546,12 @@ def compute_loss(
                 loss_mask=term_mask,
             )
             result = term.core(inputs)
-            term_total = term_total + result.loss
+            term_losses.append(term.lambda_weight * result.loss)
+            term_eligible.append(term_mask)
             # Namespace overlay metrics by term so multiple overlays (or custom cores) can't collide
             # with each other or with the primary's metrics.
             _accumulate_metrics(all_metrics, {f"{term.name}/{k}": v for k, v in result.metrics.items()})
-        scaled_loss = scaled_loss + term_total / term.scale
+        scaled_loss = scaled_loss + term.reduce(ReduceInputs(term_losses, term_eligible, term.scale))
 
     aggregated: dict[str, Any] = {}
     for k, v in all_metrics.items():

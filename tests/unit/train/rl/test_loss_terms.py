@@ -248,6 +248,38 @@ def test_extra_echo_term_adds_scaled_contribution():
     assert "echo/echo_nll" in metrics and "echo/echo_token_count" in metrics
 
 
+def test_primary_lambda_scales_loss():
+    """primary_lambda (default 1.0) linearly scales the primary term's contribution."""
+    trainer, inference, teacher, advantages, loss_mask = _inputs([6, 4], seed=21)
+    kwargs = dict(
+        loss_mask=loss_mask,
+        loss_fns=setup_loss_fns([_rl_term()]),
+        loss_scale=8,
+        training_mode="rl",
+    )
+    base, _ = compute_loss(trainer, inference, teacher, advantages, **kwargs)
+    doubled, _ = compute_loss(trainer, inference, teacher, advantages, primary_lambda=2.0, **kwargs)
+    assert torch.allclose(doubled, 2.0 * base)
+
+
+def test_custom_reduce_replaces_default_normalization():
+    """A custom reduce overrides the default divide-by-loss_scale (proves the reduce seam)."""
+
+    def sum_reduce(inputs):
+        return sum(inputs.per_sample_losses)
+
+    trainer, inference, teacher, advantages, loss_mask = _inputs([5, 5], seed=23)
+    kwargs = dict(
+        loss_mask=loss_mask,
+        loss_fns=setup_loss_fns([_rl_term()]),
+        loss_scale=7,
+        training_mode="rl",
+    )
+    summed, _ = compute_loss(trainer, inference, teacher, advantages, reduce=sum_reduce, **kwargs)
+    normalized, _ = compute_loss(trainer, inference, teacher, advantages, **kwargs)
+    assert torch.allclose(normalized, summed / 7)
+
+
 def test_extra_terms_none_matches_rl_only():
     trainer, inference, teacher, advantages, loss_mask = _inputs([5, 5], seed=7)
     kwargs = dict(
