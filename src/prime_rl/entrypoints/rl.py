@@ -77,8 +77,6 @@ def setup_env_servers(config: RLConfig, config_dir: Path) -> list[dict]:
 
     Returns one spawn spec per server: ``{label, kind, name, toml}``.
     """
-    from prime_rl.utils.utils import get_free_port
-
     config_dir.mkdir(parents=True, exist_ok=True)
     envs = [("train", env) for env in config.orchestrator.train.env]
     if config.orchestrator.eval is not None:
@@ -88,7 +86,7 @@ def setup_env_servers(config: RLConfig, config_dir: Path) -> list[dict]:
     for kind, env in envs:
         if env.address is not None:
             continue  # user-managed external server — don't spawn one
-        env.address = f"tcp://127.0.0.1:{get_free_port()}"
+        env.address = f"tcp://127.0.0.1:{config.env_server_base_port + len(specs)}"
         env_dict = {
             k: v for k, v in env.model_dump(mode="json", exclude_none=True).items() if k in EnvConfig.model_fields
         }
