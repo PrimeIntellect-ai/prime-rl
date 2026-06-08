@@ -8,7 +8,9 @@ from prime_rl.configs.losses import (
     SystemRoleEchoConfig,
     ToolRoleEchoConfig,
 )
+from prime_rl.orchestrator.advantage import RenderHints, echo_advantage
 from prime_rl.orchestrator.echo import _build_step_echo_alpha, apply_echo_filter
+from prime_rl.orchestrator.trajectories import step_token_roles
 
 
 def test_role_alpha_maps_only_enabled_roles():
@@ -99,3 +101,39 @@ def test_apply_echo_filter_rejects_wrong_inner_length():
 def test_apply_echo_filter_rejects_non_bool():
     with pytest.raises(TypeError, match="plain bool"):
         apply_echo_filter(_rollout([1, 2], [3]), lambda r: [[True, 1, True]])
+
+
+def test_echo_advantage_matches_build_step_echo_alpha():
+    """echo_advantage on step_token_roles' output reproduces _build_step_echo_alpha's role->alpha
+    masking — the bit-identity guard for moving echo onto the advantage_fn (transitional; removed
+    when build_echo_annotations is retired)."""
+    tokens = {
+        "prompt_ids": [1, 2, 3, 4],
+        "completion_ids": [5, 6],
+        "prompt_attribution": {
+            "message_roles": ["system", "user", "tool"],
+            "message_indices": [0, 1, 2, 2],
+            "is_content": [True, True, True, True],
+            "message_tool_names": [None, None, "calc"],
+        },
+    }
+    roles, tool_names = step_token_roles(tokens)
+    hints = RenderHints(
+        token_id=tokens["prompt_ids"] + tokens["completion_ids"],
+        role=roles,
+        tool_name=tool_names,
+        is_sampled=[False, False, False, False, True, True],
+        inference_logprob=[0.0] * 6,
+    )
+    adv = echo_advantage([hints], roles=["system", "tool"], tool_names={"calc"}, alpha=0.5)[0]
+    expected = _build_step_echo_alpha(
+        prompt_attribution=tokens["prompt_attribution"],
+        prompt_len=4,
+        completion_len=2,
+        echo_config=EchoLossConfig(
+            system=SystemRoleEchoConfig(alpha=0.5),
+            tool=ToolRoleEchoConfig(alpha=0.5, tool_names={"calc"}),
+        ),
+    )
+    # _build_step_echo_alpha uses None for "not echoed"; echo_advantage uses 0.0.
+    assert adv == [0.5 if e is not None else 0.0 for e in expected]
