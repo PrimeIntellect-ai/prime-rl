@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = "~=3.12.0"
 dependencies = [
     "prime-rl-configs",
+    "prime-pydantic-config",
     "beartype>=0.21.0",
     "datasets>=4.0.0",
     "jaxtyping>=0.3.2",
