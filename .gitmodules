@@ -13,3 +13,6 @@
 [submodule "pydantic-config"]
 	path = deps/pydantic-config
 	url = https://github.com/PrimeIntellect-ai/pydantic-config
+[submodule "deps/vf-nano"]
+	path = deps/vf-nano
+	url = git@github.com:PrimeIntellect-ai/vf-nano.git
