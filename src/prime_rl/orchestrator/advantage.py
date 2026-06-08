@@ -27,7 +27,7 @@ from prime_rl.utils.utils import import_object
 class AdvantageInputs:
     """Inputs for advantage computation of a single group (one example × N rollouts)."""
 
-    rollouts: list["vf.Trace"]  # noqa: F821 (forward ref)
+    rollouts: list[vf.Trace]
 
 
 @dataclass
@@ -130,7 +130,7 @@ def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
 
 
 def assign_advantages(
-    rollouts: list["TrainRollout"],  # noqa: F821 (forward ref)
+    rollouts: list[TrainRollout],
     advantage_fn: AdvantageFn | None,
 ) -> None:
     """Compute and assign advantages for one finished group of rollouts
