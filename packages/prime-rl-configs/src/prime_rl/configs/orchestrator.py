@@ -160,7 +160,7 @@ class EnvConfig(BaseConfig):
     """ZMQ address of an external env server (e.g. ``tcp://host:5000``). When set, the orchestrator connects to this server instead of spawning one; when None, a subprocess env server is spawned automatically."""
 
     num_workers: int | Literal["auto"] = "auto"
-    """Worker processes for the spawned env server. ``auto`` scales to 1 worker per 256 concurrent rollouts. Ignored when ``address`` is set."""
+    """Worker processes for the spawned env server. ``auto`` defaults to 8 workers, scaling up by 1 worker per 64 concurrent rollouts. Ignored when ``address`` is set."""
 
     ratio: float | None = Field(None, gt=0)
     """Sampling weight for this environment in the buffer. When None for all envs, samples uniformly across all available problems. When set, must be set on all envs — values are relative weights normalized to probabilities (e.g. [1, 1] and [0.5, 0.5] are equivalent)."""
@@ -327,10 +327,10 @@ class EvalConfig(BaseConfig):
             # Resolve auto num_workers now that num_examples and group_size are set
             if env.num_workers == "auto":
                 if env.num_examples == -1:
-                    env.num_workers = 4
+                    env.num_workers = 8
                 else:
                     max_concurrent = env.num_examples * env.group_size
-                    env.num_workers = max(1, math.ceil(max_concurrent / 256))
+                    env.num_workers = max(8, math.ceil(max_concurrent / 64))
         return self
 
     @model_validator(mode="after")
@@ -902,7 +902,7 @@ class OrchestratorConfig(BaseConfig):
         for env_cfg in self.train.env:
             if env_cfg.num_workers == "auto":
                 assert self.max_inflight_rollouts is not None
-                env_cfg.num_workers = max(1, math.ceil(self.max_inflight_rollouts / 256))
+                env_cfg.num_workers = max(8, math.ceil(self.max_inflight_rollouts / 64))
 
         return self
 
