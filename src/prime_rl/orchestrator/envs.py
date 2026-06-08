@@ -59,7 +59,7 @@ class Env:
         """Spawn the env server (if needed), connect, and cache its ``info``."""
         address = self.config.address or self._spawn()
         get_logger().debug(f"Connecting {self.name} to env server {address}")
-        self._env_client = EnvClient(address=address, name=self.name)
+        self._env_client = EnvClient(address=address)
         await self.env_client.wait_for_server_startup()
         info = await self.env_client.info()
         self.num_tasks = info["num_tasks"]
@@ -78,7 +78,6 @@ class Env:
                 env_id=self.config.stripped_id,
                 taskset_args=self.config.args,
                 agent_config=self.config.agent,
-                agent_timeout=self.config.timeout,
                 max_turns=self.config.max_turns,
                 address=address,
             ),
@@ -88,11 +87,11 @@ class Env:
         self._env_server_process = process
         return address
 
-    def _sampling(self, cache_salt: str | None) -> dict:
+    def _sampling(self, cache_salt: str | None) -> vf.SamplingConfig:
         sampling = {**self.sampling_args}
         if cache_salt is not None:
             sampling["extra_body"] = {**sampling.get("extra_body", {}), "cache_salt": cache_salt}
-        return sampling
+        return vf.SamplingConfig(**sampling)
 
     async def run_rollout(
         self, client: vf.ClientConfig, example: dict, model_name: str, cache_salt: str | None
@@ -100,10 +99,9 @@ class Env:
         """Run a single rollout for ``example`` (by task index); return the vf-nano Trace dict."""
         return await self.env_client.run_rollout(
             task_idx=example["example_id"],
-            client_config=client.model_dump(),
+            client_config=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
-            timeout=self.config.timeout,
         )
 
     async def run_group(
@@ -113,10 +111,9 @@ class Env:
         return await self.env_client.run_group(
             task_idx=example["example_id"],
             n=group_size,
-            client_config=client.model_dump(),
+            client_config=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
-            timeout=self.config.timeout,
         )
 
     def shutdown(self) -> None:
