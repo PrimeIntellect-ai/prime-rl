@@ -492,7 +492,7 @@ class RolloutDispatcher:
             is_synth_exception = True
 
         for r in rollouts:
-            if r.get("error") is None and len(r.get("trajectory") or []) == 0:
+            if r.get("error") is None and len(r.get("trajectory") or r.get("transcript") or []) == 0:
                 # Empty trajectory: promote to an explicit error so the sink
                 # treats it like any other failure
                 r["error"] = {
@@ -552,6 +552,7 @@ class RolloutDispatcher:
             "error_chain_str": error_repr,
         }
         out["trajectory"] = []
+        out["transcript"] = []
         out["completion"] = None
         out["reward"] = 0.0
         out["is_truncated"] = False

@@ -174,13 +174,14 @@ def backfill_rollout_tokens(
     When a renderer is provided, uses it for tokenization (faster, deterministic).
     Otherwise falls back to the tokenizer + apply_chat_template path.
     """
-    if all(step["tokens"] is not None for step in output["trajectory"]):
+    turns = output.get("trajectory") or output.get("transcript") or []
+    if all(step["tokens"] is not None for step in turns):
         return True
 
     logger = get_logger()
     tools = _convert_tools_to_oai_format(output.get("tool_defs", []))
 
-    for step_idx, step in enumerate(output["trajectory"]):
+    for step_idx, step in enumerate(turns):
         if step["tokens"] is not None:
             continue
 
@@ -228,7 +229,7 @@ def interleave_rollout(
     """
     logger = get_logger()
 
-    trajectory = output["trajectory"]
+    trajectory = output.get("trajectory") or output.get("transcript") or []
     if len(trajectory) == 0:
         error = output.get("error")
         stop = output.get("stop_condition")
@@ -258,6 +259,12 @@ def interleave_rollout(
                 "completion_ids": list(tokens["completion_ids"]),
                 "completion_mask": list(map(bool, tokens["completion_mask"])),
                 "completion_logprobs": list(tokens["completion_logprobs"]),
+                "prompt_advantages": list(tokens["prompt_advantages"])
+                if tokens.get("prompt_advantages") is not None
+                else None,
+                "completion_advantages": list(tokens["completion_advantages"])
+                if tokens.get("completion_advantages") is not None
+                else None,
                 "routed_experts": routed_experts,
                 "routed_experts_start": routed_experts_start,
                 # Renderer-emitted multimodal sidecar (placeholders + per-item
@@ -305,6 +312,11 @@ def interleave_rollout(
             completion_temperatures=[],
             teacher_logprobs=None,
             advantage=None,
+            token_advantages=(
+                list(tokens["prompt_advantages"]) + list(tokens["completion_advantages"])
+                if tokens.get("prompt_advantages") is not None and tokens.get("completion_advantages") is not None
+                else None
+            ),
             env_name=env_name,
             mm_token_type_ids=None,
             routed_experts=None,  # deferred — finalized at end of interleave_rollout
@@ -375,6 +387,12 @@ def interleave_rollout(
         sample.completion_ids.extend(new_prompt_ids)
         sample.completion_mask.extend([False] * len(new_prompt_ids))
         sample.completion_logprobs.extend([0.0] * len(new_prompt_ids))
+        if sample.token_advantages is not None:
+            prompt_advantages = tokens.get("prompt_advantages")
+            completion_advantages = tokens.get("completion_advantages")
+            if prompt_advantages is None or completion_advantages is None:
+                raise ValueError(f"Missing token advantages for example {output.get('example_id')} step {step_idx}.")
+            sample.token_advantages.extend(prompt_advantages[prefix_len:])
 
         # Extend with new completion tokens
         completion_ids = tokens["completion_ids"]
@@ -384,6 +402,8 @@ def interleave_rollout(
         else:
             sample.completion_mask.extend(tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
+        if sample.token_advantages is not None:
+            sample.token_advantages.extend(tokens["completion_advantages"])
 
         step_routed = tokens.get("routed_experts")
         state = sample_routed_state.get(id(sample))

@@ -139,7 +139,7 @@ class EvalSink:
             metrics.completion_len_min = float(min(lens))
             metrics.truncation_rate = float(sum(1 for r in valid if r.is_truncated) / len(valid))
             metrics.no_response_rate = float(sum(1 for r in valid if not r.raw.get("completion")) / len(valid))
-            num_turns = [len(r.raw.get("trajectory") or []) for r in valid]
+            num_turns = [len(r.raw.get("trajectory") or r.raw.get("transcript") or []) for r in valid]
             metrics.num_turns_mean = float(sum(num_turns) / len(num_turns))
             metrics.num_turns_min = float(min(num_turns))
             metrics.num_turns_max = float(max(num_turns))

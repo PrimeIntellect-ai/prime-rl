@@ -52,7 +52,7 @@ class MetricsBuilder:
                 "prefill_len": metrics.rollout_prefill_lens,
                 "decode_len": metrics.rollout_decode_lens,
                 "samples_per_rollout": metrics.samples_per_rollout,
-                "num_turns": [len(r.raw["trajectory"]) for r in rollouts],
+                "num_turns": [len(r.raw.get("trajectory") or r.raw.get("transcript") or []) for r in rollouts],
             }
         )
         metrics_df = pd.DataFrame([(r.raw.get("metrics") or {}) for r in rollouts])

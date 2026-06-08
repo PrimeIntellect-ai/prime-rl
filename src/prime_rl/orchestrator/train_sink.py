@@ -157,7 +157,8 @@ class TrainSink:
         if rollout.error is not None:
             return
         raw = rollout.raw
-        needs_backfill = any(s["tokens"] is None for s in raw.get("trajectory") or [])
+        turns = raw.get("trajectory") or raw.get("transcript") or []
+        needs_backfill = any(s["tokens"] is None for s in turns)
         if needs_backfill:
             await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
         samples = await asyncio.to_thread(
@@ -200,7 +201,16 @@ class TrainSink:
             )
             return
 
-        assign_advantages(survivors, self.advantage_fn)
+        if env.provides_token_advantages:
+            for rollout in survivors:
+                rollout.advantage = float(rollout.raw.get("advantage", rollout.reward))
+                for sample in rollout.samples:
+                    if sample.token_advantages is None:
+                        raise ValueError(
+                            f"v1 env {env_name} provides advantages but rollout {rollout.rollout_id} has no token_advantages"
+                        )
+        else:
+            assign_advantages(survivors, self.advantage_fn)
 
         # Propagate to the pre-tokenized samples so the orchestrator can
         # collect samples at ship time without re-walking rollouts. The env

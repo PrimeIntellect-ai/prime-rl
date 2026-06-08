@@ -35,6 +35,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     env_name: str
     teacher_logprobs: list[float] | None = None
     advantage: float | None = None
+    token_advantages: list[float] | None = None
     reward: float | None = None
 
     # Generic multimodal kwargs: flat dict keyed by the kwarg names the

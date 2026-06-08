@@ -172,7 +172,7 @@ class WandbMonitor(Monitor):
         start_time = time.perf_counter()
 
         for rollout in rollouts:
-            trajectory = rollout["trajectory"]
+            trajectory = rollout.get("trajectory") or rollout.get("transcript") or []
             if not trajectory:
                 continue
             last_step = trajectory[-1]

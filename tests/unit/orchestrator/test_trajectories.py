@@ -1378,3 +1378,49 @@ def test_interleave_rollout_packs_pixels_from_renderer_mm_data():
     assert _decode_mm_thw(sample) == [[1, 2, 3], [1, 4, 4]]
     # mm_token_type_ids: image at token 2, video at token 5, rest 0.
     assert sample.mm_token_type_ids == [0, 1, 0, 0, 2, 0, 0]
+
+
+def test_interleave_rollout_transcript_token_advantages():
+    output = {
+        "example_id": 7,
+        "env_name": "v1-env",
+        "error": None,
+        "reward": 1.0,
+        "transcript": [
+            {
+                "prompt": [{"role": "user", "content": "U1"}],
+                "completion": [{"role": "assistant", "content": "A1"}],
+                "tokens": {
+                    "prompt_ids": [1, 2],
+                    "prompt_mask": [0, 0],
+                    "prompt_advantages": [0.0, 0.0],
+                    "completion_ids": [3],
+                    "completion_mask": [1],
+                    "completion_logprobs": [-0.1],
+                    "completion_advantages": [0.5],
+                },
+            },
+            {
+                "prompt": [{"role": "user", "content": "U1"}],
+                "completion": [{"role": "assistant", "content": "A2"}],
+                "tokens": {
+                    "prompt_ids": [1, 2, 3, 4],
+                    "prompt_mask": [0, 0, 0, 0],
+                    "prompt_advantages": [0.0, 0.0, 0.5, 0.0],
+                    "completion_ids": [5],
+                    "completion_mask": [1],
+                    "completion_logprobs": [-0.2],
+                    "completion_advantages": [0.5],
+                },
+            },
+        ],
+    }
+
+    samples = interleave_rollout(output)
+
+    assert samples is not None
+    assert len(samples) == 1
+    assert samples[0].prompt_ids == [1, 2]
+    assert samples[0].completion_ids == [3, 4, 5]
+    assert samples[0].completion_mask == [True, False, True]
+    assert samples[0].token_advantages == [0.0, 0.0, 0.5, 0.0, 0.5]

@@ -194,3 +194,13 @@ def test_prepare_sample_none_routed_experts():
 
     micro_batch = prepare_sample(sample, seq_len=8)
     assert micro_batch.routed_experts is None
+
+
+def test_prepare_sample_prefers_token_advantages(make_training_example):
+    example = make_training_example()
+    example.advantage = 99.0
+    example.token_advantages = [0.0, 0.1, 0.2, 0.3]
+
+    micro_batch = prepare_sample(example, seq_len=16)
+
+    assert micro_batch.advantages == [0.0, 0.1, 0.2, 0.3]

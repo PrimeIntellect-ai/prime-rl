@@ -68,7 +68,9 @@ def default_advantage_fn(
         )
         return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs).tolist())
     if isinstance(length_penalty, TurnsLengthPenaltyConfig):
-        costs = torch.tensor([len(r["trajectory"]) for r in inputs.rollouts], dtype=rewards.dtype)
+        costs = torch.tensor(
+            [len(r.get("trajectory") or r.get("transcript") or []) for r in inputs.rollouts], dtype=rewards.dtype
+        )
         return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs).tolist())
 
     return AdvantageOutputs(advantages=(rewards - rewards.mean()).tolist())

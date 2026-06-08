@@ -7,7 +7,7 @@ import time
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from multiprocessing.process import BaseProcess
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar, cast
 
 import pandas as pd
 import verifiers as vf
@@ -21,6 +21,7 @@ from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize
 
 REQUIRED_STATE_COLUMNS = ["trajectory"]
+V1_REQUIRED_STATE_COLUMNS = ["transcript"]
 
 
 class Env:
@@ -31,9 +32,66 @@ class Env:
         self.sampling_args: dict = {}
 
         get_logger().debug(f"Initializing {config.resolved_name} ({config})")
-        self._env: vf.Environment = vf.load_environment(config.stripped_id, **config.args)
+        self._env = self._load_environment()
         self._env_client: ZMQEnvClient | None = None
         self._env_server_process: BaseProcess | None = None
+
+    def _configured_advantage(self) -> str | None:
+        return getattr(self.config, "advantage", None)
+
+    def _env_args(self) -> dict[str, Any]:
+        args = dict(self.config.args)
+        advantage = self._configured_advantage()
+        if advantage is None:
+            return args
+        config_value = args.get("config", {})
+        if not isinstance(config_value, dict):
+            raise TypeError("env args.config must be a mapping when setting advantage")
+        args["config"] = {**config_value, "advantage": advantage}
+        return args
+
+    def _load_environment(self):
+        return vf.load_environment(self.config.stripped_id, **self._env_args())
+
+    @staticmethod
+    def _is_v1_env(env: Any) -> bool:
+        return all(hasattr(env, attr) for attr in ("taskset", "harness", "score_group", "run_rollout"))
+
+    def _v1_model_config(self, client: vf.ClientConfig, model_name: str, cache_salt: str | None):
+        import verifiers.v1 as vf1
+
+        return vf1.ModelConfig(
+            client=client,
+            model=model_name,
+            sampling_args=self._sampling_args_with_salt(cache_salt),
+        )
+
+    @staticmethod
+    def _task_row(example: dict) -> dict:
+        return {k: v for k, v in example.items() if k not in {"env_name", "eval_step"}}
+
+    def _v1_output(self, task, state) -> vf.RolloutOutput:
+        output = state.to_output(task, state_columns=self.state_columns)
+        output.setdefault("error", None)
+        self._fill_v1_token_usage(output)
+        return cast(vf.RolloutOutput, output)
+
+    def _fill_v1_token_usage(self, output: dict[str, Any]) -> None:
+        usage = dict(output.get("token_usage") or {})
+        transcript = output.get("transcript") or []
+        final_output_tokens = 0
+        final_input_tokens = 0
+        for turn in transcript:
+            tokens = (turn or {}).get("tokens") or {}
+            prompt_ids = tokens.get("prompt_ids") or []
+            completion_ids = tokens.get("completion_ids") or []
+            final_output_tokens += len(completion_ids)
+            final_input_tokens = max(0, len(prompt_ids) - final_output_tokens)
+        usage.setdefault("input_tokens", float(final_input_tokens + final_output_tokens))
+        usage.setdefault("output_tokens", float(final_output_tokens))
+        usage["final_input_tokens"] = float(usage.get("final_input_tokens", final_input_tokens))
+        usage["final_output_tokens"] = float(usage.get("final_output_tokens", final_output_tokens))
+        output["token_usage"] = usage
 
     @property
     def name(self) -> str:
@@ -42,6 +100,14 @@ class Env:
     @property
     def env(self) -> vf.Environment:
         return self._env
+
+    @property
+    def is_v1(self) -> bool:
+        return self._is_v1_env(self.env)
+
+    @property
+    def provides_token_advantages(self) -> bool:
+        return bool(self.is_v1 and getattr(self.env, "provides_advantages", False))
 
     @property
     def env_client(self) -> ZMQEnvClient:
@@ -53,6 +119,8 @@ class Env:
 
     @property
     def requires_group_scoring(self) -> bool:
+        if self.is_v1:
+            return bool(getattr(self.env, "requires_group_rollouts", False))
         return any(self.env.rubric._is_group_func(func) for func in self.env.rubric._get_reward_funcs())
 
     async def start(
@@ -62,6 +130,8 @@ class Env:
         json_logging: bool = False,
     ) -> None:
         """Spawn an env server (if needed) and connect to it."""
+        if self.is_v1:
+            return
         if self.config.address is None:
             address = self._spawn(log_dir=log_dir, log_level=log_level, json_logging=json_logging)
         else:
@@ -115,7 +185,8 @@ class Env:
     def state_columns(self) -> list[str]:
         """Required columns plus any extras configured on the env, deduped (required first)."""
         merged: list[str] = []
-        for col in (*REQUIRED_STATE_COLUMNS, *self.config.state_columns):
+        required = V1_REQUIRED_STATE_COLUMNS if self.is_v1 else REQUIRED_STATE_COLUMNS
+        for col in (*required, *self.config.state_columns):
             if col not in merged:
                 merged.append(col)
         return merged
@@ -128,6 +199,18 @@ class Env:
         cache_salt: str | None,
     ) -> vf.RolloutOutput:
         """Run a single rollout for an example."""
+        if self.is_v1:
+            import verifiers.v1 as vf1
+
+            task = self.env.taskset.to_task(cast(vf1.JsonData, self._task_row(example)))
+            model = self._v1_model_config(client, model_name, cache_salt)
+            state = await self.env.run_rollout(
+                task,
+                model=model,
+                max_retries=self.config.max_retries,
+            )
+            return self._v1_output(task, state)
+
         return await self.env.run_rollout(
             vf.RolloutInput(**example),
             client=client,
@@ -147,6 +230,26 @@ class Env:
         cache_salt: str | None,
     ) -> list[vf.RolloutOutput]:
         """Run a group of rollouts for an example. Required for group-scoring envs."""
+        if self.is_v1:
+            import verifiers.v1 as vf1
+
+            base_task = self.env.taskset.to_task(cast(vf1.JsonData, self._task_row(example)))
+            tasks, initial_states = await self.env.taskset.init_group(base_task, group_size)
+            model = self._v1_model_config(client, model_name, cache_salt)
+            states = await asyncio.gather(
+                *(
+                    self.env.run_rollout(
+                        task,
+                        model=model,
+                        state=state,
+                        max_retries=self.config.max_retries,
+                    )
+                    for task, state in zip(tasks, initial_states, strict=True)
+                )
+            )
+            states = await self.env.score_group(tasks, list(states), model=model)
+            return [self._v1_output(task, state) for task, state in zip(tasks, states, strict=True)]
+
         return await self.env.run_group(
             [vf.RolloutInput(**example) for _ in range(group_size)],
             client=client,

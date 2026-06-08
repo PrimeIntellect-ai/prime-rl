@@ -537,3 +537,21 @@ def test_explicit_inference_parser_wins_over_auto():
     )
     assert config.inference is not None
     assert config.inference.model.tool_call_parser == "hermes"
+
+
+def test_train_advantage_inherits_and_env_override_can_disable():
+    config = OrchestratorConfig.model_validate(
+        {
+            "train": {
+                "advantage": "grpo",
+                "env": [
+                    {"id": "env-a"},
+                    {"id": "env-b", "advantage": "rloo"},
+                    {"id": "env-c", "advantage": None},
+                ],
+            },
+            "renderer": None,
+        }
+    )
+
+    assert [env.advantage for env in config.train.env] == ["grpo", "rloo", None]

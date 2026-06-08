@@ -57,7 +57,10 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     input_ids = training_example.prompt_ids + training_example.completion_ids
     loss_mask = training_example.prompt_mask + training_example.completion_mask
     inference_logprobs = [0.0] * len(training_example.prompt_ids) + training_example.completion_logprobs
-    advantages = [training_example.advantage] * len(input_ids)
+    if training_example.token_advantages is None:
+        advantages = [training_example.advantage] * len(input_ids)
+    else:
+        advantages = list(training_example.token_advantages)
     reward = training_example.reward if training_example.reward is not None else float("nan")
     rewards = [reward] * len(input_ids)
     position_ids = list(range(len(input_ids)))
@@ -104,6 +107,14 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     ), (
         f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}, rewards: {len(rewards)}, temperatures: {len(temperatures)}"
     )
+    if training_example.token_advantages is not None:
+        assert len(training_example.token_advantages) == len(training_example.prompt_ids) + len(
+            training_example.completion_ids
+        ), (
+            f"token_advantages: {len(training_example.token_advantages)}, "
+            f"input_ids: {len(training_example.prompt_ids) + len(training_example.completion_ids)}"
+        )
+
     if teacher_logprobs is not None:
         assert len(teacher_logprobs) == len(input_ids), f"teacher_logprobs: {len(teacher_logprobs)}"
 

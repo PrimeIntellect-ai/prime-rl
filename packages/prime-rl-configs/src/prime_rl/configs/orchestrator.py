@@ -214,6 +214,9 @@ class TrainEnvConfig(EnvConfig):
     """Rollouts generated per example for GRPO group-relative advantages.
     Inherits from ``orchestrator.group_size`` when unset."""
 
+    advantage: str | None = None
+    """Optional v1 env-owned advantage function. Unset inherits ``orchestrator.train.advantage``; explicit null disables inheritance."""
+
 
 class EvalEnvConfig(EnvConfig):
     sampling: EvalSamplingConfig = EvalSamplingConfig()
@@ -236,6 +239,9 @@ class TrainConfig(BaseConfig):
     sampling: TrainSamplingConfig = TrainSamplingConfig()
     """Shared training sampling configuration."""
 
+    advantage: str | None = None
+    """Default v1 env-owned advantage function for training envs. Built-ins include ``grpo``, ``rloo``, and ``reinforce``."""
+
     num_workers: int | Literal["auto"] = "auto"
     """Default worker processes for env servers. Can be overridden per env."""
 
@@ -256,6 +262,8 @@ class TrainConfig(BaseConfig):
                 env.num_workers = self.num_workers
             if "max_retries" not in env.model_fields_set:
                 env.max_retries = self.max_retries
+            if "advantage" not in env.model_fields_set:
+                env.advantage = self.advantage
         return self
 
     @model_validator(mode="after")

@@ -336,7 +336,7 @@ class PrimeMonitor(Monitor):
         for sample_id, rollout in enumerate(rollouts):
             prompt = rollout.get("prompt")
             completion = rollout.get("completion")
-            trajectory = rollout.get("trajectory") or []
+            trajectory = rollout.get("trajectory") or rollout.get("transcript") or []
             if prompt is None or completion is None or not trajectory:
                 continue
 
