@@ -143,7 +143,7 @@ class Env:
         """Run a single rollout for ``task_idx``; return a typed Trace."""
         wire = await self.env_client.run_rollout(
             task_idx=task_idx,
-            client_config=client,
+            client=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
@@ -158,7 +158,7 @@ class Env:
         wires = await self.env_client.run_group(
             task_idx=task_idx,
             n=group_size,
-            client_config=client,
+            client=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
