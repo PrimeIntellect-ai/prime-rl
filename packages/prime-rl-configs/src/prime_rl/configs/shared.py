@@ -249,16 +249,34 @@ class FileSystemTransportConfig(BaseTransportConfig):
 
 
 class ZMQTransportConfig(BaseTransportConfig):
+    """
+    ZMQ binds on all local interfaces and connects to ``host`` (or ``MASTER_ADDR`` when unset).
+    Base ``port`` is used for training batches if that hop uses ZMQ; micro-batches use
+    ``port + 1`` for PUB/SUB data and ``port + 2`` for the startup READY barrier.
+    This assumes a trusted trainer network; ZMQ messages are not authenticated.
+    """
+
     type: Literal["zmq"] = "zmq"
 
-    host: str = "localhost"
-    """Host address for ZMQ transport."""
+    host: str | None = None
+    """Host address receivers/senders connect to. When unset or ``0.0.0.0``, resolves to ``MASTER_ADDR`` or ``localhost``."""
 
     port: int = 5555
     """Base port for ZMQ transport."""
 
-    hwm: int = 10
+    hwm: int = Field(64, ge=1)
     """High-water mark (max in-flight messages per ZMQ socket)."""
+
+    recv_timeout_seconds: int = Field(300, ge=1)
+    """Seconds a micro-batch receiver waits after the master has published a step before failing fast."""
+
+    ready_timeout_seconds: int = Field(300, ge=1)
+    """Seconds the micro-batch sender waits at startup for rank READY messages before failing fast."""
+
+    publish_grace_ms: int = Field(1000, ge=0)
+    """One-time startup grace after all READY messages arrive, before the first publish, to let
+    PUB/SUB subscriptions propagate and avoid step-0 slow-joiner drops. Conservative by default
+    since it is a one-time cost; lower it once a topology is observed to start cleanly."""
 
 
 TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig, Field(discriminator="type")]

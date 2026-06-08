@@ -1,7 +1,11 @@
+import asyncio
+import base64
 import io
 import json
+from pathlib import Path
 from unittest.mock import Mock
 
+import httpx
 import pyarrow.parquet as pq
 
 from prime_rl.utils.monitor.prime import PrimeMonitor
@@ -92,6 +96,86 @@ def test_rollouts_to_parquet_bytes_skips_rollouts_without_trajectory():
     assert len(rows) == 1
     assert rows[0]["problem_id"] == 1
     assert rows[0]["sample_id"] == 0
+
+
+def test_rollouts_to_parquet_bytes_inlines_local_image_urls_without_mutating(tmp_path: Path):
+    monitor = _new_monitor()
+    monitor.run_id = "run-images"
+    image_path = tmp_path / "sample.jpg"
+    image_bytes = b"jpeg-bytes"
+    image_path.write_bytes(image_bytes)
+    file_url = image_path.as_uri()
+    rollout = _build_rollout(example_id=1, reward=1.0, task="image-task")
+    image_part = {"type": "image_url", "image_url": {"url": file_url}}
+    rollout["prompt"] = [{"role": "user", "content": [image_part]}]
+    rollout["completion"] = [{"role": "assistant", "content": [image_part]}]
+    rollout["trajectory"][0]["prompt"] = [{"role": "user", "content": [image_part]}]
+
+    parquet_bytes = monitor._rollouts_to_parquet_bytes([rollout], step=9)
+
+    assert parquet_bytes is not None
+    row = pq.read_table(io.BytesIO(parquet_bytes)).to_pylist()[0]
+    expected_url = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode("ascii")
+    assert json.loads(row["prompt"])[0]["content"][0]["image_url"]["url"] == expected_url
+    assert json.loads(row["completion"])[0]["content"][0]["image_url"]["url"] == expected_url
+    assert json.loads(row["trajectory"])[0]["prompt"][0]["content"][0]["image_url"]["url"] == expected_url
+    assert rollout["prompt"][0]["content"][0]["image_url"]["url"] == file_url
+
+
+def test_rollouts_to_parquet_bytes_leaves_large_local_image_urls(tmp_path: Path):
+    monitor = _new_monitor()
+    monitor.run_id = "run-large-image"
+    image_path = tmp_path / "large.png"
+    image_path.write_bytes(b"x" * (2 * 1024 * 1024 + 1))
+    file_url = image_path.as_uri()
+    rollout = _build_rollout(example_id=1, reward=1.0, task="image-task")
+    rollout["prompt"] = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": file_url}}]}]
+
+    parquet_bytes = monitor._rollouts_to_parquet_bytes([rollout], step=9)
+
+    assert parquet_bytes is not None
+    row = pq.read_table(io.BytesIO(parquet_bytes)).to_pylist()[0]
+    assert json.loads(row["prompt"])[0]["content"][0]["image_url"]["url"] == file_url
+
+
+def test_upload_to_r2_streams_path_with_content_length_and_retry_rewind(tmp_path: Path, monkeypatch):
+    """The multimodal upload path: a Path body is streamed via an AsyncClient with an explicit
+    Content-Length (no chunked transfer-encoding), and a retry re-sends the full body."""
+    monitor = _new_monitor()
+    monitor.logger = Mock()
+
+    payload = b"PARQUET-BODY" * 50_000  # ~600 KB, spans many 64 KB stream chunks
+    path = tmp_path / "samples.parquet"
+    path.write_bytes(payload)
+
+    seen: list[tuple[dict, int]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await request.aread()  # consume the streamed body
+        seen.append((dict(request.headers), len(request.content)))
+        if len(seen) == 1:
+            raise httpx.ConnectError("transient")  # force a retry to exercise rewind
+        return httpx.Response(200)
+
+    async def _no_sleep(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)  # skip retry backoff
+    monitor._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def run() -> bool:
+        try:
+            return await monitor._upload_to_r2("https://r2.example/key", path, content_type="application/parquet")
+        finally:
+            await monitor._client.aclose()
+
+    assert asyncio.run(run()) is True
+    assert len(seen) == 2  # first attempt failed, second succeeded
+
+    headers, body_len = seen[-1]
+    assert body_len == len(payload)  # full body re-sent after rewind, not truncated
+    assert headers["content-length"] == str(len(payload))
+    assert "transfer-encoding" not in headers  # presigned PUT must stay on Content-Length
 
 
 def test_sanitize_json_payload_drops_non_finite_values_and_logs_paths():

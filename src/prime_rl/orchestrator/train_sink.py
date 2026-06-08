@@ -14,8 +14,11 @@ save_rollouts, monitor.log, teacher logprobs) live on the orchestrator.
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from collections import defaultdict
+
+from renderers import mm_store
 
 from prime_rl.configs.orchestrator import AdvantageConfig, OrchestratorConfig
 from prime_rl.orchestrator.advantage import assign_advantages, setup_advantage_fn
@@ -54,6 +57,15 @@ class TrainSink:
         self.config = config
         self.tokenizer = tokenizer
         self.renderer = renderer
+
+        # Canonical run-scoped offload dir. The env worker (during rollout),
+        # this sink's offload, and the sweeper must all resolve the SAME
+        # ``/data/outputs/run_<RUN_ID>`` dir — otherwise the sink re-copies
+        # images the env worker already wrote and the sweeper misses the
+        # env-worker/feature assets. Falls back to ``output_dir`` for local
+        # runs without RUN_ID.
+        run_id = os.environ.get("RUN_ID", "")
+        self._mm_asset_root = mm_store.run_dir(run_id) if run_id else config.output_dir
         self.train_envs = train_envs
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size
@@ -164,13 +176,17 @@ class TrainSink:
             interleave_rollout,
             raw,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
+            renderer=self.renderer,
+            defer_materialization=self.config.defer_mm_materialization,
             env_name=rollout.env_name,
         )
         rollout.samples = samples or []
         # Offload base64 image bytes to disk as soon as the rollout is
         # tokenized, so memory stays flat instead of holding every buffered
-        # rollout's images until the batch ships (no-op for text-only).
-        await asyncio.to_thread(offload_images_to_disk, [raw], self.config.output_dir)
+        # rollout's images until the batch ships (no-op for text-only). Images
+        # the env worker already offloaded to the same run dir are recognized
+        # and not re-copied.
+        await asyncio.to_thread(offload_images_to_disk, [raw], self._mm_asset_root)
 
     def process_group(self, group_id: uuid.UUID) -> None:
         """Finalize one GRPO group: drop errored rollouts (the whole group
@@ -251,6 +267,16 @@ class TrainSink:
         set), apply post-batch filter annotations, and assemble the
         trainer-bound ``TrainingSample`` list. Overflow stays for the next
         batch."""
+        # Evict stale offloaded mm_feature artifacts (a regenerable cache the
+        # trainer never reads — over-eviction just forces a reprocess) under
+        # the TTL. Each run sweeps its own dir → multi-run safe; no-op for
+        # text-only runs (feature dir absent).
+        num_swept = mm_store.sweep_stale_artifacts(self._mm_asset_root, self.config.mm_artifact_ttl_seconds)
+        if num_swept:
+            get_logger().info(
+                f"Swept {num_swept} stale mm_feature artifacts (ttl={self.config.mm_artifact_ttl_seconds}s)"
+            )
+
         if self.batch_size is not None:
             cohort = self.pending_batch[: self.batch_size]
             self.pending_batch = self.pending_batch[self.batch_size :]

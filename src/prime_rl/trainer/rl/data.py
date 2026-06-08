@@ -1,8 +1,12 @@
+import pickle
+import time
 from pathlib import Path
 from typing import TypedDict
 
 import torch
+import torch.distributed.distributed_c10d as c10d
 from jaxtyping import Bool, Float, Int
+from renderers import RendererConfig
 from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
@@ -11,6 +15,10 @@ from prime_rl.trainer.rl.packer import BasePacker, setup_packer
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.world import get_world
 from prime_rl.transport import MicroBatch, MicroBatchReceiver, TransportConfig, setup_micro_batch_receiver
+from prime_rl.utils.logger import get_logger
+
+# Poll interval for the worker wait on the master's micro-batch publish status.
+_PUBLISH_POLL_SECONDS = 1.0
 
 
 class TensorMicroBatch(TypedDict):
@@ -62,6 +70,9 @@ class FakeDataLoader:
         self.multi_run_manager = get_multi_run_manager()
 
     def wait_for_batch(self) -> None:
+        return
+
+    def synchronize_state(self) -> None:
         return
 
     def get_batch(self) -> list[TensorMicroBatch]:
@@ -163,8 +174,15 @@ class DataLoader:
         pad_to_multiple_of: int,
         tokenizer: PreTrainedTokenizer,
         config: TransportConfig,
+        defer_mm_materialization: bool = False,
+        renderer_config: RendererConfig | None = None,
+        pack_multimodal: bool = False,
+        micro_batch_transport_config: TransportConfig | None = None,
     ):
         self.world = get_world()
+        self._current_step = start_step
+        self._micro_batch_transport_config = micro_batch_transport_config or config
+        self._store = c10d._get_default_store()
 
         if self.world.is_master:
             self.packer: BasePacker = setup_packer(
@@ -174,27 +192,81 @@ class DataLoader:
                 transport_config=config,
                 pad_to_multiple_of=pad_to_multiple_of,
                 start_step=start_step,
+                pack_multimodal=pack_multimodal,
+                micro_batch_transport_config=self._micro_batch_transport_config,
             )
 
         non_dp_world_size = self.world.world_size // dp_world_size
         dp_rank = self.world.rank // non_dp_world_size
         self.multi_run_manager = get_multi_run_manager()
 
-        self.receiver: MicroBatchReceiver = setup_micro_batch_receiver(output_dir, dp_rank, start_step, config)
+        self.receiver: MicroBatchReceiver = setup_micro_batch_receiver(
+            output_dir, dp_rank, start_step, self._micro_batch_transport_config
+        )
+
+        # Deferred materialization: each rank builds its own renderer once and
+        # materializes pixels from the shipped image references in get_batch.
+        self.defer_mm_materialization = defer_mm_materialization
+        self._renderer = None
+        # Build the renderer only when one is configured. With default-on defer,
+        # text-only runs leave renderer_config None and never receive mm_refs, so
+        # the materialize path below is simply never hit.
+        if defer_mm_materialization and renderer_config is not None:
+            from renderers.base import create_renderer
+
+            self._renderer = create_renderer(tokenizer, renderer_config)
+        # Per-step materialization cost, surfaced as wandb time/mm_materialize.
+        self.last_mm_materialize_time = 0.0
+        self.last_mm_images_materialized = 0
+
+    def _publish_status_key(self) -> str:
+        return f"micro_batch_publish/{self._current_step}"
+
+    def _publish_micro_batch_status(self, *, ok: bool, error: str = "") -> None:
+        self._store.set(self._publish_status_key(), pickle.dumps({"ok": ok, "error": error}))
+
+    def _wait_for_micro_batch_status(self) -> None:
+        # No deadline here: packing is generation-bound (the master blocks on the
+        # orchestrator) and can legitimately take arbitrarily long, so a fixed
+        # timeout would crash the run on slow generation rather than a real fault.
+        # Liveness is already covered: a wedged master is killed by the packer
+        # watchdog -> torchrun tears down the group, and a master pack error sets
+        # ok=False below for an immediate coordinated fail. Genuine ZMQ delivery
+        # is still bounded by the receiver's recv_timeout once published.
+        key = self._publish_status_key()
+        while not self._store.check([key]):
+            time.sleep(_PUBLISH_POLL_SECONDS)
+
+        status = pickle.loads(self._store.get(key))
+        if not status.get("ok", False):
+            error = status.get("error") or "unknown error"
+            raise RuntimeError(f"Trainer master failed to pack micro-batch step {self._current_step}: {error}")
 
     def wait_for_batch(self) -> None:
         if self.world.is_master:
             self.packer._arm_watchdog()
             try:
                 self.packer.pack()
+                self._publish_micro_batch_status(ok=True)
+            except Exception as exc:
+                self._publish_micro_batch_status(ok=False, error=repr(exc))
+                raise
             finally:
                 self.packer._disarm_watchdog()
+
+        self._wait_for_micro_batch_status()
         self.receiver.wait()
+
+    def synchronize_state(self) -> None:
         self.multi_run_manager.synchronize_state()
 
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()
-        return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+        self.last_mm_materialize_time = 0.0
+        self.last_mm_images_materialized = 0
+        tensor_batches = [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+        self._current_step += 1
+        return tensor_batches
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
@@ -210,6 +282,33 @@ class DataLoader:
                 key: torch.frombuffer(bytearray(payload.data), dtype=_torch_dtype(payload.dtype)).reshape(payload.shape)
                 for key, payload in micro_batch.mm_kwargs.items()
             }
+        elif micro_batch.mm_refs is not None:
+            # Deferred path: materialize pixels here from the shipped image
+            # references. Returns torch tensors directly (no decode needed).
+            # SCOPE (16a): this runs in every rank that holds the shard, so with
+            # TP/CP/EP the same images are read+processed non_dp_world_size times.
+            # Fine for DP-only; a per-DP-group materializer + broadcast is a 16b
+            # perf item for large model-parallel runs.
+            if self._renderer is None:
+                raise ValueError(
+                    "Received mm_refs but the trainer has no renderer: orchestrator/trainer "
+                    "defer_mm_materialization config mismatch (trainer flag is off)."
+                )
+            from prime_rl.utils.mm import materialize_mm_refs
+
+            try:
+                materialize_start = time.perf_counter()
+                mm_kwargs = materialize_mm_refs(self._renderer, micro_batch.mm_refs)
+                self.last_mm_materialize_time += time.perf_counter() - materialize_start
+                self.last_mm_images_materialized += len(micro_batch.mm_refs.uris)
+            except Exception as exc:
+                # The pre-forward all-reduce will fail-fast every rank, so make the
+                # culprit obvious: which run (from lora_num_tokens) and which images.
+                run_idx = next((i for i, n in enumerate(micro_batch.lora_num_tokens or []) if n > 0), None)
+                get_logger().error(
+                    f"mm materialization failed (run_idx={run_idx}, uris={micro_batch.mm_refs.uris}): {exc!r}"
+                )
+                raise
         routed_experts = None
         packed_routed_experts = micro_batch.routed_experts
         if packed_routed_experts is not None:

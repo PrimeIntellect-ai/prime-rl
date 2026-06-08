@@ -30,11 +30,30 @@ delegates to upstream so we track future vLLM changes for free.
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
+import json
+import logging
+import os
+import re
+import time
 from collections.abc import AsyncGenerator
 from functools import cached_property
+from http import HTTPStatus
+from pathlib import Path
 from typing import Any
 
 from fastapi import Request
+from renderers.mm_store import (
+    _SAFE_FINGERPRINT_RE,
+    _SAFE_MM_HASH_RE,
+    _SAFE_RUN_ID_RE,
+    MMFILE_PREFIX,
+    mm_feature_envelope_matches,
+    mm_feature_fingerprint,
+    mm_feature_path,
+    split_mmfile_ref,
+)
 from vllm.entrypoints.openai.engine.protocol import ErrorResponse, RequestResponseMetadata
 from vllm.entrypoints.serve.disagg.protocol import (
     GenerateRequest,
@@ -47,6 +66,13 @@ from vllm.outputs import RequestOutput
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 
 from prime_rl.inference.vllm.routed_experts import RoutedExpertsCapture
+
+logger = logging.getLogger(__name__)
+
+_MM_FEATURE_LOAD_WORKERS_ENV = "PRIME_RL_MM_FEATURE_LOAD_WORKERS"
+_MM_FEATURE_LOAD_RETRIES = 3
+_MM_FEATURE_LOAD_BACKOFF_S = 0.02
+_mm_feature_executor: concurrent.futures.ThreadPoolExecutor | None = None
 
 
 class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
@@ -95,6 +121,269 @@ async def _client_set_max_tokens(raw_request: Request | None) -> bool:
         return True
     sp = body.get("sampling_params")
     return isinstance(sp, dict) and "max_tokens" in sp
+
+
+class _MMFeatureArtifactError(Exception):
+    def __init__(
+        self,
+        *,
+        error_type: str,
+        message: str,
+        missing: list[dict[str, str]] | None = None,
+        status_code: HTTPStatus = HTTPStatus.INTERNAL_SERVER_ERROR,
+    ) -> None:
+        super().__init__(message)
+        self.error_type = error_type
+        self.missing = missing or []
+        self.status_code = status_code
+
+    def response_message(self) -> str:
+        return json.dumps(
+            {
+                "error_type": self.error_type,
+                "message": str(self),
+                "missing": self.missing,
+            },
+            separators=(",", ":"),
+        )
+
+
+def _mm_feature_load_workers() -> int:
+    raw = os.getenv(_MM_FEATURE_LOAD_WORKERS_ENV, "8").strip()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 8
+
+
+def _get_mm_feature_executor() -> concurrent.futures.ThreadPoolExecutor:
+    global _mm_feature_executor
+    if _mm_feature_executor is None:
+        _mm_feature_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=_mm_feature_load_workers(),
+            thread_name_prefix="prime-mmfile",
+        )
+    return _mm_feature_executor
+
+
+def _mm_feature_env_run_id() -> str:
+    run_id = os.environ.get("RUN_ID", "").strip()
+    if not run_id or not _SAFE_RUN_ID_RE.fullmatch(run_id):
+        raise _MMFeatureArtifactError(
+            error_type="invalid_mm_feature_store",
+            message="RUN_ID must be set to a safe run id for legacy mmfile refs.",
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+    return run_id
+
+
+def _parse_mmfile_ref(ref: str, *, expected_modality: str, expected_hash: str) -> tuple[str, str, str, str]:
+    try:
+        run_id, fingerprint, modality, mm_hash = split_mmfile_ref(ref)
+    except ValueError as exc:
+        raise _MMFeatureArtifactError(
+            error_type="invalid_mm_feature_ref",
+            message=f"Invalid mmfile ref shape for {expected_modality}.",
+            status_code=HTTPStatus.BAD_REQUEST,
+        ) from exc
+    if run_id is None:  # legacy 5-part ref: run_id comes from this process's env
+        run_id = _mm_feature_env_run_id()
+    if not _SAFE_RUN_ID_RE.fullmatch(run_id):
+        raise _MMFeatureArtifactError(
+            error_type="invalid_mm_feature_ref",
+            message="mmfile run_id contains unsafe characters.",
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+    if modality != expected_modality:
+        raise _MMFeatureArtifactError(
+            error_type="invalid_mm_feature_ref",
+            message=(f"mmfile modality {modality!r} does not match slot modality {expected_modality!r}."),
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+    if mm_hash != expected_hash:
+        raise _MMFeatureArtifactError(
+            error_type="invalid_mm_feature_ref",
+            message="mmfile hash does not match the slot mm_hash.",
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+    if not _SAFE_FINGERPRINT_RE.fullmatch(fingerprint):
+        raise _MMFeatureArtifactError(
+            error_type="invalid_mm_feature_ref",
+            message="mmfile fingerprint contains unsafe characters.",
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+    if modality != "image":
+        raise _MMFeatureArtifactError(
+            error_type="invalid_mm_feature_ref",
+            message=f"Unsupported mmfile modality: {modality!r}.",
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+    if not _SAFE_MM_HASH_RE.fullmatch(mm_hash):
+        raise _MMFeatureArtifactError(
+            error_type="invalid_mm_feature_ref",
+            message="mmfile hash contains unsafe characters.",
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+    expected_fingerprint = mm_feature_fingerprint(family="qwen_vl", spatial_merge_size=2)
+    if fingerprint != expected_fingerprint:
+        raise _MMFeatureArtifactError(
+            error_type="incompatible_mm_feature_artifact",
+            message=(
+                "mmfile fingerprint is not compatible with this vLLM process "
+                f"(got {fingerprint}, expected {expected_fingerprint})."
+            ),
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+    return run_id, fingerprint, modality, mm_hash
+
+
+def _mm_feature_path(*, run_id: str, fingerprint: str, modality: str, mm_hash: str) -> Path:
+    # ``_parse_mmfile_ref`` validates run_id/fingerprint/modality/mm_hash and the
+    # traversal guard before we reach here, so ``mm_store.mm_feature_path``'s
+    # ValueError paths are unreachable; surface any as the reader's domain error.
+    try:
+        return mm_feature_path(run_id=run_id, fingerprint=fingerprint, modality=modality, mm_hash=mm_hash)
+    except ValueError as exc:
+        raise _MMFeatureArtifactError(
+            error_type="invalid_mm_feature_ref",
+            message=str(exc),
+            status_code=HTTPStatus.BAD_REQUEST,
+        ) from exc
+
+
+def _decoded_image_placeholder_length(item: Any, *, spatial_merge_size: int) -> int:
+    elem = item.get("image_grid_thw")
+    data = getattr(elem, "data", elem)
+    if hasattr(data, "detach"):
+        data = data.detach().cpu()
+    if hasattr(data, "tolist"):
+        data = data.tolist()
+    grid = data[0] if isinstance(data, list) and data and isinstance(data[0], list) else data
+    if not isinstance(grid, list) or len(grid) != 3:
+        raise ValueError("decoded image_grid_thw does not have shape [T,H,W]")
+    return int(grid[0]) * int(grid[1]) * int(grid[2]) // (spatial_merge_size**2)
+
+
+def _load_mmfile_ref_sync(
+    ref: str,
+    *,
+    expected_modality: str,
+    expected_hash: str,
+    expected_placeholder_length: int,
+):
+    import msgpack
+    from vllm.multimodal.inputs import MultiModalKwargsItem
+    from vllm.v1.serial_utils import MsgpackDecoder
+
+    run_id, fingerprint, modality, mm_hash = _parse_mmfile_ref(
+        ref, expected_modality=expected_modality, expected_hash=expected_hash
+    )
+    path = _mm_feature_path(run_id=run_id, fingerprint=fingerprint, modality=modality, mm_hash=mm_hash)
+    missing = [
+        {
+            "run_id": run_id,
+            "modality": modality,
+            "mm_hash": mm_hash,
+            "fingerprint": fingerprint,
+        }
+    ]
+
+    packed: bytes | None = None
+    for attempt in range(_MM_FEATURE_LOAD_RETRIES):
+        try:
+            packed = path.read_bytes()
+            break
+        except FileNotFoundError:
+            if attempt + 1 == _MM_FEATURE_LOAD_RETRIES:
+                raise _MMFeatureArtifactError(
+                    error_type="missing_mm_feature_artifact",
+                    message=f"Missing mmfile artifact: {path}",
+                    missing=missing,
+                ) from None
+            time.sleep(_MM_FEATURE_LOAD_BACKOFF_S * (attempt + 1))
+
+    try:
+        artifact = msgpack.unpackb(packed, raw=False)
+        envelope = artifact.get("envelope") if isinstance(artifact, dict) else None
+        payload = artifact.get("payload") if isinstance(artifact, dict) else None
+        if not isinstance(envelope, dict) or not isinstance(payload, bytes):
+            raise ValueError("artifact must contain envelope and binary payload")
+        if not mm_feature_envelope_matches(
+            envelope,
+            run_id=run_id,
+            fingerprint=fingerprint,
+            modality=modality,
+            mm_hash=mm_hash,
+            payload=payload,
+            require_run_id=False,
+        ):
+            raise ValueError("artifact envelope does not match requested mmfile")
+
+        decoder = MsgpackDecoder(t=MultiModalKwargsItem)
+        item = decoder.decode(payload)
+        placeholder_length = _decoded_image_placeholder_length(item, spatial_merge_size=2)
+        if int(envelope.get("placeholder_length", -1)) != expected_placeholder_length:
+            raise ValueError("artifact placeholder length does not match envelope")
+        if placeholder_length != expected_placeholder_length:
+            raise ValueError("decoded image_grid_thw does not match placeholder length")
+        return item
+    except _MMFeatureArtifactError:
+        raise
+    except Exception as exc:
+        raise _MMFeatureArtifactError(
+            error_type="corrupt_mm_feature_artifact",
+            message=f"Corrupt mmfile artifact for {modality}:{mm_hash}: {exc}",
+            missing=missing,
+        ) from exc
+
+
+async def _load_mmfile_ref(
+    ref: str,
+    *,
+    expected_modality: str,
+    expected_hash: str,
+    expected_placeholder_length: int,
+):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        _get_mm_feature_executor(),
+        lambda: _load_mmfile_ref_sync(
+            ref,
+            expected_modality=expected_modality,
+            expected_hash=expected_hash,
+            expected_placeholder_length=expected_placeholder_length,
+        ),
+    )
+
+
+def _missing_cache_error_from_exception(exc: Exception, features: Any) -> _MMFeatureArtifactError | None:
+    text = repr(exc)
+    if "Expected a cached item" not in text:
+        return None
+
+    missing_hashes = set(re.findall(r"mm_hash=['\"]([^'\"]+)['\"]", text))
+    missing: list[dict[str, str]] = []
+    kwargs_data = getattr(features, "kwargs_data", None)
+    hashes_by_modality = getattr(features, "mm_hashes", {}) or {}
+    if isinstance(kwargs_data, dict):
+        for modality, items in kwargs_data.items():
+            hashes = hashes_by_modality.get(modality) or []
+            for idx, item in enumerate(items):
+                if item is not None or idx >= len(hashes):
+                    continue
+                mm_hash = hashes[idx]
+                if missing_hashes and mm_hash not in missing_hashes:
+                    continue
+                missing.append({"modality": modality, "mm_hash": mm_hash})
+
+    if not missing and missing_hashes:
+        missing = [{"modality": "unknown", "mm_hash": h} for h in missing_hashes]
+
+    return _MMFeatureArtifactError(
+        error_type="missing_mm_cache_item",
+        message=f"vLLM multimodal cache miss for cache-only slot: {exc}",
+        missing=missing,
+    )
 
 
 class PrimeRlServingTokens(ServingTokens):
@@ -150,31 +439,86 @@ class PrimeRlServingTokens(ServingTokens):
         # Build the engine input — features-aware (MM) or text-only fallback.
         # Identical to upstream so we keep tracking it.
         if features := request.features:
-            from vllm.entrypoints.serve.disagg.mm_serde import decode_mm_kwargs_item
-            from vllm.inputs import mm_input
-            from vllm.multimodal.inputs import (
-                MultiModalKwargsItem,
-                PlaceholderRange,
-            )
+            try:
+                from vllm.entrypoints.serve.disagg.mm_serde import decode_mm_kwargs_item
+                from vllm.inputs import mm_input
+                from vllm.multimodal.inputs import (
+                    MultiModalKwargsItem,
+                    PlaceholderRange,
+                )
 
-            mm_placeholders = {
-                modality: [PlaceholderRange(offset=p.offset, length=p.length) for p in ranges]
-                for modality, ranges in features.mm_placeholders.items()
-            }
-            mm_kwargs: dict[str, list[MultiModalKwargsItem | None]] = {}
-            if features.kwargs_data is not None:
-                for modality, items in features.kwargs_data.items():
-                    mm_kwargs[modality] = [decode_mm_kwargs_item(item) if item is not None else None for item in items]
-            else:
-                for modality, hashes in features.mm_hashes.items():
-                    mm_kwargs[modality] = [None] * len(hashes)
-            engine_input = mm_input(
-                prompt_token_ids=request.token_ids,
-                mm_kwargs=mm_kwargs,  # type: ignore[arg-type]
-                mm_hashes=features.mm_hashes,
-                mm_placeholders=mm_placeholders,
-                cache_salt=request.cache_salt,
-            )
+                mm_placeholders = {
+                    modality: [PlaceholderRange(offset=p.offset, length=p.length) for p in ranges]
+                    for modality, ranges in features.mm_placeholders.items()
+                }
+                mm_kwargs: dict[str, list[MultiModalKwargsItem | None]] = {}
+                slot_counts = {"none": 0, "inline": 0, "mmfile": 0}
+                load_start = time.monotonic()
+
+                async def decode_slot(modality: str, idx: int, item: str | None) -> MultiModalKwargsItem | None:
+                    if item is None:
+                        slot_counts["none"] += 1
+                        return None
+                    if item.startswith(f"{MMFILE_PREFIX}:"):
+                        slot_counts["mmfile"] += 1
+                        hashes = features.mm_hashes.get(modality) or []
+                        placeholders = features.mm_placeholders.get(modality) or []
+                        if idx >= len(hashes) or idx >= len(placeholders):
+                            raise _MMFeatureArtifactError(
+                                error_type="invalid_mm_feature_ref",
+                                message=("mmfile slot has no matching hash or placeholder entry."),
+                                status_code=HTTPStatus.BAD_REQUEST,
+                            )
+                        return await _load_mmfile_ref(
+                            item,
+                            expected_modality=modality,
+                            expected_hash=hashes[idx],
+                            expected_placeholder_length=placeholders[idx].length,
+                        )
+                    slot_counts["inline"] += 1
+                    return decode_mm_kwargs_item(item)
+
+                if features.kwargs_data is not None:
+                    for modality, items in features.kwargs_data.items():
+                        hashes = features.mm_hashes.get(modality) or []
+                        if len(items) != len(hashes):
+                            raise _MMFeatureArtifactError(
+                                error_type="invalid_mm_feature_ref",
+                                message=(
+                                    f"kwargs_data[{modality!r}] has {len(items)} items but mm_hashes has {len(hashes)}."
+                                ),
+                                status_code=HTTPStatus.BAD_REQUEST,
+                            )
+                        mm_kwargs[modality] = list(
+                            await asyncio.gather(*(decode_slot(modality, idx, item) for idx, item in enumerate(items)))
+                        )
+                else:
+                    for modality, hashes in features.mm_hashes.items():
+                        slot_counts["none"] += len(hashes)
+                        mm_kwargs[modality] = [None] * len(hashes)
+
+                if any(slot_counts.values()):
+                    logger.debug(
+                        "decoded multimodal feature slots none=%d inline=%d mmfile=%d disk_load_ms=%.2f",
+                        slot_counts["none"],
+                        slot_counts["inline"],
+                        slot_counts["mmfile"],
+                        (time.monotonic() - load_start) * 1000.0,
+                    )
+
+                engine_input = mm_input(
+                    prompt_token_ids=request.token_ids,
+                    mm_kwargs=mm_kwargs,  # type: ignore[arg-type]
+                    mm_hashes=features.mm_hashes,
+                    mm_placeholders=mm_placeholders,
+                    cache_salt=request.cache_salt,
+                )
+            except _MMFeatureArtifactError as exc:
+                return self.create_error_response(
+                    exc.response_message(),
+                    err_type=exc.error_type,
+                    status_code=exc.status_code,
+                )
         else:
             (engine_input,) = await self.openai_serving_render.preprocess_completion(
                 request,
@@ -273,9 +617,20 @@ class PrimeRlServingTokens(ServingTokens):
             )
             result_generator = capture
 
-        response = await super().serve_tokens_full_generator(
-            request, result_generator, request_id, model_name, request_metadata
-        )
+        try:
+            response = await super().serve_tokens_full_generator(
+                request, result_generator, request_id, model_name, request_metadata
+            )
+        except Exception as exc:
+            if request.features is not None:
+                mm_error = _missing_cache_error_from_exception(exc, request.features)
+                if mm_error is not None:
+                    return self.create_error_response(
+                        mm_error.response_message(),
+                        err_type=mm_error.error_type,
+                        status_code=mm_error.status_code,
+                    )
+            raise
 
         if capture is not None and isinstance(response, GenerateResponse):
             response = capture.post_process(response)

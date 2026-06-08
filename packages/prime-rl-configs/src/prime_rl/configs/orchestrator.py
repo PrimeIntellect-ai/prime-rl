@@ -160,7 +160,7 @@ class EnvConfig(BaseConfig):
     """ZMQ address of an external env server (e.g. ``tcp://host:5000``). When set, the orchestrator connects to this server instead of spawning one; when None, a subprocess env server is spawned automatically."""
 
     num_workers: int | Literal["auto"] = "auto"
-    """Worker processes for the spawned env server. ``auto`` scales to 1 worker per 256 concurrent rollouts. Ignored when ``address`` is set."""
+    """Worker processes for the spawned env server. ``auto`` defaults to 8 workers, scaling up by 1 worker per 64 concurrent rollouts. Ignored when ``address`` is set."""
 
     ratio: float | None = Field(None, gt=0)
     """Sampling weight for this environment in the buffer. When None for all envs, samples uniformly across all available problems. When set, must be set on all envs — values are relative weights normalized to probabilities (e.g. [1, 1] and [0.5, 0.5] are equivalent)."""
@@ -327,10 +327,10 @@ class EvalConfig(BaseConfig):
             # Resolve auto num_workers now that num_examples and group_size are set
             if env.num_workers == "auto":
                 if env.num_examples == -1:
-                    env.num_workers = 4
+                    env.num_workers = 8
                 else:
                     max_concurrent = env.num_examples * env.group_size
-                    env.num_workers = max(1, math.ceil(max_concurrent / 256))
+                    env.num_workers = max(8, math.ceil(max_concurrent / 64))
         return self
 
     @model_validator(mode="after")
@@ -588,6 +588,9 @@ class OrchestratorConfig(BaseConfig):
     output_dir: Path = Path("outputs/run_default")
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node."""
 
+    mm_artifact_ttl_seconds: float = 1800.0
+    """TTL (seconds) for offloaded multimodal ``mm_features`` artifacts under ``output_dir/assets/mm_features``. Once per step the orchestrator deletes feature files older than this. Features ONLY: source images under ``assets/images`` are never swept (they are terminal browser output with no regeneration path and are kept for the whole run as the recoverable source). Features are a regenerable cache (trainer rebuilds pixels from the image; env-worker rewrites missing features on demand), so over-eviction just forces a reprocess. The TTL only needs to exceed the write→vLLM-admit window (seconds), so minutes leave a large safety margin against racing in-flight reads. Defaults to 30 minutes."""
+
     tasks_per_minute: int | None = Field(None, ge=1)
     """Rate limit per environment worker, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. With multiple workers, the effective total rate is ``workers × this value``. None disables rate limiting."""
 
@@ -618,6 +621,9 @@ class OrchestratorConfig(BaseConfig):
 
     max_off_policy_steps: int = Field(8, ge=0)
     """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
+
+    defer_mm_materialization: bool = True
+    """Defer multimodal pixel materialization to the trainer. When True, the orchestrator ships lightweight image references (``mm_refs``) instead of materializing pixels and shipping heavy ``mm_kwargs``. Must match the trainer's setting. A no-op for text-only runs; forced off for SFT."""
 
     bench: bool = False
     """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""
@@ -760,6 +766,9 @@ class OrchestratorConfig(BaseConfig):
         validators below so they see the corrected value."""
         if self.training_mode == "sft":
             self.renderer = None
+            # SFT has no renderer, so it can't defer materialization; keep the
+            # default-on flag from tripping the renderer-required validator.
+            self.defer_mm_materialization = False
         return self
 
     @model_validator(mode="after")
@@ -837,6 +846,19 @@ class OrchestratorConfig(BaseConfig):
         )
 
     @model_validator(mode="after")
+    def validate_defer_mm_materialization(self):
+        """Deferred materialization needs a renderer so the descriptor it ships
+        in ``mm_refs`` is reproducible by the trainer's identical renderer."""
+        # Only VLM runs emit mm_refs; text-only runs never do, so default-on is
+        # a harmless no-op for them even if the renderer is opted out.
+        if self.defer_mm_materialization and self.renderer is None and self.student.model.vlm is not None:
+            raise ValueError(
+                "orchestrator.defer_mm_materialization requires a renderer so the trainer can "
+                "materialize pixels identically from the shipped image references."
+            )
+        return self
+
+    @model_validator(mode="after")
     def resolve_batching(self):
         has_rollout_batch = self.batch_size is not None
         has_token_batch = self.token_batch_size is not None
@@ -880,7 +902,7 @@ class OrchestratorConfig(BaseConfig):
         for env_cfg in self.train.env:
             if env_cfg.num_workers == "auto":
                 assert self.max_inflight_rollouts is not None
-                env_cfg.num_workers = max(1, math.ceil(self.max_inflight_rollouts / 256))
+                env_cfg.num_workers = max(8, math.ceil(self.max_inflight_rollouts / 64))
 
         return self
 

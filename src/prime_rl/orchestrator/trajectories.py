@@ -5,11 +5,12 @@ from typing import Any
 
 import numpy as np
 import pybase64
-import torch
 import verifiers as vf
+from renderers import mm_store
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.transport import RoutedExperts, TrainingSample
+from prime_rl.transport.types import MMRefs
 from prime_rl.utils.chat_template import (
     common_prefix_len,
     deserialize_tool_calls,
@@ -18,6 +19,12 @@ from prime_rl.utils.chat_template import (
     strip_message_content,
 )
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.mm import (
+    encode_mm_kwargs,
+    image_uris_from_messages,
+    pack_mm_kwargs_tensors,
+    reconstruct_mm_pixels,
+)
 
 # We use list() instead of deepcopy() for flat lists (token IDs, logprobs) - safe because
 # primitives are immutable. mm_kwargs payloads are not mutated after creation.
@@ -204,6 +211,8 @@ def backfill_rollout_tokens(
 def interleave_rollout(
     output: vf.RolloutOutput,
     mm_token_type_ids_mapping: dict[int, int] | None = None,
+    renderer: Any = None,
+    defer_materialization: bool = False,
     *,
     env_name: str = "",
 ) -> list[TrainingSample] | None:
@@ -506,20 +515,43 @@ def interleave_rollout(
     # reading the last step alone would miss every earlier-turn image.
     # Concat in step order recovers the per-sample cumulative set;
     # deduping again here would drop legitimate duplicate placeholders.
-    for _, sample, step_indices in active_samples:
-        renderer_mm = _union_step_mm_data(prepared_steps, step_indices)
-        if renderer_mm is not None:
-            mm_kwargs = _pack_mm_kwargs_from_renderer(renderer_mm)
-            if mm_kwargs is not None:
-                sample.mm_kwargs = mm_kwargs
-                # ``mm_token_type_ids``: 1 for image-placeholder tokens, 2
-                # for video, 0 otherwise. Renderer-supplied via
-                # ``mm_token_type_id_map`` (single source of truth).
-                if mm_token_type_ids_mapping is not None:
-                    sample.mm_token_type_ids = [
-                        mm_token_type_ids_mapping.get(token_id, 0)
-                        for token_id in sample.prompt_ids + sample.completion_ids
-                    ]
+    #
+    # Skip pixel materialization for filtered rollouts: their samples are
+    # dropped before the trainer (the orchestrator collect loop only appends
+    # ``not is_filtered`` samples), so re-deriving their pixels is pure waste.
+    # The token bookkeeping above is kept — metrics are computed over all
+    # rollouts. ``is_filtered`` is absent for standalone callers (tests), which
+    # default to materializing.
+    if not output.get("is_filtered", False):
+        for _, sample, step_indices in active_samples:
+            renderer_mm = _union_step_mm_data(prepared_steps, step_indices)
+            if renderer_mm is None:
+                continue
+            if defer_materialization:
+                # Ship lightweight refs; the trainer materializes pixels in its
+                # data loader from the descriptor + window image URIs.
+                sample.mm_refs = _collect_mm_refs(renderer_mm, trajectory, step_indices)
+            else:
+                # The env worker ships descriptor-only mm_data (no pixel_values)
+                # to keep its memory flat. Re-derive the pixels here from the
+                # offloaded images referenced in this sample's messages, matched
+                # by content hash with a grid_thw assert. ``renderer`` is the
+                # multimodal pool used for rollouts; absent (or already
+                # pixel-bearing in-process tests) → pass through unchanged.
+                if renderer is not None and _mm_needs_pixels(renderer_mm):
+                    renderer_mm = _reconstruct_mm_pixels(
+                        renderer, renderer_mm, _window_image_messages(trajectory, step_indices)
+                    )
+                mm_kwargs = _pack_mm_kwargs_from_renderer(renderer_mm)
+                if mm_kwargs is not None:
+                    sample.mm_kwargs = mm_kwargs
+            # ``mm_token_type_ids``: 1 for image-placeholder tokens, 2 for
+            # video, 0 otherwise. Renderer-supplied via ``mm_token_type_id_map``
+            # (single source of truth). Computed in both paths.
+            if (sample.mm_kwargs is not None or sample.mm_refs is not None) and mm_token_type_ids_mapping is not None:
+                sample.mm_token_type_ids = [
+                    mm_token_type_ids_mapping.get(token_id, 0) for token_id in sample.prompt_ids + sample.completion_ids
+                ]
 
     return [sample for _, sample, _ in active_samples]
 
@@ -563,67 +595,140 @@ def _union_step_mm_data(
     return {"mm_items": union_items, "mm_hashes": union_hashes}
 
 
-def _pack_mm_kwargs_from_renderer(mm_data: Any) -> "dict[str, Any] | None":
-    """Batch the renderer's per-image ``mm_items`` into model-agnostic
-    forward kwargs.
-
-    ``mm_data`` may arrive as a ``MultiModalData`` instance (in-process
-    for tests) or as a plain dict (after msgpack round-trip from the
-    env-worker). Each item is a dict keyed by the names the model's
-    ``forward`` expects (``pixel_values`` + ``image_grid_thw`` for
-    Qwen3-VL, just ``pixel_values`` for Gemma3-VL, etc.). We batch by
-    ``torch.cat(..., dim=0)`` per key — generic because every HF VLM
-    processor emits a leading batch/patch dimension, and the renderer
-    always processes one image per call.
-
-    Returns a dict of ``EncodedTensor`` payloads keyed by kwarg name,
-    or ``None`` when no multimodal data is present.
-    """
-    from verifiers.utils.serve_utils import decode_tensor_payload
-
-    from prime_rl.transport.types import EncodedTensor
-
-    mm_items = mm_data.mm_items if hasattr(mm_data, "mm_items") else (mm_data or {}).get("mm_items") or {}
-    # Flatten across modalities into one kwarg dict — the model's
-    # forward signature is the schema. ``mm_items`` is typically
-    # ``{"image": [...], "video": [...]}`` but each modality's keys
-    # don't collide for any HF VLM we ship today.
-    per_kwarg: dict[str, list] = {}
-    for _modality, items in mm_items.items():
+def _mm_needs_pixels(union_mm: dict[str, Any]) -> bool:
+    """True if any mm item lacks ``pixel_values`` (descriptor-only shape)."""
+    for items in (union_mm.get("mm_items") or {}).values():
         for item in items or []:
-            for key, payload in item.items():
-                per_kwarg.setdefault(key, []).append(decode_tensor_payload(payload))
-    if not per_kwarg:
+            if isinstance(item, dict) and item.get("pixel_values") is None:
+                return True
+    return False
+
+
+def _window_image_messages(trajectory: list[Any], step_indices: list[int]) -> list[Any]:
+    """Collect the messages from the steps this sample covers.
+
+    The offloaded images (``file://`` after ``offload_images_to_disk``, or
+    inline base64 in-process) live in the step prompts, in conversation order.
+    Concatenating the window's prompts gives ``materialize_pixels`` every image
+    it needs to re-derive pixels by hash; duplicates across cumulative prompts
+    are harmless (the cache absorbs them and matching stops once resolved).
+    """
+    messages: list[Any] = []
+    for si in step_indices:
+        if not (0 <= si < len(trajectory)):
+            continue
+        prompt = trajectory[si].get("prompt")
+        if isinstance(prompt, list):
+            messages.extend(prompt)
+    return messages
+
+
+def _reconstruct_mm_pixels(renderer: Any, union_mm: dict[str, Any], messages: list[Any]) -> Any:
+    """Re-attach ``pixel_values`` to a descriptor-only union mm_data. Delegates
+    to ``utils.mm`` so the flag-off path matches the trainer's flag-on path."""
+    return reconstruct_mm_pixels(renderer, union_mm, messages)
+
+
+def _pack_mm_kwargs_from_renderer(mm_data: Any) -> "dict[str, Any] | None":
+    """Batch the renderer's per-image ``mm_items`` into ``EncodedTensor``
+    forward kwargs. Delegates to ``utils.mm`` (pack then encode)."""
+    tensors = pack_mm_kwargs_tensors(mm_data)
+    if tensors is None:
         return None
-    out: dict[str, EncodedTensor] = {}
-    for key, tensors in per_kwarg.items():
-        cat = torch.cat(tensors, dim=0).contiguous()
-        arr = cat.detach().cpu().numpy()
-        out[key] = EncodedTensor(
-            dtype=str(arr.dtype),
-            shape=list(arr.shape),
-            data=arr.tobytes(),
+    return encode_mm_kwargs(tensors)
+
+
+def _grid_to_list(grid: Any) -> "list | None":
+    """Normalize an ``image_grid_thw`` (torch/numpy tensor, msgpack wire payload,
+    or list) to a plain nested list — the only transport-safe form. Shape is
+    preserved (real Qwen grids are 2-D ``(n, 3)`` → ``list[list[int]]``), since
+    the renderer's ``_grids_equal`` compares the nested form."""
+    if grid is None:
+        return None
+    if isinstance(grid, dict):  # msgpack wire payload from the env→orch hop
+        from verifiers.utils.serve_utils import decode_tensor_payload
+
+        grid = decode_tensor_payload(grid, to_torch=False)
+    return grid.tolist() if hasattr(grid, "tolist") else list(grid)
+
+
+def _collect_mm_refs(union_mm: dict[str, Any], trajectory: list[Any], step_indices: list[int]) -> MMRefs | None:
+    """Build lightweight image references (descriptor + window URIs) for the
+    deferred-materialization path.
+
+    The descriptor must be transport-safe: the batch sender uses a bare msgspec
+    encoder that rejects tensors/ndarrays. So we ship a normalized, descriptor-ONLY
+    copy — pixel_values dropped, grids → ``list[int]``, hashes → ``str`` — rather
+    than the raw union (which on in-process paths still holds torch tensors).
+    """
+    items = union_mm.get("mm_items") or {}
+    hashes = union_mm.get("mm_hashes") or {}
+    non_image = sorted(
+        {m for m, lst in items.items() if lst and m != "image"} | {m for m, hl in hashes.items() if hl and m != "image"}
+    )
+    if non_image:
+        raise ValueError(f"defer_mm_materialization supports the image modality only this iteration; got {non_image}")
+    # Renderer-family guard: this path is Qwen-style (descriptors keyed on
+    # ``image_grid_thw``). Other families (e.g. Kimi uses ``grid_thws``) would
+    # silently ship a None grid — fail loudly instead.
+    if any(item.get("image_grid_thw") is None for item in (items.get("image") or [])):
+        raise ValueError(
+            "defer_mm_materialization currently supports Qwen-style image descriptors only "
+            "(items must carry image_grid_thw); got an image item without it — unsupported renderer family."
         )
-    return out
+    norm_items = {
+        modality: [{"image_grid_thw": _grid_to_list(item.get("image_grid_thw"))} for item in (lst or [])]
+        for modality, lst in items.items()
+    }
+    norm_hashes = {m: [str(h) if h is not None else h for h in (hl or [])] for m, hl in hashes.items()}
+    uris = image_uris_from_messages(_window_image_messages(trajectory, step_indices))
+    return MMRefs(descriptor={"mm_items": norm_items, "mm_hashes": norm_hashes}, uris=uris)
 
 
 _FILE_URL_PREFIX = "file://"
 
 
+_MEDIA_TYPE_EXT = {"jpeg": ".jpg", "jpg": ".jpg", "png": ".png", "webp": ".webp", "gif": ".gif"}
+
+
+def _media_type_ext(media_type: str) -> str:
+    subtype = media_type.split("/", 1)[-1].split(";", 1)[0].strip().lower()
+    return _MEDIA_TYPE_EXT.get(subtype, ".img")
+
+
+def _is_under(path: Path, parent: Path) -> bool:
+    """True if ``path`` lives directly in (or below) ``parent``."""
+    try:
+        path, parent = path.resolve(), parent.resolve()
+    except OSError:
+        pass
+    return parent == path.parent or parent in path.parents
+
+
 def offload_images_to_disk(rollouts: list[vf.RolloutOutput], output_dir: Path) -> int:
-    """Replace base64 image data in rollout trajectories with file paths on disk.
+    """Normalize trajectory prompt images to ``file://`` paths under the run dir.
 
-    Scans all trajectory step prompts for data:image URLs, writes the decoded
-    image bytes to ``{output_dir}/assets/images/{hash}.png``, and replaces the
-    URL in-place with ``file://{path}``.  Deduplicates by content hash so each
-    unique image is written only once.
+    Scans all trajectory step prompts for image URLs and rewrites them in place:
 
-    Returns the number of unique images written to disk.
+    - ``data:image/...;base64,...`` → decode, write to
+      ``{output_dir}/assets/images/{sha256(decoded)[:16]}{ext}``, rewrite to
+      ``file://``.
+    - ``file://...`` already under ``{output_dir}/assets/images`` → left as-is
+      (the env worker offloaded it there during the live rollout).
+    - ``file://...`` elsewhere (e.g. a shared image cache the env worker wrote
+      to) → copied into the run's assets dir by content hash and rewritten, so
+      the rollout is self-contained for the trainer.
+
+    Content-addressed by ``sha256(decoded_bytes)``, matching the env-worker live
+    offload, so an image offloaded during the rollout is recognized and never
+    re-decoded or duplicated. Returns the number of unique images written here.
     """
-    images_dir = output_dir / "assets" / "images"
+    # Absolute: paths become ``file://`` URLs; a relative path yields a malformed
+    # URI (``file://rel/...``) that the renderer can't load.
+    images_dir = (output_dir / mm_store.IMAGE_ASSET_SUBDIR).resolve()
     images_dir.mkdir(parents=True, exist_ok=True)
 
-    written: set[str] = set()
+    written: set[Path] = set()
 
     for output in rollouts:
         for step in output.get("trajectory", []):
@@ -635,18 +740,51 @@ def offload_images_to_disk(rollouts: list[vf.RolloutOutput], output_dir: Path) -
                 if not isinstance(content, list):
                     continue
                 for item in content:
-                    if item.get("type") != "image_url":
+                    if not isinstance(item, dict) or item.get("type") != "image_url":
                         continue
-                    url = item.get("image_url", {}).get("url", "")
-                    if not url.startswith("data:image"):
+                    image_url = item.get("image_url")
+                    if not isinstance(image_url, dict):
                         continue
-                    b64_data = url.split(",", 1)[1]
-                    content_hash = hashlib.sha256(b64_data.encode()).hexdigest()[:16]
-                    path = images_dir / f"{content_hash}.png"
-                    if content_hash not in written:
+                    url = image_url.get("url", "")
+                    if not isinstance(url, str):
+                        continue
+
+                    if url.startswith("data:image"):
+                        header, _, b64_data = url.partition(",")
+                        if not b64_data:
+                            continue
+                        try:
+                            raw = base64.b64decode(b64_data)
+                        except Exception:
+                            continue
+                        ext = _media_type_ext(header[len("data:") :])
+                    elif url.startswith(_FILE_URL_PREFIX):
+                        src = Path(url[len(_FILE_URL_PREFIX) :])
+                        if _is_under(src, images_dir):
+                            continue  # already in the run's assets dir
+                        try:
+                            raw = src.read_bytes()
+                        except OSError:
+                            continue
+                        ext = src.suffix or ".img"
+                    else:
+                        continue
+
+                    content_hash = hashlib.sha256(raw).hexdigest()[:16]
+                    path = images_dir / f"{content_hash}{ext}"
+                    if path not in written:
                         if not path.exists():
-                            path.write_bytes(base64.b64decode(b64_data))
-                        written.add(content_hash)
-                    item["image_url"]["url"] = f"{_FILE_URL_PREFIX}{path}"
+                            path.write_bytes(raw)
+                        else:
+                            # Recurring image already on disk: refresh its mtime so a
+                            # future last-use sweep treats it as hot. Images aren't
+                            # evicted today, but this keeps the practice consistent
+                            # with the mm_feature writer. Best-effort on a sweep race.
+                            try:
+                                path.touch()
+                            except OSError:
+                                pass
+                        written.add(path)
+                    image_url["url"] = path.as_uri()
 
     return len(written)

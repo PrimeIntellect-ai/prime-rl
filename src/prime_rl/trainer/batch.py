@@ -1,6 +1,6 @@
 import copy
 
-from prime_rl.transport.types import MicroBatch, RoutedExperts, TrainingSample
+from prime_rl.transport.types import EncodedTensor, MicroBatch, MMRefs, RoutedExperts, TrainingSample
 
 ROUTED_EXPERTS_DTYPE_ITEMSIZE = {
     "uint8": 1,
@@ -49,6 +49,135 @@ def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
     routed_experts.shape[0] += padding_size
 
 
+def _append_encoded_tensor(dst: EncodedTensor, src: EncodedTensor, key: str) -> None:
+    # Concatenate along dim 0; dtype and trailing dims must match. A malformed
+    # payload (data length inconsistent with shape) surfaces loudly downstream
+    # when the trainer does frombuffer(...).reshape(shape), so we don't re-check it here.
+    if dst.dtype != src.dtype:
+        raise ValueError(f"Cannot pack mm_kwargs[{key!r}] with different dtypes: {dst.dtype} vs {src.dtype}")
+    if len(dst.shape) != len(src.shape) or dst.shape[1:] != src.shape[1:]:
+        raise ValueError(f"Cannot pack mm_kwargs[{key!r}] with incompatible shapes: {dst.shape} vs {src.shape}")
+    dst.data += src.data
+    dst.shape[0] += src.shape[0]
+
+
+def _append_mm_kwargs(dst: dict[str, EncodedTensor], src: dict[str, EncodedTensor]) -> None:
+    if set(dst) != set(src):
+        raise ValueError(f"Cannot pack mm_kwargs with different keys: {sorted(dst)} vs {sorted(src)}")
+    for key in dst:
+        _append_encoded_tensor(dst[key], src[key], key)
+
+
+def _append_mm_ref_descriptor_list(dst_map: dict, src_map: dict, field: str) -> None:
+    if set(dst_map) != set(src_map):
+        raise ValueError(f"Cannot pack mm_refs descriptor {field} with different modalities")
+    for modality, src_items in src_map.items():
+        dst_items = dst_map[modality]
+        if not isinstance(dst_items, list) or not isinstance(src_items, list):
+            raise ValueError(f"mm_refs descriptor {field}[{modality!r}] must be a list to pack")
+        dst_items.extend(copy.deepcopy(src_items))
+
+
+def _append_mm_refs(dst: MMRefs, src: MMRefs) -> None:
+    dst_items = dst.descriptor.get("mm_items") or {}
+    src_items = src.descriptor.get("mm_items") or {}
+    dst_hashes = dst.descriptor.get("mm_hashes") or {}
+    src_hashes = src.descriptor.get("mm_hashes") or {}
+
+    _append_mm_ref_descriptor_list(dst_items, src_items, "mm_items")
+    _append_mm_ref_descriptor_list(dst_hashes, src_hashes, "mm_hashes")
+    dst.descriptor["mm_items"] = dst_items
+    dst.descriptor["mm_hashes"] = dst_hashes
+    dst.uris.extend(src.uris)
+
+
+def _mm_sidecar_kind(sample: MicroBatch) -> str | None:
+    if sample.mm_kwargs is not None and sample.mm_refs is not None:
+        raise ValueError("A multimodal sample cannot carry both mm_kwargs and mm_refs")
+    if sample.mm_refs is not None:
+        return "refs"
+    if sample.mm_kwargs is not None:
+        return "kwargs"
+    return None
+
+
+def _single_lora_idx(sample: MicroBatch) -> int | None:
+    if sample.lora_num_tokens is None:
+        return None
+    active = [idx for idx, tokens in enumerate(sample.lora_num_tokens) if tokens > 0]
+    return active[0] if len(active) == 1 else None
+
+
+def _can_pack_sample(
+    bin_content: MicroBatch,
+    sample: MicroBatch,
+    *,
+    idx: int,
+    max_seq_len: int,
+    pack_multimodal: bool,
+) -> bool:
+    if len(bin_content.input_ids) + len(sample.input_ids) > max_seq_len:
+        return False
+    if bin_content.training_mode != sample.training_mode:
+        return False
+
+    bin_mm_kind = _mm_sidecar_kind(bin_content)
+    sample_mm_kind = _mm_sidecar_kind(sample)
+    if bin_mm_kind is None and sample_mm_kind is None:
+        return True
+    if not pack_multimodal or bin_mm_kind != sample_mm_kind:
+        return False
+    # Multimodal samples only pack with the same run: a multi-run microbatch would
+    # break the MoE LoRA path (one adapter per microbatch). prepare_batch may be
+    # called with multi-run input, so this guard is load-bearing, not redundant.
+    return _single_lora_idx(bin_content) == idx
+
+
+def _append_micro_batch(bin_content: MicroBatch, sample: MicroBatch, idx: int) -> None:
+    existing_len = len(bin_content.input_ids)
+    sample_len = len(sample.input_ids)
+
+    bin_content.input_ids.extend(sample.input_ids)
+    bin_content.loss_mask.extend(sample.loss_mask)
+    bin_content.advantages.extend(sample.advantages)
+    if sample.rewards is not None:
+        if bin_content.rewards is None:
+            bin_content.rewards = [float("nan")] * existing_len
+        bin_content.rewards.extend(sample.rewards)
+    elif bin_content.rewards is not None:
+        bin_content.rewards.extend([float("nan")] * sample_len)
+    bin_content.inference_logprobs.extend(sample.inference_logprobs)
+    bin_content.temperatures.extend(sample.temperatures)
+    if bin_content.teacher_logprobs is not None or sample.teacher_logprobs is not None:
+        if bin_content.teacher_logprobs is None:
+            bin_content.teacher_logprobs = [0.0] * existing_len
+        bin_content.teacher_logprobs.extend(sample.teacher_logprobs or [0.0] * sample_len)
+
+    assert (bin_content.routed_experts is None) == (sample.routed_experts is None)
+    if sample.routed_experts is not None:
+        if bin_content.routed_experts is None:
+            bin_content.routed_experts = _copy_routed_experts(sample.routed_experts)
+        else:
+            _append_routed_experts(bin_content, sample)
+
+    if bin_content.mm_token_type_ids is not None or sample.mm_token_type_ids is not None:
+        if bin_content.mm_token_type_ids is None:
+            bin_content.mm_token_type_ids = [0] * existing_len
+        bin_content.mm_token_type_ids.extend(sample.mm_token_type_ids or [0] * sample_len)
+
+    bin_content.env_names.extend(sample.env_names)
+    bin_content.position_ids.extend(sample.position_ids)
+    assert bin_content.lora_num_tokens is not None
+    bin_content.lora_num_tokens[idx] += sample_len
+
+    # Concatenate the multimodal sidecar. _can_pack_sample already guaranteed the
+    # bin and sample share the same kind, so dispatch on whichever is present.
+    if bin_content.mm_refs is not None:
+        _append_mm_refs(bin_content.mm_refs, sample.mm_refs)
+    elif bin_content.mm_kwargs is not None:
+        _append_mm_kwargs(bin_content.mm_kwargs, sample.mm_kwargs)
+
+
 def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch:
     """
     Prepare a problem for sequence packing training.
@@ -76,6 +205,12 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     routed_experts = (
         _copy_routed_experts(training_example.routed_experts) if training_example.routed_experts is not None else None
     )
+
+    if (training_example.mm_kwargs is not None or training_example.mm_refs is not None) and len(input_ids) > seq_len:
+        raise ValueError(
+            "Cannot truncate multimodal training sample without also truncating its multimodal sidecars: "
+            f"sample_len={len(input_ids)}, seq_len={seq_len}"
+        )
 
     if len(input_ids) > seq_len:
         input_ids = input_ids[:seq_len]
@@ -131,26 +266,33 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         routed_experts=routed_experts,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
-        mm_kwargs=training_example.mm_kwargs,
+        mm_kwargs=copy.deepcopy(training_example.mm_kwargs),
+        mm_refs=copy.deepcopy(training_example.mm_refs),
         training_mode=training_example.training_mode,
     )
 
 
 def _is_multimodal_sample(sample: MicroBatch) -> bool:
-    """Check if a sample contains multimodal data (images)."""
-    return sample.mm_kwargs is not None
+    """Check if a sample contains multimodal data (images). A deferred sample
+    carries ``mm_refs`` and no ``mm_kwargs``; both count as multimodal so it is
+    not mis-packed as text (which would break the FSDP per-step modality
+    invariant)."""
+    return sample.mm_kwargs is not None or sample.mm_refs is not None
 
 
 def packed_samples_into_micro_bs(
-    samples: list[tuple[int, MicroBatch]], max_seq_len: int, num_loras: int
+    samples: list[tuple[int, MicroBatch]], max_seq_len: int, num_loras: int, pack_multimodal: bool = False
 ) -> list[MicroBatch]:
     """
     Pack samples into micro_batch efficiently.
     We follow the First Fit Decreasing algorithm to pack the samples into bins and minimize potential padding while never truncating.
     With per-token temperatures, samples can be packed together regardless of their temperature values.
 
-    NOTE: Multimodal samples (with mm_kwargs) are NOT packed together as they have variable-sized
-    vision data that doesn't pack well. Each multimodal sample becomes its own micro batch.
+    Multimodal samples are only packed when ``pack_multimodal`` is true. They
+    pack with other multimodal samples of the same sidecar representation
+    (deferred ``mm_refs`` or eager ``mm_kwargs``), never with text-only samples.
+    The caller is responsible for enabling this only for model paths whose
+    position handling supports packed multimodal boundaries.
     """
     # Sort by (lora_idx, -length) for packing efficiency
     samples.sort(key=lambda x: (x[0], -len(x[1].input_ids)))
@@ -159,52 +301,25 @@ def packed_samples_into_micro_bs(
     micro_batches: list[MicroBatch] = []
 
     for idx, sample in samples:
-        # Multimodal samples cannot be packed - each becomes its own micro batch
-        if _is_multimodal_sample(sample):
+        # Unsupported multimodal samples remain standalone. Supported multimodal
+        # samples use the same token-side first-fit packing as text, with strict
+        # sidecar concatenation in the same sample order.
+        if _is_multimodal_sample(sample) and not pack_multimodal:
             sample.lora_num_tokens = [0] * num_loras
             sample.lora_num_tokens[idx] = len(sample.input_ids)
             micro_batches.append(sample)
             continue
 
-        # Try to find a bin that can fit this sequence (only pack text-only samples)
+        # Try to find a bin that can fit this sequence.
         for bin_content in micro_batches:
-            # Don't pack into multimodal micro batches
-            if _is_multimodal_sample(bin_content):
-                continue
-            # Check if sequence fits in this bin
-            if (
-                len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len
-                and bin_content.training_mode == sample.training_mode
+            if _can_pack_sample(
+                bin_content,
+                sample,
+                idx=idx,
+                max_seq_len=max_seq_len,
+                pack_multimodal=pack_multimodal,
             ):
-                existing_len = len(bin_content.input_ids)
-                bin_content.input_ids.extend(sample.input_ids)
-                bin_content.loss_mask.extend(sample.loss_mask)
-                bin_content.advantages.extend(sample.advantages)
-                if sample.rewards is not None:
-                    if bin_content.rewards is None:
-                        bin_content.rewards = [float("nan")] * existing_len
-                    bin_content.rewards.extend(sample.rewards)
-                elif bin_content.rewards is not None:
-                    bin_content.rewards.extend([float("nan")] * len(sample.input_ids))
-                bin_content.inference_logprobs.extend(sample.inference_logprobs)
-                bin_content.temperatures.extend(sample.temperatures)
-                if sample.teacher_logprobs is not None:
-                    if bin_content.teacher_logprobs is None:
-                        bin_content.teacher_logprobs = []
-                    bin_content.teacher_logprobs.extend(sample.teacher_logprobs)
-                assert (bin_content.routed_experts is None) == (sample.routed_experts is None)
-                if sample.routed_experts is not None:
-                    if bin_content.routed_experts is None:
-                        bin_content.routed_experts = _copy_routed_experts(sample.routed_experts)
-                    else:
-                        _append_routed_experts(bin_content, sample)
-                if sample.mm_token_type_ids is not None:
-                    if bin_content.mm_token_type_ids is None:
-                        bin_content.mm_token_type_ids = []
-                    bin_content.mm_token_type_ids.extend(sample.mm_token_type_ids)
-                bin_content.env_names.extend(sample.env_names)
-                bin_content.position_ids.extend(sample.position_ids)
-                bin_content.lora_num_tokens[idx] += len(sample.input_ids)
+                _append_micro_batch(bin_content, sample, idx)
                 break
         else:
             sample.lora_num_tokens = [0] * num_loras
@@ -283,6 +398,7 @@ def prepare_batch(
     idxs: list[int],
     num_loras: int,
     pad_to_multiple_of: int = 1,
+    pack_multimodal: bool = False,
 ) -> list[list[MicroBatch]]:
     """
     Prepare a batch of problems for each GPU. Each batch is a list of micro batches.
@@ -295,7 +411,7 @@ def prepare_batch(
     """
     all_samples = [(idx, prepare_sample(rollout, seq_len)) for idx, rollout in zip(idxs, rollouts)]
 
-    micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras)
+    micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras, pack_multimodal=pack_multimodal)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
 
     # Separate by modality so each step index has uniform modality across all ranks

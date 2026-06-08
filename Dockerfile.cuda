@@ -86,7 +86,11 @@ ARG TARGETARCH
 COPY scripts/docker-arm64-post-install.sh /app/scripts/docker-arm64-post-install.sh
 RUN if [ "$TARGETARCH" = "arm64" ]; then /app/scripts/docker-arm64-post-install.sh; fi
 
-FROM python:3.12-slim
+# Pin Debian 12 (bookworm, glibc 2.36) — the bare `python:3.12-slim` tag tracks
+# Debian stable, which moved to trixie (glibc ~2.41) and broke the runtime FLA
+# TileLang nvcc JIT (`bits/mathcalls.h: cospi/sinpi noexcept` conflict vs the
+# mounted CUDA host headers). bookworm's glibc matches the ubuntu22.04 builder.
+FROM python:3.12-slim-bookworm
 
 RUN apt-get update && apt-get install -y \
     --no-install-recommends \

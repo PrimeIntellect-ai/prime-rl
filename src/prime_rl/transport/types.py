@@ -14,6 +14,17 @@ class EncodedTensor(msgspec.Struct, array_like=True, gc=False):
     data: bytes
 
 
+# Lightweight image references shipped instead of materialized pixels when
+# defer_mm_materialization is on: the orchestrator emits these and the trainer
+# materializes pixels in its data loader.
+class MMRefs(msgspec.Struct, array_like=True, gc=False):
+    # Descriptor-only mm_data ({"mm_items": {...grid/placeholder...}, "mm_hashes": {...}}),
+    # transport-safe (grids arrive as msgpack wire payloads, hashes as str). + the
+    # candidate file:// image URIs for this sample. Trainer materializes from these.
+    descriptor: dict
+    uris: list[str]
+
+
 # Routed experts are large per-token arrays. tolist() is too expensive, so we
 # send raw bytes through msgpack and carry the shape/dtype needed to rebuild.
 class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -56,6 +67,12 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # taus), sft uses sft_loss_fn. Stamped by the orchestrator from training_mode.
     training_mode: TrainingMode = "rl"
 
+    # Lightweight image references (deferred materialization). Exactly one of
+    # {mm_kwargs, mm_refs} is populated per multimodal sample. APPENDED LAST:
+    # array_like=True structs encode positionally, so new fields must go at the
+    # end to preserve the wire positions of existing fields.
+    mm_refs: MMRefs | None = None
+
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A batch of training examples with metadata for transport."""
@@ -89,3 +106,6 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # sft → sft loss). All samples packed into a micro batch share the same mode.
     training_mode: TrainingMode = "rl"
     rewards: list[float] | None = None
+    # See TrainingSample.mm_refs. APPENDED LAST — array_like=True is positional, so
+    # new fields go at the end to preserve existing field wire positions.
+    mm_refs: MMRefs | None = None

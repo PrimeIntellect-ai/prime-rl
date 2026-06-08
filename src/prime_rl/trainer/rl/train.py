@@ -26,6 +26,7 @@ from prime_rl.utils.cp import (
     shard_for_cp,
 )
 from prime_rl.utils.logger import format_time, setup_logger
+from prime_rl.utils.vlm import get_packed_mm_disabled_reasons, get_packed_mm_position_strategy
 from prime_rl.trainer.rl.loss import (
     compute_entropy,
     compute_loss,
@@ -68,6 +69,16 @@ from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
 from ring_flash_attn import substitute_hf_flash_attn
 from torchtitan.distributed.utils import clip_grad_norm_
+
+
+def _raise_if_any_rank_failed(local_error: Exception | None, message: str) -> None:
+    failed_flag = torch.tensor(1 if local_error else 0, dtype=torch.int64, device="cuda")
+    dist.all_reduce(failed_flag, op=dist.ReduceOp.MAX)
+    if failed_flag.item() == 0:
+        return
+    if local_error is not None:
+        raise RuntimeError(f"{message} on this rank; failing all ranks.") from local_error
+    raise RuntimeError(f"{message} on another rank; failing all ranks.")
 
 
 @clean_exit
@@ -121,6 +132,15 @@ def train(config: TrainerConfig):
         config.output_dir, config.max_concurrent_runs, torch.device("cuda", world.local_rank), config.model.lora
     )
 
+    # Reject (at discovery) runs whose deferred-MM config is incompatible with the
+    # trainer — a misconfigured run shouldn't crash all ranks later in get_batch.
+    if world.is_master:
+        from prime_rl.utils.mm import make_defer_mm_validation_hook
+
+        multi_run_manager.register_config_validation_hook(
+            make_defer_mm_validation_hook(config.defer_mm_materialization, config.renderer)
+        )
+
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
 
@@ -148,6 +168,20 @@ def train(config: TrainerConfig):
 
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
+
+    mm_position_strategy = get_packed_mm_position_strategy(model)
+    mm_pack_reasons = get_packed_mm_disabled_reasons(
+        model,
+        enabled=config.pack_multimodal,
+        attn_impl=config.model.attn,
+        cp_enabled=parallel_dims.cp_enabled,
+        cp_size=config.model.cp,
+    )
+    pack_multimodal = not mm_pack_reasons
+    if pack_multimodal:
+        logger.info("Multimodal packing enabled (position_strategy=pass_1d)")
+    elif config.model.vlm is not None or mm_position_strategy != "none":
+        logger.info(f"Multimodal packing disabled ({', '.join(mm_pack_reasons)})")
 
     # Set up the loss function
     logger.info(f"Setting up loss function ({config.loss})")
@@ -238,6 +272,16 @@ def train(config: TrainerConfig):
             config.model.cp,
             tokenizer,
             config.rollout_transport,
+            defer_mm_materialization=config.defer_mm_materialization,
+            # Pass the configured renderer (defaults to AutoRendererConfig). The
+            # orchestrator ships mm_refs based on whether rollouts have images, NOT
+            # on the trainer's model.vlm block (prod VLM configs may leave it None),
+            # so do NOT gate on model.vlm. data.py builds the renderer only when
+            # defer is on and renderer_config is not None, so an explicit
+            # renderer=None still opts out (and a text-only run never gets mm_refs).
+            renderer_config=config.renderer,
+            pack_multimodal=pack_multimodal,
+            micro_batch_transport_config=config.micro_batch_transport,
         )
 
     token_exporter = setup_token_exporter(config, parallel_dims, world, logger)
@@ -331,14 +375,31 @@ def train(config: TrainerConfig):
         # Wait for the batch to be available
         logger.debug("Waiting for training batch to arrive")
         wait_for_batch_start_time = time.perf_counter()
-        dataloader.wait_for_batch()
+        wait_error: Exception | None = None
+        try:
+            dataloader.wait_for_batch()
+        except Exception as exc:
+            wait_error = exc
+        _raise_if_any_rank_failed(wait_error, "Training-batch wait failed")
+        dataloader.synchronize_state()
         wait_for_batch_time = time.perf_counter() - wait_for_batch_start_time
         logger.debug(f"Waited for batch to arrive for {wait_for_batch_time:.2f} seconds")
 
         # Load the training batch
         logger.debug("Loading batch")
         load_data_start_time = time.perf_counter()
-        micro_batches = dataloader.get_batch()
+        # A get_batch failure on one rank (deferred-MM materialization error, a
+        # missing file://, or an orchestrator/trainer flag mismatch) must fail all
+        # ranks before the forward collective, or survivors hang in NCCL. The
+        # per-step int all-reduce is negligible and protects every run, not just MM.
+        load_error: Exception | None = None
+        try:
+            micro_batches = dataloader.get_batch()
+        except Exception as exc:
+            load_error = exc
+        # Preserve the culprit rank's traceback; bystander ranks still raise so
+        # none proceeds into the forward collective alone.
+        _raise_if_any_rank_failed(load_error, "Training-batch load failed")
         load_data_time = time.perf_counter() - load_data_start_time
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
 
@@ -629,6 +690,10 @@ def train(config: TrainerConfig):
             "time/step": step_time,
             "time/wait_for_batch": wait_for_batch_time,
             "time/load_data": load_data_time,
+            # Synchronous trainer-side MM materialization (decode + vision
+            # preprocessing from shipped refs), a subset of time/load_data.
+            "time/mm_materialize": getattr(dataloader, "last_mm_materialize_time", 0.0),
+            "mm/images_materialized": getattr(dataloader, "last_mm_images_materialized", 0),
             "time/broadcast_weights": broadcast_weights_time,
             "time/save_ckpt": save_ckpt_time,
             "time/forward_backward": forward_backward_time,
