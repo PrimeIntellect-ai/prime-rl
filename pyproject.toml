@@ -183,7 +183,7 @@ prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 # verifiers + all v1/research env packages are dropped here. The only env is
 # vf-nano's reverse-text example.
 vf-nano = { path = "deps/vf-nano", editable = true }
-reverse-text = { path = "deps/vf-nano/examples/reverse_text", editable = true }
+reverse-text = { path = "deps/vf-nano/examples/tasksets/reverse_text", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
 torch = { index = "pytorch-cu128" }

@@ -2535,7 +2535,7 @@ requires-dist = [
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "quack-kernels", marker = "extra == 'quack'", specifier = ">=0.4.1" },
     { name = "renderers", editable = "deps/renderers" },
-    { name = "reverse-text", marker = "extra == 'envs'", editable = "deps/vf-nano/examples/reverse_text" },
+    { name = "reverse-text", marker = "extra == 'envs'", editable = "deps/vf-nano/examples/tasksets/reverse_text" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ring-flash-attn", specifier = ">=0.1.8" },
     { name = "setproctitle", specifier = ">=1.3.0" },
@@ -3097,7 +3097,7 @@ wheels = [
 [[package]]
 name = "reverse-text"
 version = "0.1.0"
-source = { editable = "deps/vf-nano/examples/reverse_text" }
+source = { editable = "deps/vf-nano/examples/tasksets/reverse_text" }
 dependencies = [
     { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "vf-nano", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -3859,16 +3859,17 @@ requires-dist = [
 provides-extras = ["serve", "prime"]
 
 [package.metadata.requires-dev]
-examples = [
-    { name = "code-golf", editable = "deps/vf-nano/examples/code_golf" },
-    { name = "deepwiki", editable = "deps/vf-nano/examples/deepwiki" },
-    { name = "glossary", editable = "deps/vf-nano/examples/glossary" },
-    { name = "gsm8k", editable = "deps/vf-nano/examples/gsm8k" },
-    { name = "harbor", editable = "deps/vf-nano/examples/harbor" },
-    { name = "hello-rlm", editable = "deps/vf-nano/examples/hello_rlm" },
-    { name = "reverse-text", editable = "deps/vf-nano/examples/reverse_text" },
-    { name = "wiki-search", editable = "deps/vf-nano/examples/wiki_search" },
-    { name = "wikispeedia", editable = "deps/vf-nano/examples/wikispeedia" },
+harnesses = [{ name = "compact", editable = "deps/vf-nano/examples/harnesses/compact" }]
+tasksets = [
+    { name = "code-golf", editable = "deps/vf-nano/examples/tasksets/code_golf" },
+    { name = "deepwiki", editable = "deps/vf-nano/examples/tasksets/deepwiki" },
+    { name = "glossary", editable = "deps/vf-nano/examples/tasksets/glossary" },
+    { name = "gsm8k", editable = "deps/vf-nano/examples/tasksets/gsm8k" },
+    { name = "harbor", editable = "deps/vf-nano/examples/tasksets/harbor" },
+    { name = "hello-rlm", editable = "deps/vf-nano/examples/tasksets/hello_rlm" },
+    { name = "reverse-text", editable = "deps/vf-nano/examples/tasksets/reverse_text" },
+    { name = "wiki-search", editable = "deps/vf-nano/examples/tasksets/wiki_search" },
+    { name = "wikispeedia", editable = "deps/vf-nano/examples/tasksets/wikispeedia" },
 ]
 
 [[package]]
