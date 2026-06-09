@@ -5508,6 +5508,7 @@ dev = [
 ]
 examples = [
     { name = "aime24-v1", editable = "deps/verifiers/examples/tasksets/aime24_v1" },
+    { name = "alphabet-sort-v1", editable = "deps/verifiers/examples/tasksets/alphabet_sort_v1" },
     { name = "code-golf-v1", editable = "deps/verifiers/examples/tasksets/code_golf_v1" },
     { name = "compact", editable = "deps/verifiers/examples/harnesses/compact" },
     { name = "deepwiki-v1", editable = "deps/verifiers/examples/tasksets/deepwiki_v1" },
