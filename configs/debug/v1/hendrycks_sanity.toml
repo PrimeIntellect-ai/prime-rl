@@ -8,7 +8,7 @@ max_steps = 5000
 
 [wandb]
 project = "hendrycks-sanity"
-name = "v1-subprocess"
+name = "v1"
 
 [deployment]
 num_train_gpus = 4
@@ -28,7 +28,7 @@ seq_len = 8192
 
 [[orchestrator.train.env]]
 name = "hendrycks-math"
-taskset = { id = "math-env", dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B", dataset_subset = "default" }
+taskset = { id = "math-env-v1", dataset_name = "mikasenghaas/Sanity-Test-R1D-1.5B", dataset_subset = "default" }
 harness = { id = "default", enable_bash = false, runtime = { type = "subprocess" } }
 
 [orchestrator.eval]
@@ -36,7 +36,7 @@ interval = 50
 
 [[orchestrator.eval.env]]
 name = "aime2024"
-taskset = { id = "aime24" }
+taskset = { id = "aime24-v1" }
 harness = { id = "default", enable_bash = false, runtime = { type = "subprocess" } }
 group_size = 32
 

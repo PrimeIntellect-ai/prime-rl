@@ -64,17 +64,44 @@ flash-attn-3 = ["flash_attn_3"]
 flash-attn-cute = [
     "flash-attn-4",
 ]
-# Experimental v1 branch: v1 plugins (tasksets + harnesses) are installed as packages,
-# resolved by id. The shipped `default`/`rlm` harnesses and the taskset(s) prime-rl runs
-# live here.
+# Environments prime-rl can run, resolved by id: the classic v0 envs (driven through the
+# legacy bridge) plus the v1 tasksets + harnesses (`-v1` suffix avoids clashing with the
+# same-named v0 envs).
 envs = [
-    "reverse-text",
+    "aime2024",
+    "aime2025",
     "alphabet-sort",
+    "code-env",
+    "color-codeword",
+    "deepdive",
+    "general-agent",
+    "gpqa",
+    "hle",
+    "ifeval",
+    "livecodebench",
+    "logic-env",
+    "math-env",
+    "math-python",
+    "math500",
+    "mini-swe-agent-plus",
+    "mini-swe-agent-plus-rlm",
+    "mmlu-pro",
+    "opencode-cp",
+    "opencode-deepdive",
+    "opencode-math",
+    "opencode-science",
+    "opencode-swe",
+    "reverse-text",
+    "rlm-swe",
+    "science-env",
+    "simpleqa-verified",
+    "tau2-bench",
+    "wiki-search",
     "wordle",
     "reverse-text-v1",
-    "gsm8k",
-    "math-env",
-    "aime24",
+    "gsm8k-v1",
+    "math-env-v1",
+    "aime24-v1",
     "harnesses",
 ]
 disagg = [
@@ -181,17 +208,44 @@ nixl-cu12 = false
 
 [tool.uv.sources]
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
-# prime-rl depends on the one `verifiers` package (v0 + v1 + the legacy bridge); the v1 plugins
-# resolve from deps/verifiers/{examples,packages}. `reverse-text` is verifiers' classic v0 env;
-# `reverse-text-v1` is the v1 taskset.
+# prime-rl depends on the one `verifiers` package (v0 + v1 + the legacy bridge). v0 envs
+# resolve from deps/{verifiers,research-environments}/environments; v1 tasksets (`-v1`) and
+# harnesses from deps/verifiers/{examples/tasksets,packages}.
 verifiers = { path = "deps/verifiers", editable = true }
-reverse-text = { path = "deps/verifiers/environments/reverse_text", editable = true }
+aime2024 = { path = "deps/research-environments/environments/aime2024", editable = true }
+aime2025 = { path = "deps/research-environments/environments/aime2025", editable = true }
 alphabet-sort = { path = "deps/verifiers/environments/alphabet_sort", editable = true }
+code-env = { path = "deps/research-environments/environments/code_env", editable = true }
+color-codeword = { path = "deps/research-environments/environments/color_codeword", editable = true }
+deepdive = { path = "deps/research-environments/environments/deepdive", editable = true }
+general-agent = { path = "deps/research-environments/environments/general_agent", editable = true }
+gpqa = { path = "deps/research-environments/environments/gpqa", editable = true }
+hle = { path = "deps/research-environments/environments/hle", editable = true }
+ifeval = { path = "deps/research-environments/environments/ifeval", editable = true }
+livecodebench = { path = "deps/research-environments/environments/livecodebench", editable = true }
+logic-env = { path = "deps/research-environments/environments/logic_env", editable = true }
+math-env = { path = "deps/research-environments/environments/math_env", editable = true }
+math-python = { path = "deps/verifiers/environments/math_python", editable = true }
+math500 = { path = "deps/research-environments/environments/math500", editable = true }
+mini-swe-agent-plus = { path = "deps/research-environments/environments/mini_swe_agent_plus", editable = true }
+mini-swe-agent-plus-rlm = { path = "deps/research-environments/environments/mini_swe_agent_plus_rlm", editable = true }
+mmlu-pro = { path = "deps/research-environments/environments/mmlu_pro", editable = true }
+opencode-cp = { path = "deps/research-environments/environments/opencode_cp", editable = true }
+opencode-deepdive = { path = "deps/research-environments/environments/opencode_deepdive", editable = true }
+opencode-math = { path = "deps/research-environments/environments/opencode_math", editable = true }
+opencode-science = { path = "deps/research-environments/environments/opencode_science", editable = true }
+opencode-swe = { path = "deps/research-environments/environments/opencode_swe", editable = true }
+reverse-text = { path = "deps/verifiers/environments/reverse_text", editable = true }
+rlm-swe = { path = "deps/research-environments/environments/rlm_swe", editable = true }
+science-env = { path = "deps/research-environments/environments/science_env", editable = true }
+simpleqa-verified = { path = "deps/research-environments/environments/simpleqa_verified", editable = true }
+tau2-bench = { path = "deps/research-environments/environments/tau2_bench", editable = true }
+wiki-search = { path = "deps/verifiers/environments/wiki_search", editable = true }
 wordle = { path = "deps/verifiers/environments/wordle", editable = true }
 reverse-text-v1 = { path = "deps/verifiers/examples/tasksets/reverse_text_v1", editable = true }
-gsm8k = { path = "deps/verifiers/examples/tasksets/gsm8k", editable = true }
-math-env = { path = "deps/verifiers/examples/tasksets/math_env", editable = true }
-aime24 = { path = "deps/verifiers/examples/tasksets/aime24", editable = true }
+gsm8k-v1 = { path = "deps/verifiers/examples/tasksets/gsm8k_v1", editable = true }
+math-env-v1 = { path = "deps/verifiers/examples/tasksets/math_env_v1", editable = true }
+aime24-v1 = { path = "deps/verifiers/examples/tasksets/aime24_v1", editable = true }
 harnesses = { path = "deps/verifiers/packages/harnesses", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
