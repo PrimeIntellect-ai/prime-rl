@@ -1,7 +1,7 @@
 import math
 import warnings
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 from pydantic import AliasChoices, Field, model_serializer, model_validator
 from pydantic_core.core_schema import SerializerFunctionWrapHandler
@@ -422,12 +422,52 @@ class CheckpointConfig(BaseConfig):
     """Skip loading the progress from checkpoint."""
 
 
-# Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387).
-class GibberishFilterConfig(BaseConfig):
-    type: Literal["gibberish"] = "gibberish"
+FilterAction: TypeAlias = Literal["monitor", "drop", "penalize"]
 
-    enforce: bool = False
-    """When True, skip detected rollouts entirely so they are not sent to the trainer. When False, only track detection metrics."""
+
+class BaseFilterConfig(BaseConfig):
+    """Shared action fields for rollout filters.
+
+    Exactly one of ``action`` / ``enforce`` should be set (``enforce`` is legacy
+    compatibility). If neither is set, the filter falls back to its per-type
+    default action.
+    """
+
+    action: FilterAction | None = None
+    """What to do when the filter detects a rollout. ``monitor``: only track detection metrics. ``drop``: skip the rollout entirely so it is not sent to the trainer. ``penalize``: cap the rollout's reward at ``penalty_reward`` before advantage computation while keeping it trainable. If None, resolves from the legacy ``enforce`` flag, falling back to the filter's default action."""
+
+    enforce: bool | None = None
+    """Legacy flag kept for backwards compatibility: ``true`` resolves to ``action="drop"``, ``false`` to ``action="monitor"``. Prefer setting ``action`` instead."""
+
+    penalty_reward: float = -1.0
+    """Reward cap applied when ``action="penalize"``: final reward = ``min(raw_reward, penalty_reward)``. Ignored by other actions."""
+
+    _default_action: ClassVar[FilterAction] = "monitor"
+
+    @model_validator(mode="after")
+    def _validate_action_and_enforce(self):
+        if self.action is not None and self.enforce is not None:
+            implied = "drop" if self.enforce else "monitor"
+            if self.action != implied:
+                raise ValueError(
+                    f"Conflicting filter config: action={self.action!r} but enforce={self.enforce} "
+                    f"implies action={implied!r}. Set only `action` (preferred) or only `enforce`."
+                )
+        return self
+
+    @property
+    def resolved_action(self) -> FilterAction:
+        """The effective action: explicit ``action`` wins, then legacy ``enforce``, then the per-type default."""
+        if self.action is not None:
+            return self.action
+        if self.enforce is not None:
+            return "drop" if self.enforce else "monitor"
+        return self._default_action
+
+
+# Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387).
+class GibberishFilterConfig(BaseFilterConfig):
+    type: Literal["gibberish"] = "gibberish"
 
     token_id_threshold: int = 100_000
     """Token IDs above this are candidates for gibberish. BPE tokens are sorted by merge order."""
@@ -439,11 +479,8 @@ class GibberishFilterConfig(BaseConfig):
 # Flags rollouts stuck in a repetition loop: emits high-confidence tokens for an extended stretch.
 # Flagged when `window` consecutive tokens are each sampled with probability above `prob_threshold`.
 # (Section 3.2, https://arxiv.org/abs/2506.13585)
-class RepetitionFilterConfig(BaseConfig):
+class RepetitionFilterConfig(BaseFilterConfig):
     type: Literal["repetition"] = "repetition"
-
-    enforce: bool = False
-    """When True, skip detected rollouts entirely so they are not sent to the trainer. When False, only track detection metrics."""
 
     window: int = Field(3_000, ge=1)
     """Consecutive high-probability steps required to flag the rollout."""
@@ -453,11 +490,10 @@ class RepetitionFilterConfig(BaseConfig):
 
 
 # Flags rollouts with zero advantage.
-class ZeroAdvantageFilterConfig(BaseConfig):
+class ZeroAdvantageFilterConfig(BaseFilterConfig):
     type: Literal["zero_advantage"] = "zero_advantage"
 
-    enforce: bool = True
-    """When True, skip detected rollouts entirely so they are not sent to the trainer. When False, only track detection metrics."""
+    _default_action: ClassVar[FilterAction] = "drop"
 
 
 FilterConfig: TypeAlias = Annotated[
@@ -552,14 +588,15 @@ class OrchestratorConfig(BaseConfig):
     advantage: AdvantageConfig | None = DefaultAdvantageConfig()
 
     pre_batch_filters: list[FilterConfig] = [
-        GibberishFilterConfig(enforce=False),
-        RepetitionFilterConfig(enforce=False),
-        ZeroAdvantageFilterConfig(enforce=False),
+        GibberishFilterConfig(),
+        RepetitionFilterConfig(),
+        ZeroAdvantageFilterConfig(action="monitor"),
     ]
     """Filters applied *before* a rollout enters the training batch buffer.
-    All three filter types are registered in monitor mode by default; flip ``enforce=true`` per type
+    All three filter types are registered in monitor mode by default; set ``action="drop"`` per type
     to drop matching rollouts before they consume a slot in the batch (e.g. a zero-advantage group
-    never makes it into a training batch)."""
+    never makes it into a training batch), or ``action="penalize"`` (gibberish/repetition) to cap the
+    rollout's reward at ``penalty_reward`` before advantage computation while keeping it trainable."""
 
     post_batch_filters: list[FilterConfig] = [
         GibberishFilterConfig(),
