@@ -1,3 +1,0 @@
-# Output-dir overlay for the slurm run (wandb + slurm now live in hendrycks_sanity.toml).
-# Usage: uv run rl @ configs/debug/nano/hendrycks_sanity.toml @ configs/debug/nano/slurm_hendrycks_sanity.toml
-output_dir = "/beegfs/mika/hendrycks-sanity-vf-nano-subprocess"

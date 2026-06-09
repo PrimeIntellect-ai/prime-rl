@@ -3,6 +3,7 @@
 # default harness, subprocess runtime). Submits to slurm by default; pass --no-slurm
 # to run locally.
 
+output_dir = "/beegfs/mika/hendrycks-sanity-vf-nano-subprocess"
 max_steps = 5000
 
 [wandb]
