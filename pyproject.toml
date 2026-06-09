@@ -31,7 +31,7 @@ dependencies = [
     "setproctitle>=1.3.0",
     "uvloop>=0.21.0",
     "torchtitan",
-    "verifiers[v1]",
+    "verifiers",
     "renderers",
     "dion",
     "tilelang>=0.1.8",
@@ -75,8 +75,7 @@ envs = [
     "gsm8k",
     "math-env",
     "aime24",
-    "default",
-    "rlm",
+    "harnesses",
 ]
 disagg = [
     "deep-ep ; platform_machine == 'x86_64'",
@@ -193,8 +192,7 @@ reverse-text-v1 = { path = "deps/verifiers/examples/tasksets/reverse_text_v1", e
 gsm8k = { path = "deps/verifiers/examples/tasksets/gsm8k", editable = true }
 math-env = { path = "deps/verifiers/examples/tasksets/math_env", editable = true }
 aime24 = { path = "deps/verifiers/examples/tasksets/aime24", editable = true }
-default = { path = "deps/verifiers/packages/harnesses/default", editable = true }
-rlm = { path = "deps/verifiers/packages/harnesses/rlm", editable = true }
+harnesses = { path = "deps/verifiers/packages/harnesses", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
 torch = { index = "pytorch-cu128" }

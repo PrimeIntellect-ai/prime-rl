@@ -577,11 +577,6 @@ wheels = [
 ]
 
 [[package]]
-name = "default"
-version = "0.1.0"
-source = { editable = "deps/verifiers/packages/harnesses/default" }
-
-[[package]]
 name = "depyf"
 version = "0.20.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1039,6 +1034,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/01/ee/02a2c011bdab74c6f
 wheels = [
     { url = "https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl", hash = "sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86", size = 37515, upload-time = "2025-04-24T03:35:24.344Z" },
 ]
+
+[[package]]
+name = "harnesses"
+version = "0.1.0"
+source = { editable = "deps/verifiers/packages/harnesses" }
 
 [[package]]
 name = "hf-xet"
@@ -2559,7 +2559,7 @@ dependencies = [
     { name = "torchvision", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "transformers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "uvloop", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "verifiers", extra = ["v1"], marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "vllm", version = "0.22.0+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.22.0/vllm-0.22.0+cu129-cp38-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
     { name = "vllm", version = "0.22.0+cu129", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.22.0/vllm-0.22.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "wandb", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -2587,12 +2587,11 @@ disagg = [
 envs = [
     { name = "aime24", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "alphabet-sort", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "default", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "gsm8k", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "harnesses", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "math-env", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "reverse-text", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "reverse-text-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "rlm", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "wordle", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
 flash-attn = [
@@ -2636,13 +2635,13 @@ requires-dist = [
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "deep-ep", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" },
     { name = "deep-gemm", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_gemm-2.5.0+891d57b-cp312-cp312-linux_x86_64.whl" },
-    { name = "default", marker = "extra == 'envs'", editable = "deps/verifiers/packages/harnesses/default" },
     { name = "dion", git = "https://github.com/samsja/dion.git?rev=d891eeb" },
     { name = "flash-attn", marker = "platform_machine == 'x86_64' and extra == 'flash-attn'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.4/flash_attn-2.8.3+cu128torch2.11-cp312-cp312-linux_x86_64.whl" },
     { name = "flash-attn-3", marker = "extra == 'flash-attn-3'", index = "https://download.pytorch.org/whl/test/cu128" },
     { name = "flash-attn-4", marker = "extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=96bd151" },
     { name = "flash-linear-attention", git = "https://github.com/fla-org/flash-linear-attention" },
     { name = "gsm8k", marker = "extra == 'envs'", editable = "deps/verifiers/examples/tasksets/gsm8k" },
+    { name = "harnesses", marker = "extra == 'envs'", editable = "deps/verifiers/packages/harnesses" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "kernels", marker = "extra == 'gpt-oss'" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
@@ -2674,7 +2673,6 @@ requires-dist = [
     { name = "reverse-text-v1", marker = "extra == 'envs'", editable = "deps/verifiers/examples/tasksets/reverse_text_v1" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ring-flash-attn", specifier = ">=0.1.8" },
-    { name = "rlm", marker = "extra == 'envs'", editable = "deps/verifiers/packages/harnesses/rlm" },
     { name = "setproctitle", specifier = ">=1.3.0" },
     { name = "tenacity", specifier = ">=8.2.0" },
     { name = "tilelang", specifier = ">=0.1.8" },
@@ -2685,7 +2683,7 @@ requires-dist = [
     { name = "torchvision", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", specifier = "==5.6.2" },
     { name = "uvloop", specifier = ">=0.21.0" },
-    { name = "verifiers", extras = ["v1"], editable = "deps/verifiers" },
+    { name = "verifiers", editable = "deps/verifiers" },
     { name = "vllm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'", specifier = ">=0.22.0" },
     { name = "vllm", marker = "platform_machine == 'aarch64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.22.0/vllm-0.22.0+cu129-cp38-abi3-manylinux_2_28_aarch64.whl" },
     { name = "vllm", marker = "platform_machine == 'x86_64'", url = "https://github.com/vllm-project/vllm/releases/download/v0.22.0/vllm-0.22.0+cu129-cp38-abi3-manylinux_2_28_x86_64.whl" },
@@ -2731,7 +2729,7 @@ requires-dist = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.2.26"
+version = "0.2.27"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -2741,23 +2739,23 @@ dependencies = [
     { name = "pydantic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tenacity", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9b/98/7ecfdd389664c5112eda8d83e287b266f627fdbcefe5510b1b7346effa4b/prime_sandboxes-0.2.26.tar.gz", hash = "sha256:87b0aa2d5ee44f201cb4d0fc1bdf52efa617a7f3cbf9e5a5ee7bc2de0f45ac98", size = 68496, upload-time = "2026-05-12T22:17:47.801Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9a/1f/b257b21f54e9b961bcac05335f6637c494ed0986fb4b5d2054f97f96faa0/prime_sandboxes-0.2.27.tar.gz", hash = "sha256:db4071387f4b2dc8bcd0c8916af4031f864dfd5dfd9818f56119347af20b1469", size = 68661, upload-time = "2026-06-05T21:55:35.175Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e8/51/b5c282dffd4eba73953cdf86c34df36dd31264464489fd14a1a565776e03/prime_sandboxes-0.2.26-py3-none-any.whl", hash = "sha256:03226e4fa81a8008bbdb3046f295a56a43e74bb89b8e894b001547643deca918", size = 34234, upload-time = "2026-05-12T22:17:46.494Z" },
+    { url = "https://files.pythonhosted.org/packages/94/bc/a9142d0ef67d92672469cff15cadc04eb46ca9957b00156445d14c14b04f/prime_sandboxes-0.2.27-py3-none-any.whl", hash = "sha256:3fb227cc909c15475fb2874974d166d857021ee6ed9a6e0d4482b1b5ebfc50e2", size = 34402, upload-time = "2026-06-05T21:55:33.451Z" },
 ]
 
 [[package]]
 name = "prime-tunnel"
-version = "0.1.7"
+version = "0.1.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pydantic", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tenacity", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/91/63/900dbb168a0f49dd9b6c510520a8c9b2b7ecb2c5863caac7757f12ea16e5/prime_tunnel-0.1.7.tar.gz", hash = "sha256:0fd296a78645c95c4474cf418321bac2ad6ba6816701e8823baf6ab718a68a5a", size = 13024, upload-time = "2026-05-20T06:38:40.444Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9c/e7/557c7623bd8c9a7a9127d880dce2a3d8612d3a7df02bdde6f01c958a20b8/prime_tunnel-0.1.8.tar.gz", hash = "sha256:07803d5d5c6ec83c260bbef0ecd340f4f6acab0f6a254d5d34a4c6ddfc777c0b", size = 14576, upload-time = "2026-06-02T06:39:36.56Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/60/32/3270dba4c7c402372d25faf8f633f571fe2be8692d720e0eb717ed6ab44e/prime_tunnel-0.1.7-py3-none-any.whl", hash = "sha256:226a08ef9cc4c13503f4e1a687d4fa733ab72626725538b822edbaf8064c40fd", size = 14912, upload-time = "2026-05-20T06:38:38.986Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/5f/181fe0ca1ca8507c0a373e55363b411bdeab9ad904c68edec7d7b1bdea74/prime_tunnel-0.1.8-py3-none-any.whl", hash = "sha256:fab081f566e0887ce50c7b5872169e9f356fc3263d5f0493cfabb3150eb73b0a", size = 15843, upload-time = "2026-06-02T06:39:34.043Z" },
 ]
 
 [[package]]
@@ -3316,11 +3314,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/d9/33/97d7ee4f67b782ae1
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c1/02/18ba0727a1c755c528d6a52b363d62c0b7a8e64cf961b3030c046107db4d/ring_flash_attn-0.1.8-py3-none-any.whl", hash = "sha256:296c929516c3b21f7bcdaeca44a99bb541779a7b63979eb0f67837dcb18a2bb9", size = 25437, upload-time = "2025-09-10T11:53:07.565Z" },
 ]
-
-[[package]]
-name = "rlm"
-version = "0.1.0"
-source = { editable = "deps/verifiers/packages/harnesses/rlm" }
 
 [[package]]
 name = "rpds-py"
@@ -4011,6 +4004,7 @@ dependencies = [
     { name = "gepa", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "httpx", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "jinja2", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "loguru", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "math-verify", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "mcp", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "msgpack", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -4026,24 +4020,14 @@ dependencies = [
     { name = "pymupdf", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pyzmq", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "regex", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "renderers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "requests", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "rich", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "setproctitle", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tenacity", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "textual", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "uvloop", marker = "(platform_machine == 'aarch64' and platform_python_implementation != 'PyPy' and sys_platform == 'linux') or (platform_machine == 'x86_64' and platform_python_implementation != 'PyPy' and sys_platform == 'linux')" },
-]
-
-[package.optional-dependencies]
-v1 = [
-    { name = "loguru", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "mcp", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "msgpack", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "openai-agents", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "prime-pydantic-config", extra = ["toml"], marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "pyzmq", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "renderers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tomli-w", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "uvloop", marker = "(platform_machine == 'aarch64' and platform_python_implementation != 'PyPy' and sys_platform == 'linux') or (platform_machine == 'x86_64' and platform_python_implementation != 'PyPy' and sys_platform == 'linux')" },
 ]
 
 [package.metadata]
@@ -4061,33 +4045,28 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "liger-kernel", marker = "extra == 'rl'", specifier = ">=0.5.10" },
-    { name = "loguru", marker = "extra == 'v1'", specifier = ">=0.7.0" },
+    { name = "loguru", specifier = ">=0.7.0" },
     { name = "math-verify", specifier = ">=0.8.0" },
     { name = "mcp", specifier = ">=1.14.1" },
-    { name = "mcp", marker = "extra == 'v1'", specifier = ">=1.2" },
     { name = "msgpack", specifier = ">=1.1.2" },
-    { name = "msgpack", marker = "extra == 'v1'", specifier = ">=1.0.0" },
     { name = "nest-asyncio", specifier = ">=1.6.0" },
     { name = "nltk", marker = "extra == 'ta'" },
     { name = "numpy" },
     { name = "openai", specifier = ">=1.108.1" },
     { name = "openai-agents", specifier = ">=0.0.7" },
-    { name = "openai-agents", marker = "extra == 'v1'", specifier = ">=0.0.7" },
     { name = "peft", marker = "extra == 'rl'" },
     { name = "pillow" },
     { name = "prime-pydantic-config", extras = ["toml"] },
-    { name = "prime-pydantic-config", extras = ["toml"], marker = "extra == 'v1'" },
-    { name = "prime-sandboxes", specifier = ">=0.2.25" },
-    { name = "prime-tunnel", specifier = ">=0.1.6" },
+    { name = "prime-sandboxes", specifier = ">=0.2.27" },
+    { name = "prime-tunnel", specifier = ">=0.1.8" },
     { name = "pydantic", specifier = ">=2.11.9" },
     { name = "pymupdf" },
     { name = "python-dotenv", marker = "extra == 'browser'", specifier = ">=1.0.0" },
     { name = "pyzmq", specifier = ">=27.1.0" },
-    { name = "pyzmq", marker = "extra == 'v1'", specifier = ">=27.0.0" },
     { name = "reasoning-gym", marker = "extra == 'rg'" },
     { name = "regex", specifier = "<2026.4.4" },
+    { name = "renderers", specifier = ">=0.1.8.dev28" },
     { name = "renderers", marker = "extra == 'renderers'", specifier = ">=0.1.8.dev28" },
-    { name = "renderers", marker = "extra == 'v1'", specifier = ">=0.1.8.dev28" },
     { name = "requests" },
     { name = "requests", marker = "extra == 'rl'" },
     { name = "rich" },
@@ -4097,7 +4076,7 @@ requires-dist = [
     { name = "textarena", marker = "extra == 'ta'" },
     { name = "textual" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
-    { name = "tomli-w", marker = "extra == 'v1'", specifier = ">=1.0.0" },
+    { name = "tomli-w", specifier = ">=1.0.0" },
     { name = "torch", marker = "extra == 'rl'", specifier = ">=2.8.0,<2.9.0" },
     { name = "transformers", marker = "extra == 'rl'", specifier = ">=4.56.2" },
     { name = "typing-extensions", marker = "python_full_version < '3.12'" },
@@ -4105,7 +4084,7 @@ requires-dist = [
     { name = "vllm", marker = "extra == 'rl'", specifier = ">=0.10.0,<0.11.0" },
     { name = "wandb", marker = "extra == 'rl'" },
 ]
-provides-extras = ["browser", "renderers", "rg", "rl", "ta", "v1"]
+provides-extras = ["browser", "renderers", "rg", "rl", "ta"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -4120,7 +4099,6 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "reasoning-gym" },
-    { name = "renderers", specifier = ">=0.1.8.dev28" },
     { name = "ruff" },
     { name = "stagehand", specifier = ">=3.0.0" },
     { name = "textarena" },
@@ -4139,12 +4117,9 @@ examples = [
     { name = "wiki-search", editable = "deps/verifiers/examples/tasksets/wiki_search" },
     { name = "wikispeedia", editable = "deps/verifiers/examples/tasksets/wikispeedia" },
 ]
-harnesses = [
-    { name = "default", editable = "deps/verifiers/packages/harnesses/default" },
-    { name = "rlm", editable = "deps/verifiers/packages/harnesses/rlm" },
-]
+harnesses = [{ name = "harnesses", editable = "deps/verifiers/packages/harnesses" }]
 policy = [{ name = "semgrep", specifier = ">=1.150.0" }]
-tasksets = [{ name = "harbor", editable = "deps/verifiers/packages/tasksets/harbor" }]
+tasksets = [{ name = "tasksets", editable = "deps/verifiers/packages/tasksets" }]
 
 [[package]]
 name = "virtualenv"
