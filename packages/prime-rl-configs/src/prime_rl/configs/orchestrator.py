@@ -159,8 +159,8 @@ class EnvConfig(BaseConfig):
     address: str | None = None
     """ZMQ address of an external env server (e.g. ``tcp://host:5000``). When set, the orchestrator connects to this server instead of spawning one; when None, a subprocess env server is spawned automatically."""
 
-    num_workers: int | Literal["auto"] = 32
-    """Worker processes for the spawned env server. ``auto`` is resolved per group (train envs use a fixed pool). Ignored when ``address`` is set."""
+    num_workers: int | Literal["auto"] = "auto"
+    """Worker processes for the spawned env server. ``auto`` scales to 1 worker per 256 concurrent rollouts. Ignored when ``address`` is set."""
 
     ratio: float | None = Field(None, gt=0)
     """Sampling weight for this environment in the buffer. When None for all envs, samples uniformly across all available problems. When set, must be set on all envs — values are relative weights normalized to probabilities (e.g. [1, 1] and [0.5, 0.5] are equivalent)."""
@@ -898,12 +898,11 @@ class OrchestratorConfig(BaseConfig):
             if "group_size" not in env_cfg.model_fields_set:
                 env_cfg.group_size = self.group_size
 
-        # Fixed train env worker pool: a single env worker can't absorb all
-        # in-flight rollouts (event-loop saturation during sandbox setup ->
-        # heartbeat timeout -> restart loop). Explicit per-env values win.
+        # Resolve train env num_workers from max_inflight_rollouts
         for env_cfg in self.train.env:
             if env_cfg.num_workers == "auto":
-                env_cfg.num_workers = 32
+                assert self.max_inflight_rollouts is not None
+                env_cfg.num_workers = max(1, math.ceil(self.max_inflight_rollouts / 256))
 
         return self
 
