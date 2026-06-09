@@ -8,7 +8,7 @@ from jaxtyping import Float
 from torch import Tensor
 
 if TYPE_CHECKING:
-    import verifiers.nano as vf
+    import verifiers.v1 as vf
 
     from prime_rl.orchestrator.types import TrainRollout
 

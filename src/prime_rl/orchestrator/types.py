@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
-import verifiers.nano as vf
+import verifiers.v1 as vf
 
 from prime_rl.transport import TrainingSample
 

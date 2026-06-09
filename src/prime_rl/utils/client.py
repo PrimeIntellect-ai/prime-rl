@@ -8,12 +8,12 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import httpx
-import verifiers.nano as vf
+import verifiers.v1 as vf
 from httpx import AsyncClient
 from openai import NotFoundError
 from renderers import RendererConfig
 from tenacity import retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
-from verifiers.nano.clients.config import OpenAIClientConfig, RendererClientConfig
+from verifiers.v1.clients.config import OpenAIClientConfig, RendererClientConfig
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
@@ -186,7 +186,7 @@ def setup_clients(
     renderer_model_name: str | None = None,
     pool_size: int | None = None,
 ) -> list[vf.ClientConfig]:
-    """Build vf-nano client configs (one per base_url × DP rank). ``client_type``
+    """Build v1 client configs (one per base_url × DP rank). ``client_type``
     ``renderer`` → token-in/out (``RendererClientConfig``, with the renderer the env
     server should use forwarded as a serialized config so it doesn't fall back to the
     default renderer); otherwise plain chat-completions (``OpenAIClientConfig``)."""
@@ -194,9 +194,9 @@ def setup_clients(
     config_cls = RendererClientConfig if is_renderer else OpenAIClientConfig
     renderer_extra: dict = {}
     if is_renderer:
-        # Pass the shared renderers.RendererConfig straight through (vf-nano's
+        # Pass the shared renderers.RendererConfig straight through (v1's
         # RendererClientConfig.renderer is the same type; pydantic round-trips it
-        # over the wire). prime-rl and vf-nano share one renderer config.
+        # over the wire). prime-rl and v1 share one renderer config.
         renderer_extra = {"renderer": renderer_config, "pool_size": pool_size or 1}
     env_headers = {
         k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None

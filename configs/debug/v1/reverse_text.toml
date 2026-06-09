@@ -1,5 +1,5 @@
-# Debug RL run on the vf-nano env server (reverse-text starter).
-# The orchestrator spawns a vf-nano EnvServer per env (it never loads the env
+# Debug RL run on the v1 env server (reverse-text starter).
+# The orchestrator spawns a v1 EnvServer per env (it never loads the env
 # itself), dispatches rollouts by task index, and trains on the returned Traces
 # (renderer-tokenized). Light settings for a quick end-to-end smoke.
 

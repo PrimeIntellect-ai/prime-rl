@@ -3,7 +3,7 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-import verifiers.nano as vf
+import verifiers.v1 as vf
 from pydantic import AliasChoices, Field, model_serializer, model_validator
 from pydantic_core.core_schema import SerializerFunctionWrapHandler
 from renderers import AutoRendererConfig, RendererConfig
@@ -145,7 +145,7 @@ class EvalSamplingConfig(BaseConfig):
 
 
 class EnvConfig(vf.EnvConfig):
-    """A vf-nano environment — its ``taskset`` + ``harness`` (reused from ``vf.EnvConfig``,
+    """A v1 environment — its ``taskset`` + ``harness`` (reused from ``vf.EnvConfig``,
     resolved to their specific config types by ``id`` via vf's shared validator) plus
     prime-rl's orchestration knobs. Timeouts come from ``vf.TimeoutConfig``
     (``timeout.rollout`` / ``timeout.scoring``)."""
@@ -173,12 +173,12 @@ class EnvConfig(vf.EnvConfig):
 
     @property
     def is_legacy(self) -> bool:
-        """A v0/legacy env (run via the bridge): an ``id`` is set and no nano ``taskset`` is."""
+        """A v0/legacy env (run via the bridge): an ``id`` is set and no v1 ``taskset`` is."""
         return not self.taskset.id
 
     @property
     def env_id(self) -> str:
-        """The env identifier — the nano taskset id (v1) or the legacy env id (v0)."""
+        """The env identifier — the v1 taskset id (v1) or the legacy env id (v0)."""
         return self.taskset.id or self.id or ""
 
     @property

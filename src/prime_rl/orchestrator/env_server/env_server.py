@@ -1,7 +1,7 @@
 import asyncio
 
-from verifiers.nano.legacy import LegacyEnvServer
-from verifiers.nano.serve import EnvServer
+from verifiers.v1.legacy import LegacyEnvServer
+from verifiers.v1.serve import EnvServer
 
 from prime_rl.configs.env_server import EnvServerConfig
 from prime_rl.orchestrator.utils import intercept_vf_logging
@@ -14,13 +14,13 @@ from prime_rl.utils.utils import clean_exit
 @clean_exit
 def run_server(config: EnvServerConfig):
     setup_logger(config.log.level, json_logging=config.log.json_logging)
-    # Route vf-nano's stdlib logging (the server's own logs) through our handler.
-    intercept_vf_logging(logger="verifiers.nano", level=config.log.level)
+    # Route v1's stdlib logging (the server's own logs) through our handler.
+    intercept_vf_logging(logger="verifiers.v1", level=config.log.level)
 
     env = config.env
     address = env.address or "tcp://127.0.0.1:5000"
     # A v0/legacy env runs a classic verifiers env through the bridge; a v1 env is a native
-    # nano taskset. Both serve vf.Trace over the same protocol, so the orchestrator is agnostic.
+    # v1 taskset. Both serve vf.Trace over the same protocol, so the orchestrator is agnostic.
     if env.is_legacy:
         server: EnvServer = LegacyEnvServer(env_id=env.env_id, env_args=env.args, address=address)
     else:

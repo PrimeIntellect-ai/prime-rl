@@ -64,9 +64,9 @@ flash-attn-3 = ["flash_attn_3"]
 flash-attn-cute = [
     "flash-attn-4",
 ]
-# Experimental vf-nano branch: vf-nano plugins (tasksets + harnesses) are installed as
-# packages, resolved by id (v1 verifiers is dropped). The shipped `default`/`rlm` harnesses
-# and the taskset(s) prime-rl runs live here.
+# Experimental v1 branch: v1 plugins (tasksets + harnesses) are installed as packages,
+# resolved by id. The shipped `default`/`rlm` harnesses and the taskset(s) prime-rl runs
+# live here.
 envs = [
     "reverse-text",
     "alphabet-sort",
@@ -168,7 +168,6 @@ prime = false
 prime-sandboxes = false
 prime-tunnel = false
 prime-evals = false
-vf-nano = false
 verifiers = false
 renderers = false
 tasksets = false
@@ -183,19 +182,19 @@ nixl-cu12 = false
 
 [tool.uv.sources]
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
-# vf-nano is verifiers v1 (vendored inside the verifiers package). prime-rl depends on the one
-# `verifiers` package (v0 + v1=nano + the legacy bridge); plugins resolve from the nested vf-nano.
-# `reverse-text` is verifiers' classic v0 env; `reverse-text-v1` is the nano taskset.
+# prime-rl depends on the one `verifiers` package (v0 + v1 + the legacy bridge); the v1 plugins
+# resolve from deps/verifiers/{examples,packages}. `reverse-text` is verifiers' classic v0 env;
+# `reverse-text-v1` is the v1 taskset.
 verifiers = { path = "deps/verifiers", editable = true }
 reverse-text = { path = "deps/verifiers/environments/reverse_text", editable = true }
 alphabet-sort = { path = "deps/verifiers/environments/alphabet_sort", editable = true }
 wordle = { path = "deps/verifiers/environments/wordle", editable = true }
-reverse-text-v1 = { path = "deps/verifiers/deps/vf-nano/examples/tasksets/reverse_text_v1", editable = true }
-gsm8k = { path = "deps/verifiers/deps/vf-nano/examples/tasksets/gsm8k", editable = true }
-math-env = { path = "deps/verifiers/deps/vf-nano/examples/tasksets/math_env", editable = true }
-aime24 = { path = "deps/verifiers/deps/vf-nano/examples/tasksets/aime24", editable = true }
-default = { path = "deps/verifiers/deps/vf-nano/packages/harnesses/default", editable = true }
-rlm = { path = "deps/verifiers/deps/vf-nano/packages/harnesses/rlm", editable = true }
+reverse-text-v1 = { path = "deps/verifiers/examples/tasksets/reverse_text_v1", editable = true }
+gsm8k = { path = "deps/verifiers/examples/tasksets/gsm8k", editable = true }
+math-env = { path = "deps/verifiers/examples/tasksets/math_env", editable = true }
+aime24 = { path = "deps/verifiers/examples/tasksets/aime24", editable = true }
+default = { path = "deps/verifiers/packages/harnesses/default", editable = true }
+rlm = { path = "deps/verifiers/packages/harnesses/rlm", editable = true }
 renderers = { path = "deps/renderers", editable = true }
 prime-pydantic-config = { path = "deps/pydantic-config", editable = true }
 torch = { index = "pytorch-cu128" }

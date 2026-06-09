@@ -7,7 +7,7 @@ from itertools import cycle
 from pathlib import Path
 
 import orjson
-import verifiers.nano as vf
+import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.transport import TrainingSample
@@ -22,7 +22,7 @@ from prime_rl.utils.utils import (
 
 async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer):
     """Build the student inference pool. Returns ``(None, inference_pool)`` — the
-    renderer now lives in the env server (vf-nano's renderer client), so the
+    renderer now lives in the env server (v1's renderer client), so the
     orchestrator builds no renderer; it just forwards ``config.renderer`` so the env
     server uses the model-specific renderer (not the tool-less default fallback).
     ``train_client_type`` selects the env server's client: ``renderer`` (token-in/out)

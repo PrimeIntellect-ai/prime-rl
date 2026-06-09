@@ -1,4 +1,4 @@
-"""Turn a vf-nano `Trace` (the env server's native, typed output) into training data.
+"""Turn a v1 `Trace` (the env server's native, typed output) into training data.
 
 The orchestrator holds a real `vf.Trace` (validated in `envs.py`), so everything
 here is attribute access — no dicts. The trajectory is segmented into `branches`
@@ -10,8 +10,8 @@ only grew), each turn carrying `tokens` (`prompt_ids` / `completion_ids` /
 
 from __future__ import annotations
 
-import verifiers.nano as vf
-from verifiers.nano.clients.openai import message_to_wire
+import verifiers.v1 as vf
+from verifiers.v1.clients.openai import message_to_wire
 
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.chat_template import (
@@ -51,7 +51,7 @@ def backfill_rollout_tokens(trace: vf.Trace, tokenizer) -> None:
 
 
 def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSample]:
-    """Convert a vf-nano `Trace` into `TrainingSample`s — one per branch.
+    """Convert a v1 `Trace` into `TrainingSample`s — one per branch.
 
     Stitch each branch's turns into one token sequence: the branch's first-turn
     prompt, then for each turn the new context tokens since the running prefix (mask

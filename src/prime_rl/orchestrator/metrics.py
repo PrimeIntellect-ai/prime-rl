@@ -178,7 +178,7 @@ class MetricsBuilder:
 
     @staticmethod
     def timing_df(rollouts: list[TrainRollout]) -> pd.DataFrame:
-        """Per-rollout timing from the vf-nano Trace (`generation`/`scoring` spans)."""
+        """Per-rollout timing from the v1 Trace (`generation`/`scoring` spans)."""
         rows = []
         for r in rollouts:
             timing = r.trace.timing

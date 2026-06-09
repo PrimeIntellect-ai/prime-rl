@@ -148,9 +148,9 @@ class Orchestrator:
     def __init__(self, config: OrchestratorConfig) -> None:
         self.config = config
         setup_logger(config.log.level, json_logging=config.log.json_logging)
-        # Route the in-process vf-nano library logging through our handler. The
+        # Route the in-process v1 library logging through our handler. The
         # env server runs in a child process, so its logging is separate.
-        intercept_vf_logging(logger="verifiers.nano", level="WARN")
+        intercept_vf_logging(logger="verifiers.v1", level="WARN")
         get_logger().info(f"Starting orchestrator ({config.training_mode})")
 
         if config.bench:
@@ -200,7 +200,7 @@ class Orchestrator:
         with open(config_dir / "orch.toml", "wb") as f:
             tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
 
-        # TODO(vf-nano, experimental): temporary. vf-nano envs are local packages
+        # TODO(v1, experimental): temporary. v1 envs are local packages
         # installed in this venv (no prime-env hub install); the env server imports
         # them in its own child process.
 

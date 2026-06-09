@@ -1,6 +1,6 @@
-"""Env wrappers over a vf-nano env server.
+"""Env wrappers over a v1 env server.
 
-Each ``Env`` owns a vf-nano ``EnvServer`` (spawned as a child process, or an
+Each ``Env`` owns a v1 ``EnvServer`` (spawned as a child process, or an
 external one given by ``config.address``) and an ``EnvClient`` to drive it. The
 orchestrator never *runs* an environment: it asks the server for ``info``
 (``num_tasks`` + whether group scoring is needed), then runs rollouts purely by
@@ -24,9 +24,9 @@ from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import Generic, TypeVar
 
-import verifiers.nano as vf
-from verifiers.nano.legacy import LegacyEnvServer
-from verifiers.nano.serve import EnvClient, EnvServer
+import verifiers.v1 as vf
+from verifiers.v1.legacy import LegacyEnvServer
+from verifiers.v1.serve import EnvClient, EnvServer
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
 from prime_rl.utils.logger import get_logger
@@ -48,13 +48,13 @@ def _run_env_server(*, log_file: str, log_level: str, json_logging: bool, legacy
     os.dup2(fh.fileno(), sys.stdout.fileno())
     os.dup2(fh.fileno(), sys.stderr.fileno())
     setup_logger(log_level, json_logging=json_logging)
-    intercept_vf_logging(logger="verifiers.nano", level=log_level)
+    intercept_vf_logging(logger="verifiers.v1", level=log_level)
     server_cls = LegacyEnvServer if legacy else EnvServer
     server_cls.run_server(**kwargs)
 
 
 class Env:
-    """Wraps a vf-nano env server + client. The orchestrator never loads the env."""
+    """Wraps a v1 env server + client. The orchestrator never loads the env."""
 
     def __init__(self, config: EnvConfig):
         self.config = config
@@ -63,7 +63,7 @@ class Env:
         self.requires_group_scoring: bool = False
         # Typed Trace for this env (Trace parametrized with the env's Task subclass),
         # used to validate the wire trace into a real vf.Trace with typed task fields.
-        # v0/legacy envs return Trace[WireTask] (no nano Task subclass to import); v1 envs
+        # v0/legacy envs return Trace[WireTask] (no v1 Task subclass to import); v1 envs
         # type the trace with the taskset's Task subclass.
         self.trace_type = vf.Trace[vf.WireTask] if config.is_legacy else vf.Trace[vf.task_type(config.env_id)]
         self._env_client: EnvClient | None = None
@@ -98,7 +98,7 @@ class Env:
         )
 
     async def _spawn(self, log_dir: Path, log_level: str, json_logging: bool) -> str:
-        """Spawn a vf-nano EnvServer child process (it loads the env; we never do).
+        """Spawn a v1 EnvServer child process (it loads the env; we never do).
         The server binds an OS-assigned port (``:0``) and reports the concrete
         address back over a queue — no free-port guess, no TOCTOU race. Its output
         goes to ``<log_dir>/<name>.log`` (``log_dir`` is already the train/eval-split

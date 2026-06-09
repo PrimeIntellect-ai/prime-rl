@@ -1,21 +1,21 @@
-# vf-nano analog of examples/hendrycks_sanity/rl.toml — identical config with only
-# the env sections swapped to vf-nano taskset/harness syntax (math-env taskset,
+# v1 analog of examples/hendrycks_sanity/rl.toml — identical config with only
+# the env sections swapped to v1 taskset/harness syntax (math-env taskset,
 # default harness, subprocess runtime). Submits to slurm by default; pass --no-slurm
 # to run locally.
 
-output_dir = "/beegfs/mika/hendrycks-sanity-vf-nano-subprocess"
+output_dir = "/beegfs/mika/hendrycks-sanity-v1-subprocess"
 max_steps = 5000
 
 [wandb]
 project = "hendrycks-sanity"
-name = "vf-nano-subprocess"
+name = "v1-subprocess"
 
 [deployment]
 num_train_gpus = 4
 num_infer_gpus = 4
 
 [slurm]
-job_name = "vf-nano-subprocess"
+job_name = "v1-subprocess"
 partition = "cluster"
 
 [model]

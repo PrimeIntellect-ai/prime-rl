@@ -24,7 +24,7 @@ class EventLoopLagMonitor:
     """Monitors how busy the main event loop is by timing short sleeps.
 
     Vendored from verifiers.utils.async_utils (the orchestrator now runs on
-    vf-nano and no longer depends on v1 verifiers)."""
+    v1 and no longer depends on v1 verifiers)."""
 
     def __init__(self, measure_interval: float = 0.1, max_measurements: int = 1000):
         assert measure_interval > 0 and max_measurements > 0
