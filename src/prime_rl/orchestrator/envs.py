@@ -15,6 +15,7 @@ from verifiers.serve import ZMQEnvClient, ZMQEnvServer
 from verifiers.utils.serve_utils import get_free_port
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
+from prime_rl.orchestrator.advantage import AdvantageFn, setup_advantage_fn
 from prime_rl.orchestrator.eval_utils import compute_pass_at_k
 from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.monitor import get_monitor
@@ -170,6 +171,11 @@ class TrainEnv(Env):
     def __init__(self, config: TrainEnvConfig):
         super().__init__(config)
         self.sampling_args = config.sampling.to_sampling_args()
+        # Built once — custom advantage funcs do an ``import_object`` we don't
+        # want to pay per group. ``None`` = reward-only path.
+        self.advantage_fn: AdvantageFn | None = (
+            setup_advantage_fn(config.advantage) if config.advantage is not None else None
+        )
 
     def get_dataset(self, seed: int | None = None):
         return self.env.get_dataset(seed=seed)

@@ -18,7 +18,7 @@ import uuid
 from collections import defaultdict
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.advantage import AdvantageFn, assign_advantages, setup_advantage_fn
+from prime_rl.orchestrator.advantage import assign_advantages
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.trajectories import (
@@ -57,13 +57,6 @@ class TrainSink:
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
-        # Built once per env — custom advantage funcs do an ``import_object`` and
-        # we don't want to pay that per group. Each env carries its own advantage
-        # config (inheriting the top-level default when unset). ``None`` = reward-only path.
-        self.advantage_fns: dict[str, AdvantageFn | None] = {
-            env.name: setup_advantage_fn(env.config.advantage) if env.config.advantage is not None else None
-            for env in train_envs
-        }
         self.pre_filters = pre_filters
         self.post_filters = post_filters
 
@@ -203,7 +196,7 @@ class TrainSink:
             )
             return
 
-        assign_advantages(survivors, self.advantage_fns[env_name])
+        assign_advantages(survivors, self.train_envs.get(env_name).advantage_fn)
 
         # Propagate to the pre-tokenized samples so the orchestrator can
         # collect samples at ship time without re-walking rollouts. The env
