@@ -9,8 +9,8 @@ from collections.abc import Callable, Sequence
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.batch import prepare_batch
-from prime_rl.trainer.cost_model import build_bin_cost
 from prime_rl.trainer.runs import get_multi_run_manager
+from prime_rl.trainer.utils import build_bin_cost
 from prime_rl.transport import (
     MicroBatch,
     MicroBatchSender,

@@ -2,7 +2,7 @@ import copy
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from prime_rl.trainer.partition import balanced_partition
+from prime_rl.trainer.utils import balanced_partition
 from prime_rl.transport.types import MicroBatch, RoutedExperts, TrainingSample
 
 ROUTED_EXPERTS_DTYPE_ITEMSIZE = {

@@ -8,7 +8,7 @@ from prime_rl.trainer.batch import (
     prepare_batch,
     prepare_sample,
 )
-from prime_rl.trainer.cost_model import build_bin_cost
+from prime_rl.trainer.utils import build_bin_cost
 from prime_rl.transport.types import MicroBatch, RoutedExperts, TrainingSample
 
 
