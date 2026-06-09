@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from collections.abc import AsyncGenerator
 from functools import cached_property
@@ -49,10 +50,14 @@ from renderers.mm_store import (
     _SAFE_MM_HASH_RE,
     _SAFE_RUN_ID_RE,
     MMFILE_PREFIX,
+    MMRAW_PREFIX,
     mm_feature_envelope_matches,
     mm_feature_fingerprint,
     mm_feature_path,
+    mm_processor_fingerprint,
+    raw_image_path,
     split_mmfile_ref,
+    split_mmraw_ref,
 )
 from vllm.entrypoints.openai.engine.protocol import ErrorResponse, RequestResponseMetadata
 from vllm.entrypoints.serve.disagg.protocol import (
@@ -73,6 +78,8 @@ _MM_FEATURE_LOAD_WORKERS_ENV = "PRIME_RL_MM_FEATURE_LOAD_WORKERS"
 _MM_FEATURE_LOAD_RETRIES = 3
 _MM_FEATURE_LOAD_BACKOFF_S = 0.02
 _mm_feature_executor: concurrent.futures.ThreadPoolExecutor | None = None
+_mm_raw_processors: dict[str, Any] = {}
+_mm_raw_processors_lock = threading.Lock()
 
 
 class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
@@ -237,6 +244,56 @@ def _parse_mmfile_ref(ref: str, *, expected_modality: str, expected_hash: str) -
     return run_id, fingerprint, modality, mm_hash
 
 
+def _parse_mmraw_ref(
+    ref: str, *, expected_modality: str, expected_hash: str
+) -> tuple[str, str, str, str, str, list[int]]:
+    try:
+        run_id, fingerprint, modality, mm_hash, raw_image_id, grid_thw = split_mmraw_ref(ref)
+    except ValueError as exc:
+        raise _MMFeatureArtifactError(
+            error_type="invalid_mm_raw_ref",
+            message=f"Invalid mmraw ref shape for {expected_modality}.",
+            status_code=HTTPStatus.BAD_REQUEST,
+        ) from exc
+    if not _SAFE_RUN_ID_RE.fullmatch(run_id):
+        raise _MMFeatureArtifactError(
+            error_type="invalid_mm_raw_ref",
+            message="mmraw run_id contains unsafe characters.",
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+    if modality != expected_modality:
+        raise _MMFeatureArtifactError(
+            error_type="invalid_mm_raw_ref",
+            message=(f"mmraw modality {modality!r} does not match slot modality {expected_modality!r}."),
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+    if mm_hash != expected_hash:
+        raise _MMFeatureArtifactError(
+            error_type="invalid_mm_raw_ref",
+            message="mmraw hash does not match the slot mm_hash.",
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+    if not _SAFE_FINGERPRINT_RE.fullmatch(fingerprint):
+        raise _MMFeatureArtifactError(
+            error_type="invalid_mm_raw_ref",
+            message="mmraw fingerprint contains unsafe characters.",
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+    if modality != "image":
+        raise _MMFeatureArtifactError(
+            error_type="invalid_mm_raw_ref",
+            message=f"Unsupported mmraw modality: {modality!r}.",
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+    if not _SAFE_MM_HASH_RE.fullmatch(mm_hash):
+        raise _MMFeatureArtifactError(
+            error_type="invalid_mm_raw_ref",
+            message="mmraw hash contains unsafe characters.",
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+    return run_id, fingerprint, modality, mm_hash, raw_image_id, grid_thw
+
+
 def _mm_feature_path(*, run_id: str, fingerprint: str, modality: str, mm_hash: str) -> Path:
     # ``_parse_mmfile_ref`` validates run_id/fingerprint/modality/mm_hash and the
     # traversal guard before we reach here, so ``mm_store.mm_feature_path``'s
@@ -251,7 +308,7 @@ def _mm_feature_path(*, run_id: str, fingerprint: str, modality: str, mm_hash: s
         ) from exc
 
 
-def _decoded_image_placeholder_length(item: Any, *, spatial_merge_size: int) -> int:
+def _decoded_image_grid_thw(item: Any) -> list[int]:
     elem = item.get("image_grid_thw")
     data = getattr(elem, "data", elem)
     if hasattr(data, "detach"):
@@ -261,7 +318,47 @@ def _decoded_image_placeholder_length(item: Any, *, spatial_merge_size: int) -> 
     grid = data[0] if isinstance(data, list) and data and isinstance(data[0], list) else data
     if not isinstance(grid, list) or len(grid) != 3:
         raise ValueError("decoded image_grid_thw does not have shape [T,H,W]")
+    return [int(grid[0]), int(grid[1]), int(grid[2])]
+
+
+def _decoded_image_placeholder_length(item: Any, *, spatial_merge_size: int) -> int:
+    grid = _decoded_image_grid_thw(item)
     return int(grid[0]) * int(grid[1]) * int(grid[2]) // (spatial_merge_size**2)
+
+
+def _processor_size_value(size: Any, key: str) -> int:
+    value = getattr(size, key, None)
+    if value is None and isinstance(size, dict):
+        value = size.get(key)
+    if value is None:
+        raise ValueError(f"image processor size missing {key!r}")
+    return int(value)
+
+
+def _processor_fingerprint(processor: Any) -> tuple[str, int]:
+    image_processor = processor.image_processor
+    merge_size = int(getattr(image_processor, "merge_size"))
+    fingerprint = mm_processor_fingerprint(
+        family="qwen_vl",
+        patch_size=int(getattr(image_processor, "patch_size")),
+        merge_size=merge_size,
+        temporal_patch_size=int(getattr(image_processor, "temporal_patch_size")),
+        min_pixels=_processor_size_value(image_processor.size, "shortest_edge"),
+        max_pixels=_processor_size_value(image_processor.size, "longest_edge"),
+    )
+    return fingerprint, merge_size
+
+
+def _get_mm_raw_processor(model_name: str) -> Any:
+    with _mm_raw_processors_lock:
+        processor = _mm_raw_processors.get(model_name)
+        if processor is not None:
+            return processor
+    from transformers import AutoProcessor
+
+    processor = AutoProcessor.from_pretrained(model_name)
+    with _mm_raw_processors_lock:
+        return _mm_raw_processors.setdefault(model_name, processor)
 
 
 def _load_mmfile_ref_sync(
@@ -337,6 +434,115 @@ def _load_mmfile_ref_sync(
         ) from exc
 
 
+def _load_mmraw_ref_sync(
+    ref: str,
+    *,
+    expected_modality: str,
+    expected_hash: str,
+    expected_placeholder_length: int,
+    processor_model_name: str,
+):
+    from PIL import Image
+    from renderers.qwen3_vl import _image_hash
+    from vllm.model_executor.models.qwen2_vl import _create_qwen2vl_field_factory
+    from vllm.multimodal.inputs import MultiModalKwargsItems
+
+    run_id, fingerprint, modality, mm_hash, raw_image_id, expected_grid = _parse_mmraw_ref(
+        ref,
+        expected_modality=expected_modality,
+        expected_hash=expected_hash,
+    )
+    missing = [
+        {
+            "run_id": run_id,
+            "modality": modality,
+            "mm_hash": mm_hash,
+            "fingerprint": fingerprint,
+            "raw_image_id": raw_image_id,
+        }
+    ]
+    try:
+        path = raw_image_path(run_id=run_id, raw_image_id=raw_image_id)
+    except ValueError as exc:
+        raise _MMFeatureArtifactError(
+            error_type="invalid_mm_raw_ref",
+            message=str(exc),
+            status_code=HTTPStatus.BAD_REQUEST,
+        ) from exc
+
+    pil = None
+    for attempt in range(_MM_FEATURE_LOAD_RETRIES):
+        try:
+            with Image.open(path) as img:
+                pil = img.convert("RGB")
+            break
+        except FileNotFoundError:
+            if attempt + 1 == _MM_FEATURE_LOAD_RETRIES:
+                raise _MMFeatureArtifactError(
+                    error_type="missing_mm_raw_image",
+                    message=f"Missing mmraw image: {path}",
+                    missing=missing,
+                ) from None
+            time.sleep(_MM_FEATURE_LOAD_BACKOFF_S * (attempt + 1))
+        except Exception as exc:
+            raise _MMFeatureArtifactError(
+                error_type="corrupt_mm_raw_image",
+                message=f"Corrupt mmraw image for {modality}:{mm_hash}: {exc}",
+                missing=missing,
+            ) from exc
+    if pil is None:
+        raise _MMFeatureArtifactError(
+            error_type="missing_mm_raw_image",
+            message=f"Missing mmraw image: {path}",
+            missing=missing,
+        )
+
+    actual_hash = _image_hash(pil)
+    if actual_hash != mm_hash:
+        raise _MMFeatureArtifactError(
+            error_type="raw_mm_hash_mismatch",
+            message=f"mmraw image hash mismatch for {modality}:{mm_hash}; got {actual_hash}",
+            missing=missing,
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+
+    try:
+        processor = _get_mm_raw_processor(processor_model_name)
+        expected_fingerprint, merge_size = _processor_fingerprint(processor)
+        if fingerprint != expected_fingerprint:
+            raise _MMFeatureArtifactError(
+                error_type="incompatible_mm_raw_fingerprint",
+                message=(
+                    "mmraw fingerprint is not compatible with this vLLM process "
+                    f"(got {fingerprint}, expected {expected_fingerprint})."
+                ),
+                status_code=HTTPStatus.BAD_REQUEST,
+            )
+
+        hf_inputs = processor.image_processor(images=[pil], return_tensors="pt")
+        config = _create_qwen2vl_field_factory(merge_size)(hf_inputs)
+        item = MultiModalKwargsItems.from_hf_inputs(hf_inputs, config)["image"][0]
+        actual_grid = _decoded_image_grid_thw(item)
+        actual_placeholder_length = _decoded_image_placeholder_length(item, spatial_merge_size=merge_size)
+        if actual_grid != expected_grid:
+            raise ValueError(f"processed image_grid_thw {actual_grid!r} != ref {expected_grid!r}")
+        if actual_placeholder_length != expected_placeholder_length:
+            raise ValueError(
+                "processed image_grid_thw does not match placeholder length "
+                f"({actual_placeholder_length} != {expected_placeholder_length})"
+            )
+        return item
+    except _MMFeatureArtifactError:
+        raise
+    except Exception as exc:
+        raise _MMFeatureArtifactError(
+            error_type="raw_mm_grid_mismatch",
+            message=f"mmraw materialization failed for {modality}:{mm_hash}: {exc}",
+            missing=missing,
+            status_code=HTTPStatus.BAD_REQUEST,
+        ) from exc
+
+
 async def _load_mmfile_ref(
     ref: str,
     *,
@@ -352,6 +558,27 @@ async def _load_mmfile_ref(
             expected_modality=expected_modality,
             expected_hash=expected_hash,
             expected_placeholder_length=expected_placeholder_length,
+        ),
+    )
+
+
+async def _load_mmraw_ref(
+    ref: str,
+    *,
+    expected_modality: str,
+    expected_hash: str,
+    expected_placeholder_length: int,
+    processor_model_name: str,
+):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        _get_mm_feature_executor(),
+        lambda: _load_mmraw_ref_sync(
+            ref,
+            expected_modality=expected_modality,
+            expected_hash=expected_hash,
+            expected_placeholder_length=expected_placeholder_length,
+            processor_model_name=processor_model_name,
         ),
     )
 
@@ -452,13 +679,31 @@ class PrimeRlServingTokens(ServingTokens):
                     for modality, ranges in features.mm_placeholders.items()
                 }
                 mm_kwargs: dict[str, list[MultiModalKwargsItem | None]] = {}
-                slot_counts = {"none": 0, "inline": 0, "mmfile": 0}
+                slot_counts = {"none": 0, "inline": 0, "mmfile": 0, "mmraw": 0}
                 load_start = time.monotonic()
+                processor_model_name = str(getattr(self.model_config, "model", None) or model_name)
 
                 async def decode_slot(modality: str, idx: int, item: str | None) -> MultiModalKwargsItem | None:
                     if item is None:
                         slot_counts["none"] += 1
                         return None
+                    if item.startswith(f"{MMRAW_PREFIX}:"):
+                        slot_counts["mmraw"] += 1
+                        hashes = features.mm_hashes.get(modality) or []
+                        placeholders = features.mm_placeholders.get(modality) or []
+                        if idx >= len(hashes) or idx >= len(placeholders):
+                            raise _MMFeatureArtifactError(
+                                error_type="invalid_mm_raw_ref",
+                                message=("mmraw slot has no matching hash or placeholder entry."),
+                                status_code=HTTPStatus.BAD_REQUEST,
+                            )
+                        return await _load_mmraw_ref(
+                            item,
+                            expected_modality=modality,
+                            expected_hash=hashes[idx],
+                            expected_placeholder_length=placeholders[idx].length,
+                            processor_model_name=processor_model_name,
+                        )
                     if item.startswith(f"{MMFILE_PREFIX}:"):
                         slot_counts["mmfile"] += 1
                         hashes = features.mm_hashes.get(modality) or []
@@ -499,10 +744,11 @@ class PrimeRlServingTokens(ServingTokens):
 
                 if any(slot_counts.values()):
                     logger.debug(
-                        "decoded multimodal feature slots none=%d inline=%d mmfile=%d disk_load_ms=%.2f",
+                        "decoded multimodal feature slots none=%d inline=%d mmfile=%d mmraw=%d load_ms=%.2f",
                         slot_counts["none"],
                         slot_counts["inline"],
                         slot_counts["mmfile"],
+                        slot_counts["mmraw"],
                         (time.monotonic() - load_start) * 1000.0,
                     )
 

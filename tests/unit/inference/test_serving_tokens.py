@@ -15,7 +15,15 @@ import asyncio
 import numpy as np
 import pybase64
 import pytest
-from renderers.mm_store import mm_feature_fingerprint as _mm_feature_fingerprint
+from renderers.mm_store import (
+    mm_feature_fingerprint as _mm_feature_fingerprint,
+)
+from renderers.mm_store import (
+    mm_processor_fingerprint as _mm_processor_fingerprint,
+)
+from renderers.mm_store import (
+    mmraw_ref,
+)
 from vllm.entrypoints.serve.disagg.protocol import GenerateResponse, GenerateResponseChoice
 
 from prime_rl.inference.vllm.routed_experts import serialize_routed_experts
@@ -24,6 +32,7 @@ from prime_rl.inference.vllm.serving_tokens import (
     _client_set_max_tokens,
     _GenerateRoutedExpertsCapture,
     _load_mmfile_ref_sync,
+    _load_mmraw_ref_sync,
     _missing_cache_error_from_exception,
     _MMFeatureArtifactError,
 )
@@ -159,6 +168,48 @@ def test_missing_mmfile_artifact_is_typed(tmp_path, monkeypatch):
             "modality": "image",
             "mm_hash": mm_hash,
             "fingerprint": fingerprint,
+        }
+    ]
+
+
+def test_missing_mmraw_image_is_typed(tmp_path, monkeypatch):
+    monkeypatch.setenv("PRIME_RL_MM_FEATURE_ROOT", str(tmp_path))
+    run_id = "testrun"
+    mm_hash = "a" * 32
+    fingerprint = _mm_processor_fingerprint(
+        family="qwen_vl",
+        patch_size=14,
+        merge_size=2,
+        temporal_patch_size=2,
+        min_pixels=56 * 56,
+        max_pixels=14 * 14 * 4 * 1280,
+    )
+    ref = mmraw_ref(
+        run_id=run_id,
+        fingerprint=fingerprint,
+        modality="image",
+        mm_hash=mm_hash,
+        raw_image_id="missing.png",
+        grid_thw=[[1, 2, 2]],
+    )
+
+    with pytest.raises(_MMFeatureArtifactError) as exc_info:
+        _load_mmraw_ref_sync(
+            ref,
+            expected_modality="image",
+            expected_hash=mm_hash,
+            expected_placeholder_length=1,
+            processor_model_name="unused-on-missing-file",
+        )
+
+    assert exc_info.value.error_type == "missing_mm_raw_image"
+    assert exc_info.value.missing == [
+        {
+            "run_id": run_id,
+            "modality": "image",
+            "mm_hash": mm_hash,
+            "fingerprint": fingerprint,
+            "raw_image_id": "missing.png",
         }
     ]
 
