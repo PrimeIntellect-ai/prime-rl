@@ -515,15 +515,34 @@ class RolloutModelConfig(BaseConfig):
     client: ClientConfig = ClientConfig()
 
 
+class ReferenceLogprobsConfig(BaseConfig):
+    """How the reference model scores each trajectory (the per-token logprobs prefill)."""
+
+    top_k: int = Field(1, ge=1)
+    """Top-k (token_id, logprob) per position the reference returns. ``1`` ships just the argmax
+    alongside the always-present sampled-token logprob; ``>1`` enables top-k distillation (OPD) /
+    richer scoring (e.g. pedagogical RL)."""
+
+
+class ReferenceModelConfig(RolloutModelConfig):
+    """A frozen model whose per-token logprobs we score trajectories against (the OPD teacher /
+    pedagogical frozen student). Distinct from ``teacher``, which is the SFT *generator*."""
+
+    logprobs: ReferenceLogprobsConfig = ReferenceLogprobsConfig()
+
+
 class OrchestratorConfig(BaseConfig):
     training_mode: Literal["rl", "opd", "sft"] = "rl"
-    """Training mode. ``rl``: student generates rollouts, no teacher. ``opd``: student generates rollouts, teacher computes logprobs (teacher_tau > 0). ``sft``: teacher generates rollouts, student inference pool used for evals and weight sync."""
+    """Training mode. ``rl``: student generates rollouts. ``opd``: student generates rollouts, the reference computes logprobs. ``sft``: teacher generates rollouts, student inference pool used for evals and weight sync."""
 
     student: RolloutModelConfig = Field(RolloutModelConfig(), validation_alias=AliasChoices("student", "model"))
     """Student rollout participant (model + client) — the model being trained."""
 
     teacher: RolloutModelConfig | None = Field(None, validation_alias=AliasChoices("teacher", "teacher_model"))
-    """Teacher rollout participant (model + client). Role depends on ``training_mode``: ``opd`` — teacher computes logprobs; ``sft`` — teacher generates rollouts."""
+    """SFT generator (model + client): in ``sft`` mode the teacher *generates* the rollouts the student trains on. Not used in ``rl``/``opd``."""
+
+    reference: ReferenceModelConfig | None = None
+    """Reference scorer (model + client + logprobs): the model whose per-token logprobs we score trajectories against — the OPD teacher / pedagogical frozen student. Required in ``opd``; optional in ``rl`` (e.g. pedagogical reward shaping); unused in ``sft``."""
 
     train: TrainConfig = TrainConfig()
 
@@ -708,9 +727,9 @@ class OrchestratorConfig(BaseConfig):
         - [orchestrator.model.<k>]    -> [orchestrator.student.model.<k>]
           (where <k> is any ModelConfig field)
 
-        Teacher must always be configured under [orchestrator.teacher.*]
-        (no equivalent shortcut), because rl mode forbids a teacher and we
-        don't want the same shortcut to silently route to two different roles.
+        Teacher and reference must always be configured under their own
+        [orchestrator.teacher.*] / [orchestrator.reference.*] tables (no flat
+        shortcut), so the student shortcut can't silently route to another role.
         """
         if not isinstance(data, dict):
             return data
@@ -830,12 +849,20 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_training_mode(self):
-        """Enforce training mode invariants that involve only orchestrator fields."""
+        """Enforce training mode invariants that involve only orchestrator fields.
+
+        ``teacher`` is the SFT *generator* (it generates rollouts); ``reference`` is the *scorer* (it
+        computes logprobs). They are independent participants for different roles."""
         has_teacher = self.teacher is not None
-        if self.training_mode == "rl" and has_teacher:
-            raise ValueError("orchestrator.teacher must not be set when training_mode = 'rl'.")
-        if self.training_mode in ("opd", "sft") and not has_teacher:
-            raise ValueError(f"orchestrator.teacher must be configured when training_mode = '{self.training_mode}'.")
+        has_reference = self.reference is not None
+        if self.training_mode == "sft" and not has_teacher:
+            raise ValueError("orchestrator.teacher (the SFT generator) must be configured when training_mode = 'sft'.")
+        if self.training_mode != "sft" and has_teacher:
+            raise ValueError("orchestrator.teacher is the SFT generator; it must not be set when training_mode != 'sft'.")
+        if self.training_mode == "opd" and not has_reference:
+            raise ValueError("orchestrator.reference (the scorer) must be configured when training_mode = 'opd'.")
+        if self.training_mode == "sft" and has_reference:
+            raise ValueError("orchestrator.reference (the scorer) is not used when training_mode = 'sft'.")
         return self
 
     @model_validator(mode="after")

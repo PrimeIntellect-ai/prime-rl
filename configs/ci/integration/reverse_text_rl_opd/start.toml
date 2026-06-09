@@ -38,10 +38,10 @@ max_completion_tokens = 128
 [[orchestrator.eval.env]]
 id = "reverse-text"
 
-[orchestrator.teacher.model]
+[orchestrator.reference.model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 
-[orchestrator.teacher.client]
+[orchestrator.reference.client]
 base_url = ["http://localhost:8001/v1"]
 
 [trainer.optim]

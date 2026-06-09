@@ -193,6 +193,13 @@ def rl_local(config: RLConfig):
                 f"{', '.join(config.orchestrator.teacher.client.base_url)} is running before the "
                 "orchestrator starts, otherwise rollouts will hang."
             )
+        if config.orchestrator.reference:
+            logger.info(
+                "orchestrator.reference is configured - the rl entrypoint does not start reference inference "
+                "servers. Make sure your reference endpoint at "
+                f"{', '.join(config.orchestrator.reference.client.base_url)} is running before the "
+                "orchestrator starts, otherwise scoring will hang."
+            )
 
         orchestrator_cmd = ["orchestrator", "@", (config_dir / ORCHESTRATOR_TOML).as_posix()]
         logger.info("Starting orchestrator process")

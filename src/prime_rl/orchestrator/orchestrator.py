@@ -140,6 +140,7 @@ class Orchestrator:
     renderer: Renderer | None
     mm_token_type_ids_mapping: dict[int, int] | None
     teacher_inference: InferencePool | None
+    reference_inference: InferencePool | None
     heart: Heartbeat | None
     usage_reporter: UsageReporter | None
     inference_metrics: InferenceMetricsCollector | None
@@ -182,6 +183,7 @@ class Orchestrator:
         self.renderer = None
         self.mm_token_type_ids_mapping = None
         self.teacher_inference = None
+        self.reference_inference = None
         self.heart = None
         self.usage_reporter = None
         self.inference_metrics = None
@@ -237,6 +239,17 @@ class Orchestrator:
             self.teacher_inference = await setup_inference_pool(
                 config.teacher.client,
                 model_name=config.teacher.model.name,
+                train_client_type="openai_chat_completions",
+            )
+
+        if config.reference is not None:
+            get_logger().info(
+                f"Initializing reference inference pool (base_url={', '.join(config.reference.client.base_url)}, "
+                f"model={config.reference.model.name})"
+            )
+            self.reference_inference = await setup_inference_pool(
+                config.reference.client,
+                model_name=config.reference.model.name,
                 train_client_type="openai_chat_completions",
             )
 
@@ -305,6 +318,11 @@ class Orchestrator:
             get_logger().info("Waiting for teacher inference pool to be ready")
             await self.teacher_inference.wait_for_ready(config.teacher.model.name)
             get_logger().success("Teacher inference pool ready")
+        if self.reference_inference is not None:
+            assert config.reference is not None
+            get_logger().info("Waiting for reference inference pool to be ready")
+            await self.reference_inference.wait_for_ready(config.reference.model.name)
+            get_logger().success("Reference inference pool ready")
 
         if config.wandb is not None and config.collect_inference_metrics:
             self.inference_metrics = InferenceMetricsCollector(
@@ -569,12 +587,12 @@ class Orchestrator:
         )
 
         teacher_logprobs_time = 0.0  # opd only
-        if config.training_mode == "opd" and self.teacher_inference is not None:
-            assert config.teacher is not None
+        if config.training_mode == "opd" and self.reference_inference is not None:
+            assert config.reference is not None
             t = time.perf_counter()
             teacher_logprobs_list = await compute_teacher_logprobs(
-                clients=self.teacher_inference.train_clients,
-                model_name=config.teacher.model.name,
+                clients=self.reference_inference.train_clients,
+                model_name=config.reference.model.name,
                 samples=batch.samples,
             )
             for ex, lp in zip(batch.samples, teacher_logprobs_list):
@@ -868,6 +886,8 @@ class Orchestrator:
                 await self.student_inference.stop()
             if self.teacher_inference is not None:
                 await self.teacher_inference.stop()
+            if self.reference_inference is not None:
+                await self.reference_inference.stop()
             if self.train_envs is not None:
                 self.train_envs.shutdown()
             if self.eval_envs is not None:
