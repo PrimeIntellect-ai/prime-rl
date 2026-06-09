@@ -69,7 +69,6 @@ envs = [
     "deepdive",
     "general-agent",
     "gpqa",
-    "harnesses",
     "hle",
     "ifeval",
     "livecodebench",
@@ -89,7 +88,6 @@ envs = [
     "science-env",
     "simpleqa-verified",
     "tau2-bench",
-    "tasksets",
     "wiki-search",
     "wordle",
 ]
