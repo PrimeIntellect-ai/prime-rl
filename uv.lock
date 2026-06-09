@@ -4118,7 +4118,6 @@ examples = [
     { name = "wikispeedia", editable = "deps/verifiers/examples/tasksets/wikispeedia" },
 ]
 harnesses = [{ name = "harnesses", editable = "deps/verifiers/packages/harnesses" }]
-policy = [{ name = "semgrep", specifier = ">=1.150.0" }]
 tasksets = [{ name = "tasksets", editable = "deps/verifiers/packages/tasksets" }]
 
 [[package]]
