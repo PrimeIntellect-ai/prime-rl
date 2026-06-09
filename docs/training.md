@@ -78,6 +78,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 |---|---|
 | `--clean-output-dir` | Wipe `<output_dir>` before starting. Useful when re-running an experiment with the same name during iteration. |
 | `--output-dir outputs/<name>` | Per-run output directory. Always set this when running more than one experiment in parallel. |
+| `orchestrator.dump_failed_train_rollouts` | Save errored train arrivals to `rollouts/step_N/train_failed_rollouts.jsonl` before group/batch filtering. Pair with `orchestrator.dump_failed_train_trajectory=true` when debugging failed multi-agent judge or tool I/O without also bloating successful train rollout files. |
 | `--max-steps N` | Stop after `N` trainer steps. Overrides the config value. |
 | `--dry-run` | Resolve + validate the full config, write per-process TOMLs to `<output_dir>/configs/`, and exit without launching. The fastest way to debug a misbehaving config. |
 

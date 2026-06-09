@@ -81,6 +81,16 @@ def save_rollouts(rollouts: list[vf.RolloutOutput], path: Path, exclude_keys: se
             f.write(orjson.dumps(row, default=make_serializable, option=opts))
 
 
+def append_rollouts(rollouts: list[vf.RolloutOutput], path: Path, exclude_keys: set[str] | None = None) -> None:
+    """Append rollouts to a JSONL file using verifiers serialization."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    opts = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
+    with open(path, "ab") as f:
+        for rollout in rollouts:
+            row = {k: v for k, v in rollout.items() if k not in exclude_keys} if exclude_keys else rollout
+            f.write(orjson.dumps(row, default=make_serializable, option=opts))
+
+
 def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):
     """Intercepts verifiers logging and routes through prime-rl logger with optional prefix."""
     vf_logger = logging.getLogger(logger)

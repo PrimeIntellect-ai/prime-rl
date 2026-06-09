@@ -68,6 +68,7 @@ from prime_rl.orchestrator.types import (
     rollouts_for_logging,
 )
 from prime_rl.orchestrator.utils import (
+    append_rollouts,
     compute_teacher_logprobs,
     get_weight_dir,
     intercept_vf_logging,
@@ -513,11 +514,29 @@ class Orchestrator:
                 continue
 
             assert isinstance(rollout, TrainRollout)
+            await self.maybe_save_failed_train_rollout(rollout)
             train_batch = await self.train_sink.add(rollout)
             # In drain mode any late-arriving train batch is dropped — we
             # don't want to ship past ``max_steps``
             if train_batch is not None and not self.draining and not self.stopped.is_set():
                 await self.finalize_train_batch(train_batch)
+
+    async def maybe_save_failed_train_rollout(self, rollout: TrainRollout) -> None:
+        """Persist errored train arrivals before group filtering can drop them."""
+        if not self.config.dump_failed_train_rollouts or rollout.error is None:
+            return
+        step_path = get_step_path(get_rollout_dir(self.config.output_dir), self.progress.step)
+        dump_trajectory = (
+            self.config.dump_trajectory
+            if self.config.dump_failed_train_trajectory is None
+            else self.config.dump_failed_train_trajectory
+        )
+        await asyncio.to_thread(
+            append_rollouts,
+            [rollout.to_dict()],
+            step_path / "train_failed_rollouts.jsonl",
+            exclude_keys=None if dump_trajectory else {"trajectory"},
+        )
 
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O

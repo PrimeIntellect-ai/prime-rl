@@ -30,14 +30,18 @@ With no `--deployment.hosts`, the whole allocation is treated as one run. Topolo
 For a broken GPU CI env on AIP2, repair the project env through the same CUDA
 13.1 path that `launch-script-mnode` / `cc-wrapper-mnode` uses: source
 `/lus/lfs1aip2/projects/a6r/joanv.a6r/scripts/primerl_env.sh`, set
-`UV_PROJECT_ENVIRONMENT=.venv-ci-gpu`, run the normal locked sync with the
-project extras, then run `scripts/docker-arm64-post-install.sh`. Do not bypass
-`exclude-newer` or hand-install a replacement torch stack.
+`UV_PROJECT_ENVIRONMENT=.venv-ci-gpu`, then run
+`bash scripts/sync-prime-rl-env.sh`. Do not bypass `exclude-newer` or
+hand-install a replacement torch stack.
 
-The arm64 post-install source-builds FA2, reinstalls FA4, and copies the Cutlass
-helper that FA4 expects. After that, validation commands against the repaired env
-should use `uv run --no-sync ...` so a fresh sync does not remove the
-source-built `flash-attn` package.
+The sync wrapper keeps `uv sync` exact while preserving the GH200 accelerator
+invariant: ordinary syncs refuse accidental `flash-attn` source rebuilds, FA4 is
+repaired after any namespace clobber, and the wrapper verifies FA2/FA3/FA4
+imports before it exits. If FA2 really must be rebuilt, run the wrapper on a
+compute node with `PRIME_RL_ALLOW_FLASH_ATTN_BUILD=1`; do not let login-node or
+ordinary dependency-sync paths compile it implicitly. Validation commands after
+that should still use `uv run --no-sync ...` so interactive probes do not
+implicitly resync the environment mid-run.
 
 ## Concurrent runs ("lanes")
 
@@ -62,5 +66,6 @@ You pick the *shape* by picking the config: a 2-node config on a 32-node hold ma
 4. **Set `weight_broadcast.type = "nccl"` for real runs.** It moves weights GPU→GPU over Slingshot (~10× faster than the `filesystem` default, which round-trips a checkpoint through Lustre). It needs the fabric, which `activate-prime-rl.sh` loads.
 5. **Concurrent lanes must be fully disjoint:** distinct node slices, `port-base` ≥100 apart, distinct `lane-tag`. The `lane-tag` namespaces outputs/rollouts/caches; omit or repeat it and lanes overwrite each other's rollouts and one crashes (`FileNotFoundError` on `rollouts/step_N`).
 6. **The `vllm-router` aarch64 wheel must be in `uv.lock`.** If multi_node inference dies with `vllm-router: command not found`, the lock is missing the `manylinux_2_28_aarch64` router wheel. `pyproject.toml` pins both-arch wheels; after any pyproject change run `uv lock` **and commit the lock** — committing the manifest without its lock is the trap.
-7. **Slingshot is libfabric (`cxi`), not InfiniBand.** Never use `ibv_devinfo` / `NCCL_IB_HCA`. The fabric loads via `module load brics/nccl` (done by `activate-prime-rl.sh`); without it NCCL silently falls back to TCP sockets (~10× slower). A healthy fabric does ≥~23 GB/s on `nccl-tests` and prints `NET/OFI` in `NCCL_DEBUG=INFO`.
-8. **`/tmp` and `/dev/shm` are a shared, RAM-backed tmpfs that Slurm does NOT wipe between jobs.** A lane can hit `OSError [Errno 28] ENOSPC` from *other users'* leftover caches on a node — an environment issue, not a launcher bug. Pick fresh nodes or clear space; don't chase it as a code bug.
+7. **Use `scripts/sync-prime-rl-env.sh` for GH200 syncs.** Raw `uv sync` can leave the FA2/FA4 namespace invalid on aarch64; the wrapper syncs, uses `PRIME_RL_WHEELHOUSE` when present (default: ignored `./wheels`), refuses accidental `flash-attn` source rebuilds, repairs FA4 clobbering, and verifies FA2/FA3/FA4 before returning. Use `PRIME_RL_ALLOW_FLASH_ATTN_BUILD=1` only for an intentional compute-node rebuild.
+8. **Slingshot is libfabric (`cxi`), not InfiniBand.** Never use `ibv_devinfo` / `NCCL_IB_HCA`. The fabric loads via `module load brics/nccl` (done by `activate-prime-rl.sh`); without it NCCL silently falls back to TCP sockets (~10× slower). A healthy fabric does ≥~23 GB/s on `nccl-tests` and prints `NET/OFI` in `NCCL_DEBUG=INFO`.
+9. **`/tmp` and `/dev/shm` are a shared, RAM-backed tmpfs that Slurm does NOT wipe between jobs.** A lane can hit `OSError [Errno 28] ENOSPC` from *other users'* leftover caches on a node — an environment issue, not a launcher bug. Pick fresh nodes or clear space; don't chase it as a code bug.

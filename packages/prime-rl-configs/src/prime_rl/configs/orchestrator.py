@@ -681,6 +681,23 @@ class OrchestratorConfig(BaseConfig):
         ),
     )
 
+    dump_failed_train_rollouts: bool = Field(
+        False,
+        description=(
+            "Persist train rollout arrivals with errors to "
+            "outputs/<run>/rollouts/<step>/train_failed_rollouts.jsonl before train group/batch filtering. "
+            "Trajectory inclusion follows dump_failed_train_trajectory."
+        ),
+    )
+
+    dump_failed_train_trajectory: bool | None = Field(
+        None,
+        description=(
+            "Whether train_failed_rollouts.jsonl includes full trajectories. "
+            "When None, follows dump_trajectory."
+        ),
+    )
+
     ckpt: CheckpointConfig | None = None
     """Checkpoint configuration."""
 

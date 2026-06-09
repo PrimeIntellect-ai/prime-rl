@@ -356,6 +356,14 @@ def test_orchestrator_vlm_requires_renderer():
     assert config.renderer is not None
 
 
+def test_orchestrator_failed_train_rollout_dump_config():
+    config = OrchestratorConfig.model_validate(
+        {"dump_failed_train_rollouts": True, "dump_failed_train_trajectory": True}
+    )
+    assert config.dump_failed_train_rollouts is True
+    assert config.dump_failed_train_trajectory is True
+
+
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})

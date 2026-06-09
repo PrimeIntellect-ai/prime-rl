@@ -14,8 +14,15 @@
 set -euo pipefail
 
 FA4_SPEC="flash-attn-4 @ git+https://github.com/Dao-AILab/flash-attention.git@96bd151#subdirectory=flash_attn/cute"
+VENV_PATH="${VENV_PATH:-.venv}"
+VENV_PYTHON="$VENV_PATH/bin/python"
 
-SITE_PACKAGES=$(uv run --no-sync python -c 'import site; print(site.getsitepackages()[0])')
+if [ ! -x "$VENV_PYTHON" ]; then
+    echo "ERROR: no python at $VENV_PYTHON. Run from the project root or set VENV_PATH." >&2
+    exit 1
+fi
+
+SITE_PACKAGES=$("$VENV_PYTHON" -c 'import site; print(site.getsitepackages()[0])')
 CUTE_INTERFACE="$SITE_PACKAGES/flash_attn/cute/interface.py"
 CUTE_TILE_SCHEDULER="$SITE_PACKAGES/flash_attn/cute/tile_scheduler.py"
 
@@ -35,7 +42,7 @@ if [ "$LINES" -gt 1000 ] && [ "$TILE_SCHEDULER_OK" -eq 1 ]; then
     echo "flash-attn-cute OK ($LINES lines at $CUTE_INTERFACE); no reinstall needed."
 else
     echo "flash-attn-cute missing or clobbered; reinstalling FA4..."
-    uv pip install --python .venv/bin/python --reinstall --no-deps "$FA4_SPEC"
+    uv pip install --python "$VENV_PYTHON" --reinstall --no-deps "$FA4_SPEC"
 fi
 
 AMPERE_SRC="$SITE_PACKAGES/flash_attn/cute/ampere_helpers.py"
@@ -51,7 +58,7 @@ else
     exit 1
 fi
 
-CUTE_INTERFACE=$(uv run --no-sync python -c 'import flash_attn.cute.interface as m; print(m.__file__)')
+CUTE_INTERFACE=$("$VENV_PYTHON" -c 'import flash_attn.cute.interface as m; print(m.__file__)')
 LINES=$(wc -l < "$CUTE_INTERFACE")
 if [ "$LINES" -gt 1000 ]; then
     echo "Success: flash-attn-cute interface.py has $LINES lines (correct version)"

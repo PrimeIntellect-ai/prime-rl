@@ -90,3 +90,22 @@ def test_eval_rollout_persistence_honors_dump_trajectory():
     exclude_kw = _call_kw(calls[0], "exclude_keys")
     assert exclude_kw is not None
     assert ast.unparse(exclude_kw.value) == "None if self.config.dump_trajectory else {'trajectory'}"
+
+
+def test_failed_train_rollout_persistence_honors_config_and_dump_trajectory():
+    method = _method("maybe_save_failed_train_rollout")
+    assert "dump_failed_train_rollouts" in ast.unparse(method)
+    assert "dump_failed_train_trajectory" in ast.unparse(method)
+    calls = [
+        node
+        for node in ast.walk(method)
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func) == "asyncio.to_thread"
+        and node.args
+        and ast.unparse(node.args[0]) == "append_rollouts"
+    ]
+    assert len(calls) == 1
+    assert "train_failed_rollouts.jsonl" in ast.unparse(calls[0])
+    exclude_kw = _call_kw(calls[0], "exclude_keys")
+    assert exclude_kw is not None
+    assert ast.unparse(exclude_kw.value) == "None if dump_trajectory else {'trajectory'}"
