@@ -18,14 +18,7 @@ def run_server(config: EnvServerConfig):
 
     # TODO(vf-nano, experimental): temporary. vf-nano envs are local packages
     # (installed in this venv); no hub install.
-    server = EnvServer(
-        taskset_config=config.env.taskset,
-        harness_config=config.env.harness,
-        harness_timeout=config.env.timeout.rollout,
-        scoring_timeout=config.env.timeout.scoring,
-        max_turns=config.env.max_turns,
-        address=config.env.address or "tcp://127.0.0.1:5000",
-    )
+    server = EnvServer(config.env, address=config.env.address or "tcp://127.0.0.1:5000")
     asyncio.run(server.run())
 
 

@@ -8,7 +8,7 @@ from prime_rl.utils.config import BaseConfig
 
 
 class EnvServerConfig(BaseConfig):
-    env: EnvConfig = EnvConfig()
+    env: EnvConfig
 
     log: LogConfig = LogConfig()
 
