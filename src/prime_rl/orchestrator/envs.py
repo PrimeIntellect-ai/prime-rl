@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Generic, TypeVar
 
 import verifiers.nano as vf
+from verifiers.nano.legacy import LegacyEnvServer
 from verifiers.nano.serve import EnvClient, EnvServer
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
@@ -36,10 +37,10 @@ from prime_rl.utils.logger import get_logger
 ENV_SERVER_SPAWN_TIMEOUT = 600.0
 
 
-def _run_env_server(*, log_file: str, log_level: str, json_logging: bool, **kwargs) -> None:
+def _run_env_server(*, log_file: str, log_level: str, json_logging: bool, legacy: bool = False, **kwargs) -> None:
     """Spawned-process entry point: send the env server's output (its logging + any
     subprocess-runtime output) to ``log_file``, then serve. Top-level so it stays
-    picklable for the ``spawn`` start method."""
+    picklable for the ``spawn`` start method. ``legacy`` picks the v0 bridge server."""
     from prime_rl.orchestrator.utils import intercept_vf_logging
     from prime_rl.utils.logger import setup_logger
 
@@ -48,7 +49,8 @@ def _run_env_server(*, log_file: str, log_level: str, json_logging: bool, **kwar
     os.dup2(fh.fileno(), sys.stderr.fileno())
     setup_logger(log_level, json_logging=json_logging)
     intercept_vf_logging(logger="verifiers.nano", level=log_level)
-    EnvServer.run_server(**kwargs)
+    server_cls = LegacyEnvServer if legacy else EnvServer
+    server_cls.run_server(**kwargs)
 
 
 class Env:
@@ -61,7 +63,9 @@ class Env:
         self.requires_group_scoring: bool = False
         # Typed Trace for this env (Trace parametrized with the env's Task subclass),
         # used to validate the wire trace into a real vf.Trace with typed task fields.
-        self.trace_type = vf.Trace[vf.task_type(config.id)]
+        # v0/legacy envs return Trace[WireTask] (no nano Task subclass to import); v1 envs
+        # type the trace with the taskset's Task subclass.
+        self.trace_type = vf.Trace[vf.WireTask] if config.is_legacy else vf.Trace[vf.task_type(config.env_id)]
         self._env_client: EnvClient | None = None
         self._env_server_process: BaseProcess | None = None
 
@@ -103,16 +107,21 @@ class Env:
         address_queue: mp.Queue = ctx.Queue()
         log_file = log_dir / f"{self.name}.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        get_logger().debug(f"Spawning env server {self.name} (id={self.config.id}, log={log_file})")
+        get_logger().debug(f"Spawning env server {self.name} (id={self.config.env_id}, log={log_file})")
+        server_kwargs = (
+            dict(legacy=True, env_id=self.config.env_id, env_args=self.config.args)
+            if self.config.is_legacy
+            else dict(legacy=False, config=self.config)
+        )
         process = ctx.Process(
             target=_run_env_server,
             kwargs=dict(
                 log_file=str(log_file),
                 log_level=log_level,
                 json_logging=json_logging,
-                config=self.config,
                 address="tcp://127.0.0.1:0",
                 address_queue=address_queue,
+                **server_kwargs,
             ),
             daemon=False,
         )

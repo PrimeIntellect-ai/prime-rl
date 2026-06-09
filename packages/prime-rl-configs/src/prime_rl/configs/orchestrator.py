@@ -165,19 +165,30 @@ class EnvConfig(vf.EnvConfig):
     max_retries: int = Field(3, ge=0)
     """Times the env server retries a failed rollout before returning an error."""
 
+    id: str | None = None
+    """Classic (v0) env id, loaded via verifiers ``load_environment(id, **args)`` and served
+    through the legacy bridge. Set this instead of ``taskset`` to run a legacy v0 environment."""
+    args: dict = Field(default_factory=dict)
+    """Kwargs passed to the v0 env's ``load_environment`` (only used when ``id`` is set)."""
+
     @property
-    def id(self) -> str:
-        """The taskset id — the env id (e.g. ``reverse-text``)."""
-        return self.taskset.id
+    def is_legacy(self) -> bool:
+        """A v0/legacy env (run via the bridge): an ``id`` is set and no nano ``taskset`` is."""
+        return not self.taskset.id
+
+    @property
+    def env_id(self) -> str:
+        """The env identifier — the nano taskset id (v1) or the legacy env id (v0)."""
+        return self.taskset.id or self.id or ""
 
     @property
     def resolved_name(self) -> str:
-        return self.name or self.id
+        return self.name or self.env_id
 
     @model_validator(mode="after")
     def validate_env(self):
-        if not self.taskset.id:
-            raise ValueError('no taskset configured for this env — set taskset = { id = "<env-id>" }')
+        if not self.taskset.id and not self.id:
+            raise ValueError('no env configured — set taskset = { id = "<id>" } (v1) or id = "<id>" (v0/legacy)')
         if self.resolved_name == "all":
             raise ValueError(
                 'Environment name "all" is reserved for global metric aggregation. Use a different name or id.'
