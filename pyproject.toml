@@ -70,6 +70,8 @@ flash-attn-cute = [
 envs = [
     "reverse-text",
     "gsm8k",
+    "math-env",
+    "aime24",
     "default",
     "rlm",
 ]
@@ -189,6 +191,8 @@ prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 vf-nano = { path = "deps/vf-nano", editable = true }
 reverse-text = { path = "deps/vf-nano/examples/tasksets/reverse_text", editable = true }
 gsm8k = { path = "deps/vf-nano/examples/tasksets/gsm8k", editable = true }
+math-env = { path = "deps/vf-nano/examples/tasksets/math_env", editable = true }
+aime24 = { path = "deps/vf-nano/examples/tasksets/aime24", editable = true }
 default = { path = "deps/vf-nano/packages/harnesses/default", editable = true }
 rlm = { path = "deps/vf-nano/packages/harnesses/rlm", editable = true }
 renderers = { path = "deps/renderers", editable = true }

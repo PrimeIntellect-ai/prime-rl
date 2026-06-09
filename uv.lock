@@ -59,6 +59,21 @@ wheels = [
 ]
 
 [[package]]
+name = "aime24"
+version = "0.1.0"
+source = { editable = "deps/vf-nano/examples/tasksets/aime24" }
+dependencies = [
+    { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "vf-nano", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "vf-nano", editable = "deps/vf-nano" },
+]
+
+[[package]]
 name = "aiofiles"
 version = "25.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1519,6 +1534,21 @@ wheels = [
 ]
 
 [[package]]
+name = "math-env"
+version = "0.1.0"
+source = { editable = "deps/vf-nano/examples/tasksets/math_env" }
+dependencies = [
+    { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "vf-nano", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets" },
+    { name = "vf-nano", editable = "deps/vf-nano" },
+]
+
+[[package]]
 name = "matplotlib-inline"
 version = "0.2.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2489,8 +2519,10 @@ disagg = [
     { name = "vllm-router", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 envs = [
+    { name = "aime24", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "default", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "gsm8k", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "math-env", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "reverse-text", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "rlm", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
@@ -2528,6 +2560,7 @@ mamba-ssm = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aime24", marker = "extra == 'envs'", editable = "deps/vf-nano/examples/tasksets/aime24" },
     { name = "aiolimiter", specifier = ">=1.2.1" },
     { name = "beartype", specifier = ">=0.21.0" },
     { name = "datasets", specifier = ">=4.0.0" },
@@ -2544,6 +2577,7 @@ requires-dist = [
     { name = "kernels", marker = "extra == 'gpt-oss'" },
     { name = "liger-kernel", specifier = ">=0.5.10" },
     { name = "loguru", specifier = ">=0.7.3" },
+    { name = "math-env", marker = "extra == 'envs'", editable = "deps/vf-nano/examples/tasksets/math_env" },
     { name = "modelexpress", marker = "extra == 'modelexpress'", specifier = "==0.3.0" },
     { name = "mooncake-transfer-engine", specifier = ">=0.3.10.post2" },
     { name = "msgspec", specifier = ">=0.18" },
@@ -3903,12 +3937,14 @@ provides-extras = ["serve", "prime"]
 
 [package.metadata.requires-dev]
 examples = [
+    { name = "aime24", editable = "deps/vf-nano/examples/tasksets/aime24" },
     { name = "code-golf", editable = "deps/vf-nano/examples/tasksets/code_golf" },
     { name = "compact", editable = "deps/vf-nano/examples/harnesses/compact" },
     { name = "deepwiki", editable = "deps/vf-nano/examples/tasksets/deepwiki" },
     { name = "glossary", editable = "deps/vf-nano/examples/tasksets/glossary" },
     { name = "gsm8k", editable = "deps/vf-nano/examples/tasksets/gsm8k" },
     { name = "hello-rlm", editable = "deps/vf-nano/examples/tasksets/hello_rlm" },
+    { name = "math-env", editable = "deps/vf-nano/examples/tasksets/math_env" },
     { name = "reverse-text", editable = "deps/vf-nano/examples/tasksets/reverse_text" },
     { name = "wiki-search", editable = "deps/vf-nano/examples/tasksets/wiki_search" },
     { name = "wikispeedia", editable = "deps/vf-nano/examples/tasksets/wikispeedia" },
