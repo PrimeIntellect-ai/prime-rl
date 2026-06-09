@@ -261,14 +261,14 @@ async def compute_teacher_logprobs(
     Dispatches to the vLLM-sidecar or dynamo-nvext path based on the
     per-client ``renderer_transport``:
 
-      - ``prime_vllm_generate``  (default): POST ``/inference/v1/generate``
-      - ``dynamo_chat_nvext``               : POST ``/v1/chat/completions`` with nvext
+      - ``vllm_generate``  (default): POST ``/inference/v1/generate``
+      - ``dynamo_chat``               : POST ``/v1/chat/completions`` with nvext
 
     Both flatten to ``list[float]`` via the shared helper.
     """
 
     async def _compute_single(client_config: vf.ClientConfig, sample: TrainingSample) -> list[float]:
-        if client_config.renderer_transport == "dynamo_chat_nvext":
+        if client_config.renderer_transport == "dynamo_chat":
             return await _compute_teacher_logprobs_dynamo(client_config, model_name, sample)
         return await _compute_teacher_logprobs_vllm(client_config, model_name, sample)
 
