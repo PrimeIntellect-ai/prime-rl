@@ -550,9 +550,7 @@ class Orchestrator:
         # Serialize the typed Trace at the I/O boundary (disk + wandb sample tables).
         rollout_dicts = [r.trace.model_dump(mode="json") for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(config.output_dir), step)
-        await asyncio.to_thread(
-            save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
-        )
+        await asyncio.to_thread(save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl")
 
         teacher_logprobs_time = 0.0  # opd only
         if config.training_mode == "opd" and self.teacher_inference is not None:
@@ -759,7 +757,6 @@ class Orchestrator:
         save_rollouts(
             rollout_dicts,
             step_path / f"eval_rollouts_{batch.env_name}.jsonl",
-            exclude_keys={"trajectory"},
         )
         self.monitor.log_eval_samples(rollout_dicts, env_name=batch.env_name, step=batch.step)
         self.monitor.log(batch.metrics.to_wandb_dict(env_name=batch.env_name, step=batch.step), step=batch.step)
