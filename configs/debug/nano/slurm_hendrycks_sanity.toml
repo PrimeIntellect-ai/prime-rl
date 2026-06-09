@@ -1,0 +1,10 @@
+# Usage: uv run rl @ configs/debug/nano/hendrycks_sanity.toml @ configs/debug/nano/slurm_hendrycks_sanity.toml
+output_dir = "/beegfs/mika/hendrycks-sanity-vf-nano-subprocess"
+
+[wandb]
+project = "hendrycks-sanity"
+name = "vf-nano-subprocess"
+
+[slurm]
+job_name = "vf-nano-subprocess"
+partition = "cluster"
