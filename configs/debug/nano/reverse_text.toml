@@ -22,9 +22,9 @@ max_completion_tokens = 128
 
 [[orchestrator.train.env]]
 taskset = { id = "reverse-text" }
-# Swappable harness/runtime inherited from vf-nano. reverse-text is a pure-text
-# single-turn env, so the subprocess runtime (no docker) is enough.
-harness = { id = "default", runtime = { type = "subprocess" } }
+# reverse-text is a pure-text single-turn env: disable the bash tool (the model answers
+# directly) and use the subprocess runtime (no docker).
+harness = { id = "default", enable_bash = false, runtime = { type = "subprocess" } }
 
 # No eval block, mirroring examples/reverse_text/rl.toml — this is a train-only
 # smoke. Add an [orchestrator.eval] block (with an interval) to exercise eval.
@@ -36,9 +36,3 @@ lr = 3e-6
 
 [inference]
 gpu_memory_utilization = 0.5
-
-# vf-nano's default agent always offers a `bash` tool, so vLLM must accept
-# tool requests. This fine-tune doesn't auto-resolve a parser, so set it
-# (Qwen3 uses the hermes tool-call format).
-[inference.model]
-tool_call_parser = "hermes"
