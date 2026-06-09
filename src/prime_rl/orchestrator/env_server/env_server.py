@@ -1,37 +1,24 @@
 import asyncio
 
-from verifiers.serve import ZMQEnvServer
+from verifiers.nano.serve import EnvServer
 
 from prime_rl.configs.env_server import EnvServerConfig
+from prime_rl.orchestrator.utils import intercept_vf_logging
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import setup_logger
-from prime_rl.utils.pathing import get_log_dir
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.utils import clean_exit, get_env_ids_to_install, install_env
+from prime_rl.utils.utils import clean_exit
 
 
 @clean_exit
 def run_server(config: EnvServerConfig):
     setup_logger(config.log.level, json_logging=config.log.json_logging)
+    # Route vf-nano's stdlib logging (the server's own logs) through our handler.
+    intercept_vf_logging(logger="verifiers.nano", level=config.log.level)
 
-    # install environment if not already installed
-    env_ids_to_install = set()
-    env_ids_to_install.update(get_env_ids_to_install([config.env]))
-    for env_id in env_ids_to_install:
-        install_env(env_id, prerelease=config.env_install_prerelease)
-
-    log_dir = (get_log_dir(config.output_dir) / config.env.resolved_name).as_posix()
-
-    server = ZMQEnvServer(
-        env_id=config.env.stripped_id,
-        env_args=config.env.args,
-        extra_env_kwargs=config.env.extra_env_kwargs,
-        log_level=config.log.level,
-        log_dir=log_dir,
-        json_logging=config.log.json_logging,
-        num_workers=config.env.num_workers,
-        **{"address": config.env.address} if config.env.address is not None else {},
-    )
+    # TODO(vf-nano, experimental): temporary. vf-nano envs are local packages
+    # (installed in this venv); no hub install.
+    server = EnvServer(config.env, address=config.env.address or "tcp://127.0.0.1:5000")
     asyncio.run(server.run())
 
 

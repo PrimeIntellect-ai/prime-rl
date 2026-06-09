@@ -12,6 +12,7 @@ from threading import Event, Thread
 import pynvml
 import tomli_w
 
+from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import get_logger, setup_logger
@@ -31,6 +32,10 @@ RL_SBATCH = "rl.sbatch"
 TRAINER_TOML = "trainer.toml"
 ORCHESTRATOR_TOML = "orchestrator.toml"
 INFERENCE_TOML = "inference.toml"
+
+# Gap between the train and eval env-server port blocks, so each kind has headroom
+# for many envs without the blocks overlapping (train: base+i; eval: base+stride+i).
+ENV_SERVER_KIND_STRIDE = 1000
 
 
 def get_physical_gpu_ids() -> list[int]:
@@ -67,6 +72,44 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
             tomli_w.dump(config.inference.model_dump(exclude=exclude_inference, exclude_none=True, mode="json"), f)
 
 
+def setup_env_servers(config: RLConfig, config_dir: Path) -> list[dict]:
+    """Give each env its own launcher-spawned ``env-server`` process on a fixed port,
+    point the orchestrator at it (set ``env.address`` so it attaches instead of
+    sidecar-spawning), and write a per-env ``EnvServerConfig`` TOML. Train envs bind
+    ``base_port + i``; eval envs bind ``base_port + ENV_SERVER_KIND_STRIDE + i``, so the
+    two kinds sit in separate blocks with headroom for many envs each. Envs that already
+    set ``address`` (a user-managed external server) are left alone. Must run before
+    ``write_subconfigs`` so the addresses land in the orchestrator config.
+
+    Returns one spawn spec per server: ``{label, kind, name, toml}``.
+    """
+    config_dir.mkdir(parents=True, exist_ok=True)
+    env_lists = [("train", config.orchestrator.train.env)]
+    if config.orchestrator.eval is not None:
+        env_lists.append(("eval", config.orchestrator.eval.env))
+
+    specs: list[dict] = []
+    for kind_index, (kind, env_list) in enumerate(env_lists):
+        for i, env in enumerate(env_list):
+            if env.address is not None:
+                continue  # user-managed external server — don't spawn one
+            port = config.env_server_base_port + kind_index * ENV_SERVER_KIND_STRIDE + i
+            env.address = f"tcp://127.0.0.1:{port}"
+            env_dict = {
+                k: v for k, v in env.model_dump(mode="json", exclude_none=True).items() if k in EnvConfig.model_fields
+            }
+            server_dict: dict = {"env": env_dict, "output_dir": config.output_dir.as_posix()}
+            if config.log.level is not None:
+                server_dict["log"] = {"level": config.log.level}
+            toml_path = config_dir / f"env_server_{kind}_{env.resolved_name}.toml"
+            with open(toml_path, "wb") as f:
+                tomli_w.dump(server_dict, f)
+            specs.append(
+                {"label": f"env-{kind}-{env.resolved_name}", "kind": kind, "name": env.resolved_name, "toml": toml_path}
+            )
+    return specs
+
+
 def rl_local(config: RLConfig):
     assert config.deployment.type == "single_node"
 
@@ -76,6 +119,9 @@ def rl_local(config: RLConfig):
     )
 
     config_dir = config.output_dir / "configs"
+    # Assign each env its own env-server (sets env.address) *before* writing subconfigs,
+    # so the orchestrator config points at the launcher-spawned servers.
+    env_server_specs = setup_env_servers(config, config_dir)
     write_subconfigs(config, config_dir)
     logger.info(f"Wrote subconfigs to {config_dir}")
 
@@ -193,6 +239,32 @@ def rl_local(config: RLConfig):
                 f"{', '.join(config.orchestrator.teacher.client.base_url)} is running before the "
                 "orchestrator starts, otherwise rollouts will hang."
             )
+
+        # Start one env server per env (before the orchestrator, which attaches to
+        # them by address). CPU-only — keep them off the GPUs.
+        for spec in env_server_specs:
+            env_log = log_dir / "envs" / spec["kind"] / f"{spec['name']}.log"
+            env_log.parent.mkdir(parents=True, exist_ok=True)
+            env_cmd = ["env-server", "@", spec["toml"].as_posix()]
+            logger.info(f"Starting env server {spec['label']}")
+            logger.debug(f"Env server start command: {' '.join(env_cmd)}")
+            with open(env_log, "w") as log_file:
+                env_process = Popen(
+                    env_cmd,
+                    env={**os.environ, "CUDA_VISIBLE_DEVICES": ""},
+                    stdout=log_file,
+                    stderr=log_file,
+                )
+            processes.append(env_process)
+            stop_event = Event()
+            stop_events[spec["label"]] = stop_event
+            monitor_thread = Thread(
+                target=monitor_process,
+                args=(env_process, stop_event, error_queue, spec["label"]),
+                daemon=True,
+            )
+            monitor_thread.start()
+            monitor_threads.append(monitor_thread)
 
         orchestrator_cmd = ["orchestrator", "@", (config_dir / ORCHESTRATOR_TOML).as_posix()]
         logger.info("Starting orchestrator process")

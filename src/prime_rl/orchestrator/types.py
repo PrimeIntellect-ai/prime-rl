@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
-import verifiers as vf
+import verifiers.nano as vf
 
 from prime_rl.transport import TrainingSample
 
@@ -55,7 +55,7 @@ class GroupState:
 
     kind: RolloutKind
     env_name: str
-    example: dict
+    task_idx: int
     rollouts_to_schedule: int
     target_rollouts: int
     emitted: int = 0
@@ -66,45 +66,18 @@ class GroupState:
 
 @dataclass
 class FinishedRollout:
-    """A completed rollout the sink receives. ``raw`` is the env's untouched
-    ``vf.RolloutOutput``; prime-rl metadata lives on typed fields. Train vs
+    """A completed rollout the sink receives. ``trace`` is the env's typed
+    ``vf.Trace``; prime-rl metadata lives on typed fields. Train vs
     eval is discriminated via ``isinstance``. ``rollout_id`` is the only
-    safe key for tracing one rollout — ``(env_name, example_id)`` collides
+    safe key for tracing one rollout — ``(env_name, task_idx)`` collides
     on re-sampling and ``group_id`` covers a whole group."""
 
-    raw: vf.RolloutOutput
+    trace: vf.Trace
     env_name: str
-    example_id: int | str
     group_id: uuid.UUID
     policy_version: int
     off_policy_steps: int
     rollout_id: uuid.UUID = field(default_factory=uuid.uuid4)
-
-    @property
-    def error(self) -> dict | None:
-        return self.raw.get("error")
-
-    @property
-    def reward(self) -> float:
-        return float(self.raw.get("reward", 0.0))
-
-    @property
-    def is_truncated(self) -> bool:
-        return bool(self.raw.get("is_truncated", False))
-
-    def to_dict(self) -> vf.RolloutOutput:
-        """``raw`` + metadata merged for I/O (``save_rollouts``,
-        ``monitor.log_samples``). Shallow copy; never mutates ``self.raw``."""
-        out: vf.RolloutOutput = dict(self.raw)  # type: ignore[assignment]
-        for f in fields(self):
-            if f.name in ("raw", "samples"):
-                continue
-            val = getattr(self, f.name)
-            if f.name == "filter_results":
-                out["filters"] = dict(val)
-                continue
-            out[f.name] = str(val) if isinstance(val, uuid.UUID) else val
-        return out
 
 
 @dataclass

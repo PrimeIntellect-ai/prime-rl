@@ -3,6 +3,7 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
+import verifiers.nano as vf
 from pydantic import AliasChoices, Field, model_serializer, model_validator
 from pydantic_core.core_schema import SerializerFunctionWrapHandler
 from renderers import AutoRendererConfig, RendererConfig
@@ -143,18 +144,14 @@ class EvalSamplingConfig(BaseConfig):
         return data
 
 
-class EnvConfig(BaseConfig):
-    id: str = "reverse-text"
-    """Registered verifiers environment ID (e.g. ``math-env``, ``primeintellect/math-env``). May include an ``@version`` suffix for installation."""
+class EnvConfig(vf.EnvConfig):
+    """A vf-nano environment — its ``taskset`` + ``harness`` (reused from ``vf.EnvConfig``,
+    resolved to their specific config types by ``id`` via vf's shared validator) plus
+    prime-rl's orchestration knobs. Timeouts come from ``vf.TimeoutConfig``
+    (``timeout.rollout`` / ``timeout.scoring``)."""
 
     name: str | None = None
-    """Display name for this environment in logs, metrics, and buffer keys. Defaults to the ``id`` without ``@version``. Must be unique across all envs in the same group."""
-
-    args: dict = {}
-    """Keyword arguments forwarded to ``vf.load_environment``. See the environment's docstring for accepted args."""
-
-    extra_env_kwargs: dict[str, Any] = {}
-    """Extra kwargs passed to the env (e.g. ``seq_len``, ``max_total_completion_tokens``). Auto-populated by the orchestrator; user overrides are generally discouraged. The main use case is matching ``extra_env_kwargs`` when running an env in an isolated environment server."""
+    """Display name for this environment in logs, metrics, and buffer keys. Defaults to the taskset id. Must be unique across all envs in the same group."""
 
     address: str | None = None
     """ZMQ address of an external env server (e.g. ``tcp://host:5000``). When set, the orchestrator connects to this server instead of spawning one; when None, a subprocess env server is spawned automatically."""
@@ -168,41 +165,23 @@ class EnvConfig(BaseConfig):
     max_retries: int = Field(3, ge=0)
     """Times the env server retries a failed rollout before returning an error."""
 
-    max_total_completion_tokens: int = -1
-    """Maximum total completion tokens across all turns in a multi-turn rollout. ``-1`` disables. Auto-populated into ``extra_env_kwargs``."""
-
-    timeout: float | None = Field(None, validation_alias=AliasChoices("timeout", "timeout_seconds"))
-    """Per-rollout wall-clock timeout in seconds. None disables."""
-
-    state_columns: list[str] = []
-    """Extra ``State`` fields to persist into the saved rollout records (in addition to the always-saved ``trajectory`` and ``sampling_args``). Values must be JSON-serializable."""
-
     @property
-    def stripped_id(self) -> str:
-        """Environment ID without the @version suffix."""
-        return self.id.split("@")[0]
+    def id(self) -> str:
+        """The taskset id — the env id (e.g. ``reverse-text``)."""
+        return self.taskset.id
 
     @property
     def resolved_name(self) -> str:
-        return self.name or self.stripped_id
+        return self.name or self.id
 
     @model_validator(mode="after")
-    def validate_env_name(self):
+    def validate_env(self):
+        if not self.taskset.id:
+            raise ValueError('no taskset configured for this env — set taskset = { id = "<env-id>" }')
         if self.resolved_name == "all":
             raise ValueError(
                 'Environment name "all" is reserved for global metric aggregation. Use a different name or id.'
             )
-        return self
-
-    @model_validator(mode="after")
-    def resolve_max_total_completion_tokens(self):
-        self.extra_env_kwargs["max_total_completion_tokens"] = self.max_total_completion_tokens
-        return self
-
-    @model_validator(mode="after")
-    def resolve_timeout(self):
-        if self.timeout is not None:
-            self.extra_env_kwargs["timeout_seconds"] = self.timeout
         return self
 
 
@@ -230,7 +209,7 @@ class EvalEnvConfig(EnvConfig):
 
 
 class TrainConfig(BaseConfig):
-    env: list[TrainEnvConfig] = [TrainEnvConfig()]
+    env: list[TrainEnvConfig] = Field(default_factory=list)
     """Training environments."""
 
     sampling: TrainSamplingConfig = TrainSamplingConfig()
@@ -279,7 +258,7 @@ class TrainConfig(BaseConfig):
 
 
 class EvalConfig(BaseConfig):
-    env: list[EvalEnvConfig] = [EvalEnvConfig()]
+    env: list[EvalEnvConfig] = Field(default_factory=list)
     """Evaluation environments."""
 
     sampling: EvalSamplingConfig = Field(default_factory=EvalSamplingConfig)
@@ -900,12 +879,11 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_env_config(self):
-        """Populate extra_env_kwargs and vLLM sampling defaults from top-level fields."""
-        is_vllm = self.training_mode != "sft"
+        """Set vLLM sampling defaults on each train env from top-level fields."""
+        if self.training_mode == "sft":
+            return self
         for env in self.train.env:
-            env.extra_env_kwargs.update(max_seq_len=self.seq_len)
-            if is_vllm:
-                env.sampling.extra_body.setdefault("top_k", -1)
-                env.sampling.extra_body.setdefault("min_p", 0.0)
-                env.sampling.extra_body.setdefault("return_token_ids", True)
+            env.sampling.extra_body.setdefault("top_k", -1)
+            env.sampling.extra_body.setdefault("min_p", 0.0)
+            env.sampling.extra_body.setdefault("return_token_ids", True)
         return self

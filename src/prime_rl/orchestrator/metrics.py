@@ -32,30 +32,25 @@ class MetricsBuilder:
         existing dashboards / alerts keep working."""
         num_rollouts = len(rollouts)
         num_unique_examples = len({r.group_id for r in rollouts})
-        num_tokens = sum(
-            r.raw["token_usage"]["final_input_tokens"] + r.raw["token_usage"]["final_output_tokens"] for r in rollouts
-        )
+        num_tokens = sum(r.trace.total_tokens for r in rollouts)
 
         results_df = pd.DataFrame(
             {
                 "group_id": [r.group_id for r in rollouts],
-                "example_id": [r.example_id for r in rollouts],
+                "task_idx": [r.trace.task.idx for r in rollouts],
                 "env_name": [r.env_name for r in rollouts],
-                "reward": [r.reward for r in rollouts],
-                "is_truncated": [r.is_truncated for r in rollouts],
+                "reward": [r.trace.reward for r in rollouts],
+                "is_truncated": [r.trace.is_truncated for r in rollouts],
                 "is_filtered": [r.is_filtered for r in rollouts],
-                "stop_condition": [r.raw.get("stop_condition") for r in rollouts],
-                "seq_len": [
-                    r.raw["token_usage"]["final_input_tokens"] + r.raw["token_usage"]["final_output_tokens"]
-                    for r in rollouts
-                ],
+                "stop_condition": [r.trace.stop_condition for r in rollouts],
+                "seq_len": [r.trace.total_tokens for r in rollouts],
                 "prefill_len": metrics.rollout_prefill_lens,
                 "decode_len": metrics.rollout_decode_lens,
                 "samples_per_rollout": metrics.samples_per_rollout,
-                "num_turns": [len(r.raw["trajectory"]) for r in rollouts],
+                "num_turns": [r.trace.num_turns for r in rollouts],
             }
         )
-        metrics_df = pd.DataFrame([(r.raw.get("metrics") or {}) for r in rollouts])
+        metrics_df = pd.DataFrame([r.trace.metrics for r in rollouts])
         filter_df = pd.DataFrame([r.filter_results for r in rollouts])
         timing_df = self.timing_df(rollouts)
 
@@ -183,17 +178,10 @@ class MetricsBuilder:
 
     @staticmethod
     def timing_df(rollouts: list[TrainRollout]) -> pd.DataFrame:
-        return pd.DataFrame(
-            [
-                {
-                    "total": r.raw["timing"]["total"],
-                    "setup": r.raw["timing"]["setup"]["duration"],
-                    "generation": r.raw["timing"]["generation"]["duration"],
-                    "model": r.raw["timing"]["model"]["duration"],
-                    "env": r.raw["timing"]["env"]["duration"],
-                    "scoring": r.raw["timing"]["scoring"]["duration"],
-                    "overhead": r.raw["timing"]["overhead"],
-                }
-                for r in rollouts
-            ]
-        )
+        """Per-rollout timing from the vf-nano Trace (`generation`/`scoring` spans)."""
+        rows = []
+        for r in rollouts:
+            timing = r.trace.timing
+            generation, scoring = timing.generation.duration, timing.scoring.duration
+            rows.append({"total": generation + scoring, "generation": generation, "scoring": scoring})
+        return pd.DataFrame(rows)

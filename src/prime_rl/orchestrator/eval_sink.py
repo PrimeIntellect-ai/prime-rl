@@ -96,17 +96,17 @@ class EvalSink:
         if not group:
             return
         env_name = group[0].env_name
-        example_id = group[0].example_id
+        task_idx = group[0].trace.task.idx
         eval_step = group[0].eval_step
         bucket = self.pending_batches[(env_name, eval_step)]
         bucket.extend(group)
 
-        survivors = [r for r in group if r.error is None]
+        survivors = [r for r in group if not r.trace.has_error]
         num_errored = len(group) - len(survivors)
-        rewards = [r.reward for r in survivors]
+        rewards = [r.trace.reward for r in survivors]
         avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
         get_logger().debug(
-            f"Finished group | env={env_name} example_id={example_id} eval_step={eval_step} | "
+            f"Finished group | env={env_name} task_idx={task_idx} eval_step={eval_step} | "
             f"rollouts={len(group)} (errored={num_errored}) | reward={avg_reward:.4f}"
         )
 
@@ -120,9 +120,9 @@ class EvalSink:
         rollouts = self.pending_batches.pop(key, [])
 
         n_total = len(rollouts)
-        n_cancelled = sum(1 for r in rollouts if (r.error or {}).get("error") == "Cancelled")
-        n_errored = sum(1 for r in rollouts if r.error is not None) - n_cancelled
-        valid = [r for r in rollouts if r.error is None]
+        n_cancelled = sum(1 for r in rollouts if r.trace.has_error and r.trace.error.type == "Cancelled")
+        n_errored = sum(1 for r in rollouts if r.trace.has_error) - n_cancelled
+        valid = [r for r in rollouts if not r.trace.has_error]
         metrics = EvalBatchMetrics(
             n_rollouts=n_total,
             n_cancelled=n_cancelled,
@@ -130,24 +130,24 @@ class EvalSink:
         )
 
         if valid:
-            rewards = [r.reward for r in valid]
-            lens = [r.raw["token_usage"]["final_output_tokens"] for r in valid]
+            rewards = [r.trace.reward for r in valid]
+            lens = [r.trace.completion_len for r in valid]
             metrics.group_size = self.group_size_for(env_name)
             metrics.reward_mean = float(sum(rewards) / len(rewards))
             metrics.completion_len_mean = float(sum(lens) / len(lens))
             metrics.completion_len_max = float(max(lens))
             metrics.completion_len_min = float(min(lens))
-            metrics.truncation_rate = float(sum(1 for r in valid if r.is_truncated) / len(valid))
-            metrics.no_response_rate = float(sum(1 for r in valid if not r.raw.get("completion")) / len(valid))
-            num_turns = [len(r.raw.get("trajectory") or []) for r in valid]
+            metrics.truncation_rate = float(sum(1 for r in valid if r.trace.is_truncated) / len(valid))
+            metrics.no_response_rate = float(sum(1 for r in valid if not r.trace.has_response) / len(valid))
+            num_turns = [r.trace.num_turns for r in valid]
             metrics.num_turns_mean = float(sum(num_turns) / len(num_turns))
             metrics.num_turns_min = float(min(num_turns))
             metrics.num_turns_max = float(max(num_turns))
 
             # pass@k: errored attempts don't count toward k tries
-            by_example: dict[int | str, list[float]] = {}
+            by_example: dict[int, list[float]] = {}
             for r in valid:
-                by_example.setdefault(r.example_id, []).append(r.reward)
+                by_example.setdefault(r.trace.task.idx, []).append(r.trace.reward)
             metrics.n_examples = len(by_example)
             unique_rewards = {float(r) for r in rewards}
             if unique_rewards.issubset({0.0, 1.0}) and by_example:

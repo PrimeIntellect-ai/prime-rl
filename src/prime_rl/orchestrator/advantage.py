@@ -4,11 +4,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
 import torch
-import verifiers as vf
 from jaxtyping import Float
 from torch import Tensor
 
 if TYPE_CHECKING:
+    import verifiers.nano as vf
+
     from prime_rl.orchestrator.types import TrainRollout
 
 from prime_rl.configs.orchestrator import (
@@ -26,7 +27,7 @@ from prime_rl.utils.utils import import_object
 class AdvantageInputs:
     """Inputs for advantage computation of a single group (one example × N rollouts)."""
 
-    rollouts: list[vf.RolloutOutput]
+    rollouts: list[vf.Trace]
 
 
 @dataclass
@@ -57,7 +58,7 @@ def default_advantage_fn(
     `length_penalty` enables correctness-gated efficiency shaping over a per-rollout
     cost: tokens (weighted completion + tool-response) or trajectory turn count.
     """
-    rewards = torch.tensor([r["reward"] for r in inputs.rollouts], dtype=torch.float32)
+    rewards = torch.tensor([r.reward for r in inputs.rollouts], dtype=torch.float32)
 
     if isinstance(length_penalty, TokensLengthPenaltyConfig):
         w_c = length_penalty.completion_weight
@@ -68,7 +69,7 @@ def default_advantage_fn(
         )
         return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs).tolist())
     if isinstance(length_penalty, TurnsLengthPenaltyConfig):
-        costs = torch.tensor([len(r["trajectory"]) for r in inputs.rollouts], dtype=rewards.dtype)
+        costs = torch.tensor([len(r.trajectory) for r in inputs.rollouts], dtype=rewards.dtype)
         return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs).tolist())
 
     return AdvantageOutputs(advantages=(rewards - rewards.mean()).tolist())
@@ -129,19 +130,19 @@ def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
 
 
 def assign_advantages(
-    rollouts: list["TrainRollout"],  # noqa: F821 (forward ref)
+    rollouts: list[TrainRollout],
     advantage_fn: AdvantageFn | None,
 ) -> None:
     """Compute and assign advantages for one finished group of rollouts
     (``TrainSink.process_group`` hands in a single group's surviving rollouts).
     ``advantage_fn=None`` is the trivial case (advantage = reward); a custom
-    ``advantage_fn`` receives the raw ``vf.RolloutOutput``\\ s via
+    ``advantage_fn`` receives the ``vf.Trace``\\ s via
     ``AdvantageInputs.rollouts``.
     """
     if advantage_fn is None:
         for rollout in rollouts:
-            rollout.advantage = rollout.reward
+            rollout.advantage = rollout.trace.reward
         return
-    result = advantage_fn(AdvantageInputs(rollouts=[r.raw for r in rollouts]))
+    result = advantage_fn(AdvantageInputs(rollouts=[r.trace for r in rollouts]))
     for rollout, advantage in zip(rollouts, result.advantages):
         rollout.advantage = advantage

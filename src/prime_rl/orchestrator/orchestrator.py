@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
-import logging
 import os
 import time
 from typing import TYPE_CHECKING
@@ -37,8 +36,6 @@ if TYPE_CHECKING:
     from prime_rl.transport.base import TrainingBatchSender
     from prime_rl.utils.client import InferencePool
     from prime_rl.utils.monitor.base import Monitor
-from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
-
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
@@ -76,7 +73,7 @@ from prime_rl.orchestrator.utils import (
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
-from prime_rl.utils.async_utils import safe_cancel
+from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.client import init_nccl_broadcast, setup_inference_pool
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
@@ -85,8 +82,6 @@ from prime_rl.utils.pathing import get_log_dir, get_rollout_dir, get_step_path
 from prime_rl.utils.usage_reporter import UsageReporter
 from prime_rl.utils.utils import (
     clean_exit,
-    get_env_ids_to_install,
-    install_env,
     resolve_latest_ckpt_step,
 )
 
@@ -153,10 +148,9 @@ class Orchestrator:
     def __init__(self, config: OrchestratorConfig) -> None:
         self.config = config
         setup_logger(config.log.level, json_logging=config.log.json_logging)
-        # Silence in-process ``verifiers.*`` library noise but keep
-        # ``verifiers.serve`` (env-server lifecycle) through our handler
-        logging.getLogger("verifiers").setLevel(logging.CRITICAL + 1)
-        intercept_vf_logging(logger="verifiers.serve", level="WARN")
+        # Route the in-process vf-nano library logging through our handler. The
+        # env server runs in a child process, so its logging is separate.
+        intercept_vf_logging(logger="verifiers.nano", level="WARN")
         get_logger().info(f"Starting orchestrator ({config.training_mode})")
 
         if config.bench:
@@ -206,11 +200,9 @@ class Orchestrator:
         with open(config_dir / "orch.toml", "wb") as f:
             tomli_w.dump(config.model_dump(exclude_none=True, mode="json"), f)
 
-        env_ids_to_install = set(get_env_ids_to_install(config.train.env))
-        if config.eval is not None:
-            env_ids_to_install.update(get_env_ids_to_install(config.eval.env))
-        for env_id in env_ids_to_install:
-            install_env(env_id, prerelease=config.env_install_prerelease)
+        # TODO(vf-nano, experimental): temporary. vf-nano envs are local packages
+        # installed in this venv (no prime-env hub install); the env server imports
+        # them in its own child process.
 
         get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
         self.tokenizer = setup_tokenizer(config.tokenizer)
@@ -555,9 +547,8 @@ class Orchestrator:
                 f"({batch.metrics.n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / filter config"
             )
 
-        # Materialize at the I/O boundary so prime-rl metadata travels with
-        # the raw vf payload on disk + in wandb sample tables
-        rollout_dicts = [r.to_dict() for r in batch.rollouts]
+        # Serialize the typed Trace at the I/O boundary (disk + wandb sample tables).
+        rollout_dicts = [r.trace.model_dump(mode="json") for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(config.output_dir), step)
         await asyncio.to_thread(
             save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
@@ -595,7 +586,7 @@ class Orchestrator:
         self.monitor.log_samples(rollout_dicts, step=step)
         self.monitor.log_distributions(
             distributions={
-                "rewards": [r.reward for r in batch.rollouts],
+                "rewards": [r.trace.reward for r in batch.rollouts],
                 "advantages": [r.advantage for r in batch.rollouts if r.advantage is not None],
             },
             step=step,
@@ -614,10 +605,7 @@ class Orchestrator:
 
         num_rollouts = len(batch.rollouts)
         num_unique_examples = len({r.group_id for r in batch.rollouts})
-        num_tokens = sum(
-            r.raw["token_usage"]["final_input_tokens"] + r.raw["token_usage"]["final_output_tokens"]
-            for r in batch.rollouts
-        )
+        num_tokens = sum(r.trace.total_tokens for r in batch.rollouts)
         self.progress.total_tokens += num_tokens
         self.progress.total_samples += num_rollouts
         self.progress.total_problems += num_unique_examples
@@ -722,10 +710,10 @@ class Orchestrator:
         n_trainable = batch.metrics.n_trainable
         error_rate = (n_errors_total / n_arrivals_total) if n_arrivals_total else 0.0
         trainable_rate = (n_trainable / n_survivors) if n_survivors else 0.0
-        reward_mean = sum(r.reward for r in batch.rollouts) / max(n_survivors, 1)
+        reward_mean = sum(r.trace.reward for r in batch.rollouts) / max(n_survivors, 1)
         max_off_policy = max((r.off_policy_steps for r in batch.rollouts), default=0)
-        turns_mean = sum(len(r.raw.get("trajectory") or []) for r in batch.rollouts) / max(n_survivors, 1)
-        truncation_rate = sum(1 for r in batch.rollouts if r.is_truncated) / max(n_survivors, 1)
+        turns_mean = sum(r.trace.num_turns for r in batch.rollouts) / max(n_survivors, 1)
+        truncation_rate = sum(1 for r in batch.rollouts if r.trace.is_truncated) / max(n_survivors, 1)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {reward_mean:.4f} | "
@@ -746,14 +734,12 @@ class Orchestrator:
             n_env_errors = batch.metrics.errors_by_env.get(env_name, 0)
             ratio = (n_env_arrivals / n_arrivals_total) if n_arrivals_total else 0.0
             env_error_rate = (n_env_errors / n_env_arrivals) if n_env_arrivals else 0.0
-            env_reward = (sum(r.reward for r in env_rollouts) / len(env_rollouts)) if env_rollouts else 0.0
+            env_reward = (sum(r.trace.reward for r in env_rollouts) / len(env_rollouts)) if env_rollouts else 0.0
             env_max_off_policy = max((r.off_policy_steps for r in env_rollouts), default=0)
-            env_turns = (
-                sum(len(r.raw.get("trajectory") or []) for r in env_rollouts) / len(env_rollouts)
-                if env_rollouts
-                else 0.0
+            env_turns = sum(r.trace.num_turns for r in env_rollouts) / len(env_rollouts) if env_rollouts else 0.0
+            env_truncation = (
+                sum(1 for r in env_rollouts if r.trace.is_truncated) / len(env_rollouts) if env_rollouts else 0.0
             )
-            env_truncation = sum(1 for r in env_rollouts if r.is_truncated) / len(env_rollouts) if env_rollouts else 0.0
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_reward:.4f} | "
                 f"Turns {env_turns:.1f} | Max Off-Policy {env_max_off_policy} | "
@@ -768,7 +754,7 @@ class Orchestrator:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no surviving rollouts, skipping log")
             return
 
-        rollout_dicts = [r.to_dict() for r in batch.rollouts]
+        rollout_dicts = [r.trace.model_dump(mode="json") for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(self.config.output_dir), batch.step)
         save_rollouts(
             rollout_dicts,

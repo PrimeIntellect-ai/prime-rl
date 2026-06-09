@@ -5,7 +5,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import verifiers as vf
 import wandb
 from transformers.tokenization_utils import PreTrainedTokenizer
 from wandb.errors import CommError
@@ -113,13 +112,13 @@ class WandbMonitor(Monitor):
         if config is not None and isinstance(config, WandbWithExtrasConfig) and config.log_extras:
             if config.log_extras.samples:
                 self.last_log_samples_step = -1
-                self.samples_cols = ["step", "env_name", "task", "example_id", "messages", "input_ids", "reward"]
+                self.samples_cols = ["step", "env_name", "task", "task_idx", "messages", "input_ids", "reward"]
                 self.samples_table = wandb.Table(
                     columns=self.samples_cols,
                     log_mode="INCREMENTAL",
                 )
                 self.tokenizer = tokenizer
-                self.eval_samples_cols = ["step", "env", "task", "example_id", "completion", "reward"]
+                self.eval_samples_cols = ["step", "env", "task", "task_idx", "completion", "reward"]
                 self.eval_samples_table = wandb.Table(
                     columns=self.eval_samples_cols,
                     log_mode="INCREMENTAL",
@@ -143,7 +142,7 @@ class WandbMonitor(Monitor):
             return
         wandb.log({**metrics, "step": step})
 
-    def log_samples(self, rollouts: list[vf.RolloutOutput], step: int) -> None:
+    def log_samples(self, rollouts: list[dict], step: int) -> None:
         """Logs rollouts to W&B table."""
         if not self.is_master:
             return
@@ -183,7 +182,7 @@ class WandbMonitor(Monitor):
                 "step": step,
                 "env_name": rollout.get("env_name"),
                 "task": rollout.get("task"),
-                "example_id": rollout["example_id"],
+                "task_idx": rollout["task"]["idx"],
                 "messages": messages_text,
                 "input_ids": str(full_ids),
                 "reward": rollout["reward"],
@@ -197,7 +196,7 @@ class WandbMonitor(Monitor):
         self.last_log_samples_step = step
         self.logger.debug(f"Logged samples at step {step} to W&B table in {time.perf_counter() - start_time:.2f}s")
 
-    def log_eval_samples(self, rollouts: list[vf.RolloutOutput], env_name: str, step: int) -> None:
+    def log_eval_samples(self, rollouts: list[dict], env_name: str, step: int) -> None:
         """Logs eval rollouts to a separate W&B table."""
         if not self.is_master:
             return
@@ -222,7 +221,7 @@ class WandbMonitor(Monitor):
                 "step": step,
                 "env": env_name,
                 "task": rollout.get("task"),
-                "example_id": rollout["example_id"],
+                "task_idx": rollout["task"]["idx"],
                 "completion": completion,
                 "reward": rollout["reward"],
             }
