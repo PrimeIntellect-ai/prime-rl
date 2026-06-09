@@ -533,12 +533,13 @@ class TokenChoiceTopKRouter(nn.Module):
         top_scores = top_scores * self.route_scale
 
         # group tokens together by expert indices from 0 to num_experts and pass that to experts forward
+        # histc requires a float input, but the downstream permute kernel needs integer token counts
         num_tokens_per_expert = torch.histc(
             selected_experts_indices.reshape(-1).float(),
             bins=self.num_experts,
             min=0,
             max=self.num_experts,
-        )
+        ).to(torch.long)
 
         return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum
 
@@ -585,12 +586,13 @@ class TokenReorderer(nn.Module):
         """
         # group tokens together by expert indices from 0 to num_experts and pass that to experts forward
         selected_experts_indices = selected_experts_indices.reshape(-1)
+        # histc requires a float input, but the downstream permute kernel needs integer token counts
         num_tokens_per_expert = torch.histc(
             selected_experts_indices.float(),
             bins=self.num_experts,
             min=0,
             max=self.num_experts,
-        )
+        ).to(torch.long)
 
         # Reorder the token indices to match the order of the experts
         # token_indices_experts_sorted shape (bs*slen*top_k,)
