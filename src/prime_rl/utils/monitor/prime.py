@@ -1,7 +1,6 @@
 import asyncio
 import base64
 import contextlib
-import io
 import json
 import math
 import mimetypes
@@ -75,22 +74,6 @@ async def _aiter_handle(f, chunk_size: int = 65536):
     AsyncClient can send it; small chunks bound each TLS write to avoid large allocations."""
     while chunk := f.read(chunk_size):
         yield chunk
-
-
-def _table_to_parquet_bytes(table: "pa.Table") -> bytes:
-    buf = io.BytesIO()
-    pq.write_table(table, buf, compression="snappy", use_dictionary=True, write_statistics=True)
-    return buf.getvalue()
-
-
-def _run_config_is_multimodal(run_config: Any) -> bool:
-    """True when the run trains a VLM. Handles trainer (``model``) and orchestrator
-    (``student.model``) config shapes; defaults False for anything else."""
-    candidates = (
-        getattr(run_config, "model", None),
-        getattr(getattr(run_config, "student", None), "model", None),
-    )
-    return any(getattr(model, "is_vlm", False) for model in candidates if model is not None)
 
 
 def _drop_non_finite_json_values(value: Any, dropped_paths: list[str], path: str = "") -> Any:
@@ -211,7 +194,6 @@ class PrimeMonitor(Monitor):
         self.history: list[dict[str, Any]] = []
         self._keep_full_history = keep_full_history
         self.output_dir = output_dir
-        self._is_multimodal = _run_config_is_multimodal(run_config)
         self._registered = False
         self._finalized = False
         self._closed = False
@@ -405,19 +387,14 @@ class PrimeMonitor(Monitor):
         self.logger.info(f"Logging {len(rollouts)} samples to Prime Intellect API at step {step}")
         start_time = time.perf_counter()
 
-        table = self._rollouts_to_parquet_table(rollouts, step)
-        if table is None:
+        # Always build straight to a disk-backed temp file and stream the upload. Samples can
+        # inline base64 images and be large; gating on a config flag was fragile (silently
+        # off when ``[model.vlm]`` wasn't set). Streaming from disk is safe for any size and
+        # never holds the serialized body in RAM.
+        body = self._write_samples_parquet(rollouts, step)
+        if body is None:
             self.logger.warning(f"No samples to log at step {step}")
             return
-
-        # Multimodal parquets inline base64 images and can be large: write straight to a
-        # disk-backed temp file and stream the upload, so the serialized body is never held
-        # in RAM as bytes and nothing is retained during the async upload. Text runs stay inline.
-        if self._is_multimodal:
-            body: bytes | Path = self._spill_table_to_tempfile(table, step)
-        else:
-            body = _table_to_parquet_bytes(table)
-        del table
 
         # Mark pending only once the body is built and ready to schedule.
         self._pending_sample_steps.add(step)
@@ -427,80 +404,92 @@ class PrimeMonitor(Monitor):
             f"Initiated samples upload at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
         )
 
-    def _rollouts_to_parquet_table(self, rollouts: list[vf.RolloutOutput], step: int) -> "pa.Table | None":
-        """Build the sample Parquet table from rollouts (None when there is nothing to log)."""
+    def _write_samples_parquet(self, rollouts: list[vf.RolloutOutput], step: int) -> "Path | None":
+        """Stream the sample Parquet straight to a disk-backed temp file (co-located with the
+        run's output dir to avoid a tmpfs ``/tmp``), one rollout at a time, so base64-inlined
+        images are never all held in RAM. Returns the temp file path, or None when there is
+        nothing to log. The upload coroutine unlinks the file when done."""
         now = datetime.now(timezone.utc)
-        rows = []
-        image_data_url_cache: dict[str, str | None] = {}
-
-        for sample_id, rollout in enumerate(rollouts):
-            prompt = rollout.get("prompt")
-            completion = rollout.get("completion")
-            trajectory = rollout.get("trajectory") or []
-            if prompt is None or completion is None or not trajectory:
-                continue
-
-            example_id = rollout.get("example_id")
-            try:
-                problem_id = int(example_id) if example_id is not None else sample_id
-            except (TypeError, ValueError):
-                problem_id = sample_id
-
-            trajectory_data = [
-                {
-                    "prompt": ts["prompt"],
-                    "completion": ts["completion"],
-                    "reward": ts.get("reward"),
-                    "advantage": ts.get("advantage"),
-                    "extras": ts.get("extras", {}),
-                    "num_input_tokens": len(ts["tokens"]["prompt_ids"]) if ts.get("tokens") else None,
-                    "num_output_tokens": len(ts["tokens"]["completion_ids"]) if ts.get("tokens") else None,
-                }
-                for ts in trajectory
-            ]
-
-            rows.append(
-                {
-                    "run_id": self.run_id,
-                    "step": step,
-                    "tag": "",
-                    "problem_id": problem_id,
-                    "sample_id": sample_id,
-                    "prompt": json.dumps(_inline_local_image_urls(prompt, image_data_url_cache)),
-                    "completion": json.dumps(_inline_local_image_urls(completion, image_data_url_cache)),
-                    "trajectory": json.dumps(_inline_local_image_urls(trajectory_data, image_data_url_cache)),
-                    "answer": rollout.get("answer") or "",
-                    "env_name": rollout.get("env_name") or "",
-                    "task": rollout.get("task") or "",
-                    "info": _json(rollout.get("info")),
-                    "reward": rollout.get("reward"),
-                    "advantage": rollout.get("advantage"),
-                    "metrics": _json(rollout.get("metrics")),
-                    "timing": _json(rollout.get("timing")),
-                    "num_input_tokens": 0,
-                    "num_output_tokens": 0,
-                    "created_at": now,
-                }
-            )
-
-        if not rows:
-            return None
-
-        return pa.Table.from_pylist(rows, schema=_SAMPLE_SCHEMA)
-
-    def _rollouts_to_parquet_bytes(self, rollouts: list[vf.RolloutOutput], step: int) -> bytes | None:
-        """Convert rollouts to in-memory Parquet bytes (inline upload path)."""
-        table = self._rollouts_to_parquet_table(rollouts, step)
-        return None if table is None else _table_to_parquet_bytes(table)
-
-    def _spill_table_to_tempfile(self, table: "pa.Table", step: int) -> Path:
-        """Write the sample Parquet straight to a disk-backed temp file, co-located with the
-        run's output dir to avoid a tmpfs ``/tmp``. The upload coroutine unlinks it when done."""
         directory = str(self.output_dir) if self.output_dir else None
         fd, name = tempfile.mkstemp(prefix=f"prime_samples_step{step}_", suffix=".parquet", dir=directory)
-        with os.fdopen(fd, "wb") as f:
-            pq.write_table(table, f, compression="snappy", use_dictionary=True, write_statistics=True)
-        return Path(name)
+        path = Path(name)
+        writer: "pq.ParquetWriter | None" = None
+        wrote = False
+        try:
+            with os.fdopen(fd, "wb") as f:
+                writer = pq.ParquetWriter(
+                    f, _SAMPLE_SCHEMA, compression="snappy", use_dictionary=True, write_statistics=True
+                )
+                for sample_id, rollout in enumerate(rollouts):
+                    row = self._rollout_to_sample_row(rollout, sample_id, step, now)
+                    if row is None:
+                        continue
+                    writer.write_table(pa.Table.from_pylist([row], schema=_SAMPLE_SCHEMA))
+                    wrote = True
+                writer.close()
+                writer = None
+        except BaseException:
+            if writer is not None:
+                writer.close()
+            path.unlink(missing_ok=True)
+            raise
+        if not wrote:
+            path.unlink(missing_ok=True)
+            return None
+        return path
+
+    def _rollout_to_sample_row(
+        self, rollout: vf.RolloutOutput, sample_id: int, step: int, now: datetime
+    ) -> "dict[str, Any] | None":
+        """Build one sample row, or None to skip. A fresh per-rollout image cache bounds peak
+        RAM to a single rollout's inlined base64 (images repeated across its turns still dedup)."""
+        prompt = rollout.get("prompt")
+        completion = rollout.get("completion")
+        trajectory = rollout.get("trajectory") or []
+        if prompt is None or completion is None or not trajectory:
+            return None
+
+        example_id = rollout.get("example_id")
+        try:
+            problem_id = int(example_id) if example_id is not None else sample_id
+        except (TypeError, ValueError):
+            problem_id = sample_id
+
+        trajectory_data = [
+            {
+                "prompt": ts["prompt"],
+                "completion": ts["completion"],
+                "reward": ts.get("reward"),
+                "advantage": ts.get("advantage"),
+                "extras": ts.get("extras", {}),
+                "num_input_tokens": len(ts["tokens"]["prompt_ids"]) if ts.get("tokens") else None,
+                "num_output_tokens": len(ts["tokens"]["completion_ids"]) if ts.get("tokens") else None,
+            }
+            for ts in trajectory
+        ]
+
+        image_cache: dict[str, str | None] = {}
+        return {
+            "run_id": self.run_id,
+            "step": step,
+            "tag": "",
+            "problem_id": problem_id,
+            "sample_id": sample_id,
+            "prompt": json.dumps(_inline_local_image_urls(prompt, image_cache)),
+            "completion": json.dumps(_inline_local_image_urls(completion, image_cache)),
+            "trajectory": json.dumps(_inline_local_image_urls(trajectory_data, image_cache)),
+            "answer": rollout.get("answer") or "",
+            "env_name": rollout.get("env_name") or "",
+            "task": rollout.get("task") or "",
+            "info": _json(rollout.get("info")),
+            "reward": rollout.get("reward"),
+            "advantage": rollout.get("advantage"),
+            "metrics": _json(rollout.get("metrics")),
+            "timing": _json(rollout.get("timing")),
+            "num_input_tokens": 0,
+            "num_output_tokens": 0,
+            "created_at": now,
+        }
 
     def _upload_samples_via_presigned_url(self, body: bytes | Path, step: int) -> None:
         """Upload Parquet samples using presigned URL flow (fire-and-forget)."""
