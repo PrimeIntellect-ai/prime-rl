@@ -370,40 +370,40 @@ class RLConfig(BaseConfig):
             if self.trainer.weight_broadcast.type == "nccl":
                 raise ValueError("NCCL weight broadcast does not support LoRA yet.")
 
-            if self.orchestrator.student.model.lora is None:
+            if self.orchestrator.policy.model.lora is None:
                 from prime_rl.configs.orchestrator import LoRAConfig
 
-                self.orchestrator.student.model.lora = LoRAConfig()
+                self.orchestrator.policy.model.lora = LoRAConfig()
 
             if (
-                self.orchestrator.student.model.lora.rank is not None
-                and self.orchestrator.student.model.lora.rank != self.trainer.model.lora.rank
+                self.orchestrator.policy.model.lora.rank is not None
+                and self.orchestrator.policy.model.lora.rank != self.trainer.model.lora.rank
             ):
                 raise ValueError(
-                    f"orchestrator.student.model.lora.rank ({self.orchestrator.student.model.lora.rank}) conflicts with "
+                    f"orchestrator.policy.model.lora.rank ({self.orchestrator.policy.model.lora.rank}) conflicts with "
                     f"trainer.model.lora.rank ({self.trainer.model.lora.rank}). "
-                    f"Remove orchestrator.student.model.lora.rank to inherit from trainer, or update trainer.model.lora.rank to match."
+                    f"Remove orchestrator.policy.model.lora.rank to inherit from trainer, or update trainer.model.lora.rank to match."
                 )
 
             if (
-                self.orchestrator.student.model.lora.alpha is not None
-                and self.orchestrator.student.model.lora.alpha != self.trainer.model.lora.alpha
+                self.orchestrator.policy.model.lora.alpha is not None
+                and self.orchestrator.policy.model.lora.alpha != self.trainer.model.lora.alpha
             ):
                 raise ValueError(
-                    f"orchestrator.student.model.lora.alpha ({self.orchestrator.student.model.lora.alpha}) conflicts with "
+                    f"orchestrator.policy.model.lora.alpha ({self.orchestrator.policy.model.lora.alpha}) conflicts with "
                     f"trainer.model.lora.alpha ({self.trainer.model.lora.alpha}). "
-                    f"Remove orchestrator.student.model.lora.alpha to inherit from trainer, or update trainer.model.lora.alpha to match."
+                    f"Remove orchestrator.policy.model.lora.alpha to inherit from trainer, or update trainer.model.lora.alpha to match."
                 )
 
-            if self.orchestrator.student.model.lora.rank is None:
-                self.orchestrator.student.model.lora.rank = self.trainer.model.lora.rank
+            if self.orchestrator.policy.model.lora.rank is None:
+                self.orchestrator.policy.model.lora.rank = self.trainer.model.lora.rank
 
-            if self.orchestrator.student.model.lora.alpha is None:
-                self.orchestrator.student.model.lora.alpha = self.trainer.model.lora.alpha
+            if self.orchestrator.policy.model.lora.alpha is None:
+                self.orchestrator.policy.model.lora.alpha = self.trainer.model.lora.alpha
 
-            if self.orchestrator.student.model.lora.name is None:
-                self.orchestrator.student.model.lora.name = (
-                    f"r{self.orchestrator.student.model.lora.rank}-a{self.orchestrator.student.model.lora.alpha}"
+            if self.orchestrator.policy.model.lora.name is None:
+                self.orchestrator.policy.model.lora.name = (
+                    f"r{self.orchestrator.policy.model.lora.rank}-a{self.orchestrator.policy.model.lora.alpha}"
                 )
 
             if self.inference is not None:
@@ -601,20 +601,20 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_inference_client(self):
-        """Auto-configure orchestrator student client from the inference server config.
+        """Auto-configure the orchestrator policy client from the inference server config.
 
-        Always sets dp_rank_count from inference DP size. For teacher-sourced
-        training (e.g. sft_distill), also sets base_url - student-sourced
-        algorithms rely on the ClientConfig default
+        Always sets dp_rank_count from inference DP size. When no train env
+        samples from the policy (e.g. sft_distill), also sets base_url —
+        policy-sourced algorithms rely on the ClientConfig default
         (``["http://localhost:8000/v1"]``) which already matches the auto-launched
-        student vLLM at inference.server.port = 8000.
+        policy vLLM at inference.server.port = 8000.
         """
         if self.inference is None:
             return self
-        client = self.orchestrator.student.client
+        client = self.orchestrator.policy.client
         if "dp_rank_count" not in client.model_fields_set:
             client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
-        if self.orchestrator.all_teacher_sourced and "base_url" not in client.model_fields_set:
+        if not self.orchestrator.any_policy_sourced and "base_url" not in client.model_fields_set:
             host = self.inference.server.host or "localhost"
             port = self.inference.server.port
             client.base_url = [f"http://{host}:{port}/v1"]

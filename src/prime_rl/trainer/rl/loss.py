@@ -7,7 +7,7 @@ from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
 from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, LossConfig
-from prime_rl.transport.types import LOSS_CORE_CE, LOSS_CORE_RL, LOSS_CORE_TEACHER_KL
+from prime_rl.transport.types import LOSS_CORE_CE, LOSS_CORE_REF_KL, LOSS_CORE_RL
 from prime_rl.utils.utils import import_object
 
 
@@ -22,7 +22,7 @@ class LossInputs:
 
     trainer_logprobs: Float[Tensor, " seq"]
     inference_logprobs: Float[Tensor, " seq"]
-    teacher_logprobs: Float[Tensor, " seq"] | None
+    ref_logprobs: Float[Tensor, " seq"] | None
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
     loss_weights: Float[Tensor, " seq"] | None = field(default=None)
@@ -175,20 +175,22 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     return LossOutputs(loss=loss, metrics=metrics)
 
 
-def teacher_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
+def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
     """
-    Teacher-KL loss core (on-policy distillation): the default DPPO+KL math
-    with the tau knobs hardcoded to drop the reward signal and use the teacher
-    KL as the per-token policy-gradient signal.
+    Ref-KL loss core (on-policy distillation): the default DPPO+KL math
+    with the tau knobs hardcoded to drop the reward signal and use the reverse
+    KL to the reference model as the per-token policy-gradient signal.
     """
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
-    teacher_logprobs = inputs.teacher_logprobs
+    ref_logprobs = inputs.ref_logprobs
     advantages = inputs.advantages
     loss_mask = inputs.loss_mask
 
-    if teacher_logprobs is None:
-        raise ValueError("teacher_kl loss core requires teacher_logprobs - configure a teacher_logprobs token scorer.")
+    if ref_logprobs is None:
+        raise ValueError(
+            "ref_kl loss core requires ref_logprobs - configure a token scorer (logprobs / demo_logprobs)."
+        )
 
     log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
         trainer_logprobs, inference_logprobs
@@ -207,8 +209,8 @@ def teacher_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
     drop_mask = loss_mask & is_masked
     keep_mask = loss_mask & ~is_masked
 
-    teacher_kl = teacher_logprobs - trainer_logprobs
-    advantages = 0.0 * advantages + 1.0 * teacher_kl.detach()
+    ref_kl = ref_logprobs - trainer_logprobs
+    advantages = 0.0 * advantages + 1.0 * ref_kl.detach()
 
     pg_loss = keep_mask * advantages * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
@@ -225,7 +227,7 @@ def teacher_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
         "is_masked_high": _safe_mean(is_masked_high, loss_mask),
         "masked_advantage_positive": _safe_mean(positive_advantages, drop_mask),
         "masked_advantage_negative": _safe_mean(negative_advantages, drop_mask),
-        "teacher_kl": _safe_mean(teacher_kl, loss_mask),
+        "ref_kl": _safe_mean(ref_kl, loss_mask),
     }
 
     return LossOutputs(loss=loss, metrics=metrics)
@@ -250,7 +252,7 @@ def ce_loss_fn(inputs: LossInputs) -> LossOutputs:
 def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
     """Build the loss fn for the RL core: ``default_loss_fn`` with the
     configured knobs, or the imported function for ``CustomLossConfig``.
-    The ce / teacher_kl cores are fixed and unaffected by ``trainer.loss``."""
+    The ce / ref_kl cores are fixed and unaffected by ``trainer.loss``."""
     if isinstance(loss_config, CustomLossConfig):
         custom_fn = import_object(loss_config.import_path)
         kwargs = loss_config.kwargs
@@ -268,7 +270,7 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
 def compute_loss(
     trainer_logprobs: list[Float[Tensor, " seq_i"]],
     inference_logprobs: list[Float[Tensor, " seq_i"]],
-    teacher_logprobs: list[Float[Tensor, " seq_i"]] | None,
+    ref_logprobs: list[Float[Tensor, " seq_i"]] | None,
     advantages: list[Float[Tensor, " seq_i"]],
     loss_mask: list[Bool[Tensor, " seq_i"]],
     loss_core_ids: list[Int[Tensor, " seq_i"]] | None,
@@ -285,12 +287,12 @@ def compute_loss(
 
     - ``LOSS_CORE_RL`` → ``rl_loss_fn`` (built by ``setup_rl_loss_fn``)
     - ``LOSS_CORE_CE`` → ``ce_loss_fn`` (masked NLL)
-    - ``LOSS_CORE_TEACHER_KL`` → ``teacher_kl_loss_fn``
+    - ``LOSS_CORE_REF_KL`` → ``ref_kl_loss_fn``
 
     Args:
         trainer_logprobs: Log probabilities for each sequence
         inference_logprobs: Reference log probabilities for each sequence
-        teacher_logprobs: Teacher log probabilities for each sequence, or None
+        ref_logprobs: Reference-model log probabilities for each sequence, or None
         advantages: Advantages for each sequence
         loss_mask: Loss mask for each sequence
         loss_core_ids: Per-token loss core ids for each sequence, or None (all RL)
@@ -305,8 +307,8 @@ def compute_loss(
     all_metrics: dict[str, list[Tensor]] = {}
 
     n = len(trainer_logprobs)
-    if teacher_logprobs is None:
-        teacher_logprobs = [None] * n
+    if ref_logprobs is None:
+        ref_logprobs = [None] * n
     if loss_core_ids is None:
         loss_core_ids = [None] * n
     if loss_weights is None:
@@ -318,10 +320,10 @@ def compute_loss(
             all_metrics.setdefault(k, []).append(v)
         return result.loss
 
-    for t_logp, i_logp, teach_logp, adv, mask, cores, weights in zip(
+    for t_logp, i_logp, ref_logp, adv, mask, cores, weights in zip(
         trainer_logprobs,
         inference_logprobs,
-        teacher_logprobs,
+        ref_logprobs,
         advantages,
         loss_mask,
         loss_core_ids,
@@ -332,7 +334,7 @@ def compute_loss(
             return LossInputs(
                 trainer_logprobs=t_logp,
                 inference_logprobs=i_logp,
-                teacher_logprobs=teach_logp,
+                ref_logprobs=ref_logp,
                 advantages=adv,
                 loss_mask=core_mask,
                 loss_weights=weights,
@@ -344,7 +346,7 @@ def compute_loss(
 
         for core_id, core_fn in (
             (LOSS_CORE_RL, rl_loss_fn),
-            (LOSS_CORE_TEACHER_KL, teacher_kl_loss_fn),
+            (LOSS_CORE_REF_KL, ref_kl_loss_fn),
             (LOSS_CORE_CE, ce_loss_fn),
         ):
             core_mask = mask & (cores == core_id)

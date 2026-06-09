@@ -150,7 +150,7 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
 
-    # Set up the loss function for the RL core (ce / teacher_kl cores are fixed)
+    # Set up the loss function for the RL core (ce / ref_kl cores are fixed)
     logger.info(f"Setting up loss function ({config.loss})")
     rl_loss_fn = setup_rl_loss_fn(config.loss)
 
@@ -374,9 +374,7 @@ def train(config: TrainerConfig):
             advantages = micro_batch["advantages"].to("cuda")
             loss_mask = micro_batch["loss_mask"].to("cuda")
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
-            teacher_logprobs = (
-                micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
-            )
+            ref_logprobs = micro_batch["ref_logprobs"].to("cuda") if micro_batch["ref_logprobs"] is not None else None
             loss_core_ids = (
                 micro_batch["loss_core_ids"].to("cuda") if micro_batch["loss_core_ids"] is not None else None
             )
@@ -481,9 +479,7 @@ def train(config: TrainerConfig):
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
-                teacher_logprobs=teacher_logprobs.squeeze().split(response_lengths)
-                if teacher_logprobs is not None
-                else None,
+                ref_logprobs=ref_logprobs.squeeze().split(response_lengths) if ref_logprobs is not None else None,
                 advantages=advantages.squeeze().split(response_lengths),
                 loss_mask=loss_mask.squeeze().split(response_lengths),
                 loss_core_ids=loss_core_ids.squeeze().split(response_lengths) if loss_core_ids is not None else None,
@@ -511,7 +507,7 @@ def train(config: TrainerConfig):
                 tensors[f"entropy/{env_name}"].append(entropy[indices])
 
             # Mismatch KL is only meaningful where sampling logprobs exist —
-            # exclude CE-core tokens (teacher tokens / env observations).
+            # exclude CE-core tokens (frozen-model tokens / env observations).
             if loss_core_ids is None:
                 mismatch_mask = loss_mask
                 has_mismatch_tokens = True

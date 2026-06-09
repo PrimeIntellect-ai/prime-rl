@@ -176,12 +176,12 @@ Right now, router handles 2 most important things:
 ### Routing policies
 The 2 policies you might want to configure are:
 - `consistent_hash` - this is the default policy that optimizes for KV cache re-use across turns - this works by hashing a request header to determine where to route the request to. You can configure what to hash by setting
-`orchestrator.student.client.extra_headers_from_state` to the header the `router` expects to be set.
+`orchestrator.policy.client.extra_headers_from_state` to the header the `router` expects to be set.
 
 We set it to a sensible default, that works with all verifiers environments.
 
 ```toml
-[orchestrator.student.client.extra_headers_from_state]
+[orchestrator.policy.client.extra_headers_from_state]
 X-Session-ID = "trajectory_id" # this is the default - each rollout has a unique trajectory_id and router expects X-Session-ID
 ```
 

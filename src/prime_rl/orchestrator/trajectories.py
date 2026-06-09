@@ -310,7 +310,7 @@ def interleave_rollout(
             completion_mask=completion_mask,
             completion_logprobs=list(tokens["completion_logprobs"]),
             completion_temperatures=[],
-            teacher_logprobs=None,
+            ref_logprobs=None,
             advantage=None,
             env_name=env_name,
             mm_token_type_ids=None,

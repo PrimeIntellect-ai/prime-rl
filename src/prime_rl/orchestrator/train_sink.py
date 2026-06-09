@@ -2,13 +2,14 @@
 
 1. ``process_rollout`` — eager per-rollout tokenization (overlaps with
    dispatcher producing more rollouts). Errored rollouts skip this.
-2. ``process_group`` — filters errored rollouts, computes advantages over
-   survivors, runs the pre-batch filter pass.
+2. ``process_group`` — filters errored rollouts, hands survivors to the env
+   algorithm's ``finalize_group`` (advantages + per-sample wire stamping),
+   runs the pre-batch filter pass.
 3. ``process_batch`` — applies post-batch filter annotations and assembles
    the trainer-bound ``TrainingSample`` list. Returns a ``TrainBatch``.
 
 ``add()`` returns ``TrainBatch | None``. I/O concerns (ship to trainer,
-save_rollouts, monitor.log, teacher logprobs) live on the orchestrator.
+save_rollouts, monitor.log, token scorers) live on the orchestrator.
 """
 
 from __future__ import annotations
@@ -18,8 +19,6 @@ import uuid
 from collections import defaultdict
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.advantage import assign_advantages
-from prime_rl.orchestrator.algorithms import stamp_loss_routing
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.trajectories import (
@@ -149,7 +148,7 @@ class TrainSink:
 
     async def process_rollout(self, rollout: TrainRollout) -> None:
         """Tokenize the rollout eagerly. Backfills tokens if the env didn't
-        return them (SFT against external teacher APIs); errored rollouts
+        return them (frozen-sourced rollouts from external APIs); errored rollouts
         skip tokenization and get dropped at the group level."""
         if rollout.error is not None:
             return
@@ -157,13 +156,12 @@ class TrainSink:
         needs_backfill = any(s["tokens"] is None for s in raw.get("trajectory") or [])
         if needs_backfill:
             await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
-        algorithm = self.train_envs.get(rollout.env_name).algorithm
         samples = await asyncio.to_thread(
             interleave_rollout,
             raw,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             env_name=rollout.env_name,
-            tag_observation_tokens=algorithm.loss is not None and algorithm.loss.observation != "none",
+            tag_observation_tokens=self.train_envs.get(rollout.env_name).algorithm.tag_observation_tokens,
         )
         rollout.samples = samples or []
         # Offload base64 image bytes to disk as soon as the rollout is
@@ -199,22 +197,15 @@ class TrainSink:
             )
             return
 
-        assign_advantages(survivors, self.train_envs.get(env_name).advantage_fn)
+        # Advantages + per-sample wire stamping (advantage, loss routing) are
+        # the algorithm's job; the sink only owns the grouping mechanics.
+        env.algorithm.finalize_group(survivors)
 
-        # Propagate to the pre-tokenized samples so the orchestrator can
-        # collect samples at ship time without re-walking rollouts. The env
-        # has a single sampling temperature; fan it out across each sample's
-        # completion tokens here (interleave leaves it empty).
+        # The env has a single sampling temperature; fan it out across each
+        # sample's completion tokens (interleave leaves it empty).
         temperature = env.sampling_args["temperature"]
-        assert env.algorithm.loss is not None
         for r in survivors:
             for sample in r.samples:
-                # ``advantage=None`` (NoAdvantageConfig) ships as neutral 0.0;
-                # the rollout keeps None so advantage-based filters skip it.
-                sample.advantage = r.advantage if r.advantage is not None else 0.0
-                sample.reward = r.reward
-                sample.env_name = r.env_name
-                stamp_loss_routing(sample, env.algorithm.loss)
                 sample.completion_temperatures = [temperature] * len(sample.completion_ids)
 
         if self.pre_filters:

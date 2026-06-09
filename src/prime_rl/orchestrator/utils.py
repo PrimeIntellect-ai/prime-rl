@@ -2,7 +2,6 @@ import asyncio
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
-from itertools import cycle
 from pathlib import Path
 
 import orjson
@@ -11,7 +10,6 @@ from verifiers.utils.client_utils import setup_openai_client
 from verifiers.utils.save_utils import make_serializable
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.transport import TrainingSample
 from prime_rl.utils.client import setup_inference_pool
 from prime_rl.utils.logger import InterceptHandler, get_logger
 from prime_rl.utils.utils import (
@@ -21,14 +19,14 @@ from prime_rl.utils.utils import (
 )
 
 
-async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer):
-    """Build the student inference pool + matching renderer. Returns
+async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
+    """Build the live policy inference pool + matching renderer. Returns
     ``(renderer | None, inference_pool)``; ``renderer`` is ``None`` on the
     MITO path (``config.renderer is None``)."""
     from renderers.base import create_renderer
 
-    client_config = config.student.client
-    model_name = config.student.model.name
+    client_config = config.policy.client
+    model_name = config.policy.model.name
 
     if config.renderer is not None:
         renderer = create_renderer(tokenizer, config.renderer)
@@ -148,20 +146,6 @@ async def compute_prefill_logprobs(
         lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
         flat.append(float(lp) if lp is not None else 0.0)
     return flat
-
-
-async def compute_teacher_logprobs(
-    clients: list[vf.ClientConfig],
-    model_name: str,
-    samples: list[TrainingSample],
-) -> list[list[float]]:
-    """Compute teacher model logprobs for a batch of training samples via prefill."""
-    return await asyncio.gather(
-        *[
-            compute_prefill_logprobs(client, model_name, list(sample.prompt_ids) + list(sample.completion_ids))
-            for client, sample in zip(cycle(clients), samples)
-        ]
-    )
 
 
 def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_timeout: int | None = None) -> Path:

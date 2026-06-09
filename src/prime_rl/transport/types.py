@@ -4,7 +4,7 @@ import msgspec
 # algorithm's loss routing); the trainer just executes them.
 LOSS_CORE_RL = 0  # configured RL loss (importance-weighted PG + KL)
 LOSS_CORE_CE = 1  # masked NLL (SFT / observation prediction)
-LOSS_CORE_TEACHER_KL = 2  # per-token teacher KL as the PG signal (OPD / SDFT)
+LOSS_CORE_REF_KL = 2  # per-token reverse KL to a reference model as the PG signal (OPD / SDFT)
 
 
 # Encoded tensor: {dtype: "float32", shape: [...], data: <bytes>}.
@@ -35,7 +35,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     completion_logprobs: list[float]
     completion_temperatures: list[float]  # Per-token temperatures used during generation
     env_name: str
-    teacher_logprobs: list[float] | None = None
+    ref_logprobs: list[float] | None = None  # reference-model logprobs (ref_kl core)
     advantage: float | None = None
     reward: float | None = None
 
@@ -92,7 +92,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     position_ids: list[int]
     temperatures: list[float]  # Per-token temperatures used during generation
     env_names: list[str]
-    teacher_logprobs: list[float] | None = None
+    ref_logprobs: list[float] | None = None
     lora_num_tokens: list[int] | None = None
     routed_experts: RoutedExperts | None = None
 

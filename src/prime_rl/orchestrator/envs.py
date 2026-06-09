@@ -12,7 +12,7 @@ from verifiers.serve import ZMQEnvClient, ZMQEnvServer
 from verifiers.utils.serve_utils import get_free_port
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
-from prime_rl.orchestrator.advantage import AdvantageFn, setup_advantage_fn
+from prime_rl.orchestrator.algorithms import Algorithm, ModelRegistry
 from prime_rl.utils.logger import get_logger
 
 REQUIRED_STATE_COLUMNS = ["trajectory"]
@@ -162,21 +162,10 @@ class Env:
 class TrainEnv(Env):
     config: TrainEnvConfig
 
-    def __init__(self, config: TrainEnvConfig):
+    def __init__(self, config: TrainEnvConfig, algorithm: Algorithm):
         super().__init__(config)
-        assert config.algorithm is not None, "TrainEnvConfig.algorithm must be resolved before env construction"
-        self.algorithm = config.algorithm
-        self.sampling_args = config.sampling.to_sampling_args()
-        # Teacher-sourced rollouts may hit external chat-completions endpoints
-        # that reject logprob requests — and sampling logprobs are only needed
-        # for importance ratios on student-sampled tokens.
-        if self.algorithm.sampling is not None and self.algorithm.sampling.source == "teacher":
-            self.sampling_args.pop("logprobs", None)
-        # Built once — custom advantage funcs do an ``import_object`` we don't
-        # want to pay per group. ``None`` = reward-only path.
-        self.advantage_fn: AdvantageFn | None = (
-            setup_advantage_fn(self.algorithm.advantage) if self.algorithm.advantage is not None else None
-        )
+        self.algorithm = algorithm
+        self.sampling_args = algorithm.sampling_args(config.sampling.to_sampling_args())
 
     def get_dataset(self, seed: int | None = None):
         return self.env.get_dataset(seed=seed)
@@ -251,12 +240,14 @@ class Envs(Generic[EnvT]):
 
 
 class TrainEnvs(Envs[TrainEnv]):
-    """Collection of training environments."""
+    """Collection of training environments, each paired with its runtime
+    :class:`Algorithm` built from the env's resolved algorithm config."""
 
-    def __init__(self, configs: Sequence[TrainEnvConfig]):
+    def __init__(self, configs: Sequence[TrainEnvConfig], *, registry: ModelRegistry, tokenizer):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
-            env = TrainEnv(config)
+            assert config.algorithm is not None, "TrainEnvConfig.algorithm must be resolved before env construction"
+            env = TrainEnv(config, Algorithm(config.algorithm, registry, tokenizer))
             self._envs[env.name] = env
 
 

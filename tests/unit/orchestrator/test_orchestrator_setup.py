@@ -4,18 +4,17 @@ from unittest.mock import AsyncMock, patch
 
 from renderers import Qwen3VLRendererConfig
 
-from prime_rl.orchestrator.utils import setup_student_inference_pool
+from prime_rl.orchestrator.utils import setup_policy_inference_pool
 
 
-def test_setup_student_inference_pool_uses_renderer_when_enabled():
+def test_setup_policy_inference_pool_uses_renderer_when_enabled():
     async def run() -> None:
         tokenizer = object()
         renderer_settings = Qwen3VLRendererConfig()
         config = SimpleNamespace(
-            training_mode="rl",
-            student=SimpleNamespace(
+            policy=SimpleNamespace(
                 client=SimpleNamespace(base_url=["http://localhost:8000/v1"]),
-                model=SimpleNamespace(name="student-model"),
+                model=SimpleNamespace(name="policy-model"),
             ),
             renderer=renderer_settings,
             pool_size=None,
@@ -30,7 +29,7 @@ def test_setup_student_inference_pool_uses_renderer_when_enabled():
                 new=AsyncMock(return_value=inference_pool),
             ) as setup_pool_mock,
         ):
-            returned_renderer, returned_pool = await setup_student_inference_pool(
+            returned_renderer, returned_pool = await setup_policy_inference_pool(
                 config=config,
                 tokenizer=tokenizer,
             )
@@ -39,8 +38,8 @@ def test_setup_student_inference_pool_uses_renderer_when_enabled():
         assert returned_pool is inference_pool
         create_renderer_mock.assert_called_once_with(tokenizer, renderer_settings)
         setup_pool_mock.assert_awaited_once_with(
-            config.student.client,
-            model_name="student-model",
+            config.policy.client,
+            model_name="policy-model",
             train_client_type="renderer",
             eval_client_type="openai_chat_completions",
             renderer_config=renderer_settings,
@@ -50,18 +49,17 @@ def test_setup_student_inference_pool_uses_renderer_when_enabled():
     asyncio.run(run())
 
 
-def test_setup_student_inference_pool_defaults_to_mito():
+def test_setup_policy_inference_pool_defaults_to_mito():
     """No renderer -> plain MITO chat completions."""
 
     async def run() -> None:
         tokenizer = object()
         config = SimpleNamespace(
-            training_mode="rl",
             renderer=None,
             pool_size=None,
-            student=SimpleNamespace(
+            policy=SimpleNamespace(
                 client=SimpleNamespace(base_url=["http://localhost:8000/v1"]),
-                model=SimpleNamespace(name="student-model"),
+                model=SimpleNamespace(name="policy-model"),
             ),
         )
         inference_pool = object()
@@ -73,7 +71,7 @@ def test_setup_student_inference_pool_defaults_to_mito():
                 new=AsyncMock(return_value=inference_pool),
             ) as setup_pool_mock,
         ):
-            renderer, returned_pool = await setup_student_inference_pool(
+            renderer, returned_pool = await setup_policy_inference_pool(
                 config=config,
                 tokenizer=tokenizer,
             )
@@ -82,8 +80,8 @@ def test_setup_student_inference_pool_defaults_to_mito():
         assert returned_pool is inference_pool
         create_renderer_mock.assert_not_called()
         setup_pool_mock.assert_awaited_once_with(
-            config.student.client,
-            model_name="student-model",
+            config.policy.client,
+            model_name="policy-model",
             train_client_type="openai_chat_completions",
             eval_client_type="openai_chat_completions",
         )

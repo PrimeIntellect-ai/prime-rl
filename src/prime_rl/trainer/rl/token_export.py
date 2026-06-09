@@ -161,7 +161,7 @@ def _compute_export_tensors(
         "is_masked_low": None,
     }
     # Ratio-based fields are meaningless when no token has sampling logprobs
-    # (e.g. pure CE batches distilling teacher tokens).
+    # (e.g. pure CE batches distilling frozen-model tokens).
     loss_core_ids = micro_batch.get("loss_core_ids")
     if loss_core_ids is not None and bool((loss_core_ids == LOSS_CORE_CE).all()):
         return fields

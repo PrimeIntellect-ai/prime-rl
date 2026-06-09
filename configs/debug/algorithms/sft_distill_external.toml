@@ -1,8 +1,8 @@
-# SFT from openai/gpt-5-mini via PI inference.
+# SFT distillation from openai/gpt-5-mini via PI inference.
 # Requires PRIME_API_KEY + PRIME_TEAM_ID in the environment.
 #
 # Run with:
-#   uv run rl @ configs/debug/training_modes/sft_external.toml
+#   uv run rl @ configs/debug/algorithms/sft_distill_external.toml
 
 max_steps = 20
 seq_len = 2048
@@ -15,7 +15,7 @@ project = "reverse-text-debug"
 name = "debug-sft-external"
 
 [orchestrator]
-training_mode = "sft"
+algorithm = { name = "sft_distill", model = "gpt-5-mini" }
 batch_size = 128
 group_size = 4
 
@@ -36,14 +36,14 @@ max_completion_tokens = 128
 [[orchestrator.eval.env]]
 id = "reverse-text"
 
-[orchestrator.teacher.model]
+[orchestrator.models.gpt-5-mini.model]
 name = "openai/gpt-5-mini"
 
-[orchestrator.teacher.client]
+[orchestrator.models.gpt-5-mini.client]
 base_url = ["https://api.pinference.ai/api/v1"]
 api_key_var = "PRIME_API_KEY"
 
-[orchestrator.teacher.client.headers_from_env]
+[orchestrator.models.gpt-5-mini.client.headers_from_env]
 X-Prime-Team-ID = "PRIME_TEAM_ID"
 
 [trainer.optim]

@@ -5,6 +5,7 @@ This page covers the math and the configurable algorithmic components: the algor
 ## Table of Contents
 
 - [The Algorithm Abstraction](#the-algorithm-abstraction)
+  - [The Model Registry](#the-model-registry)
   - [Presets](#presets)
   - [Customizing Components](#customizing-components)
   - [Per-Env Algorithms](#per-env-algorithms)
@@ -30,13 +31,31 @@ This page covers the math and the configurable algorithmic components: the algor
 
 A training algorithm in `prime-rl` is a bundle of three components, configured under `[orchestrator.algorithm]`:
 
-1. **Sampling** (`algorithm.sampling`) — who generates train rollouts: the live `student` policy or the frozen `teacher` pool. Group sizing stays on the env config (`group_size`).
+1. **Sampling** (`algorithm.sampling`) — which model generates train rollouts. `source` is a model reference: `"policy"` (the live policy, the default) or any [model-registry](#the-model-registry) key (a frozen hosted model). Group sizing stays on the env config (`group_size`).
 2. **Scoring** — how finished rollouts become per-token training signal:
    - `algorithm.advantage` — group-level advantage assignment (e.g. GRPO group-norm).
-   - `algorithm.token_scorer` — optional async per-sample scoring that attaches per-token data by querying the teacher pool (e.g. teacher logprobs for distillation), with bounded concurrency.
-3. **Loss routing** (`algorithm.loss`) — which loss core applies to which tokens: `action` selects the core for model-generated tokens (`rl` / `ce` / `teacher_kl`), `observation` optionally trains on env-provided tokens (tool output, terminal responses) with weight `observation_weight`.
+   - `algorithm.token_scorer` — optional async per-sample scoring that attaches per-token data by querying a reference model (e.g. prefill logprobs for distillation), with bounded concurrency.
+3. **Loss routing** (`algorithm.loss`) — which loss core applies to which tokens: `action` selects the core for model-generated tokens (`rl` / `ce` / `ref_kl`), `observation` optionally trains on env-provided tokens (tool output, terminal responses) with weight `observation_weight`.
 
 The trainer is algorithm-blind: routing ships per token on the wire (`loss_core` / `token_loss_cores` / `token_loss_weights` on each training sample) and the trainer just executes loss cores. Adding an algorithm never touches the dispatcher, packer, or trainer hot path.
+
+### The Model Registry
+
+There are no model *roles* in `prime-rl` — no teacher slot, no judge slot. There is the live policy (registered under the reserved name `"policy"`) and a registry of named frozen hosted models under `[orchestrator.models]`. Algorithm components hold *references* into that registry, so the same deployment can serve different algorithms in the same run:
+
+```toml
+[orchestrator.models.qwen-32b]
+model.name = "Qwen/Qwen3-32B"
+client.base_url = ["http://localhost:8001/v1"]
+
+[orchestrator.algorithm]
+name = "opd"
+model = "qwen-32b"   # folds into token_scorer.model
+```
+
+`algorithm.model` is shorthand for whichever component reference the preset leaves unresolved (`token_scorer.model` for `opd` / `self_distill`, `sampling.source` for `sft_distill`); set the component fields directly for multi-model setups. Registry references are validated at config time: every reference must name `"policy"` or a registered entry, and every entry must be referenced by some env's algorithm.
+
+Liveness is a property of the registry entry, not of any role: rollouts sampled from `"policy"` get version-salted prefix caches, carry sampling logprobs for importance ratios, and age off-policy as weights update; rollouts and scores from frozen entries get a stable prefix cache and never go stale. Frozen entries are externally hosted (`client.base_url` is required) — `prime-rl` never launches or updates them.
 
 ### Presets
 
@@ -49,13 +68,11 @@ name = "grpo"  # the default
 
 | Preset | Sampling | Advantage | Token scorer | Loss routing | What it is |
 |---|---|---|---|---|---|
-| `grpo` | student | `default` (group-norm) | — | `rl` on actions | Standard group-relative RL. |
-| `opd` | student | `default` | `teacher_logprobs` | `teacher_kl` on actions | On-policy distillation ([Thinking Machines](https://thinkingmachines.ai/blog/on-policy-distillation/)): student samples, per-token reverse KL against the teacher as the gradient signal. Requires `[orchestrator.teacher]`. |
-| `sft_distill` | teacher | `default` | — | `ce` on actions | Hard distillation: the teacher generates rollouts, the student trains with CE on the teacher's tokens. Requires `[orchestrator.teacher]`. |
-| `self_distill` | student | `none` | `demo_teacher_logprobs` | `teacher_kl` on actions | SDFT ([arXiv:2601.19897](https://arxiv.org/abs/2601.19897)): the model is its own teacher, conditioned on an expert demonstration from the example's `info` dict. Requires `[orchestrator.teacher]` (a pool serving the same checkpoint — v1 keeps it frozen rather than EMA-tracking the student). |
-| `echo` | student | `default` | — | `rl` on actions + weighted `ce` on observations | ECHO: standard GRPO plus a cross-entropy loss on env-observation tokens already present in the rollout (`observation_weight` is ECHO's λ). |
-
-`orchestrator.training_mode` (`rl` / `opd` / `sft`) is a deprecated alias that maps onto the `grpo` / `opd` / `sft_distill` presets.
+| `grpo` | policy | `default` (group-norm) | — | `rl` on actions | Standard group-relative RL. |
+| `opd` | policy | `default` | `logprobs` | `ref_kl` on actions | On-policy distillation ([Thinking Machines](https://thinkingmachines.ai/blog/on-policy-distillation/)): the policy samples, per-token reverse KL against a reference model as the gradient signal. Needs `model = "<registry key>"`. |
+| `sft_distill` | *(set via `model`)* | `default` | — | `ce` on actions | Hard distillation: a frozen model generates rollouts, the policy trains with CE on its tokens. Needs `model = "<registry key>"`. |
+| `self_distill` | policy | `none` | `demo_logprobs` | `ref_kl` on actions | SDFT ([arXiv:2601.19897](https://arxiv.org/abs/2601.19897)): the model is its own reference, conditioned on an expert demonstration. `model = "policy"` is the paper's setting and needs no extra deployment; point at a registry entry to score under a frozen copy instead. |
+| `echo` | policy | `default` | — | `rl` on actions + weighted `ce` on observations | ECHO: standard GRPO plus a cross-entropy loss on env-observation tokens already present in the rollout (`observation_weight` is ECHO's λ). |
 
 ### Customizing Components
 
@@ -73,7 +90,7 @@ type = "custom"
 import_path = "my_module.normalized_advantage"
 ```
 
-Component compatibility is validated at config time: `teacher_kl` loss requires a teacher-logprobs scorer, teacher sampling cannot feed the `rl` loss (no student sampling logprobs for importance ratios), and group-relative advantage with `group_size = 1` warns that every advantage collapses to zero.
+Component compatibility is validated at config time: `ref_kl` loss requires a logprobs-filling token scorer, frozen-model sampling cannot feed the `rl` loss (no policy sampling logprobs for importance ratios), a plain `logprobs` scorer pointed at `"policy"` is rejected as degenerate (zero KL), and group-relative advantage with `group_size = 1` warns that every advantage collapses to zero.
 
 ### Per-Env Algorithms
 
@@ -111,8 +128,8 @@ Step indices are 0-indexed so the gap holds at startup — inference is exactly 
 The trainer executes three fixed **loss cores**; the orchestrator routes every token to one of them (per the env algorithm's `loss` config), and tokens of different cores pack freely into the same micro batch:
 
 - `rl` — the configured RL loss (`[trainer.loss]`): DPPO + KL by default, or a [custom loss](#custom-loss).
-- `ce` — masked NLL. Used for teacher tokens (`sft_distill`) and env-observation tokens (`echo`).
-- `teacher_kl` — the DPPO machinery with the per-token teacher KL ($\log \pi_{\text{teacher}} - \log \pi$) as the policy-gradient signal (`opd`, `self_distill`). Requires teacher logprobs from a [token scorer](#token-scorers); the teacher must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
+- `ce` — masked NLL. Used for frozen-model tokens (`sft_distill`) and env-observation tokens (`echo`).
+- `ref_kl` — the DPPO machinery with the per-token reverse KL to a reference model ($\log \pi_{\text{ref}} - \log \pi$) as the policy-gradient signal (`opd`, `self_distill`). Requires `ref_logprobs` from a [token scorer](#token-scorers); the scoring model must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
 
 ### Default RL Loss
 
@@ -148,7 +165,7 @@ The knobs (under `[trainer.loss]` with `type = "default"`):
 | `adv_tau` | 1.0 | Temperature on the advantage term. Set to 0 for pure distillation (no RL signal). |
 | `kl_tau` | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
 
-Set `[trainer.loss] type = "default"` and configure via the knobs above. The `ce` and `teacher_kl` cores are fixed and unaffected by `[trainer.loss]`.
+Set `[trainer.loss] type = "default"` and configure via the knobs above. The `ce` and `ref_kl` cores are fixed and unaffected by `[trainer.loss]`.
 
 ### Custom Loss
 
@@ -189,7 +206,7 @@ The dataclasses:
 class LossInputs:
     trainer_logprobs: Float[Tensor, "seq"]      # current policy
     inference_logprobs: Float[Tensor, "seq"]    # rollout-time policy
-    teacher_logprobs: Float[Tensor, "seq"] | None  # set by teacher-logprobs token scorers
+    ref_logprobs: Float[Tensor, "seq"] | None   # set by logprobs token scorers
     advantages: Float[Tensor, "seq"]
     loss_mask: Bool[Tensor, "seq"]              # tokens routed to this core
     loss_weights: Float[Tensor, "seq"] | None   # per-token loss weights (None = 1.0)
@@ -268,14 +285,15 @@ advantage = { type = "custom", import_path = "my_module.normalized_advantage" }
 
 ### Token Scorers
 
-Token scorers are the async half of scoring: they run at batch-ship time, query the teacher pool with bounded concurrency (`max_concurrent`, default 32), and attach per-token data to each sample. Two are built in:
+Token scorers are the async half of scoring: they run at batch-ship time, query their reference model (`model`, a [registry](#the-model-registry) reference) with bounded concurrency (`max_concurrent`, default 32), and attach per-token data to each sample. Two are built in:
 
-- `teacher_logprobs` — score each sample's own context under the teacher via prefill; fills `teacher_logprobs` for the `teacher_kl` loss core (on-policy distillation).
-- `demo_teacher_logprobs` — SDFT: rebuild the prompt with an expert demonstration woven into the last user message (`template`, with `{question}` / `{demonstration}` placeholders), score the student's completion under that demo-conditioned context. The demonstration is read from the example's `info[demo_key]` (default key: `demonstration`); single-step trajectories only.
+- `logprobs` — score each sample's own context under the reference model via prefill; fills `ref_logprobs` for the `ref_kl` loss core (on-policy distillation). `model = "policy"` is rejected (the KL would be identically zero).
+- `demo_logprobs` — SDFT: rebuild the prompt with an expert demonstration woven into the last user message (`template`, with `{question}` / `{demonstration}` placeholders), score the policy's completion under that demo-conditioned context. `model = "policy"` scores under the live policy itself — the SDFT setting, no extra deployment. The demonstration is read from the example's `info[demo_key]`, falling back to a top-level rollout field of the same name (e.g. `answer`); single-step trajectories only.
 
 ```toml
 [orchestrator.algorithm.token_scorer]
-type = "demo_teacher_logprobs"
+type = "demo_logprobs"
+model = "policy"
 demo_key = "demonstration"
 max_concurrent = 64
 ```

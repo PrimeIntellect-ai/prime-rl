@@ -40,8 +40,9 @@ if TYPE_CHECKING:
 from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
+from prime_rl.configs.algorithm import POLICY_MODEL
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.algorithms import ScoringContext, TokenScorer, score_train_batch, setup_token_scorer
+from prime_rl.orchestrator.algorithms import ModelRegistry, score_train_batch
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -71,7 +72,7 @@ from prime_rl.orchestrator.utils import (
     intercept_vf_logging,
     save_rollouts,
     set_default_executor,
-    setup_student_inference_pool,
+    setup_policy_inference_pool,
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
@@ -124,13 +125,13 @@ class Orchestrator:
 
     # Always set by ``setup()``
     tokenizer: PreTrainedTokenizer
-    student_inference: InferencePool
+    policy_inference: InferencePool
+    models: ModelRegistry
     monitor: Monitor
     sender: TrainingBatchSender
     train_envs: TrainEnvs
     train_source: TrainSource
     train_sink: TrainSink
-    token_scorers: dict[str, TokenScorer]
     dispatcher: RolloutDispatcher
     watcher: WeightWatcher
     metrics: MetricsBuilder
@@ -140,8 +141,6 @@ class Orchestrator:
     # Set by ``setup()`` only when relevant config is present
     renderer: Renderer | None
     mm_token_type_ids_mapping: dict[int, int] | None
-    teacher_inference: InferencePool | None
-    scoring_ctx: ScoringContext
     heart: Heartbeat | None
     usage_reporter: UsageReporter | None
     inference_metrics: InferenceMetricsCollector | None
@@ -184,7 +183,7 @@ class Orchestrator:
         # config is present
         self.renderer = None
         self.mm_token_type_ids_mapping = None
-        self.teacher_inference = None
+        self.models = ModelRegistry()
         self.heart = None
         self.usage_reporter = None
         self.inference_metrics = None
@@ -218,30 +217,33 @@ class Orchestrator:
         get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
         self.tokenizer = setup_tokenizer(config.tokenizer)
 
-        # Student inference pool
+        # Live policy inference pool, registered under the reserved name
         get_logger().info(
-            f"Initializing student inference pool (base_url={', '.join(config.student.client.base_url)}, "
-            f"model={config.student.model.name})"
+            f"Initializing policy inference pool (base_url={', '.join(config.policy.client.base_url)}, "
+            f"model={config.policy.model.name})"
         )
-        self.renderer, self.student_inference = await setup_student_inference_pool(
+        self.renderer, self.policy_inference = await setup_policy_inference_pool(
             config=config, tokenizer=self.tokenizer
         )
+        self.models.register(POLICY_MODEL, self.policy_inference)
         self.mm_token_type_ids_mapping = (
             getattr(self.renderer, "mm_token_type_id_map", None) if self.renderer is not None else None
         )
         if self.mm_token_type_ids_mapping == {}:
             self.mm_token_type_ids_mapping = None
 
-        if config.teacher is not None:
+        # Frozen hosted models from [orchestrator.models]
+        for name, hosted in config.models.items():
             get_logger().info(
-                f"Initializing teacher inference pool (base_url={', '.join(config.teacher.client.base_url)}, "
-                f"model={config.teacher.model.name})"
+                f"Initializing inference pool '{name}' (base_url={', '.join(hosted.client.base_url)}, "
+                f"model={hosted.model.name})"
             )
-            self.teacher_inference = await setup_inference_pool(
-                config.teacher.client,
-                model_name=config.teacher.model.name,
+            pool = await setup_inference_pool(
+                hosted.client,
+                model_name=hosted.model.name,
                 train_client_type="openai_chat_completions",
             )
+            self.models.register(name, pool)
 
         get_logger().info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
         self.monitor = setup_monitor(
@@ -266,7 +268,7 @@ class Orchestrator:
         post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="post-batch")
 
         get_logger().info("Loading training environments")
-        self.train_envs = TrainEnvs(config.train.env)
+        self.train_envs = TrainEnvs(config.train.env, registry=self.models, tokenizer=self.tokenizer)
         get_logger().debug(
             f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})"
         )
@@ -295,20 +297,19 @@ class Orchestrator:
                 self.resume_step = config.ckpt.resume_step
 
         # Resume below may bump ``policy.version`` and the LoRA model name
-        self.policy.model_name = self.student_inference.model_name
+        self.policy.model_name = self.policy_inference.model_name
 
-        get_logger().info("Waiting for student inference pool to be ready")
-        await self.student_inference.wait_for_ready(config.student.model.name)
-        get_logger().success("Student inference pool ready")
-        if self.teacher_inference is not None:
-            assert config.teacher is not None
-            get_logger().info("Waiting for teacher inference pool to be ready")
-            await self.teacher_inference.wait_for_ready(config.teacher.model.name)
-            get_logger().success("Teacher inference pool ready")
+        get_logger().info("Waiting for policy inference pool to be ready")
+        await self.policy_inference.wait_for_ready(config.policy.model.name)
+        get_logger().success("Policy inference pool ready")
+        for name, hosted in config.models.items():
+            get_logger().info(f"Waiting for inference pool '{name}' to be ready")
+            await self.models.get(name).wait_for_ready(hosted.model.name)
+            get_logger().success(f"Inference pool '{name}' ready")
 
         if config.wandb is not None and config.collect_inference_metrics:
             self.inference_metrics = InferenceMetricsCollector(
-                self.student_inference.admin_clients,
+                self.policy_inference.admin_clients,
                 roles=config.inference_metrics_roles,
             )
             await self.inference_metrics.start()
@@ -316,7 +317,7 @@ class Orchestrator:
         get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
         if config.weight_broadcast.type == "nccl":
             await init_nccl_broadcast(
-                self.student_inference.admin_clients,
+                self.policy_inference.admin_clients,
                 config.weight_broadcast.host,
                 config.weight_broadcast.port,
                 config.weight_broadcast.timeout,
@@ -327,7 +328,7 @@ class Orchestrator:
         get_logger().info(f"Initializing training batch sender ({config.rollout_transport})")
         self.sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
-        self.lora_name = config.student.model.lora.name if config.student.model.lora else None
+        self.lora_name = config.policy.model.lora.name if config.policy.model.lora else None
 
         if self.resume_step is not None and self.ckpt_manager is not None:
             self.ckpt_manager.load(self.progress, step=self.resume_step)
@@ -337,28 +338,13 @@ class Orchestrator:
             weights_path = get_weight_dir(
                 config.output_dir, self.progress.step, check_exists=check_exists, wait_timeout=wait_timeout
             )
-            await self.student_inference.update_weights(weights_path, lora_name=self.lora_name, step=self.progress.step)
+            await self.policy_inference.update_weights(weights_path, lora_name=self.lora_name, step=self.progress.step)
             if self.lora_name is not None:
-                self.student_inference.update_model_name(self.lora_name)
+                self.policy_inference.update_model_name(self.lora_name)
                 self.policy.model_name = self.lora_name
             self.policy.version = self.progress.step
         else:
             get_logger().info("Training from scratch")
-
-        # Per-env token scorers (e.g. teacher logprobs for opd / self_distill),
-        # run at batch-ship time in ``finalize_train_batch``.
-        self.token_scorers = {
-            env.name: scorer
-            for env in self.train_envs
-            if (scorer := setup_token_scorer(env.algorithm.token_scorer)) is not None
-        }
-        if self.token_scorers:
-            assert self.teacher_inference is not None and config.teacher is not None
-            self.scoring_ctx = ScoringContext(
-                teacher_clients=self.teacher_inference.train_clients,
-                teacher_model_name=config.teacher.model.name,
-                tokenizer=self.tokenizer,
-            )
 
         self.train_source = TrainSource(self.train_envs, seed=42)
         self.eval_source: EvalSource | None = (
@@ -379,8 +365,7 @@ class Orchestrator:
             eval_envs=self.eval_envs,
             train_source=self.train_source,
             eval_source=self.eval_source,
-            student_inference=self.student_inference,
-            teacher_inference=self.teacher_inference,
+            models=self.models,
             policy=self.policy,
             max_inflight_rollouts=config.max_inflight_rollouts,
             tasks_per_minute=config.tasks_per_minute,
@@ -402,7 +387,7 @@ class Orchestrator:
         self.watcher = WeightWatcher(
             config,
             policy=self.policy,
-            inference=self.student_inference,
+            inference=self.policy_inference,
             observers=[self.dispatcher, self],
             lora_name=self.lora_name,
             ckpt_step=self.progress.step,
@@ -516,7 +501,7 @@ class Orchestrator:
 
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O
-        side-effects (ckpt, save_rollouts, teacher logprobs, sender.send,
+        side-effects (ckpt, save_rollouts, token scorers, sender.send,
         metrics, heartbeat, progress, eval trigger). The sink has already
         done all data-transformation work."""
         config = self.config
@@ -568,11 +553,11 @@ class Orchestrator:
             save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
         )
 
-        teacher_logprobs_time = 0.0  # envs with a token scorer only
-        if self.token_scorers:
-            t = time.perf_counter()
-            await score_train_batch(batch.rollouts, self.token_scorers, self.scoring_ctx)
-            teacher_logprobs_time = time.perf_counter() - t
+        # Per-env token scorers run at the batch boundary; envs without a
+        # scorer are a no-op, so this is unconditional.
+        t = time.perf_counter()
+        await score_train_batch(self.train_envs, batch.rollouts)
+        scoring_time = time.perf_counter() - t
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.update_dispatch_gate()
@@ -584,7 +569,7 @@ class Orchestrator:
             progress=self.progress,
             step_time=step_time,
             save_ckpt_time=save_ckpt_time,
-            teacher_logprobs_time=teacher_logprobs_time,
+            scoring_time=scoring_time,
             pre_filter_seen=self.train_sink.pre_filter_seen,
             pre_filter_dropped=self.train_sink.pre_filter_dropped,
             pre_filter_dropped_by_name=dict(self.train_sink.pre_filter_dropped_by_name),
@@ -865,10 +850,8 @@ class Orchestrator:
             self.component_tasks.clear()
             if self.inference_metrics is not None:
                 await self.inference_metrics.stop()
-            if self.student_inference is not None:
-                await self.student_inference.stop()
-            if self.teacher_inference is not None:
-                await self.teacher_inference.stop()
+            for pool in self.models.pools.values():
+                await pool.stop()
             if self.train_envs is not None:
                 self.train_envs.shutdown()
             if self.eval_envs is not None:

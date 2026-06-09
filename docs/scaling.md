@@ -41,7 +41,7 @@ uv run rl @ rl.toml \
   --inference.parallel.dp 6
 ```
 
-The launcher allocates GPUs in order from `CUDA_VISIBLE_DEVICES` (or all visible GPUs): inference first, trainer next, teacher last. To target a specific physical subset, pin `CUDA_VISIBLE_DEVICES` before launching.
+The launcher allocates GPUs in order from `CUDA_VISIBLE_DEVICES` (or all visible GPUs): inference first, trainer next. To target a specific physical subset, pin `CUDA_VISIBLE_DEVICES` before launching.
 
 For quick A/B ablations on the same node, run two RL instances side-by-side in separate tmux sessions, each pinned to half the GPUs and a separate inference port:
 
@@ -237,7 +237,7 @@ gpus_per_node = 8
 
 Full multi-node configs ship in [`examples/multinode/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/multinode):
 
-- [`rl.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/multinode/rl.toml) — two-node RL run with NCCL weight broadcast on a 30B MoE student.
+- [`rl.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/multinode/rl.toml) — two-node RL run with NCCL weight broadcast on a 30B MoE policy.
 - [`sft.toml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/examples/multinode/sft.toml) — two-node SFT against the same model.
 
 For inference-only multi-node, set `[deployment] type = "multi_node"` on an inference TOML — each node runs an independent vLLM replica (TP and DP must fit within one node), and the launcher prints one URL per node. Front the URLs with a router or point clients at any of them.

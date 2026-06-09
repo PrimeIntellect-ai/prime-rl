@@ -83,26 +83,24 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 
 ### Algorithms
 
-The RL entrypoint supports several training algorithms, switched via `[orchestrator.algorithm]` (see [Algorithms](algorithms.md#the-algorithm-abstraction) for the full reference and per-component customization):
+The RL entrypoint supports several training algorithms, switched via `[orchestrator.algorithm]` (see [Algorithms](algorithms.md#the-algorithm-abstraction) for the full reference, the model registry, and per-component customization):
 
-| Preset | Teacher | Use case |
+| Preset | Frozen model (`algorithm.model`) | Use case |
 |---|---|---|
-| `grpo` (default) | Forbidden | Standard group-relative RL |
-| `opd` | Required, must be vLLM (needs `prompt_logprobs`) | [On-policy distillation](https://thinkingmachines.ai/blog/on-policy-distillation/): student generates rollouts, trainer minimizes KL to teacher logprobs |
-| `sft_distill` | Required, any OpenAI-compatible endpoint | Hard-distill: teacher generates rollouts, student trains on them |
-| `self_distill` | Required, must be vLLM, serving the student's base checkpoint | [SDFT](https://arxiv.org/abs/2601.19897): the model is its own teacher conditioned on expert demonstrations |
-| `echo` | Forbidden | GRPO plus cross-entropy on env-observation tokens |
+| `grpo` (default) | None | Standard group-relative RL |
+| `opd` | Required, must be vLLM (needs `prompt_logprobs`) | [On-policy distillation](https://thinkingmachines.ai/blog/on-policy-distillation/): the policy generates rollouts, the trainer minimizes per-token reverse KL to a reference model |
+| `sft_distill` | Required, any OpenAI-compatible endpoint | Hard-distill: a frozen model generates rollouts, the policy trains on its tokens |
+| `self_distill` | `"policy"` (no deployment) or a vLLM entry serving the same checkpoint | [SDFT](https://arxiv.org/abs/2601.19897): the model is its own reference conditioned on expert demonstrations |
+| `echo` | None | GRPO plus cross-entropy on env-observation tokens |
 
-`orchestrator.training_mode` (`rl` / `opd` / `sft`) is a deprecated alias for the `grpo` / `opd` / `sft_distill` presets.
-
-The `rl` entrypoint only manages student-policy inference. For algorithms with a teacher, start the teacher inference server manually and point `[orchestrator.teacher.client]` at it:
+Frozen models are named `[orchestrator.models.<key>]` entries referenced from the algorithm (`algorithm = { name = "opd", model = "<key>" }`). The `rl` entrypoint only manages policy inference — start frozen-model servers yourself and point the entry's `client.base_url` at them:
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 uv run inference \
-  --model.name <teacher> --server.port 8001
+  --model.name <frozen-model> --server.port 8001
 ```
 
-The standalone `uv run sft` entrypoint is the more traditional SFT path — pure dataset-based, no teacher, no orchestrator. Use the `sft_distill` algorithm only when you want a teacher to generate the supervision on the fly.
+The standalone `uv run sft` entrypoint is the more traditional SFT path — pure dataset-based, no orchestrator. Use the `sft_distill` algorithm only when you want a frozen model to generate the supervision on the fly.
 
 ### Important Metrics
 

@@ -3,7 +3,7 @@ import torch
 
 from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig
 from prime_rl.trainer.rl.loss import LossInputs, LossOutputs, compute_entropy, compute_loss, setup_rl_loss_fn
-from prime_rl.transport.types import LOSS_CORE_CE, LOSS_CORE_RL, LOSS_CORE_TEACHER_KL
+from prime_rl.transport.types import LOSS_CORE_CE, LOSS_CORE_REF_KL, LOSS_CORE_RL
 
 pytestmark = [pytest.mark.gpu]
 
@@ -11,7 +11,7 @@ pytestmark = [pytest.mark.gpu]
 def test_grpo_loss():
     trainer_logprobs = [torch.randn(50, dtype=torch.float32).cuda(), torch.randn(30, dtype=torch.float32).cuda()]
     inference_logprobs = [torch.randn(50, dtype=torch.float32).cuda(), torch.randn(30, dtype=torch.float32).cuda()]
-    teacher_logprobs = [torch.randn(50, dtype=torch.float32).cuda(), torch.randn(30, dtype=torch.float32).cuda()]
+    ref_logprobs = [torch.randn(50, dtype=torch.float32).cuda(), torch.randn(30, dtype=torch.float32).cuda()]
     advantages = [torch.randn(50).cuda(), torch.randn(30).cuda()]
     loss_mask = [torch.ones(50, dtype=torch.bool).cuda(), torch.ones(30, dtype=torch.bool).cuda()]
 
@@ -19,7 +19,7 @@ def test_grpo_loss():
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
-        teacher_logprobs,
+        ref_logprobs,
         advantages,
         loss_mask=loss_mask,
         loss_core_ids=None,
@@ -33,7 +33,7 @@ def test_grpo_loss():
 def test_gspo_loss():
     trainer_logprobs = [torch.randn(40, dtype=torch.float32).cuda(), torch.randn(60, dtype=torch.float32).cuda()]
     inference_logprobs = [torch.randn(40, dtype=torch.float32).cuda(), torch.randn(60, dtype=torch.float32).cuda()]
-    teacher_logprobs = [torch.randn(40, dtype=torch.float32).cuda(), torch.randn(60, dtype=torch.float32).cuda()]
+    ref_logprobs = [torch.randn(40, dtype=torch.float32).cuda(), torch.randn(60, dtype=torch.float32).cuda()]
     advantages = [torch.randn(40).cuda(), torch.randn(60).cuda()]
     loss_mask = [torch.ones(40, dtype=torch.bool).cuda(), torch.ones(60, dtype=torch.bool).cuda()]
 
@@ -41,7 +41,7 @@ def test_gspo_loss():
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
-        teacher_logprobs,
+        ref_logprobs,
         advantages,
         loss_mask=loss_mask,
         loss_core_ids=None,
@@ -69,7 +69,7 @@ def test_setup_rl_loss_fn_with_custom_config():
     inputs = LossInputs(
         trainer_logprobs=torch.randn(50, dtype=torch.float32).cuda(),
         inference_logprobs=torch.randn(50, dtype=torch.float32).cuda(),
-        teacher_logprobs=None,
+        ref_logprobs=None,
         advantages=torch.randn(50).cuda(),
         loss_mask=torch.ones(50, dtype=torch.bool).cuda(),
     )
@@ -91,7 +91,7 @@ def test_ce_core_matches_masked_nll():
     loss, metrics = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
-        teacher_logprobs=None,
+        ref_logprobs=None,
         advantages=advantages,
         loss_mask=loss_mask,
         loss_core_ids=loss_core_ids,
@@ -119,7 +119,7 @@ def test_ce_core_applies_loss_weights():
     loss, _ = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
-        teacher_logprobs=None,
+        ref_logprobs=None,
         advantages=advantages,
         loss_mask=loss_mask,
         loss_core_ids=loss_core_ids,
@@ -144,7 +144,7 @@ def test_routed_all_rl_matches_unrouted():
     kwargs = dict(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
-        teacher_logprobs=None,
+        ref_logprobs=None,
         advantages=advantages,
         loss_mask=loss_mask,
         loss_weights=None,
@@ -163,18 +163,18 @@ def test_mixed_cores_in_one_sequence():
     torch.manual_seed(1)
     trainer_logprobs = [torch.randn(n, dtype=torch.float32).cuda()]
     inference_logprobs = [torch.randn(n, dtype=torch.float32).cuda()]
-    teacher_logprobs = [torch.randn(n, dtype=torch.float32).cuda()]
+    ref_logprobs = [torch.randn(n, dtype=torch.float32).cuda()]
     advantages = [torch.randn(n).cuda()]
     loss_mask = [torch.ones(n, dtype=torch.bool).cuda()]
     cores = torch.full((n,), LOSS_CORE_RL, dtype=torch.long)
     cores[4:8] = LOSS_CORE_CE
-    cores[8:] = LOSS_CORE_TEACHER_KL
+    cores[8:] = LOSS_CORE_REF_KL
 
     rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig(dppo_mask_high=10.0))
     loss, metrics = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
-        teacher_logprobs=teacher_logprobs,
+        ref_logprobs=ref_logprobs,
         advantages=advantages,
         loss_mask=loss_mask,
         loss_core_ids=[cores.cuda()],
@@ -185,7 +185,7 @@ def test_mixed_cores_in_one_sequence():
 
     assert loss.shape == ()
     assert "nll" in metrics
-    assert "teacher_kl" in metrics
+    assert "ref_kl" in metrics
     assert "is_masked" in metrics
 
 

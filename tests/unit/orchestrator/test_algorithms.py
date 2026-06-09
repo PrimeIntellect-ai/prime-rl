@@ -6,43 +6,64 @@ import verifiers as vf
 from prime_rl.configs.algorithm import AlgorithmConfig, LossRoutingConfig
 from prime_rl.orchestrator.algorithms import stamp_loss_routing
 from prime_rl.orchestrator.trajectories import interleave_rollout
-from prime_rl.transport.types import LOSS_CORE_CE, LOSS_CORE_RL, LOSS_CORE_TEACHER_KL, TrainingSample
+from prime_rl.transport.types import LOSS_CORE_CE, LOSS_CORE_REF_KL, LOSS_CORE_RL, TrainingSample
 
 
 @pytest.mark.parametrize(
-    ("name", "source", "advantage_type", "scorer_type", "action", "observation"),
+    ("name", "model", "source", "advantage_type", "scorer_type", "scorer_model", "action", "observation"),
     [
-        ("grpo", "student", "default", None, "rl", "none"),
-        ("opd", "student", "default", "teacher_logprobs", "teacher_kl", "none"),
-        ("sft_distill", "teacher", "default", None, "ce", "none"),
-        ("self_distill", "student", "none", "demo_teacher_logprobs", "teacher_kl", "none"),
-        ("echo", "student", "default", None, "rl", "ce"),
+        ("grpo", None, "policy", "default", None, None, "rl", "none"),
+        ("opd", "ref", "policy", "default", "logprobs", "ref", "ref_kl", "none"),
+        ("sft_distill", "ref", "ref", "default", None, None, "ce", "none"),
+        ("self_distill", "policy", "policy", "none", "demo_logprobs", "policy", "ref_kl", "none"),
+        ("echo", None, "policy", "default", None, None, "rl", "ce"),
     ],
 )
-def test_preset_expansion(name, source, advantage_type, scorer_type, action, observation):
-    algo = AlgorithmConfig(name=name)
+def test_preset_expansion(name, model, source, advantage_type, scorer_type, scorer_model, action, observation):
+    algo = AlgorithmConfig(name=name, model=model)
     assert algo.sampling.source == source
     assert algo.advantage.type == advantage_type
     assert (algo.token_scorer.type if algo.token_scorer is not None else None) == scorer_type
+    assert (algo.token_scorer.model if algo.token_scorer is not None else None) == scorer_model
     assert algo.loss.action == action
     assert algo.loss.observation == observation
 
 
 def test_preset_component_override():
     algo = AlgorithmConfig(name="echo", loss={"observation_weight": 0.5})
-    assert algo.loss.observation == "ce"  # unset loss fields fall back to field defaults, not the preset
+    assert algo.loss.observation == "ce"  # unset loss fields inherit from the preset
     assert algo.loss.observation_weight == 0.5
     assert algo.advantage.type == "default"  # untouched components still inherit the preset
 
 
-def test_teacher_kl_action_requires_scorer():
+def test_scorer_requires_model_reference():
+    with pytest.raises(ValueError, match="needs a scoring model"):
+        AlgorithmConfig(name="opd")
+
+
+def test_frozen_sampling_requires_model_reference():
+    with pytest.raises(ValueError, match="samples rollouts from a frozen model"):
+        AlgorithmConfig(name="sft_distill")
+
+
+def test_model_shorthand_without_target_errors():
+    with pytest.raises(ValueError, match="no component needs it"):
+        AlgorithmConfig(name="grpo", model="ref")
+
+
+def test_logprobs_scorer_rejects_policy():
+    with pytest.raises(ValueError, match="degenerate"):
+        AlgorithmConfig(name="opd", model="policy")
+
+
+def test_ref_kl_action_requires_scorer():
     with pytest.raises(ValueError, match="token_scorer"):
         AlgorithmConfig(name="opd", token_scorer=None)
 
 
-def test_rl_action_incompatible_with_teacher_sampling():
-    with pytest.raises(ValueError, match="sampling.source='teacher'"):
-        AlgorithmConfig(name="sft_distill", loss={"action": "rl"})
+def test_rl_action_incompatible_with_frozen_sampling():
+    with pytest.raises(ValueError, match="sampling.source='ref'"):
+        AlgorithmConfig(name="sft_distill", model="ref", loss={"action": "rl"})
 
 
 def _make_sample(obs_mask: list[bool] | None) -> TrainingSample:
@@ -68,8 +89,8 @@ def test_stamp_loss_routing_uniform_rl():
 
 def test_stamp_loss_routing_primary_core():
     sample = _make_sample(obs_mask=None)
-    stamp_loss_routing(sample, LossRoutingConfig(action="teacher_kl"))
-    assert sample.loss_core == LOSS_CORE_TEACHER_KL
+    stamp_loss_routing(sample, LossRoutingConfig(action="ref_kl"))
+    assert sample.loss_core == LOSS_CORE_REF_KL
     assert sample.token_loss_cores is None
 
 

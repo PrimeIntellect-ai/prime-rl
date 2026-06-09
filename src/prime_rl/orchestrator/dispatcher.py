@@ -14,7 +14,9 @@
 - ``on_new_version`` (called by the watcher) bumps ``off_policy_steps`` on
   in-flight train rollouts and drops groups past ``max_off_policy_steps``.
   Eval rollouts are measurements for the policy version they started with,
-  so they are allowed to finish even if training advances.
+  so they are allowed to finish even if training advances. Train rollouts
+  sampled from a frozen model never age — their sampler doesn't change
+  with policy updates.
   Cancellations surface as synthetic ``Cancelled`` markers so the sink's
   count-to-``group_size`` finalization still fires.
 """
@@ -31,6 +33,8 @@ from typing import Literal
 import verifiers as vf
 from aiolimiter import AsyncLimiter
 
+from prime_rl.configs.algorithm import POLICY_MODEL
+from prime_rl.orchestrator.algorithms import ModelRegistry
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.train_source import TrainSource
@@ -126,8 +130,7 @@ class RolloutDispatcher:
         eval_envs: EvalEnvs | None,
         train_source: TrainSource,
         eval_source: EvalSource | None,
-        student_inference: InferencePool,
-        teacher_inference: InferencePool | None,
+        models: ModelRegistry,
         policy: Policy,
         max_inflight_rollouts: int,
         tasks_per_minute: float | None,
@@ -136,10 +139,9 @@ class RolloutDispatcher:
         self.policy = policy
         self.train_envs = train_envs
         self.eval_envs = eval_envs
-        # Train rollouts go to the pool selected by the env's algorithm
-        # (student or teacher); eval always evaluates the student.
-        self.student_inference = student_inference
-        self.teacher_inference = teacher_inference
+        # Train rollouts go to the pool named by the env algorithm's sampling
+        # source; eval always evaluates the policy.
+        self.models = models
         self.train_source = train_source
         self.eval_source = eval_source
         self.max_off_policy_steps = max_off_policy_steps
@@ -172,16 +174,14 @@ class RolloutDispatcher:
         self.task: asyncio.Task | None = None
 
     def _train_pool_for(self, env_name: str) -> tuple[InferencePool, str, bool]:
-        """``(pool, model_name, is_teacher_sourced)`` for *train* rollouts of
-        this env, selected by the env algorithm's sampling source. Teacher-
-        sourced envs roll out against the frozen teacher pool; everything else
-        samples the live student policy. (Eval always uses the student.)"""
-        env = self.train_envs.get(env_name)
-        assert env.algorithm.sampling is not None
-        if env.algorithm.sampling.source == "teacher":
-            assert self.teacher_inference is not None, f"env '{env_name}' samples from teacher but no pool is set"
-            return self.teacher_inference, self.teacher_inference.model_name, True
-        return self.student_inference, self.policy.model_name, False
+        """``(pool, model_name, is_live)`` for *train* rollouts of this env —
+        the registry pool named by the env algorithm's sampling source. (Eval
+        always uses the policy.)"""
+        algorithm = self.train_envs.get(env_name).algorithm
+        pool = self.models.get(algorithm.sampling_source)
+        if algorithm.samples_from_live_policy:
+            return pool, self.policy.model_name, True
+        return pool, pool.model_name, False
 
     @property
     def inflight_train_count(self) -> int:
@@ -271,6 +271,10 @@ class RolloutDispatcher:
         cancelled = 0
         for meta in self.inflight.values():
             if meta.kind != "train":
+                continue
+            # Frozen-sourced rollouts never go stale — their sampler doesn't
+            # change with policy updates.
+            if not self.train_envs.get(meta.env_name).algorithm.samples_from_live_policy:
                 continue
             meta.off_policy_steps += 1
             if meta.off_policy_steps > self.max_off_policy_steps:
@@ -386,16 +390,16 @@ class RolloutDispatcher:
         ready, no permits). Returns True after issuing one task — the caller
         loops to keep scheduling.
         """
-        # Train rollouts use the pool selected by the env's algorithm (teacher
-        # for teacher-sourced envs) via the renderer/token train client. Eval
-        # always evaluates the student and goes through the eval client
-        # (chat-completions) — the same path the legacy orchestrator used, so
-        # eval scores stay comparable.
+        # Train rollouts use the registry pool named by the env's algorithm
+        # via the renderer/token train client. Eval always evaluates the
+        # policy and goes through the eval client (chat-completions) — the
+        # same path the legacy orchestrator used, so eval scores stay
+        # comparable.
         if group.kind == "eval":
-            pool, model_name = self.student_inference, self.policy.model_name
-            teacher_sourced = False
+            pool, model_name = self.models.get(POLICY_MODEL), self.policy.model_name
+            live_sourced = True
         else:
-            pool, model_name, teacher_sourced = self._train_pool_for(group.env_name)
+            pool, model_name, live_sourced = self._train_pool_for(group.env_name)
 
         # Pin a single client per group to keep prefix-cache hits
         if group.pinned_client is None:
@@ -416,13 +420,13 @@ class RolloutDispatcher:
         if env_collection is None:
             return False
         env = env_collection.get(group.env_name)
-        # Teacher-sourced train rollouts hit the frozen teacher pool; salting
-        # per policy version would invalidate the teacher's prefix cache every
-        # weight update for no reason.
-        if teacher_sourced:
-            cache_salt = None
-        else:
+        # Frozen-sourced train rollouts hit a frozen pool; salting per policy
+        # version would invalidate its prefix cache every weight update for
+        # no reason.
+        if live_sourced:
             cache_salt = str(group.policy_version_at_start)
+        else:
+            cache_salt = None
 
         if env.requires_group_scoring:
             permits = group.rollouts_to_schedule
