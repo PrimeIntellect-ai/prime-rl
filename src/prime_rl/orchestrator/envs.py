@@ -1,25 +1,19 @@
 from __future__ import annotations
 
-import asyncio
 import atexit
 import multiprocessing as mp
-import time
-from collections.abc import Awaitable, Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import Generic, TypeVar
 
-import pandas as pd
 import verifiers as vf
 from verifiers.serve import ZMQEnvClient, ZMQEnvServer
 from verifiers.utils.serve_utils import get_free_port
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
 from prime_rl.orchestrator.advantage import AdvantageFn, setup_advantage_fn
-from prime_rl.orchestrator.eval_utils import compute_pass_at_k
-from prime_rl.utils.logger import ProgressTracker, get_logger
-from prime_rl.utils.monitor import get_monitor
-from prime_rl.utils.utils import capitalize
+from prime_rl.utils.logger import get_logger
 
 REQUIRED_STATE_COLUMNS = ["trajectory"]
 
@@ -188,147 +182,6 @@ class EvalEnv(Env):
         super().__init__(config)
         self.sampling_args = config.sampling.to_sampling_args()
         self.examples = self.env.get_eval_dataset(n=config.num_examples).to_list()
-
-    async def evaluate(
-        self,
-        model_name: str,
-        get_client: Callable[[], Awaitable[vf.ClientConfig]],
-        step: int,
-        cache_salt: str,
-    ) -> list[vf.RolloutOutput]:
-        num_examples = len(self.examples)
-        group_size = self.config.group_size
-        get_logger().info(f"Evaluating {self.name} ({num_examples=}, {group_size=})")
-        total_rollouts = num_examples * group_size
-        pbar = ProgressTracker(total=total_rollouts, desc=f"Evaluating {self.name}")
-        eval_start = time.perf_counter()
-
-        if self.requires_group_scoring:
-
-            async def run_with_progress(example: dict) -> list[vf.RolloutOutput] | None:
-                """Run group_size rollouts as a scored group for one example."""
-                try:
-                    client = await get_client()
-                    outputs = await self.run_group(
-                        client=client,
-                        example=example,
-                        model_name=model_name,
-                        group_size=group_size,
-                        cache_salt=cache_salt,
-                    )
-                    pbar.update(group_size)
-                    return outputs
-                except Exception as e:
-                    get_logger().warning(f"Group failed: {e}")
-                    pbar.update(group_size)
-                    return None
-
-            coros = [run_with_progress(example) for example in self.examples]
-
-        else:
-
-            async def run_with_progress(example: dict) -> list[vf.RolloutOutput] | None:
-                """Run a single rollout for one example."""
-                try:
-                    client = await get_client()
-                    output = await self.run_rollout(
-                        client=client, example=example, model_name=model_name, cache_salt=cache_salt
-                    )
-                    pbar.update(1)
-                    return [output]
-                except Exception as e:
-                    get_logger().warning(f"Rollout failed: {e}")
-                    pbar.update(1)
-                    return None
-
-            coros = [run_with_progress(example) for example in self.examples for _ in range(group_size)]
-
-        try:
-            results = await asyncio.gather(*coros)
-        finally:
-            pbar.close()
-
-        successful_outputs = [o for group in results if group is not None for o in group]
-        failed_count = total_rollouts - len(successful_outputs)
-        eval_time = time.perf_counter() - eval_start
-
-        if failed_count:
-            get_logger().warning(
-                f"{failed_count}/{total_rollouts} ({failed_count / total_rollouts * 100:.1f}%) rollouts failed"
-            )
-
-        if not successful_outputs:
-            get_logger().warning(f"All rollouts failed for {self.name}, skipping logging metrics")
-            get_monitor().log(
-                {
-                    f"eval/{self.name}/failed_rollouts": failed_count / total_rollouts,
-                    "step": step,
-                },
-                step=step,
-            )
-            return []
-
-        # Log metrics
-        monitor = get_monitor()
-
-        rows = [
-            {
-                "example_id": o["example_id"],
-                "reward": o["reward"],
-                "completion_len": o["token_usage"]["final_output_tokens"],
-                "is_truncated": o["is_truncated"],
-                "has_error": o.get("error") is not None,
-                "no_response": not o.get("completion"),
-            }
-            for o in successful_outputs
-        ]
-        results_df = pd.DataFrame(rows)
-
-        unique_rewards = results_df.reward.dropna().unique()
-        could_be_binary = set(unique_rewards).issubset({0.0, 1.0})
-        if could_be_binary:
-            pass_at_k = (
-                results_df.groupby("example_id")
-                .apply(lambda x: compute_pass_at_k(x.reward.dropna()), include_groups=False)
-                .apply(pd.Series)
-            )
-        else:
-            pass_at_k = None
-            get_logger().warning("Skipping computing pass@k rates because the task rewards appear to be non-binary")
-
-        message = f"Evaluated {self.name} in {eval_time:.2f}s (Avg@{group_size}={results_df.reward.mean():.4f}"
-        if could_be_binary:
-            assert pass_at_k is not None
-            for pass_rate, pass_rate_score in pd.Series(pass_at_k.mean()).items():
-                message += f", {capitalize(str(pass_rate))}: {pass_rate_score:.4f}"
-
-        message += (
-            f", No-response: {results_df.no_response.mean() * 100:.1f}%"
-            f", Completion Length: {results_df.completion_len.mean():.2f} (±{results_df.completion_len.std():.2f}, ∈[{results_df.completion_len.min():.2f}, {results_df.completion_len.max():.2f}])"
-            f", Truncated: {results_df.is_truncated.mean() * 100:.1f}%)"
-        )
-        get_logger().success(message)
-
-        eval_metrics = {
-            f"avg@{group_size}": float(results_df.reward.mean()),
-            "no_response/mean": float(results_df.no_response.mean()),
-            "no_response/count": int(results_df.no_response.sum()),
-            "completion_len/mean": results_df.completion_len.mean().item(),
-            "completion_len/max": results_df.completion_len.max().item(),
-            "completion_len/min": results_df.completion_len.min().item(),
-            "is_truncated/mean": results_df.is_truncated.mean().item(),
-            "failed_rollouts": failed_count / total_rollouts,
-            "time": eval_time,
-        }
-        if could_be_binary:
-            assert pass_at_k is not None
-            eval_metrics.update(pd.Series(pass_at_k.mean()).to_dict())
-        eval_metrics = {f"eval/{self.name}/{key}": v for key, v in eval_metrics.items()}
-        eval_metrics["step"] = step
-        monitor.log(eval_metrics, step=step)
-        monitor.log_eval_samples(successful_outputs, env_name=self.name, step=step)
-
-        return successful_outputs
 
 
 EnvT = TypeVar("EnvT", bound=Env)

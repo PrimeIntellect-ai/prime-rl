@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = "~=3.12.0"
 dependencies = [
     "prime-rl-configs",
+    "prime-pydantic-config",
     "beartype>=0.21.0",
     "datasets>=4.0.0",
     "jaxtyping>=0.3.2",
@@ -27,6 +28,7 @@ dependencies = [
     "aiolimiter>=1.2.1",
     "tenacity>=8.2.0",
     "openai>=1.106.1",
+    "orjson>=3.11.0",
     "rich>=14.0.0",
     "setproctitle>=1.3.0",
     "uvloop>=0.21.0",
