@@ -522,7 +522,7 @@ class OrchestratorConfig(BaseConfig):
     """Typed renderer config (``renderers.RendererConfig`` discriminated
     union). Defaults to ``"auto"``, which resolves from
     ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. ``None``
-    opts into MITO (``openai_chat_completions``); SFT mode forces this."""
+    opts into MITO (``openai_chat_completions``)."""
 
     pool_size: int | None = Field(None, ge=1)
     """Number of renderer slots shared across concurrent rollouts. Bump
@@ -759,11 +759,10 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def _force_no_renderer_for_sft(self):
-        """SFT rolls out via the teacher's plain chat-completions endpoint; the
-        renderer client doesn't apply. Force ``renderer=None`` so the user
-        doesn't have to remember to set it. Declared before the renderer
-        validators below so they see the corrected value."""
-        if self.training_mode == "sft":
+        """Teacher-backed SFT rolls out via the teacher's plain chat-completions
+        endpoint; the renderer client doesn't apply. When no teacher is
+        configured, SFT uses the student rollout path and keeps the renderer."""
+        if self.training_mode == "sft" and self.teacher is not None:
             self.renderer = None
         return self
 
@@ -773,8 +772,8 @@ class OrchestratorConfig(BaseConfig):
         has_teacher = self.teacher is not None
         if self.training_mode == "rl" and has_teacher:
             raise ValueError("orchestrator.teacher must not be set when training_mode = 'rl'.")
-        if self.training_mode in ("opd", "sft") and not has_teacher:
-            raise ValueError(f"orchestrator.teacher must be configured when training_mode = '{self.training_mode}'.")
+        if self.training_mode == "opd" and not has_teacher:
+            raise ValueError("orchestrator.teacher must be configured when training_mode = 'opd'.")
         return self
 
     @model_validator(mode="after")
