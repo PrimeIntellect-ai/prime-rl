@@ -1,0 +1,143 @@
+# Twelve-step GPQA open-ended sequential debate smoke for one 8-node GH200 allocation.
+#
+# Topology: 1 train node + 7 independent inference replicas. Each inference
+# replica owns one 4xGH200 node and serves Qwen3.5 with TP=4.
+
+output_dir = "outputs/isambard/calibration/gpqa_openended_debate_12step_bs512_g16_1t7i_sequential4_kvsmoke"
+max_steps = 12
+seq_len = 32768
+
+[log]
+level = "info"
+
+[wandb]
+project = "gpqa-openended-debate-calibration"
+name = "qwen35-bs512-g16-1t7i-12step-openended-sequential4-kvsmoke"
+
+[model]
+name = "Qwen/Qwen3.5-35B-A3B"
+
+[ckpt]
+interval = 12
+keep_last = 1
+
+[weight_broadcast]
+type = "filesystem"
+
+[deployment]
+type = "multi_node"
+gpus_per_node = 4
+num_train_nodes = 1
+num_infer_nodes = 1
+num_infer_replicas = 7
+
+[trainer]
+pack_samples = true
+enable_router_replay = true
+
+[trainer.model]
+impl = "custom"
+seq_len = 32768
+attn = "flash_attention_3"
+optim_cpu_offload = true
+fsdp_cpu_offload = false
+cp = 2
+cp_style = "ulysses"
+fused_lm_head_token_chunk_size = "auto"
+
+[trainer.model.compile]
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.lora]
+rank = 32
+alpha = 64
+
+[trainer.optim]
+lr = 1e-5
+
+[orchestrator]
+training_mode = "rl"
+batch_size = 512
+group_size = 16
+max_inflight_rollouts = 768
+max_off_policy_steps = 8
+dump_trajectory = false
+dump_failed_train_rollouts = true
+dump_failed_train_trajectory = true
+
+[orchestrator.renderer]
+name = "auto"
+preserve_all_thinking = false
+
+[orchestrator.model.lora]
+name = "debate-r32"
+
+[orchestrator.advantage]
+type = "ema_per_member"
+momentum = 0.9
+
+[orchestrator.train]
+num_workers = 24
+
+[orchestrator.train.sampling]
+temperature = 1.0
+top_p = 0.95
+repetition_penalty = 1.0
+max_completion_tokens = 16384
+thinking_token_budget = 8192
+extra_body = { top_k = 20, min_p = 0.0, presence_penalty = 1.5 }
+
+[[orchestrator.train.env]]
+id = "gpqa-open-ended-debate"
+name = "gpqa-openended-debate-sequential4-bs512-train"
+args = { prompts_ref = "selfplay_oe_sequential4", schedule = [{ slot_id = 0, agents = ["debater_a"], phase = "propose" }, { slot_id = 1, agents = ["debater_b"], phase = "propose" }, { slot_id = 2, agents = ["debater_a"], phase = "critique" }, { slot_id = 3, agents = ["debater_b"], phase = "critique" }, { slot_id = 4, agents = ["judge"], phase = "final" }] }
+
+[orchestrator.multi_agent.fixed.judge]
+members = ["judge"]
+model = "qwen/qwen3.5-9b"
+base_url = ["https://openrouter.ai/api/v1"]
+api_key_var = "OPENROUTER_API_KEY"
+request_mode = "chat"
+sampling = { temperature = 0.7, top_p = 0.8, max_completion_tokens = 4096, extra_body = { top_k = 20, min_p = 0.0, presence_penalty = 1.5, reasoning = { enabled = false }, provider = { order = ["DeepInfra", "Together", "Venice"], allow_fallbacks = true } } }
+
+[orchestrator.eval]
+interval = 12
+skip_first_step = true
+num_examples = 16
+group_size = 4
+max_concurrent_rollouts_per_client = 8
+num_workers = 12
+
+[[orchestrator.eval.env]]
+id = "gpqa-open-ended-debate"
+name = "gpqa-openended-debate-sequential4-bs512-eval"
+num_examples = 16
+group_size = 4
+args = { num_eval_examples = 32, prompts_ref = "selfplay_oe_sequential4", schedule = [{ slot_id = 0, agents = ["debater_a"], phase = "propose" }, { slot_id = 1, agents = ["debater_b"], phase = "propose" }, { slot_id = 2, agents = ["debater_a"], phase = "critique" }, { slot_id = 3, agents = ["debater_b"], phase = "critique" }, { slot_id = 4, agents = ["judge"], phase = "final" }] }
+
+[inference]
+gpu_memory_utilization = 0.92
+enable_return_routed_experts = true
+enable_lora = true
+max_lora_rank = 32
+enable_prefix_caching = true
+enable_dbo = false
+
+[inference.model]
+max_model_len = 32768
+
+[inference.parallel]
+tp = 4
+dp = 1
+
+[inference.vllm_extra]
+moe_backend = "triton"
+gdn_prefill_backend = "triton"
+max_num_seqs = 128
+max_num_batched_tokens = 131072
+performance_mode = "throughput"
+generation_config = "vllm"
+stream_interval = 10
+enable_chunked_prefill = true
