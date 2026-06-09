@@ -507,8 +507,16 @@ class OrchestratorConfig(BaseConfig):
 
     advantage: AdvantageConfig | None = DefaultAdvantageConfig()
 
-    advantage_filter: AdvantageFilterConfig | None = AdvantageFilterConfig()
-    """Optional train-rollout filter. When set, rollouts with advantage <= ``threshold`` are logged but not sent to the trainer."""
+    pre_batch_advantage_filter: AdvantageFilterConfig | None = None
+    """Optional advantage filter applied *before* rollouts enter the training batch buffer.
+    When set, rollouts with advantage <= ``threshold`` are dropped in ``process_group`` and never
+    consume a batch slot — the batch refills from other rollouts, so bump ``oversampling_factor``
+    to keep the trainer fed. Off by default."""
+
+    post_batch_advantage_filter: AdvantageFilterConfig | None = AdvantageFilterConfig()
+    """Optional advantage filter applied *after* a batch is assembled. When set, rollouts with
+    advantage <= ``threshold`` stay in the batch for metrics/baseline but their samples are not
+    sent to the trainer. On by default (``threshold = 0.0``)."""
 
     log: LogConfig = LogConfig()
 

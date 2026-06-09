@@ -99,8 +99,8 @@ monkey_patch_chat_completion_logprobs()
 SHUTDOWN_TIMEOUT_S = 300
 
 # Abort after this many consecutive train batches drop all rollouts to
-# the advantage filter — usually a very high threshold or homogeneous-reward
-# dataset; fail loudly instead of spinning
+# the post-batch advantage filter — usually a very high threshold or
+# homogeneous-reward dataset; fail loudly instead of spinning
 MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 
 # Maximum batches the orchestrator may run ahead of the trainer. The
@@ -260,9 +260,15 @@ class Orchestrator:
 
         # Detectors annotate train rollouts only; evals are logged without detector metadata.
         detectors = setup_detectors(vocab_size=self.tokenizer.vocab_size)
-        if config.advantage_filter is not None:
+        if config.pre_batch_advantage_filter is not None:
             get_logger().info(
-                f"Configured advantage filter (threshold={config.advantage_filter.threshold}; excludes advantage <= threshold)"
+                f"Configured pre-batch advantage filter (threshold={config.pre_batch_advantage_filter.threshold}; "
+                "drops advantage <= threshold before batching)"
+            )
+        if config.post_batch_advantage_filter is not None:
+            get_logger().info(
+                f"Configured post-batch advantage filter (threshold={config.post_batch_advantage_filter.threshold}; "
+                "withholds advantage <= threshold from the trainer)"
             )
 
         get_logger().info("Loading training environments")
@@ -394,7 +400,8 @@ class Orchestrator:
             token_batch_size=config.token_batch_size,
             advantage_config=config.advantage,
             detectors=detectors,
-            advantage_filter=config.advantage_filter,
+            pre_batch_advantage_filter=config.pre_batch_advantage_filter,
+            post_batch_advantage_filter=config.post_batch_advantage_filter,
         )
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         self.watcher = WeightWatcher(
@@ -542,20 +549,20 @@ class Orchestrator:
         if batch.metrics.n_trainable == 0:
             self.consecutive_empty_batches += 1
             get_logger().warning(
-                f"Step {step}: advantage filter excluded all {len(batch.rollouts)} rollouts "
+                f"Step {step}: post-batch advantage filter excluded all {len(batch.rollouts)} rollouts "
                 f"(consecutive empty batches: {self.consecutive_empty_batches}/{MAX_CONSECUTIVE_EMPTY_BATCHES})"
             )
             if self.consecutive_empty_batches >= MAX_CONSECUTIVE_EMPTY_BATCHES:
                 raise RuntimeError(
-                    f"{self.consecutive_empty_batches} consecutive zero-trainable batches — "
-                    "check orchestrator.advantage_filter or task difficulty."
+                    f"{self.consecutive_empty_batches} consecutive zero-trainable batches — check "
+                    "orchestrator.post_batch_advantage_filter / pre_batch_advantage_filter or task difficulty."
                 )
             return
         self.consecutive_empty_batches = 0
         if batch.metrics.n_trainable / len(batch.rollouts) <= 0.1:
             get_logger().warning(
                 f"Only {batch.metrics.n_trainable}/{len(batch.rollouts)} rollouts in the batch are trainable "
-                f"({batch.metrics.n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / advantage_filter"
+                f"({batch.metrics.n_trainable / len(batch.rollouts):.1%}) — consider reviewing task difficulty / post_batch_advantage_filter"
             )
 
         # Materialize at the I/O boundary so prime-rl metadata travels with
@@ -590,6 +597,8 @@ class Orchestrator:
             step_time=step_time,
             save_ckpt_time=save_ckpt_time,
             teacher_logprobs_time=teacher_logprobs_time,
+            pre_filter_seen=self.train_sink.pre_filter_seen,
+            pre_filter_dropped=self.train_sink.pre_filter_dropped,
         )
         self.monitor.log(metrics, step=step)
         self.monitor.log_samples(rollout_dicts, step=step)
@@ -624,6 +633,7 @@ class Orchestrator:
 
         self.log_train_batch(batch, step=step, step_time=step_time)
 
+        self.train_sink.reset_pre_filter_stats()
         self.progress.step += 1
         self.maybe_trigger_eval(self.progress.step)
 

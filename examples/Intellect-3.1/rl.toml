@@ -77,6 +77,10 @@ name = "code"
 ratio = 0.2
 args = { pool_size = 512 }
 
+# Drop zero/negative-advantage rollouts before they consume a batch slot.
+[orchestrator.pre_batch_advantage_filter]
+threshold = 0.0
+
 [orchestrator.eval]
 interval = 25
 

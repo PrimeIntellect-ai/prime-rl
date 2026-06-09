@@ -174,19 +174,26 @@ The detectors are:
 - `gibberish` — detects tokens in the top 25% of token IDs sampled at very low logprob.
 - `repetition` — detects long high-confidence token streaks.
 
-The only built-in rollout exclusion is the standalone advantage filter. It logs excluded rollouts, but does not send their samples to the trainer. By default, rollouts with advantage `<= 0.0` are excluded:
+The only built-in rollout exclusion is the advantage filter, which drops rollouts whose advantage is `<= threshold` (default `0.0`). It runs at two independent points in the pipeline, each with its own config block:
+
+- **`[orchestrator.pre_batch_advantage_filter]`** — applied *before* rollouts enter the batch buffer (in `process_group`). Dropped rollouts never consume a batch slot, so the batch refills from other rollouts. This keeps every shipped batch dense, at the cost of oversampling on the inference side — bump `oversampling_factor` if the trainer starves. **Off by default.**
+- **`[orchestrator.post_batch_advantage_filter]`** — applied *after* a batch is assembled (in `process_batch`). Dropped rollouts stay in the batch (so they still count toward metrics and the advantage baseline) but their samples are withheld from the trainer. **On by default** with `threshold = 0.0`.
+
+The two stages are independent and most configs enable just one. Both reuse the same shape:
 
 ```toml
-[orchestrator.advantage_filter]
+[orchestrator.pre_batch_advantage_filter]
 threshold = 0.0
 ```
 
-Raise the threshold to require a stronger positive advantage signal, lower it to allow weak negative-advantage rollouts through, or disable the filter entirely with:
+Raise a threshold to require a stronger positive advantage signal, lower it to let weak negative-advantage rollouts through, or disable a stage entirely with:
 
 ```toml
 [orchestrator]
-advantage_filter = "None"
+post_batch_advantage_filter = "None"
 ```
+
+Watch `advantage_filter/all/pre_batch_dropped_rate` (fraction dropped pre-batch) and `advantage_filter/{all,<env>}/is_filtered` (fraction withheld post-batch).
 
 ## Multi-Turn Trajectories
 

@@ -3,10 +3,11 @@
 1. ``process_rollout`` — eager per-rollout tokenization (overlaps with
    dispatcher producing more rollouts). Errored rollouts skip this.
 2. ``process_group`` — filters errored rollouts, computes advantages over
-   survivors, and queues them for training.
-3. ``process_batch`` — applies detector annotations and the advantage filter,
-   then assembles the trainer-bound ``TrainingSample`` list. Returns a
-   ``TrainBatch``.
+   survivors, applies the pre-batch advantage filter, and queues the rest
+   for training.
+3. ``process_batch`` — applies detector annotations and the post-batch
+   advantage filter, then assembles the trainer-bound ``TrainingSample``
+   list. Returns a ``TrainBatch``.
 
 ``add()`` returns ``TrainBatch | None``. I/O concerns (ship to trainer,
 save_rollouts, monitor.log, teacher logprobs) live on the orchestrator.
@@ -48,7 +49,8 @@ class TrainSink:
         token_batch_size: int | None,
         advantage_config: AdvantageConfig | None,
         detectors: list[RolloutDetector],
-        advantage_filter: AdvantageFilterConfig | None,
+        pre_batch_advantage_filter: AdvantageFilterConfig | None,
+        post_batch_advantage_filter: AdvantageFilterConfig | None,
     ) -> None:
         assert (batch_size is None) != (token_batch_size is None), (
             "Exactly one of batch_size / token_batch_size must be set"
@@ -64,13 +66,19 @@ class TrainSink:
         # we don't want to pay that per group. ``None`` = reward-only path
         self.advantage_fn = setup_advantage_fn(advantage_config) if advantage_config is not None else None
         self.detectors = detectors
-        self.advantage_filter = advantage_filter
+        self.pre_batch_advantage_filter = pre_batch_advantage_filter
+        self.post_batch_advantage_filter = post_batch_advantage_filter
 
         # Keyed by the dispatcher's group UUID. ``(env_name, example_id)``
         # isn't unique — the same example can be re-sampled while an
         # earlier group is still in flight
         self.pending_groups: dict[uuid.UUID, list[TrainRollout]] = defaultdict(list)
         self.pending_batch: list[TrainRollout] = []
+
+        # Pre-batch advantage-filter stats since the last ship; reset by the
+        # orchestrator after each ship via ``reset_pre_filter_stats``
+        self.pre_filter_seen = 0
+        self.pre_filter_dropped = 0
 
         # Per-env arrival / error counters since the last ship; reset in
         # ``process_batch``. Fuel for the per-env success log breakdown
@@ -172,7 +180,8 @@ class TrainSink:
     def process_group(self, group_id: uuid.UUID) -> None:
         """Finalize one GRPO group: drop errored rollouts (the whole group
         when ``requires_group_scoring`` and any failed), assign advantages,
-        append survivors to ``pending_batch``."""
+        apply the pre-batch advantage filter, append survivors to
+        ``pending_batch``."""
         group = self.pending_groups.pop(group_id, [])
         if not group:
             return
@@ -212,7 +221,16 @@ class TrainSink:
                 sample.training_mode = self.config.training_mode
                 sample.completion_temperatures = [temperature] * len(sample.completion_ids)
 
+        # Pre-batch advantage filter: drop matching rollouts before they enter
+        # the batch buffer so they never consume a slot (vs. the post-batch
+        # filter, which keeps them in the batch but withholds them from the trainer).
+        num_pre_filtered = 0
         for r in survivors:
+            self.pre_filter_seen += 1
+            if should_filter_by_advantage(r.advantage, self.pre_batch_advantage_filter):
+                self.pre_filter_dropped += 1
+                num_pre_filtered += 1
+                continue
             r.is_filtered = False
             self.pending_batch.append(r)
 
@@ -220,15 +238,15 @@ class TrainSink:
         avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
         get_logger().debug(
             f"Finished group | env={env_name} example_id={example_id} | "
-            f"rollouts={len(group)} (errored={num_errored}, accepted={len(survivors)}) | "
-            f"reward={avg_reward:.4f}"
+            f"rollouts={len(group)} (errored={num_errored}, pre_filtered={num_pre_filtered}, "
+            f"accepted={len(survivors) - num_pre_filtered}) | reward={avg_reward:.4f}"
         )
 
     def process_batch(self) -> TrainBatch:
         """Pop a cohort off ``pending_batch`` (by rollout count when
         ``batch_size`` is set, by token count when ``token_batch_size`` is
-        set), apply detector annotations and the advantage filter, and
-        assemble the trainer-bound ``TrainingSample`` list. Overflow stays
+        set), apply detector annotations and the post-batch advantage filter,
+        and assemble the trainer-bound ``TrainingSample`` list. Overflow stays
         for the next batch."""
         if self.batch_size is not None:
             cohort = self.pending_batch[: self.batch_size]
@@ -247,7 +265,7 @@ class TrainSink:
 
         apply_detectors(self.detectors, cohort)
         for rollout in cohort:
-            rollout.is_filtered = should_filter_by_advantage(rollout.advantage, self.advantage_filter)
+            rollout.is_filtered = should_filter_by_advantage(rollout.advantage, self.post_batch_advantage_filter)
 
         # Samples are pre-built by ``process_rollout``; ``process_group``
         # already set advantage/reward on each sample
@@ -289,3 +307,7 @@ class TrainSink:
         self.arrivals_by_env.clear()
         self.errors_by_env.clear()
         return TrainBatch(rollouts=cohort, samples=samples, metrics=metrics)
+
+    def reset_pre_filter_stats(self) -> None:
+        self.pre_filter_seen = 0
+        self.pre_filter_dropped = 0

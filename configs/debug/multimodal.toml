@@ -24,7 +24,8 @@ group_size = 16
 pool_size = 4
 # Step 0 on Qwen3-VL-4B vs color-codeword can be uniform (all-correct or
 # all-wrong), so don't exclude zero-advantage rollouts before any progress.
-advantage_filter = "None"
+# (pre-batch filter is off by default; disable the on-by-default post-batch one.)
+post_batch_advantage_filter = "None"
 
 [orchestrator.train.sampling]
 max_completion_tokens = 64

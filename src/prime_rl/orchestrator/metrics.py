@@ -24,6 +24,8 @@ class MetricsBuilder:
         step_time: float,
         save_ckpt_time: float,
         teacher_logprobs_time: float,
+        pre_filter_seen: int,
+        pre_filter_dropped: int,
     ) -> dict[str, Any]:
         """Builds the per-step W&B dict. Stable metric names so
         existing dashboards / alerts keep working."""
@@ -168,6 +170,12 @@ class MetricsBuilder:
             env_detection_df = detection_df.loc[env_df.index] if not detection_df.empty else detection_df
             for name in detection_df.columns:
                 to_log[f"detections/{env}/{name}"] = env_detection_df[name].astype(float).mean()
+
+        # Pre-batch advantage filter drops rollouts before they reach the
+        # cohort, so they're absent from ``results_df`` — report the drop rate
+        # from the sink's running counters instead.
+        if pre_filter_seen > 0:
+            to_log["advantage_filter/all/pre_batch_dropped_rate"] = pre_filter_dropped / pre_filter_seen
 
         # Dispatcher / watcher gauges live on the ``_timestamp`` axis via
         # the periodic logger — keep this dict step-axis only
