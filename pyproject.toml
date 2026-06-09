@@ -70,6 +70,7 @@ flash-attn-cute = [
 envs = [
     "reverse-text",
     "alphabet-sort",
+    "wordle",
     "reverse-text-v1",
     "gsm8k",
     "math-env",
@@ -188,6 +189,7 @@ prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 verifiers = { path = "deps/verifiers", editable = true }
 reverse-text = { path = "deps/verifiers/environments/reverse_text", editable = true }
 alphabet-sort = { path = "deps/verifiers/environments/alphabet_sort", editable = true }
+wordle = { path = "deps/verifiers/environments/wordle", editable = true }
 reverse-text-v1 = { path = "deps/verifiers/deps/vf-nano/examples/tasksets/reverse_text_v1", editable = true }
 gsm8k = { path = "deps/verifiers/deps/vf-nano/examples/tasksets/gsm8k", editable = true }
 math-env = { path = "deps/verifiers/deps/vf-nano/examples/tasksets/math_env", editable = true }
