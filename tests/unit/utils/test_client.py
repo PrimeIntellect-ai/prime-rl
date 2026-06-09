@@ -3,10 +3,17 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
+import pytest
 import verifiers as vf
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.client import _is_retryable_lora_error, load_lora_adapter, setup_clients
+from prime_rl.utils.client import _is_retryable_lora_error, init_nccl_broadcast, load_lora_adapter, setup_clients
+
+
+def make_status_error(status_code: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "http://worker/init_broadcaster")
+    response = httpx.Response(status_code, request=request)
+    return httpx.HTTPStatusError("status error", request=request, response=response)
 
 
 def test_is_retryable_lora_error_returns_true_for_404():
@@ -47,6 +54,36 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
         json={"lora_name": "test-lora", "lora_path": "/test/path"},
         timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
     )
+
+
+def test_init_nccl_broadcast_requires_divisible_world_size():
+    clients = [AsyncMock(), AsyncMock()]
+
+    with pytest.raises(ValueError, match="divisible"):
+        asyncio.run(init_nccl_broadcast(clients, host="localhost", port=29501, timeout=10, inference_world_size=3))
+
+
+def test_init_nccl_broadcast_propagates_missing_route():
+    mock_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.raise_for_status.side_effect = make_status_error(404)
+    mock_client.post.return_value = mock_response
+
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(init_nccl_broadcast([mock_client], host="localhost", port=29501, timeout=10))
+
+
+def test_init_nccl_broadcast_assigns_rank_offsets():
+    clients = [AsyncMock(), AsyncMock()]
+    for client in clients:
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        client.post.return_value = response
+
+    asyncio.run(init_nccl_broadcast(clients, host="localhost", port=29501, timeout=10, inference_world_size=8))
+
+    assert clients[0].post.call_args.kwargs["json"]["rank_offset"] == 0
+    assert clients[1].post.call_args.kwargs["json"]["rank_offset"] == 4
 
 
 def test_setup_clients_assigns_renderer_and_dp_rank_headers():

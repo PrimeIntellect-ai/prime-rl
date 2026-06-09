@@ -1,6 +1,6 @@
 import pytest
 
-from prime_rl.utils.pathing import validate_output_dir
+from prime_rl.utils.pathing import sync_wait_for_path, validate_output_dir
 
 
 def test_nonexistent_dir_passes(tmp_path):
@@ -55,3 +55,8 @@ def test_clean_on_nonexistent_dir_is_noop(tmp_path):
     output_dir = tmp_path / "does_not_exist"
     validate_output_dir(output_dir, resuming=False, clean=True)
     assert not output_dir.exists()
+
+
+def test_sync_wait_for_path_times_out(tmp_path):
+    with pytest.raises(TimeoutError, match="Timed out"):
+        sync_wait_for_path(tmp_path / "missing", interval=0.001, timeout=0.001)

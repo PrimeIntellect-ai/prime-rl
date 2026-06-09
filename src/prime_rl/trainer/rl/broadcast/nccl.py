@@ -15,6 +15,7 @@ from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.trainer.utils import get_world
+from prime_rl.trainer.utils import maybe_clean as maybe_clean_path
 from prime_rl.trainer.weights import get_max_layer_num
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
@@ -182,6 +183,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
         self.logger = get_logger()
         self.world = get_world()
         self.multi_run_manager = get_multi_run_manager()
+        self.ready_timeout = config.timeout
         self.nccl_broadcast_sender = NCCLWeightBroadcastSender(
             config.host,
             config.port,
@@ -259,5 +261,13 @@ class NCCLWeightBroadcast(WeightBroadcast):
         for idx, save_dir in notified_runs:
             nccl_ready_file = save_dir / NCCL_READY_MARKER
             self.logger.debug(f"Waiting for NCCL_READY marker at {nccl_ready_file}")
-            sync_wait_for_path(nccl_ready_file, interval=0.1, log_interval=10)
+            sync_wait_for_path(nccl_ready_file, interval=0.1, log_interval=10, timeout=self.ready_timeout)
             self.logger.debug(f"Inference workers ready for NCCL broadcast (run {idx})")
+
+    def maybe_clean(self, interval_to_keep: int | None):
+        for idx in self.multi_run_manager.used_idxs:
+            maybe_clean_path(
+                get_broadcast_dir(self.multi_run_manager.get_run_dir(idx)),
+                self.multi_run_manager.progress[idx].step,
+                interval_to_keep,
+            )

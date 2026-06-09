@@ -322,14 +322,27 @@ def validate_shared_weight_broadcast(
     orchestrator: OrchestratorConfig,
     inference: Optional[InferenceConfig] = None,
 ) -> None:
-    if (
-        inference
-        and trainer.weight_broadcast.type != orchestrator.weight_broadcast.type != inference.weight_broadcast.type
-    ):
+    if inference and inference.weight_broadcast.type != orchestrator.weight_broadcast.type:
         raise ValueError(
-            f"Inference weight broadcast type ({inference.weight_broadcast.type}) and orchestrator weight broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for both."
+            f"Inference weight broadcast type ({inference.weight_broadcast.type}) and orchestrator weight "
+            f"broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same "
+            f"weight broadcast type for both."
         )
-    elif trainer.weight_broadcast.type != orchestrator.weight_broadcast.type:
+    if trainer.weight_broadcast.type != orchestrator.weight_broadcast.type:
         raise ValueError(
-            f"Trainer weight broadcast type ({trainer.weight_broadcast.type}) and orchestrator weight broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same weight broadcast type for both."
+            f"Trainer weight broadcast type ({trainer.weight_broadcast.type}) and orchestrator weight "
+            f"broadcast type ({orchestrator.weight_broadcast.type}) are not the same. Please specify the same "
+            f"weight broadcast type for both."
         )
+    if trainer.weight_broadcast.type != "nccl":
+        return
+
+    for field in ("port", "inference_world_size", "timeout", "quantize_in_weight_transfer"):
+        trainer_value = getattr(trainer.weight_broadcast, field)
+        orchestrator_value = getattr(orchestrator.weight_broadcast, field)
+        if trainer_value != orchestrator_value:
+            raise ValueError(
+                f"Trainer weight broadcast {field} ({trainer_value}) and orchestrator weight broadcast {field} "
+                f"({orchestrator_value}) are not the same. Please specify the same NCCL weight broadcast {field} "
+                f"for both."
+            )

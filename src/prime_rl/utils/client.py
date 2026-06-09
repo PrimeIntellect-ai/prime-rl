@@ -493,6 +493,17 @@ async def init_nccl_broadcast(
             f"inference_world_size not provided, defaulting to {inference_world_size} (one GPU per admin client)"
         )
 
+    if not admin_clients:
+        raise ValueError("Cannot initialize NCCL broadcast without inference admin clients")
+    if inference_world_size < 1:
+        raise ValueError(f"inference_world_size must be positive, got {inference_world_size}")
+    if inference_world_size % len(admin_clients) != 0:
+        num_servers = len(admin_clients)
+        raise ValueError(
+            f"inference_world_size ({inference_world_size}) must be divisible by the number of "
+            f"inference servers ({num_servers})"
+        )
+
     gpus_per_server = inference_world_size // len(admin_clients)
 
     logger.info(
@@ -501,23 +512,18 @@ async def init_nccl_broadcast(
     )
 
     async def _init_nccl_broadcast(admin_client: AsyncClient, rank_offset: int) -> None:
-        try:
-            response = await admin_client.post(
-                "/init_broadcaster",
-                json={
-                    "host": host,
-                    "port": port,
-                    "rank_offset": rank_offset,
-                    "inference_world_size": inference_world_size,
-                    "timeout": timeout,
-                    "quantize_in_weight_transfer": quantize_in_weight_transfer,
-                },
-            )
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                logger.warning("The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization.")
-                return
+        response = await admin_client.post(
+            "/init_broadcaster",
+            json={
+                "host": host,
+                "port": port,
+                "rank_offset": rank_offset,
+                "inference_world_size": inference_world_size,
+                "timeout": timeout,
+                "quantize_in_weight_transfer": quantize_in_weight_transfer,
+            },
+        )
+        response.raise_for_status()
 
     await asyncio.gather(
         *[

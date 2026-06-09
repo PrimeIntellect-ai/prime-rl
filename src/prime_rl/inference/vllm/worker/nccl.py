@@ -138,13 +138,34 @@ class NCCLWeightUpdateWorker(Worker):
             rank_offset: Starting GPU offset for this server in the global inference group.
             inference_world_size: Total number of inference GPUs across all servers.
         """
-        self.quantize_in_weight_transfer = quantize_in_weight_transfer
         # Use the worker's device index directly as the local rank.
         # The previous dp_group-based computation broke in vLLM v1 multiprocess
         # DP mode where each worker is a separate process with a singleton
         # DP group (rank_in_group is always 0).
         local_rank = self.device.index
         global_rank_inference = rank_offset + local_rank
+        requested_config = {
+            "host": host,
+            "port": port,
+            "rank_offset": rank_offset,
+            "inference_world_size": inference_world_size,
+            "timeout": timeout,
+            "quantize_in_weight_transfer": quantize_in_weight_transfer,
+            "local_rank": local_rank,
+        }
+        current_config = getattr(self, "_nccl_broadcaster_config", None)
+        if current_config is not None:
+            if current_config == requested_config:
+                logger.info("NCCL broadcast receiver already initialized with matching config; skipping")
+                self.quantize_in_weight_transfer = quantize_in_weight_transfer
+                return
+            raise RuntimeError(
+                f"NCCL broadcast receiver already initialized with {current_config}; requested {requested_config}"
+            )
+        if hasattr(self, "nccl_broadcast_receiver"):
+            raise RuntimeError("NCCL broadcast receiver already initialized without a recorded config")
+
+        self.quantize_in_weight_transfer = quantize_in_weight_transfer
 
         logger.info(
             f"Worker [local_rank={local_rank} rank_offset={rank_offset}] "
@@ -159,6 +180,7 @@ class NCCLWeightUpdateWorker(Worker):
             device=self.device,
             timeout=timeout,
         )
+        self._nccl_broadcaster_config = requested_config
 
     def liveness_probe(self) -> None:
         """No-op RPC used by the API server liveness endpoint."""

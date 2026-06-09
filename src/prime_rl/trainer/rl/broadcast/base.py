@@ -16,3 +16,6 @@ class WeightBroadcast(ABC):
     @abstractmethod
     def broadcast_weights(self, model: nn.Module, step: int):
         pass
+
+    def maybe_clean(self, interval_to_keep: int | None):
+        pass

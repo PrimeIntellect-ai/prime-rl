@@ -276,10 +276,9 @@ def train(config: TrainerConfig):
                 broadcast_weights_start_time = time.perf_counter()
                 weight_broadcast.broadcast_weights(model, step=progress.step)
                 broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
-                # Clean up old broadcast directories (unless at ckpt interval if using filesystem weight broadcast)
-                if config.weight_broadcast.type == "filesystem":
-                    interval_to_keep = config.ckpt and config.ckpt.interval
-                    weight_broadcast.maybe_clean(interval_to_keep)
+                # Clean up old broadcast directories unless they fall on a checkpoint interval.
+                interval_to_keep = config.ckpt and config.ckpt.interval
+                weight_broadcast.maybe_clean(interval_to_keep)
             else:
                 broadcast_weights_time = 0
                 # Usually the broadcast will set this. If broadcast is skipped, we need to reset this here.
