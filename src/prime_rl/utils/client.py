@@ -197,7 +197,11 @@ def setup_clients(
         # Pass the shared renderers.RendererConfig straight through (v1's
         # RendererClientConfig.renderer is the same type; pydantic round-trips it
         # over the wire). prime-rl and v1 share one renderer config.
-        renderer_extra = {"renderer": renderer_config, "pool_size": pool_size or 1}
+        renderer_extra = {
+            "renderer": renderer_config,
+            "pool_size": pool_size or 1,
+            "renderer_model_name": renderer_model_name,
+        }
     env_headers = {
         k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
     }
