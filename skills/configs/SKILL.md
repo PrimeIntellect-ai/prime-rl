@@ -74,5 +74,4 @@ Leave it unset for normal training. When enabled, it exports every sequence from
 
 - `packages/prime-rl-configs/src/prime_rl/` — config classes under `configs/`; `utils/config.py` re-exports `BaseConfig` and `cli`
 - `configs/debug/` — minimal debug configs
-- `configs/private/` — private configs submodule (internal)
 - `examples/` — full example configs
