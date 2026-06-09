@@ -1,29 +1,30 @@
-"""Algorithm abstraction: bundles sampling, scoring, and loss routing.
+"""Algorithm abstraction: sampling, advantage, and loss routing.
 
-An algorithm is a preset of three components:
+An algorithm is a preset of three pieces:
 
 1. **Sampling** — which model generates train rollouts. ``source`` is a model
    reference: ``"policy"`` (the live policy) or a ``[orchestrator.models]``
    registry key (a frozen hosted model).
-2. **Scoring** — how rollouts become per-token training signal:
-   - ``advantage``: group-level advantage assignment (e.g. GRPO group-norm).
-   - ``token_scorer``: optional async per-sample scorer that attaches
-     per-token data by querying a reference model (e.g. prefill logprobs).
-3. **Loss routing** — which loss core applies to which tokens:
-   - ``action``: core for model-generated tokens (``rl`` / ``ce`` / ``ref_kl``).
-   - ``observation``: core for env-provided tokens in multi-turn rollouts
-     (``none`` drops them from the loss — the default; ``ce`` trains on them).
+2. **Advantage** — the per-token training signal, one concept at different
+   granularities and evaluation sites: group-relative strategies compute
+   scalars on the orchestrator and ship numbers; reference-KL strategies ship
+   reference prefill logprobs and the trainer evaluates the per-token signal
+   against the live policy. The strategy determines which loss core consumes
+   the action tokens (``rl`` / ``ce`` / ``ref_kl``).
+3. **Loss routing** — what happens to env-provided observation tokens in
+   multi-turn rollouts (``none`` drops them from the loss — the default;
+   ``ce`` trains on them with a per-token weight, ECHO).
 
-There are no model roles ("teacher", "judge") in the schema — components hold
-*references* to named hosted models, and the same registry entry can serve
-different algorithms in the same run. Presets are vetted bundles; every
-component can be overridden individually for research. The trainer is
-algorithm-blind: routing ships per token on the wire and the trainer just
+There are no model roles ("teacher", "judge") in the schema — advantage
+strategies hold *references* to named hosted models, and the same registry
+entry can serve different algorithms in the same run. Presets are vetted
+bundles; every piece can be overridden individually for research. The trainer
+is algorithm-blind: routing ships per token on the wire and the trainer just
 executes loss cores.
 """
 
 import warnings
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
@@ -35,6 +36,9 @@ AlgorithmName: TypeAlias = Literal["grpo", "opd", "sft_distill", "self_distill",
 # caches salted per version). Every other key names a frozen hosted model
 # from ``[orchestrator.models]``.
 POLICY_MODEL: str = "policy"
+
+ActionLossCore: TypeAlias = Literal["rl", "ce", "ref_kl"]
+ObservationLossCore: TypeAlias = Literal["none", "ce"]
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +57,7 @@ class SamplingConfig(BaseConfig):
 
 
 # ---------------------------------------------------------------------------
-# Component 2a: group-level advantage assignment
+# Component 2: advantage strategies
 # ---------------------------------------------------------------------------
 
 
@@ -77,8 +81,13 @@ LengthPenaltyConfig: TypeAlias = Annotated[
 ]
 
 
-class DefaultAdvantageConfig(BaseConfig):
-    type: Literal["default"] = "default"
+class GroupNormAdvantageConfig(BaseConfig):
+    type: Literal["group_norm"] = "group_norm"
+    """GRPO: scalar advantage = reward minus the per-group mean baseline,
+    consumed by the ``rl`` loss core on the rollout's action tokens."""
+
+    action_core: ClassVar[ActionLossCore] = "rl"
+    group_relative: ClassVar[bool] = True
 
     length_penalty: LengthPenaltyConfig | None = None
     """Correctness-gated length penalty. ``tokens`` shapes by weighted token cost; ``turns`` shapes by trajectory turn count; None disables shaping. In mixed groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost rollouts get advantage in [0, 1], others get 0."""
@@ -86,65 +95,55 @@ class DefaultAdvantageConfig(BaseConfig):
 
 class RewardAdvantageConfig(BaseConfig):
     type: Literal["reward"] = "reward"
-    """Advantage = raw reward, no group baseline."""
+    """Scalar advantage = raw reward, no group baseline. Consumed by the
+    ``rl`` loss core."""
+
+    action_core: ClassVar[ActionLossCore] = "rl"
+    group_relative: ClassVar[bool] = False
 
 
-class NoAdvantageConfig(BaseConfig):
-    type: Literal["none"] = "none"
-    """No group-level advantage: rollouts keep ``advantage=None`` (so the
-    zero-advantage filter never fires) and samples ship a neutral 0.0. Use for
-    algorithms whose training signal does not come from rewards (e.g.
-    self-distillation)."""
+class RefKLAdvantageConfig(BaseConfig):
+    type: Literal["ref_kl"] = "ref_kl"
+    """On-policy distillation (OPD): the per-token signal is the reverse KL to
+    a reference model, evaluated in the trainer from reference prefill
+    logprobs scored over each sample's own context (``ref_logprobs`` on the
+    wire, ``ref_kl`` loss core). Group-relative scalars are still assigned:
+    their sign steers the DPPO masking direction in the loss, and the
+    zero-advantage filter reads them."""
 
-
-class CustomAdvantageConfig(BaseConfig):
-    type: Literal["custom"] = "custom"
-
-    import_path: str
-    """Import path to the advantage function (e.g. ``my_module.my_advantage``)."""
-
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Kwargs forwarded to the advantage function."""
-
-
-AdvantageConfig: TypeAlias = Annotated[
-    DefaultAdvantageConfig | RewardAdvantageConfig | NoAdvantageConfig | CustomAdvantageConfig,
-    Field(discriminator="type"),
-]
-
-
-# ---------------------------------------------------------------------------
-# Component 2b: per-sample token scorers (async, query a reference model)
-# ---------------------------------------------------------------------------
-
-
-class LogprobsScorerConfig(BaseConfig):
-    type: Literal["logprobs"] = "logprobs"
-    """Score each sample's own context under a reference model via prefill.
-    Fills ``TrainingSample.ref_logprobs`` — consumed by the ``ref_kl`` loss
-    core (on-policy distillation)."""
+    action_core: ClassVar[ActionLossCore] = "ref_kl"
+    group_relative: ClassVar[bool] = True
 
     model: str | None = None
-    """Registry key of the scoring model (a ``[orchestrator.models]`` entry).
-    Required — set it here or fold via ``algorithm.model``. ``"policy"`` is
-    rejected: scoring the policy under itself yields zero KL signal (use
-    ``demo_logprobs`` for demo-conditioned self-teaching)."""
+    """Registry key of the reference model (a ``[orchestrator.models]``
+    entry). Required — set it here or fold via ``algorithm.model``.
+    ``"policy"`` is rejected: scoring the policy under itself yields zero KL
+    signal (use ``demo_ref_kl`` for demo-conditioned self-teaching)."""
 
     max_concurrent: int = Field(32, ge=1)
     """Maximum concurrent prefill requests per batch."""
 
+    length_penalty: LengthPenaltyConfig | None = None
+    """Length penalty applied to the group-relative scalars (see
+    ``group_norm``)."""
 
-class DemoLogprobsScorerConfig(BaseConfig):
-    type: Literal["demo_logprobs"] = "demo_logprobs"
-    """Score each sample's completion under a reference model conditioned on an
-    expert demonstration (SDFT, https://arxiv.org/abs/2601.19897). The scoring
-    prefix is rebuilt from the rollout's first-turn messages with the
-    demonstration woven into the user message via ``template``; completion
-    logprobs are aligned back onto the sample. Requires single-step
-    trajectories."""
+
+class DemoRefKLAdvantageConfig(BaseConfig):
+    type: Literal["demo_ref_kl"] = "demo_ref_kl"
+    """Self-distillation (SDFT, https://arxiv.org/abs/2601.19897): the
+    per-token signal is the reverse KL to a reference model conditioned on an
+    expert demonstration. The scoring prefix is rebuilt from the rollout's
+    first-turn messages with the demonstration woven into the user message via
+    ``template``; completion logprobs are aligned back onto the sample.
+    Requires single-step trajectories. No scalar advantage is assigned —
+    rollouts keep ``advantage=None`` (advantage-based filters never fire) and
+    samples ship a neutral 0.0."""
+
+    action_core: ClassVar[ActionLossCore] = "ref_kl"
+    group_relative: ClassVar[bool] = False
 
     model: str | None = None
-    """Registry key of the scoring model. ``"policy"`` is the SDFT paper's
+    """Registry key of the reference model. ``"policy"`` is the SDFT paper's
     setting — the current model conditioned on the demo *is* the reference —
     and needs no extra deployment. Point at a ``[orchestrator.models]`` entry
     to score under a frozen copy instead."""
@@ -166,8 +165,38 @@ class DemoLogprobsScorerConfig(BaseConfig):
     """Maximum concurrent prefill requests per batch."""
 
 
-TokenScorerConfig: TypeAlias = Annotated[
-    LogprobsScorerConfig | DemoLogprobsScorerConfig,
+class SupervisedAdvantageConfig(BaseConfig):
+    type: Literal["supervised"] = "supervised"
+    """Cross-entropy on the sampled tokens (SFT distillation). The ``ce``
+    loss core ignores scalar advantages, but group-relative scalars are still
+    assigned so reward-based filtering keeps working (the zero-advantage
+    filter drops uniform-reward groups)."""
+
+    action_core: ClassVar[ActionLossCore] = "ce"
+    group_relative: ClassVar[bool] = True
+
+
+class CustomAdvantageConfig(BaseConfig):
+    type: Literal["custom"] = "custom"
+    """Custom scalar advantage function, consumed by the ``rl`` loss core."""
+
+    action_core: ClassVar[ActionLossCore] = "rl"
+    group_relative: ClassVar[bool] = False
+
+    import_path: str
+    """Import path to the advantage function (e.g. ``my_module.my_advantage``)."""
+
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    """Kwargs forwarded to the advantage function."""
+
+
+AdvantageConfig: TypeAlias = Annotated[
+    GroupNormAdvantageConfig
+    | RewardAdvantageConfig
+    | RefKLAdvantageConfig
+    | DemoRefKLAdvantageConfig
+    | SupervisedAdvantageConfig
+    | CustomAdvantageConfig,
     Field(discriminator="type"),
 ]
 
@@ -176,16 +205,12 @@ TokenScorerConfig: TypeAlias = Annotated[
 # Component 3: loss routing
 # ---------------------------------------------------------------------------
 
-ActionLossCore: TypeAlias = Literal["rl", "ce", "ref_kl"]
-ObservationLossCore: TypeAlias = Literal["none", "ce"]
-
 
 class LossRoutingConfig(BaseConfig):
-    action: ActionLossCore = "rl"
-    """Loss core for model-generated tokens. ``rl`` is the configured RL loss
-    (``trainer.loss``); ``ce`` is masked NLL (SFT); ``ref_kl`` uses the
-    per-token reverse KL to a reference model as the policy-gradient signal
-    (requires a token scorer that fills ``ref_logprobs``)."""
+    """Routing for tokens the advantage strategy doesn't already determine.
+    The action-token core is derived from the advantage strategy
+    (``advantage.action_core``); this config only routes env-provided
+    observation tokens."""
 
     observation: ObservationLossCore = "none"
     """Loss core for env-provided tokens of later turns (tool output, terminal
@@ -201,41 +226,35 @@ class LossRoutingConfig(BaseConfig):
 # The algorithm bundle
 # ---------------------------------------------------------------------------
 
-# Preset component tables. ``None`` entries mean "component absent" (e.g. no
-# token scorer); fields the user sets explicitly always win. Model references
-# (``sampling.source`` of sft_distill, ``token_scorer.model`` of opd /
+# Preset component tables. Fields the user sets explicitly always win. Model
+# references (``sampling.source`` of sft_distill, ``advantage.model`` of opd /
 # self_distill) have no sensible default — presets leave them ``None`` and
 # validation demands ``algorithm.model`` (or the component field).
 _PRESETS: dict[str, dict[str, Any]] = {
     "grpo": dict(
         sampling=lambda: SamplingConfig(),
-        advantage=lambda: DefaultAdvantageConfig(),
-        token_scorer=lambda: None,
-        loss=lambda: LossRoutingConfig(action="rl"),
+        advantage=lambda: GroupNormAdvantageConfig(),
+        loss=lambda: LossRoutingConfig(),
     ),
     "opd": dict(
         sampling=lambda: SamplingConfig(),
-        advantage=lambda: DefaultAdvantageConfig(),
-        token_scorer=lambda: LogprobsScorerConfig(),
-        loss=lambda: LossRoutingConfig(action="ref_kl"),
+        advantage=lambda: RefKLAdvantageConfig(),
+        loss=lambda: LossRoutingConfig(),
     ),
     "sft_distill": dict(
         sampling=lambda: SamplingConfig(source=None),
-        advantage=lambda: DefaultAdvantageConfig(),
-        token_scorer=lambda: None,
-        loss=lambda: LossRoutingConfig(action="ce"),
+        advantage=lambda: SupervisedAdvantageConfig(),
+        loss=lambda: LossRoutingConfig(),
     ),
     "self_distill": dict(
         sampling=lambda: SamplingConfig(),
-        advantage=lambda: NoAdvantageConfig(),
-        token_scorer=lambda: DemoLogprobsScorerConfig(),
-        loss=lambda: LossRoutingConfig(action="ref_kl"),
+        advantage=lambda: DemoRefKLAdvantageConfig(),
+        loss=lambda: LossRoutingConfig(),
     ),
     "echo": dict(
         sampling=lambda: SamplingConfig(),
-        advantage=lambda: DefaultAdvantageConfig(),
-        token_scorer=lambda: None,
-        loss=lambda: LossRoutingConfig(action="rl", observation="ce"),
+        advantage=lambda: GroupNormAdvantageConfig(),
+        loss=lambda: LossRoutingConfig(observation="ce"),
     ),
 }
 
@@ -245,15 +264,15 @@ class AlgorithmConfig(BaseConfig):
     """Algorithm preset. Resolves any component left unset:
 
     - ``grpo`` — policy group sampling, group-relative advantage, RL loss.
-    - ``opd`` — on-policy distillation: policy samples, reference-model logprobs, per-token reverse-KL signal. Needs ``model``.
-    - ``sft_distill`` — a frozen model samples, the policy trains with CE on its tokens. Needs ``model``.
-    - ``self_distill`` — SDFT: policy samples, demo-conditioned reference logprobs, reverse-KL signal. ``model = "policy"`` is the paper's setting.
+    - ``opd`` — on-policy distillation: policy samples, ``ref_kl`` advantage against a reference model. Needs ``model``.
+    - ``sft_distill`` — a frozen model samples, the policy trains with CE on its tokens (``supervised``). Needs ``model``.
+    - ``self_distill`` — SDFT: policy samples, ``demo_ref_kl`` advantage. ``model = "policy"`` is the paper's setting.
     - ``echo`` — GRPO on action tokens + weighted CE on env-observation tokens.
     """
 
     model: str | None = Field(None, exclude=True)
     """Model reference for whichever component the preset leaves unresolved:
-    ``token_scorer.model`` (opd / self_distill) or ``sampling.source``
+    ``advantage.model`` (opd / self_distill) or ``sampling.source``
     (sft_distill). ``"policy"`` or a ``[orchestrator.models]`` key. Set the
     component fields directly for multi-model setups. Write-only input sugar —
     folded by validation and excluded from dumps so resolved configs
@@ -263,10 +282,8 @@ class AlgorithmConfig(BaseConfig):
     """Sampling component override. Unset inherits from the preset."""
 
     advantage: AdvantageConfig | None = None
-    """Group-level advantage component override. Unset inherits from the preset."""
-
-    token_scorer: TokenScorerConfig | None = None
-    """Per-sample token scorer override. Unset inherits from the preset."""
+    """Advantage strategy override. Unset inherits from the preset; setting
+    one replaces the preset's choice wholesale."""
 
     loss: LossRoutingConfig | None = None
     """Loss routing override. Unset inherits from the preset."""
@@ -277,15 +294,16 @@ class AlgorithmConfig(BaseConfig):
         refs: set[str] = set()
         if self.sampling is not None and self.sampling.source is not None:
             refs.add(self.sampling.source)
-        if self.token_scorer is not None and self.token_scorer.model is not None:
-            refs.add(self.token_scorer.model)
+        advantage_model = getattr(self.advantage, "model", None)
+        if advantage_model is not None:
+            refs.add(advantage_model)
         return refs
 
     @property
     def requires_group_advantage(self) -> bool:
-        """True when the advantage component is group-relative, i.e. degenerate
-        with ``group_size=1``."""
-        return isinstance(self.advantage, DefaultAdvantageConfig)
+        """True when the advantage strategy assigns group-relative scalars,
+        i.e. degenerate with ``group_size=1``."""
+        return self.advantage is not None and self.advantage.group_relative
 
     @model_validator(mode="after")
     def resolve_preset(self):
@@ -293,37 +311,38 @@ class AlgorithmConfig(BaseConfig):
 
         ``sampling`` / ``loss`` merge at the field level: a partial override
         (e.g. just ``loss.observation_weight`` on ``echo``) keeps the preset's
-        other fields. ``advantage`` / ``token_scorer`` are discriminated unions
-        — setting one replaces the preset's choice wholesale, and
-        ``token_scorer`` may be explicitly set to None to disable the preset's
-        scorer."""
+        other fields. ``advantage`` is a discriminated union — setting one
+        replaces the preset's choice wholesale. Preset-filled components are
+        removed from ``model_fields_set`` again so downstream folding (the
+        orchestrator-level ``advantage`` shorthand) can tell genuine user
+        input from preset defaults."""
         preset = _PRESETS[self.name]
         for component in ("sampling", "loss"):
             preset_value = preset[component]()
             current = getattr(self, component)
             if current is None:
                 setattr(self, component, preset_value)
+                self.__pydantic_fields_set__.discard(component)
             else:
                 for field_name in type(current).model_fields:
                     if field_name not in current.model_fields_set:
                         setattr(current, field_name, getattr(preset_value, field_name))
         if self.advantage is None:
             self.advantage = preset["advantage"]()
-        if "token_scorer" not in self.model_fields_set:
-            self.token_scorer = preset["token_scorer"]()
+            self.__pydantic_fields_set__.discard("advantage")
         return self
 
     @model_validator(mode="after")
     def fold_model(self):
-        """Fold the ``model`` shorthand into whichever component references the
+        """Fold the ``model`` shorthand into whichever component reference the
         preset left unresolved. Declared after ``resolve_preset`` so the preset
         components exist, before ``validate_component_compatibility`` so the
         unresolved-reference errors only fire when folding couldn't help."""
         if self.model is None:
             return self
         filled = False
-        if self.token_scorer is not None and self.token_scorer.model is None:
-            self.token_scorer.model = self.model
+        if getattr(self.advantage, "model", "<absent>") is None:
+            self.advantage.model = self.model
             filled = True
         if self.sampling is not None and self.sampling.source is None:
             self.sampling.source = self.model
@@ -332,40 +351,36 @@ class AlgorithmConfig(BaseConfig):
             raise ValueError(
                 f"algorithm '{self.name}': 'model' is set but no component needs it — every model "
                 "reference is already set, or the algorithm references no model. Set the component "
-                "field (token_scorer.model / sampling.source) directly instead."
+                "field (advantage.model / sampling.source) directly instead."
             )
         return self
 
     @model_validator(mode="after")
     def validate_component_compatibility(self):
-        assert self.loss is not None and self.sampling is not None  # resolved above
+        assert self.sampling is not None and self.advantage is not None and self.loss is not None  # resolved above
         if self.sampling.source is None:
             raise ValueError(
                 f"algorithm '{self.name}' samples rollouts from a frozen model — set model='<key>' "
                 "on the algorithm (a [orchestrator.models] entry), or sampling.source explicitly."
             )
-        if self.token_scorer is not None and self.token_scorer.model is None:
+        if getattr(self.advantage, "model", "<absent>") is None:
             raise ValueError(
-                f"algorithm '{self.name}': token_scorer '{self.token_scorer.type}' needs a scoring model — "
+                f"algorithm '{self.name}': advantage '{self.advantage.type}' needs a reference model — "
                 "set model='<key>' on the algorithm ('policy' or a [orchestrator.models] entry), or "
-                "token_scorer.model explicitly."
+                "advantage.model explicitly."
             )
-        if isinstance(self.token_scorer, LogprobsScorerConfig) and self.token_scorer.model == POLICY_MODEL:
+        if isinstance(self.advantage, RefKLAdvantageConfig) and self.advantage.model == POLICY_MODEL:
             raise ValueError(
-                f"algorithm '{self.name}': token_scorer 'logprobs' with model='policy' is degenerate — "
+                f"algorithm '{self.name}': advantage 'ref_kl' with model='policy' is degenerate — "
                 "the reference distribution equals the policy, so the KL signal is zero. Point at a "
-                "[orchestrator.models] entry, or use 'demo_logprobs' for demo-conditioned self-teaching."
+                "[orchestrator.models] entry, or use 'demo_ref_kl' for demo-conditioned self-teaching."
             )
-        if self.loss.action == "ref_kl" and self.token_scorer is None:
+        if self.advantage.action_core == "rl" and self.sampling.source != POLICY_MODEL:
             raise ValueError(
-                f"algorithm '{self.name}': loss.action='ref_kl' requires a token_scorer that fills "
-                "ref_logprobs (logprobs or demo_logprobs)."
-            )
-        if self.loss.action == "rl" and self.sampling.source != POLICY_MODEL:
-            raise ValueError(
-                f"algorithm '{self.name}': loss.action='rl' with sampling.source='{self.sampling.source}' "
-                "is invalid — importance ratios need the live policy's own sampling logprobs. Use "
-                "loss.action='ce' to distill frozen-model tokens."
+                f"algorithm '{self.name}': advantage '{self.advantage.type}' trains with the rl loss "
+                f"core but sampling.source='{self.sampling.source}' — importance ratios need the live "
+                "policy's own sampling logprobs. Use the 'supervised' advantage (sft_distill) to "
+                "distill frozen-model tokens."
             )
         return self
 
@@ -377,6 +392,7 @@ class AlgorithmConfig(BaseConfig):
             warnings.warn(
                 f"Env '{env_name}' uses group-relative advantage (algorithm '{self.name}') with "
                 "group_size=1 — every advantage is 0 and (with the default zero-advantage filter) "
-                "no rollout will train. Set group_size >= 2 or advantage.type='none'.",
+                "no rollout will train. Set group_size >= 2 or a non-group-relative advantage "
+                "(e.g. advantage.type='reward').",
                 stacklevel=2,
             )

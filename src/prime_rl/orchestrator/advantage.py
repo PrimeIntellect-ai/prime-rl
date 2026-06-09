@@ -12,16 +12,11 @@ if TYPE_CHECKING:
     from prime_rl.orchestrator.types import TrainRollout
 
 from prime_rl.configs.algorithm import (
-    AdvantageConfig,
-    CustomAdvantageConfig,
     LengthPenaltyConfig,
-    NoAdvantageConfig,
-    RewardAdvantageConfig,
     TokensLengthPenaltyConfig,
     TurnsLengthPenaltyConfig,
 )
 from prime_rl.orchestrator.utils import get_model_completion_len, get_tool_response_len
-from prime_rl.utils.utils import import_object
 
 
 @dataclass
@@ -113,37 +108,6 @@ def _efficiency_shaping(
     # Shape rewards: correct rollouts amplified by up to 2x, incorrect untouched
     shaped_rewards = rewards * (1 + bonus * correct_mask)
     return shaped_rewards - shaped_rewards.mean()
-
-
-def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
-    """Setup advantage function from config."""
-    if isinstance(config, CustomAdvantageConfig):
-        custom_fn = import_object(config.import_path)
-        kwargs = config.kwargs
-
-        def advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
-            return custom_fn(inputs, **kwargs)
-
-        return advantage_fn
-
-    if isinstance(config, RewardAdvantageConfig):
-
-        def advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
-            return AdvantageOutputs(advantages=[r["reward"] for r in inputs.rollouts])
-
-        return advantage_fn
-
-    if isinstance(config, NoAdvantageConfig):
-
-        def advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
-            return AdvantageOutputs(advantages=[None] * len(inputs.rollouts))
-
-        return advantage_fn
-
-    def advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
-        return default_advantage_fn(inputs, length_penalty=config.length_penalty)
-
-    return advantage_fn
 
 
 def assign_advantages(

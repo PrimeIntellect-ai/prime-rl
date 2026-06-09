@@ -11,7 +11,7 @@ from prime_rl.configs.algorithm import (
     POLICY_MODEL,
     AdvantageConfig,
     AlgorithmConfig,
-    DefaultAdvantageConfig,
+    GroupNormAdvantageConfig,
     RewardAdvantageConfig,
 )
 from prime_rl.configs.shared import (
@@ -489,7 +489,7 @@ class OrchestratorConfig(BaseConfig):
 
     models: dict[str, HostedModelConfig] = {}
     """Named frozen hosted models, referenced from algorithm components by key
-    (e.g. ``token_scorer.model = "ref"`` → ``[orchestrator.models.ref]``). The
+    (e.g. ``advantage.model = "ref"`` → ``[orchestrator.models.ref]``). The
     same entry can serve any number of roles (distillation reference, frozen
     sampler, ...). Frozen entries are externally hosted: ``client.base_url``
     is required and prime-rl never updates their weights."""
@@ -530,7 +530,7 @@ class OrchestratorConfig(BaseConfig):
     eval: EvalConfig | None = None
     """Evaluation configuration."""
 
-    advantage: AdvantageConfig | None = Field(DefaultAdvantageConfig(), exclude=True)
+    advantage: AdvantageConfig | None = Field(GroupNormAdvantageConfig(), exclude=True)
     """Shorthand for ``algorithm.advantage``, folded into the resolved
     algorithm (and inherited by envs without their own algorithm). Write-only
     input sugar — excluded from dumps so resolved configs round-trip."""
@@ -753,6 +753,9 @@ class OrchestratorConfig(BaseConfig):
                     f"{owner}: 'advantage' shorthand conflicts with the explicit 'algorithm.advantage'. Set one."
                 )
             algorithm.advantage = advantage
+            # Assignment after validation bypasses the model validators —
+            # re-check the component matrix against the folded strategy.
+            algorithm.validate_component_compatibility()
 
         # Explicit ``advantage = "None"`` historically meant "advantage = raw
         # reward" — translate to the explicit type.
@@ -822,7 +825,7 @@ class OrchestratorConfig(BaseConfig):
         if unused:
             raise ValueError(
                 f"[orchestrator.models] entries {unused} are not referenced by any train env's algorithm. "
-                "Remove them or point an algorithm component (sampling.source / token_scorer.model) at them."
+                "Remove them or point an algorithm component (sampling.source / advantage.model) at them."
             )
         return self
 

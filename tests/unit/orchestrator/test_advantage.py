@@ -5,7 +5,6 @@ import pytest
 
 from prime_rl.configs.algorithm import (
     CustomAdvantageConfig,
-    DefaultAdvantageConfig,
     TokensLengthPenaltyConfig,
     TurnsLengthPenaltyConfig,
 )
@@ -14,8 +13,8 @@ from prime_rl.orchestrator.advantage import (
     AdvantageOutputs,
     assign_advantages,
     default_advantage_fn,
-    setup_advantage_fn,
 )
+from prime_rl.orchestrator.algorithms import CustomAdvantage
 from prime_rl.orchestrator.types import TrainRollout
 
 
@@ -269,8 +268,7 @@ def _train_rollouts(rewards: list[float]) -> list[TrainRollout]:
 
 def test_assign_advantages_writes_field():
     rollouts = _train_rollouts([1.0, 0.5, 0.8])
-    fn = setup_advantage_fn(DefaultAdvantageConfig())
-    assign_advantages(rollouts, fn)
+    assign_advantages(rollouts, default_advantage_fn)
     advs = [r.advantage for r in rollouts]
     assert sum(advs) == pytest.approx(0.0, abs=1e-6)
 
@@ -285,21 +283,20 @@ def test_assign_advantages_without_fn_is_reward():
 def test_assign_advantages_singleton_group_is_zero():
     """A group of size 1 has reward == mean, so its advantage is 0."""
     rollouts = _train_rollouts([0.7])
-    fn = setup_advantage_fn(DefaultAdvantageConfig())
-    assign_advantages(rollouts, fn)
+    assign_advantages(rollouts, default_advantage_fn)
     assert rollouts[0].advantage == pytest.approx(0.0, abs=1e-6)
 
 
-def test_setup_advantage_fn_with_custom_config():
+def test_custom_advantage_strategy():
     config = CustomAdvantageConfig(
         import_path="tests.unit.orchestrator.test_advantage._dummy_custom_advantage",
         kwargs={"scale": 2.0},
     )
-    advantage_fn = setup_advantage_fn(config)
+    strategy = CustomAdvantage(config)
 
     inputs = _make_group(rewards=[1.0, 0.5, 0.8], completion_lengths=[10, 12, 8])
 
-    result = advantage_fn(inputs)
+    result = strategy.advantage_fn(inputs)
     assert isinstance(result, AdvantageOutputs)
     assert result.advantages == pytest.approx([2.0, 1.0, 1.6], abs=1e-6)
 

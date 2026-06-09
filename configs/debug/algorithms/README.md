@@ -10,6 +10,7 @@ Minimal end-to-end configs for the algorithm presets against bundled verifiers e
 | `sft_distill.toml` | `sft_distill` | local vLLM (`Qwen3-0.6B-Reverse-Text-RL`) | |
 | `sft_distill_lora.toml` | `sft_distill` | local vLLM (`Qwen3-0.6B-Reverse-Text-RL`) | trains a LoRA adapter (rank 8) |
 | `sft_distill_external.toml` | `sft_distill` | PI inference (`openai/gpt-5-mini`) | external OAI endpoint; no local server |
+| `self_distill.toml` | `self_distill` | none (`model = "policy"`) | SDFT against the live policy; demo from reverse-text's `answer` field |
 | `echo.toml` | `echo` | none | multi-turn `alphabet-sort`; CE on observation tokens |
 
 The policy inference server is auto-launched on GPU 0 at `http://localhost:8000/v1` with `gpu_memory_utilization=0.5`. The local frozen model (used by `opd*.toml` and `sft_distill.toml` / `sft_distill_lora.toml`) is **not** auto-launched — start it manually on GPU 1.
@@ -45,6 +46,9 @@ uv run rl @ configs/debug/algorithms/sft_distill_lora.toml
 # SFT distillation from openai/gpt-5-mini via PI inference
 # (requires PRIME_API_KEY + PRIME_TEAM_ID in env; no local frozen model needed)
 uv run rl @ configs/debug/algorithms/sft_distill_external.toml
+
+# Self-distillation against the live policy (no frozen model)
+uv run rl @ configs/debug/algorithms/self_distill.toml
 
 # ECHO (no frozen model; multi-turn env)
 uv run rl @ configs/debug/algorithms/echo.toml

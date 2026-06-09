@@ -1,8 +1,8 @@
 """Orchestrator-side algorithm runtime.
 
 The config side (``prime_rl.configs.algorithm``) defines *what* an algorithm
-is — a preset of sampling, scoring (advantage + token scorer), and loss
-routing. This module turns that declaration into runtime objects:
+is — a preset of sampling, advantage, and loss routing. This module turns
+that declaration into runtime objects:
 
 - :class:`ModelRegistry` — named inference pools. ``"policy"`` is the live
   policy; every other entry is a frozen hosted model from
@@ -12,9 +12,11 @@ routing. This module turns that declaration into runtime objects:
   component that interprets ``AlgorithmConfig``. The pipeline (dispatcher,
   train sink, orchestrator) calls its hooks and reads its properties; it
   never branches on algorithm config fields.
-- **Token scorers** — async per-sample scoring that attaches per-token data
-  by querying a reference model from the registry (bounded concurrency).
-  Runs at batch-ship time via :func:`score_train_batch`.
+- **Advantage strategies** — one runtime object per ``AdvantageConfig`` union
+  member, owning both execution points of the training signal: group-time
+  scalar assignment (``assign``, cheap and synchronous) and ship-time
+  reference scoring (``score``, async inference against a registry model with
+  bounded concurrency, run via :func:`score_train_batch`).
 """
 
 from __future__ import annotations
@@ -22,20 +24,26 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from itertools import cycle
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from prime_rl.configs.algorithm import (
     POLICY_MODEL,
+    AdvantageConfig,
     AlgorithmConfig,
-    DemoLogprobsScorerConfig,
-    LogprobsScorerConfig,
+    CustomAdvantageConfig,
+    DemoRefKLAdvantageConfig,
+    GroupNormAdvantageConfig,
+    LengthPenaltyConfig,
     LossRoutingConfig,
-    TokenScorerConfig,
+    RefKLAdvantageConfig,
+    RewardAdvantageConfig,
+    SupervisedAdvantageConfig,
 )
-from prime_rl.orchestrator.advantage import assign_advantages, setup_advantage_fn
+from prime_rl.orchestrator.advantage import AdvantageInputs, AdvantageOutputs, assign_advantages, default_advantage_fn
 from prime_rl.orchestrator.utils import compute_prefill_logprobs
 from prime_rl.transport import TrainingSample
 from prime_rl.transport.types import LOSS_CORE_CE, LOSS_CORE_REF_KL, LOSS_CORE_RL
+from prime_rl.utils.utils import import_object
 
 if TYPE_CHECKING:
     from transformers.tokenization_utils import PreTrainedTokenizer
@@ -70,17 +78,16 @@ class ModelRegistry:
         return name == POLICY_MODEL
 
 
-def stamp_loss_routing(sample: TrainingSample, loss: LossRoutingConfig) -> None:
+def stamp_loss_routing(sample: TrainingSample, action_core: int, loss: LossRoutingConfig) -> None:
     """Stamp the env's loss routing onto one sample's wire fields.
 
-    Action tokens (the trainable completion tokens) get the configured action
-    core. When the algorithm trains on observations, env-provided tokens
-    (tagged by ``interleave_rollout`` in ``completion_obs_mask``) flip from
-    masked-out to trainable on the CE core with ``observation_weight``.
-    ``completion_obs_mask`` is orchestrator-internal and cleared here so it
-    never ships.
+    Action tokens (the trainable completion tokens) get the advantage
+    strategy's loss core. When the algorithm trains on observations,
+    env-provided tokens (tagged by ``interleave_rollout`` in
+    ``completion_obs_mask``) flip from masked-out to trainable on the CE core
+    with ``observation_weight``. ``completion_obs_mask`` is
+    orchestrator-internal and cleared here so it never ships.
     """
-    action_core = ACTION_LOSS_CORES[loss.action]
     sample.loss_core = action_core
     obs_mask = sample.completion_obs_mask
     sample.completion_obs_mask = None
@@ -102,18 +109,86 @@ def stamp_loss_routing(sample: TrainingSample, loss: LossRoutingConfig) -> None:
     sample.token_loss_weights = weights
 
 
-class TokenScorer(Protocol):
-    async def score(self, rollouts: list[TrainRollout]) -> None: ...
+# ---------------------------------------------------------------------------
+# Advantage strategies
+# ---------------------------------------------------------------------------
 
 
-class LogprobsScorer:
-    """Fill ``TrainingSample.ref_logprobs`` by scoring each sample's own
-    context under the reference model (on-policy distillation)."""
+def _assign_group_norm(rollouts: list[TrainRollout], length_penalty: LengthPenaltyConfig | None) -> None:
+    assign_advantages(rollouts, lambda inputs: default_advantage_fn(inputs, length_penalty=length_penalty))
 
-    def __init__(self, config: LogprobsScorerConfig, registry: ModelRegistry):
+
+class AdvantageStrategy:
+    """Runtime counterpart of one ``AdvantageConfig`` union member.
+
+    Two execution points: ``assign`` runs at group finalization and sets
+    rollout-level scalars; ``score`` runs at batch-ship time and attaches
+    per-token reference data by querying a registry model. Subclasses
+    override what they use — the defaults assign no scalars (rollouts keep
+    ``advantage=None``, so advantage-based filters skip them) and score
+    nothing."""
+
+    def assign(self, rollouts: list[TrainRollout]) -> None:
+        pass
+
+    async def score(self, rollouts: list[TrainRollout]) -> None:
+        pass
+
+
+class GroupNormAdvantage(AdvantageStrategy):
+    """GRPO: scalar advantage = reward minus the per-group mean baseline."""
+
+    def __init__(self, config: GroupNormAdvantageConfig):
+        self.length_penalty = config.length_penalty
+
+    def assign(self, rollouts: list[TrainRollout]) -> None:
+        _assign_group_norm(rollouts, self.length_penalty)
+
+
+class RewardAdvantage(AdvantageStrategy):
+    """Scalar advantage = raw reward, no group baseline."""
+
+    def assign(self, rollouts: list[TrainRollout]) -> None:
+        assign_advantages(rollouts, None)
+
+
+class CustomAdvantage(AdvantageStrategy):
+    """User-supplied scalar advantage function."""
+
+    def __init__(self, config: CustomAdvantageConfig):
+        custom_fn = import_object(config.import_path)
+        kwargs = config.kwargs
+
+        def advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
+            return custom_fn(inputs, **kwargs)
+
+        self.advantage_fn = advantage_fn
+
+    def assign(self, rollouts: list[TrainRollout]) -> None:
+        assign_advantages(rollouts, self.advantage_fn)
+
+
+class SupervisedAdvantage(AdvantageStrategy):
+    """SFT distillation: the CE core ignores scalars, but group-relative
+    scalars are still assigned so reward-based filtering keeps working."""
+
+    def assign(self, rollouts: list[TrainRollout]) -> None:
+        _assign_group_norm(rollouts, None)
+
+
+class RefKLAdvantage(AdvantageStrategy):
+    """On-policy distillation: group-relative scalars (their sign steers the
+    DPPO masking direction in the ``ref_kl`` core) plus
+    ``TrainingSample.ref_logprobs`` from scoring each sample's own context
+    under the reference model."""
+
+    def __init__(self, config: RefKLAdvantageConfig, registry: ModelRegistry):
         assert config.model is not None
         self.config = config
         self.registry = registry
+
+    def assign(self, rollouts: list[TrainRollout]) -> None:
+        _assign_group_norm(rollouts, self.config.length_penalty)
 
     async def score(self, rollouts: list[TrainRollout]) -> None:
         pool = self.registry.get(self.config.model)
@@ -130,9 +205,10 @@ class LogprobsScorer:
         )
 
 
-class DemoLogprobsScorer:
-    """Fill ``TrainingSample.ref_logprobs`` by scoring each sample's completion
-    under the reference model conditioned on an expert demonstration (SDFT).
+class DemoRefKLAdvantage(AdvantageStrategy):
+    """Self-distillation (SDFT): fill ``TrainingSample.ref_logprobs`` by
+    scoring each sample's completion under the reference model conditioned on
+    an expert demonstration. No scalar advantage is assigned.
 
     The scoring prefix is rebuilt from the rollout's first-turn prompt
     messages with the demonstration woven into the last user message; the
@@ -140,7 +216,7 @@ class DemoLogprobsScorer:
     sample's prompt positions are 0.0 and stay outside the loss mask).
     """
 
-    def __init__(self, config: DemoLogprobsScorerConfig, registry: ModelRegistry, tokenizer: PreTrainedTokenizer):
+    def __init__(self, config: DemoRefKLAdvantageConfig, registry: ModelRegistry, tokenizer: PreTrainedTokenizer):
         assert config.model is not None
         self.config = config
         self.registry = registry
@@ -150,7 +226,7 @@ class DemoLogprobsScorer:
         trajectory = rollout.raw.get("trajectory") or []
         if len(trajectory) != 1:
             raise ValueError(
-                f"demo_logprobs supports single-step trajectories only; "
+                f"demo_ref_kl supports single-step trajectories only; "
                 f"env '{rollout.env_name}' produced {len(trajectory)} steps."
             )
         info = rollout.raw.get("info") or {}
@@ -159,18 +235,18 @@ class DemoLogprobsScorer:
             demonstration = rollout.raw.get(self.config.demo_key)
         if demonstration is None:
             raise ValueError(
-                f"demo_logprobs requires '{self.config.demo_key}' in the example's info dict or as a "
+                f"demo_ref_kl requires '{self.config.demo_key}' in the example's info dict or as a "
                 f"top-level rollout field (env '{rollout.env_name}', example {rollout.example_id})."
             )
 
         messages = [dict(m) for m in trajectory[0]["prompt"]]
         user_indices = [i for i, m in enumerate(messages) if m.get("role") == "user"]
         if not user_indices:
-            raise ValueError(f"demo_logprobs found no user message to condition (env '{rollout.env_name}').")
+            raise ValueError(f"demo_ref_kl found no user message to condition (env '{rollout.env_name}').")
         last_user = messages[user_indices[-1]]
         question = last_user.get("content")
         if not isinstance(question, str):
-            raise ValueError("demo_logprobs supports text-only prompts (user content must be a string).")
+            raise ValueError("demo_ref_kl supports text-only prompts (user content must be a string).")
         last_user["content"] = self.config.template.format(question=question, demonstration=demonstration)
 
         # ``return_dict=False`` pins the flat token-id list — newer
@@ -199,14 +275,21 @@ class DemoLogprobsScorer:
         )
 
 
-def setup_token_scorer(
-    config: TokenScorerConfig | None, registry: ModelRegistry, tokenizer: PreTrainedTokenizer
-) -> TokenScorer | None:
-    if config is None:
-        return None
-    if isinstance(config, LogprobsScorerConfig):
-        return LogprobsScorer(config, registry)
-    return DemoLogprobsScorer(config, registry, tokenizer)
+def setup_advantage_strategy(
+    config: AdvantageConfig, registry: ModelRegistry, tokenizer: PreTrainedTokenizer
+) -> AdvantageStrategy:
+    if isinstance(config, GroupNormAdvantageConfig):
+        return GroupNormAdvantage(config)
+    if isinstance(config, RewardAdvantageConfig):
+        return RewardAdvantage()
+    if isinstance(config, CustomAdvantageConfig):
+        return CustomAdvantage(config)
+    if isinstance(config, SupervisedAdvantageConfig):
+        return SupervisedAdvantage()
+    if isinstance(config, RefKLAdvantageConfig):
+        return RefKLAdvantage(config, registry)
+    assert isinstance(config, DemoRefKLAdvantageConfig)
+    return DemoRefKLAdvantage(config, registry, tokenizer)
 
 
 class Algorithm:
@@ -220,8 +303,8 @@ class Algorithm:
         self.registry = registry
         self.sampling_source: str = config.sampling.source
         self.loss = config.loss
-        self.advantage_fn = setup_advantage_fn(config.advantage)
-        self.token_scorer = setup_token_scorer(config.token_scorer, registry, tokenizer)
+        self.action_core = ACTION_LOSS_CORES[config.advantage.action_core]
+        self.advantage = setup_advantage_strategy(config.advantage, registry, tokenizer)
 
     @property
     def name(self) -> str:
@@ -246,30 +329,31 @@ class Algorithm:
         return args
 
     def finalize_group(self, rollouts: list[TrainRollout]) -> None:
-        """Score one finalized group: assign group-level advantages, then
-        stamp each sample's wire fields (advantage + loss routing)."""
-        assign_advantages(rollouts, self.advantage_fn)
+        """Score one finalized group: assign scalar advantages, then stamp
+        each sample's wire fields (advantage + loss routing)."""
+        self.advantage.assign(rollouts)
         for rollout in rollouts:
             for sample in rollout.samples:
-                # ``advantage=None`` (NoAdvantageConfig) ships as neutral 0.0;
-                # the rollout keeps None so advantage-based filters skip it.
+                # Strategies without scalars leave ``rollout.advantage=None``
+                # (advantage-based filters skip it); the wire ships a
+                # neutral 0.0.
                 sample.advantage = rollout.advantage if rollout.advantage is not None else 0.0
                 sample.reward = rollout.reward
                 sample.env_name = rollout.env_name
-                stamp_loss_routing(sample, self.loss)
+                stamp_loss_routing(sample, self.action_core, self.loss)
 
     async def score_batch(self, rollouts: list[TrainRollout]) -> None:
-        """Run the token scorer over this env's rollouts at batch-ship time.
-        No-op without a scorer."""
-        if self.token_scorer is None or not rollouts:
+        """Run the advantage strategy's ship-time scoring over this env's
+        rollouts. No-op for strategies without reference scoring."""
+        if not rollouts:
             return
-        await self.token_scorer.score(rollouts)
+        await self.advantage.score(rollouts)
 
 
 async def score_train_batch(train_envs: TrainEnvs, rollouts: list[TrainRollout]) -> None:
     """Run each env's ``score_batch`` over its unfiltered rollouts,
-    concurrently across envs. Per-env concurrency is bounded by the scorer's
-    own config; envs without a scorer return immediately."""
+    concurrently across envs. Per-env concurrency is bounded by the strategy's
+    own config; envs without reference scoring return immediately."""
     by_env: dict[str, list[TrainRollout]] = defaultdict(list)
     for rollout in rollouts:
         if not rollout.is_filtered:

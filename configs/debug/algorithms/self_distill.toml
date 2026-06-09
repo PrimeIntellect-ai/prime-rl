@@ -20,7 +20,7 @@ group_size = 1
 
 [orchestrator.algorithm]
 name = "self_distill"
-token_scorer = { type = "demo_logprobs", model = "policy", demo_key = "answer" }
+advantage = { type = "demo_ref_kl", model = "policy", demo_key = "answer" }
 
 [orchestrator.renderer]
 name = "qwen3"

@@ -17,7 +17,7 @@ This page covers the math and the configurable algorithmic components: the algor
 - [Advantage](#advantage)
   - [Default Advantage](#default-advantage)
   - [Custom Advantage](#custom-advantage)
-  - [Token Scorers](#token-scorers)
+  - [Reference-Scoring Strategies](#reference-scoring-strategies)
 - [Filters](#filters)
 - [Difficulty Pools](#difficulty-pools)
 - [Online Difficulty Filtering](#online-difficulty-filtering)
@@ -32,10 +32,8 @@ This page covers the math and the configurable algorithmic components: the algor
 A training algorithm in `prime-rl` is a bundle of three components, configured under `[orchestrator.algorithm]`:
 
 1. **Sampling** (`algorithm.sampling`) — which model generates train rollouts. `source` is a model reference: `"policy"` (the live policy, the default) or any [model-registry](#the-model-registry) key (a frozen hosted model). Group sizing stays on the env config (`group_size`).
-2. **Scoring** — how finished rollouts become per-token training signal:
-   - `algorithm.advantage` — group-level advantage assignment (e.g. GRPO group-norm).
-   - `algorithm.token_scorer` — optional async per-sample scoring that attaches per-token data by querying a reference model (e.g. prefill logprobs for distillation), with bounded concurrency.
-3. **Loss routing** (`algorithm.loss`) — which loss core applies to which tokens: `action` selects the core for model-generated tokens (`rl` / `ce` / `ref_kl`), `observation` optionally trains on env-provided tokens (tool output, terminal responses) with weight `observation_weight`.
+2. **Advantage** (`algorithm.advantage`) — the per-token training signal, one concept at different granularities and evaluation sites. Group-relative strategies compute scalars on the orchestrator and ship numbers; reference-KL strategies query a reference model at batch-ship time (bounded concurrency) and ship its prefill logprobs for the trainer to evaluate against the live policy. The strategy determines which loss core consumes the action tokens (`rl` / `ce` / `ref_kl`).
+3. **Loss routing** (`algorithm.loss`) — what happens to env-provided observation tokens in multi-turn rollouts (tool output, terminal responses): `observation = "none"` masks them out (the default), `"ce"` trains on them with weight `observation_weight`.
 
 The trainer is algorithm-blind: routing ships per token on the wire (`loss_core` / `token_loss_cores` / `token_loss_weights` on each training sample) and the trainer just executes loss cores. Adding an algorithm never touches the dispatcher, packer, or trainer hot path.
 
@@ -50,10 +48,10 @@ client.base_url = ["http://localhost:8001/v1"]
 
 [orchestrator.algorithm]
 name = "opd"
-model = "qwen-32b"   # folds into token_scorer.model
+model = "qwen-32b"   # folds into advantage.model
 ```
 
-`algorithm.model` is shorthand for whichever component reference the preset leaves unresolved (`token_scorer.model` for `opd` / `self_distill`, `sampling.source` for `sft_distill`); set the component fields directly for multi-model setups. Registry references are validated at config time: every reference must name `"policy"` or a registered entry, and every entry must be referenced by some env's algorithm.
+`algorithm.model` is shorthand for whichever component reference the preset leaves unresolved (`advantage.model` for `opd` / `self_distill`, `sampling.source` for `sft_distill`); set the component fields directly for multi-model setups. Registry references are validated at config time: every reference must name `"policy"` or a registered entry, and every entry must be referenced by some env's algorithm.
 
 Liveness is a property of the registry entry, not of any role: rollouts sampled from `"policy"` get version-salted prefix caches, carry sampling logprobs for importance ratios, and age off-policy as weights update; rollouts and scores from frozen entries get a stable prefix cache and never go stale. Frozen entries are externally hosted (`client.base_url` is required) — `prime-rl` never launches or updates them.
 
@@ -66,17 +64,17 @@ Pick a vetted preset by name:
 name = "grpo"  # the default
 ```
 
-| Preset | Sampling | Advantage | Token scorer | Loss routing | What it is |
-|---|---|---|---|---|---|
-| `grpo` | policy | `default` (group-norm) | — | `rl` on actions | Standard group-relative RL. |
-| `opd` | policy | `default` | `logprobs` | `ref_kl` on actions | On-policy distillation ([Thinking Machines](https://thinkingmachines.ai/blog/on-policy-distillation/)): the policy samples, per-token reverse KL against a reference model as the gradient signal. Needs `model = "<registry key>"`. |
-| `sft_distill` | *(set via `model`)* | `default` | — | `ce` on actions | Hard distillation: a frozen model generates rollouts, the policy trains with CE on its tokens. Needs `model = "<registry key>"`. |
-| `self_distill` | policy | `none` | `demo_logprobs` | `ref_kl` on actions | SDFT ([arXiv:2601.19897](https://arxiv.org/abs/2601.19897)): the model is its own reference, conditioned on an expert demonstration. `model = "policy"` is the paper's setting and needs no extra deployment; point at a registry entry to score under a frozen copy instead. |
-| `echo` | policy | `default` | — | `rl` on actions + weighted `ce` on observations | ECHO: standard GRPO plus a cross-entropy loss on env-observation tokens already present in the rollout (`observation_weight` is ECHO's λ). |
+| Preset | Sampling | Advantage | Loss | What it is |
+|---|---|---|---|---|
+| `grpo` | policy | `group_norm` | `rl` on actions | Standard group-relative RL. |
+| `opd` | policy | `ref_kl` | `ref_kl` on actions | On-policy distillation ([Thinking Machines](https://thinkingmachines.ai/blog/on-policy-distillation/)): the policy samples, per-token reverse KL against a reference model as the gradient signal. Needs `model = "<registry key>"`. |
+| `sft_distill` | *(set via `model`)* | `supervised` | `ce` on actions | Hard distillation: a frozen model generates rollouts, the policy trains with CE on its tokens. Needs `model = "<registry key>"`. |
+| `self_distill` | policy | `demo_ref_kl` | `ref_kl` on actions | SDFT ([arXiv:2601.19897](https://arxiv.org/abs/2601.19897)): the model is its own reference, conditioned on an expert demonstration. `model = "policy"` is the paper's setting and needs no extra deployment; point at a registry entry to score under a frozen copy instead. |
+| `echo` | policy | `group_norm` | `rl` on actions + weighted `ce` on observations | ECHO: standard GRPO plus a cross-entropy loss on env-observation tokens already present in the rollout (`observation_weight` is ECHO's λ). |
 
 ### Customizing Components
 
-Every component can be overridden individually — preset fields you don't set are kept (for `sampling` / `loss`, field-by-field; `advantage` / `token_scorer` are replaced wholesale when set):
+Every component can be overridden individually — preset fields you don't set are kept (for `sampling` / `loss`, field-by-field; `advantage` is a discriminated union, replaced wholesale when set):
 
 ```toml
 [orchestrator.algorithm]
@@ -90,7 +88,7 @@ type = "custom"
 import_path = "my_module.normalized_advantage"
 ```
 
-Component compatibility is validated at config time: `ref_kl` loss requires a logprobs-filling token scorer, frozen-model sampling cannot feed the `rl` loss (no policy sampling logprobs for importance ratios), a plain `logprobs` scorer pointed at `"policy"` is rejected as degenerate (zero KL), and group-relative advantage with `group_size = 1` warns that every advantage collapses to zero.
+Component compatibility is validated at config time: frozen-model sampling cannot feed an `rl`-core advantage (no policy sampling logprobs for importance ratios), `ref_kl` pointed at `"policy"` is rejected as degenerate (zero KL), and group-relative advantage with `group_size = 1` warns that every advantage collapses to zero.
 
 ### Per-Env Algorithms
 
@@ -125,11 +123,11 @@ Step indices are 0-indexed so the gap holds at startup — inference is exactly 
 
 ### Loss Cores and Routing
 
-The trainer executes three fixed **loss cores**; the orchestrator routes every token to one of them (per the env algorithm's `loss` config), and tokens of different cores pack freely into the same micro batch:
+The trainer executes three fixed **loss cores**; the orchestrator routes every token to one of them (action tokens to the advantage strategy's core, observation tokens per the env algorithm's `loss` config), and tokens of different cores pack freely into the same micro batch:
 
-- `rl` — the configured RL loss (`[trainer.loss]`): DPPO + KL by default, or a [custom loss](#custom-loss).
-- `ce` — masked NLL. Used for frozen-model tokens (`sft_distill`) and env-observation tokens (`echo`).
-- `ref_kl` — the DPPO machinery with the per-token reverse KL to a reference model ($\log \pi_{\text{ref}} - \log \pi$) as the policy-gradient signal (`opd`, `self_distill`). Requires `ref_logprobs` from a [token scorer](#token-scorers); the scoring model must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
+- `rl` — the configured RL loss (`[trainer.loss]`): DPPO + KL by default, or a [custom loss](#custom-loss). Fed by the scalar advantage strategies (`group_norm`, `reward`, `custom`).
+- `ce` — masked NLL. Used for frozen-model tokens (`supervised` / `sft_distill`) and env-observation tokens (`echo`).
+- `ref_kl` — the DPPO machinery with the per-token reverse KL to a reference model ($\log \pi_{\text{ref}} - \log \pi$) as the policy-gradient signal (`opd`, `self_distill`). Requires `ref_logprobs` from a [reference-scoring strategy](#reference-scoring-strategies); the scoring model must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
 
 ### Default RL Loss
 
@@ -221,14 +219,16 @@ Anything you put in `metrics` is averaged across sequences and logged with the o
 
 ## Advantage
 
-The group-level advantage is the `advantage` component of the [algorithm](#the-algorithm-abstraction). `[orchestrator.advantage]` (and per-env `advantage = {...}`) is shorthand for `algorithm.advantage`. Types:
+The advantage strategy is the `advantage` component of the [algorithm](#the-algorithm-abstraction) — every training signal is an advantage, varying in granularity (group-scalar vs. per-token) and evaluation site (orchestrator vs. trainer). `[orchestrator.advantage]` (and per-env `advantage = {...}`) is shorthand for `algorithm.advantage`. Types:
 
-| Type | Effect |
-|---|---|
-| `default` | Group-norm (GRPO): reward minus per-group baseline, optional length penalty. |
-| `reward` | Advantage = raw reward, no baseline. |
-| `none` | No advantage — rollouts keep `advantage = None` (advantage-based filters never fire) and ship a neutral 0.0. For algorithms whose signal doesn't come from rewards (e.g. `self_distill`). |
-| `custom` | Your function (below). |
+| Type | Loss core | Effect |
+|---|---|---|
+| `group_norm` | `rl` | Group-norm (GRPO): reward minus per-group baseline, optional length penalty. |
+| `reward` | `rl` | Advantage = raw reward, no baseline. |
+| `ref_kl` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`model`, a registry key), evaluated in the trainer from shipped reference logprobs. Group-relative scalars are still assigned (their sign steers the DPPO masking direction; the zero-advantage filter reads them). |
+| `demo_ref_kl` | `ref_kl` | SDFT: per-token reverse KL to a demo-conditioned reference. No scalars — rollouts keep `advantage = None` (advantage-based filters never fire) and ship a neutral 0.0. |
+| `supervised` | `ce` | Cross-entropy on the sampled tokens (`sft_distill`). The loss ignores scalars, but group-relative scalars are still assigned so reward-based filtering keeps working. |
+| `custom` | `rl` | Your function (below). |
 
 ### Default Advantage
 
@@ -236,10 +236,10 @@ The default advantage is per-group reward minus per-group baseline (DR-GRPO with
 
 This is intentionally simple — it does the right thing for most envs. Switch to a [custom advantage](#custom-advantage) when you need group-aware shaping that depends on trajectory metadata (sub-agent rollouts, relative-rank shaping, …).
 
-Two built-in **length penalties** can be layered on top of any advantage to discourage rambling:
+Two built-in **length penalties** (`length_penalty` on the `group_norm` / `ref_kl` strategies) can be layered on top to discourage rambling:
 
-- `[orchestrator.length_penalty] type = "tokens"` — penalizes long completions in tokens, with configurable target and slope.
-- `[orchestrator.length_penalty] type = "turns"` — penalizes long multi-turn rollouts by turn count.
+- `[orchestrator.advantage.length_penalty] type = "tokens"` — penalizes long completions by weighted token cost.
+- `[orchestrator.advantage.length_penalty] type = "turns"` — penalizes long multi-turn rollouts by turn count.
 
 
 ### Custom Advantage
@@ -273,7 +273,7 @@ kwargs = { eps = 1e-8 }
 
 ```toml
 [orchestrator.advantage]
-type = "default"  # the default every env inherits unless it overrides
+type = "group_norm"  # the default every env inherits unless it overrides
 
 [[orchestrator.train.env]]
 id = "math-env"   # inherits the default above
@@ -283,20 +283,22 @@ id = "agent-env"
 advantage = { type = "custom", import_path = "my_module.normalized_advantage" }
 ```
 
-### Token Scorers
+### Reference-Scoring Strategies
 
-Token scorers are the async half of scoring: they run at batch-ship time, query their reference model (`model`, a [registry](#the-model-registry) reference) with bounded concurrency (`max_concurrent`, default 32), and attach per-token data to each sample. Two are built in:
+The `ref_kl` / `demo_ref_kl` strategies have an async ship-time half: at batch-ship time they query their reference model (`model`, a [registry](#the-model-registry) reference) with bounded concurrency (`max_concurrent`, default 32) and attach per-token reference logprobs to each sample:
 
-- `logprobs` — score each sample's own context under the reference model via prefill; fills `ref_logprobs` for the `ref_kl` loss core (on-policy distillation). `model = "policy"` is rejected (the KL would be identically zero).
-- `demo_logprobs` — SDFT: rebuild the prompt with an expert demonstration woven into the last user message (`template`, with `{question}` / `{demonstration}` placeholders), score the policy's completion under that demo-conditioned context. `model = "policy"` scores under the live policy itself — the SDFT setting, no extra deployment. The demonstration is read from the example's `info[demo_key]`, falling back to a top-level rollout field of the same name (e.g. `answer`); single-step trajectories only.
+- `ref_kl` — score each sample's own context under the reference model via prefill; fills `ref_logprobs` for the `ref_kl` loss core (on-policy distillation). `model = "policy"` is rejected (the KL would be identically zero).
+- `demo_ref_kl` — SDFT: rebuild the prompt with an expert demonstration woven into the last user message (`template`, with `{question}` / `{demonstration}` placeholders), score the policy's completion under that demo-conditioned context. `model = "policy"` scores under the live policy itself — the SDFT setting, no extra deployment. The demonstration is read from the example's `info[demo_key]`, falling back to a top-level rollout field of the same name (e.g. `answer`); single-step trajectories only.
 
 ```toml
-[orchestrator.algorithm.token_scorer]
-type = "demo_logprobs"
+[orchestrator.algorithm.advantage]
+type = "demo_ref_kl"
 model = "policy"
 demo_key = "demonstration"
 max_concurrent = 64
 ```
+
+Only batch survivors get scored — rollouts that are filtered or cancelled never cost reference compute. The time shows up as `time/scoring` in the step timing.
 
 ## Filters
 
