@@ -126,24 +126,22 @@ class RolloutDispatcher:
         eval_envs: EvalEnvs | None,
         train_source: TrainSource,
         eval_source: EvalSource | None,
-        inference: InferencePool,
-        eval_inference: InferencePool,
+        student_inference: InferencePool,
+        teacher_inference: InferencePool | None,
         policy: Policy,
         max_inflight_rollouts: int,
         tasks_per_minute: float | None,
         max_off_policy_steps: int,
-        training_mode: Literal["rl", "opd", "sft"],
     ) -> None:
         self.policy = policy
         self.train_envs = train_envs
         self.eval_envs = eval_envs
-        # Train rollouts go to ``inference`` (the teacher in SFT mode);
-        # eval always evaluates the student, so it uses ``eval_inference``.
-        self.inference = inference
-        self.eval_inference = eval_inference
+        # Train rollouts go to the pool selected by the env's algorithm
+        # (student or teacher); eval always evaluates the student.
+        self.student_inference = student_inference
+        self.teacher_inference = teacher_inference
         self.train_source = train_source
         self.eval_source = eval_source
-        self.training_mode = training_mode
         self.max_off_policy_steps = max_off_policy_steps
 
         self.max_inflight = max_inflight_rollouts
@@ -173,14 +171,17 @@ class RolloutDispatcher:
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
 
-    @property
-    def train_model_name(self) -> str:
-        """Model name for *train* rollouts. In SFT mode train data comes from
-        the teacher pool, so use its model name; otherwise the live student
-        policy. (Eval always uses ``policy.model_name`` — the student.)"""
-        if self.training_mode == "sft":
-            return self.inference.model_name
-        return self.policy.model_name
+    def _train_pool_for(self, env_name: str) -> tuple[InferencePool, str, bool]:
+        """``(pool, model_name, is_teacher_sourced)`` for *train* rollouts of
+        this env, selected by the env algorithm's sampling source. Teacher-
+        sourced envs roll out against the frozen teacher pool; everything else
+        samples the live student policy. (Eval always uses the student.)"""
+        env = self.train_envs.get(env_name)
+        assert env.algorithm.sampling is not None
+        if env.algorithm.sampling.source == "teacher":
+            assert self.teacher_inference is not None, f"env '{env_name}' samples from teacher but no pool is set"
+            return self.teacher_inference, self.teacher_inference.model_name, True
+        return self.student_inference, self.policy.model_name, False
 
     @property
     def inflight_train_count(self) -> int:
@@ -385,14 +386,16 @@ class RolloutDispatcher:
         ready, no permits). Returns True after issuing one task — the caller
         loops to keep scheduling.
         """
-        # Train rollouts use the rollout pool (teacher in SFT) via the
-        # renderer/token train client. Eval always evaluates the student and
-        # goes through the eval client (chat-completions) — the same path the
-        # legacy orchestrator used, so eval scores stay comparable.
+        # Train rollouts use the pool selected by the env's algorithm (teacher
+        # for teacher-sourced envs) via the renderer/token train client. Eval
+        # always evaluates the student and goes through the eval client
+        # (chat-completions) — the same path the legacy orchestrator used, so
+        # eval scores stay comparable.
         if group.kind == "eval":
-            pool, model_name = self.eval_inference, self.policy.model_name
+            pool, model_name = self.student_inference, self.policy.model_name
+            teacher_sourced = False
         else:
-            pool, model_name = self.inference, self.train_model_name
+            pool, model_name, teacher_sourced = self._train_pool_for(group.env_name)
 
         # Pin a single client per group to keep prefix-cache hits
         if group.pinned_client is None:
@@ -413,10 +416,10 @@ class RolloutDispatcher:
         if env_collection is None:
             return False
         env = env_collection.get(group.env_name)
-        # SFT-mode train rollouts hit the frozen teacher pool; salting per
-        # policy version would invalidate the teacher's prefix cache every
+        # Teacher-sourced train rollouts hit the frozen teacher pool; salting
+        # per policy version would invalidate the teacher's prefix cache every
         # weight update for no reason.
-        if self.training_mode == "sft" and group.kind == "train":
+        if teacher_sourced:
             cache_salt = None
         else:
             cache_salt = str(group.policy_version_at_start)

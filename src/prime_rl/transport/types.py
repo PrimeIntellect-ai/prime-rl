@@ -1,8 +1,10 @@
-from typing import Literal
-
 import msgspec
 
-TrainingMode = Literal["rl", "opd", "sft"]
+# Per-token loss cores. The orchestrator routes each token to a core (the
+# algorithm's loss routing); the trainer just executes them.
+LOSS_CORE_RL = 0  # configured RL loss (importance-weighted PG + KL)
+LOSS_CORE_CE = 1  # masked NLL (SFT / observation prediction)
+LOSS_CORE_TEACHER_KL = 2  # per-token teacher KL as the PG signal (OPD / SDFT)
 
 
 # Encoded tensor: {dtype: "float32", shape: [...], data: <bytes>}.
@@ -52,9 +54,23 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: list[int] | None = None
 
-    # Loss dispatch is batch-driven: rl/opd use default_loss_fn (with mode-specific
-    # taus), sft uses sft_loss_fn. Stamped by the orchestrator from training_mode.
-    training_mode: TrainingMode = "rl"
+    # Loss routing, stamped by the orchestrator from the env's algorithm.
+    # ``loss_core`` is the core for every trainable token; the per-token arrays
+    # (full prompt+completion length) override it where set. ``None`` arrays
+    # mean "uniform" so the plain GRPO wire stays as small as before.
+    loss_core: int = LOSS_CORE_RL
+    token_loss_cores: list[int] | None = None
+    token_loss_weights: list[float] | None = None
+
+    # Per-token advantages (full sequence length). ``None`` broadcasts the
+    # rollout-level ``advantage`` scalar over the sequence.
+    token_advantages: list[float] | None = None
+
+    # Orchestrator-internal: marks env-provided observation tokens within
+    # ``completion_ids`` (set by ``interleave_rollout`` when the env's
+    # algorithm trains on observations). Consumed by the train sink when
+    # stamping loss routing and cleared before transport.
+    completion_obs_mask: list[bool] | None = None
 
 
 class TrainingBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -85,7 +101,9 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: list[int] | None = None
 
-    # Loss dispatch is batch-driven (rl/opd → default loss with mode-specific taus,
-    # sft → sft loss). All samples packed into a micro batch share the same mode.
-    training_mode: TrainingMode = "rl"
+    # Per-token loss routing. ``None`` means uniform: every token uses
+    # LOSS_CORE_RL with weight 1.0 — packed samples of different cores
+    # materialize the arrays.
+    loss_core_ids: list[int] | None = None
+    loss_weights: list[float] | None = None
     rewards: list[float] | None = None

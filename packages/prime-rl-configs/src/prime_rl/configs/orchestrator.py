@@ -7,6 +7,14 @@ from pydantic import AliasChoices, Field, model_serializer, model_validator
 from pydantic_core.core_schema import SerializerFunctionWrapHandler
 from renderers import AutoRendererConfig, RendererConfig
 
+from prime_rl.configs.algorithm import (
+    TRAINING_MODE_TO_ALGORITHM,
+    AdvantageConfig,
+    AlgorithmConfig,
+    DefaultAdvantageConfig,
+    RewardAdvantageConfig,
+    TrainingMode,
+)
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ClientConfig,
@@ -143,49 +151,6 @@ class EvalSamplingConfig(BaseConfig):
         return data
 
 
-class TokensLengthPenaltyConfig(BaseConfig):
-    type: Literal["tokens"] = "tokens"
-
-    completion_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
-    """Weight on model completion tokens. Finite and non-negative."""
-
-    tool_response_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
-    """Weight on tool-response tokens (read from the rollout's ``*_total_tool_response_tokens`` harness metric; 0 if absent). Finite and non-negative."""
-
-
-class TurnsLengthPenaltyConfig(BaseConfig):
-    type: Literal["turns"] = "turns"
-
-
-LengthPenaltyConfig: TypeAlias = Annotated[
-    TokensLengthPenaltyConfig | TurnsLengthPenaltyConfig,
-    Field(discriminator="type"),
-]
-
-
-class DefaultAdvantageConfig(BaseConfig):
-    type: Literal["default"] = "default"
-
-    length_penalty: LengthPenaltyConfig | None = None
-    """Correctness-gated length penalty. ``tokens`` shapes by weighted token cost; ``turns`` shapes by trajectory turn count; None disables shaping. In mixed groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost rollouts get advantage in [0, 1], others get 0."""
-
-
-class CustomAdvantageConfig(BaseConfig):
-    type: Literal["custom"] = "custom"
-
-    import_path: str
-    """Import path to the advantage function (e.g. ``my_module.my_advantage``)."""
-
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Kwargs forwarded to the advantage function."""
-
-
-AdvantageConfig: TypeAlias = Annotated[
-    DefaultAdvantageConfig | CustomAdvantageConfig,
-    Field(discriminator="type"),
-]
-
-
 class EnvConfig(BaseConfig):
     id: str = "reverse-text"
     """Registered verifiers environment ID (e.g. ``math-env``, ``primeintellect/math-env``). May include an ``@version`` suffix for installation."""
@@ -257,10 +222,15 @@ class TrainEnvConfig(EnvConfig):
     """Rollouts generated per example for GRPO group-relative advantages.
     Inherits from ``orchestrator.group_size`` when unset."""
 
+    algorithm: AlgorithmConfig | None = None
+    """Training algorithm for this env. Inherits from the top-level
+    ``orchestrator.algorithm`` when unset; set a different preset (or override
+    individual components) to give this env its own algorithm."""
+
     advantage: AdvantageConfig | None = None
-    """Advantage strategy for this env's GRPO groups. Inherits from the top-level
-    ``orchestrator.advantage`` when unset; set a different ``default``/``custom``
-    config to give this env its own advantage computation."""
+    """Shorthand for ``algorithm.advantage``. Inherits from the top-level
+    ``orchestrator.advantage`` when unset. Setting both this and an explicit
+    ``algorithm.advantage`` to different values is an error."""
 
 
 class EvalEnvConfig(EnvConfig):
@@ -505,8 +475,14 @@ class RolloutModelConfig(BaseConfig):
 
 
 class OrchestratorConfig(BaseConfig):
-    training_mode: Literal["rl", "opd", "sft"] = "rl"
-    """Training mode. ``rl``: student generates rollouts, no teacher. ``opd``: student generates rollouts, teacher computes logprobs (teacher_tau > 0). ``sft``: teacher generates rollouts, student inference pool used for evals and weight sync."""
+    algorithm: AlgorithmConfig = AlgorithmConfig()
+    """Training algorithm: a preset bundle of sampling, scoring (advantage +
+    token scorer), and loss routing. Defaults to ``grpo``. Override per env via
+    ``[[orchestrator.train.env]]``'s ``algorithm``."""
+
+    training_mode: TrainingMode = "rl"
+    """Deprecated alias for ``algorithm``: ``rl`` → ``grpo``, ``opd`` → ``opd``,
+    ``sft`` → ``sft_distill``. Use ``[orchestrator.algorithm]`` instead."""
 
     student: RolloutModelConfig = Field(RolloutModelConfig(), validation_alias=AliasChoices("student", "model"))
     """Student rollout participant (model + client) — the model being trained."""
@@ -550,6 +526,8 @@ class OrchestratorConfig(BaseConfig):
     """Evaluation configuration."""
 
     advantage: AdvantageConfig | None = DefaultAdvantageConfig()
+    """Shorthand for ``algorithm.advantage``, folded into the resolved
+    algorithm (and inherited by envs without their own algorithm)."""
 
     pre_batch_filters: list[FilterConfig] = [
         GibberishFilterConfig(enforce=False),
@@ -758,23 +736,86 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def _force_no_renderer_for_sft(self):
-        """SFT rolls out via the teacher's plain chat-completions endpoint; the
-        renderer client doesn't apply. Force ``renderer=None`` so the user
+    def resolve_algorithm(self):
+        """Translate the deprecated ``training_mode`` alias, fold the
+        ``advantage`` shorthands, and propagate the resolved algorithm into
+        every train env. Declared before any validator that reads
+        ``algorithm``."""
+        if "training_mode" in self.model_fields_set and self.training_mode != "rl":
+            expected = TRAINING_MODE_TO_ALGORITHM[self.training_mode]
+            if "algorithm" in self.model_fields_set:
+                if self.algorithm.name != expected:
+                    raise ValueError(
+                        f"training_mode='{self.training_mode}' conflicts with algorithm '{self.algorithm.name}'. "
+                        "training_mode is a deprecated alias — set [orchestrator.algorithm] only."
+                    )
+            else:
+                warnings.warn(
+                    f"'training_mode' is deprecated, use [orchestrator.algorithm] name='{expected}' instead. "
+                    "Auto-translating for now, but this will be removed in a future release.",
+                    FutureWarning,
+                    stacklevel=2,
+                )
+                self.algorithm = AlgorithmConfig.from_training_mode(self.training_mode)
+
+        def fold_advantage(algorithm: AlgorithmConfig, advantage, owner: str) -> None:
+            if "advantage" in algorithm.model_fields_set and algorithm.advantage != advantage:
+                raise ValueError(
+                    f"{owner}: 'advantage' shorthand conflicts with the explicit 'algorithm.advantage'. Set one."
+                )
+            algorithm.advantage = advantage
+
+        # Explicit ``advantage = "None"`` historically meant "advantage = raw
+        # reward" — translate to the explicit type.
+        if "advantage" in self.model_fields_set:
+            fold_advantage(self.algorithm, self.advantage or RewardAdvantageConfig(), "orchestrator")
+
+        # Envs inherit the top-level algorithm (with the shorthand already
+        # folded in); an env's own ``advantage`` shorthand applies on top of
+        # whichever algorithm the env ended up with.
+        for env_cfg in self.train.env:
+            if env_cfg.algorithm is None:
+                env_cfg.algorithm = self.algorithm.model_copy(deep=True)
+            if "advantage" in env_cfg.model_fields_set:
+                fold_advantage(
+                    env_cfg.algorithm, env_cfg.advantage or RewardAdvantageConfig(), f"env '{env_cfg.resolved_name}'"
+                )
+        return self
+
+    @property
+    def needs_teacher(self) -> bool:
+        return any(env.algorithm is not None and env.algorithm.requires_teacher for env in self.train.env)
+
+    @property
+    def all_teacher_sourced(self) -> bool:
+        """True when every train env samples rollouts from the teacher pool."""
+        return all(
+            env.algorithm is not None
+            and env.algorithm.sampling is not None
+            and env.algorithm.sampling.source == "teacher"
+            for env in self.train.env
+        )
+
+    @model_validator(mode="after")
+    def _force_no_renderer_for_teacher_sampling(self):
+        """Teacher-sourced rollouts go through the teacher's plain
+        chat-completions endpoint; the renderer client doesn't apply. When every
+        train env samples from the teacher, force ``renderer=None`` so the user
         doesn't have to remember to set it. Declared before the renderer
         validators below so they see the corrected value."""
-        if self.training_mode == "sft":
+        if self.all_teacher_sourced:
             self.renderer = None
         return self
 
     @model_validator(mode="after")
-    def validate_training_mode(self):
-        """Enforce training mode invariants that involve only orchestrator fields."""
+    def validate_teacher_config(self):
+        """The teacher pool must be configured exactly when some algorithm needs it."""
         has_teacher = self.teacher is not None
-        if self.training_mode == "rl" and has_teacher:
-            raise ValueError("orchestrator.teacher must not be set when training_mode = 'rl'.")
-        if self.training_mode in ("opd", "sft") and not has_teacher:
-            raise ValueError(f"orchestrator.teacher must be configured when training_mode = '{self.training_mode}'.")
+        if self.needs_teacher and not has_teacher:
+            names = sorted({env.algorithm.name for env in self.train.env if env.algorithm.requires_teacher})
+            raise ValueError(f"orchestrator.teacher must be configured for algorithm(s) {names}.")
+        if not self.needs_teacher and has_teacher:
+            raise ValueError("orchestrator.teacher is set but no train env's algorithm uses a teacher.")
         return self
 
     @model_validator(mode="after")
@@ -880,11 +921,8 @@ class OrchestratorConfig(BaseConfig):
         for env_cfg in self.train.env:
             if "group_size" not in env_cfg.model_fields_set:
                 env_cfg.group_size = self.group_size
-
-        # Propagate the top-level ``advantage`` into each train env that didn't set its own.
-        for env_cfg in self.train.env:
-            if "advantage" not in env_cfg.model_fields_set:
-                env_cfg.advantage = self.advantage
+            assert env_cfg.algorithm is not None  # materialized by resolve_algorithm
+            env_cfg.algorithm.warn_group_size(env_cfg.group_size, env_cfg.resolved_name)
 
         # Resolve train env num_workers from max_inflight_rollouts
         for env_cfg in self.train.env:
@@ -911,10 +949,12 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def resolve_env_config(self):
         """Populate extra_env_kwargs and vLLM sampling defaults from top-level fields."""
-        is_vllm = self.training_mode != "sft"
         for env in self.train.env:
             env.extra_env_kwargs.update(max_seq_len=self.seq_len)
-            if is_vllm:
+            # Student-sourced rollouts hit our vLLM server; teacher-sourced
+            # rollouts may hit external OAI endpoints that reject these knobs.
+            assert env.algorithm is not None and env.algorithm.sampling is not None
+            if env.algorithm.sampling.source == "student":
                 env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)
                 env.sampling.extra_body.setdefault("return_token_ids", True)

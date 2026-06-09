@@ -10,7 +10,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 - [RL Trainer](#rl-trainer)
   - [Launch](#launch)
   - [Useful Knobs](#useful-knobs)
-  - [Training Modes (RL / OPD / SFT)](#training-modes-rl--opd--sft)
+  - [Algorithms](#algorithms)
   - [Important Metrics](#important-metrics)
 - [SFT Trainer](#sft-trainer)
   - [Dataset Format](#dataset-format)
@@ -59,7 +59,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `orchestrator.batch_size` | Tasks per trainer step. |
 | `orchestrator.group_size` | Rollouts generated per task. |
 | `orchestrator.max_off_policy_steps` | How many distinct policies may have contributed to one rollout before it's discarded (default 8). The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `errored_rollouts` and `mismatch_kl/all/mean` when tuning. |
-| `orchestrator.training_mode` | `rl` (default), `opd`, or `sft`. See [Training modes](#training-modes-rl--opd--sft). |
+| `[orchestrator.algorithm]` | Training algorithm preset (`grpo` default, `opd`, `sft_distill`, `self_distill`, `echo`) with per-component overrides. See [Algorithms](#algorithms). |
 | `[[orchestrator.train.env]]` | Training environments. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Environments](configuration.md#environments-orchestratortrainenv). |
 | `[[orchestrator.eval.env]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
 
@@ -81,24 +81,28 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `--max-steps N` | Stop after `N` trainer steps. Overrides the config value. |
 | `--dry-run` | Resolve + validate the full config, write per-process TOMLs to `<output_dir>/configs/`, and exit without launching. The fastest way to debug a misbehaving config. |
 
-### Training Modes (RL / OPD / SFT)
+### Algorithms
 
-The RL entrypoint supports three training modes, switched via `orchestrator.training_mode`:
+The RL entrypoint supports several training algorithms, switched via `[orchestrator.algorithm]` (see [Algorithms](algorithms.md#the-algorithm-abstraction) for the full reference and per-component customization):
 
-| Mode | Student | Teacher | Use case |
-|---|---|---|---|
-| `rl` | Required | Forbidden | Standard RL |
-| `opd` | Required | Required, must be vLLM (needs `prompt_logprobs`) | [On-policy distillation](https://thinkingmachines.ai/blog/on-policy-distillation/): student generates rollouts, trainer minimizes KL to teacher logprobs |
-| `sft` | Required | Required, any OpenAI-compatible endpoint | Hard-distill: teacher generates rollouts, student trains on them |
+| Preset | Teacher | Use case |
+|---|---|---|
+| `grpo` (default) | Forbidden | Standard group-relative RL |
+| `opd` | Required, must be vLLM (needs `prompt_logprobs`) | [On-policy distillation](https://thinkingmachines.ai/blog/on-policy-distillation/): student generates rollouts, trainer minimizes KL to teacher logprobs |
+| `sft_distill` | Required, any OpenAI-compatible endpoint | Hard-distill: teacher generates rollouts, student trains on them |
+| `self_distill` | Required, must be vLLM, serving the student's base checkpoint | [SDFT](https://arxiv.org/abs/2601.19897): the model is its own teacher conditioned on expert demonstrations |
+| `echo` | Forbidden | GRPO plus cross-entropy on env-observation tokens |
 
-The `rl` entrypoint only manages student-policy inference. For OPD and (local-vLLM) SFT, start the teacher inference server manually and point `[orchestrator.teacher.client]` at it:
+`orchestrator.training_mode` (`rl` / `opd` / `sft`) is a deprecated alias for the `grpo` / `opd` / `sft_distill` presets.
+
+The `rl` entrypoint only manages student-policy inference. For algorithms with a teacher, start the teacher inference server manually and point `[orchestrator.teacher.client]` at it:
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 uv run inference \
   --model.name <teacher> --server.port 8001
 ```
 
-The standalone `uv run sft` entrypoint is the more traditional SFT path — pure dataset-based, no teacher, no orchestrator. Use `orchestrator.training_mode = "sft"` only when you want a teacher to generate the supervision on the fly.
+The standalone `uv run sft` entrypoint is the more traditional SFT path — pure dataset-based, no teacher, no orchestrator. Use the `sft_distill` algorithm only when you want a teacher to generate the supervision on the fly.
 
 ### Important Metrics
 

@@ -206,6 +206,7 @@ def interleave_rollout(
     mm_token_type_ids_mapping: dict[int, int] | None = None,
     *,
     env_name: str = "",
+    tag_observation_tokens: bool = False,
 ) -> list[TrainingSample] | None:
     """
     Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
@@ -221,6 +222,12 @@ def interleave_rollout(
 
     Returns a list of samples - could be 1 (extension always held) or up to T
     (extension never held).
+
+    With ``tag_observation_tokens``, each sample additionally carries
+    ``completion_obs_mask`` marking env-provided tokens within
+    ``completion_ids`` (the later-turn prompt extensions: tool output,
+    terminal responses). Algorithms that train on observations (ECHO) route
+    these tokens to the CE loss core instead of dropping them.
 
     For VLM models, each renderer-produced trajectory step carries its
     per-image processed tensors inline on ``multi_modal_data``; the last
@@ -308,6 +315,8 @@ def interleave_rollout(
             env_name=env_name,
             mm_token_type_ids=None,
             routed_experts=None,  # deferred — finalized at end of interleave_rollout
+            # A step's own completion tokens are actions, not observations
+            completion_obs_mask=[False] * len(completion_ids) if tag_observation_tokens else None,
         )
         # Initialize routed-experts state for this sample. First chunk is the
         # raw step routed_experts (no pad, no copy). running_len is the
@@ -370,11 +379,14 @@ def interleave_rollout(
         """Extend an existing sample with a new trajectory step (extension property holds)."""
         tokens = prepared_steps[step_idx]
 
-        # Extend with new prompt tokens (mask=False, no gradient)
+        # Extend with new prompt tokens (mask=False, no gradient). These are
+        # the env's response to the previous action — observation tokens.
         new_prompt_ids = tokens["prompt_ids"][prefix_len:]
         sample.completion_ids.extend(new_prompt_ids)
         sample.completion_mask.extend([False] * len(new_prompt_ids))
         sample.completion_logprobs.extend([0.0] * len(new_prompt_ids))
+        if sample.completion_obs_mask is not None:
+            sample.completion_obs_mask.extend([True] * len(new_prompt_ids))
 
         # Extend with new completion tokens
         completion_ids = tokens["completion_ids"]
@@ -384,6 +396,8 @@ def interleave_rollout(
         else:
             sample.completion_mask.extend(tokens["completion_mask"])
         sample.completion_logprobs.extend(tokens["completion_logprobs"])
+        if sample.completion_obs_mask is not None:
+            sample.completion_obs_mask.extend([False] * len(completion_ids))
 
         step_routed = tokens.get("routed_experts")
         state = sample_routed_state.get(id(sample))

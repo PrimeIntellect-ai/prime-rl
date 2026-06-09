@@ -1,16 +1,22 @@
 # Algorithms
 
-This page covers the math and the configurable algorithmic components: how off-policy training works, the default loss and advantage functions, how to plug in your own, the filters applied between rollout and training, and how multi-turn rollouts get merged into training samples.
+This page covers the math and the configurable algorithmic components: the algorithm abstraction and its presets, how off-policy training works, the loss cores and advantage functions, how to plug in your own, the filters applied between rollout and training, and how multi-turn rollouts get merged into training samples.
 
 ## Table of Contents
 
+- [The Algorithm Abstraction](#the-algorithm-abstraction)
+  - [Presets](#presets)
+  - [Customizing Components](#customizing-components)
+  - [Per-Env Algorithms](#per-env-algorithms)
 - [Async / Off-Policy Training](#async--off-policy-training)
 - [Loss](#loss)
-  - [Default Loss](#default-loss)
+  - [Loss Cores and Routing](#loss-cores-and-routing)
+  - [Default RL Loss](#default-rl-loss)
   - [Custom Loss](#custom-loss)
 - [Advantage](#advantage)
   - [Default Advantage](#default-advantage)
   - [Custom Advantage](#custom-advantage)
+  - [Token Scorers](#token-scorers)
 - [Filters](#filters)
 - [Difficulty Pools](#difficulty-pools)
 - [Online Difficulty Filtering](#online-difficulty-filtering)
@@ -19,6 +25,71 @@ This page covers the math and the configurable algorithmic components: how off-p
   - [Best-Effort Interleaving](#best-effort-interleaving)
   - [Renderers](#renderers)
   - [Discontinuous Trajectories](#discontinuous-trajectories)
+
+## The Algorithm Abstraction
+
+A training algorithm in `prime-rl` is a bundle of three components, configured under `[orchestrator.algorithm]`:
+
+1. **Sampling** (`algorithm.sampling`) — who generates train rollouts: the live `student` policy or the frozen `teacher` pool. Group sizing stays on the env config (`group_size`).
+2. **Scoring** — how finished rollouts become per-token training signal:
+   - `algorithm.advantage` — group-level advantage assignment (e.g. GRPO group-norm).
+   - `algorithm.token_scorer` — optional async per-sample scoring that attaches per-token data by querying the teacher pool (e.g. teacher logprobs for distillation), with bounded concurrency.
+3. **Loss routing** (`algorithm.loss`) — which loss core applies to which tokens: `action` selects the core for model-generated tokens (`rl` / `ce` / `teacher_kl`), `observation` optionally trains on env-provided tokens (tool output, terminal responses) with weight `observation_weight`.
+
+The trainer is algorithm-blind: routing ships per token on the wire (`loss_core` / `token_loss_cores` / `token_loss_weights` on each training sample) and the trainer just executes loss cores. Adding an algorithm never touches the dispatcher, packer, or trainer hot path.
+
+### Presets
+
+Pick a vetted preset by name:
+
+```toml
+[orchestrator.algorithm]
+name = "grpo"  # the default
+```
+
+| Preset | Sampling | Advantage | Token scorer | Loss routing | What it is |
+|---|---|---|---|---|---|
+| `grpo` | student | `default` (group-norm) | — | `rl` on actions | Standard group-relative RL. |
+| `opd` | student | `default` | `teacher_logprobs` | `teacher_kl` on actions | On-policy distillation ([Thinking Machines](https://thinkingmachines.ai/blog/on-policy-distillation/)): student samples, per-token reverse KL against the teacher as the gradient signal. Requires `[orchestrator.teacher]`. |
+| `sft_distill` | teacher | `default` | — | `ce` on actions | Hard distillation: the teacher generates rollouts, the student trains with CE on the teacher's tokens. Requires `[orchestrator.teacher]`. |
+| `self_distill` | student | `none` | `demo_teacher_logprobs` | `teacher_kl` on actions | SDFT ([arXiv:2601.19897](https://arxiv.org/abs/2601.19897)): the model is its own teacher, conditioned on an expert demonstration from the example's `info` dict. Requires `[orchestrator.teacher]` (a pool serving the same checkpoint — v1 keeps it frozen rather than EMA-tracking the student). |
+| `echo` | student | `default` | — | `rl` on actions + weighted `ce` on observations | ECHO: standard GRPO plus a cross-entropy loss on env-observation tokens already present in the rollout (`observation_weight` is ECHO's λ). |
+
+`orchestrator.training_mode` (`rl` / `opd` / `sft`) is a deprecated alias that maps onto the `grpo` / `opd` / `sft_distill` presets.
+
+### Customizing Components
+
+Every component can be overridden individually — preset fields you don't set are kept (for `sampling` / `loss`, field-by-field; `advantage` / `token_scorer` are replaced wholesale when set):
+
+```toml
+[orchestrator.algorithm]
+name = "echo"
+
+[orchestrator.algorithm.loss]
+observation_weight = 0.25  # keep echo's routing, change lambda
+
+[orchestrator.algorithm.advantage]
+type = "custom"
+import_path = "my_module.normalized_advantage"
+```
+
+Component compatibility is validated at config time: `teacher_kl` loss requires a teacher-logprobs scorer, teacher sampling cannot feed the `rl` loss (no student sampling logprobs for importance ratios), and group-relative advantage with `group_size = 1` warns that every advantage collapses to zero.
+
+### Per-Env Algorithms
+
+All three components resolve per environment. Each env inherits `[orchestrator.algorithm]` unless it sets its own, so a single run can mix algorithms across envs — e.g. GRPO on math, ECHO on a terminal env:
+
+```toml
+[orchestrator.algorithm]
+name = "grpo"
+
+[[orchestrator.train.env]]
+id = "math-env"     # inherits grpo
+
+[[orchestrator.train.env]]
+id = "terminal-env"
+algorithm = { name = "echo" }
+```
 
 ## Async / Off-Policy Training
 
@@ -35,7 +106,15 @@ Step indices are 0-indexed so the gap holds at startup — inference is exactly 
 
 ## Loss
 
-### Default Loss
+### Loss Cores and Routing
+
+The trainer executes three fixed **loss cores**; the orchestrator routes every token to one of them (per the env algorithm's `loss` config), and tokens of different cores pack freely into the same micro batch:
+
+- `rl` — the configured RL loss (`[trainer.loss]`): DPPO + KL by default, or a [custom loss](#custom-loss).
+- `ce` — masked NLL. Used for teacher tokens (`sft_distill`) and env-observation tokens (`echo`).
+- `teacher_kl` — the DPPO machinery with the per-token teacher KL ($\log \pi_{\text{teacher}} - \log \pi$) as the policy-gradient signal (`opd`, `self_distill`). Requires teacher logprobs from a [token scorer](#token-scorers); the teacher must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
+
+### Default RL Loss
 
 The default RL loss is a DPPO policy-gradient term combined with a KL regularizer similar to Kimi-K2.5. For each prompt $x_j$ we sample a group of $G$ rollouts $\{y_i\}_{i=1}^G$, score them to get $s_i$, then optimize:
 
@@ -69,17 +148,11 @@ The knobs (under `[trainer.loss]` with `type = "default"`):
 | `adv_tau` | 1.0 | Temperature on the advantage term. Set to 0 for pure distillation (no RL signal). |
 | `kl_tau` | 1e-3 | Temperature on the KL regularizer. Set to 0 to disable. |
 
-The trainer dispatches automatically based on the batch's training mode (set by the orchestrator via `orchestrator.training_mode`):
-
-- `rl` mode → DPPO + KL with the advantage signal.
-- `opd` mode → KL distillation against the teacher's per-token logprobs. The teacher must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
-- `sft` mode → standard token-level NLL on teacher-generated rollouts.
-
-Set `[trainer.loss] type = "default"` and configure via the knobs above. SFT and OPD modes ignore the policy-gradient–specific fields.
+Set `[trainer.loss] type = "default"` and configure via the knobs above. The `ce` and `teacher_kl` cores are fixed and unaffected by `[trainer.loss]`.
 
 ### Custom Loss
 
-The loss is computed **per sequence**: you write a function that takes one sequence's tensors and returns a scalar loss. The trainer iterates and aggregates.
+`[trainer.loss] type = "custom"` replaces the `rl` core. The loss is computed **per sequence**: you write a function that takes one sequence's tensors and returns a scalar loss. The trainer iterates and aggregates. `inputs.loss_mask` selects exactly the tokens routed to the `rl` core (for a plain GRPO run, all trainable tokens).
 
 ```python
 # my_module.py
@@ -116,9 +189,10 @@ The dataclasses:
 class LossInputs:
     trainer_logprobs: Float[Tensor, "seq"]      # current policy
     inference_logprobs: Float[Tensor, "seq"]    # rollout-time policy
-    teacher_logprobs: Float[Tensor, "seq"] | None  # only set in OPD mode
+    teacher_logprobs: Float[Tensor, "seq"] | None  # set by teacher-logprobs token scorers
     advantages: Float[Tensor, "seq"]
-    loss_mask: Bool[Tensor, "seq"]
+    loss_mask: Bool[Tensor, "seq"]              # tokens routed to this core
+    loss_weights: Float[Tensor, "seq"] | None   # per-token loss weights (None = 1.0)
 
 @dataclass
 class LossOutputs:
@@ -129,6 +203,15 @@ class LossOutputs:
 Anything you put in `metrics` is averaged across sequences and logged with the other trainer metrics.
 
 ## Advantage
+
+The group-level advantage is the `advantage` component of the [algorithm](#the-algorithm-abstraction). `[orchestrator.advantage]` (and per-env `advantage = {...}`) is shorthand for `algorithm.advantage`. Types:
+
+| Type | Effect |
+|---|---|
+| `default` | Group-norm (GRPO): reward minus per-group baseline, optional length penalty. |
+| `reward` | Advantage = raw reward, no baseline. |
+| `none` | No advantage — rollouts keep `advantage = None` (advantage-based filters never fire) and ship a neutral 0.0. For algorithms whose signal doesn't come from rewards (e.g. `self_distill`). |
+| `custom` | Your function (below). |
 
 ### Default Advantage
 
@@ -181,6 +264,20 @@ id = "math-env"   # inherits the default above
 [[orchestrator.train.env]]
 id = "agent-env"
 advantage = { type = "custom", import_path = "my_module.normalized_advantage" }
+```
+
+### Token Scorers
+
+Token scorers are the async half of scoring: they run at batch-ship time, query the teacher pool with bounded concurrency (`max_concurrent`, default 32), and attach per-token data to each sample. Two are built in:
+
+- `teacher_logprobs` — score each sample's own context under the teacher via prefill; fills `teacher_logprobs` for the `teacher_kl` loss core (on-policy distillation).
+- `demo_teacher_logprobs` — SDFT: rebuild the prompt with an expert demonstration woven into the last user message (`template`, with `{question}` / `{demonstration}` placeholders), score the student's completion under that demo-conditioned context. The demonstration is read from the example's `info[demo_key]` (default key: `demonstration`); single-step trajectories only.
+
+```toml
+[orchestrator.algorithm.token_scorer]
+type = "demo_teacher_logprobs"
+demo_key = "demonstration"
+max_concurrent = 64
 ```
 
 ## Filters

@@ -96,60 +96,72 @@ def set_default_executor(max_workers: int = 64) -> None:
     asyncio.get_event_loop().set_default_executor(ThreadPoolExecutor(max_workers=max_workers))
 
 
+async def compute_prefill_logprobs(
+    client_config: vf.ClientConfig,
+    model_name: str,
+    token_ids: list[int],
+) -> list[float]:
+    """Score ``token_ids`` under ``model_name`` via prefill; returns one
+    logprob per token (0.0 for the leading token, which has no context)."""
+    import httpx
+    from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
+
+    client = setup_openai_client(client_config)
+
+    # Two escape hatches from ``AsyncOpenAI.post``:
+    #   1. URL — ``/inference/v1/generate`` is mounted at server root, not
+    #      under ``/v1``. Pass an absolute URL so the SDK's
+    #      ``_prepare_url`` skips the base-url merge (it short-circuits
+    #      when the path passes ``httpx.URL.is_relative_url`` as False).
+    #   2. Parse — vLLM's ``GenerateResponse`` is a plain
+    #      ``pydantic.BaseModel`` and the SDK's parse layer rejects any
+    #      ``cast_to`` that doesn't subclass ``openai.BaseModel``. Use
+    #      ``cast_to=httpx.Response`` so the SDK still builds the request
+    #      (preserving ``auth_headers``, retries, timeouts, idempotency
+    #      keys) and just hands us the raw response to validate ourselves.
+    base = str(client.base_url).rstrip("/").removesuffix("/v1")
+    http_response = await client.post(
+        f"{base}/inference/v1/generate",
+        cast_to=httpx.Response,
+        body={
+            "model": model_name,
+            "token_ids": token_ids,
+            "sampling_params": {
+                "max_tokens": 1,
+                "temperature": 1.0,
+                "top_p": 1.0,
+                "prompt_logprobs": 1,
+            },
+        },
+    )
+    response = GenerateResponse.model_validate_json(http_response.content)
+    # ``prompt_logprobs[i]`` is a ``{token_id: Logprob}`` dict for tokens
+    # the engine could score, or ``None`` for the leading token which has
+    # no preceding context. Flatten to ``list[float]`` with 0.0 in the
+    # unscored slot.
+    flat: list[float] = []
+    for entry in response.prompt_logprobs or []:
+        if not entry:
+            flat.append(0.0)
+            continue
+        first = next(iter(entry.values()))
+        lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
+        flat.append(float(lp) if lp is not None else 0.0)
+    return flat
+
+
 async def compute_teacher_logprobs(
     clients: list[vf.ClientConfig],
     model_name: str,
     samples: list[TrainingSample],
 ) -> list[list[float]]:
     """Compute teacher model logprobs for a batch of training samples via prefill."""
-    import httpx
-    from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
-
-    async def _compute_single(client_config: vf.ClientConfig, sample: TrainingSample) -> list[float]:
-        client = setup_openai_client(client_config)
-
-        # Two escape hatches from ``AsyncOpenAI.post``:
-        #   1. URL — ``/inference/v1/generate`` is mounted at server root, not
-        #      under ``/v1``. Pass an absolute URL so the SDK's
-        #      ``_prepare_url`` skips the base-url merge (it short-circuits
-        #      when the path passes ``httpx.URL.is_relative_url`` as False).
-        #   2. Parse — vLLM's ``GenerateResponse`` is a plain
-        #      ``pydantic.BaseModel`` and the SDK's parse layer rejects any
-        #      ``cast_to`` that doesn't subclass ``openai.BaseModel``. Use
-        #      ``cast_to=httpx.Response`` so the SDK still builds the request
-        #      (preserving ``auth_headers``, retries, timeouts, idempotency
-        #      keys) and just hands us the raw response to validate ourselves.
-        base = str(client.base_url).rstrip("/").removesuffix("/v1")
-        http_response = await client.post(
-            f"{base}/inference/v1/generate",
-            cast_to=httpx.Response,
-            body={
-                "model": model_name,
-                "token_ids": list(sample.prompt_ids) + list(sample.completion_ids),
-                "sampling_params": {
-                    "max_tokens": 1,
-                    "temperature": 1.0,
-                    "top_p": 1.0,
-                    "prompt_logprobs": 1,
-                },
-            },
-        )
-        response = GenerateResponse.model_validate_json(http_response.content)
-        # ``prompt_logprobs[i]`` is a ``{token_id: Logprob}`` dict for tokens
-        # the engine could score, or ``None`` for the leading token which has
-        # no preceding context. Flatten to ``list[float]`` with 0.0 in the
-        # unscored slot.
-        flat: list[float] = []
-        for entry in response.prompt_logprobs or []:
-            if not entry:
-                flat.append(0.0)
-                continue
-            first = next(iter(entry.values()))
-            lp = first.logprob if hasattr(first, "logprob") else first.get("logprob")
-            flat.append(float(lp) if lp is not None else 0.0)
-        return flat
-
-    return await asyncio.gather(*[_compute_single(client, sample) for client, sample in zip(cycle(clients), samples)])
+    return await asyncio.gather(
+        *[
+            compute_prefill_logprobs(client, model_name, list(sample.prompt_ids) + list(sample.completion_ids))
+            for client, sample in zip(cycle(clients), samples)
+        ]
+    )
 
 
 def get_weight_dir(output_dir: Path, step: int, check_exists: bool = True, wait_timeout: int | None = None) -> Path:

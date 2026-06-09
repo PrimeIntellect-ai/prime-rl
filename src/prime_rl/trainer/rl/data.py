@@ -42,9 +42,10 @@ class TensorMicroBatch(TypedDict):
     # mm_token_type_ids: token type per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
 
-    # Selects loss dispatch (rl/opd → default loss with mode-specific taus,
-    # sft → sft loss). All samples in a micro batch share the same mode.
-    training_mode: str
+    # Per-token loss routing. ``None`` means every token uses the RL core
+    # with weight 1.0.
+    loss_core_ids: Int[Tensor, "batch seq"] | None
+    loss_weights: Float[Tensor, "batch seq"] | None
 
 
 class FakeDataLoader:
@@ -119,7 +120,8 @@ class FakeDataLoader:
             "routed_experts": None,
             "mm_kwargs": None,
             "mm_token_type_ids": None,
-            "training_mode": "rl",
+            "loss_core_ids": None,
+            "loss_weights": None,
         }
 
     def _get_micro_batch(self, generator: torch.Generator) -> TensorMicroBatch:
@@ -147,7 +149,8 @@ class FakeDataLoader:
             "routed_experts": None,
             "mm_kwargs": None,
             "mm_token_type_ids": None,
-            "training_mode": "rl",
+            "loss_core_ids": None,
+            "loss_weights": None,
         }
 
 
@@ -242,7 +245,12 @@ class DataLoader:
             if micro_batch.mm_token_type_ids is not None
             else None,
             routed_experts=routed_experts,
-            training_mode=micro_batch.training_mode,
+            loss_core_ids=torch.tensor(micro_batch.loss_core_ids, dtype=torch.long).unsqueeze(0)
+            if micro_batch.loss_core_ids is not None
+            else None,
+            loss_weights=torch.tensor(micro_batch.loss_weights, dtype=torch.float).unsqueeze(0)
+            if micro_batch.loss_weights is not None
+            else None,
         )
 
 

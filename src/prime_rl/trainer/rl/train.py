@@ -31,10 +31,11 @@ from prime_rl.trainer.rl.loss import (
     compute_loss,
     compute_importance_ratio_and_mismatch_kl,
     selective_log_softmax,
-    setup_loss_fns,
+    setup_rl_loss_fn,
     shift_tensor_left,
     shift_tensor_right,
 )
+from prime_rl.transport.types import LOSS_CORE_CE
 from prime_rl.trainer.rl.token_export import setup_token_exporter
 from prime_rl.trainer.model import (
     forward,
@@ -149,9 +150,9 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
 
-    # Set up the loss function
+    # Set up the loss function for the RL core (ce / teacher_kl cores are fixed)
     logger.info(f"Setting up loss function ({config.loss})")
-    loss_fns = setup_loss_fns(config.loss)
+    rl_loss_fn = setup_rl_loss_fn(config.loss)
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -376,6 +377,10 @@ def train(config: TrainerConfig):
             teacher_logprobs = (
                 micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
             )
+            loss_core_ids = (
+                micro_batch["loss_core_ids"].to("cuda") if micro_batch["loss_core_ids"] is not None else None
+            )
+            loss_weights = micro_batch["loss_weights"].to("cuda") if micro_batch["loss_weights"] is not None else None
             routed_experts = (
                 micro_batch["routed_experts"].to("cuda") if micro_batch["routed_experts"] is not None else None
             )
@@ -481,9 +486,10 @@ def train(config: TrainerConfig):
                 else None,
                 advantages=advantages.squeeze().split(response_lengths),
                 loss_mask=loss_mask.squeeze().split(response_lengths),
-                loss_fns=loss_fns,
+                loss_core_ids=loss_core_ids.squeeze().split(response_lengths) if loss_core_ids is not None else None,
+                loss_weights=loss_weights.squeeze().split(response_lengths) if loss_weights is not None else None,
+                rl_loss_fn=rl_loss_fn,
                 loss_scale=loss_scale,
-                training_mode=micro_batch["training_mode"],
             )
 
             # Backward pass
@@ -504,12 +510,26 @@ def train(config: TrainerConfig):
             for env_name, indices in env_to_indices.items():
                 tensors[f"entropy/{env_name}"].append(entropy[indices])
 
-            if micro_batch["training_mode"] != "sft":
+            # Mismatch KL is only meaningful where sampling logprobs exist —
+            # exclude CE-core tokens (teacher tokens / env observations).
+            if loss_core_ids is None:
+                mismatch_mask = loss_mask
+                has_mismatch_tokens = True
+            else:
+                mismatch_mask = loss_mask & (loss_core_ids != LOSS_CORE_CE)
+                has_mismatch_tokens = bool(mismatch_mask.any())
+            if has_mismatch_tokens:
                 with torch.no_grad():
                     _, _, mismatch_kl = compute_importance_ratio_and_mismatch_kl(out["logprobs"], inference_logprobs)
-                mismatch_kl = mismatch_kl[loss_mask].detach().to("cpu")
+                mismatch_kl = mismatch_kl[mismatch_mask].detach().to("cpu")
                 tensors["mismatch_kl/all"].append(mismatch_kl)
-                for env_name, indices in env_to_indices.items():
+                mismatch_env_names = [
+                    env_name for env_name, keep in zip(env_names, mismatch_mask.flatten().tolist()) if keep
+                ]
+                mismatch_env_to_indices: dict[str, list[int]] = {}
+                for idx, env_name in enumerate(mismatch_env_names):
+                    mismatch_env_to_indices.setdefault(env_name, []).append(idx)
+                for env_name, indices in mismatch_env_to_indices.items():
                     tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
 
             token_exporter.export(progress.step, micro_step, micro_batch, out, response_lengths, config.loss)
@@ -526,7 +546,7 @@ def train(config: TrainerConfig):
 
             # Debug log with *local, micro step* stats
             micro_step_message = f"Micro Step {micro_step}/{len(micro_batches)} | Loss {tensors['loss'][-1].mean().item():.4f} | Entropy {tensors['entropy/all'][-1].mean().item():.4f}"
-            if micro_batch["training_mode"] != "sft":
+            if has_mismatch_tokens:
                 micro_step_message += f" | Mismatch KL {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
             if "max_vio" in tensors:
                 micro_step_message += f" | Max Vio {tensors['max_vio'][-1].mean().item():.4f}"

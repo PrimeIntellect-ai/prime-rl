@@ -44,4 +44,4 @@ uv run rl @ configs/debug/training_modes/sft_lora.toml
 uv run rl @ configs/debug/training_modes/sft_external.toml
 ```
 
-See [docs/training.md](../../docs/training.md#training-modes-rl--opd--sft-via-orchestrator) for what each mode does.
+See [docs/training.md](../../docs/training.md#algorithms) for what each algorithm does. `training_mode` is a deprecated alias for `[orchestrator.algorithm]` presets (`rl`→`grpo`, `opd`→`opd`, `sft`→`sft_distill`).

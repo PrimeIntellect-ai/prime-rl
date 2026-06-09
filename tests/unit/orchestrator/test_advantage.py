@@ -3,7 +3,7 @@ import uuid
 
 import pytest
 
-from prime_rl.configs.orchestrator import (
+from prime_rl.configs.algorithm import (
     CustomAdvantageConfig,
     DefaultAdvantageConfig,
     TokensLengthPenaltyConfig,

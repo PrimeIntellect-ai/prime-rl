@@ -19,6 +19,7 @@ from collections import defaultdict
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.advantage import assign_advantages
+from prime_rl.orchestrator.algorithms import stamp_loss_routing
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.trajectories import (
@@ -156,11 +157,13 @@ class TrainSink:
         needs_backfill = any(s["tokens"] is None for s in raw.get("trajectory") or [])
         if needs_backfill:
             await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
+        algorithm = self.train_envs.get(rollout.env_name).algorithm
         samples = await asyncio.to_thread(
             interleave_rollout,
             raw,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             env_name=rollout.env_name,
+            tag_observation_tokens=algorithm.loss is not None and algorithm.loss.observation != "none",
         )
         rollout.samples = samples or []
         # Offload base64 image bytes to disk as soon as the rollout is
@@ -203,12 +206,15 @@ class TrainSink:
         # has a single sampling temperature; fan it out across each sample's
         # completion tokens here (interleave leaves it empty).
         temperature = env.sampling_args["temperature"]
+        assert env.algorithm.loss is not None
         for r in survivors:
             for sample in r.samples:
-                sample.advantage = r.advantage
+                # ``advantage=None`` (NoAdvantageConfig) ships as neutral 0.0;
+                # the rollout keeps None so advantage-based filters skip it.
+                sample.advantage = r.advantage if r.advantage is not None else 0.0
                 sample.reward = r.reward
                 sample.env_name = r.env_name
-                sample.training_mode = self.config.training_mode
+                stamp_loss_routing(sample, env.algorithm.loss)
                 sample.completion_temperatures = [temperature] * len(sample.completion_ids)
 
         if self.pre_filters:

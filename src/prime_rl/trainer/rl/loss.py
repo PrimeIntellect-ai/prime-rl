@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import torch
@@ -7,18 +7,25 @@ from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
 from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, LossConfig
+from prime_rl.transport.types import LOSS_CORE_CE, LOSS_CORE_RL, LOSS_CORE_TEACHER_KL
 from prime_rl.utils.utils import import_object
 
 
 @dataclass
 class LossInputs:
-    """Inputs for computing loss on a single sample."""
+    """Inputs for computing loss on a single sample.
+
+    ``loss_mask`` already selects the tokens routed to the receiving loss core
+    — core functions never re-derive eligibility. ``loss_weights`` is an
+    optional per-token scale (None means 1.0 everywhere).
+    """
 
     trainer_logprobs: Float[Tensor, " seq"]
     inference_logprobs: Float[Tensor, " seq"]
     teacher_logprobs: Float[Tensor, " seq"] | None
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
+    loss_weights: Float[Tensor, " seq"] | None = field(default=None)
 
 
 @dataclass
@@ -150,7 +157,10 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     advantages = loss_config.adv_tau * advantages
     pg_loss = keep_mask * advantages * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
-    loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
+    per_token_loss = -pg_loss + loss_config.kl_tau * kl_loss
+    if inputs.loss_weights is not None:
+        per_token_loss = per_token_loss * inputs.loss_weights
+    loss = per_token_loss.sum()
 
     metrics = {
         "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
@@ -165,11 +175,11 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
     return LossOutputs(loss=loss, metrics=metrics)
 
 
-def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
+def teacher_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
     """
-    On-policy distillation loss: the default DPPO+KL math with the tau knobs
-    hardcoded to drop the reward signal and use the teacher KL as the
-    per-token policy-gradient signal.
+    Teacher-KL loss core (on-policy distillation): the default DPPO+KL math
+    with the tau knobs hardcoded to drop the reward signal and use the teacher
+    KL as the per-token policy-gradient signal.
     """
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
@@ -178,7 +188,7 @@ def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
     loss_mask = inputs.loss_mask
 
     if teacher_logprobs is None:
-        raise ValueError("opd_loss_fn requires teacher_logprobs - configure a teacher for opd mode.")
+        raise ValueError("teacher_kl loss core requires teacher_logprobs - configure a teacher_logprobs token scorer.")
 
     log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
         trainer_logprobs, inference_logprobs
@@ -202,7 +212,10 @@ def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
 
     pg_loss = keep_mask * advantages * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
-    loss = (-pg_loss + 1e-3 * kl_loss).sum()
+    per_token_loss = -pg_loss + 1e-3 * kl_loss
+    if inputs.loss_weights is not None:
+        per_token_loss = per_token_loss * inputs.loss_weights
+    loss = per_token_loss.sum()
 
     metrics = {
         "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),
@@ -218,32 +231,26 @@ def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
     return LossOutputs(loss=loss, metrics=metrics)
 
 
-def sft_loss_fn(inputs: LossInputs) -> LossOutputs:
-    """SFT-style masked negative log-likelihood over trainable tokens."""
+def ce_loss_fn(inputs: LossInputs) -> LossOutputs:
+    """Cross-entropy loss core: masked negative log-likelihood (SFT / ECHO
+    observation prediction)."""
     trainer_logprobs = inputs.trainer_logprobs
     loss_mask = inputs.loss_mask
 
-    loss = -(trainer_logprobs[loss_mask]).sum()
+    nll = -trainer_logprobs
+    if inputs.loss_weights is not None:
+        nll = nll * inputs.loss_weights
+    loss = nll[loss_mask].sum()
     metrics = {
         "nll": _safe_mean(-trainer_logprobs, loss_mask),
     }
     return LossOutputs(loss=loss, metrics=metrics)
 
 
-def setup_loss_fns(loss_config: LossConfig) -> dict[str, LossFn]:
-    """Build the per-training-mode loss fn dispatch table.
-
-    Always returns all three modes - the trainer is mode-agnostic and routes
-    per batch from ``TrainingSample.training_mode``:
-
-    - ``"sft"`` → ``sft_loss_fn`` (masked NLL on teacher tokens)
-    - ``"opd"`` → ``opd_loss_fn`` (teacher KL as gradient signal, hardcoded
-      DPPO + KL knobs)
-    - ``"rl"``  → ``default_loss_fn(loss_config)`` for ``DefaultLossConfig``,
-      or the imported function for ``CustomLossConfig``.
-
-    ``trainer.loss`` only affects the rl path - opd and sft are independent.
-    """
+def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
+    """Build the loss fn for the RL core: ``default_loss_fn`` with the
+    configured knobs, or the imported function for ``CustomLossConfig``.
+    The ce / teacher_kl cores are fixed and unaffected by ``trainer.loss``."""
     if isinstance(loss_config, CustomLossConfig):
         custom_fn = import_object(loss_config.import_path)
         kwargs = loss_config.kwargs
@@ -255,7 +262,7 @@ def setup_loss_fns(loss_config: LossConfig) -> dict[str, LossFn]:
         def rl_fn(inputs: LossInputs) -> LossOutputs:
             return default_loss_fn(inputs, loss_config)
 
-    return {"sft": sft_loss_fn, "opd": opd_loss_fn, "rl": rl_fn}
+    return rl_fn
 
 
 def compute_loss(
@@ -264,16 +271,21 @@ def compute_loss(
     teacher_logprobs: list[Float[Tensor, " seq_i"]] | None,
     advantages: list[Float[Tensor, " seq_i"]],
     loss_mask: list[Bool[Tensor, " seq_i"]],
-    loss_fns: dict[str, LossFn],
+    loss_core_ids: list[Int[Tensor, " seq_i"]] | None,
+    loss_weights: list[Float[Tensor, " seq_i"]] | None,
+    rl_loss_fn: LossFn,
     loss_scale: int,
-    training_mode: str = "rl",
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
 
-    Loss dispatch is batch-driven: ``training_mode`` selects the loss fn from
-    ``loss_fns`` (built by ``setup_loss_fns``). sft → sft_loss_fn, opd →
-    opd_loss_fn, rl → the configured default/custom loss.
+    Loss routing is per token: ``loss_core_ids`` selects the core for every
+    token (``None`` means all-RL — the hot path, no extra device syncs), and
+    each present core runs over its slice of the loss mask:
+
+    - ``LOSS_CORE_RL`` → ``rl_loss_fn`` (built by ``setup_rl_loss_fn``)
+    - ``LOSS_CORE_CE`` → ``ce_loss_fn`` (masked NLL)
+    - ``LOSS_CORE_TEACHER_KL`` → ``teacher_kl_loss_fn``
 
     Args:
         trainer_logprobs: Log probabilities for each sequence
@@ -281,50 +293,63 @@ def compute_loss(
         teacher_logprobs: Teacher log probabilities for each sequence, or None
         advantages: Advantages for each sequence
         loss_mask: Loss mask for each sequence
-        loss_fns: Per-mode loss fn dispatch table from setup_loss_fns()
+        loss_core_ids: Per-token loss core ids for each sequence, or None (all RL)
+        loss_weights: Per-token loss weights for each sequence, or None (all 1.0)
+        rl_loss_fn: Loss fn for the RL core from setup_rl_loss_fn()
         loss_scale: Scale factor to normalize the loss
-        training_mode: Selects which loss fn to apply
 
     Returns:
         Tuple of (scaled_loss, aggregated_metrics)
     """
-    try:
-        effective_loss_fn = loss_fns[training_mode]
-    except KeyError:
-        raise ValueError(
-            f"No loss fn available for training_mode={training_mode!r} "
-            f"(available: {sorted(loss_fns)}). Check trainer.loss.type."
-        )
-
     total_loss = 0.0
     all_metrics: dict[str, list[Tensor]] = {}
 
+    n = len(trainer_logprobs)
     if teacher_logprobs is None:
-        teacher_logprobs = [None] * len(trainer_logprobs)
+        teacher_logprobs = [None] * n
+    if loss_core_ids is None:
+        loss_core_ids = [None] * n
+    if loss_weights is None:
+        loss_weights = [None] * n
 
-    for t_logp, i_logp, teach_logp, adv, mask in zip(
+    def run_core(core_fn: LossFn, inputs: LossInputs) -> Tensor:
+        result = core_fn(inputs)
+        for k, v in result.metrics.items():
+            all_metrics.setdefault(k, []).append(v)
+        return result.loss
+
+    for t_logp, i_logp, teach_logp, adv, mask, cores, weights in zip(
         trainer_logprobs,
         inference_logprobs,
         teacher_logprobs,
         advantages,
         loss_mask,
+        loss_core_ids,
+        loss_weights,
     ):
-        inputs = LossInputs(
-            trainer_logprobs=t_logp,
-            inference_logprobs=i_logp,
-            teacher_logprobs=teach_logp,
-            advantages=adv,
-            loss_mask=mask,
-        )
 
-        result = effective_loss_fn(inputs)
+        def make_inputs(core_mask: Bool[Tensor, " seq"]) -> LossInputs:
+            return LossInputs(
+                trainer_logprobs=t_logp,
+                inference_logprobs=i_logp,
+                teacher_logprobs=teach_logp,
+                advantages=adv,
+                loss_mask=core_mask,
+                loss_weights=weights,
+            )
 
-        total_loss = total_loss + result.loss
+        if cores is None:
+            total_loss = total_loss + run_core(rl_loss_fn, make_inputs(mask))
+            continue
 
-        for k, v in result.metrics.items():
-            if k not in all_metrics:
-                all_metrics[k] = []
-            all_metrics[k].append(v)
+        for core_id, core_fn in (
+            (LOSS_CORE_RL, rl_loss_fn),
+            (LOSS_CORE_TEACHER_KL, teacher_kl_loss_fn),
+            (LOSS_CORE_CE, ce_loss_fn),
+        ):
+            core_mask = mask & (cores == core_id)
+            if bool(core_mask.any()):
+                total_loss = total_loss + run_core(core_fn, make_inputs(core_mask))
 
     scaled_loss = total_loss / loss_scale
 

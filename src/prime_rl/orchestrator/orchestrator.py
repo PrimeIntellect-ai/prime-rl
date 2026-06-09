@@ -41,6 +41,7 @@ from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.orchestrator.algorithms import ScoringContext, TokenScorer, score_train_batch, setup_token_scorer
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -66,7 +67,6 @@ from prime_rl.orchestrator.types import (
     TrainRollout,
 )
 from prime_rl.orchestrator.utils import (
-    compute_teacher_logprobs,
     get_weight_dir,
     intercept_vf_logging,
     save_rollouts,
@@ -130,6 +130,7 @@ class Orchestrator:
     train_envs: TrainEnvs
     train_source: TrainSource
     train_sink: TrainSink
+    token_scorers: dict[str, TokenScorer]
     dispatcher: RolloutDispatcher
     watcher: WeightWatcher
     metrics: MetricsBuilder
@@ -140,6 +141,7 @@ class Orchestrator:
     renderer: Renderer | None
     mm_token_type_ids_mapping: dict[int, int] | None
     teacher_inference: InferencePool | None
+    scoring_ctx: ScoringContext
     heart: Heartbeat | None
     usage_reporter: UsageReporter | None
     inference_metrics: InferenceMetricsCollector | None
@@ -157,7 +159,8 @@ class Orchestrator:
         # ``verifiers.serve`` (env-server lifecycle) through our handler
         logging.getLogger("verifiers").setLevel(logging.CRITICAL + 1)
         intercept_vf_logging(logger="verifiers.serve", level="WARN")
-        get_logger().info(f"Starting orchestrator ({config.training_mode})")
+        algorithms = sorted({env.algorithm.name for env in config.train.env if env.algorithm is not None})
+        get_logger().info(f"Starting orchestrator (algorithm: {', '.join(algorithms)})")
 
         if config.bench:
             get_logger().warning(f"Running in benchmark mode (max_steps={config.max_steps})")
@@ -264,9 +267,6 @@ class Orchestrator:
 
         get_logger().info("Loading training environments")
         self.train_envs = TrainEnvs(config.train.env)
-        if config.training_mode == "sft":
-            for env in self.train_envs:
-                env.sampling_args.pop("logprobs", None)
         get_logger().debug(
             f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})"
         )
@@ -345,13 +345,20 @@ class Orchestrator:
         else:
             get_logger().info("Training from scratch")
 
-        # SFT generates rollouts via the teacher (the student is trained on
-        # the teacher's outputs); RL / OPD generate via the student
-        if config.training_mode == "sft":
-            assert self.teacher_inference is not None, "sft mode requires teacher inference"
-            rollout_inference = self.teacher_inference
-        else:
-            rollout_inference = self.student_inference
+        # Per-env token scorers (e.g. teacher logprobs for opd / self_distill),
+        # run at batch-ship time in ``finalize_train_batch``.
+        self.token_scorers = {
+            env.name: scorer
+            for env in self.train_envs
+            if (scorer := setup_token_scorer(env.algorithm.token_scorer)) is not None
+        }
+        if self.token_scorers:
+            assert self.teacher_inference is not None and config.teacher is not None
+            self.scoring_ctx = ScoringContext(
+                teacher_clients=self.teacher_inference.train_clients,
+                teacher_model_name=config.teacher.model.name,
+                tokenizer=self.tokenizer,
+            )
 
         self.train_source = TrainSource(self.train_envs, seed=42)
         self.eval_source: EvalSource | None = (
@@ -372,13 +379,12 @@ class Orchestrator:
             eval_envs=self.eval_envs,
             train_source=self.train_source,
             eval_source=self.eval_source,
-            inference=rollout_inference,
-            eval_inference=self.student_inference,
+            student_inference=self.student_inference,
+            teacher_inference=self.teacher_inference,
             policy=self.policy,
             max_inflight_rollouts=config.max_inflight_rollouts,
             tasks_per_minute=config.tasks_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
-            training_mode=config.training_mode,
         )
         self.metrics = MetricsBuilder(config)
         self.train_sink = TrainSink(
@@ -562,17 +568,10 @@ class Orchestrator:
             save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
         )
 
-        teacher_logprobs_time = 0.0  # opd only
-        if config.training_mode == "opd" and self.teacher_inference is not None:
-            assert config.teacher is not None
+        teacher_logprobs_time = 0.0  # envs with a token scorer only
+        if self.token_scorers:
             t = time.perf_counter()
-            teacher_logprobs_list = await compute_teacher_logprobs(
-                clients=self.teacher_inference.train_clients,
-                model_name=config.teacher.model.name,
-                samples=batch.samples,
-            )
-            for ex, lp in zip(batch.samples, teacher_logprobs_list):
-                ex.teacher_logprobs = lp
+            await score_train_batch(batch.rollouts, self.token_scorers, self.scoring_ctx)
             teacher_logprobs_time = time.perf_counter() - t
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))

@@ -11,10 +11,12 @@ from torch import Tensor
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import TrainRollout
 
-from prime_rl.configs.orchestrator import (
+from prime_rl.configs.algorithm import (
     AdvantageConfig,
     CustomAdvantageConfig,
     LengthPenaltyConfig,
+    NoAdvantageConfig,
+    RewardAdvantageConfig,
     TokensLengthPenaltyConfig,
     TurnsLengthPenaltyConfig,
 )
@@ -31,9 +33,11 @@ class AdvantageInputs:
 
 @dataclass
 class AdvantageOutputs:
-    """Outputs from advantage computation of a single group."""
+    """Outputs from advantage computation of a single group. ``None`` entries
+    mean "no advantage" — the rollout keeps ``advantage=None`` (advantage-based
+    filters never fire) and its samples ship a neutral 0.0."""
 
-    advantages: list[float]
+    advantages: list[float | None]
 
 
 AdvantageFn = Callable[..., AdvantageOutputs]
@@ -119,6 +123,20 @@ def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
 
         def advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
             return custom_fn(inputs, **kwargs)
+
+        return advantage_fn
+
+    if isinstance(config, RewardAdvantageConfig):
+
+        def advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
+            return AdvantageOutputs(advantages=[r["reward"] for r in inputs.rollouts])
+
+        return advantage_fn
+
+    if isinstance(config, NoAdvantageConfig):
+
+        def advantage_fn(inputs: AdvantageInputs) -> AdvantageOutputs:
+            return AdvantageOutputs(advantages=[None] * len(inputs.rollouts))
 
         return advantage_fn
 

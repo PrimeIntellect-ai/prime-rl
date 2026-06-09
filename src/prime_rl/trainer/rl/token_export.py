@@ -10,6 +10,7 @@ from torch import Tensor
 
 from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
 from prime_rl.trainer.rl.loss import compute_importance_ratio_and_mismatch_kl
+from prime_rl.transport.types import LOSS_CORE_CE, LOSS_CORE_RL
 
 SCHEMA_VERSION = 1
 
@@ -65,7 +66,6 @@ class TokenExporter:
                         "micro_sequence_idx": micro_sequence_idx,
                         "export_sequence_idx": self._sequences_this_step,
                         "env_name": _first_non_empty(columns["env_names"][start:end]),
-                        "training_mode": str(micro_batch["training_mode"]),
                         **_slice_columns(columns, start, end),
                     }
                 )
@@ -141,6 +141,9 @@ def _export_columns(
         "is_masked": _optional_tensor_to_bools(export_tensors["is_masked"], seq_len),
         "is_masked_high": _optional_tensor_to_bools(export_tensors["is_masked_high"], seq_len),
         "is_masked_low": _optional_tensor_to_bools(export_tensors["is_masked_low"], seq_len),
+        "loss_core_ids": _tensor_to_ints(micro_batch["loss_core_ids"])
+        if micro_batch.get("loss_core_ids") is not None
+        else [LOSS_CORE_RL] * seq_len,
         "env_names": list(micro_batch["env_names"]),
     }
 
@@ -157,7 +160,10 @@ def _compute_export_tensors(
         "is_masked_high": None,
         "is_masked_low": None,
     }
-    if micro_batch["training_mode"] == "sft":
+    # Ratio-based fields are meaningless when no token has sampling logprobs
+    # (e.g. pure CE batches distilling teacher tokens).
+    loss_core_ids = micro_batch.get("loss_core_ids")
+    if loss_core_ids is not None and bool((loss_core_ids == LOSS_CORE_CE).all()):
         return fields
 
     inference_logprobs = micro_batch["inference_logprobs"].to(trainer_logprobs.device)

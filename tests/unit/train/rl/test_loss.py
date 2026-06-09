@@ -2,7 +2,8 @@ import pytest
 import torch
 
 from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig
-from prime_rl.trainer.rl.loss import LossInputs, LossOutputs, compute_entropy, compute_loss, setup_loss_fns
+from prime_rl.trainer.rl.loss import LossInputs, LossOutputs, compute_entropy, compute_loss, setup_rl_loss_fn
+from prime_rl.transport.types import LOSS_CORE_CE, LOSS_CORE_RL, LOSS_CORE_TEACHER_KL
 
 pytestmark = [pytest.mark.gpu]
 
@@ -14,14 +15,16 @@ def test_grpo_loss():
     advantages = [torch.randn(50).cuda(), torch.randn(30).cuda()]
     loss_mask = [torch.ones(50, dtype=torch.bool).cuda(), torch.ones(30, dtype=torch.bool).cuda()]
 
-    loss_fns = setup_loss_fns(DefaultLossConfig(dppo_mask_high=10.0))
+    rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig(dppo_mask_high=10.0))
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
         teacher_logprobs,
         advantages,
         loss_mask=loss_mask,
-        loss_fns=loss_fns,
+        loss_core_ids=None,
+        loss_weights=None,
+        rl_loss_fn=rl_loss_fn,
         loss_scale=1.0,
     )
     assert loss.shape == ()
@@ -34,14 +37,16 @@ def test_gspo_loss():
     advantages = [torch.randn(40).cuda(), torch.randn(60).cuda()]
     loss_mask = [torch.ones(40, dtype=torch.bool).cuda(), torch.ones(60, dtype=torch.bool).cuda()]
 
-    loss_fns = setup_loss_fns(DefaultLossConfig(dppo_mask_high=10.0))
+    rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig(dppo_mask_high=10.0))
     loss, _ = compute_loss(
         trainer_logprobs,
         inference_logprobs,
         teacher_logprobs,
         advantages,
         loss_mask=loss_mask,
-        loss_fns=loss_fns,
+        loss_core_ids=None,
+        loss_weights=None,
+        rl_loss_fn=rl_loss_fn,
         loss_scale=1.0,
     )
     assert loss.shape == ()
@@ -53,13 +58,13 @@ def test_entropy_loss():
     assert entropy.shape == (10, 10)
 
 
-def test_setup_loss_fns_with_custom_config():
-    """Test setup_loss_fns with CustomLossConfig importing a custom loss."""
+def test_setup_rl_loss_fn_with_custom_config():
+    """Test setup_rl_loss_fn with CustomLossConfig importing a custom loss."""
     loss_config = CustomLossConfig(
         import_path="tests.unit.train.rl.test_loss._dummy_custom_loss",
         kwargs={"multiplier": 2.0},
     )
-    loss_fns = setup_loss_fns(loss_config)
+    rl_loss_fn = setup_rl_loss_fn(loss_config)
 
     inputs = LossInputs(
         trainer_logprobs=torch.randn(50, dtype=torch.float32).cuda(),
@@ -69,56 +74,119 @@ def test_setup_loss_fns_with_custom_config():
         loss_mask=torch.ones(50, dtype=torch.bool).cuda(),
     )
 
-    result = loss_fns["rl"](inputs)
+    result = rl_loss_fn(inputs)
     assert isinstance(result, LossOutputs)
     assert result.loss.shape == ()
     assert "custom_metric" in result.metrics
 
 
-def test_sft_loss_matches_masked_nll():
+def test_ce_core_matches_masked_nll():
     trainer_logprobs = [torch.tensor([-0.1, -0.5, -0.2], dtype=torch.float32).cuda()]
     inference_logprobs = [torch.zeros(3, dtype=torch.float32).cuda()]
     advantages = [torch.zeros(3, dtype=torch.float32).cuda()]
     loss_mask = [torch.tensor([True, False, True], dtype=torch.bool).cuda()]
+    loss_core_ids = [torch.full((3,), LOSS_CORE_CE, dtype=torch.long).cuda()]
 
-    loss_fns = setup_loss_fns(DefaultLossConfig())
+    rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig())
     loss, metrics = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
         teacher_logprobs=None,
         advantages=advantages,
         loss_mask=loss_mask,
-        loss_fns=loss_fns,
+        loss_core_ids=loss_core_ids,
+        loss_weights=None,
+        rl_loss_fn=rl_loss_fn,
         loss_scale=2,
-        training_mode="sft",
     )
 
     # loss = -sum(masked logprobs) / loss_scale = -(-0.1 - 0.2) / 2 = 0.15
     assert torch.isclose(loss, torch.tensor(0.15, device=loss.device), atol=1e-6)
     assert "nll" in metrics
+    assert "mismatch_kl" not in metrics
 
 
-def test_sft_loss_override_uses_masked_nll_with_default_loss_config():
+def test_ce_core_applies_loss_weights():
+    """ECHO-style routing: weighted CE on observation tokens."""
     trainer_logprobs = [torch.tensor([-0.1, -0.5, -0.2], dtype=torch.float32).cuda()]
     inference_logprobs = [torch.zeros(3, dtype=torch.float32).cuda()]
-    advantages = [torch.ones(3, dtype=torch.float32).cuda()]
+    advantages = [torch.zeros(3, dtype=torch.float32).cuda()]
     loss_mask = [torch.tensor([True, False, True], dtype=torch.bool).cuda()]
+    loss_core_ids = [torch.full((3,), LOSS_CORE_CE, dtype=torch.long).cuda()]
+    loss_weights = [torch.tensor([0.1, 1.0, 0.1], dtype=torch.float32).cuda()]
 
-    loss_fns = setup_loss_fns(DefaultLossConfig())
-    loss, metrics = compute_loss(
+    rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig())
+    loss, _ = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
         teacher_logprobs=None,
         advantages=advantages,
         loss_mask=loss_mask,
-        loss_fns=loss_fns,
-        loss_scale=2,
-        training_mode="sft",
+        loss_core_ids=loss_core_ids,
+        loss_weights=loss_weights,
+        rl_loss_fn=rl_loss_fn,
+        loss_scale=1,
     )
 
-    assert torch.isclose(loss, torch.tensor(0.15, device=loss.device), atol=1e-6)
+    # loss = 0.1 * (0.1 + 0.2) = 0.03
+    assert torch.isclose(loss, torch.tensor(0.03, device=loss.device), atol=1e-6)
+
+
+def test_routed_all_rl_matches_unrouted():
+    """An explicit all-RL core routing must equal the cores=None hot path."""
+    torch.manual_seed(0)
+    trainer_logprobs = [torch.randn(50, dtype=torch.float32).cuda()]
+    inference_logprobs = [torch.randn(50, dtype=torch.float32).cuda()]
+    advantages = [torch.randn(50).cuda()]
+    loss_mask = [torch.rand(50).cuda() > 0.3]
+
+    rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig())
+    kwargs = dict(
+        trainer_logprobs=trainer_logprobs,
+        inference_logprobs=inference_logprobs,
+        teacher_logprobs=None,
+        advantages=advantages,
+        loss_mask=loss_mask,
+        loss_weights=None,
+        rl_loss_fn=rl_loss_fn,
+        loss_scale=1,
+    )
+    loss_unrouted, _ = compute_loss(loss_core_ids=None, **kwargs)
+    loss_routed, _ = compute_loss(loss_core_ids=[torch.full((50,), LOSS_CORE_RL, dtype=torch.long).cuda()], **kwargs)
+
+    assert torch.equal(loss_unrouted, loss_routed)
+
+
+def test_mixed_cores_in_one_sequence():
+    """ECHO-shaped sequence: RL on action tokens, weighted CE on observation tokens."""
+    n = 12
+    torch.manual_seed(1)
+    trainer_logprobs = [torch.randn(n, dtype=torch.float32).cuda()]
+    inference_logprobs = [torch.randn(n, dtype=torch.float32).cuda()]
+    teacher_logprobs = [torch.randn(n, dtype=torch.float32).cuda()]
+    advantages = [torch.randn(n).cuda()]
+    loss_mask = [torch.ones(n, dtype=torch.bool).cuda()]
+    cores = torch.full((n,), LOSS_CORE_RL, dtype=torch.long)
+    cores[4:8] = LOSS_CORE_CE
+    cores[8:] = LOSS_CORE_TEACHER_KL
+
+    rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig(dppo_mask_high=10.0))
+    loss, metrics = compute_loss(
+        trainer_logprobs=trainer_logprobs,
+        inference_logprobs=inference_logprobs,
+        teacher_logprobs=teacher_logprobs,
+        advantages=advantages,
+        loss_mask=loss_mask,
+        loss_core_ids=[cores.cuda()],
+        loss_weights=None,
+        rl_loss_fn=rl_loss_fn,
+        loss_scale=1,
+    )
+
+    assert loss.shape == ()
     assert "nll" in metrics
-    assert "mismatch_kl" not in metrics
+    assert "teacher_kl" in metrics
+    assert "is_masked" in metrics
 
 
 def _dummy_custom_loss(inputs: LossInputs, multiplier: float = 1.0) -> LossOutputs:

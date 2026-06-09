@@ -49,7 +49,9 @@ CLI: `--env.0.id reverse-text --env.1.id math-env`.
 
 **Dicts** — TOML uses a section; CLI takes a JSON string: `--vllm-extra '{"key1": "value1"}'`.
 
-**Discriminated unions** — set the `type` field to pick the variant (`[trainer.loss] type = "sft"`). Omit `type` to keep the default variant.
+**Discriminated unions** — set the `type` field to pick the variant (`[orchestrator.advantage] type = "custom"`). Omit `type` to keep the default variant.
+
+**Algorithm presets** — `[orchestrator.algorithm] name = "grpo" | "opd" | "sft_distill" | "self_distill" | "echo"` bundles sampling, advantage, token scorer, and loss routing. Components left unset resolve from the preset; setting one overrides it (field-by-field for `sampling`/`loss`, wholesale for the `advantage`/`token_scorer` unions). Per-env override: `[[orchestrator.train.env]]` `algorithm = { name = "echo" }`. Teacher-using presets (`opd`, `sft_distill`, `self_distill`) require `[orchestrator.teacher]`. See `docs/algorithms.md`.
 
 **`BaseModel | None` fields** — bare flag enables defaults; nested override enables and sets:
 
@@ -62,7 +64,7 @@ In TOML, an empty section header (`[ckpt]`) does the same.
 
 ## RL trainer token exports
 
-For rollout debugging, enable trainer-side token export under `trainer.experimental.token_export` (or `experimental.token_export` when running the trainer entrypoint directly). It writes one JSONL record per exported sequence under `output_dir/token_exports/step_<step>/rank_<rank>.jsonl`. Each record stores aligned per-token arrays for token ids, loss mask, advantage, reward, entropy, mismatch KL, inference/trainer logprobs, importance ratios, probability deltas, and masking diagnostics. It does not decode token text in the trainer.
+For rollout debugging, enable trainer-side token export under `trainer.experimental.token_export` (or `experimental.token_export` when running the trainer entrypoint directly). It writes one JSONL record per exported sequence under `output_dir/token_exports/step_<step>/rank_<rank>.jsonl`. Each record stores aligned per-token arrays for token ids, loss mask, loss core ids, advantage, reward, entropy, mismatch KL, inference/trainer logprobs, importance ratios, probability deltas, and masking diagnostics. It does not decode token text in the trainer.
 
 ```toml
 [trainer.experimental.token_export]

@@ -164,11 +164,18 @@ class TrainEnv(Env):
 
     def __init__(self, config: TrainEnvConfig):
         super().__init__(config)
+        assert config.algorithm is not None, "TrainEnvConfig.algorithm must be resolved before env construction"
+        self.algorithm = config.algorithm
         self.sampling_args = config.sampling.to_sampling_args()
+        # Teacher-sourced rollouts may hit external chat-completions endpoints
+        # that reject logprob requests — and sampling logprobs are only needed
+        # for importance ratios on student-sampled tokens.
+        if self.algorithm.sampling is not None and self.algorithm.sampling.source == "teacher":
+            self.sampling_args.pop("logprobs", None)
         # Built once — custom advantage funcs do an ``import_object`` we don't
         # want to pay per group. ``None`` = reward-only path.
         self.advantage_fn: AdvantageFn | None = (
-            setup_advantage_fn(config.advantage) if config.advantage is not None else None
+            setup_advantage_fn(self.algorithm.advantage) if self.algorithm.advantage is not None else None
         )
 
     def get_dataset(self, seed: int | None = None):
