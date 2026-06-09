@@ -259,6 +259,11 @@ class Orchestrator:
         if config.training_mode == "sft":
             for env in self.train_envs:
                 env.sampling_args.pop("logprobs", None)
+        if config.renderer is None:
+            # MITO (no renderer): ask vLLM to return the prompt/completion token ids
+            # so the chat client can carry them for training instead of re-tokenizing.
+            for env in self.train_envs:
+                env.sampling_args.setdefault("extra_body", {})["return_token_ids"] = True
         get_logger().debug(
             f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})"
         )
