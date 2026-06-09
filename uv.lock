@@ -5516,8 +5516,10 @@ examples = [
     { name = "hello-rlm-v1", editable = "deps/verifiers/examples/tasksets/hello_rlm_v1" },
     { name = "math-env-v1", editable = "deps/verifiers/examples/tasksets/math_env_v1" },
     { name = "reverse-text-v1", editable = "deps/verifiers/examples/tasksets/reverse_text_v1" },
+    { name = "terminal-bench-2-v1", editable = "deps/verifiers/examples/tasksets/terminal_bench_2_v1" },
     { name = "wiki-search-v1", editable = "deps/verifiers/examples/tasksets/wiki_search_v1" },
     { name = "wikispeedia-v1", editable = "deps/verifiers/examples/tasksets/wikispeedia_v1" },
+    { name = "wordle-v1", editable = "deps/verifiers/examples/tasksets/wordle_v1" },
 ]
 harnesses = [{ name = "harnesses", editable = "deps/verifiers/packages/harnesses" }]
 tasksets = [{ name = "tasksets", editable = "deps/verifiers/packages/tasksets" }]
