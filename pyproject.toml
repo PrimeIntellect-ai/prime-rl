@@ -69,6 +69,7 @@ flash-attn-cute = [
 # and the taskset(s) prime-rl runs live here.
 envs = [
     "reverse-text",
+    "alphabet-sort",
     "reverse-text-v1",
     "gsm8k",
     "math-env",
@@ -186,6 +187,7 @@ prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
 # `reverse-text` is verifiers' classic v0 env; `reverse-text-v1` is the nano taskset.
 verifiers = { path = "deps/verifiers", editable = true }
 reverse-text = { path = "deps/verifiers/environments/reverse_text", editable = true }
+alphabet-sort = { path = "deps/verifiers/environments/alphabet_sort", editable = true }
 reverse-text-v1 = { path = "deps/verifiers/deps/vf-nano/examples/tasksets/reverse_text_v1", editable = true }
 gsm8k = { path = "deps/verifiers/deps/vf-nano/examples/tasksets/gsm8k", editable = true }
 math-env = { path = "deps/verifiers/deps/vf-nano/examples/tasksets/math_env", editable = true }

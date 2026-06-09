@@ -131,6 +131,17 @@ wheels = [
 ]
 
 [[package]]
+name = "alphabet-sort"
+version = "0.1.12"
+source = { editable = "deps/verifiers/environments/alphabet_sort" }
+dependencies = [
+    { name = "verifiers", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", specifier = ">=0.1.9" }]
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -2546,6 +2557,7 @@ disagg = [
 ]
 envs = [
     { name = "aime24", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "alphabet-sort", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "default", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "gsm8k", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "math-env", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -2589,6 +2601,7 @@ mamba-ssm = [
 requires-dist = [
     { name = "aime24", marker = "extra == 'envs'", editable = "deps/verifiers/deps/vf-nano/examples/tasksets/aime24" },
     { name = "aiolimiter", specifier = ">=1.2.1" },
+    { name = "alphabet-sort", marker = "extra == 'envs'", editable = "deps/verifiers/environments/alphabet_sort" },
     { name = "beartype", specifier = ">=0.21.0" },
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "deep-ep", marker = "platform_machine == 'x86_64' and extra == 'disagg'", url = "https://github.com/PrimeIntellect-ai/prime-rl/releases/download/v0.5.0/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl" },
