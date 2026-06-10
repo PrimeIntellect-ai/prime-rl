@@ -45,8 +45,8 @@ def _rl_term() -> LossTerm:
     return LossTerm(name="rl", loss=DPPOKLCoreConfig(), advantage=GRPOAdvantageConfig())
 
 
-def _echo_term(roles: list[str], alpha: float) -> LossTerm:
-    return LossTerm(name="echo", loss=CECoreConfig(), advantage=EchoAdvantageConfig(roles=roles, alpha=alpha))
+def _echo_term(roles: list[str]) -> LossTerm:
+    return LossTerm(name="echo", loss=CECoreConfig(), advantage=EchoAdvantageConfig(roles=roles))
 
 
 def _inputs(seq_lens: list[int], seed: int):
@@ -298,7 +298,7 @@ def test_extra_terms_none_matches_rl_only():
 
 def test_no_rl_term_makes_rl_core_raise():
     # No primary term: the rl core must error when applied, not fabricate a default loss.
-    loss_fns = setup_loss_fns([_echo_term(["assistant"], 0.5)])
+    loss_fns = setup_loss_fns([_echo_term(["assistant"])])
     inputs = LossInputs(torch.zeros(3), torch.zeros(3), None, torch.zeros(3), torch.ones(3, dtype=torch.bool))
     with pytest.raises(ValueError, match="no primary"):
         loss_fns["rl"](inputs)

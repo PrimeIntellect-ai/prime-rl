@@ -256,11 +256,9 @@ def _rl(**loss_kwargs):
     return {"name": "rl", "loss": {"type": "dppo_kl", **loss_kwargs}, "advantage": {"type": "grpo"}}
 
 
-def _echo(name="echo", roles=("assistant",), alpha=None):
-    advantage = {"type": "echo", "roles": list(roles)}
-    if alpha is not None:
-        advantage["alpha"] = alpha
-    return {"name": name, "loss": {"type": "ce"}, "advantage": advantage}
+def _echo(name="echo", roles=("assistant",)):
+    # A full-form echo *overlay* term (an explicit sibling, not the `echo` compound recipe).
+    return {"name": name, "loss": {"type": "ce"}, "advantage": {"type": "echo", "roles": list(roles)}}
 
 
 def test_shared_losses_propagate_to_subconfigs():
@@ -278,11 +276,23 @@ def test_shared_losses_propagate_to_subconfigs():
 
 
 def test_duplicate_loss_names_rejected():
+    # Plain duplicate: two explicit terms sharing a name.
     with pytest.raises(ValidationError, match="Duplicate loss term names"):
         RLConfig.model_validate(
             {
                 "model": {"name": "my-model"},
                 "losses": [_rl(), _echo(name="rl")],
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+    # The `echo` recipe already emits an `rl` term, so adding a separate one collides — and the error
+    # names the recipe, pointing the user to tune the rl half through `echo` instead.
+    with pytest.raises(ValidationError, match="emitted by the 'echo' compound preset"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [{"type": "echo"}, _rl()],
                 "trainer": {},
                 "orchestrator": {"renderer": None},
             }
@@ -362,20 +372,24 @@ def test_rl_preset_expands_and_keeps_axis_defaults():
     assert rl.advantage.type == "grpo"
 
 
-def test_echo_preset_advantage_override_deep_merges():
-    # `advantage = {alpha = 0.3}` deep-merges over the preset default, keeping `type = "echo"` + roles.
+def test_echo_recipe_expands_to_rl_and_ce():
+    # `echo` is not a primitive — it expands to the `rl` primary + a `ce`-on-roles overlay. Its
+    # advantage knobs (roles/...) route to the overlay's echo advantage, `lambda_weight` sets the
+    # overlay's λ (the echo magnitude), and an `rl = {...}` block tunes the policy-gradient half.
     config = RLConfig.model_validate(
         {
             "model": {"name": "my-model"},
-            "losses": [{"type": "rl"}, {"type": "echo", "advantage": {"alpha": 0.3}}],
+            "losses": [{"type": "echo", "roles": ["user", "tool"], "lambda_weight": 0.3, "rl": {"loss": {"kl_tau": 5e-4}}}],
             "trainer": {},
             "orchestrator": {"renderer": None},
         }
     )
-    echo = config.trainer.losses[1]
+    rl, echo = config.trainer.losses
+    assert rl.name == "rl" and rl.loss.type == "dppo_kl" and rl.advantage.type == "grpo"
+    assert rl.loss.kl_tau == 5e-4 and rl.lambda_weight == 1.0
     assert echo.name == "echo" and echo.loss.type == "ce"
-    assert echo.advantage.type == "echo" and echo.advantage.roles == ["assistant"]
-    assert echo.advantage.alpha == 0.3
+    assert echo.advantage.type == "echo" and echo.advantage.roles == ["user", "tool"]
+    assert echo.lambda_weight == 0.3
 
 
 def test_loss_preset_flat_kwarg_rejected():
@@ -392,13 +406,12 @@ def test_loss_preset_flat_kwarg_rejected():
 
 
 def test_loss_term_lambda_reduce_and_hooks_parse():
-    # λ + reduce + hooks are per-term knobs (defaults: 1.0 / global mean / no hooks); presets accept
-    # them as overrides too.
+    # λ + reduce + hooks are per-term knobs (defaults: 1.0 / global mean / no hooks). On the `echo`
+    # recipe they route to the ce overlay; the emitted rl term keeps the defaults.
     config = RLConfig.model_validate(
         {
             "model": {"name": "my-model"},
             "losses": [
-                _rl(),
                 {
                     "type": "echo",
                     "lambda_weight": 0.5,
@@ -422,7 +435,7 @@ def test_builtin_hook_preset_parses():
     config = RLConfig.model_validate(
         {
             "model": {"name": "my-model"},
-            "losses": [_rl(), {"type": "echo", "hooks": [{"type": "min_prob_filter", "min_logprob": -2.0}]}],
+            "losses": [{"type": "echo", "hooks": [{"type": "min_prob_filter", "min_logprob": -2.0}]}],
             "trainer": {},
             "orchestrator": {"renderer": None},
         }
@@ -447,7 +460,7 @@ def test_empty_enabled_losses_rejected():
 
 
 def test_malformed_loss_override_rejected():
-    # An override targeting a real echo term but with a bad alpha is caught at config time
+    # An override targeting a real echo term but with a bad value (tau) is caught at config time
     # (built via apply_term_override), not deferred to the orchestrator's resolve step.
     with pytest.raises(ValidationError):
         RLConfig.model_validate(
@@ -462,7 +475,7 @@ def test_malformed_loss_override_rejected():
                             {
                                 "id": "reverse-text",
                                 "enabled_losses": ["rl", "echo"],
-                                "loss_overrides": {"echo": {"advantage": {"alpha": "not-a-float"}}},
+                                "loss_overrides": {"echo": {"advantage": {"tau": "not-a-float"}}},
                             }
                         ]
                     },
@@ -492,7 +505,7 @@ def test_loss_overrides_unknown_key_rejected():
                 "orchestrator": {
                     "renderer": None,
                     "train": {
-                        "env": [{"id": "reverse-text", "loss_overrides": {"nope": {"advantage": {"alpha": 0.1}}}}]
+                        "env": [{"id": "reverse-text", "loss_overrides": {"nope": {"advantage": {"tau": 0.1}}}}]
                     },
                 },
             }
@@ -596,7 +609,7 @@ def test_loss_overrides_disabled_term_rejected():
                             {
                                 "id": "reverse-text",
                                 "enabled_losses": ["rl"],
-                                "loss_overrides": {"echo": {"advantage": {"alpha": 0.1}}},
+                                "loss_overrides": {"echo": {"advantage": {"tau": 0.1}}},
                             }
                         ]
                     },

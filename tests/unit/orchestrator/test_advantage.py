@@ -351,14 +351,14 @@ def test_grpo_advantage_tau_scales():
     assert grpo_advantage(group, tau=0.5) == [[0.0, 0.25], [0.0, -0.25]]
 
 
-def test_echo_advantage_alpha_on_matching_roles():
+def test_echo_advantage_masks_matching_roles():
     group = [_hints(["system", "user", "assistant", None], [False, False, True, False])]
-    assert echo_advantage(group, roles=["system", "user"], alpha=0.5) == [[0.5, 0.5, 0.0, 0.0]]
+    assert echo_advantage(group, roles=["system", "user"]) == [[1.0, 1.0, 0.0, 0.0]]
 
 
 def test_echo_advantage_tool_names_filter():
     group = [_hints(["tool", "tool", "assistant"], [False, False, True], tool_names=["a", "b", None])]
-    assert echo_advantage(group, roles=["tool"], tool_names={"a"}, alpha=2.0) == [[2.0, 0.0, 0.0]]
+    assert echo_advantage(group, roles=["tool"], tool_names={"a"}) == [[1.0, 0.0, 0.0]]
 
 
 def test_sft_advantage_on_sampled_tokens():
@@ -413,12 +413,12 @@ def test_resolve_advantage_fn_grpo_broadcasts_advantage():
 
 
 def test_resolve_advantage_fn_echo_masks_roles():
-    fn = resolve_advantage_fn(EchoAdvantageConfig(roles=["system"], alpha=0.5))
+    fn = resolve_advantage_fn(EchoAdvantageConfig(roles=["system"]))
     group = [_hints(["system", "user"], [False, False])]
-    assert fn(group) == [[0.5, 0.0]]
+    assert fn(group) == [[1.0, 0.0]]
 
 
 def test_echo_advantage_by_advantage_scales_by_rollout_advantage():
     group = [_hints(["system"], [False], advantage=0.5)]
-    # alpha * (advantage * tau) = 1.0 * (0.5 * 2.0) = 1.0
-    assert echo_advantage(group, roles=["system"], alpha=1.0, by_advantage=True, tau=2.0) == [[1.0]]
+    # advantage * tau = 0.5 * 2.0 = 1.0 (the selection mask scaled by the rollout advantage)
+    assert echo_advantage(group, roles=["system"], by_advantage=True, tau=2.0) == [[1.0]]

@@ -194,17 +194,17 @@ def echo_advantage(
     *,
     roles: list[str],
     tool_names: set[str] | None = None,
-    alpha: float = 1.0,
     by_advantage: bool = False,
     tau: float = 1.0,
 ) -> list[list[float]]:
-    """Per-token echo signal: ``alpha`` on tokens whose role matches (and, for ``tool``, whose
-    ``tool_name`` is allowed), ``0`` elsewhere. ``by_advantage`` multiplies the weight by the unit's
-    advantage × ``tau`` (advantage-weighted echo)."""
+    """Per-token echo signal: a selection mask — ``1.0`` on tokens whose role matches (and, for
+    ``tool``, whose ``tool_name`` is allowed), ``0`` elsewhere. ``by_advantage`` multiplies the mask by
+    the unit's advantage × ``tau`` (advantage-weighted echo). The echo magnitude is the term's λ
+    (``lambda_weight``), not a per-fn weight."""
     role_set = set(roles)
     out: list[list[float]] = []
     for h in group:
-        scale = alpha * ((h.advantage or 0.0) * tau if by_advantage else 1.0)
+        scale = (h.advantage or 0.0) * tau if by_advantage else 1.0
         out.append(
             [
                 scale
@@ -260,7 +260,6 @@ def resolve_advantage_fn(config: AdvantageFnConfig) -> Callable[[list[RenderHint
             echo_advantage,
             roles=config.roles,
             tool_names=config.tool_names,
-            alpha=config.alpha,
             by_advantage=config.by_advantage,
             tau=config.tau,
         )

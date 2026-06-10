@@ -196,6 +196,10 @@ On `sebastian/losses-2026-06-04`, each chunk CI-green (GRPO bit-identical where 
 - Composable per-term `losses` (loss core + advantage_fn), per-env `enabled_losses` + `loss_overrides`.
 - The advantage axis (`grpo`/`echo`/`sft`/`custom`); one parameterizable pg core under `dppo_kl`/`ce`.
 - Per-term **λ** (`lambda_weight`) + pluggable **reduce** (`mean`/`custom`).
+- **Compound recipes** (§4): list-level, provenance-tagged preset expansion; `echo` = `rl ⊕ ce-on-roles`
+  (emits the rl primary + a ce overlay), knob-routed (`roles`/… → the echo advantage, `rl = {...}` →
+  the rl half), with λ owning the echo magnitude (`EchoAdvantageConfig.alpha` dropped) — a name clash
+  with a recipe's sub-term names the recipe.
 - **Emergent zero-advantage dismissal** (the old ①/⑤): `0`=mask; no-gradient samples dropped.
 - **Reference scorer split** (chunk 1): `orchestrator.teacher` (sft generator) vs `orchestrator.reference`
   (scorer) + a `logprobs.top_k` config field — *not yet consumed* (see §12).
@@ -212,18 +216,16 @@ On `sebastian/losses-2026-06-04`, each chunk CI-green (GRPO bit-identical where 
 
 ## 12. Still TODO (rough order)
 
-1. **Compound recipes + `echo`** (§4) — list-level, provenance-tagged preset expansion; `echo` =
-   `rl ⊕ ce-on-roles` with knob routing; drop `EchoAdvantageConfig.alpha` (λ owns magnitude); generic
-   duplicate-name error with the compound-aware message. **← next chunk.**
-2. **Reference logprobs feed + top-k** (§5) — reconcile chunk-1's reference with the algorithm-local
+1. **Reference logprobs feed + top-k** (§5) — reconcile chunk-1's reference with the algorithm-local
    inline external model; have the prefill compute top-k, ship it on the wire, expose it to
    `RenderHints` (advantage_fns) + `LossInputs` (cores/hooks); a `ref_kl` advantage/core consumes it.
-3. **Filter niceties** (§6) — the orchestrator-side sampling-prob filter as a built-in (the live-prob
+   **← next chunk.**
+2. **Filter niceties** (§6) — the orchestrator-side sampling-prob filter as a built-in (the live-prob
    one is done via `min_prob_filter`).
-4. **Surface polish** toward the full pointer/cascading-preset model — proposed here, *deferred in
+3. **Surface polish** toward the full pointer/cascading-preset model — proposed here, *deferred in
    code* until the team aligns (typed configs + the `custom` escape hatch are ~equivalent today).
-5. **Pedagogical RL** (`plans/pedagogical-rl.md`) — the application that motivated hooks + the
-   reference feed; needs #2 and, for the live gate, a `surprisal_gate` hook.
+4. **Pedagogical RL** (`plans/pedagogical-rl.md`) — the application that motivated hooks + the
+   reference feed; needs #1 and, for the live gate, a `surprisal_gate` hook.
 
 **Backlog / not now:** preset parity with the algorithm-abstraction zoo (`opd`/`sft_distill`/
 `self_distill` as our presets — easily expressible, not a priority); the teacher↔student curriculum
