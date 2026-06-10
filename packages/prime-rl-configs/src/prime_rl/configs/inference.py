@@ -342,6 +342,13 @@ class InferenceConfig(BaseConfig):
     enable_return_routed_experts: bool = False
     """Return routed experts in responses. Forwarded as ``--enable-return-routed-experts``."""
 
+    moe_backend: str = "auto"
+    """MoE kernel backend, forwarded as vLLM ``--moe-backend``. The default fused
+    backends (e.g. FlashInfer TRTLLM) compute gating+routing+experts in one kernel and
+    bypass the Python ``BaseRouter`` that the routed-experts capture hook binds to, so
+    capture yields all-zero routing. Use a non-fused backend (``triton``) when
+    ``enable_return_routed_experts``/router replay is on so real routing is captured."""
+
     enable_fp32_lm_head: bool = True
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented as a monkey-patch over vLLM's LogitsProcessor, activated by setting ``additional_config["fp32_lm_head"] = True`` on the vLLM config."""
 
@@ -503,6 +510,7 @@ class InferenceConfig(BaseConfig):
             "gpu_memory_utilization": "gpu_memory_utilization",
             "api_server_count": "api_server_count",
             "enable_return_routed_experts": "enable_return_routed_experts",
+            "moe_backend": "moe_backend",
             "enable_expert_parallel": "enable_expert_parallel",
             "all2all_backend": "all2all_backend",
             "enable_eplb": "enable_eplb",
