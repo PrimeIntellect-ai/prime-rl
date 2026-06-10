@@ -486,6 +486,7 @@ class Orchestrator:
         to the train / eval sink. Both sinks return a finalized batch (or
         ``None``) from ``add()``; we just dispatch on the result."""
         while not self.stopped.is_set():
+            self._raise_for_failed_component_tasks()
             if self.draining and self.dispatcher.is_idle:
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
@@ -509,6 +510,19 @@ class Orchestrator:
             # don't want to ship past ``max_steps``
             if train_batch is not None and not self.draining and not self.stopped.is_set():
                 await self.finalize_train_batch(train_batch)
+
+    def _raise_for_failed_component_tasks(self) -> None:
+        for task in self.component_tasks:
+            if not task.done():
+                continue
+            if task.cancelled():
+                continue
+
+            task_name = task.get_name()
+            exception = task.exception()
+            if exception is None:
+                raise RuntimeError(f"Background task {task_name!r} exited unexpectedly")
+            raise RuntimeError(f"Background task {task_name!r} failed") from exception
 
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O
