@@ -89,6 +89,24 @@ def _drop_non_finite_json_values(value: Any, dropped_paths: list[str], path: str
     return value
 
 
+def _get_run_environments(run_config: BaseConfig | None) -> Any:
+    if run_config is None:
+        return None
+
+    environments = getattr(run_config, "env", None)
+    if environments:
+        return environments
+
+    train_config = getattr(run_config, "train", None)
+    environments = getattr(train_config, "env", None) if train_config else None
+    if environments:
+        return environments
+
+    orchestrator_config = getattr(run_config, "orchestrator", None)
+    train_config = getattr(orchestrator_config, "train", None) if orchestrator_config else None
+    return getattr(train_config, "env", None) if train_config else None
+
+
 class PrimeMonitor(Monitor):
     """Logs to Prime Intellect API."""
 
@@ -198,7 +216,7 @@ class PrimeMonitor(Monitor):
             frontend_url = prime_config.frontend_url
 
         model = getattr(run_config, "model", None) if run_config else None
-        environments = getattr(run_config, "env", None) if run_config else None
+        environments = _get_run_environments(run_config)
         wandb = getattr(run_config, "wandb", None) if run_config else None
 
         payload: dict[str, Any] = {
