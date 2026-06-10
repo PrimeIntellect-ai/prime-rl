@@ -173,6 +173,7 @@ class Orchestrator:
         # True after the final train step ships — pipeline winds down without
         # scheduling new train rollouts
         self.draining = False
+        self.logged_drain_linger = False
         # Previous ``TrainBatch`` arrival timestamp; reset every ship so
         # ``step_time`` in the success log is real sink-to-sink cycle time
         self.last_batch_at = None
@@ -497,6 +498,21 @@ class Orchestrator:
         ``None``) from ``add()``; we just dispatch on the result."""
         while not self.stopped.is_set():
             if self.draining and self.dispatcher.is_idle:
+                if self._trainer_broadcast_pending():
+                    # The trainer broadcasts every version up to max_steps - 2 and blocks in
+                    # _wait_for_nccl_ready until the watcher arms the receive. With off-policy
+                    # slack the dispatcher can ship the final batches before those versions
+                    # arrive — exiting now would strand the trainer forever. Stay alive until
+                    # the watcher has adopted the last expected version.
+                    if not self.logged_drain_linger:
+                        self.logged_drain_linger = True
+                        assert self.config.max_steps is not None
+                        get_logger().info(
+                            f"Drained, but trainer broadcasts are still expected "
+                            f"(v{self.policy.version} < v{self.config.max_steps - 2}) — waiting before exit"
+                        )
+                    await asyncio.sleep(0.5)
+                    continue
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
                 break
@@ -538,6 +554,14 @@ class Orchestrator:
             exclude_keys=None if dump_trajectory else {"trajectory"},
         )
 
+    def _trainer_broadcast_pending(self) -> bool:
+        """Whether the trainer still has NCCL broadcasts only the watcher can receive."""
+        if self.config.weight_broadcast.type != "nccl":
+            return False
+        if self.config.max_steps is None:
+            return False
+        return self.policy.version < self.config.max_steps - 2
+
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O
         side-effects (ckpt, save_rollouts, teacher logprobs, sender.send,
@@ -556,13 +580,7 @@ class Orchestrator:
         save_ckpt_time = await self.maybe_save_ckpt(step)
 
         if config.max_steps is not None and step >= config.max_steps:
-            self.draining = True
-            self.dispatcher.disable_train_scheduling()
-            n_cancelled = await self.dispatcher.cancel_inflight_train_rollouts()
-            get_logger().info(
-                f"Draining pipeline (cancelled {n_cancelled} in-flight train rollout(s); "
-                f"any in-flight evals will complete)"
-            )
+            await self._enter_drain()
             return
 
         if batch.metrics.n_trainable == 0:
@@ -660,6 +678,23 @@ class Orchestrator:
         self.train_sink.reset_pre_filter_stats()
         self.progress.step += 1
         self.maybe_trigger_eval(self.progress.step)
+        if config.max_steps is not None and self.progress.step >= config.max_steps:
+            # Drain as soon as the final batch has shipped. Waiting for one more finalized
+            # batch to enter drain deadlocks under NCCL weight broadcast: the dispatch gate
+            # needs policy version >= max_steps - 1 to assemble that batch, but the trainer
+            # never broadcasts its receiver-less final step over NCCL (only the filesystem
+            # transport writes it).
+            await self._enter_drain()
+
+    async def _enter_drain(self) -> None:
+        if self.draining:
+            return
+        self.draining = True
+        self.dispatcher.disable_train_scheduling()
+        n_cancelled = await self.dispatcher.cancel_inflight_train_rollouts()
+        get_logger().info(
+            f"Draining pipeline (cancelled {n_cancelled} in-flight train rollout(s); any in-flight evals will complete)"
+        )
 
     def maybe_trigger_eval(self, step: int) -> None:
         """Fire eligible eval epochs and flip to ``PREFER_EVAL`` if anything
