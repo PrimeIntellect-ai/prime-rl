@@ -243,11 +243,11 @@ class TrainEnvs(Envs[TrainEnv]):
     """Collection of training environments, each paired with its runtime
     :class:`Algorithm` built from the env's resolved algorithm config."""
 
-    def __init__(self, configs: Sequence[TrainEnvConfig], *, policy_pool, tokenizer):
+    def __init__(self, configs: Sequence[TrainEnvConfig], *, policy_pool, renderer):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
             assert config.algo is not None, "TrainEnvConfig.algo must be resolved before env construction"
-            env = TrainEnv(config, build_algorithm(config.algo, policy_pool, tokenizer))
+            env = TrainEnv(config, build_algorithm(config.algo, policy_pool, renderer))
             self._envs[env.name] = env
 
 

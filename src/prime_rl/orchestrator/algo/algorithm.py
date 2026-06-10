@@ -47,7 +47,7 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import import_object
 
 if TYPE_CHECKING:
-    from transformers.tokenization_utils import PreTrainedTokenizer
+    from renderers.base import Renderer
 
     from prime_rl.orchestrator.envs import TrainEnvs
     from prime_rl.orchestrator.types import TrainRollout
@@ -87,17 +87,18 @@ class Algorithm:
     Class-level declarations say what the algorithm needs: which loss
     component its action tokens feed (``action_loss_type``) and what it calls
     its reference model, if it has one (``model_role``, e.g. "teacher").
-    Holds the policy pool (built once by the orchestrator) and connects client
-    pools to any inline frozen model references in :meth:`setup`."""
+    Constructed with the policy pool and the policy's renderer (the canonical
+    messages → token ids path; ``None`` under MITO); connects client pools to
+    any inline frozen model references in :meth:`setup`."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
     model_role: ClassVar[str | None] = None
 
-    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, tokenizer: PreTrainedTokenizer):
+    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
         assert config.sampling.source is not None
         self.config = config
-        self.tokenizer = tokenizer
         self.policy_pool = policy_pool
+        self.renderer = renderer
         self.sampling_pool: InferencePool = policy_pool  # frozen sources swap this in setup()
         self.reference_pool: InferencePool | None = None  # resolved in setup() when the algorithm declares a model
         self.connected_pools: list[InferencePool] = []  # client pools connected in setup(); closed at shutdown
@@ -180,8 +181,8 @@ class GRPOAlgorithm(Algorithm):
     policy per example; credit = reward minus the group mean (optionally
     length-shaped); action tokens feed the ``rl`` loss."""
 
-    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, tokenizer: PreTrainedTokenizer):
-        super().__init__(config, policy_pool, tokenizer)
+    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
+        super().__init__(config, policy_pool, renderer)
         assert isinstance(config.advantage, GroupNormAdvantageConfig)
         self.length_penalty = config.advantage.length_penalty
 
@@ -202,8 +203,8 @@ class OPDAlgorithm(Algorithm):
     action_loss_type = "ref_kl"
     model_role = "teacher"
 
-    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, tokenizer: PreTrainedTokenizer):
-        super().__init__(config, policy_pool, tokenizer)
+    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
+        super().__init__(config, policy_pool, renderer)
         assert isinstance(config.advantage, RefKLAdvantageConfig)
         self.length_penalty = config.advantage.length_penalty
         self.max_concurrent = config.advantage.max_concurrent
@@ -239,9 +240,10 @@ class OPSDAlgorithm(Algorithm):
     action_loss_type = "ref_kl"
     model_role = "teacher"
 
-    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, tokenizer: PreTrainedTokenizer):
-        super().__init__(config, policy_pool, tokenizer)
+    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
+        super().__init__(config, policy_pool, renderer)
         assert isinstance(config.advantage, DemoRefKLAdvantageConfig)
+        assert renderer is not None, "demo_ref_kl requires the renderer (validated at config time)"
         self.demo_key = config.advantage.demo_key
         self.template = config.advantage.template
         self.max_concurrent = config.advantage.max_concurrent
@@ -273,11 +275,11 @@ class OPSDAlgorithm(Algorithm):
             raise ValueError("demo_ref_kl supports text-only prompts (user content must be a string).")
         last_user["content"] = self.template.format(question=question, demonstration=demonstration)
 
-        # ``return_dict=False`` pins the flat token-id list — newer
-        # transformers default to returning a BatchEncoding.
-        return self.tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, tokenize=True, return_dict=False
-        )
+        # Render through the policy's renderer — the same messages → token ids
+        # path the policy's own prompts take, so the scoring prefix matches
+        # the prompt distribution the teacher conditions on.
+        assert self.renderer is not None
+        return self.renderer.render_ids(messages, add_generation_prompt=True)
 
     async def score(self, rollouts: list[TrainRollout]) -> None:
         pool = self._reference_pool()
@@ -324,8 +326,8 @@ class CustomAlgorithm(Algorithm):
     """User-supplied advantage function: one scalar per rollout, optionally
     with per-token advantages aligned to each rollout's completion tokens."""
 
-    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, tokenizer: PreTrainedTokenizer):
-        super().__init__(config, policy_pool, tokenizer)
+    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None):
+        super().__init__(config, policy_pool, renderer)
         assert isinstance(config.advantage, CustomAdvantageConfig)
         custom_fn = import_object(config.advantage.import_path)
         kwargs = config.advantage.kwargs
@@ -352,10 +354,10 @@ ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
 }
 
 
-def build_algorithm(config: AlgorithmConfig, policy_pool: InferencePool, tokenizer: PreTrainedTokenizer) -> Algorithm:
+def build_algorithm(config: AlgorithmConfig, policy_pool: InferencePool, renderer: Renderer | None) -> Algorithm:
     cls = ALGORITHM_CLASSES[config.advantage.type]
     assert cls.action_loss_type == config.advantage.action_loss_type  # config and runtime declare in two places
-    return cls(config, policy_pool, tokenizer)
+    return cls(config, policy_pool, renderer)
 
 
 async def score_train_batch(train_envs: TrainEnvs, rollouts: list[TrainRollout]) -> None:

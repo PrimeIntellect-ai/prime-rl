@@ -813,6 +813,23 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_renderer_for_demo_scoring(self):
+        """``demo_ref_kl`` rebuilds its demo-conditioned scoring prefix
+        client-side, which requires the policy's renderer (the canonical
+        messages → token ids path)."""
+        if self.renderer is not None:
+            return self
+        for env in self.train.env:
+            if env.algo is not None and env.algo.advantage.type == "demo_ref_kl":
+                raise ValueError(
+                    f"env '{env.resolved_name}' uses demo_ref_kl, which renders its demo-conditioned "
+                    "scoring prefix client-side and requires orchestrator.renderer — remove "
+                    "'renderer = \"None\"' (and note the renderer is forced off when no train env "
+                    "samples from the policy)."
+                )
+        return self
+
+    @model_validator(mode="after")
     def validate_pool_size(self):
         """``pool_size`` is only meaningful when the renderer is enabled
         (``renderer is not None``). Reject otherwise so callers don't

@@ -297,7 +297,7 @@ def test_custom_advantage_algorithm():
             }
         }
     )
-    algorithm = CustomAlgorithm(config, policy_pool=None, tokenizer=None)
+    algorithm = CustomAlgorithm(config, policy_pool=None, renderer=None)
 
     inputs = _make_group(rewards=[1.0, 0.5, 0.8], completion_lengths=[10, 12, 8])
 

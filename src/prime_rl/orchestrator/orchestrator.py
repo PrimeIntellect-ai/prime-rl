@@ -253,7 +253,7 @@ class Orchestrator:
         post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="post-batch")
 
         get_logger().info("Loading training environments")
-        self.train_envs = TrainEnvs(config.train.env, policy_pool=self.policy_inference, tokenizer=self.tokenizer)
+        self.train_envs = TrainEnvs(config.train.env, policy_pool=self.policy_inference, renderer=self.renderer)
         get_logger().debug(
             f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})"
         )
