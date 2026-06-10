@@ -555,7 +555,7 @@ class Orchestrator:
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
                 eval_batch = self.eval_sink.add(rollout)
                 if eval_batch is not None:
-                    self.finalize_eval_batch(eval_batch)
+                    await self.finalize_eval_batch(eval_batch)
                 continue
 
             assert isinstance(rollout, TrainRollout)
@@ -858,7 +858,7 @@ class Orchestrator:
             )
         get_logger().success("\n\t\t ".join(lines))
 
-    def finalize_eval_batch(self, batch: EvalBatch) -> None:
+    async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch (save_rollouts,
         monitor.log_eval_samples, monitor.log)."""
         if not batch.rollouts:
@@ -867,7 +867,8 @@ class Orchestrator:
 
         rollout_dicts = [r.to_dict() for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(self.config.output_dir), batch.step)
-        save_rollouts(
+        await asyncio.to_thread(
+            save_rollouts,
             rollout_dicts,
             step_path / f"eval_rollouts_{batch.env_name}.jsonl",
             exclude_keys=None if self.config.dump_trajectory else {"trajectory"},

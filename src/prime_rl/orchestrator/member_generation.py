@@ -26,8 +26,11 @@ def _client_type(request_mode: RequestMode) -> vf.ClientType:
             return "renderer"
 
 
-def _dispatch_index(values: list[str], *, target_name: str, member_id: str, dispatch_id: object) -> int:
-    payload = f"{target_name}:{member_id}:{dispatch_id}".encode()
+def _dispatch_index(values: list[str], *, target_name: str, member_id: str, group_id: object) -> int:
+    # Group-stable on purpose: consecutive turns of the same fixed member
+    # within one group hit the same server (KV prefix-cache reuse), while
+    # different groups still spread across the pool.
+    payload = f"{target_name}:{member_id}:{group_id}".encode()
     digest = hashlib.sha256(payload).digest()
     return int.from_bytes(digest[:8], "big") % len(values)
 
@@ -37,13 +40,13 @@ def _fixed_client(
     target: FixedMemberTargetConfig,
     *,
     member_id: str,
-    dispatch_id: object,
+    group_id: object,
 ) -> vf.ClientConfig:
     idx = _dispatch_index(
         target.base_url,
         target_name=target_name,
         member_id=member_id,
-        dispatch_id=dispatch_id,
+        group_id=group_id,
     )
     return vf.ClientConfig(
         client_type=_client_type(target.request_mode),
@@ -136,6 +139,7 @@ def compile_member_generation_plan(
     learner_sampling_args: Mapping[str, Any],
     fixed_sampling_args: Mapping[str, Any],
     dispatch_id: object,
+    group_id: object,
 ) -> vf.MemberGenerationPlan | None:
     if not config.enabled:
         return None
@@ -164,7 +168,7 @@ def compile_member_generation_plan(
                 target_name,
                 fixed,
                 member_id=member_id,
-                dispatch_id=dispatch_id,
+                group_id=group_id,
             ),
             model=fixed.model,
             sampling_args=sampling_args,

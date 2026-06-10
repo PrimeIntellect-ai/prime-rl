@@ -444,6 +444,7 @@ class RolloutDispatcher:
                         model_name=model_name,
                         cache_salt=cache_salt,
                         dispatch_id=dispatch_id,
+                        group_id=str(group_id),
                     )
                     for dispatch_id in dispatch_ids
                 ]
@@ -476,6 +477,7 @@ class RolloutDispatcher:
                     model_name=model_name,
                     cache_salt=cache_salt,
                     dispatch_id=dispatch_id,
+                    group_id=str(group_id),
                 )
                 group.scheduled += 1
             await self.acquire(permits)

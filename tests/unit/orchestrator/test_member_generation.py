@@ -53,6 +53,7 @@ def test_compile_member_generation_plan_routes_train_one_and_fixed_members():
         learner_sampling_args={"temperature": 1.0, "extra_body": {"cache_salt": "7"}},
         fixed_sampling_args={"temperature": 1.0, "max_completion_tokens": 1024},
         dispatch_id=dispatch_id,
+        group_id="group-compile",
     )
 
     assert plan is not None
@@ -82,6 +83,41 @@ def test_compile_member_generation_plan_routes_train_one_and_fixed_members():
     }
 
 
+def test_fixed_member_client_is_pinned_per_group():
+    config = MultiAgentConfig(
+        fixed={
+            "judge": FixedMemberTargetConfig(
+                members=["judge"],
+                model="judge-model",
+                base_url=[f"http://judge-{i}/v1" for i in range(4)],
+                request_mode="chat",
+            )
+        }
+    )
+
+    def judge_url(dispatch_id: str, group_id: str) -> str:
+        plan = compile_member_generation_plan(
+            config,
+            member_ids=["judge"],
+            default_client=vf.ClientConfig(api_base_url="http://learner/v1"),
+            default_model="learner-model",
+            learner_sampling_args={},
+            fixed_sampling_args={},
+            dispatch_id=dispatch_id,
+            group_id=group_id,
+        )
+        assert plan is not None
+        return plan.members["judge"].client.api_base_url
+
+    # Same group: every dispatch (turn / rollout) hits the same server.
+    urls = {judge_url(f"group-0:{idx}", "group-0") for idx in range(8)}
+    assert len(urls) == 1
+
+    # Different groups: selection spreads across the pool.
+    urls_across_groups = {judge_url(f"group-{g}:0", f"group-{g}") for g in range(32)}
+    assert len(urls_across_groups) > 1
+
+
 def test_fixed_member_renderer_config_reaches_client_config():
     renderer = Qwen3RendererConfig()
     config = MultiAgentConfig(
@@ -106,6 +142,7 @@ def test_fixed_member_renderer_config_reaches_client_config():
         learner_sampling_args={},
         fixed_sampling_args={},
         dispatch_id="dispatch-renderer",
+        group_id="group-renderer",
     )
 
     assert plan is not None
@@ -144,6 +181,7 @@ def test_train_one_unselected_renderer_target_preserves_renderer_config():
         learner_sampling_args={},
         fixed_sampling_args={},
         dispatch_id=dispatch_id,
+        group_id="group-renderer-train-one",
     )
 
     assert plan is not None
@@ -208,6 +246,7 @@ def test_env_compile_generation_strips_learner_only_fields_from_fixed_targets():
         model_name="learner-model",
         cache_salt="7",
         dispatch_id="dispatch-1",
+        group_id="group-1",
     )
 
     assert plan is not None

@@ -85,7 +85,14 @@ def test_train_rollout_persistence_honors_dump_trajectory():
 
 
 def test_eval_rollout_persistence_honors_dump_trajectory():
-    calls = _calls(_method("finalize_eval_batch"), "save_rollouts")
+    calls = [
+        node
+        for node in ast.walk(_method("finalize_eval_batch"))
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func) == "asyncio.to_thread"
+        and node.args
+        and ast.unparse(node.args[0]) == "save_rollouts"
+    ]
     assert len(calls) == 1
     exclude_kw = _call_kw(calls[0], "exclude_keys")
     assert exclude_kw is not None

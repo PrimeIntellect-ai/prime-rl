@@ -368,6 +368,7 @@ async def _run_prime_env_server_member_generation_smoke(monkeypatch: pytest.Monk
             model_name="learner-model",
             cache_salt="7",
             dispatch_id=dispatch_id,
+            group_id="group-e2e",
         )
         assert generation is not None
 

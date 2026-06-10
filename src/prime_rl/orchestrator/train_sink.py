@@ -290,8 +290,12 @@ class TrainSink:
                     source_rollout_id=episode.rollout_id,
                     advantage=advantages[member_idx],
                 )
-                await self.process_rollout(member)
                 out.append(member)
+        # Tokenization is independent per member: ``process_rollout`` mutates
+        # only the member's own raw/samples and uses the shared
+        # tokenizer/renderer read-only, so members can overlap. ``out`` keeps
+        # the deterministic episode x member order regardless.
+        await asyncio.gather(*(self.process_rollout(member) for member in out))
         return out
 
     def _is_multi_agent_episode_rollout(self, rollout: TrainRollout) -> bool:

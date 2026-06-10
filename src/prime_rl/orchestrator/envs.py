@@ -164,6 +164,7 @@ class Env:
         model_name: str,
         cache_salt: str | None,
         dispatch_id: str,
+        group_id: str,
     ) -> vf.MemberGenerationPlan | None:
         if not config.enabled:
             return None
@@ -175,6 +176,7 @@ class Env:
             learner_sampling_args=self._sampling_args_with_salt(cache_salt),
             fixed_sampling_args=self._fixed_member_sampling_args(),
             dispatch_id=dispatch_id,
+            group_id=group_id,
         )
 
     @property
@@ -322,9 +324,8 @@ class EvalEnv(Env):
                 """Run group_size rollouts as a scored group for one example."""
                 client = await acquire_client(group_size)
                 try:
-                    dispatch_ids = [
-                        f"eval:{step}:{self.name}:{example['example_id']}:{idx}" for idx in range(group_size)
-                    ]
+                    group_key = f"eval:{step}:{self.name}:{example['example_id']}"
+                    dispatch_ids = [f"{group_key}:{idx}" for idx in range(group_size)]
                     generation = (
                         [
                             self.compile_generation(
@@ -333,6 +334,7 @@ class EvalEnv(Env):
                                 model_name=model_name,
                                 cache_salt=cache_salt,
                                 dispatch_id=dispatch_id,
+                                group_id=group_key,
                             )
                             for dispatch_id in dispatch_ids
                         ]
@@ -367,7 +369,8 @@ class EvalEnv(Env):
                 example, rollout_idx = job
                 client = await acquire_client(1)
                 try:
-                    dispatch_id = f"eval:{step}:{self.name}:{example['example_id']}:{rollout_idx}"
+                    group_key = f"eval:{step}:{self.name}:{example['example_id']}"
+                    dispatch_id = f"{group_key}:{rollout_idx}"
                     generation = (
                         self.compile_generation(
                             active_multi_agent,
@@ -375,6 +378,7 @@ class EvalEnv(Env):
                             model_name=model_name,
                             cache_salt=cache_salt,
                             dispatch_id=dispatch_id,
+                            group_id=group_key,
                         )
                         if active_multi_agent is not None
                         else None

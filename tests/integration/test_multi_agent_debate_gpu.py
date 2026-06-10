@@ -112,6 +112,7 @@ async def _run_gpu_backed_multi_agent_smoke(tmp_path: Path, *, base_url: str, ap
                 model_name=learner_model,
                 cache_salt=f"gpu-smoke-{idx}",
                 dispatch_id=dispatch_id,
+                group_id=f"gpu-smoke-group-{idx}",
             )
             assert generation is not None
 
