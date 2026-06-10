@@ -206,29 +206,11 @@ class MinProbFilterConfig(BaseConfig):
     """Keep only tokens whose current-policy logprob is ``>=`` this; below it the per-token loss is zeroed."""
 
 
-class SurprisalGateConfig(BaseConfig):
-    """Built-in hook: weight each token's loss by a surprisal gate ``σ(kappa·(logπ − gamma))`` over the
-    *current policy's* logprob (the model being trained). This is the pedagogical-RL student-assimilation
-    gate ``wₜ = σ(κ(logπ_θS(τₜ) − γ))`` — it down-weights tokens the student already finds likely. Reads
-    the live forward, so it's a hook, not an orchestrator-side signal. For the paper's exact
-    ``1/Σ wₜ`` normalization, pair it with a ``custom`` reduce (the default ``mean`` divides by the
-    eligible-token count)."""
-
-    type: Literal["surprisal_gate"] = "surprisal_gate"
-
-    kappa: float = Field(1.0, allow_inf_nan=False)
-    """Gate sharpness ``κ`` (larger = harder gate)."""
-
-    gamma: float = Field(0.0, allow_inf_nan=False)
-    """Logprob threshold ``γ`` — the gate's midpoint (``wₜ = 0.5`` when ``logπ = γ``)."""
-
-
 HookConfig: TypeAlias = Annotated[
-    CustomHookConfig | MinProbFilterConfig | SurprisalGateConfig,
+    CustomHookConfig | MinProbFilterConfig,
     Field(discriminator="type"),
 ]
-"""A loss term's hook: a built-in preset (``min_prob_filter`` / ``surprisal_gate``) or a ``custom``
-import path."""
+"""A loss term's hook: a built-in preset (``min_prob_filter``) or a ``custom`` import path."""
 
 # The single-term ``rl`` preset's default axes (dppo_kl core + grpo advantage). Shared by the
 # ``echo`` compound recipe, whose policy-gradient half *is* the ``rl`` term (see ``_expand_echo``).
