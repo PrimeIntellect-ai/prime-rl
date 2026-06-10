@@ -98,15 +98,15 @@ class RepetitionFilter:
 
 
 @dataclass
-class ZeroAdvantageFilter:
-    """Flags rollouts whose computed advantage is zero (e.g. all rollouts in a
-    GRPO group earned the same reward, so the centered advantage collapses)."""
+class AdvantageFilter:
+    """Flags rollouts whose computed advantage is at or below a threshold."""
 
     name: str
+    threshold: float = 0.0
     enforce: bool = True
 
     def check(self, rollout: "TrainRollout") -> FilterResult:
-        if rollout.advantage is not None and rollout.advantage == 0.0:
+        if rollout.advantage is not None and rollout.advantage <= self.threshold:
             return FilterResult(detected=True)
         return FilterResult(detected=False)
 
@@ -127,9 +127,10 @@ def setup_filter(config: FilterConfig, vocab_size: int) -> RolloutFilter:
             logprob_threshold=math.log(config.prob_threshold),
             enforce=config.enforce,
         )
-    elif config.type == "zero_advantage":
-        return ZeroAdvantageFilter(
-            name="zero_advantage",
+    elif config.type in ("advantage", "zero_advantage"):
+        return AdvantageFilter(
+            name="advantage",
+            threshold=config.threshold,
             enforce=config.enforce,
         )
     raise ValueError(f"Unknown filter type: {config.type}")

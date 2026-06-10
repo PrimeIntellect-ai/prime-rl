@@ -1,8 +1,9 @@
 import math
 import uuid
 
-from prime_rl.configs.orchestrator import GibberishFilterConfig, RepetitionFilterConfig
+from prime_rl.configs.orchestrator import AdvantageFilterConfig, GibberishFilterConfig, RepetitionFilterConfig
 from prime_rl.orchestrator.filters import (
+    AdvantageFilter,
     GibberishFilter,
     RepetitionFilter,
     apply_filters,
@@ -77,6 +78,12 @@ def _make_repetition_filter(window=5, prob_threshold=0.99, enforce=False):
     return RepetitionFilter(
         name="repetition", window=window, logprob_threshold=math.log(prob_threshold), enforce=enforce
     )
+
+
+def _make_advantage_rollout(advantage: float | None) -> TrainRollout:
+    rollout = _make_rollout(completion_ids=[1], completion_logprobs=[-1.0])
+    rollout.advantage = advantage
+    return rollout
 
 
 # --- GibberishFilter tests ---
@@ -187,6 +194,23 @@ def test_repetition_varied_probs_no_trigger():
     assert result.detected is False
 
 
+# --- AdvantageFilter tests ---
+
+
+def test_advantage_filter_detects_rollouts_at_or_below_threshold():
+    advantage_filter = AdvantageFilter(name="advantage", threshold=0.1)
+
+    assert advantage_filter.check(_make_advantage_rollout(0.1)).detected is True
+    assert advantage_filter.check(_make_advantage_rollout(-0.2)).detected is True
+    assert advantage_filter.check(_make_advantage_rollout(0.2)).detected is False
+
+
+def test_advantage_filter_ignores_missing_advantage():
+    advantage_filter = AdvantageFilter(name="advantage", threshold=0.0)
+
+    assert advantage_filter.check(_make_advantage_rollout(None)).detected is False
+
+
 # --- setup_filter / setup_filters tests ---
 
 
@@ -220,6 +244,24 @@ def test_setup_filter_repetition_enforce():
     config = RepetitionFilterConfig(enforce=True)
     repetition_filter = setup_filter(config, vocab_size=128_000)
     assert repetition_filter.enforce is True
+
+
+def test_setup_filter_advantage():
+    config = AdvantageFilterConfig(threshold=0.25)
+    advantage_filter = setup_filter(config, vocab_size=128_000)
+    assert isinstance(advantage_filter, AdvantageFilter)
+    assert advantage_filter.name == "advantage"
+    assert advantage_filter.threshold == 0.25
+    assert advantage_filter.enforce is True
+
+
+def test_setup_filter_zero_advantage_alias():
+    config = AdvantageFilterConfig(type="zero_advantage", enforce=False)
+    advantage_filter = setup_filter(config, vocab_size=128_000)
+    assert isinstance(advantage_filter, AdvantageFilter)
+    assert advantage_filter.name == "advantage"
+    assert advantage_filter.threshold == 0.0
+    assert advantage_filter.enforce is False
 
 
 def test_setup_filters_multiple():

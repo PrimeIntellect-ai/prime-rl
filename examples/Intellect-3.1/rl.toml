@@ -78,7 +78,7 @@ ratio = 0.2
 args = { pool_size = 512 }
 
 [[orchestrator.pre_batch_filters]]
-type = "zero_advantage"
+type = "advantage"
 enforce = true
 
 [orchestrator.eval]

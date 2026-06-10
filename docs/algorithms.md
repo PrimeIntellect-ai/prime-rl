@@ -191,17 +191,18 @@ Filters drop rollouts between scoring and training. Built-ins (composable):
 |---|---|
 | `gibberish` | Drops rollouts whose mean log-prob fall below a threshold — usually a sign of degenerate output. |
 | `repetition` | Drops rollouts with high n-gram repetition. |
-| `zero_advantage` | Drops rollouts whose advantage is zero, so the trainer doesn't waste tokens on them. |
+| `advantage` | Drops rollouts whose advantage is less than or equal to `threshold` (default `0.0`). |
 
-The default `[orchestrator]` config already includes all three filters with their defaults. To override, set `filters` explicitly — the list replaces the defaults wholesale:
+The default `[orchestrator]` config already includes all three filters in both `pre_batch_filters` and `post_batch_filters`. Pre-batch filters monitor only by default; post-batch filters enforce by default. To override either list, set it explicitly — the list replaces that slot's defaults wholesale:
 
 ```toml
-[[orchestrator.filters]]
-type = "zero_advantage"
+[[orchestrator.post_batch_filters]]
+type = "advantage"
+threshold = 0.0
 
-[[orchestrator.filters]]
+[[orchestrator.post_batch_filters]]
 type = "repetition"
-threshold = 0.4
+prob_threshold = 0.99
 ```
 
 Filtered rollouts still appear in W&B distributions, just not in the trainer batch — useful for spotting whether filtering is doing its job.

@@ -41,7 +41,7 @@ name = "qwen3-4b-wiki-search"
 max_completion_tokens = 512
 
 [[orchestrator.pre_batch_filters]]
-type = "zero_advantage"
+type = "advantage"
 enforce = true
 
 [[orchestrator.train.env]]

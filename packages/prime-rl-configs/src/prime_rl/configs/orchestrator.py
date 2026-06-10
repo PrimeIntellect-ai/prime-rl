@@ -452,16 +452,19 @@ class RepetitionFilterConfig(BaseConfig):
     """Tokens sampled with probability above this are considered repetitive. Consecutive such tokens count toward the window."""
 
 
-# Flags rollouts with zero advantage.
-class ZeroAdvantageFilterConfig(BaseConfig):
-    type: Literal["zero_advantage"] = "zero_advantage"
+# Flags rollouts at or below an advantage threshold.
+class AdvantageFilterConfig(BaseConfig):
+    type: Literal["advantage", "zero_advantage"] = "advantage"
 
     enforce: bool = True
     """When True, skip detected rollouts entirely so they are not sent to the trainer. When False, only track detection metrics."""
 
+    threshold: float = 0.0
+    """Flag rollouts whose computed advantage is less than or equal to this value."""
+
 
 FilterConfig: TypeAlias = Annotated[
-    GibberishFilterConfig | RepetitionFilterConfig | ZeroAdvantageFilterConfig,
+    GibberishFilterConfig | RepetitionFilterConfig | AdvantageFilterConfig,
     Field(discriminator="type"),
 ]
 
@@ -554,17 +557,17 @@ class OrchestratorConfig(BaseConfig):
     pre_batch_filters: list[FilterConfig] = [
         GibberishFilterConfig(enforce=False),
         RepetitionFilterConfig(enforce=False),
-        ZeroAdvantageFilterConfig(enforce=False),
+        AdvantageFilterConfig(enforce=False),
     ]
     """Filters applied *before* a rollout enters the training batch buffer.
     All three filter types are registered in monitor mode by default; flip ``enforce=true`` per type
-    to drop matching rollouts before they consume a slot in the batch (e.g. a zero-advantage group
+    to drop matching rollouts before they consume a slot in the batch (e.g. a non-positive-advantage group
     never makes it into a training batch)."""
 
     post_batch_filters: list[FilterConfig] = [
         GibberishFilterConfig(),
         RepetitionFilterConfig(),
-        ZeroAdvantageFilterConfig(),
+        AdvantageFilterConfig(),
     ]
     """Filters applied *after* a batch has been assembled. Each filter annotates each rollout;
     rollouts flagged by an enforcing filter are still recorded but not shipped to the trainer."""
@@ -750,7 +753,7 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_unique_filter_types(self):
         for slot_name in ("pre_batch_filters", "post_batch_filters"):
-            types = [f.type for f in getattr(self, slot_name)]
+            types = ["advantage" if f.type == "zero_advantage" else f.type for f in getattr(self, slot_name)]
             if len(types) != len(set(types)):
                 raise ValueError(
                     f"Duplicate filter types in {slot_name}: {types}. Each filter type may only appear once per slot."
