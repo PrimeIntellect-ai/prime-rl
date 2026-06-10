@@ -125,7 +125,7 @@ def test_fan_out_pipeline_into_compute_rae_advantages():
         is_trainable_member=lambda _rollout, member_id: member_id != "judge",
     )
     state = RAEState(momentum=0.9)
-    advantages = compute_rae_advantages(units, state)
+    advantages, _ = compute_rae_advantages(units, state)
     assert len(advantages) == len(units) == 4
     # Both debater_a units share key (task, example_id=1, "debater_a") →
     # the EMA recursion compounds. With cold start b=0, momentum=0.9:

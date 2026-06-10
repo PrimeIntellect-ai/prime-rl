@@ -11,6 +11,7 @@ from verifiers.types import MemberRollout
 from prime_rl.configs.multi_agent import MultiAgentConfig
 from prime_rl.configs.orchestrator import AdvantageConfig, EMAPerMemberAdvantageConfig
 from prime_rl.orchestrator.member_generation import is_trainable_member as is_bound_trainable_member
+from prime_rl.orchestrator.types import RAEStats
 
 MemberTrainability = Callable[[Mapping, str], bool]
 
@@ -78,19 +79,35 @@ def _rae_key(member_rollout: Mapping) -> RAEKey:
 def compute_rae_advantages(
     member_rollouts: list[MemberRollout],
     state: RAEState,
-) -> list[float]:
+) -> tuple[list[float], RAEStats]:
     """Compute per-member advantages and update EMA baselines.
 
     SPIRAL Alg.1 updates the baseline first, then subtracts that updated
     baseline from the same rollout's reward.
+
+    Also returns an ``RAEStats`` observability snapshot for this call,
+    derived from the estimator's inputs/outputs only (no estimator
+    internals beyond reading baseline values).
     """
     advantages: list[float] = []
+    stats = RAEStats()
     for member_rollout in member_rollouts:
         reward = member_rollout["reward"]
         key = _rae_key(member_rollout)
+        prev_baseline = state.baselines.get(key)
         state.update(key, reward)
-        advantages.append(reward - state.baselines[key])
-    return advantages
+        baseline = state.baselines[key]
+        advantages.append(reward - baseline)
+
+        member_id = member_rollout["member_id"]
+        stats.updates += 1
+        if prev_baseline is None:
+            stats.cold_updates += 1
+        stats.baseline_abs_delta_sum += abs(baseline - (prev_baseline if prev_baseline is not None else 0.0))
+        stats.baseline_sum_by_member[member_id] = stats.baseline_sum_by_member.get(member_id, 0.0) + baseline
+        stats.updates_by_member[member_id] = stats.updates_by_member.get(member_id, 0) + 1
+    stats.baseline_keys_total = len(state.baselines)
+    return advantages, stats
 
 
 def validate_advantage_mode(env_name: str, *, is_multi_agent: bool, advantage: AdvantageConfig | None) -> None:

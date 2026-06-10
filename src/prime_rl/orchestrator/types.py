@@ -124,6 +124,38 @@ class EvalRollout(FinishedRollout):
 
 
 @dataclass
+class RAEStats:
+    """Instrumentation snapshot of the multi-agent advantage path (RAE).
+
+    Derived strictly from the estimator's inputs/outputs (rewards in,
+    baseline values out) so the estimator implementation can be swapped
+    without touching this. ``baseline_abs_delta_sum`` accumulates per-update
+    baseline movement ``|after - before|``, using the estimator's effective
+    prior (0.0) as the before-value for cold keys. A "cold" update is a
+    baseline key never seen before. Window semantics match the sink's other
+    counters: everything since the last ship, regardless of which batch the
+    affected rows land in."""
+
+    updates: int = 0
+    cold_updates: int = 0
+    baseline_abs_delta_sum: float = 0.0
+    baseline_sum_by_member: dict[str, float] = field(default_factory=dict)
+    updates_by_member: dict[str, int] = field(default_factory=dict)
+    baseline_keys_total: int = 0
+
+    def merge(self, other: RAEStats) -> None:
+        self.updates += other.updates
+        self.cold_updates += other.cold_updates
+        self.baseline_abs_delta_sum += other.baseline_abs_delta_sum
+        for member_id, baseline_sum in other.baseline_sum_by_member.items():
+            self.baseline_sum_by_member[member_id] = self.baseline_sum_by_member.get(member_id, 0.0) + baseline_sum
+        for member_id, count in other.updates_by_member.items():
+            self.updates_by_member[member_id] = self.updates_by_member.get(member_id, 0) + count
+        # The baseline table only grows; the freshest snapshot is the largest.
+        self.baseline_keys_total = max(self.baseline_keys_total, other.baseline_keys_total)
+
+
+@dataclass
 class TrainBatchMetrics:
     """Per-batch aggregates from ``TrainSink.process_batch``; consumed by
     ``MetricsBuilder.build``. ``arrivals_by_env`` / ``errors_by_env`` count
@@ -138,6 +170,7 @@ class TrainBatchMetrics:
     samples_shipped: int
     arrivals_by_env: dict[str, int] = field(default_factory=dict)
     errors_by_env: dict[str, int] = field(default_factory=dict)
+    rae_stats: RAEStats | None = None
 
 
 @dataclass
@@ -193,6 +226,9 @@ class EvalBatchMetrics:
     num_turns_min: float = 0.0
     num_turns_max: float = 0.0
     pass_at_k: dict[str, float] = field(default_factory=dict)
+    # Key-agnostic means of numeric env-emitted rollout metrics
+    # (``raw["metrics"]``), e.g. debate diagnostics.
+    env_metrics: dict[str, float] = field(default_factory=dict)
 
     def to_wandb_dict(self, *, env_name: str, step: int) -> dict[str, float]:
         prefix = f"eval/{env_name}"
@@ -213,6 +249,8 @@ class EvalBatchMetrics:
             out[f"{prefix}/num_turns/max"] = self.num_turns_max
             for k, v in self.pass_at_k.items():
                 out[f"{prefix}/{k}"] = v
+            for key, value in self.env_metrics.items():
+                out[f"{prefix}/metrics/{key}"] = value
         return out
 
 

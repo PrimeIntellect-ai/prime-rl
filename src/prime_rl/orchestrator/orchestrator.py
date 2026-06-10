@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from prime_rl.transport.base import TrainingBatchSender
     from prime_rl.utils.client import InferencePool
     from prime_rl.utils.monitor.base import Monitor
+from verifiers.clients.renderer_client import get_bridge_metrics, reset_bridge_metrics
 from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
@@ -659,6 +660,10 @@ class Orchestrator:
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.update_dispatch_gate()
 
+        # Snapshot + reset the renderer client's process-global TITO bridge
+        # counters so each step logs a disjoint window
+        bridge_metrics = get_bridge_metrics()
+        reset_bridge_metrics()
         metrics = self.metrics.build(
             step=step,
             rollouts=batch.rollouts,
@@ -670,6 +675,7 @@ class Orchestrator:
             pre_filter_seen=self.train_sink.pre_filter_seen,
             pre_filter_dropped=self.train_sink.pre_filter_dropped,
             pre_filter_dropped_by_name=dict(self.train_sink.pre_filter_dropped_by_name),
+            bridge_metrics=bridge_metrics,
         )
         self.monitor.log(metrics, step=step)
         self.monitor.log_samples(rollout_dicts, step=step)

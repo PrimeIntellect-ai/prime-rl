@@ -34,7 +34,7 @@ from prime_rl.orchestrator.trajectories import (
     interleave_rollout,
     offload_images_to_disk,
 )
-from prime_rl.orchestrator.types import TrainBatch, TrainBatchMetrics, TrainRollout
+from prime_rl.orchestrator.types import RAEStats, TrainBatch, TrainBatchMetrics, TrainRollout
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
@@ -69,6 +69,10 @@ class TrainSink:
         self.rae_state = rae_state
         self.pre_filters = pre_filters
         self.post_filters = post_filters
+
+        # RAE observability accumulated across groups since the last ship;
+        # popped into ``TrainBatchMetrics`` by ``process_batch``
+        self.rae_step_stats: RAEStats | None = None
 
         # Keyed by the dispatcher's group UUID. ``(env_name, example_id)``
         # isn't unique — the same example can be re-sampled while an
@@ -273,7 +277,11 @@ class TrainSink:
             episode.raw["env_name"] = episode.env_name
             raw_episodes.append(episode.raw)
         member_raws, episode_to_member_idxs = fan_out_trainable_for_multi_agent(raw_episodes, self.config.multi_agent)
-        advantages = compute_rae_advantages(member_raws, self.rae_state)
+        advantages, rae_stats = compute_rae_advantages(member_raws, self.rae_state)
+        if self.rae_step_stats is None:
+            self.rae_step_stats = rae_stats
+        else:
+            self.rae_step_stats.merge(rae_stats)
 
         out: list[TrainRollout] = []
         for episode, member_idxs in zip(episodes, episode_to_member_idxs):
@@ -306,7 +314,11 @@ class TrainSink:
         raw.setdefault("env_name", episode.env_name)
         raw.setdefault("trajectory_id", f"{episode.rollout_id}:{raw.get('member_id', 'member')}")
         raw.setdefault("completion", None)
-        raw.setdefault("is_truncated", episode.raw.get("is_truncated", False))
+        # Member-level truncation: a member row is truncated iff one of its
+        # own trajectory steps hit a generation-length stop. Prompt-overflow
+        # truncation produces no trajectory step and stays episode-level,
+        # visible via the inherited stop_condition ("prompt_too_long").
+        raw["is_truncated"] = any(step["is_truncated"] for step in raw["trajectory"])
         raw.setdefault("stop_condition", episode.raw.get("stop_condition"))
         raw.setdefault("metrics", episode.raw.get("metrics", {}))
         raw.setdefault("timing", episode.raw.get("timing", {}))
@@ -390,7 +402,9 @@ class TrainSink:
             samples_shipped=len(samples),
             arrivals_by_env=dict(self.arrivals_by_env),
             errors_by_env=dict(self.errors_by_env),
+            rae_stats=self.rae_step_stats,
         )
+        self.rae_step_stats = None
         self.arrivals_by_env.clear()
         self.errors_by_env.clear()
         return TrainBatch(rollouts=cohort, samples=samples, metrics=metrics, episode_rollouts=episode_rollouts)

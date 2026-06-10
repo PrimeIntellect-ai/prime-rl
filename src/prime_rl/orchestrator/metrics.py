@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import pandas as pd
@@ -27,9 +28,13 @@ class MetricsBuilder:
         pre_filter_seen: int,
         pre_filter_dropped: int,
         pre_filter_dropped_by_name: dict[str, int],
+        bridge_metrics: Mapping[str, int],
     ) -> dict[str, Any]:
         """Builds the per-step W&B dict. Stable metric names so
-        existing dashboards / alerts keep working."""
+        existing dashboards / alerts keep working.
+
+        ``bridge_metrics`` is a snapshot of the verifiers renderer client's
+        process-global TITO bridge counters (attempts/successes/failures)."""
         num_rollouts = len(rollouts)
         num_unique_examples = len({r.group_id for r in rollouts})
         num_tokens = sum(
@@ -53,6 +58,8 @@ class MetricsBuilder:
                 "decode_len": metrics.rollout_decode_lens,
                 "samples_per_rollout": metrics.samples_per_rollout,
                 "num_turns": [len(r.raw["trajectory"]) for r in rollouts],
+                "member_id": [r.raw.get("member_id") for r in rollouts],
+                "advantage": [r.advantage for r in rollouts],
             }
         )
         metrics_df = pd.DataFrame([(r.raw.get("metrics") or {}) for r in rollouts])
@@ -64,6 +71,16 @@ class MetricsBuilder:
         env_group_size = {env.resolved_name: env.group_size for env in self.config.train.env}
 
         def compute_solve_rates(df):
+            """solve_none/solve_all/effective_batch_size are GRPO-group
+            metrics: each row is an independent attempt and a group's reward
+            sum reaching ``group_size`` means fully solved. Multi-agent
+            member rows are correlated zero-sum projections of one episode
+            (their rewards sum to ~0 by construction), so no group-solve
+            semantics exists for them — they are excluded, and the keys are
+            omitted entirely when a slice has only member rows."""
+            df = df[df.member_id.isna()]
+            if df.empty:
+                return None
             grouped = df.groupby("group_id")
             reward_per_problem = grouped.reward.sum()
             solve_none = (reward_per_problem == 0).mean()
@@ -72,7 +89,7 @@ class MetricsBuilder:
             return solve_none, solve_all, 1 - solve_none - solve_all
 
         by_example = results_df.groupby("group_id")
-        solve_none, solve_all, effective_batch_size = compute_solve_rates(results_df)
+        solve_rates = compute_solve_rates(results_df)
 
         to_log: dict[str, Any] = {
             "progress/tokens": num_tokens,
@@ -118,9 +135,6 @@ class MetricsBuilder:
             "reward/all/mean": by_example.reward.mean().mean(),
             "reward/all/max": by_example.reward.mean().max(),
             "reward/all/min": by_example.reward.mean().min(),
-            "solve_none/all": solve_none,
-            "solve_all/all": solve_all,
-            "effective_batch_size/all": effective_batch_size,
             **{f"batch/{env}": r for env, r in results_df.env_name.value_counts(normalize=True).items()},
             "time/step": step_time,
             "time/teacher_logprobs": teacher_logprobs_time,
@@ -129,6 +143,11 @@ class MetricsBuilder:
             **{f"filters/all/{name}": filter_df[name].astype(float).mean() for name in filter_df.columns},
             "step": step,
         }
+        if solve_rates is not None:
+            solve_none, solve_all, effective_batch_size = solve_rates
+            to_log["solve_none/all"] = solve_none
+            to_log["solve_all/all"] = solve_all
+            to_log["effective_batch_size/all"] = effective_batch_size
 
         # Per-env metrics
         per_env_columns = [
@@ -155,10 +174,12 @@ class MetricsBuilder:
             to_log[f"reward/{env}/mean"] = env_by_example.reward.mean().mean()
             to_log[f"reward/{env}/max"] = env_by_example.reward.mean().max()
             to_log[f"reward/{env}/min"] = env_by_example.reward.mean().min()
-            sn, sa, eb = compute_solve_rates(env_df)
-            to_log[f"solve_none/{env}"] = sn
-            to_log[f"solve_all/{env}"] = sa
-            to_log[f"effective_batch_size/{env}"] = eb
+            env_solve_rates = compute_solve_rates(env_df)
+            if env_solve_rates is not None:
+                sn, sa, eb = env_solve_rates
+                to_log[f"solve_none/{env}"] = sn
+                to_log[f"solve_all/{env}"] = sa
+                to_log[f"effective_batch_size/{env}"] = eb
             to_log[f"stop_condition/{env}/generation_truncated"] = (
                 env_df.is_truncated & (env_df.stop_condition != "prompt_too_long")
             ).mean()
@@ -171,6 +192,43 @@ class MetricsBuilder:
             env_filter_df = filter_df.loc[env_df.index] if not filter_df.empty else filter_df
             for name in filter_df.columns:
                 to_log[f"filters/{env}/{name}"] = env_filter_df[name].astype(float).mean()
+
+        # Multi-agent member rows (fan-out products carrying ``member_id``):
+        # per-member reward/advantage and the trainable-row balance across
+        # members (shares sum to 1 — seat imbalance shows up directly)
+        ma_df = results_df[results_df.member_id.notna()]
+        if not ma_df.empty:
+            num_episodes = len({r.source_rollout_id for r in rollouts if r.raw.get("member_id") is not None})
+            to_log["multi_agent/member_rows"] = len(ma_df)
+            to_log["multi_agent/fan_out_factor"] = len(ma_df) / num_episodes
+            trainable_ma = ma_df[~ma_df.is_filtered]
+            for member_id, member_df in ma_df.groupby("member_id"):
+                to_log[f"multi_agent/{member_id}/reward_mean"] = member_df.reward.mean()
+                to_log[f"multi_agent/{member_id}/advantage_mean"] = member_df.advantage.astype(float).mean()
+                if len(trainable_ma) > 0:
+                    to_log[f"multi_agent/{member_id}/trainable_row_share"] = float(
+                        (trainable_ma.member_id == member_id).mean()
+                    )
+
+        rae_stats = metrics.rae_stats
+        if rae_stats is not None and rae_stats.updates > 0:
+            to_log["multi_agent/rae/cold_key_fraction"] = rae_stats.cold_updates / rae_stats.updates
+            to_log["multi_agent/rae/baseline_drift_mean"] = rae_stats.baseline_abs_delta_sum / rae_stats.updates
+            to_log["multi_agent/rae/baseline_keys_total"] = rae_stats.baseline_keys_total
+            for member_id, baseline_sum in rae_stats.baseline_sum_by_member.items():
+                to_log[f"multi_agent/{member_id}/rae_baseline_mean"] = (
+                    baseline_sum / rae_stats.updates_by_member[member_id]
+                )
+
+        # TITO bridge counters (process-global in the verifiers renderer
+        # client) — a miss silently degrades to a full O(T²) re-render. The
+        # window covers everything since the previous snapshot, including
+        # concurrent eval traffic.
+        bridge_attempts = bridge_metrics["attempts"]
+        if bridge_attempts > 0:
+            to_log["bridge/attempt_count"] = bridge_attempts
+            to_log["bridge/hit_rate"] = bridge_metrics["successes"] / bridge_attempts
+            to_log["bridge/miss_count"] = bridge_metrics["failures"]
 
         # Dispatcher / watcher gauges live on the ``_timestamp`` axis via
         # the periodic logger — keep this dict step-axis only
