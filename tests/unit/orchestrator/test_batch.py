@@ -144,6 +144,45 @@ def test_prepare_batch_packs_mixed_loss_cores(make_training_example):
     assert len(flat_batches[0].input_ids) == 8
 
 
+@pytest.mark.parametrize("refs_on_longer", [True, False])
+def test_prepare_batch_aligns_ref_logprobs_in_mixed_bins(make_training_example, refs_on_longer):
+    """Packing a ref-bearing sample (e.g. OPD) with a ref-less one (e.g. GRPO)
+    must keep ``ref_logprobs`` position-aligned with ``input_ids`` — placeholder
+    0.0s on the ref-less tokens, both when the bin gains refs after ref-less
+    content (backfill) and when ref-less content lands in a ref-bearing bin."""
+    longer = TrainingSample(
+        prompt_ids=[1, 2, 3],
+        prompt_mask=[False] * 3,
+        completion_ids=[4, 5, 6],
+        completion_mask=[True] * 3,
+        completion_logprobs=[-0.1] * 3,
+        completion_temperatures=[1.0] * 3,
+        ref_logprobs=[-1.5] * 6 if refs_on_longer else None,
+        advantage=1.0,
+        env_name="test-env",
+    )
+    shorter = make_training_example()
+    shorter.ref_logprobs = None if refs_on_longer else [-1.5] * 4
+
+    batches_per_gpu = prepare_batch(
+        rollouts=[longer, shorter],
+        seq_len=16,
+        pad_to_multiple_of=1,
+        num_train_workers=1,
+        idxs=[0, 0],
+        num_loras=1,
+    )
+    flat_batches = [batch for worker_batches in batches_per_gpu for batch in worker_batches]
+    assert len(flat_batches) == 1  # both samples share one bin
+    bin_content = flat_batches[0]
+    assert len(bin_content.ref_logprobs) == len(bin_content.input_ids)
+    # FFD places the longer sample first; refs must sit at their sample's offset
+    if refs_on_longer:
+        assert bin_content.ref_logprobs == [-1.5] * 6 + [0.0] * 4
+    else:
+        assert bin_content.ref_logprobs == [0.0] * 6 + [-1.5] * 4
+
+
 def test_prepare_sample_with_routed_experts():
     """Routed experts are passed through prepare_sample and match input_ids length."""
     # 2 prompt + 2 completion = 4 tokens, 2 layers, topk=2

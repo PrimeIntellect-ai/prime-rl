@@ -223,8 +223,10 @@ def packed_samples_into_micro_bs(
                 bin_content.temperatures.extend(sample.temperatures)
                 if sample.ref_logprobs is not None:
                     if bin_content.ref_logprobs is None:
-                        bin_content.ref_logprobs = []
+                        bin_content.ref_logprobs = [0.0] * existing_len
                     bin_content.ref_logprobs.extend(sample.ref_logprobs)
+                elif bin_content.ref_logprobs is not None:
+                    bin_content.ref_logprobs.extend([0.0] * len(sample.input_ids))
                 assert (bin_content.routed_experts is None) == (sample.routed_experts is None)
                 if sample.routed_experts is not None:
                     if bin_content.routed_experts is None:
