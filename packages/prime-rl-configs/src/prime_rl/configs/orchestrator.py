@@ -519,9 +519,20 @@ class ReferenceLogprobsConfig(BaseConfig):
     """How the reference model scores each trajectory (the per-token logprobs prefill)."""
 
     top_k: int = Field(1, ge=1)
-    """Top-k (token_id, logprob) per position the reference returns. ``1`` ships just the argmax
-    alongside the always-present sampled-token logprob; ``>1`` enables top-k distillation (OPD) /
-    richer scoring (e.g. pedagogical RL)."""
+    """Top-k logprobs per position the reference returns. Currently only ``1`` is supported (the
+    sampled-token estimate); ``>1`` (top-k distillation) is rejected until the reference-scoring
+    follow-up wires the prefill request, a wider transport shape, and a consuming core."""
+
+    @model_validator(mode="after")
+    def _reject_unsupported_top_k(self) -> "ReferenceLogprobsConfig":
+        # The field is shipped ahead of its consumer; rejecting >1 keeps it from silently no-opping.
+        if self.top_k != 1:
+            raise ValueError(
+                "reference.logprobs.top_k > 1 is not supported yet — top-k reference scoring is a "
+                "follow-up (it needs the prefill request, a wider wire shape, and a consuming core). "
+                "Use top_k = 1."
+            )
+        return self
 
 
 class ReferenceModelConfig(RolloutModelConfig):

@@ -444,6 +444,27 @@ def test_builtin_hook_preset_parses():
     assert hook.type == "min_prob_filter" and hook.min_logprob == -2.0
 
 
+def test_echo_tool_names_without_tool_role_rejected():
+    # tool_names only narrows the 'tool' role; without 'tool' in roles it's a silent no-op -> rejected.
+    with pytest.raises(ValidationError, match="tool_names"):
+        RLConfig.model_validate(
+            {
+                "model": {"name": "my-model"},
+                "losses": [{"type": "echo", "roles": ["assistant"], "tool_names": ["search"]}],
+                "trainer": {},
+                "orchestrator": {"renderer": None},
+            }
+        )
+
+
+def test_reference_logprobs_top_k_above_one_rejected():
+    # top_k > 1 (top-k reference scoring) is a follow-up; reject it rather than silently no-op.
+    from prime_rl.configs.orchestrator import ReferenceLogprobsConfig
+
+    with pytest.raises(ValidationError, match="top_k > 1 is not supported"):
+        ReferenceLogprobsConfig(top_k=2)
+
+
 def test_empty_enabled_losses_rejected():
     with pytest.raises(ValidationError, match="enabled_losses is empty"):
         RLConfig.model_validate(

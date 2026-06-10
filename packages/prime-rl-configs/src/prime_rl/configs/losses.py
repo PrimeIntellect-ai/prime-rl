@@ -112,6 +112,17 @@ class EchoAdvantageConfig(BaseConfig):
     tau: float = Field(1.0, ge=0)
     """Temperature on the advantage when ``by_advantage``."""
 
+    @model_validator(mode="after")
+    def _validate_tool_names(self) -> "EchoAdvantageConfig":
+        # ``tool_names`` only narrows the ``tool`` role; setting it without echoing ``tool`` is a
+        # silent no-op (``echo_advantage`` only checks names on tool-role tokens), so reject it.
+        if self.tool_names is not None and "tool" not in self.roles:
+            raise ValueError(
+                f"echo advantage: tool_names={sorted(self.tool_names)} only narrows the 'tool' role, but "
+                f"'tool' is not in roles={self.roles}; add 'tool' to roles or drop tool_names."
+            )
+        return self
+
 
 class SFTAdvantageConfig(BaseConfig):
     """SFT advantage: a constant ``alpha`` on the sampled tokens, 0 elsewhere (masked NLL)."""
