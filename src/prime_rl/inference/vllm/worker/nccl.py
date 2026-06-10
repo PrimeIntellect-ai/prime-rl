@@ -1,4 +1,5 @@
 import pickle
+import threading
 from typing import TYPE_CHECKING, Generator, cast
 
 import torch
@@ -122,6 +123,69 @@ class NCCLWeightBroadcastReceiver:
 
 class NCCLWeightUpdateWorker(Worker):
     """vLLM worker extension for updating weights in-place using NCCL."""
+
+    def arm_lora_receive(self, step: int, header_expectation: dict | None = None) -> None:
+        """Arm a background LoRA receive and return after the receiver thread is live.
+
+        This method is intentionally fast: the API server awaits this worker RPC
+        before returning 202 to the orchestrator. The blocking NCCL receive runs
+        in the background and is joined by ``wait_lora_receive``.
+        """
+        thread = getattr(self, "_lora_receive_thread", None)
+        if thread is not None and thread.is_alive():
+            state = getattr(self, "_lora_receive_state", {})
+            raise RuntimeError(f"LoRA receive for step {state.get('step')} is still in flight")
+
+        self._lora_receive_state = {
+            "step": step,
+            "status": "armed",
+            "error": None,
+        }
+        self._lora_receive_error = None
+        thread = threading.Thread(
+            target=self._run_lora_receive_thread,
+            args=(step, header_expectation),
+            name=f"lora-receive-step-{step}",
+            daemon=True,
+        )
+        self._lora_receive_thread = thread
+        thread.start()
+
+    def _run_lora_receive_thread(self, step: int, header_expectation: dict | None) -> None:
+        self._lora_receive_state["status"] = "receiving"
+        try:
+            self.receive_lora_update(step, header_expectation)
+        except BaseException as exc:
+            self._lora_receive_error = exc
+            self._lora_receive_state["status"] = "error"
+            self._lora_receive_state["error"] = repr(exc)
+            return
+        self._lora_receive_state["status"] = "ok"
+
+    def receive_lora_update(self, step: int, header_expectation: dict | None) -> None:
+        """Receive and apply an NCCL LoRA update.
+
+        PR 1 wires the arm/wait protocol first; tensor validation and adapter
+        commit are implemented in the follow-up body of this method.
+        """
+        raise NotImplementedError("NCCL LoRA receive is not implemented yet")
+
+    def wait_lora_receive(self, step: int) -> dict:
+        state = getattr(self, "_lora_receive_state", None)
+        if state is None:
+            raise RuntimeError(f"No LoRA receive has been armed for step {step}")
+        if state["step"] != step:
+            raise RuntimeError(f"LoRA receive armed for step {state['step']}, not {step}")
+
+        thread = getattr(self, "_lora_receive_thread", None)
+        if thread is None:
+            raise RuntimeError(f"LoRA receive thread missing for step {step}")
+        thread.join()
+
+        error = getattr(self, "_lora_receive_error", None)
+        if error is not None:
+            raise RuntimeError(f"LoRA receive failed for step {step}: {error!r}") from error
+        return {"status": state["status"], "step": step}
 
     def init_broadcaster(
         self,

@@ -89,6 +89,46 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
     return {"status": "ok"}
 
 
+def _lora_update_tasks(request: Request) -> dict[int, asyncio.Task]:
+    tasks = getattr(request.app.state, "lora_update_tasks", None)
+    if tasks is None:
+        tasks = {}
+        request.app.state.lora_update_tasks = tasks
+    return tasks
+
+
+@router.post("/update_lora")
+async def update_lora(request: Request):
+    data = await request.json()
+    step = data["step"]
+    adapters = data.get("adapters", [])
+    if len(adapters) != 1:
+        return JSONResponse(
+            {"status": "error", "message": "NCCL LoRA currently supports exactly one adapter per update"},
+            status_code=400,
+        )
+
+    header_expectation = {"step": step, "adapters": adapters}
+    await engine_client(request).collective_rpc("arm_lora_receive", args=(step, header_expectation))
+    task = asyncio.create_task(engine_client(request).collective_rpc("wait_lora_receive", args=(step,)))
+    _lora_update_tasks(request)[step] = task
+    return JSONResponse({"status": "receiving", "step": step}, status_code=202)
+
+
+@router.get("/update_lora/status")
+async def update_lora_status(request: Request, step: int):
+    task = _lora_update_tasks(request).get(step)
+    if task is None:
+        return JSONResponse({"status": "unknown", "step": step}, status_code=404)
+    if not task.done():
+        return {"status": "receiving", "step": step}
+    try:
+        await task
+    except Exception as exc:
+        return JSONResponse({"status": "error", "step": step, "message": repr(exc)}, status_code=500)
+    return {"status": "ok", "step": step}
+
+
 @router.get("/liveness")
 async def liveness(raw_request: Request):
     """Check that the engine event loop can service a no-op worker RPC."""
