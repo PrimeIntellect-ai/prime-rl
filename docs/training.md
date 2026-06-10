@@ -83,17 +83,17 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 
 ### Algorithms
 
-The RL entrypoint supports several training algorithms, switched via `[orchestrator.algo]` (see [Algorithms](algorithms.md#the-algorithm-abstraction) for the full reference, the model registry, and per-component customization):
+The RL entrypoint supports several training algorithms, switched via `[orchestrator.algo]` (see [Algorithms](algorithms.md#the-algorithm-abstraction) for the full reference, model references, and per-component customization):
 
 | Preset | Frozen model (`algo.model`) | Use case |
 |---|---|---|
 | `grpo` (default) | None | Standard group-relative RL |
 | `opd` | Required, must be vLLM (needs `prompt_logprobs`) | [On-policy distillation](https://thinkingmachines.ai/blog/on-policy-distillation/): the policy generates rollouts, the trainer minimizes per-token reverse KL to a reference model |
 | `sft_distill` | Required, any OpenAI-compatible endpoint | Hard-distill: a frozen model generates rollouts, the policy trains on its tokens |
-| `self_distill` | `"policy"` (no deployment) or a vLLM entry serving the same checkpoint | [SDFT](https://arxiv.org/abs/2601.19897): the model is its own reference conditioned on expert demonstrations |
+| `self_distill` | `"policy"` (the default, no deployment) or a vLLM endpoint serving a frozen copy | [SDFT](https://arxiv.org/abs/2601.19897): the model is its own reference conditioned on expert demonstrations |
 | `echo` | None | GRPO plus cross-entropy on env-observation tokens |
 
-Frozen models are named `[orchestrator.models.<key>]` entries referenced from the algorithm (`algo = { name = "opd", model = "<key>" }`). The `rl` entrypoint only manages policy inference — start frozen-model servers yourself and point the entry's `client.base_url` at them:
+Frozen models are declared inline on the algorithm (`[orchestrator.algo.model]` with `model.name` + `client.base_url`). The `rl` entrypoint only manages policy inference — start frozen-model servers yourself and point `client.base_url` at them:
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 uv run inference \

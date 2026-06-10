@@ -3,27 +3,34 @@ from unittest.mock import MagicMock
 import pytest
 import verifiers as vf
 
-from prime_rl.configs.algorithm import AlgorithmConfig, LossRoutingConfig
+from prime_rl.configs.algorithm import AlgorithmConfig, FrozenModelConfig, LossRoutingConfig
 from prime_rl.orchestrator.algorithms import stamp_loss_routing
 from prime_rl.orchestrator.trajectories import interleave_rollout
 from prime_rl.transport.types import LOSS_TYPE_CE, LOSS_TYPE_REF_KL, LOSS_TYPE_RL, TrainingSample
+
+FROZEN = {"model": {"name": "org/ref-model"}, "client": {"base_url": ["http://ref:8001/v1"]}}
+
+
+def _ref_kind(ref):
+    """Collapse a resolved reference to a comparable marker."""
+    return "frozen" if isinstance(ref, FrozenModelConfig) else ref
 
 
 @pytest.mark.parametrize(
     ("name", "model", "source", "advantage_type", "advantage_model", "action_loss_type", "observation"),
     [
         ("grpo", None, "policy", "group_norm", None, "rl", "none"),
-        ("opd", "ref", "policy", "ref_kl", "ref", "ref_kl", "none"),
-        ("sft_distill", "ref", "ref", "supervised", None, "ce", "none"),
-        ("self_distill", "policy", "policy", "demo_ref_kl", "policy", "ref_kl", "none"),
+        ("opd", FROZEN, "policy", "ref_kl", "frozen", "ref_kl", "none"),
+        ("sft_distill", FROZEN, "frozen", "supervised", None, "ce", "none"),
+        ("self_distill", None, "policy", "demo_ref_kl", "policy", "ref_kl", "none"),
         ("echo", None, "policy", "group_norm", None, "rl", "ce"),
     ],
 )
 def test_preset_expansion(name, model, source, advantage_type, advantage_model, action_loss_type, observation):
     algo = AlgorithmConfig(name=name, model=model)
-    assert algo.sampling.source == source
+    assert _ref_kind(algo.sampling.source) == source
     assert algo.advantage.type == advantage_type
-    assert getattr(algo.advantage, "model", None) == advantage_model
+    assert _ref_kind(getattr(algo.advantage, "model", None)) == advantage_model
     assert algo.advantage.action_loss_type == action_loss_type
     assert algo.loss.observation == observation
 
@@ -46,8 +53,13 @@ def test_frozen_sampling_requires_model_reference():
 
 
 def test_model_shorthand_without_target_errors():
-    with pytest.raises(ValueError, match="no component needs it"):
-        AlgorithmConfig(name="grpo", model="ref")
+    with pytest.raises(ValueError, match="no component reference accepts it"):
+        AlgorithmConfig(name="grpo", model=FROZEN)
+
+
+def test_model_shorthand_redundant_but_consistent_is_accepted():
+    algo = AlgorithmConfig(name="opd", model=FROZEN, advantage={"type": "ref_kl", "model": FROZEN})
+    assert isinstance(algo.advantage.model, FrozenModelConfig)
 
 
 def test_ref_kl_rejects_policy():
@@ -56,8 +68,8 @@ def test_ref_kl_rejects_policy():
 
 
 def test_rl_loss_type_incompatible_with_frozen_sampling():
-    with pytest.raises(ValueError, match="sampling.source='ref'"):
-        AlgorithmConfig(name="sft_distill", model="ref", advantage={"type": "group_norm"})
+    with pytest.raises(ValueError, match="sampling.source is a frozen model"):
+        AlgorithmConfig(name="sft_distill", model=FROZEN, advantage={"type": "group_norm"})
 
 
 def _make_sample(obs_mask: list[bool] | None) -> TrainingSample:

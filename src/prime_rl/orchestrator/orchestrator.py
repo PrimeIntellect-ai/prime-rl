@@ -40,9 +40,8 @@ if TYPE_CHECKING:
 from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
-from prime_rl.configs.algorithm import POLICY_MODEL
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.orchestrator.algorithms import ModelRegistry, score_train_batch
+from prime_rl.orchestrator.algorithms import score_train_batch
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -78,7 +77,7 @@ from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transport import TrainingBatch, setup_training_batch_sender
 from prime_rl.utils.async_utils import safe_cancel
-from prime_rl.utils.client import init_nccl_broadcast, setup_inference_pool
+from prime_rl.utils.client import init_nccl_broadcast
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.monitor import setup_monitor
@@ -126,7 +125,6 @@ class Orchestrator:
     # Always set by ``setup()``
     tokenizer: PreTrainedTokenizer
     policy_inference: InferencePool
-    models: ModelRegistry
     monitor: Monitor
     sender: TrainingBatchSender
     train_envs: TrainEnvs
@@ -183,7 +181,6 @@ class Orchestrator:
         # config is present
         self.renderer = None
         self.mm_token_type_ids_mapping = None
-        self.models = ModelRegistry()
         self.heart = None
         self.usage_reporter = None
         self.inference_metrics = None
@@ -217,7 +214,9 @@ class Orchestrator:
         get_logger().info(f"Initializing tokenizer ({config.tokenizer})")
         self.tokenizer = setup_tokenizer(config.tokenizer)
 
-        # Live policy inference pool, registered under the reserved name
+        # The one model prime-rl hosts: the live policy. Frozen model
+        # references are external endpoints — each env's Algorithm builds its
+        # own pools in ``setup()`` below.
         get_logger().info(
             f"Initializing policy inference pool (base_url={', '.join(config.model.client.base_url)}, "
             f"model={config.model.model.name})"
@@ -225,25 +224,11 @@ class Orchestrator:
         self.renderer, self.policy_inference = await setup_policy_inference_pool(
             config=config, tokenizer=self.tokenizer
         )
-        self.models.register(POLICY_MODEL, self.policy_inference)
         self.mm_token_type_ids_mapping = (
             getattr(self.renderer, "mm_token_type_id_map", None) if self.renderer is not None else None
         )
         if self.mm_token_type_ids_mapping == {}:
             self.mm_token_type_ids_mapping = None
-
-        # Frozen hosted models from [orchestrator.models]
-        for name, hosted in config.models.items():
-            get_logger().info(
-                f"Initializing inference pool '{name}' (base_url={', '.join(hosted.client.base_url)}, "
-                f"model={hosted.model.name})"
-            )
-            pool = await setup_inference_pool(
-                hosted.client,
-                model_name=hosted.model.name,
-                train_client_type="openai_chat_completions",
-            )
-            self.models.register(name, pool)
 
         get_logger().info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
         self.monitor = setup_monitor(
@@ -268,7 +253,7 @@ class Orchestrator:
         post_filters = setup_filters(config.post_batch_filters, vocab_size=self.tokenizer.vocab_size, kind="post-batch")
 
         get_logger().info("Loading training environments")
-        self.train_envs = TrainEnvs(config.train.env, registry=self.models, tokenizer=self.tokenizer)
+        self.train_envs = TrainEnvs(config.train.env, policy_pool=self.policy_inference, tokenizer=self.tokenizer)
         get_logger().debug(
             f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})"
         )
@@ -302,10 +287,8 @@ class Orchestrator:
         get_logger().info("Waiting for policy inference pool to be ready")
         await self.policy_inference.wait_for_ready(config.model.model.name)
         get_logger().success("Policy inference pool ready")
-        for name, hosted in config.models.items():
-            get_logger().info(f"Waiting for inference pool '{name}' to be ready")
-            await self.models.get(name).wait_for_ready(hosted.model.name)
-            get_logger().success(f"Inference pool '{name}' ready")
+        # Build + ready pools for each env algorithm's frozen model references
+        await asyncio.gather(*(env.algorithm.setup() for env in self.train_envs))
 
         if config.wandb is not None and config.collect_inference_metrics:
             self.inference_metrics = InferenceMetricsCollector(
@@ -365,7 +348,7 @@ class Orchestrator:
             eval_envs=self.eval_envs,
             train_source=self.train_source,
             eval_source=self.eval_source,
-            models=self.models,
+            policy_pool=self.policy_inference,
             policy=self.policy,
             max_inflight_rollouts=config.max_inflight_rollouts,
             tasks_per_minute=config.tasks_per_minute,
@@ -850,9 +833,12 @@ class Orchestrator:
             self.component_tasks.clear()
             if self.inference_metrics is not None:
                 await self.inference_metrics.stop()
-            for pool in self.models.pools.values():
-                await pool.stop()
+            if getattr(self, "policy_inference", None) is not None:
+                await self.policy_inference.stop()
             if self.train_envs is not None:
+                for env in self.train_envs:
+                    for pool in env.algorithm.owned_pools:
+                        await pool.stop()
                 self.train_envs.shutdown()
             if self.eval_envs is not None:
                 self.eval_envs.shutdown()

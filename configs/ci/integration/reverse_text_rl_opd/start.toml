@@ -15,9 +15,15 @@ project = "reverse-text-ci"
 name = "ci-rl-opd"
 
 [orchestrator]
-algo = { name = "opd", model = "reverse-text-rl" }
 batch_size = 128
 group_size = 16
+
+[orchestrator.algo]
+name = "opd"
+
+[orchestrator.algo.model]
+model.name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+client.base_url = ["http://localhost:8001/v1"]
 
 [orchestrator.renderer]
 name = "qwen3"
@@ -37,12 +43,6 @@ max_completion_tokens = 128
 
 [[orchestrator.eval.env]]
 id = "reverse-text"
-
-[orchestrator.models.reverse-text-rl.model]
-name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
-
-[orchestrator.models.reverse-text-rl.client]
-base_url = ["http://localhost:8001/v1"]
 
 [trainer.optim]
 lr = 3e-6

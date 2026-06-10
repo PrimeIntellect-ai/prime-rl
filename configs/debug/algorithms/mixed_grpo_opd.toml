@@ -36,7 +36,13 @@ name = "reverse-text-grpo"
 [[orchestrator.train.env]]
 id = "reverse-text"
 name = "reverse-text-opd"
-algo = { name = "opd", model = "reverse-text-rl" }
+
+[orchestrator.train.env.algo]
+name = "opd"
+
+[orchestrator.train.env.algo.model]
+model.name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+client.base_url = ["http://localhost:8001/v1"]
 
 [orchestrator.eval]
 interval = 5
@@ -47,12 +53,6 @@ max_completion_tokens = 128
 
 [[orchestrator.eval.env]]
 id = "reverse-text"
-
-[orchestrator.models.reverse-text-rl.model]
-name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
-
-[orchestrator.models.reverse-text-rl.client]
-base_url = ["http://localhost:8001/v1"]
 
 [trainer.optim]
 lr = 3e-6

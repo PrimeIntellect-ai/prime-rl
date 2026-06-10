@@ -33,8 +33,6 @@ from typing import Literal
 import verifiers as vf
 from aiolimiter import AsyncLimiter
 
-from prime_rl.configs.algorithm import POLICY_MODEL
-from prime_rl.orchestrator.algorithms import ModelRegistry
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.train_source import TrainSource
@@ -130,7 +128,7 @@ class RolloutDispatcher:
         eval_envs: EvalEnvs | None,
         train_source: TrainSource,
         eval_source: EvalSource | None,
-        models: ModelRegistry,
+        policy_pool: InferencePool,
         policy: Policy,
         max_inflight_rollouts: int,
         tasks_per_minute: float | None,
@@ -139,9 +137,9 @@ class RolloutDispatcher:
         self.policy = policy
         self.train_envs = train_envs
         self.eval_envs = eval_envs
-        # Train rollouts go to the pool named by the env algorithm's sampling
-        # source; eval always evaluates the policy.
-        self.models = models
+        # Train rollouts go to the env algorithm's sampling pool; eval always
+        # evaluates the policy.
+        self.policy_pool = policy_pool
         self.train_source = train_source
         self.eval_source = eval_source
         self.max_off_policy_steps = max_off_policy_steps
@@ -175,10 +173,9 @@ class RolloutDispatcher:
 
     def _train_pool_for(self, env_name: str) -> tuple[InferencePool, str, bool]:
         """``(pool, model_name, is_live)`` for *train* rollouts of this env —
-        the registry pool named by the env algorithm's sampling source. (Eval
-        always uses the policy.)"""
+        the env algorithm's sampling pool. (Eval always uses the policy.)"""
         algorithm = self.train_envs.get(env_name).algorithm
-        pool = self.models.get(algorithm.sampling_source)
+        pool = algorithm.sampling_pool
         if algorithm.samples_from_live_policy:
             return pool, self.policy.model_name, True
         return pool, pool.model_name, False
@@ -390,13 +387,12 @@ class RolloutDispatcher:
         ready, no permits). Returns True after issuing one task — the caller
         loops to keep scheduling.
         """
-        # Train rollouts use the registry pool named by the env's algorithm
-        # via the renderer/token train client. Eval always evaluates the
-        # policy and goes through the eval client (chat-completions) — the
-        # same path the legacy orchestrator used, so eval scores stay
-        # comparable.
+        # Train rollouts use the env algorithm's sampling pool via the
+        # renderer/token train client. Eval always evaluates the policy and
+        # goes through the eval client (chat-completions) — the same path the
+        # legacy orchestrator used, so eval scores stay comparable.
         if group.kind == "eval":
-            pool, model_name = self.models.get(POLICY_MODEL), self.policy.model_name
+            pool, model_name = self.policy_pool, self.policy.model_name
             live_sourced = True
         else:
             pool, model_name, live_sourced = self._train_pool_for(group.env_name)

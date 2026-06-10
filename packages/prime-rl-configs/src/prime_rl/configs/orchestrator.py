@@ -490,13 +490,6 @@ class OrchestratorConfig(BaseConfig):
     aliases, and flat ``ModelConfig`` keys re-nest automatically
     (``[orchestrator.model] name = ...``)."""
 
-    models: dict[str, HostedModelConfig] = {}
-    """Named frozen hosted models, referenced from algorithm components by key
-    (e.g. ``advantage.model = "ref"`` → ``[orchestrator.models.ref]``). The
-    same entry can serve any number of roles (distillation reference, frozen
-    sampler, ...). Frozen entries are externally hosted: ``client.base_url``
-    is required and prime-rl never updates their weights."""
-
     train: TrainConfig = TrainConfig()
 
     tokenizer: TokenizerConfig = TokenizerConfig()
@@ -758,7 +751,9 @@ class OrchestratorConfig(BaseConfig):
                 )
             algorithm.advantage = advantage
             # Assignment after validation bypasses the model validators —
-            # re-check the component matrix against the folded strategy.
+            # re-fold the ``model`` shorthand into the replaced strategy and
+            # re-check the component matrix.
+            algorithm.fold_model_shorthand()
             algorithm.validate_component_compatibility()
 
         # Explicit ``advantage = "None"`` historically meant "advantage = raw
@@ -795,40 +790,6 @@ class OrchestratorConfig(BaseConfig):
         validators below so they see the corrected value."""
         if not self.any_policy_sourced:
             self.renderer = None
-        return self
-
-    @model_validator(mode="after")
-    def validate_model_registry(self):
-        """Every model reference must resolve, and every registry entry must be
-        referenced. Declared after ``resolve_algorithm`` so per-env algorithms
-        are materialized."""
-        if POLICY_MODEL in self.models:
-            raise ValueError(
-                f"[orchestrator.models] key '{POLICY_MODEL}' is reserved — the live policy is configured "
-                "via [orchestrator.model] (aliases [orchestrator.policy] / [orchestrator.student]) and registered automatically."
-            )
-        for key, entry in self.models.items():
-            if "base_url" not in entry.client.model_fields_set and not entry.client.is_elastic:
-                raise ValueError(
-                    f"[orchestrator.models.{key}] needs client.base_url — frozen models are externally "
-                    "hosted; prime-rl does not launch them."
-                )
-        referenced: set[str] = set()
-        for env in self.train.env:
-            assert env.algo is not None  # materialized by resolve_algorithm
-            referenced |= env.algo.model_refs
-        unknown = sorted(referenced - {POLICY_MODEL} - set(self.models))
-        if unknown:
-            raise ValueError(
-                f"Unknown model reference(s) {unknown} — every reference other than '{POLICY_MODEL}' must "
-                f"name a [orchestrator.models] entry. Registered: {sorted(self.models) or 'none'}."
-            )
-        unused = sorted(set(self.models) - referenced)
-        if unused:
-            raise ValueError(
-                f"[orchestrator.models] entries {unused} are not referenced by any train env's algorithm. "
-                "Remove them or point an algorithm component (sampling.source / advantage.model) at them."
-            )
         return self
 
     @model_validator(mode="after")

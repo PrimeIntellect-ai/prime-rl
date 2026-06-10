@@ -12,7 +12,7 @@ from verifiers.serve import ZMQEnvClient, ZMQEnvServer
 from verifiers.utils.serve_utils import get_free_port
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
-from prime_rl.orchestrator.algorithms import Algorithm, ModelRegistry
+from prime_rl.orchestrator.algorithms import Algorithm
 from prime_rl.utils.logger import get_logger
 
 REQUIRED_STATE_COLUMNS = ["trajectory"]
@@ -243,11 +243,11 @@ class TrainEnvs(Envs[TrainEnv]):
     """Collection of training environments, each paired with its runtime
     :class:`Algorithm` built from the env's resolved algorithm config."""
 
-    def __init__(self, configs: Sequence[TrainEnvConfig], *, registry: ModelRegistry, tokenizer):
+    def __init__(self, configs: Sequence[TrainEnvConfig], *, policy_pool, tokenizer):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
             assert config.algo is not None, "TrainEnvConfig.algo must be resolved before env construction"
-            env = TrainEnv(config, Algorithm(config.algo, registry, tokenizer))
+            env = TrainEnv(config, Algorithm(config.algo, policy_pool, tokenizer))
             self._envs[env.name] = env
 
 

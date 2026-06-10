@@ -3,8 +3,7 @@
 An algorithm is a preset of three pieces:
 
 1. **Sampling** — which model generates train rollouts. ``source`` is a model
-   reference: ``"policy"`` (the live policy) or a ``[orchestrator.models]``
-   registry key (a frozen hosted model).
+   reference: ``"policy"`` (the live policy) or an inline frozen hosted model.
 2. **Advantage** — the per-token training signal, one concept at different
    granularities and evaluation sites: group-relative strategies compute
    scalars on the orchestrator and ship numbers; reference-KL strategies ship
@@ -15,12 +14,13 @@ An algorithm is a preset of three pieces:
    multi-turn rollouts (``none`` drops them from the loss — the default;
    ``ce`` trains on them with a per-token weight, ECHO).
 
-There are no model roles ("teacher", "judge") in the schema — advantage
-strategies hold *references* to named hosted models, and the same registry
-entry can serve different algorithms in the same run. Presets are vetted
-bundles; every piece can be overridden individually for research. The trainer
-is algorithm-blind: routing ships per token on the wire and the trainer just
-executes loss types.
+prime-rl only ever hosts the trainable policy. Every other model an algorithm
+uses is an external OpenAI-compatible endpoint, declared inline on the
+component that uses it (a :class:`FrozenModelConfig`). Model roles like
+"teacher" are algorithm-local vocabulary over these references; the pipeline
+branches on liveness alone. Presets are vetted bundles; every piece can be
+overridden individually for research. The trainer is algorithm-blind: routing
+ships per token on the wire and the trainer just executes loss types.
 """
 
 import warnings
@@ -28,14 +28,44 @@ from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
+from prime_rl.configs.shared import BaseModelConfig, ClientConfig
 from prime_rl.utils.config import BaseConfig
 
 AlgorithmName: TypeAlias = Literal["grpo", "opd", "sft_distill", "self_distill", "echo"]
 
-# Reserved model-registry key for the live policy (weight-updated, prefix
-# caches salted per version). Every other key names a frozen hosted model
-# from ``[orchestrator.models]``.
+# Reserved reference to the live policy (weight-updated: prefix caches salted
+# per version, sampling logprobs carried, rollouts age off-policy). Every
+# other model reference is an inline FrozenModelConfig.
 POLICY_MODEL: str = "policy"
+
+
+class FrozenModelConfig(BaseConfig):
+    """An externally hosted model behind an OpenAI-compatible endpoint.
+
+    prime-rl never launches or updates these — only the trainable policy is
+    ever hosted by prime-rl itself. Frozen models are reachable-but-unmanaged:
+    ``client.base_url`` is required, their weights never change, and rollouts
+    or scores from them never go stale (stable prefix cache, no off-policy
+    aging)."""
+
+    model: BaseModelConfig = BaseModelConfig()
+
+    client: ClientConfig = ClientConfig()
+
+    @model_validator(mode="after")
+    def require_explicit_endpoint(self):
+        if "name" not in self.model.model_fields_set:
+            raise ValueError("a frozen model reference needs an explicit model.name")
+        if "base_url" not in self.client.model_fields_set and not self.client.is_elastic:
+            raise ValueError(
+                "a frozen model reference needs client.base_url — frozen models are externally "
+                "hosted; prime-rl only ever hosts the trainable policy."
+            )
+        return self
+
+
+ModelReference: TypeAlias = Literal["policy"] | FrozenModelConfig
+"""``"policy"`` (the live policy) or an inline externally-hosted frozen model."""
 
 ActionLossType: TypeAlias = Literal["rl", "ce", "ref_kl"]
 ObservationLossType: TypeAlias = Literal["none", "ce"]
@@ -47,13 +77,13 @@ ObservationLossType: TypeAlias = Literal["none", "ce"]
 
 
 class SamplingConfig(BaseConfig):
-    source: str | None = POLICY_MODEL
+    source: ModelReference | None = POLICY_MODEL
     """Model reference for train rollout generation: ``"policy"`` (the live
     policy — prefix caches salted per version, sampling logprobs requested,
-    rollouts age off-policy) or a ``[orchestrator.models]`` key (frozen hosted
-    model — stable prefix cache, no sampling logprobs, rollouts never go
-    stale). ``None`` is only set by presets that require a frozen source and
-    must be resolved via ``algo.model`` or an explicit value."""
+    rollouts age off-policy) or an inline frozen hosted model (stable prefix
+    cache, no sampling logprobs, rollouts never go stale). ``None`` is only
+    set by presets that require a frozen source and must be resolved via
+    ``algo.model`` or an explicit value."""
 
 
 # ---------------------------------------------------------------------------
@@ -114,9 +144,9 @@ class RefKLAdvantageConfig(BaseConfig):
     action_loss_type: ClassVar[ActionLossType] = "ref_kl"
     group_relative: ClassVar[bool] = True
 
-    model: str | None = None
-    """Registry key of the reference model (a ``[orchestrator.models]``
-    entry). Required — set it here or fold via ``algo.model``.
+    model: ModelReference | None = None
+    """The reference model — an inline frozen hosted model (``model.name`` +
+    ``client.base_url``). Required — set it here or fold via ``algo.model``.
     ``"policy"`` is rejected: scoring the policy under itself yields zero KL
     signal (use ``demo_ref_kl`` for demo-conditioned self-teaching)."""
 
@@ -142,11 +172,11 @@ class DemoRefKLAdvantageConfig(BaseConfig):
     action_loss_type: ClassVar[ActionLossType] = "ref_kl"
     group_relative: ClassVar[bool] = False
 
-    model: str | None = None
-    """Registry key of the reference model. ``"policy"`` is the SDFT paper's
+    model: ModelReference = POLICY_MODEL
+    """The reference model. ``"policy"`` (the default) is the SDFT paper's
     setting — the current model conditioned on the demo *is* the reference —
-    and needs no extra deployment. Point at a ``[orchestrator.models]`` entry
-    to score under a frozen copy instead."""
+    and needs no extra deployment. Set an inline frozen hosted model to score
+    under a frozen copy instead."""
 
     demo_key: str = "demonstration"
     """Key holding the expert demonstration text — looked up in the example's
@@ -227,9 +257,10 @@ class LossRoutingConfig(BaseConfig):
 # ---------------------------------------------------------------------------
 
 # Preset component tables. Fields the user sets explicitly always win. Model
-# references (``sampling.source`` of sft_distill, ``advantage.model`` of opd /
-# self_distill) have no sensible default — presets leave them ``None`` and
-# validation demands ``algo.model`` (or the component field).
+# references with no sensible default (``sampling.source`` of sft_distill,
+# ``advantage.model`` of opd) are left ``None`` by the presets and validation
+# demands ``algo.model`` (or the component field); ``demo_ref_kl`` defaults to
+# the live policy (the SDFT setting).
 _PRESETS: dict[str, dict[str, Any]] = {
     "grpo": dict(
         sampling=lambda: SamplingConfig(),
@@ -266,17 +297,18 @@ class AlgorithmConfig(BaseConfig):
     - ``grpo`` — policy group sampling, group-relative advantage, RL loss.
     - ``opd`` — on-policy distillation: policy samples, ``ref_kl`` advantage against a reference model. Needs ``model``.
     - ``sft_distill`` — a frozen model samples, the policy trains with CE on its tokens (``supervised``). Needs ``model``.
-    - ``self_distill`` — SDFT: policy samples, ``demo_ref_kl`` advantage. ``model = "policy"`` is the paper's setting.
+    - ``self_distill`` — SDFT: policy samples, ``demo_ref_kl`` advantage against the live policy by default.
     - ``echo`` — GRPO on action tokens + weighted CE on env-observation tokens.
     """
 
-    model: str | None = Field(None, exclude=True)
-    """Model reference for whichever component the preset leaves unresolved:
-    ``advantage.model`` (opd / self_distill) or ``sampling.source``
-    (sft_distill). ``"policy"`` or a ``[orchestrator.models]`` key. Set the
-    component fields directly for multi-model setups. Write-only input sugar —
-    folded by validation and excluded from dumps so resolved configs
-    round-trip."""
+    model: ModelReference | None = Field(None, exclude=True)
+    """Model reference shorthand: ``"policy"`` or an inline frozen hosted
+    model. Folds into the component reference the preset leaves unresolved
+    (``advantage.model`` for opd, ``sampling.source`` for sft_distill) or a
+    component default the user didn't set; an explicit component reference
+    that already equals it is accepted, a disagreeing one is an error.
+    Write-only input sugar — folded by validation and excluded from dumps so
+    resolved configs round-trip."""
 
     sampling: SamplingConfig | None = None
     """Sampling component override. Unset inherits from the preset."""
@@ -287,17 +319,6 @@ class AlgorithmConfig(BaseConfig):
 
     loss: LossRoutingConfig | None = None
     """Loss routing override. Unset inherits from the preset."""
-
-    @property
-    def model_refs(self) -> set[str]:
-        """Every model the algorithm references (``"policy"`` included)."""
-        refs: set[str] = set()
-        if self.sampling is not None and self.sampling.source is not None:
-            refs.add(self.sampling.source)
-        advantage_model = getattr(self.advantage, "model", None)
-        if advantage_model is not None:
-            refs.add(advantage_model)
-        return refs
 
     @property
     def requires_group_advantage(self) -> bool:
@@ -332,27 +353,43 @@ class AlgorithmConfig(BaseConfig):
             self.__pydantic_fields_set__.discard("advantage")
         return self
 
+    def fold_model_shorthand(self) -> None:
+        """Fold the ``model`` shorthand into the component references.
+
+        Fill-or-agree: an unresolved reference (``None``, or a preset default
+        the user didn't set) takes the shorthand; an explicit reference that
+        already equals it is redundant-but-consistent; if no reference accepts
+        it, that's an error. Re-run after the orchestrator-level ``advantage``
+        shorthand replaces the advantage component wholesale."""
+        if self.model is None:
+            return
+        matched = False
+        advantage = self.advantage
+        if advantage is not None and "model" in type(advantage).model_fields:
+            if advantage.model is None or "model" not in advantage.model_fields_set:
+                advantage.model = self.model
+                matched = True
+            elif advantage.model == self.model:
+                matched = True
+        if self.sampling is not None:
+            if self.sampling.source is None:
+                self.sampling.source = self.model
+                matched = True
+            elif self.sampling.source == self.model:
+                matched = True
+        if not matched:
+            raise ValueError(
+                f"algorithm '{self.name}': 'model' is set but no component reference accepts it — "
+                "every reference is already explicitly set to a different value, or the algorithm "
+                "references no model. Set advantage.model / sampling.source directly instead."
+            )
+
     @model_validator(mode="after")
     def fold_model(self):
-        """Fold the ``model`` shorthand into whichever component reference the
-        preset left unresolved. Declared after ``resolve_preset`` so the preset
-        components exist, before ``validate_component_compatibility`` so the
-        unresolved-reference errors only fire when folding couldn't help."""
-        if self.model is None:
-            return self
-        filled = False
-        if getattr(self.advantage, "model", "<absent>") is None:
-            self.advantage.model = self.model
-            filled = True
-        if self.sampling is not None and self.sampling.source is None:
-            self.sampling.source = self.model
-            filled = True
-        if not filled:
-            raise ValueError(
-                f"algorithm '{self.name}': 'model' is set but no component needs it — every model "
-                "reference is already set, or the algorithm references no model. Set the component "
-                "field (advantage.model / sampling.source) directly instead."
-            )
+        """Declared after ``resolve_preset`` so the preset components exist,
+        before ``validate_component_compatibility`` so unresolved-reference
+        errors only fire when folding couldn't help."""
+        self.fold_model_shorthand()
         return self
 
     @model_validator(mode="after")
@@ -360,25 +397,26 @@ class AlgorithmConfig(BaseConfig):
         assert self.sampling is not None and self.advantage is not None and self.loss is not None  # resolved above
         if self.sampling.source is None:
             raise ValueError(
-                f"algorithm '{self.name}' samples rollouts from a frozen model — set model='<key>' "
-                "on the algorithm (a [orchestrator.models] entry), or sampling.source explicitly."
+                f"algorithm '{self.name}' samples rollouts from a frozen model — set 'model' on the "
+                "algorithm (an inline hosted model: model.name + client.base_url), or sampling.source "
+                "explicitly."
             )
         if getattr(self.advantage, "model", "<absent>") is None:
             raise ValueError(
                 f"algorithm '{self.name}': advantage '{self.advantage.type}' needs a reference model — "
-                "set model='<key>' on the algorithm ('policy' or a [orchestrator.models] entry), or "
-                "advantage.model explicitly."
+                "set 'model' on the algorithm (an inline hosted model: model.name + client.base_url), "
+                "or advantage.model explicitly."
             )
         if isinstance(self.advantage, RefKLAdvantageConfig) and self.advantage.model == POLICY_MODEL:
             raise ValueError(
                 f"algorithm '{self.name}': advantage 'ref_kl' with model='policy' is degenerate — "
                 "the reference distribution equals the policy, so the KL signal is zero. Point at a "
-                "[orchestrator.models] entry, or use 'demo_ref_kl' for demo-conditioned self-teaching."
+                "frozen hosted model, or use 'demo_ref_kl' for demo-conditioned self-teaching."
             )
         if self.advantage.action_loss_type == "rl" and self.sampling.source != POLICY_MODEL:
             raise ValueError(
                 f"algorithm '{self.name}': advantage '{self.advantage.type}' trains with the rl loss "
-                f"type but sampling.source='{self.sampling.source}' — importance ratios need the live "
+                "type but sampling.source is a frozen model — importance ratios need the live "
                 "policy's own sampling logprobs. Use the 'supervised' advantage (sft_distill) to "
                 "distill frozen-model tokens."
             )

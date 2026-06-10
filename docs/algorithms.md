@@ -5,7 +5,7 @@ This page covers the math and the configurable algorithmic components: the algor
 ## Table of Contents
 
 - [The Algorithm Abstraction](#the-algorithm-abstraction)
-  - [The Model Registry](#the-model-registry)
+  - [Model References](#model-references)
   - [Presets](#presets)
   - [Customizing Components](#customizing-components)
   - [Per-Env Algorithms](#per-env-algorithms)
@@ -31,29 +31,30 @@ This page covers the math and the configurable algorithmic components: the algor
 
 A training algorithm in `prime-rl` is a bundle of three components, configured under `[orchestrator.algo]`:
 
-1. **Sampling** (`algo.sampling`) — which model generates train rollouts. `source` is a model reference: `"policy"` (the live policy, the default) or any [model-registry](#the-model-registry) key (a frozen hosted model). Group sizing stays on the env config (`group_size`).
+1. **Sampling** (`algo.sampling`) — which model generates train rollouts. `source` is a [model reference](#model-references): `"policy"` (the live policy, the default) or an inline frozen hosted model. Group sizing stays on the env config (`group_size`).
 2. **Advantage** (`algo.advantage`) — the per-token training signal, one concept at different granularities and evaluation sites. Group-relative strategies compute scalars on the orchestrator and ship numbers; reference-KL strategies query a reference model at batch-ship time (bounded concurrency) and ship its prefill logprobs for the trainer to evaluate against the live policy. The strategy determines which loss type consumes the action tokens (`rl` / `ce` / `ref_kl`).
 3. **Loss routing** (`algo.loss`) — what happens to env-provided observation tokens in multi-turn rollouts (tool output, terminal responses): `observation = "none"` masks them out (the default), `"ce"` trains on them with weight `observation_weight`.
 
 The trainer is algorithm-blind: routing ships per token on the wire (`loss_type` / `token_loss_types` / `token_loss_weights` on each training sample) and the trainer just executes loss types. Adding an algorithm never touches the dispatcher, packer, or trainer hot path.
 
-### The Model Registry
+### Model References
 
-Model *roles* are algorithm-local labels over references — OPD may call its reference model a teacher, but no role exists outside the algorithm that defines it. The pipeline knows only the live policy (registered under the reserved name `"policy"`) and a registry of named frozen hosted models under `[orchestrator.models]`; algorithm components hold *references* into that registry, and the dispatcher, sink, and trainer branch on liveness alone — never on what an algorithm calls a model. The same deployment can therefore serve different algorithms in different roles in the same run:
+`prime-rl` hosts exactly one model: the trainable policy (`[orchestrator.model]`). Every other model an algorithm uses is an external OpenAI-compatible endpoint, declared *inline on the component that uses it*. A model reference is either the string `"policy"` (the live policy) or a frozen hosted model (`model.name` + `client.base_url`):
 
 ```toml
-[orchestrator.models.qwen-32b]
-model.name = "Qwen/Qwen3-32B"
-client.base_url = ["http://localhost:8001/v1"]
-
 [orchestrator.algo]
 name = "opd"
-model = "qwen-32b"   # folds into advantage.model
+
+[orchestrator.algo.model]   # folds into advantage.model
+model.name = "Qwen/Qwen3-32B"
+client.base_url = ["http://localhost:8001/v1"]
 ```
 
-`algo.model` is shorthand for whichever component reference the preset leaves unresolved (`advantage.model` for `opd` / `self_distill`, `sampling.source` for `sft_distill`); set the component fields directly for multi-model setups. Registry references are validated at config time: every reference must name `"policy"` or a registered entry, and every entry must be referenced by some env's algorithm.
+Model *roles* are algorithm-local labels over these references — OPD may call its reference model a teacher, but no role exists outside the algorithm that defines it. The dispatcher, sink, and trainer branch on liveness alone, never on what an algorithm calls a model.
 
-Liveness is a property of the registry entry, not of any role: rollouts sampled from `"policy"` get version-salted prefix caches, carry sampling logprobs for importance ratios, and age off-policy as weights update; rollouts and scores from frozen entries get a stable prefix cache and never go stale. Frozen entries are externally hosted (`client.base_url` is required) — `prime-rl` never launches or updates them.
+`algo.model` is shorthand for whichever component reference the preset leaves unresolved (`advantage.model` for `opd`, `sampling.source` for `sft_distill`) or a component default you didn't set; an explicit component reference that already equals it is accepted, a disagreeing one is an error. Set the component fields directly for multi-model setups.
+
+Liveness is a property of the reference, not of any role: rollouts sampled from `"policy"` get version-salted prefix caches, carry sampling logprobs for importance ratios, and age off-policy as weights update; rollouts and scores from frozen models get a stable prefix cache and never go stale. Frozen models are externally hosted (`client.base_url` is required) — `prime-rl` never launches or updates them, and each env's algorithm builds its own client pool to the endpoints it declares.
 
 ### Presets
 
@@ -67,9 +68,9 @@ name = "grpo"  # the default
 | Preset | Sampling | Advantage | Loss | What it is |
 |---|---|---|---|---|
 | `grpo` | policy | `group_norm` | `rl` on actions | Standard group-relative RL. |
-| `opd` | policy | `ref_kl` | `ref_kl` on actions | On-policy distillation ([Thinking Machines](https://thinkingmachines.ai/blog/on-policy-distillation/)): the policy samples, per-token reverse KL against a reference model as the gradient signal. Needs `model = "<registry key>"`. |
-| `sft_distill` | *(set via `model`)* | `supervised` | `ce` on actions | Hard distillation: a frozen model generates rollouts, the policy trains with CE on its tokens. Needs `model = "<registry key>"`. |
-| `self_distill` | policy | `demo_ref_kl` | `ref_kl` on actions | SDFT ([arXiv:2601.19897](https://arxiv.org/abs/2601.19897)): the model is its own reference, conditioned on an expert demonstration. `model = "policy"` is the paper's setting and needs no extra deployment; point at a registry entry to score under a frozen copy instead. |
+| `opd` | policy | `ref_kl` | `ref_kl` on actions | On-policy distillation ([Thinking Machines](https://thinkingmachines.ai/blog/on-policy-distillation/)): the policy samples, per-token reverse KL against a reference model as the gradient signal. Needs an inline `model`. |
+| `sft_distill` | *(set via `model`)* | `supervised` | `ce` on actions | Hard distillation: a frozen model generates rollouts, the policy trains with CE on its tokens. Needs an inline `model`. |
+| `self_distill` | policy | `demo_ref_kl` | `ref_kl` on actions | SDFT ([arXiv:2601.19897](https://arxiv.org/abs/2601.19897)): the model is its own reference, conditioned on an expert demonstration. Defaults to the live policy (the paper's setting, no extra deployment); set an inline `model` to score under a frozen copy instead. |
 | `echo` | policy | `group_norm` | `rl` on actions + weighted `ce` on observations | ECHO: standard GRPO plus a cross-entropy loss on env-observation tokens already present in the rollout (`observation_weight` is ECHO's λ). |
 
 ### Customizing Components
@@ -225,7 +226,7 @@ The advantage strategy is the `advantage` component of the [algorithm](#the-algo
 |---|---|---|
 | `group_norm` | `rl` | Group-norm (GRPO): reward minus per-group baseline, optional length penalty. |
 | `reward` | `rl` | Advantage = raw reward, no baseline. |
-| `ref_kl` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`model`, a registry key), evaluated in the trainer from shipped reference logprobs. Group-relative scalars are still assigned (their sign steers the DPPO masking direction; the zero-advantage filter reads them). |
+| `ref_kl` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`model`, an inline frozen hosted model), evaluated in the trainer from shipped reference logprobs. Group-relative scalars are still assigned (their sign steers the DPPO masking direction; the zero-advantage filter reads them). |
 | `demo_ref_kl` | `ref_kl` | SDFT: per-token reverse KL to a demo-conditioned reference. No scalars — rollouts keep `advantage = None` (advantage-based filters never fire) and ship a neutral 0.0. |
 | `supervised` | `ce` | Cross-entropy on the sampled tokens (`sft_distill`). The loss ignores scalars, but group-relative scalars are still assigned so reward-based filtering keeps working. |
 | `custom` | `rl` | Your function (below). |
@@ -285,7 +286,7 @@ advantage = { type = "custom", import_path = "my_module.normalized_advantage" }
 
 ### Reference-Scoring Strategies
 
-The `ref_kl` / `demo_ref_kl` strategies have an async ship-time half: at batch-ship time they query their reference model (`model`, a [registry](#the-model-registry) reference) with bounded concurrency (`max_concurrent`, default 32) and attach per-token reference logprobs to each sample:
+The `ref_kl` / `demo_ref_kl` strategies have an async ship-time half: at batch-ship time they query their reference model (`model`, a [model reference](#model-references)) with bounded concurrency (`max_concurrent`, default 32) and attach per-token reference logprobs to each sample:
 
 - `ref_kl` — score each sample's own context under the reference model via prefill; fills `ref_logprobs` for the `ref_kl` loss type (on-policy distillation). `model = "policy"` is rejected (the KL would be identically zero).
 - `demo_ref_kl` — SDFT: rebuild the prompt with an expert demonstration woven into the last user message (`template`, with `{question}` / `{demonstration}` placeholders), score the policy's completion under that demo-conditioned context. `model = "policy"` scores under the live policy itself — the SDFT setting, no extra deployment. The demonstration is read from the example's `info[demo_key]`, falling back to a top-level rollout field of the same name (e.g. `answer`); single-step trajectories only.

@@ -4,19 +4,18 @@ The config side (``prime_rl.configs.algorithm``) defines *what* an algorithm
 is — a preset of sampling, advantage, and loss routing. This module turns
 that declaration into runtime objects:
 
-- :class:`ModelRegistry` — named inference pools. ``"policy"`` is the live
-  policy; every other entry is a frozen hosted model from
-  ``[orchestrator.models]``. Liveness (cache salting, sampling logprobs,
-  off-policy aging) is a property of the entry, not of any model role.
 - :class:`Algorithm` — one strategy object per env, the only orchestrator
   component that interprets ``AlgorithmConfig``. The pipeline (dispatcher,
   train sink, orchestrator) calls its hooks and reads its properties; it
-  never branches on algorithm config fields.
+  never branches on algorithm config fields. prime-rl hosts exactly one
+  model — the trainable policy, whose pool is passed in; every frozen model
+  reference is an external endpoint whose pool the algorithm builds itself
+  in :meth:`Algorithm.setup`.
 - **Advantage strategies** — one runtime object per ``AdvantageConfig`` union
   member, owning both execution points of the training signal: group-time
   scalar assignment (``assign``, cheap and synchronous) and ship-time
-  reference scoring (``score``, async inference against a registry model with
-  bounded concurrency, run via :func:`score_train_batch`).
+  reference scoring (``score``, async inference against the strategy's
+  reference pool with bounded concurrency, run via :func:`score_train_batch`).
 """
 
 from __future__ import annotations
@@ -32,6 +31,7 @@ from prime_rl.configs.algorithm import (
     AlgorithmConfig,
     CustomAdvantageConfig,
     DemoRefKLAdvantageConfig,
+    FrozenModelConfig,
     GroupNormAdvantageConfig,
     LengthPenaltyConfig,
     LossRoutingConfig,
@@ -43,6 +43,7 @@ from prime_rl.orchestrator.advantage import AdvantageInputs, AdvantageOutputs, a
 from prime_rl.orchestrator.utils import compute_prefill_logprobs
 from prime_rl.transport import TrainingSample
 from prime_rl.transport.types import LOSS_TYPE_CE, LOSS_TYPE_REF_KL, LOSS_TYPE_RL
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import import_object
 
 if TYPE_CHECKING:
@@ -55,27 +56,18 @@ if TYPE_CHECKING:
 ACTION_LOSS_TYPES = {"rl": LOSS_TYPE_RL, "ce": LOSS_TYPE_CE, "ref_kl": LOSS_TYPE_REF_KL}
 
 
-class ModelRegistry:
-    """Named inference pools, registered during orchestrator setup.
+async def setup_frozen_pool(config: FrozenModelConfig) -> InferencePool:
+    """Build and ready an inference pool for an inline frozen model. The
+    endpoint is externally hosted — prime-rl connects and waits, never
+    launches."""
+    from prime_rl.utils.client import setup_inference_pool
 
-    Algorithms hold names and resolve pools lazily, so they can be constructed
-    before the pools are ready."""
-
-    def __init__(self) -> None:
-        self.pools: dict[str, InferencePool] = {}
-
-    def register(self, name: str, pool: InferencePool) -> None:
-        self.pools[name] = pool
-
-    def get(self, name: str) -> InferencePool:
-        return self.pools[name]
-
-    def is_live(self, name: str) -> bool:
-        """Live entries are weight-updated as training advances: their prefix
-        caches must be salted per policy version, their rollouts age
-        off-policy, and importance ratios need their sampling logprobs.
-        Frozen entries need none of that."""
-        return name == POLICY_MODEL
+    get_logger().info(
+        f"Initializing frozen model pool (model={config.model.name}, base_url={', '.join(config.client.base_url)})"
+    )
+    pool = await setup_inference_pool(config.client, model_name=config.model.name)
+    await pool.wait_for_ready(config.model.name)
+    return pool
 
 
 def stamp_loss_routing(sample: TrainingSample, action_loss_type: int, loss: LossRoutingConfig) -> None:
@@ -182,16 +174,17 @@ class RefKLAdvantage(AdvantageStrategy):
     ``TrainingSample.ref_logprobs`` from scoring each sample's own context
     under the reference model."""
 
-    def __init__(self, config: RefKLAdvantageConfig, registry: ModelRegistry):
+    def __init__(self, config: RefKLAdvantageConfig):
         assert config.model is not None
         self.config = config
-        self.registry = registry
+        self.pool: InferencePool | None = None  # resolved by Algorithm.setup
 
     def assign(self, rollouts: list[TrainRollout]) -> None:
         _assign_group_norm(rollouts, self.config.length_penalty)
 
     async def score(self, rollouts: list[TrainRollout]) -> None:
-        pool = self.registry.get(self.config.model)
+        pool = self.pool
+        assert pool is not None, "reference pool not set — Algorithm.setup() must run before scoring"
         semaphore = asyncio.Semaphore(self.config.max_concurrent)
         samples = [sample for rollout in rollouts for sample in rollout.samples]
 
@@ -216,11 +209,11 @@ class DemoRefKLAdvantage(AdvantageStrategy):
     sample's prompt positions are 0.0 and stay outside the loss mask).
     """
 
-    def __init__(self, config: DemoRefKLAdvantageConfig, registry: ModelRegistry, tokenizer: PreTrainedTokenizer):
+    def __init__(self, config: DemoRefKLAdvantageConfig, tokenizer: PreTrainedTokenizer):
         assert config.model is not None
         self.config = config
-        self.registry = registry
         self.tokenizer = tokenizer
+        self.pool: InferencePool | None = None  # resolved by Algorithm.setup
 
     def _ref_prefix_ids(self, rollout: TrainRollout) -> list[int]:
         trajectory = rollout.raw.get("trajectory") or []
@@ -256,7 +249,8 @@ class DemoRefKLAdvantage(AdvantageStrategy):
         )
 
     async def score(self, rollouts: list[TrainRollout]) -> None:
-        pool = self.registry.get(self.config.model)
+        pool = self.pool
+        assert pool is not None, "reference pool not set — Algorithm.setup() must run before scoring"
         semaphore = asyncio.Semaphore(self.config.max_concurrent)
 
         async def score_rollout(client, rollout: TrainRollout) -> None:
@@ -275,9 +269,7 @@ class DemoRefKLAdvantage(AdvantageStrategy):
         )
 
 
-def setup_advantage_strategy(
-    config: AdvantageConfig, registry: ModelRegistry, tokenizer: PreTrainedTokenizer
-) -> AdvantageStrategy:
+def setup_advantage_strategy(config: AdvantageConfig, tokenizer: PreTrainedTokenizer) -> AdvantageStrategy:
     if isinstance(config, GroupNormAdvantageConfig):
         return GroupNormAdvantage(config)
     if isinstance(config, RewardAdvantageConfig):
@@ -287,24 +279,44 @@ def setup_advantage_strategy(
     if isinstance(config, SupervisedAdvantageConfig):
         return SupervisedAdvantage()
     if isinstance(config, RefKLAdvantageConfig):
-        return RefKLAdvantage(config, registry)
+        return RefKLAdvantage(config)
     assert isinstance(config, DemoRefKLAdvantageConfig)
-    return DemoRefKLAdvantage(config, registry, tokenizer)
+    return DemoRefKLAdvantage(config, tokenizer)
 
 
 class Algorithm:
     """Runtime strategy object for one env — the sole interpreter of
-    ``AlgorithmConfig`` in the orchestrator."""
+    ``AlgorithmConfig`` in the orchestrator.
 
-    def __init__(self, config: AlgorithmConfig, registry: ModelRegistry, tokenizer: PreTrainedTokenizer):
+    Holds the policy pool (built once by the orchestrator) and builds pools
+    for any inline frozen model references in :meth:`setup`."""
+
+    def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, tokenizer: PreTrainedTokenizer):
         assert config.sampling is not None and config.sampling.source is not None
         assert config.advantage is not None and config.loss is not None
         self.config = config
-        self.registry = registry
-        self.sampling_source: str = config.sampling.source
+        self.policy_pool = policy_pool
+        self.sampling_pool: InferencePool = policy_pool  # frozen sources swap this in setup()
+        self.owned_pools: list[InferencePool] = []  # frozen pools built in setup(), stopped at shutdown
         self.loss = config.loss
         self.action_loss_type = ACTION_LOSS_TYPES[config.advantage.action_loss_type]
-        self.advantage = setup_advantage_strategy(config.advantage, registry, tokenizer)
+        self.advantage = setup_advantage_strategy(config.advantage, tokenizer)
+
+    async def setup(self) -> None:
+        """Build and ready pools for the algorithm's frozen model references.
+        Must run before dispatching or scoring."""
+        source = self.config.sampling.source
+        if isinstance(source, FrozenModelConfig):
+            self.sampling_pool = await setup_frozen_pool(source)
+            self.owned_pools.append(self.sampling_pool)
+        reference = getattr(self.config.advantage, "model", None)
+        if reference is not None:
+            assert hasattr(self.advantage, "pool")
+            if reference == POLICY_MODEL:
+                self.advantage.pool = self.policy_pool
+            else:
+                self.advantage.pool = await setup_frozen_pool(reference)
+                self.owned_pools.append(self.advantage.pool)
 
     @property
     def name(self) -> str:
@@ -312,7 +324,7 @@ class Algorithm:
 
     @property
     def samples_from_live_policy(self) -> bool:
-        return self.registry.is_live(self.sampling_source)
+        return self.config.sampling.source == POLICY_MODEL
 
     @property
     def tag_observation_tokens(self) -> bool:
