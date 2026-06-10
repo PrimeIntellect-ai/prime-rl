@@ -9,11 +9,11 @@
 #     DebateEnv.split_response_channels recovers raw_content=<think>..</think>arg,
 #     public_channel=arg. visibility_policy: private -> judge/opponent see arg only
 #     (no CoT leak); own turns see raw (KEEP).
-#   - GENERATION params live in the sampling config (below) + the renderer:
-#     [orchestrator.renderer] preserve_all_thinking=false — Qwen's "No Thinking
-#     Content in History" best-practice: the Qwen35Renderer drops each PAST
-#     assistant turn's <think> on re-render (only the live turn thinks). The
-#     own-turn CoT visibility (KEEP) is the pack's visibility_policy, not this flag.
+#   - GENERATION params live in the sampling config (below) + the renderer.
+#     [orchestrator.renderer] preserve_all_thinking=true is required for debate
+#     TITO/KV bridging: bridge hits replay sampled tokens verbatim, so full
+#     re-renders must preserve the same past <think> content to keep prompts
+#     byte-comparable.
 #
 # Launch (no live alloc): submit a fresh allocation via launch-script-mnode --new;
 # rl runs in-alloc inside it (NO [slurm] block — the launcher owns submission).
@@ -68,7 +68,7 @@ dump_trajectory = true   # persist full debate transcripts for inspection
 # enable_thinking (the single source of truth that also drives the pack's tag mechanics).
 [orchestrator.renderer]
 name = "auto"
-preserve_all_thinking = false   # Qwen "No Thinking Content in History" best-practice (recipe override; code default stays True)
+preserve_all_thinking = true   # Required for debate TITO bridge/full-render determinism.
 
 [orchestrator.advantage]
 type = "ema_per_member"   # REQUIRED for multi-agent (fail-loud assert: MA <=> ema_per_member)

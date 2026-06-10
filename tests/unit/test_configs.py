@@ -688,6 +688,17 @@ def test_orchestrator_renderer_auto_accepts_mapped_model():
     assert config.renderer.name == "auto"
 
 
+def test_orchestrator_debate_renderer_requires_preserve_all_thinking():
+    with pytest.raises(ValidationError, match="preserve_all_thinking"):
+        OrchestratorConfig.model_validate(
+            {
+                "model": {"name": "Qwen/Qwen3-0.6B"},
+                "renderer": {"name": "auto", "preserve_all_thinking": False},
+                "train": {"env": [{"id": "gpqa_debate"}]},
+            }
+        )
+
+
 def test_orchestrator_batching_uses_env_group_size_for_capacity():
     config = OrchestratorConfig.model_validate(
         {

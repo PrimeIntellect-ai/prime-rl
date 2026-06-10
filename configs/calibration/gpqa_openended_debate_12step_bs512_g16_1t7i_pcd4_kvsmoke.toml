@@ -69,7 +69,7 @@ dump_failed_train_trajectory = true
 
 [orchestrator.renderer]
 name = "auto"
-preserve_all_thinking = false
+preserve_all_thinking = true
 
 [orchestrator.model.lora]
 name = "debate-r32"
