@@ -247,7 +247,11 @@ def interleave_rollout(
             routed_experts_start = None
             if routed_experts_payload is not None:
                 decoded_routed_experts = pybase64.b64decode_as_bytearray(routed_experts_payload["data"])
-                routed_experts = np.frombuffer(decoded_routed_experts, dtype=np.uint8).reshape(
+                # dtype rides the payload so >256-expert MoEs (uint16) and
+                # int32 captures decode correctly; default uint8 for payloads
+                # serialized before the dtype field existed.
+                re_dtype = np.dtype(routed_experts_payload.get("dtype", "uint8"))
+                routed_experts = np.frombuffer(decoded_routed_experts, dtype=re_dtype).reshape(
                     routed_experts_payload["shape"]
                 )
                 routed_experts_start = routed_experts_payload["start"]

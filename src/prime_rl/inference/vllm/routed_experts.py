@@ -15,15 +15,24 @@ def serialize_routed_experts(routed_experts: Any, start: int = 0) -> dict[str, A
     array = np.asarray(routed_experts)
     assert array.ndim == 3
     assert np.issubdtype(array.dtype, np.integer)
+    # Narrow to the smallest unsigned int that holds the expert ids, matching
+    # vLLM's RoutedExpertsManager (uint8 for <=256 experts, uint16 otherwise).
+    # This keeps the wire payload compact while still supporting >256-expert
+    # MoEs (e.g. Kimi-K2) that overflow uint8. The dtype rides the payload so
+    # the consumer decodes with the right element type.
     if array.size:
         assert array.min() >= 0
-        assert array.max() <= np.iinfo(np.uint8).max
+        max_id = int(array.max())
+    else:
+        max_id = 0
+    target_dtype = np.uint8 if max_id <= np.iinfo(np.uint8).max else np.uint16
 
-    compact = np.ascontiguousarray(array.astype(np.uint8, copy=False))
+    compact = np.ascontiguousarray(array.astype(target_dtype, copy=False))
     return {
         "data": pybase64.b64encode(memoryview(compact)).decode("ascii"),
         "shape": list(compact.shape),
         "start": start,
+        "dtype": np.dtype(target_dtype).name,
     }
 
 
