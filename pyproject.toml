@@ -102,6 +102,7 @@ envs = [
     "gsm8k-v1",
     "math-env-v1",
     "aime24-v1",
+    "alphabet-sort-v1",
     "tasksets",
     "harnesses",
 ]
@@ -247,6 +248,7 @@ reverse-text-v1 = { path = "deps/verifiers/examples/tasksets/reverse_text_v1", e
 gsm8k-v1 = { path = "deps/verifiers/examples/tasksets/gsm8k_v1", editable = true }
 math-env-v1 = { path = "deps/verifiers/examples/tasksets/math_env_v1", editable = true }
 aime24-v1 = { path = "deps/verifiers/examples/tasksets/aime24_v1", editable = true }
+alphabet-sort-v1 = { path = "deps/verifiers/examples/tasksets/alphabet_sort_v1", editable = true }
 tasksets = { path = "deps/verifiers/packages/tasksets", editable = true }
 harnesses = { path = "deps/verifiers/packages/harnesses", editable = true }
 renderers = { path = "deps/renderers", editable = true }

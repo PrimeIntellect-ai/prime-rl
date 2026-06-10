@@ -180,6 +180,17 @@ dependencies = [
 requires-dist = [{ name = "verifiers", specifier = ">=0.1.9" }]
 
 [[package]]
+name = "alphabet-sort-v1"
+version = "0.1.0"
+source = { editable = "deps/verifiers/examples/tasksets/alphabet_sort_v1" }
+dependencies = [
+    { name = "datasets", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "datasets" }]
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -3597,6 +3608,7 @@ envs = [
     { name = "aime2025", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "aime24-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "alphabet-sort", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "alphabet-sort-v1", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "code-env", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "color-codeword", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "deepdive", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -3669,6 +3681,7 @@ requires-dist = [
     { name = "aime24-v1", marker = "extra == 'envs'", editable = "deps/verifiers/examples/tasksets/aime24_v1" },
     { name = "aiolimiter", specifier = ">=1.2.1" },
     { name = "alphabet-sort", marker = "extra == 'envs'", editable = "deps/verifiers/environments/alphabet_sort" },
+    { name = "alphabet-sort-v1", marker = "extra == 'envs'", editable = "deps/verifiers/examples/tasksets/alphabet_sort_v1" },
     { name = "beartype", specifier = ">=0.21.0" },
     { name = "code-env", marker = "extra == 'envs'", editable = "deps/research-environments/environments/code_env" },
     { name = "color-codeword", marker = "extra == 'envs'", editable = "deps/research-environments/environments/color_codeword" },
