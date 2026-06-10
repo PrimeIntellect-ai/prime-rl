@@ -28,7 +28,7 @@ from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
-from prime_rl.configs.shared import BaseModelConfig, ClientConfig
+from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.config import BaseConfig
 
 AlgorithmName: TypeAlias = Literal["grpo", "opd", "sft_distill", "self_distill", "echo"]
@@ -39,26 +39,24 @@ AlgorithmName: TypeAlias = Literal["grpo", "opd", "sft_distill", "self_distill",
 POLICY_MODEL: str = "policy"
 
 
-class FrozenModelConfig(BaseConfig):
-    """An externally hosted model behind an OpenAI-compatible endpoint.
+class FrozenModelConfig(ClientConfig):
+    """An externally hosted model behind an OpenAI-compatible endpoint: the
+    client config plus the served model's ``name``.
 
     prime-rl never launches or updates these — only the trainable policy is
     ever hosted by prime-rl itself. Frozen models are reachable-but-unmanaged:
-    ``client.base_url`` is required, their weights never change, and rollouts
-    or scores from them never go stale (stable prefix cache, no off-policy
+    ``base_url`` is required, their weights never change, and rollouts or
+    scores from them never go stale (stable prefix cache, no off-policy
     aging)."""
 
-    model: BaseModelConfig = BaseModelConfig()
-
-    client: ClientConfig = ClientConfig()
+    name: str
+    """Served model name, sent as the ``model`` field of every request."""
 
     @model_validator(mode="after")
     def require_explicit_endpoint(self):
-        if "name" not in self.model.model_fields_set:
-            raise ValueError("a frozen model reference needs an explicit model.name")
-        if "base_url" not in self.client.model_fields_set and not self.client.is_elastic:
+        if "base_url" not in self.model_fields_set and not self.is_elastic:
             raise ValueError(
-                "a frozen model reference needs client.base_url — frozen models are externally "
+                "a frozen model reference needs base_url — frozen models are externally "
                 "hosted; prime-rl only ever hosts the trainable policy."
             )
         return self
@@ -145,8 +143,8 @@ class RefKLAdvantageConfig(BaseConfig):
     group_relative: ClassVar[bool] = True
 
     model: ModelReference | None = None
-    """The reference model — an inline frozen hosted model (``model.name`` +
-    ``client.base_url``). Required — set it here or fold via ``algo.model``.
+    """The reference model — an inline frozen hosted model (``name`` +
+    ``base_url``). Required — set it here or fold via ``algo.model``.
     ``"policy"`` is rejected: scoring the policy under itself yields zero KL
     signal (use ``demo_ref_kl`` for demo-conditioned self-teaching)."""
 
@@ -398,13 +396,13 @@ class AlgorithmConfig(BaseConfig):
         if self.sampling.source is None:
             raise ValueError(
                 f"algorithm '{self.name}' samples rollouts from a frozen model — set 'model' on the "
-                "algorithm (an inline hosted model: model.name + client.base_url), or sampling.source "
+                "algorithm (an inline hosted model: name + base_url), or sampling.source "
                 "explicitly."
             )
         if getattr(self.advantage, "model", "<absent>") is None:
             raise ValueError(
                 f"algorithm '{self.name}': advantage '{self.advantage.type}' needs a reference model — "
-                "set 'model' on the algorithm (an inline hosted model: model.name + client.base_url), "
+                "set 'model' on the algorithm (an inline hosted model: name + base_url), "
                 "or advantage.model explicitly."
             )
         if isinstance(self.advantage, RefKLAdvantageConfig) and self.advantage.model == POLICY_MODEL:

@@ -23,8 +23,8 @@ group_size = 4
 name = "sft_distill"
 
 [orchestrator.algo.model]
-model.name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
-client.base_url = ["http://localhost:8001/v1"]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+base_url = ["http://localhost:8001/v1"]
 
 [orchestrator.train.sampling]
 max_completion_tokens = 128

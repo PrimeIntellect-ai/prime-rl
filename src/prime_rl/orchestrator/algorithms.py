@@ -62,11 +62,9 @@ async def setup_frozen_pool(config: FrozenModelConfig) -> InferencePool:
     launches."""
     from prime_rl.utils.client import setup_inference_pool
 
-    get_logger().info(
-        f"Initializing frozen model pool (model={config.model.name}, base_url={', '.join(config.client.base_url)})"
-    )
-    pool = await setup_inference_pool(config.client, model_name=config.model.name)
-    await pool.wait_for_ready(config.model.name)
+    get_logger().info(f"Initializing frozen model pool (model={config.name}, base_url={', '.join(config.base_url)})")
+    pool = await setup_inference_pool(config, model_name=config.name)
+    await pool.wait_for_ready(config.name)
     return pool
 
 

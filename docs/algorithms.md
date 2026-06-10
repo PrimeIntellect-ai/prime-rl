@@ -39,15 +39,15 @@ The trainer is algorithm-blind: routing ships per token on the wire (`loss_type`
 
 ### Model References
 
-`prime-rl` hosts exactly one model: the trainable policy (`[orchestrator.model]`). Every other model an algorithm uses is an external OpenAI-compatible endpoint, declared *inline on the component that uses it*. A model reference is either the string `"policy"` (the live policy) or a frozen hosted model (`model.name` + `client.base_url`):
+`prime-rl` hosts exactly one model: the trainable policy (`[orchestrator.model]`). Every other model an algorithm uses is an external OpenAI-compatible endpoint, declared *inline on the component that uses it*. A model reference is either the string `"policy"` (the live policy) or a frozen hosted model (`name` + `base_url`):
 
 ```toml
 [orchestrator.algo]
 name = "opd"
 
 [orchestrator.algo.model]   # folds into advantage.model
-model.name = "Qwen/Qwen3-32B"
-client.base_url = ["http://localhost:8001/v1"]
+name = "Qwen/Qwen3-32B"
+base_url = ["http://localhost:8001/v1"]
 ```
 
 Model *roles* are algorithm-local labels over these references — OPD may call its reference model a teacher, but no role exists outside the algorithm that defines it. The dispatcher, sink, and trainer branch on liveness alone, never on what an algorithm calls a model.

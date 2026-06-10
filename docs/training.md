@@ -93,7 +93,7 @@ The RL entrypoint supports several training algorithms, switched via `[orchestra
 | `self_distill` | `"policy"` (the default, no deployment) or a vLLM endpoint serving a frozen copy | [SDFT](https://arxiv.org/abs/2601.19897): the model is its own reference conditioned on expert demonstrations |
 | `echo` | None | GRPO plus cross-entropy on env-observation tokens |
 
-Frozen models are declared inline on the algorithm (`[orchestrator.algo.model]` with `model.name` + `client.base_url`). The `rl` entrypoint only manages policy inference — start frozen-model servers yourself and point `client.base_url` at them:
+Frozen models are declared inline on the algorithm (`[orchestrator.algo.model]` with `name` + `base_url`). The `rl` entrypoint only manages policy inference — start frozen-model servers yourself and point `base_url` at them:
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 uv run inference \

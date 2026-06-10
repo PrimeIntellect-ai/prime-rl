@@ -12,6 +12,7 @@ from threading import Event, Thread
 import pynvml
 import tomli_w
 
+from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import get_logger, setup_logger
@@ -186,12 +187,19 @@ def rl_local(config: RLConfig):
                 "will hang waiting for it."
             )
 
-        if config.orchestrator.models:
-            endpoints = ", ".join(
-                f"{name} ({', '.join(m.client.base_url)})" for name, m in config.orchestrator.models.items()
-            )
+        frozen_endpoints: list[str] = []
+        for env in config.orchestrator.train.env:
+            algo = env.algo
+            if algo is None:
+                continue
+            sampling_source = algo.sampling.source if algo.sampling is not None else None
+            for ref in (sampling_source, getattr(algo.advantage, "model", None)):
+                if isinstance(ref, FrozenModelConfig):
+                    frozen_endpoints.append(f"{ref.name} ({', '.join(ref.base_url)})")
+        if frozen_endpoints:
+            endpoints = ", ".join(dict.fromkeys(frozen_endpoints))
             logger.info(
-                "[orchestrator.models] entries are configured - the rl entrypoint does not start them. "
+                "Frozen model references are configured - the rl entrypoint does not start them. "
                 f"Make sure these endpoints are serving before the orchestrator starts: {endpoints}; "
                 "otherwise rollouts will hang."
             )

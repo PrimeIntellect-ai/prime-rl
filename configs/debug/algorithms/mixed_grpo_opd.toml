@@ -41,8 +41,8 @@ name = "reverse-text-opd"
 name = "opd"
 
 [orchestrator.train.env.algo.model]
-model.name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
-client.base_url = ["http://localhost:8001/v1"]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
+base_url = ["http://localhost:8001/v1"]
 
 [orchestrator.eval]
 interval = 5

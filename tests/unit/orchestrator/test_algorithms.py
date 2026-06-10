@@ -8,7 +8,7 @@ from prime_rl.orchestrator.algorithms import stamp_loss_routing
 from prime_rl.orchestrator.trajectories import interleave_rollout
 from prime_rl.transport.types import LOSS_TYPE_CE, LOSS_TYPE_REF_KL, LOSS_TYPE_RL, TrainingSample
 
-FROZEN = {"model": {"name": "org/ref-model"}, "client": {"base_url": ["http://ref:8001/v1"]}}
+FROZEN = {"name": "org/ref-model", "base_url": ["http://ref:8001/v1"]}
 
 
 def _ref_kind(ref):
