@@ -394,13 +394,13 @@ spec:
         {{- end }}
         resources:
           requests:
-            {{- if .Values.trainer.gpu.enabled }}
+            {{- if and .Values.trainer.gpu.enabled (not .Values.trainer.resourceClaim.enabled) }}
             nvidia.com/gpu: {{ .Values.trainer.gpu.count }}
             {{- end }}
             memory: {{ .Values.trainer.resources.requests.memory }}
             cpu: {{ .Values.trainer.resources.requests.cpu }}
           limits:
-            {{- if .Values.trainer.gpu.enabled }}
+            {{- if and .Values.trainer.gpu.enabled (not .Values.trainer.resourceClaim.enabled) }}
             nvidia.com/gpu: {{ .Values.trainer.gpu.count }}
             {{- end }}
             {{- if .Values.trainer.resources.limits }}
