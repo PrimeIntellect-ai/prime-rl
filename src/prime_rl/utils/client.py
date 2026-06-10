@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections.abc import Mapping
 from itertools import cycle
 from pathlib import Path
@@ -68,7 +69,9 @@ class InferencePool(Protocol):
         """Wait for inference pool to be ready."""
         ...
 
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
+    async def update_weights(
+        self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0, nccl_lora: bool = False
+    ) -> None:
         """Update weights on all inference servers."""
         ...
 
@@ -137,8 +140,10 @@ class StaticInferencePool:
         )
         await maybe_check_has_model(self._admin_clients, model_name, skip_model_check=self._skip_model_check)
 
-    async def update_weights(self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0) -> None:
-        await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step)
+    async def update_weights(
+        self, weight_dir: Path | None, lora_name: str | None = None, step: int = 0, nccl_lora: bool = False
+    ) -> None:
+        await update_weights(self._admin_clients, weight_dir, lora_name=lora_name, step=step, nccl_lora=nccl_lora)
 
     def get_metrics(self) -> dict[str, float]:
         return {}
@@ -366,6 +371,7 @@ async def update_weights(
     weight_dir: Path | None,
     lora_name: str | None = None,
     step: int = 0,
+    nccl_lora: bool = False,
 ) -> None:
     """Update weights on static inference servers.
 
@@ -380,7 +386,11 @@ async def update_weights(
 
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
-    if lora_name is not None and weight_dir is not None:
+    if lora_name is not None and nccl_lora:
+        if weight_dir is None:
+            raise ValueError("NCCL LoRA update requires a broadcast marker directory")
+        await update_lora_adapter(admin_clients, lora_name, weight_dir, step)
+    elif lora_name is not None and weight_dir is not None:
         await load_lora_adapter(admin_clients, lora_name, weight_dir)
     else:
 
@@ -402,6 +412,52 @@ async def update_weights(
             await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
         finally:
             await _resume_engines(admin_clients)
+
+
+LORA_UPDATE_STATUS_TIMEOUT_S = 300.0
+LORA_UPDATE_STATUS_INTERVAL_S = 0.2
+
+
+async def update_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, weight_dir: Path, step: int) -> None:
+    """Arm an NCCL LoRA update, release the trainer broadcast, and wait for completion."""
+    logger = get_logger()
+    adapters = [{"lora_name": lora_name, "lora_int_id": 1}]
+
+    async def _arm_lora_update(admin_client: AsyncClient) -> None:
+        response = await admin_client.post(
+            "/update_lora",
+            json={"step": step, "adapters": adapters},
+            timeout=httpx.Timeout(connect=10.0, read=PAUSE_READ_TIMEOUT_S, write=60.0, pool=10.0),
+        )
+        response.raise_for_status()
+
+    async def _wait_lora_update(admin_client: AsyncClient) -> None:
+        deadline = time.monotonic() + LORA_UPDATE_STATUS_TIMEOUT_S
+        while time.monotonic() < deadline:
+            response = await admin_client.get(
+                "/update_lora/status",
+                params={"step": step},
+                timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("status") == "ok":
+                    return
+            elif response.status_code >= 500:
+                response.raise_for_status()
+            await asyncio.sleep(LORA_UPDATE_STATUS_INTERVAL_S)
+        raise TimeoutError(f"Timed out waiting for NCCL LoRA update step {step}")
+
+    await _pause_engines(admin_clients, step=step)
+    try:
+        await asyncio.gather(*[_arm_lora_update(admin_client) for admin_client in admin_clients])
+        nccl_ready_file = weight_dir / NCCL_READY_MARKER
+        nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
+        nccl_ready_file.touch()
+        logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
+        await asyncio.gather(*[_wait_lora_update(admin_client) for admin_client in admin_clients])
+    finally:
+        await _resume_engines(admin_clients)
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:

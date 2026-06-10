@@ -10,7 +10,8 @@ from torch.distributed.tensor import DTensor
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
-from prime_rl.configs.trainer import NCCLWeightBroadcastConfig
+from prime_rl.configs.trainer import LoRAConfig, NCCLWeightBroadcastConfig
+from prime_rl.trainer.lora import build_lora_peft_config
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.rl.broadcast.base import WeightBroadcast
 from prime_rl.trainer.runs import get_multi_run_manager
@@ -30,6 +31,15 @@ def broadcast_integer(integer: int, communicator: PyNcclCommunicator) -> None:
     """Broadcast an integer to a process group using NCCL communicator."""
     integer_tensor = torch.tensor([integer], dtype=torch.long).cuda()
     communicator.broadcast(integer_tensor, src=0)
+
+
+def broadcast_object(payload: object, communicator: PyNcclCommunicator) -> None:
+    """Broadcast a small pickled Python payload over NCCL."""
+    state = pickle.dumps(payload)
+    size_tensor = torch.tensor([len(state)], dtype=torch.long).cuda()
+    communicator.broadcast(size_tensor, src=0)
+    state_tensor = torch.ByteTensor(list(state)).cuda()
+    communicator.broadcast(state_tensor, src=0)
 
 
 def broadcast_state_dict(state_dict: dict[str, Tensor], communicator: PyNcclCommunicator) -> None:
@@ -168,6 +178,13 @@ class NCCLWeightBroadcastSender:
                 state_dict[key] = cast(DTensor, value.to(self.dtype)).full_tensor()
         return state_dict
 
+    @torch.no_grad()
+    def broadcast_lora_update(self, step: int, adapter_header: dict, state_dict: dict[str, Tensor]) -> None:
+        """Broadcast a single LoRA adapter update into the inference pool."""
+        if self.world.is_master:
+            broadcast_object({"step": step, "adapters": [adapter_header]}, self.communicator)
+            broadcast_state_dict(state_dict, self.communicator)
+
 
 class NCCLWeightBroadcast(WeightBroadcast):
     """Broadcast weights into the inference engine using NCCL."""
@@ -178,8 +195,9 @@ class NCCLWeightBroadcast(WeightBroadcast):
         config: NCCLWeightBroadcastConfig,
         device: int | str | torch.device,
         dtype: torch.dtype = torch.bfloat16,
+        lora_config: LoRAConfig | None = None,
     ):
-        super().__init__(output_dir)
+        super().__init__(output_dir, lora_config)
         self.logger = get_logger()
         self.world = get_world()
         self.multi_run_manager = get_multi_run_manager()
@@ -198,6 +216,10 @@ class NCCLWeightBroadcast(WeightBroadcast):
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL and notifies the orchestrator."""
+        if self.lora_config is not None:
+            self._broadcast_lora_adapters(model)
+            return
+
         self.logger.debug("Starting broadcasting weights to inference engine via NCCL")
         start_time = time.perf_counter()
         # `_compute_notified_runs` is a pure function of SPMD-replicated state on
@@ -214,6 +236,57 @@ class NCCLWeightBroadcast(WeightBroadcast):
         self._wait_for_nccl_ready(notified_runs)
         self.nccl_broadcast_sender.broadcast_weights(model, step)
         self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
+
+    @torch.no_grad()
+    def _broadcast_lora_adapters(self, model: nn.Module) -> None:
+        """Broadcast one ready LoRA adapter update via NCCL."""
+        self.logger.debug("Starting broadcasting LoRA adapter to inference engine via NCCL")
+        start_time = time.perf_counter()
+        notified_runs = self._compute_notified_runs()
+        if len(notified_runs) > 1:
+            raise RuntimeError("NCCL LoRA currently supports exactly one ready run per broadcast cycle")
+
+        if self.world.is_master:
+            self._notify_orchestrator(notified_runs)
+        self._wait_for_nccl_ready(notified_runs)
+
+        for idx, _ in notified_runs:
+            state_dict = self.multi_run_manager.get_state_dict_for_run(idx)
+            state_dict = self._resolve_lora_dtensors(state_dict)
+            adapter_header = self._build_lora_adapter_header(model, idx)
+            step = self.multi_run_manager.progress[idx].step
+            self.nccl_broadcast_sender.broadcast_lora_update(step, adapter_header, state_dict)
+
+        if self.world.is_master:
+            self.logger.debug(f"LoRA adapter broadcasted in {time.perf_counter() - start_time:.2f}s")
+
+    def _resolve_lora_dtensors(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        for key, value in list(state_dict.items()):
+            if isinstance(value, DTensor):
+                state_dict[key] = cast(DTensor, value.to(self.nccl_broadcast_sender.dtype)).full_tensor()
+        return state_dict
+
+    def _build_lora_adapter_header(self, model: nn.Module, idx: int) -> dict:
+        if self.lora_config is None:
+            raise RuntimeError("Cannot build LoRA adapter header without trainer LoRA config")
+        orch_lora = self.multi_run_manager.config[idx].student.model.lora
+        if orch_lora is None:
+            raise RuntimeError(f"Run {idx} has no orchestrator LoRA config")
+        if orch_lora.name is None or orch_lora.rank is None or orch_lora.alpha is None:
+            raise RuntimeError(f"Run {idx} LoRA config must have name, rank, and alpha resolved before broadcast")
+
+        return {
+            "lora_name": orch_lora.name,
+            "lora_int_id": idx + 1,
+            "rank": orch_lora.rank,
+            "alpha": orch_lora.alpha,
+            "peft_config": build_lora_peft_config(
+                model,
+                rank=orch_lora.rank,
+                alpha=orch_lora.alpha,
+                dropout=self.lora_config.dropout,
+            ),
+        }
 
     def _compute_notified_runs(self) -> list[tuple[int, Path]]:
         """Derive the list of (run_idx, save_dir) pairs that need broadcasting.

@@ -224,6 +224,43 @@ def test_validate_shared_weight_broadcast_catches_nccl_scalar_mismatch():
         validate_shared_weight_broadcast(trainer, orchestrator)
 
 
+def test_trainer_allows_single_run_nccl_lora():
+    config = TrainerConfig.model_validate(
+        {
+            "model": {"lora": {}},
+            "weight_broadcast": {"type": "nccl", "inference_world_size": 1},
+            "max_concurrent_runs": 1,
+        }
+    )
+    assert config.weight_broadcast.type == "nccl"
+    assert config.model.lora is not None
+
+
+def test_trainer_rejects_multi_run_nccl_lora():
+    with pytest.raises(ValidationError, match="max_concurrent_runs = 1"):
+        TrainerConfig.model_validate(
+            {
+                "model": {"lora": {}},
+                "weight_broadcast": {"type": "nccl", "inference_world_size": 1},
+                "max_concurrent_runs": 2,
+            }
+        )
+
+
+def test_trainer_rejects_quantized_nccl_lora():
+    with pytest.raises(ValidationError, match="quantize_in_weight_transfer"):
+        TrainerConfig.model_validate(
+            {
+                "model": {"lora": {}},
+                "weight_broadcast": {
+                    "type": "nccl",
+                    "inference_world_size": 1,
+                    "quantize_in_weight_transfer": True,
+                },
+            }
+        )
+
+
 def test_selective_activation_checkpointing_requires_custom_impl():
     with pytest.raises(ValidationError, match="Selective activation checkpointing requires model.impl='custom'"):
         TrainerModelConfig.model_validate({"impl": "hf", "ac": {"mode": "selective"}})

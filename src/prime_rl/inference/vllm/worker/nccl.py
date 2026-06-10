@@ -1,6 +1,6 @@
 import pickle
 import threading
-from typing import TYPE_CHECKING, Generator, cast
+from typing import TYPE_CHECKING, Any, Generator, cast
 
 import torch
 from torch.nn import Module
@@ -62,6 +62,15 @@ def receive_integer(communicator: PyNcclCommunicator) -> int:
     integer_tensor = torch.tensor([10], dtype=torch.long).to(communicator.device)
     communicator.broadcast(integer_tensor, src=0)
     return cast(int, integer_tensor.item())
+
+
+def receive_object(communicator: PyNcclCommunicator) -> object:
+    """Receive a small pickled Python payload from the trainer master rank."""
+    size_tensor = torch.tensor([10], dtype=torch.long).to(communicator.device)
+    communicator.broadcast(size_tensor, src=0)
+    state_tensor = torch.empty(cast(int, size_tensor.item()), dtype=torch.uint8).to(communicator.device)
+    communicator.broadcast(state_tensor, src=0)
+    return pickle.loads(bytes(state_tensor.cpu().numpy()))
 
 
 def receive_state_dict(communicator: PyNcclCommunicator) -> Generator[tuple[str, torch.Tensor], None, None]:
@@ -163,12 +172,89 @@ class NCCLWeightUpdateWorker(Worker):
         self._lora_receive_state["status"] = "ok"
 
     def receive_lora_update(self, step: int, header_expectation: dict | None) -> None:
-        """Receive and apply an NCCL LoRA update.
+        """Receive and apply an NCCL LoRA update."""
+        receiver = getattr(self, "nccl_broadcast_receiver", None)
+        if receiver is None:
+            raise RuntimeError("NCCL broadcast receiver is not initialized")
 
-        PR 1 wires the arm/wait protocol first; tensor validation and adapter
-        commit are implemented in the follow-up body of this method.
-        """
-        raise NotImplementedError("NCCL LoRA receive is not implemented yet")
+        header = receive_object(receiver.communicator)
+        adapter = self._validate_lora_header(step, header, header_expectation)
+        tensors = dict(receive_state_dict(receiver.communicator))
+        self._commit_lora_adapter(adapter, tensors)
+
+    def _validate_lora_header(self, step: int, header: object, header_expectation: dict | None) -> dict:
+        if not isinstance(header, dict):
+            raise RuntimeError(f"LoRA update header must be a dict, got {type(header).__name__}")
+        if header.get("step") != step:
+            raise RuntimeError(f"LoRA update header step {header.get('step')} did not match armed step {step}")
+
+        adapters = header.get("adapters")
+        if not isinstance(adapters, list) or len(adapters) != 1 or not isinstance(adapters[0], dict):
+            raise RuntimeError("NCCL LoRA currently expects exactly one adapter in the update header")
+
+        adapter = adapters[0]
+        if header_expectation is not None:
+            expected_step = header_expectation.get("step")
+            if expected_step is not None and expected_step != step:
+                raise RuntimeError(f"LoRA update was armed for step {expected_step}, not {step}")
+            expected_adapters = header_expectation.get("adapters", [])
+            if len(expected_adapters) != 1 or not isinstance(expected_adapters[0], dict):
+                raise RuntimeError("LoRA update expectation must contain exactly one adapter")
+            expected_adapter = expected_adapters[0]
+            for key in ("lora_name", "lora_int_id"):
+                if key in expected_adapter and adapter.get(key) != expected_adapter[key]:
+                    raise RuntimeError(
+                        f"LoRA update header {key}={adapter.get(key)!r} did not match expected "
+                        f"{expected_adapter[key]!r}"
+                    )
+
+        for key in ("lora_name", "lora_int_id", "peft_config"):
+            if key not in adapter:
+                raise RuntimeError(f"LoRA update adapter header is missing {key!r}")
+        return adapter
+
+    def _commit_lora_adapter(self, adapter: dict[str, Any], tensors: dict[str, torch.Tensor]) -> None:
+        if not tensors:
+            raise RuntimeError("LoRA update contained no tensors")
+
+        model_runner = getattr(self, "model_runner", None)
+        lora_manager = getattr(model_runner, "lora_manager", None)
+        if lora_manager is None:
+            raise RuntimeError("LoRA is not enabled in the vLLM model runner")
+
+        adapter_manager = getattr(lora_manager, "_adapter_manager", None)
+        if adapter_manager is None:
+            raise RuntimeError("vLLM LoRA adapter manager is not initialized")
+
+        from vllm.lora.peft_helper import PEFTHelper
+
+        peft_config = dict(adapter["peft_config"])
+        peft_helper = PEFTHelper.from_dict(peft_config)
+        peft_helper.validate_legal(lora_manager.lora_config)
+
+        model = adapter_manager.model
+        lora_id = int(adapter["lora_int_id"])
+        lora_model = lora_manager._lora_model_cls.from_lora_tensors(
+            lora_model_id=lora_id,
+            tensors=tensors,
+            peft_helper=peft_helper,
+            device="cpu",
+            dtype=getattr(lora_manager.lora_config, "lora_dtype", None),
+            model_vocab_size=getattr(lora_manager, "vocab_size", None),
+            weights_mapper=getattr(model, "hf_to_vllm_mapper", None),
+            skip_prefixes=getattr(model, "lora_skip_prefixes", None),
+        )
+        lora_model.is_3d_lora_weight = bool(adapter.get("is_3d_lora_weight", False))
+
+        adapter_manager.remove_adapter(lora_id)
+        if (
+            hasattr(adapter_manager, "capacity")
+            and hasattr(adapter_manager, "remove_oldest_adapter")
+            and len(adapter_manager) + 1 > adapter_manager.capacity
+        ):
+            adapter_manager.remove_oldest_adapter()
+        adapter_manager.add_adapter(lora_model)
+        adapter_manager.activate_adapter(lora_id)
 
     def wait_lora_receive(self, step: int) -> dict:
         state = getattr(self, "_lora_receive_state", None)
