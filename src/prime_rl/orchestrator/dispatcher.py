@@ -15,11 +15,15 @@
   every in-flight rollout and drops groups past ``max_off_policy_steps``.
   Cancellations surface as synthetic ``Cancelled`` markers so the sink's
   count-to-``group_size`` finalization still fires.
+- Starvation watchdog: ``raise_if_starved`` (driven from the orchestrator's
+  main loop) crashes the run when the dispatcher sits at 0 inflight rollouts
+  with dispatch allowed and work available for ``STARVATION_TIMEOUT_S``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -45,6 +49,12 @@ from prime_rl.orchestrator.types import (
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.client import InferencePool, client_identity
 from prime_rl.utils.logger import get_logger
+
+# How long the dispatcher may sit at 0 inflight rollouts with dispatch allowed
+# and work available before ``raise_if_starved`` crashes the run. Generous
+# enough to absorb rate-limiter waits; a starved pipeline otherwise idles for
+# hours with no signal beyond a frozen periodic log line.
+STARVATION_TIMEOUT_S = 300.0
 
 
 class DispatcherMode(Enum):
@@ -173,6 +183,14 @@ class RolloutDispatcher:
 
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
+
+        # Starvation watchdog state. ``raise_if_starved`` is driven from the
+        # orchestrator's main loop — a heartbeat this dispatcher's own task
+        # cannot starve — so it fires even if the dispatch loop wedges or dies.
+        self.starvation_timeout = STARVATION_TIMEOUT_S
+        self.starved_since: float | None = None
+        self.dropped_group_count = 0
+        self.cancelled_rollout_count = 0
 
     @property
     def train_model_name(self) -> str:
@@ -667,6 +685,8 @@ class RolloutDispatcher:
 
         cancelled = inflight_cancelled + unscheduled_cancelled
         if cancelled > 0:
+            self.dropped_group_count += 1
+            self.cancelled_rollout_count += cancelled
             meta_for_log = last_meta or (
                 InflightRollout(
                     kind=group.kind,
@@ -723,6 +743,55 @@ class RolloutDispatcher:
         if train_tasks:
             await safe_cancel_all(train_tasks)
         return cancelled
+
+    def raise_if_starved(self, *, batch_progress: tuple[int, int, str] | None = None) -> None:
+        """Crash loudly when the dispatcher has had zero rollouts in flight
+        for ``starvation_timeout`` seconds while dispatch is allowed and work
+        exists (the train source is infinite, so an idle-but-allowed
+        dispatcher always indicates lost capacity: a wedged or dead fill
+        loop, an unschedulable permit cost, or a permit leak).
+
+        Pauses by intent — gate cleared, train scheduling disabled with no
+        eval queued, ``stop()`` — reset the timer instead of counting toward
+        it. Called from the orchestrator's main loop on every iteration.
+        """
+        has_work = not self.train_scheduling_disabled or self.queued_eval_examples > 0
+        starved = (
+            not self.inflight
+            and self.inflight_permits == 0
+            and self.out_q.empty()
+            and self.dispatch_allowed.is_set()
+            and not self.stopped.is_set()
+            and has_work
+        )
+        if not starved:
+            self.starved_since = None
+            return
+        now = time.monotonic()
+        if self.starved_since is None:
+            self.starved_since = now
+            return
+        starved_for = now - self.starved_since
+        if starved_for < self.starvation_timeout:
+            return
+        batch = f"{batch_progress[0]}/{batch_progress[1]} {batch_progress[2]}" if batch_progress else "unknown"
+        groups = (
+            ", ".join(
+                f"{g.env_name}[{g.kind}] emitted={g.emitted}/{g.target_rollouts} to_schedule={g.rollouts_to_schedule}"
+                for g in self.groups.values()
+            )
+            or "none"
+        )
+        raise RuntimeError(
+            f"Dispatcher starved for {starved_for:.0f}s: 0 inflight rollouts while dispatch is allowed and the "
+            f"train batch is incomplete ({batch}). Nothing is schedulable — dropped capacity was never "
+            f"backfilled (wedged or dead fill loop, permit cost > max_inflight_rollouts, or a permit leak). "
+            f"State: permits={self.inflight_permits}/{self.max_inflight}, mode={self.mode.name}, "
+            f"train_scheduling_disabled={self.train_scheduling_disabled}, "
+            f"queued_eval_examples={self.queued_eval_examples}, out_q={self.out_q.qsize()}, "
+            f"dropped_groups={self.dropped_group_count}, cancelled_rollouts={self.cancelled_rollout_count}, "
+            f"groups: {groups}"
+        )
 
     # ── metrics ────────────────────────────────────────────────────────────
 

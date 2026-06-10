@@ -547,6 +547,8 @@ class Orchestrator:
                 self.stopped.set()
                 break
 
+            self.check_pipeline_health()
+
             try:
                 rollout: FinishedRollout = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
@@ -566,6 +568,24 @@ class Orchestrator:
             # don't want to ship past ``max_steps``
             if train_batch is not None and not self.draining and not self.stopped.is_set():
                 await self.finalize_train_batch(train_batch)
+
+    def check_pipeline_health(self) -> None:
+        """Crash instead of stalling silently. The dispatcher and watcher run
+        as fire-and-forget tasks whose exceptions are never awaited, and a
+        starved dispatcher idles at 0 inflight while the periodic logger
+        keeps printing — both leave the run looping forever with no signal.
+        Runs every main-loop iteration: re-raise a dead component's
+        exception, then let the dispatcher's starvation watchdog fire."""
+        for task in self.component_tasks:
+            if not task.done():
+                continue
+            name = task.get_name()
+            if task.cancelled():
+                raise RuntimeError(f"Pipeline component {name!r} was cancelled unexpectedly")
+            if task.exception() is not None:
+                raise RuntimeError(f"Pipeline component {name!r} died") from task.exception()
+            raise RuntimeError(f"Pipeline component {name!r} exited unexpectedly")
+        self.dispatcher.raise_if_starved(batch_progress=self.train_sink.batch_progress())
 
     async def maybe_save_failed_train_rollout(self, rollout: TrainRollout) -> None:
         """Persist errored train arrivals before group filtering can drop them."""
