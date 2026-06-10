@@ -1,8 +1,8 @@
-# SFT from openai/gpt-5-mini via PI inference.
-# Requires PRIME_API_KEY + PRIME_TEAM_ID in the environment.
-#
-# Run with:
-#   uv run rl @ configs/debug/training_modes/sft_external.toml
+# Debug SFT on the v1 env server (reverse-text-v1), distilling from openai/gpt-5-mini
+# via PI inference. The external teacher returns no token ids (it's a hosted chat API),
+# so the renderer backfills tokens into the student's (Qwen3) token space before training.
+# Requires PRIME_API_KEY + PRIME_TEAM_ID in the environment. No local teacher needed.
+#   uv run rl @ configs/v1/training_mode/sft_external.toml
 
 max_steps = 20
 seq_len = 2048
@@ -11,7 +11,7 @@ seq_len = 2048
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [wandb]
-project = "reverse-text-debug"
+project = "reverse-text-v1-debug"
 name = "debug-sft-external"
 
 [orchestrator]
@@ -19,8 +19,7 @@ training_mode = "sft"
 batch_size = 128
 group_size = 4
 
-# Teacher (gpt-5-mini) rolls out over chat-completions (no tokens); the renderer backfills
-# them into the student's (Qwen3) token space.
+# The external teacher returns no tokens; the renderer backfills them into Qwen3 token space.
 [orchestrator.renderer]
 name = "qwen3"
 
@@ -29,7 +28,8 @@ max_completion_tokens = 2048
 extra_body = { reasoning_effort = "minimal" }
 
 [[orchestrator.train.env]]
-id = "reverse-text"
+taskset = { id = "reverse-text-v1" }
+harness = { id = "default", enable_bash = false, runtime = { type = "subprocess" } }
 
 [orchestrator.eval]
 interval = 1
@@ -39,7 +39,8 @@ num_examples = 128
 max_completion_tokens = 128
 
 [[orchestrator.eval.env]]
-id = "reverse-text"
+taskset = { id = "reverse-text-v1" }
+harness = { id = "default", enable_bash = false, runtime = { type = "subprocess" } }
 
 [orchestrator.teacher.model]
 name = "openai/gpt-5-mini"

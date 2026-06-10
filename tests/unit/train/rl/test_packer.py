@@ -32,8 +32,8 @@ def create_run_with_config(output_dir: Path, run_name: str) -> Path:
         "group_size": 1,
         "env": [{"id": "test-env"}],
         "sampling": {"temperature": 1.0},
-        # test-model isn't in MODEL_RENDERER_MAP; bypass the renderer-resolution validator.
-        "renderer": "None",
+        # test-model isn't in MODEL_RENDERER_MAP; use the explicit default renderer.
+        "renderer": {"name": "default"},
     }
     with open(control_dir / "orch.toml", "wb") as f:
         tomli_w.dump(config, f)

@@ -74,7 +74,7 @@ interval = 20
 id = "rlm_swe"
 name = "rlm-swe-swebench-verified-quick"
 num_workers = 4
-timeout = 3600
+timeout = { rollout = 3600 }
 
 [orchestrator.eval.env.args]
 task_type = "swebench"

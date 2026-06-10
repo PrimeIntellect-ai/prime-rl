@@ -42,8 +42,8 @@ def create_run_with_config(
             "batch_size": 32,
             "group_size": 4,
             "env": [{"id": "test-env"}],
-            # test-model isn't in MODEL_RENDERER_MAP; bypass the renderer-resolution validator.
-            "renderer": "None",
+            # test-model isn't in MODEL_RENDERER_MAP; use the explicit default renderer.
+            "renderer": {"name": "default"},
         }
 
     with open(config_dir / "orch.toml", "wb") as f:
@@ -203,7 +203,7 @@ def test_config_loading(tmp_path: Path) -> None:
         "max_steps": 1000,
         "group_size": 4,
         "env": [{"id": "test-env"}],
-        "renderer": "None",
+        "renderer": {"name": "default"},
     }
     create_run_with_config(tmp_path, "run_test123", config=test_config)
 
@@ -248,7 +248,7 @@ def test_config_cleanup_on_deletion(tmp_path: Path) -> None:
         "batch_size": 16,
         "group_size": 4,
         "env": [{"id": "test-env"}],
-        "renderer": "None",
+        "renderer": {"name": "default"},
     }
     run_dir = create_run_with_config(tmp_path, "run_delete_me", config=test_config)
 

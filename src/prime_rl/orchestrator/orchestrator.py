@@ -259,11 +259,6 @@ class Orchestrator:
         if config.training_mode == "sft":
             for env in self.train_envs:
                 env.sampling_args.pop("logprobs", None)
-        if config.renderer is None:
-            # MITO (no renderer): ask vLLM to return the prompt/completion token ids
-            # so the chat client can carry them for training instead of re-tokenizing.
-            for env in self.train_envs:
-                env.sampling_args.setdefault("extra_body", {})["return_token_ids"] = True
         get_logger().debug(
             f"Loaded {len(self.train_envs)} training environment(s) ({', '.join(self.train_envs.names)})"
         )
@@ -586,7 +581,7 @@ class Orchestrator:
             pre_filter_dropped_by_name=dict(self.train_sink.pre_filter_dropped_by_name),
         )
         self.monitor.log(metrics, step=step)
-        self.monitor.log_samples(rollout_dicts, step=step)
+        self.monitor.log_samples(batch.rollouts, step=step)
         self.monitor.log_distributions(
             distributions={
                 "rewards": [r.trace.reward for r in batch.rollouts],
@@ -763,7 +758,7 @@ class Orchestrator:
             rollout_dicts,
             step_path / f"eval_rollouts_{batch.env_name}.jsonl",
         )
-        self.monitor.log_eval_samples(rollout_dicts, env_name=batch.env_name, step=batch.step)
+        self.monitor.log_eval_samples(batch.rollouts, env_name=batch.env_name, step=batch.step)
         self.monitor.log(batch.metrics.to_wandb_dict(env_name=batch.env_name, step=batch.step), step=batch.step)
 
         n_total = batch.metrics.n_rollouts

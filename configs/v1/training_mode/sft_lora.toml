@@ -1,9 +1,11 @@
+# Debug SFT run on the v1 env server (reverse-text-v1), training a LoRA adapter.
+# The teacher generates rollouts over plain chat-completions; the renderer backfills tokens.
 # Start the teacher inference server first (on a separate GPU):
 #   CUDA_VISIBLE_DEVICES=1 uv run inference \
 #     --model.name PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
 #     --server.port 8001 --gpu-memory-utilization 0.5 --model.enforce-eager
 # Then:
-#   uv run rl @ configs/debug/training_modes/sft.toml
+#   uv run rl @ configs/v1/training_mode/sft_lora.toml
 
 max_steps = 20
 seq_len = 2048
@@ -12,8 +14,8 @@ seq_len = 2048
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [wandb]
-project = "reverse-text-debug"
-name = "debug-sft"
+project = "reverse-text-v1-debug"
+name = "debug-sft-lora"
 
 [orchestrator]
 training_mode = "sft"
@@ -28,7 +30,8 @@ name = "qwen3"
 max_completion_tokens = 128
 
 [[orchestrator.train.env]]
-id = "reverse-text"
+taskset = { id = "reverse-text-v1" }
+harness = { id = "default", enable_bash = false, runtime = { type = "subprocess" } }
 
 [orchestrator.eval]
 interval = 1
@@ -38,7 +41,8 @@ num_examples = 128
 max_completion_tokens = 128
 
 [[orchestrator.eval.env]]
-id = "reverse-text"
+taskset = { id = "reverse-text-v1" }
+harness = { id = "default", enable_bash = false, runtime = { type = "subprocess" } }
 
 [orchestrator.teacher.model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
@@ -47,7 +51,13 @@ name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"
 base_url = ["http://localhost:8001/v1"]
 
 [trainer.optim]
-lr = 3e-6
+lr = 1e-4
+
+[trainer.model.lora]
+rank = 8
+
+[trainer.ckpt.weights]
+save_adapter_separately = true
 
 [ckpt]
 
