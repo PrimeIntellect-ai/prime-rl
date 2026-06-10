@@ -111,7 +111,9 @@ Pulled from the console logs and mirrored to W&B.
 - `seq_len/{all,env}/mean` and `is_truncated/{all,env}/mean` — rollout length and truncation rate.
 - `num_turns/{all,env}/mean` — for multi-turn envs.
 - `empty_rollouts/{all,env}`, `errored_rollouts/{all,env}` — non-zero is fine in small numbers; sustained > 5% is a smell.
-- `eval/{env}/{avg@k,pass@k}` — eval scores when `[orchestrator.eval]` is set.
+- `eval/{env}/{avg@k,pass@k}` — eval scores when `[orchestrator.eval]` is set. Omitted for envs whose episode scalar is identically zero by construction (symmetric zero-sum debate, `truth_member` unset): those panels would be constant-zero. Debate packs that set `truth_member` carry a live binary scalar (truth side won) and keep them — even an all-zero batch is a true zero, not degeneracy.
+- `debate/{metric}` (train) and `eval/{env}/debate/{metric}` (eval) — debate telemetry (truth-weighted correctness, tie rate, position bias, mind-change, flip rate, length-bias correlation); emitted only for debate envs, alongside `train_debate_metrics.json` / `eval_debate_metrics_{env}.json` in the step's rollout dir.
+- `eval/{env}/mar/{key}` and `eval/{env}/winner_{count,share}/{value}` — per-member MARScore means and the judge-winner distribution (ties included) for multi-agent eval envs.
 
 **Stability** (trainer):
 

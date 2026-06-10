@@ -355,7 +355,9 @@ def test_eval_sink_forwards_numeric_rollout_metric_means():
     rollout_a = _eval_rollout(1, {"accuracy_prover": 1.0, "judge_selected_correct": True, "note": "skip-me"})
     rollout_b = _eval_rollout(2, {"accuracy_prover": 0.0})
     sink = EvalSink.__new__(EvalSink)
-    sink.eval_envs = SimpleNamespace(get=lambda name: SimpleNamespace(config=SimpleNamespace(group_size=1)))
+    sink.eval_envs = SimpleNamespace(
+        get=lambda name: SimpleNamespace(config=SimpleNamespace(group_size=1), has_inert_episode_scalar=False)
+    )
     sink.pending_batches = {("debate", 0): [rollout_a, rollout_b]}
 
     batch = sink.process_batch(("debate", 0))

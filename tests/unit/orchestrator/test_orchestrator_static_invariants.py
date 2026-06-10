@@ -18,13 +18,22 @@ def _tree() -> ast.Module:
     return ast.parse(ORCHESTRATOR_SRC.read_text())
 
 
-def _method(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
+def _methods() -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
     for node in ast.walk(_tree()):
         if isinstance(node, ast.ClassDef) and node.name == "Orchestrator":
-            for body_item in node.body:
-                if isinstance(body_item, ast.FunctionDef | ast.AsyncFunctionDef) and body_item.name == name:
-                    return body_item
-    raise AssertionError(f"`Orchestrator.{name}` not found")
+            return {
+                body_item.name: body_item
+                for body_item in node.body
+                if isinstance(body_item, ast.FunctionDef | ast.AsyncFunctionDef)
+            }
+    raise AssertionError("`Orchestrator` class not found")
+
+
+def _method(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    methods = _methods()
+    if name not in methods:
+        raise AssertionError(f"`Orchestrator.{name}` not found")
+    return methods[name]
 
 
 def _calls(fn: ast.AST, target: str) -> list[ast.Call]:
@@ -33,6 +42,32 @@ def _calls(fn: ast.AST, target: str) -> list[ast.Call]:
 
 def _call_kw(call: ast.Call, name: str) -> ast.keyword | None:
     return next((kw for kw in call.keywords if kw.arg == name), None)
+
+
+def _reaches(start: str, target: str) -> bool:
+    """True iff ``Orchestrator.{start}`` reaches a call of ``target``
+    transitively through ``self.*`` method calls. ``asyncio.to_thread(f, …)``
+    counts as a call of ``f``."""
+    methods = _methods()
+    seen: set[str] = set()
+    frontier = [start]
+    while frontier:
+        name = frontier.pop()
+        if name in seen or name not in methods:
+            continue
+        seen.add(name)
+        for node in ast.walk(methods[name]):
+            if not isinstance(node, ast.Call):
+                continue
+            callee = ast.unparse(node.func)
+            if callee == "asyncio.to_thread" and node.args:
+                callee = ast.unparse(node.args[0])
+            if callee.startswith("self."):
+                callee = callee.removeprefix("self.")
+                frontier.append(callee)
+            if callee == target:
+                return True
+    return False
 
 
 def test_setup_passes_multi_agent_config_to_dispatcher():
@@ -97,6 +132,52 @@ def test_eval_rollout_persistence_honors_dump_trajectory():
     exclude_kw = _call_kw(calls[0], "exclude_keys")
     assert exclude_kw is not None
     assert ast.unparse(exclude_kw.value) == "None if self.config.dump_trajectory else {'trajectory'}"
+
+
+def test_debate_step_metrics_import_binds_metrics_module():
+    # The call sites below go through this alias; if an upstream sync drops
+    # or rebinds it, the wiring is dead even when the calls survive.
+    imports = [
+        alias
+        for node in ast.walk(_tree())
+        if isinstance(node, ast.ImportFrom) and node.module == "prime_rl.metrics.debate"
+        for alias in node.names
+    ]
+    assert any(a.name == "write_step_metrics" and a.asname == "write_debate_step_metrics" for a in imports)
+
+
+def test_train_path_reaches_debate_step_metrics():
+    # main_loop → finalize_train_batch → (to_thread) write_debate_step_metrics.
+    # This call site was silently dropped once in an upstream sync (7f58452c8);
+    # this pin makes the next drop go red.
+    assert _reaches("main_loop", "write_debate_step_metrics")
+    calls = [
+        node
+        for node in ast.walk(_method("finalize_train_batch"))
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func) == "asyncio.to_thread"
+        and node.args
+        and ast.unparse(node.args[0]) == "write_debate_step_metrics"
+    ]
+    assert len(calls) == 1
+    prefix_kw = _call_kw(calls[0], "prefix")
+    assert prefix_kw is not None
+    assert ast.unparse(prefix_kw.value) == "'debate'"
+    monitor_kw = _call_kw(calls[0], "monitor")
+    assert monitor_kw is not None
+    assert ast.unparse(monitor_kw.value) == "self.monitor"
+
+
+def test_eval_path_reaches_debate_step_metrics():
+    assert _reaches("main_loop", "finalize_eval_batch")
+    calls = _calls(_method("finalize_eval_batch"), "write_debate_step_metrics")
+    assert len(calls) == 1
+    prefix_kw = _call_kw(calls[0], "prefix")
+    assert prefix_kw is not None
+    assert ast.unparse(prefix_kw.value) == "f'eval/{batch.env_name}/debate'"
+    monitor_kw = _call_kw(calls[0], "monitor")
+    assert monitor_kw is not None
+    assert ast.unparse(monitor_kw.value) == "self.monitor"
 
 
 def test_failed_train_rollout_persistence_honors_config_and_dump_trajectory():

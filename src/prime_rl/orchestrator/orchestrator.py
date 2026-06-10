@@ -42,6 +42,7 @@ from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
 from prime_rl.configs.orchestrator import EMAPerMemberAdvantageConfig, OrchestratorConfig
+from prime_rl.metrics.debate import write_step_metrics as write_debate_step_metrics
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
@@ -663,6 +664,18 @@ class Orchestrator:
             step_path / "train_rollouts.jsonl",
             exclude_keys=None if config.dump_trajectory else {"trajectory"},
         )
+        # Debate telemetry rides the same logged-rollout payload. The gate is
+        # the data itself: only rollouts whose ``mar_score.episode_categorical``
+        # carries a winner are counted, so a non-debate batch yields no metrics
+        # and the write is a no-op (absence, not failure).
+        await asyncio.to_thread(
+            write_debate_step_metrics,
+            rollout_dicts,
+            path=step_path / "train_debate_metrics.json",
+            step=step,
+            monitor=self.monitor,
+            prefix="debate",
+        )
 
         teacher_logprobs_time = 0.0  # opd only
         if config.training_mode == "opd" and self.teacher_inference is not None:
@@ -901,6 +914,15 @@ class Orchestrator:
         )
         self.monitor.log_eval_samples(rollout_dicts, env_name=batch.env_name, step=batch.step)
         self.monitor.log(batch.metrics.to_wandb_dict(env_name=batch.env_name, step=batch.step), step=batch.step)
+        # Same data-shape gate as the train path: non-debate eval batches
+        # yield no debate metrics and the write is a no-op.
+        write_debate_step_metrics(
+            rollout_dicts,
+            path=step_path / f"eval_debate_metrics_{batch.env_name}.json",
+            step=batch.step,
+            monitor=self.monitor,
+            prefix=f"eval/{batch.env_name}/debate",
+        )
 
         n_total = batch.metrics.n_rollouts
         error_rate = ((batch.metrics.n_cancelled + batch.metrics.n_errored) / n_total) if n_total else 0.0

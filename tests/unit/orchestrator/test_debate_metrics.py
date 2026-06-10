@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from prime_rl.metrics.debate import _spearman, compute_step_metrics
+from prime_rl.metrics.debate import _spearman, compute_step_metrics, write_step_metrics
+from prime_rl.utils.monitor.base import NoOpMonitor
 
 
 def _mk(
@@ -280,3 +282,47 @@ def test_single_member_key_without_episode_keys_stays_unresolvable():
     del rollout["final_correct/debater_b"]
     metrics = compute_step_metrics([rollout])
     assert metrics["n_resolvable"] == 0.0
+
+
+def test_write_step_metrics_namespaces_payload_and_persists(tmp_path):
+    monitor = NoOpMonitor()
+    path = tmp_path / "step_7" / "train_debate_metrics.json"
+    write_step_metrics(
+        [_mk(truth="debater_a", winner="debater_a")],
+        path=path,
+        step=7,
+        monitor=monitor,
+        prefix="debate",
+    )
+    assert json.loads(path.read_text())["twc_3way"] == 1.0
+    (payload,) = monitor.history
+    assert payload["step"] == 7
+    assert payload["debate/twc_3way"] == 1.0
+    assert all(key == "step" or key.startswith("debate/") for key in payload)
+
+
+def test_write_step_metrics_eval_prefix_matches_eval_namespace(tmp_path):
+    monitor = NoOpMonitor()
+    write_step_metrics(
+        [_mk(truth="debater_a", winner="debater_b")],
+        path=tmp_path / "eval_debate_metrics_gpqa_debate.json",
+        step=3,
+        monitor=monitor,
+        prefix="eval/gpqa_debate/debate",
+    )
+    (payload,) = monitor.history
+    assert payload["eval/gpqa_debate/debate/twc_3way"] == 0.0
+
+
+def test_write_step_metrics_non_debate_batch_is_silent(tmp_path):
+    monitor = NoOpMonitor()
+    path = tmp_path / "train_debate_metrics.json"
+    write_step_metrics(
+        [{"mar_score": {"episode_categorical": {}}, "error": None}, {"reward": 1.0, "error": None}],
+        path=path,
+        step=1,
+        monitor=monitor,
+        prefix="debate",
+    )
+    assert not path.exists()
+    assert monitor.history == []

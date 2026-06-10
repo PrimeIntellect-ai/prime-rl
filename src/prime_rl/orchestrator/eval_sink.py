@@ -16,10 +16,39 @@ from __future__ import annotations
 import uuid
 from collections import defaultdict
 
+import verifiers as vf
+
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.eval_utils import compute_pass_at_k
 from prime_rl.orchestrator.types import EvalBatch, EvalBatchMetrics, EvalRollout
 from prime_rl.utils.logger import get_logger
+
+
+def aggregate_mar_panel(rollouts: list[vf.RolloutOutput]) -> tuple[dict[str, float], dict[str, int]]:
+    """Multi-agent MARScore panel for one eval batch.
+
+    Returns ``(mar_metrics, winner_counts)``: per-key means of
+    ``MARScore.to_metrics_flat()`` over the rollouts carrying a ``mar_score``
+    (per-member rewards, parse errors, member metrics, episode metrics), and
+    the judge-winner distribution from ``episode_categorical["winner"]``
+    (ties included; ``None`` buckets as ``"none"``). Single-agent rollouts
+    carry no ``mar_score`` and contribute nothing — both dicts come back
+    empty for non-multi-agent envs."""
+    sums: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    winner_counts: dict[str, int] = {}
+    for rollout in rollouts:
+        mar_raw = rollout.get("mar_score")
+        if mar_raw is None:
+            continue
+        mar = vf.MARScore.model_validate(mar_raw)
+        for key, value in mar.to_metrics_flat().items():
+            sums[key] = sums.get(key, 0.0) + value
+            counts[key] = counts.get(key, 0) + 1
+        if "winner" in mar.episode_categorical:
+            winner = mar.episode_categorical["winner"] or "none"
+            winner_counts[winner] = winner_counts.get(winner, 0) + 1
+    return {key: sums[key] / counts[key] for key in sums}, winner_counts
 
 
 class EvalSink:
@@ -143,6 +172,15 @@ class EvalSink:
             metrics.num_turns_mean = float(sum(num_turns) / len(num_turns))
             metrics.num_turns_min = float(min(num_turns))
             metrics.num_turns_max = float(max(num_turns))
+
+            # MARScore panel (multi-agent envs only; no-op otherwise).
+            # Inert-scalar is the env's structural declaration (symmetric
+            # zero-sum debate ⇒ episode scalar ≡ 0.0 by construction), NOT a
+            # runtime all-zero observation — a truth_member pack can honestly
+            # score 0.0 on a batch, and that zero must stay visible.
+            # ``to_wandb_dict`` omits avg@k / pass@k when inert.
+            metrics.mar_metrics, metrics.winner_counts = aggregate_mar_panel([r.raw for r in valid])
+            metrics.inert_scalar = self.eval_envs.get(env_name).has_inert_episode_scalar
 
             # Env-emitted rollout metrics (e.g. debate diagnostics),
             # forwarded key-agnostically: mean per numeric key over the
