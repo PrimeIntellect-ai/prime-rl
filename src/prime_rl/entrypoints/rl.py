@@ -192,8 +192,7 @@ def rl_local(config: RLConfig):
             algo = env.algo
             if algo is None:
                 continue
-            sampling_source = algo.sampling.source if algo.sampling is not None else None
-            for ref in (sampling_source, getattr(algo.advantage, "model", None)):
+            for ref in (algo.sampling.source, getattr(algo.advantage, "model", None)):
                 if isinstance(ref, FrozenModelConfig):
                     frozen_endpoints.append(f"{ref.name} ({', '.join(ref.base_url)})")
         if frozen_endpoints:

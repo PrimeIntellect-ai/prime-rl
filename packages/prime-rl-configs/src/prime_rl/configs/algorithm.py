@@ -25,6 +25,7 @@ global token count; per-token component weights ship on the wire and the
 trainer just executes them.
 """
 
+import copy
 import warnings
 from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
@@ -258,38 +259,34 @@ class LossRoutingConfig(BaseConfig):
 # The algorithm bundle
 # ---------------------------------------------------------------------------
 
-# Preset component tables. Fields the user sets explicitly always win. Model
+# Preset component deltas, merged under the user's raw input by
+# ``merge_preset`` (the user's keys win). The component field defaults are
+# grpo's, so each preset only encodes its deviation from grpo. Model
 # references with no sensible default (``sampling.source`` of sft_distill,
-# ``advantage.model`` of opd) are left ``None`` by the presets and validation
-# demands ``algo.model`` (or the component field); ``demo_ref_kl`` defaults to
-# the live policy (the SDFT setting).
-_PRESETS: dict[str, dict[str, Any]] = {
-    "grpo": dict(
-        sampling=lambda: SamplingConfig(),
-        advantage=lambda: GroupNormAdvantageConfig(),
-        loss=lambda: LossRoutingConfig(),
-    ),
-    "opd": dict(
-        sampling=lambda: SamplingConfig(),
-        advantage=lambda: RefKLAdvantageConfig(),
-        loss=lambda: LossRoutingConfig(),
-    ),
-    "sft_distill": dict(
-        sampling=lambda: SamplingConfig(source=None),
-        advantage=lambda: SupervisedAdvantageConfig(),
-        loss=lambda: LossRoutingConfig(),
-    ),
-    "self_distill": dict(
-        sampling=lambda: SamplingConfig(),
-        advantage=lambda: DemoRefKLAdvantageConfig(),
-        loss=lambda: LossRoutingConfig(),
-    ),
-    "echo": dict(
-        sampling=lambda: SamplingConfig(),
-        advantage=lambda: GroupNormAdvantageConfig(),
-        loss=lambda: LossRoutingConfig(observation="ce"),
-    ),
+# ``advantage.model`` of opd) are set to ``None`` and validation demands
+# ``algo.model`` (or the component field); ``demo_ref_kl`` defaults to the
+# live policy (the SDFT setting).
+_PRESETS: dict[AlgorithmName, dict[str, dict[str, Any]]] = {
+    "grpo": {},
+    "opd": {"advantage": {"type": "ref_kl"}},
+    "sft_distill": {"sampling": {"source": None}, "advantage": {"type": "supervised"}},
+    "self_distill": {"advantage": {"type": "demo_ref_kl"}},
+    "echo": {"loss": {"observation": "ce"}},
 }
+
+
+def _merge_preset_delta(user: Any, delta: Any) -> Any:
+    """Merge a preset delta under user input: the user's keys win at the
+    leaf. A ``type`` discriminator mismatch makes the user's value win
+    wholesale — fields can't merge across union members."""
+    if not isinstance(user, dict) or not isinstance(delta, dict):
+        return user
+    if "type" in user and "type" in delta and user["type"] != delta["type"]:
+        return user
+    merged = dict(delta)
+    for key, value in user.items():
+        merged[key] = _merge_preset_delta(value, delta[key]) if key in delta else value
+    return merged
 
 
 class AlgorithmConfig(BaseConfig):
@@ -312,91 +309,73 @@ class AlgorithmConfig(BaseConfig):
     Write-only input sugar — folded by validation and excluded from dumps so
     resolved configs round-trip."""
 
-    sampling: SamplingConfig | None = None
-    """Sampling component override. Unset inherits from the preset."""
+    sampling: SamplingConfig = SamplingConfig()
+    """Sampling component. Unset fields inherit from the preset."""
 
-    advantage: AdvantageConfig | None = None
-    """Advantage strategy override. Unset inherits from the preset; setting
-    one replaces the preset's choice wholesale."""
+    advantage: AdvantageConfig = GroupNormAdvantageConfig()
+    """Advantage strategy. Unset fields inherit from the preset; a different
+    ``type`` replaces the preset's choice wholesale."""
 
-    loss: LossRoutingConfig | None = None
-    """Loss routing override. Unset inherits from the preset."""
+    loss: LossRoutingConfig = LossRoutingConfig()
+    """Loss routing. Unset fields inherit from the preset."""
 
     @property
     def requires_group_advantage(self) -> bool:
         """True when the advantage strategy assigns group-relative scalars,
         i.e. degenerate with ``group_size=1``."""
-        return self.advantage is not None and self.advantage.group_relative
+        return self.advantage.group_relative
+
+    @model_validator(mode="before")
+    @classmethod
+    def merge_preset(cls, data: Any) -> Any:
+        """Merge the named preset's component deltas under the user's raw
+        input, before any model is built. Downstream validators then see one
+        plain config whose field provenance is exactly what the user wrote
+        (``model_fields_set`` needs no fixing up)."""
+        if not isinstance(data, dict):
+            return data
+        preset = _PRESETS.get(data.get("name", "grpo"))
+        if preset is None:
+            return data  # unknown preset name: let field validation report it
+        for component, delta in preset.items():
+            current = data.get(component)
+            if isinstance(current, dict) or current is None:
+                data[component] = _merge_preset_delta(current or {}, copy.deepcopy(delta))
+        return data
 
     @model_validator(mode="after")
-    def resolve_preset(self):
-        """Fill unset components from the preset table.
-
-        ``sampling`` / ``loss`` merge at the field level: a partial override
-        (e.g. just ``loss.observation_weight`` on ``echo``) keeps the preset's
-        other fields. ``advantage`` is a discriminated union — setting one
-        replaces the preset's choice wholesale. Preset-filled components are
-        removed from ``model_fields_set`` again so downstream folding (the
-        orchestrator-level ``advantage`` shorthand) can tell genuine user
-        input from preset defaults."""
-        preset = _PRESETS[self.name]
-        for component in ("sampling", "loss"):
-            preset_value = preset[component]()
-            current = getattr(self, component)
-            if current is None:
-                setattr(self, component, preset_value)
-                self.__pydantic_fields_set__.discard(component)
-            else:
-                for field_name in type(current).model_fields:
-                    if field_name not in current.model_fields_set:
-                        setattr(current, field_name, getattr(preset_value, field_name))
-        if self.advantage is None:
-            self.advantage = preset["advantage"]()
-            self.__pydantic_fields_set__.discard("advantage")
-        return self
-
-    def fold_model_shorthand(self) -> None:
+    def fold_model(self):
         """Fold the ``model`` shorthand into the component references.
 
-        Fill-or-agree: an unresolved reference (``None``, or a preset default
-        the user didn't set) takes the shorthand; an explicit reference that
-        already equals it is redundant-but-consistent; if no reference accepts
-        it, that's an error. Re-run after the orchestrator-level ``advantage``
-        shorthand replaces the advantage component wholesale."""
+        Fill-or-agree: an unresolved reference (``None``, or a default the
+        user didn't set) takes the shorthand; an explicit reference that
+        already equals it is redundant-but-consistent; if no reference
+        accepts it, that's an error."""
         if self.model is None:
-            return
+            return self
         matched = False
         advantage = self.advantage
-        if advantage is not None and "model" in type(advantage).model_fields:
+        if "model" in type(advantage).model_fields:
             if advantage.model is None or "model" not in advantage.model_fields_set:
                 advantage.model = self.model
                 matched = True
             elif advantage.model == self.model:
                 matched = True
-        if self.sampling is not None:
-            if self.sampling.source is None:
-                self.sampling.source = self.model
-                matched = True
-            elif self.sampling.source == self.model:
-                matched = True
+        if self.sampling.source is None:
+            self.sampling.source = self.model
+            matched = True
+        elif self.sampling.source == self.model:
+            matched = True
         if not matched:
             raise ValueError(
                 f"algorithm '{self.name}': 'model' is set but no component reference accepts it — "
                 "every reference is already explicitly set to a different value, or the algorithm "
                 "references no model. Set advantage.model / sampling.source directly instead."
             )
-
-    @model_validator(mode="after")
-    def fold_model(self):
-        """Declared after ``resolve_preset`` so the preset components exist,
-        before ``validate_component_compatibility`` so unresolved-reference
-        errors only fire when folding couldn't help."""
-        self.fold_model_shorthand()
         return self
 
     @model_validator(mode="after")
     def validate_component_compatibility(self):
-        assert self.sampling is not None and self.advantage is not None and self.loss is not None  # resolved above
         if self.sampling.source is None:
             raise ValueError(
                 f"algorithm '{self.name}' samples rollouts from a frozen model — set 'model' on the "

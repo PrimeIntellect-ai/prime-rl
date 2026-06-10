@@ -1,3 +1,4 @@
+import copy
 import math
 import warnings
 from pathlib import Path
@@ -11,7 +12,6 @@ from prime_rl.configs.algorithm import (
     AdvantageConfig,
     AlgorithmConfig,
     GroupNormAdvantageConfig,
-    RewardAdvantageConfig,
 )
 from prime_rl.configs.shared import (
     BaseModelConfig,
@@ -226,10 +226,10 @@ class TrainEnvConfig(EnvConfig):
     individual components) to give this env its own algorithm."""
 
     advantage: AdvantageConfig | None = Field(None, exclude=True)
-    """Shorthand for ``algo.advantage``. Inherits from the top-level
-    ``orchestrator.advantage`` when unset. Setting both this and an explicit
+    """Shorthand for ``algo.advantage``, applied on top of whichever
+    algorithm this env inherits. Setting both this and an explicit
     ``algo.advantage`` to different values is an error. Write-only input
-    sugar — folded by validation and excluded from dumps so resolved configs
+    sugar — folded on raw input and excluded from dumps so resolved configs
     round-trip."""
 
 
@@ -526,9 +526,9 @@ class OrchestratorConfig(BaseConfig):
     """Evaluation configuration."""
 
     advantage: AdvantageConfig | None = Field(GroupNormAdvantageConfig(), exclude=True)
-    """Shorthand for ``algo.advantage``, folded into the resolved
-    algorithm (and inherited by envs without their own algorithm). Write-only
-    input sugar — excluded from dumps so resolved configs round-trip."""
+    """Shorthand for ``algo.advantage`` (and, through inheritance, for envs
+    without their own algorithm). Write-only input sugar — folded on raw
+    input and excluded from dumps so resolved configs round-trip."""
 
     pre_batch_filters: list[FilterConfig] = [
         GibberishFilterConfig(enforce=False),
@@ -678,6 +678,54 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="before")
     @classmethod
+    def fold_advantage_shortcuts(cls, data: Any) -> Any:
+        """Fold the ``advantage`` shorthands into ``algo.advantage`` on raw
+        input, before any ``AlgorithmConfig`` is built — each algorithm then
+        validates exactly once with everything in place. Defined before
+        ``_env_to_train`` (before-validators run in reverse definition order)
+        so the legacy ``[[env]]`` layout is already translated.
+
+        ``advantage = "None"`` historically meant "advantage = raw reward".
+        """
+        if not isinstance(data, dict):
+            return data
+
+        def fold(algo: Any, shorthand: Any, owner: str) -> None:
+            if not isinstance(algo, dict):
+                raise ValueError(
+                    f"{owner}: the 'advantage' shorthand needs 'algo' as plain config data — "
+                    "set 'algo.advantage' directly instead."
+                )
+            if shorthand is None or shorthand == "None":
+                shorthand = {"type": "reward"}
+            existing = algo.get("advantage")
+            if existing is not None and existing != shorthand:
+                raise ValueError(
+                    f"{owner}: 'advantage' shorthand conflicts with the explicit 'algo.advantage'. Set one."
+                )
+            algo["advantage"] = copy.deepcopy(shorthand)
+
+        if "advantage" in data:
+            fold(data.setdefault("algo", {}), data["advantage"], "orchestrator")
+
+        train = data.get("train")
+        envs = train.get("env") if isinstance(train, dict) else None
+        if not isinstance(envs, list):
+            return data
+        for env in envs:
+            if not isinstance(env, dict) or "advantage" not in env:
+                continue
+            # The shorthand applies on top of whichever algorithm the env
+            # inherits, so materialize the inherited copy here.
+            if env.get("algo") is None:
+                top_algo = data.get("algo")
+                env["algo"] = copy.deepcopy(top_algo) if top_algo is not None else {}
+            name = env.get("name") or str(env.get("id", "?")).split("@")[0]
+            fold(env["algo"], env["advantage"], f"env '{name}'")
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
     def _env_to_train(cls, data: Any) -> Any:
         """Allow [[env]] and [sampling] as shorthand for [train] with [[train.env]] and [train.sampling]."""
         if not isinstance(data, dict):
@@ -738,47 +786,20 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def resolve_algorithm(self):
-        """Fold the ``advantage`` shorthands and propagate the resolved
-        algorithm into every train env. Declared before any validator that
+    def inherit_env_algorithms(self):
+        """Envs without their own algorithm inherit the top-level one (the
+        ``advantage`` shorthands are already folded in on raw input by
+        ``fold_advantage_shortcuts``). Declared before any validator that
         reads ``algo``."""
-
-        def fold_advantage(algorithm: AlgorithmConfig, advantage, owner: str) -> None:
-            if "advantage" in algorithm.model_fields_set and algorithm.advantage != advantage:
-                raise ValueError(
-                    f"{owner}: 'advantage' shorthand conflicts with the explicit 'algo.advantage'. Set one."
-                )
-            algorithm.advantage = advantage
-            # Assignment after validation bypasses the model validators —
-            # re-fold the ``model`` shorthand into the replaced strategy and
-            # re-check the component matrix.
-            algorithm.fold_model_shorthand()
-            algorithm.validate_component_compatibility()
-
-        # Explicit ``advantage = "None"`` historically meant "advantage = raw
-        # reward" — translate to the explicit type.
-        if "advantage" in self.model_fields_set:
-            fold_advantage(self.algo, self.advantage or RewardAdvantageConfig(), "orchestrator")
-
-        # Envs inherit the top-level algorithm (with the shorthand already
-        # folded in); an env's own ``advantage`` shorthand applies on top of
-        # whichever algorithm the env ended up with.
         for env_cfg in self.train.env:
             if env_cfg.algo is None:
                 env_cfg.algo = self.algo.model_copy(deep=True)
-            if "advantage" in env_cfg.model_fields_set:
-                fold_advantage(
-                    env_cfg.algo, env_cfg.advantage or RewardAdvantageConfig(), f"env '{env_cfg.resolved_name}'"
-                )
         return self
 
     @property
     def any_policy_sourced(self) -> bool:
         """True when at least one train env samples rollouts from the live policy."""
-        return any(
-            env.algo is not None and env.algo.sampling is not None and env.algo.sampling.source == "policy"
-            for env in self.train.env
-        )
+        return any(env.algo is not None and env.algo.sampling.source == "policy" for env in self.train.env)
 
     @model_validator(mode="after")
     def _force_no_renderer_without_policy_sampling(self):
@@ -894,7 +915,7 @@ class OrchestratorConfig(BaseConfig):
         for env_cfg in self.train.env:
             if "group_size" not in env_cfg.model_fields_set:
                 env_cfg.group_size = self.group_size
-            assert env_cfg.algo is not None  # materialized by resolve_algorithm
+            assert env_cfg.algo is not None  # materialized by inherit_env_algorithms
             env_cfg.algo.warn_group_size(env_cfg.group_size, env_cfg.resolved_name)
 
         # Resolve train env num_workers from max_inflight_rollouts
@@ -926,7 +947,7 @@ class OrchestratorConfig(BaseConfig):
             env.extra_env_kwargs.update(max_seq_len=self.seq_len)
             # Policy-sourced rollouts hit our vLLM server; frozen-sourced
             # rollouts may hit external OAI endpoints that reject these knobs.
-            assert env.algo is not None and env.algo.sampling is not None
+            assert env.algo is not None
             if env.algo.sampling.source == "policy":
                 env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)

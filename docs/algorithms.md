@@ -75,7 +75,7 @@ name = "grpo"  # the default
 
 ### Customizing Components
 
-Every component can be overridden individually — preset fields you don't set are kept (for `sampling` / `loss`, field-by-field; `advantage` is a discriminated union, replaced wholesale when set):
+Every component can be overridden individually — the preset merges under your keys, so fields you don't set are kept. Setting a different `advantage.type` replaces the strategy wholesale (fields can't merge across union members):
 
 ```toml
 [orchestrator.algo]

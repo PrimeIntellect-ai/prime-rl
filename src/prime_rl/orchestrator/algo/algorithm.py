@@ -47,8 +47,7 @@ class Algorithm:
     pools to any inline frozen model references in :meth:`setup`."""
 
     def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, tokenizer: PreTrainedTokenizer):
-        assert config.sampling is not None and config.sampling.source is not None
-        assert config.advantage is not None and config.loss is not None
+        assert config.sampling.source is not None
         self.config = config
         self.policy_pool = policy_pool
         self.sampling_pool: InferencePool = policy_pool  # frozen sources swap this in setup()

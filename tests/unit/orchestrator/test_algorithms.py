@@ -44,6 +44,12 @@ def test_preset_component_override():
     assert algo.advantage.type == "group_norm"  # untouched components still inherit the preset
 
 
+def test_preset_advantage_override_without_type_inherits_strategy():
+    algo = AlgorithmConfig(name="opd", model=FROZEN, advantage={"max_concurrent": 64})
+    assert algo.advantage.type == "ref_kl"
+    assert algo.advantage.max_concurrent == 64
+
+
 def test_ref_kl_requires_model_reference():
     with pytest.raises(ValueError, match="needs a reference model"):
         AlgorithmConfig(name="opd")
