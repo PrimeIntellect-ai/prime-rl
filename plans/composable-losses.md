@@ -60,12 +60,19 @@ per-token float    per-token loss      per-token→per-token     → scalar     
 
 1. **advantage_fn** (orchestrator) — one float per token; `0` = masked. Group-aware (sees the whole
    GRPO group); also emits constant / dataset-driven / reference-derived signals. It's the adapter
-   between heterogeneous rollout data and uniform loss math.
+   between heterogeneous rollout data and uniform loss math — **and it is the filtering mechanism, for
+   free and by default**: `0` is a true mask, so a term whose advantage is all-zero for a sample drops
+   out automatically, and a sample that *no* term applies to is dropped from the batch (emergent
+   zero-advantage dismissal, §8). Filtering is not a separate stage — you filter by zeroing the
+   advantage.
 2. **core** (trainer) — `core(LossInputs) -> LossOutputs`; per-token loss, **not** reduced. One
    parameterizable policy-gradient core underlies `dppo_kl` and `ce` (§4.2).
 3. **hooks** (trainer) — `hook(per_token_loss, inputs) -> per_token_loss`, chainable; for transforms
    that need the live forward (current-policy prob/entropy gating, smoothing, penalties).
-4. **reduce** (per term) — per-token → scalar (`mean` = global per-token mean = today; or custom).
+4. **reduce / normalize** (per term) — per-token → scalar. **This is where normalization lives** — its
+   own axis, **not** the core and **not** a hook. Default `mean` (global per-token mean = today's
+   `loss_scale`); customize with a `custom` reduce (§4.3). Per-term, so terms normalize independently
+   and don't dilute each other.
 5. **λ·sum** — `total = Σ_terms lambda_weight_t · scalar_t`.
 
 ### The execution seam (split execution, unified surface)
@@ -115,37 +122,49 @@ The default `losses` is a single `rl` term: `{ loss = dppo_kl, advantage = grpo,
 
 ### 3.2 One-line presets  ✅
 
+Plain RL, written explicitly:
+
 ```toml
 [[losses]]
 type = "rl"                      # single-term preset: dppo_kl core + grpo advantage
-
-[[losses]]
-type  = "echo"                   # COMPOUND RECIPE: expands to TWO terms (rl ⊕ ce-on-roles)
-roles = ["user", "tool"]         # what to echo (the ce overlay's advantage)
 ```
 
-`echo` is not a primitive — it is `rl ⊕ ce-on-roles`: the policy-gradient objective on the completion
-**plus** cross-entropy supervision on the chosen role tokens. A single `{type = "echo"}` block emits
-**both** the `rl` primary and the `echo` overlay, so you don't write a separate `rl` term (§5).
+Echo — **one block gives you both** the RL objective *and* the cross-entropy supervision, because the
+`echo` recipe expands to two terms (`rl ⊕ ce-on-roles`):
+
+```toml
+[[losses]]
+type  = "echo"                   # COMPOUND RECIPE -> the `rl` primary + a `ce`-on-roles overlay
+roles = ["user", "tool"]         # what to echo (routes to the ce overlay's advantage)
+```
+
+`echo` is not a primitive — it is the policy-gradient objective on the completion **plus**
+cross-entropy supervision on the chosen role tokens. Because the `echo` block **already emits the `rl`
+primary, you do not also write a separate `rl` term** — doing so is a duplicate-name error (§5).
 
 ### 3.3 Tuning a preset
 
+Override an axis; the preset's other defaults stay (so `loss = { kl_tau = 5e-4 }` keeps
+`dppo_mask_low/high = 0.2`) — the same semantics as a full term.
+
+Plain RL, retuned:
+
 ```toml
-# tune the rl objective:
 [[losses]]
 type = "rl"
-loss = { kl_tau = 5e-4 }                       # deep-merges over the dppo_kl defaults
+loss = { kl_tau = 5e-4 }
+```
 
-# tune echo: knobs route to the right sub-term automatically
+Echo, **fully tuned through the one `echo` block** — its own knobs route to the ce overlay, and a
+nested `rl = { ... }` tunes the bundled policy-gradient half. You never add a separate `rl` term:
+
+```toml
 [[losses]]
 type          = "echo"
 roles         = ["assistant"]                  # -> the ce overlay's echo advantage
 lambda_weight = 0.5                            # -> the ce overlay's λ (the echo magnitude)
-rl            = { loss = { kl_tau = 5e-4 } }   # -> deep-merges into the rl sub-term
+rl            = { loss = { kl_tau = 5e-4 } }   # -> tunes the bundled rl primary
 ```
-
-Overriding an axis keeps the preset's other defaults (e.g. `loss = { kl_tau = 5e-4 }` keeps
-`dppo_mask_low/high = 0.2`) — the same semantics as a full term.
 
 ### 3.4 Multiple terms, written out in full
 
@@ -157,18 +176,21 @@ name      = "rl"
 loss      = { type = "dppo_kl", kl_tau = 1e-3 }
 advantage = { type = "grpo", tau = 1.0 }
 
-[[losses]]                                     # echo on assistant tokens
-name      = "echo"
-loss      = { type = "ce" }
-advantage = { type = "echo", roles = ["assistant"] }
+[[losses]]                                     # behavior-cloning regularizer: constant-weight NLL on the sampled tokens
+name          = "bc"
+loss          = { type = "ce" }
+advantage     = { type = "sft", alpha = 1.0 }
 lambda_weight = 0.1
 
-[[losses]]                                     # a second, advantage-weighted overlay (independent term)
-name      = "tool-echo"
-loss      = { type = "ce" }
-advantage = { type = "echo", roles = ["tool"], tool_names = ["calculator"], by_advantage = true, tau = 0.5 }
+[[losses]]                                     # a custom per-token advantage (the uniform pointer surface)
+name          = "shaped"
+loss          = { type = "ce" }
+advantage     = { import_path = "pkg.my_advantage", kwargs = { scale = 0.5 } }
 lambda_weight = 0.05
 ```
+
+(The same three-term shape with two `echo` overlays — different roles, one advantage-weighted — is the
+echo recipe's territory; see §5.)
 
 ### 3.5 Per-env selection + overrides  ✅
 
@@ -227,10 +249,13 @@ advantage = { type = "ref_kl", scorer = "reference" }   # points at a named scor
 ### 3.8 Filtering
 
 ```toml
-# trainer-side gate (needs the live forward): drop tokens the current policy is already confident about
+# trainer-side gate (needs the live forward): zero a term's loss on tokens the current policy is
+# already confident about. Hooks attach to any term — here, the rl primary in full form:
 [[losses]]
-type  = "echo"
-hooks = [ { type = "min_prob_filter", min_logprob = -2.0 } ]
+name      = "rl"
+loss      = { type = "dppo_kl" }
+advantage = { type = "grpo" }
+hooks     = [ { type = "min_prob_filter", min_logprob = -2.0 } ]
 ```
 
 - **`0`-advantage is a true mask** (§8): set a token's advantage to `0` and it leaves both the
@@ -316,11 +341,14 @@ why echo uses it on context tokens. The grpo↔dppo_kl / overlay↔ce pairing is
 
 ### 4.3 reduce — per term, trainer-side  ✅
 
-`reduce(inputs: ReduceInputs, **kwargs) -> Tensor`. `mean` = global per-token mean over the term's
-eligible tokens (all-reduced count, `max(·,1)`) — bit-compatible with today's `loss_scale` and unbiased
-(masked tokens leave both numerator and denominator). `custom` = a dotted path (e.g. the pedagogical
-`1/Σ wₜ` normalization, §9). Reduce is **per-term, not per-env** — per-env λ already gives per-env
-weighting; normalizing slices of one term differently is incoherent.
+`reduce(inputs: ReduceInputs, **kwargs) -> Tensor`. **Normalization is this axis.** To change how a
+term is normalized you write a `custom` reduce — **not** a custom loss and **not** a hook (the core
+returns *unreduced* per-token loss by design, and hooks are per-token→per-token; reduce is the only
+per-token→scalar step, which is also why masking hooks compose). `mean` (the default) = global
+per-token mean over the term's eligible tokens (all-reduced count, `max(·,1)`) — bit-compatible with
+today's `loss_scale` and unbiased (masked tokens leave both numerator and denominator). `custom` = a
+dotted path (e.g. the pedagogical `1/Σ wₜ` normalization, §9). Reduce is **per-term, not per-env** —
+per-env λ already gives per-env weighting; normalizing slices of one term differently is incoherent.
 
 ### 4.4 hooks — trainer-side, post-core  ✅
 
@@ -331,6 +359,7 @@ after the forward.
 | `type`            | meaning |
 |-------------------|---------|
 | `min_prob_filter` | zero the per-token loss where the current-policy logprob `< min_logprob` (a trainer-side filter) |
+| `surprisal_gate`  | weight the per-token loss by `σ(kappa·(trainer_logprob − gamma))` — the pedagogical student-assimilation gate over the trained policy's logprob (§9) |
 | `custom`          | dotted `import_path` + `kwargs` |
 
 Principle: intrinsic objective math (DPPO clip + KL) stays inside the core; hooks are cross-cutting
@@ -384,17 +413,19 @@ Some terms need **another model's per-token logprobs over the trajectory, comput
 the OPD distillation target, a pedagogical frozen-student's surprise. This is orchestrator-side
 (prefill) and **trainer-blind** (ship per-token, the trainer just consumes).
 
-### What exists today  ✅ *(but partial / misnamed)*
+### What exists today  ✅
 
-- A single global `orchestrator.reference` (a `ClientConfig` + model name + `logprobs.top_k`) and a
-  **managed `reference_inference` pool** (prime-rl hosts it). Distinct from `orchestrator.teacher`,
-  which is the SFT *generator* (it samples rollouts), not a scorer.
-- `compute_teacher_logprobs` prefills the full `prompt_ids + completion_ids` against the reference with
-  `prompt_logprobs = 1` (**top-1 only**) and ships a flat `list[float]`.
-- The wire field is **misnamed `teacher_logprobs`** — it carries the *reference scorer's* output, not
-  the SFT generator's. Consumed only by a hardcoded `opd_loss_fn` (`teacher_kl = teacher_lp −
-  trainer_lp` used as the advantage).
-- **`logprobs.top_k` is currently dead** — defined but read by nothing.
+- A single global `orchestrator.reference` (a `ClientConfig` + model name + a `logprobs.top_k` field)
+  and a **managed `reference_inference` pool** (prime-rl hosts it). Distinct from `orchestrator.teacher`,
+  the SFT *generator* (it samples rollouts) — a different thing entirely.
+- `compute_reference_logprobs` prefills the full `prompt_ids + completion_ids` against the reference
+  (currently `prompt_logprobs = 1`, **top-1**) and ships a flat per-token `reference_logprobs` on the
+  wire. The **OPD core** consumes it (`reference_kl = reference_logprobs − trainer_logprobs`, used as
+  the per-token signal), so the reference-consuming *core* seam (`LossInputs`, trainer-side) works.
+- The wire / `MicroBatch` / `LossInputs` field was renamed **`teacher_logprobs` → `reference_logprobs`**
+  (it carries the reference scorer's output, never the SFT generator's — the old name was a live
+  foot-gun). **Done.**
+- `logprobs.top_k` is still **inert** — making it live is coupled to a consumer (see below).
 
 ### The end-game (proposed): a named-scorer registry  🟡
 
@@ -407,10 +438,11 @@ pointer; references are trainer-blind; roles are component-local labels). Three 
 2. **A generic per-token map on the wire**, parallel to `term_advantages`:
    `scored_logprobs: dict[str, PerTokenTopK]`. The orchestrator prefills each configured scorer **once**
    and ships its top-k per token under its name.
-3. **Consumers point at a scorer by name** — `advantage = { type = "ref_kl", scorer = "reference" }`; a
-   `surprisal_gate` hook reads `scorer = "frozen_student"`. The framework guarantees a referenced
-   scorer is computed, shipped, and surfaced into `RenderHints` (advantages) + `LossInputs`
-   (cores/hooks).
+3. **Consumers point at a scorer by name** — `advantage = { type = "ref_kl", scorer = "reference" }`, or
+   a pedagogical `G_spike` advantage reads `scorer = "frozen_student"`. The framework guarantees a
+   referenced scorer is computed, shipped, and surfaced into `RenderHints` (advantages) + `LossInputs`
+   (cores/hooks). (The `surprisal_gate` hook is *not* a scorer consumer — it reads the live trained
+   policy, `trainer_logprobs`.)
 
 Why this is the general form — and why it dissolves the global-vs-inline fork: **chunk-1's global field
 and the "inline-on-component" idea are both special cases of the registry** (one hosted entry; one
@@ -418,31 +450,30 @@ external entry at its only use-site). "External-only / never host" is a **policy
 scorer resolves to an external `base_url`, a managed pool, or — later — a policy snapshot), not a
 property of the architecture. One prefill, N consumers.
 
-### The low-regret bridge (what the near-term chunk actually builds)  🟡
+### What's done vs deferred
 
-The config *surface* (global field vs registry vs inline) is deferred to team alignment (§12), but the
-**wire is made end-game-shaped now**, so we never migrate it:
+**Done ✅:** the rename; the flat `reference_logprobs` feed → `LossInputs` → the OPD core (the
+reference-consuming *core* seam already works for `top_k = 1`, the sampled-token estimate). The
+`surprisal_gate` hook (§4.4) lands the pedagogical Phase-2 gate (it reads the live trained policy,
+`trainer_logprobs`, so it needs no reference feed).
 
-- Ship a **named map** even with a single `"reference"` key (mirrors `term_advantages`).
-- **Rename** the misleading `teacher_logprobs` → `reference_logprobs` across wire / `MicroBatch` /
-  `LossInputs` (the field is the reference scorer's output; `config.teacher` is a different thing).
-- Make `logprobs.top_k` **live**: prefill requests `prompt_logprobs = top_k`, ships per-token top-k:
+**Deferred 🟡 — each piece needs machinery that is unsafe to half-build, and they are coupled, so they
+ship as deliberate follow-up chunks rather than dead scaffolding:**
 
-  ```python
-  reference_logprobs:      list[float] | None        # logprob of the sampled token (= today)
-  reference_topk_ids:      list[list[int]] | None     # per token: top-k token ids   (k = logprobs.top_k)
-  reference_topk_logprobs: list[list[float]] | None   # per token: top-k logprobs
-  ```
-
-- Expose all of it to `LossInputs` (cores/hooks) **and** `RenderHints` (advantage_fns) — not just the
-  opd core. With `top_k = 1` and msgspec `omit_defaults`, the wire collapses back to ~today.
-- A `ref_kl` **advantage** consumes it, making OPD a composable term (`ce`/`dppo_kl` core + `ref_kl`
-  advantage) rather than a hardcoded `opd_loss_fn`.
-
-**top-k caveat (not just "ship more numbers").** For `top_k > 1` *distillation*, the trainer must
-evaluate **its own** logprobs at the reference's top-k token ids — a forward-pass **gather**, separate
-from the feed. For `top_k = 1` the reference logprob is at the sampled token, which the trainer already
-has. So the feed can ship top-k immediately; the top_k>1 *consumer* lands with the `ref_kl` core.
+- **top-k feed + its consumer (ship together).** `logprobs.top_k > 1` is only useful with a *core* that
+  does top-k distillation, and that core must evaluate the **trainer's own** logprobs at the reference's
+  top-k token ids — a forward-pass **gather**, not just more wire data. So the feed
+  (`reference_topk_ids` / `reference_topk_logprobs` on the wire) and the gather-core land in one chunk;
+  shipping top-k that nothing reads (at a real prefill cost) is the thing to avoid. `top_k = 1` (today)
+  needs no gather.
+- **Reference in `RenderHints` (advantage side) + a `ref_kl` advantage / the pedagogical `G_spike`.**
+  Advantage_fns run per-group in `train_sink` **before** the reference is prefilled (which happens at
+  batch-finalize, after grouping). Letting an advantage read the reference requires moving the prefill
+  *ahead* of advantage computation — a deliberate orchestrator-pipeline reorder. (The reference already
+  reaches the *core* side via `LossInputs`; only the *advantage* side needs the reorder.)
+- **The named-scorer registry config surface** — the open team item (§12). The wire stays the renamed
+  flat `reference_logprobs` (one scorer) until then, generalizing to the `dict[str, …]` map when a
+  second scorer actually lands — so no premature migration.
 
 ---
 
@@ -557,22 +588,27 @@ are all expressible as terms here and can ship as presets later (⚪ backlog).
 - Per-term **λ** (`lambda_weight`) + pluggable **reduce** (`mean` / `custom`).
 - **Emergent zero-advantage dismissal** (`0` = mask; no-gradient samples dropped).
 - **Reference scorer split** in config: `orchestrator.teacher` (SFT generator) vs
-  `orchestrator.reference` (scorer) + a `logprobs.top_k` field — *not yet consumed*.
-- **Hooks** end-to-end (seam → `LossTerm.hooks` config → first built-in `min_prob_filter`).
+  `orchestrator.reference` (scorer) + a `logprobs.top_k` field (`top_k>1` not yet consumed — §6).
+- **Reference feed rename** `teacher_logprobs → reference_logprobs` end-to-end; the OPD core consumes
+  the flat (`top_k = 1`) reference feed via `LossInputs`.
+- **Hooks** end-to-end (seam → `LossTerm.hooks` config → built-ins `min_prob_filter` + `surprisal_gate`).
 - **Compound recipes + `echo`** (`rl ⊕ ce-on-roles`; knob routing; λ owns magnitude — `alpha` dropped;
   provenance-aware duplicate errors).
 
 ### 🟡 TODO (rough order)
 
-1. **Reference logprobs feed + top-k** (§6) — make `logprobs.top_k` live; ship a per-token (top-k)
-   reference feed as a **named map** on the wire; rename `teacher_logprobs` → `reference_logprobs`;
-   expose to `RenderHints` + `LossInputs`; a `ref_kl` advantage consumes it. *(in progress)*
-2. **Filter niceties** (§3.8) — the orchestrator-side sampling-prob filter as a built-in (the live-prob
-   one is done via `min_prob_filter`).
-3. **Surface polish** toward the full pointer / cascading-preset model **and the scorer-registry config
+1. **Top-k reference feed + a top-k distillation core** (§6) — ship `reference_topk_*` on the wire +
+   the gather-core that evaluates the trainer's logprobs at the reference's top-k ids (coupled — ship
+   together). `top_k = 1` already works (the OPD core); this is the `top_k > 1` upgrade.
+2. **Reference on the advantage side** (§6) — move the reference prefill *ahead* of advantage
+   computation, expose it in `RenderHints`, and add a `ref_kl` advantage / the pedagogical `G_spike`.
+3. **Filter niceties** (§3.8) — an orchestrator-side sampling-prob filter (the live-prob one is done via
+   `min_prob_filter`); wants the filter/advantage-composition surface, so it couples with #5.
+4. **Pedagogical RL** (§9) — the `surprisal_gate` hook is built (the Phase-2 live gate); remaining is the
+   Phase-1 `G_spike` advantage (needs #2) and the curriculum (backlog).
+5. **Surface polish** toward the full pointer / cascading-preset model **and the scorer-registry config
    surface** (§6) — proposed here, **deferred in code until the team aligns** (typed configs + the
    `custom` escape hatch are ~equivalent today; global-vs-registry-vs-inline is the open call).
-4. **Pedagogical RL** (§9) — needs #1 plus, for the live gate, a `surprisal_gate` hook.
 
 ### ⚪ Backlog (not now)
 
@@ -588,8 +624,9 @@ are all expressible as terms here and can ship as presets later (⚪ backlog).
   end-game) vs pure inline-on-component. The **wire** is being made registry-shaped regardless; only the
   *config surface* is open. Lean: build the feed on the registry-shaped wire now, decide the surface
   before exposing multiple scorers.
-- **Pedagogical Phase-2 gate (§9):** per-iteration snapshot (→ custom advantage + custom reduce, no new
-  machinery) vs a live in-step hook. Determines whether a `surprisal_gate` live hook gets built.
+- **Pedagogical Phase-2 gate (§9):** the live-hook path is built (`surprisal_gate`); the per-iteration
+  snapshot path (→ custom advantage + custom reduce) stays an alternative. Open: which to use in
+  practice, and whether the exact `1/Σ wₜ` normalization warrants a built-in custom reduce.
 - **Pointer-surface refactor now, or propose-and-keep typed configs?** Lean: propose here, don't
   refactor pre-discussion (it's the exact thing to align on).
 - **Preset namespacing** if component / full / recipe names ever collide beyond what config position
