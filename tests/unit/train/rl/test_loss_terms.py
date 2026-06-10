@@ -317,3 +317,25 @@ def test_setup_reduce_resolves_mean_and_custom():
         global_scale=10,
     )
     assert torch.equal(fn(inputs), torch.tensor(8.0))  # (3 + 1) × 2, ignoring global_scale
+
+
+def test_hooks_transform_per_token_loss():
+    """A primary hook transforms the per-token loss before the reduce: an identity hook is a no-op
+    (matches the no-hook path), and a constant scale on the per-token loss scales the (linear
+    mean_reduce) primary contribution."""
+    trainer, inference, teacher, advantages, loss_mask = _inputs([6, 4], seed=31)
+    kwargs = dict(
+        loss_mask=loss_mask,
+        loss_fns=setup_loss_fns([_rl_term()]),
+        loss_scale=8,
+        training_mode="rl",
+    )
+    base, _ = compute_loss(trainer, inference, teacher, advantages, **kwargs)
+    identity, _ = compute_loss(
+        trainer, inference, teacher, advantages, primary_hooks=[lambda ptl, _inp: ptl], **kwargs
+    )
+    doubled, _ = compute_loss(
+        trainer, inference, teacher, advantages, primary_hooks=[lambda ptl, _inp: 2.0 * ptl], **kwargs
+    )
+    assert torch.allclose(identity, base)
+    assert torch.allclose(doubled, 2.0 * base)

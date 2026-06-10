@@ -1,5 +1,5 @@
 import functools
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import torch
@@ -25,10 +25,17 @@ class LossInputs:
 
 @dataclass
 class LossOutputs:
-    """Outputs from computing loss on a single sample."""
+    """Outputs from computing loss on a single sample.
+
+    ``loss`` is the per-sample scalar (the masked, summed loss) — what the no-hook path consumes
+    directly, so it stays bit-identical to the pre-hook behaviour. ``per_token_loss`` is the same loss
+    *before* summation (full sequence length, ``0`` on masked tokens); it's what the hook chain
+    transforms when a term has hooks. Built-in cores populate both; a custom core only needs
+    ``per_token_loss`` if hooks are configured on its term."""
 
     loss: Float[Tensor, ""]
     metrics: dict[str, Tensor]
+    per_token_loss: Float[Tensor, " seq"] | None = None
 
 
 @dataclass
@@ -76,6 +83,16 @@ Expected signature:
 """
 
 
+Hook = Callable[[Tensor, LossInputs], Tensor]
+"""A per-term, trainer-side post-core transform: ``hook(per_token_loss, inputs) -> per_token_loss``.
+
+Chainable, runs between the core and the term's reduce, and sees all trainer-side per-token data via
+``inputs`` (the live ``trainer_logprobs`` / ``inference_logprobs`` / ``advantages`` / ``loss_mask``).
+No scalar return — reduction is the separate reduce step, so masking/gating hooks compose. For
+trainer-side signals that can't be precomputed orchestrator-side (current-policy prob/entropy gating,
+smoothing, penalties); intrinsic objective math (DPPO clip + KL) stays inside the core."""
+
+
 @dataclass
 class LossTerm:
     """A single loss term: a named core loss fn applied to a packed sample.
@@ -108,6 +125,7 @@ class ExtraTerm:
     weights: list[Float[Tensor, " seq"]]
     lambda_weight: float = 1.0
     reduce: Reduce = mean_reduce
+    hooks: list[Hook] = field(default_factory=list)
 
 
 @jaxtyped(typechecker=typechecker)
@@ -181,6 +199,23 @@ def _accumulate_metrics(all_metrics: dict[str, list[Tensor]], metrics: dict[str,
         all_metrics.setdefault(k, []).append(v)
 
 
+def _term_sample_loss(result: LossOutputs, hooks: list[Hook], inputs: LossInputs, name: str) -> Tensor:
+    """A term's per-sample scalar loss. With no hooks this is exactly ``result.loss`` (the core's
+    masked sum — bit-identical to the pre-hook path). With hooks, the core's ``per_token_loss`` is
+    passed through the chain and summed."""
+    if not hooks:
+        return result.loss
+    per_token_loss = result.per_token_loss
+    if per_token_loss is None:
+        raise ValueError(
+            f"loss term {name!r} has hooks configured but its core returned no per_token_loss; "
+            "a hookable core must populate LossOutputs.per_token_loss."
+        )
+    for hook in hooks:
+        per_token_loss = hook(per_token_loss, inputs)
+    return per_token_loss.sum()
+
+
 def compute_importance_ratio_and_mismatch_kl(
     trainer_logprobs: Tensor, inference_logprobs: Tensor
 ) -> tuple[Tensor, Tensor, Tensor]:
@@ -228,7 +263,8 @@ def default_loss_fn(inputs: LossInputs, loss_config: RLLossConfig) -> LossOutput
     # applied orchestrator-side), so the core consumes them directly.
     pg_loss = keep_mask * advantages * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
-    loss = (-pg_loss + loss_config.kl_tau * kl_loss).sum()
+    per_token_loss = -pg_loss + loss_config.kl_tau * kl_loss
+    loss = per_token_loss.sum()
 
     metrics = {
         "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),  # all trainable, masked tokens
@@ -240,7 +276,7 @@ def default_loss_fn(inputs: LossInputs, loss_config: RLLossConfig) -> LossOutput
         "masked_advantage_negative": _safe_mean(negative_advantages, drop_mask),
     }
 
-    return LossOutputs(loss=loss, metrics=metrics)
+    return LossOutputs(loss=loss, per_token_loss=per_token_loss, metrics=metrics)
 
 
 def pg_loss_fn(
@@ -306,7 +342,7 @@ def pg_loss_fn(
     loss = -pg_loss
     if kl_weight != 0.0:
         loss = loss + kl_weight * (loss_mask * log_importance_ratio**2)
-    return LossOutputs(loss=loss.sum(), metrics=metrics)
+    return LossOutputs(loss=loss.sum(), per_token_loss=loss, metrics=metrics)
 
 
 def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
@@ -346,7 +382,8 @@ def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
 
     pg_loss = keep_mask * advantages * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
-    loss = (-pg_loss + 1e-3 * kl_loss).sum()
+    per_token_loss = -pg_loss + 1e-3 * kl_loss
+    loss = per_token_loss.sum()
 
     metrics = {
         "masked_mismatch_kl": _safe_mean(mismatch_kl, loss_mask & is_masked),
@@ -359,7 +396,7 @@ def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
         "teacher_kl": _safe_mean(teacher_kl, loss_mask),
     }
 
-    return LossOutputs(loss=loss, metrics=metrics)
+    return LossOutputs(loss=loss, per_token_loss=per_token_loss, metrics=metrics)
 
 
 def sft_loss_fn(inputs: LossInputs) -> LossOutputs:
@@ -367,11 +404,12 @@ def sft_loss_fn(inputs: LossInputs) -> LossOutputs:
     trainer_logprobs = inputs.trainer_logprobs
     loss_mask = inputs.loss_mask
 
+    per_token_loss = -(loss_mask * trainer_logprobs)
     loss = -(trainer_logprobs[loss_mask]).sum()
     metrics = {
         "nll": _safe_mean(-trainer_logprobs, loss_mask),
     }
-    return LossOutputs(loss=loss, metrics=metrics)
+    return LossOutputs(loss=loss, per_token_loss=per_token_loss, metrics=metrics)
 
 
 def echo_loss_fn(inputs: LossInputs) -> LossOutputs:
@@ -385,6 +423,7 @@ def echo_loss_fn(inputs: LossInputs) -> LossOutputs:
     mask = inputs.loss_mask
     weight = inputs.advantages
 
+    per_token_loss = -(mask * weight * trainer_logprobs)
     loss = -(weight * trainer_logprobs)[mask].sum()
     # Only report metrics for splits that actually carry echo tokens. A packed split with no echo
     # tokens would otherwise contribute a spurious echo_nll=0, biasing the mean by packing composition.
@@ -392,7 +431,7 @@ def echo_loss_fn(inputs: LossInputs) -> LossOutputs:
     if mask.any():
         metrics["echo_nll"] = _safe_mean(-trainer_logprobs, mask)
         metrics["echo_token_count"] = mask.sum().float()
-    return LossOutputs(loss=loss, metrics=metrics)
+    return LossOutputs(loss=loss, per_token_loss=per_token_loss, metrics=metrics)
 
 
 def _make_custom_core(import_path: str, kwargs: dict) -> LossFn:
@@ -480,6 +519,7 @@ def compute_loss(
     extra_terms: list[ExtraTerm] | None = None,
     reduce: Reduce = mean_reduce,
     primary_lambda: float = 1.0,
+    primary_hooks: list[Hook] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -533,7 +573,7 @@ def compute_loss(
         sample_loss = 0.0
         for term in primary_terms:
             result = term.core(inputs)
-            sample_loss = sample_loss + result.loss
+            sample_loss = sample_loss + _term_sample_loss(result, primary_hooks or [], inputs, term.name)
             _accumulate_metrics(all_metrics, result.metrics)
         primary_losses.append(primary_lambda * sample_loss)
         primary_eligible.append(mask)
@@ -555,7 +595,7 @@ def compute_loss(
                 loss_mask=term_mask,
             )
             result = term.core(inputs)
-            term_losses.append(term.lambda_weight * result.loss)
+            term_losses.append(term.lambda_weight * _term_sample_loss(result, term.hooks, inputs, term.name))
             term_eligible.append(term_mask)
             # Namespace overlay metrics by term so multiple overlays (or custom cores) can't collide
             # with each other or with the primary's metrics.
