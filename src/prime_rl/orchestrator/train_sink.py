@@ -91,6 +91,14 @@ class TrainSink:
         self.advantage_fn = setup_advantage_fn(advantage_config) if advantage_config is not None else None
         self.pre_filters = pre_filters
         self.post_filters = post_filters
+        # Prompt-side echo (any echo term whose roles go beyond "assistant") needs the renderer's
+        # ``prompt_attribution``, which the token-backfill path does not emit — so warn once if both
+        # are in play (see ``process_rollout``).
+        self._prompt_role_echo = any(
+            term.advantage.type == "echo" and bool(set(term.advantage.roles) - {"assistant"})
+            for term in config.losses
+        )
+        self._warned_backfill_echo = False
 
         # Keyed by the dispatcher's group UUID. ``(env_name, example_id)``
         # isn't unique — the same example can be re-sampled while an
@@ -216,6 +224,18 @@ class TrainSink:
         needs_backfill = any(s["tokens"] is None for s in raw.get("trajectory") or [])
         if needs_backfill:
             await asyncio.to_thread(backfill_rollout_tokens, raw, self.tokenizer, renderer=self.renderer)
+            # The backfill renderer path (build_trajectory_step) does not emit prompt_attribution, so
+            # prompt-side role tokens stay unattributed — prompt-role echo silently no-ops on these
+            # rollouts. Warn loudly once rather than train nothing without a trace.
+            if self._prompt_role_echo and not self._warned_backfill_echo:
+                self._warned_backfill_echo = True
+                get_logger().warning(
+                    "Prompt-role echo is configured (echo roles beyond 'assistant'), but this rollout's "
+                    "tokens were backfilled via the renderer, which doesn't emit prompt_attribution — so "
+                    "prompt-side tokens (system/user/tool) won't be echoed for backfilled rollouts "
+                    "(completion/assistant echo is unaffected). Fix: have the renderer's "
+                    "build_trajectory_step emit prompt_attribution, or attribute in the backfill path."
+                )
 
         samples = await asyncio.to_thread(
             interleave_rollout,
