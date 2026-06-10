@@ -21,31 +21,28 @@ from prime_rl.utils.utils import (
 
 
 async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer):
-    """Build the student inference pool. Returns ``(None, inference_pool)`` — the
-    renderer now lives in the env server (v1's renderer client), so the
-    orchestrator builds no renderer; it just forwards ``config.renderer`` so the env
-    server uses the model-specific renderer (not the tool-less default fallback).
-    ``train_client_type`` selects the env server's client: ``renderer`` (token-in/out)
-    when a renderer is configured, else ``openai_chat_completions``."""
+    """Build the student renderer and inference pool, returning ``(renderer, inference_pool)``.
+
+    Training is renderer-only: RL/OPD roll out through the env server's renderer client
+    (token-in/out), and SFT — which rolls out against a chat-completions teacher that returns
+    no tokens — re-renders the conversation with this renderer to backfill them. The renderer
+    is built here from the (always-set) ``config.renderer`` and also supplies the multimodal
+    token-type-id map. The eval client is plain chat-completions (eval traces aren't trained)."""
+    from renderers.base import create_renderer
+
     client_config = config.student.client
     model_name = config.student.model.name
-    train_client_type = "renderer" if config.renderer is not None else "openai_chat_completions"
-    get_logger().info(f"Using {train_client_type} rollout client")
+    renderer = create_renderer(tokenizer, config.renderer)
+    get_logger().info("Using renderer rollout client")
     inference_pool = await setup_inference_pool(
         client_config,
         model_name=model_name,
-        train_client_type=train_client_type,
+        train_client_type="renderer",
         eval_client_type="openai_chat_completions",
         renderer_config=config.renderer,
         pool_size=config.pool_size,
     )
-    return None, inference_pool
-
-
-def get_model_completion_len(output: vf.Trace) -> int:
-    """Sum of model-generated completion tokens across all turns (excludes
-    environment-injected tokens between turns)."""
-    return sum(len(turn.tokens.completion_ids) for turn in output.trajectory if turn.tokens)
+    return renderer, inference_pool
 
 
 def get_tool_response_len(output: vf.Trace) -> int:
@@ -117,7 +114,7 @@ async def compute_teacher_logprobs(
             cast_to=httpx.Response,
             body={
                 "model": model_name,
-                "token_ids": list(sample.prompt_ids) + list(sample.completion_ids),
+                "token_ids": list(sample.token_ids),
                 "sampling_params": {
                     "max_tokens": 1,
                     "temperature": 1.0,

@@ -21,8 +21,8 @@ from prime_rl.configs.orchestrator import AdvantageConfig, OrchestratorConfig
 from prime_rl.orchestrator.advantage import assign_advantages, setup_advantage_fn
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
-from prime_rl.orchestrator.trajectories import backfill_rollout_tokens, trace_to_samples
-from prime_rl.orchestrator.types import TrainBatch, TrainBatchMetrics, TrainRollout
+from prime_rl.orchestrator.trajectories import trace_to_samples
+from prime_rl.orchestrator.types import Rollout, TrainBatch, TrainBatchMetrics
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
 
@@ -35,7 +35,6 @@ class TrainSink:
         config: OrchestratorConfig,
         *,
         tokenizer,
-        renderer,
         train_envs: TrainEnvs,
         mm_token_type_ids_mapping: dict[int, int] | None,
         batch_size: int | None,
@@ -49,7 +48,6 @@ class TrainSink:
         )
         self.config = config
         self.tokenizer = tokenizer
-        self.renderer = renderer
         self.train_envs = train_envs
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size
@@ -63,8 +61,8 @@ class TrainSink:
         # Keyed by the dispatcher's group UUID. ``(env_name, task_idx)``
         # isn't unique — the same task can be re-sampled while an
         # earlier group is still in flight
-        self.pending_groups: dict[uuid.UUID, list[TrainRollout]] = defaultdict(list)
-        self.pending_batch: list[TrainRollout] = []
+        self.pending_groups: dict[uuid.UUID, list[Rollout]] = defaultdict(list)
+        self.pending_batch: list[Rollout] = []
 
         # Reset by the orchestrator after each ship via ``reset_pre_filter_stats``
         self.pre_filter_seen = 0
@@ -79,13 +77,13 @@ class TrainSink:
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
 
-    def in_progress_groups(self) -> list[list[TrainRollout]]:
+    def in_progress_groups(self) -> list[list[Rollout]]:
         """Per-rollout groups currently accumulating in ``pending_groups`` —
         i.e. groups that haven't hit ``group_size`` yet, so the pipeline log
         can reflect partial-group progress. Skips group-scoring envs (whose
         rollouts only make sense as a unit — the user expects per-group
         fill, not per-rollout, for those)."""
-        out: list[list[TrainRollout]] = []
+        out: list[list[Rollout]] = []
         for rollouts in self.pending_groups.values():
             if not rollouts:
                 continue
@@ -103,7 +101,7 @@ class TrainSink:
         if self.batch_size is not None:
             return len(self.pending_batch), self.batch_size, "rollouts"
         assert self.token_batch_size is not None
-        tokens = sum(r.trace.total_tokens for r in self.pending_batch)
+        tokens = sum(r.total_tokens for r in self.pending_batch)
         return tokens, self.token_batch_size, "tokens"
 
     def buffered_count(self) -> int:
@@ -119,13 +117,13 @@ class TrainSink:
             counts[r.env_name] += 1
         return dict(counts)
 
-    async def add(self, rollout: TrainRollout) -> TrainBatch | None:
+    async def add(self, rollout: Rollout) -> TrainBatch | None:
         """Process one arrival; finalize the group on the ``group_size``-th
         arrival; return a ``TrainBatch`` if the batch threshold is met."""
         await self.process_rollout(rollout)
         env_name = rollout.env_name
         self.arrivals_by_env[env_name] += 1
-        if rollout.trace.has_error:
+        if rollout.has_error:
             self.errors_by_env[env_name] += 1
         self.pending_groups[rollout.group_id].append(rollout)
         if len(self.pending_groups[rollout.group_id]) >= self.group_size_for(env_name):
@@ -133,23 +131,20 @@ class TrainSink:
         ready = (
             len(self.pending_batch) >= self.batch_size
             if self.batch_size is not None
-            else sum(r.trace.total_tokens for r in self.pending_batch) >= (self.token_batch_size or 0)
+            else sum(r.total_tokens for r in self.pending_batch) >= (self.token_batch_size or 0)
         )
         if ready:
             return self.process_batch()
         return None
 
-    async def process_rollout(self, rollout: TrainRollout) -> None:
-        """Build training samples from the rollout's Trace (one per branch). The
-        renderer client already produced token ids/logprobs; when it didn't (SFT
-        against an external teacher's chat client), backfill them from the messages
-        with the student chat template. Errored rollouts are dropped at the group
+    async def process_rollout(self, rollout: Rollout) -> None:
+        """Build training samples from the rollout's Trace (one per branch), walking the
+        message graph. Training is renderer-only across all modes (RL/OPD student, SFT teacher),
+        so every node already carries its tokens. Errored rollouts are dropped at the group
         level, so skip them here."""
-        if rollout.trace.has_error:
+        if rollout.has_error:
             return
-        if any(turn.tokens is None for turn in rollout.trace.trajectory):
-            await asyncio.to_thread(backfill_rollout_tokens, rollout.trace, self.tokenizer)
-        samples = await asyncio.to_thread(trace_to_samples, rollout.trace, env_name=rollout.env_name)
+        samples = await asyncio.to_thread(trace_to_samples, rollout, env_name=rollout.env_name)
         rollout.samples = samples or []
 
     def process_group(self, group_id: uuid.UUID) -> None:
@@ -160,8 +155,8 @@ class TrainSink:
         if not group:
             return
         env_name = group[0].env_name
-        task_idx = group[0].trace.task.idx
-        survivors = [r for r in group if not r.trace.has_error]
+        task_idx = group[0].task.idx
+        survivors = [r for r in group if not r.has_error]
         num_errored = len(group) - len(survivors)
 
         # Group-scoring envs: any failure makes survivors' rewards unsafe
@@ -184,16 +179,16 @@ class TrainSink:
 
         # Propagate to the pre-tokenized samples so the orchestrator can
         # collect samples at ship time without re-walking rollouts. The env
-        # has a single sampling temperature; fan it out across each sample's
-        # completion tokens here (interleave leaves it empty).
+        # has a single sampling temperature; fan it out per token (context
+        # tokens are masked out, so their temperature is don't-care).
         temperature = env.sampling_args["temperature"]
         for r in survivors:
             for sample in r.samples:
                 sample.advantage = r.advantage
-                sample.reward = r.trace.reward
+                sample.reward = r.reward
                 sample.env_name = r.env_name
                 sample.training_mode = self.config.training_mode
-                sample.completion_temperatures = [temperature] * len(sample.completion_ids)
+                sample.temperatures = [temperature] * len(sample.token_ids)
 
         if self.pre_filters:
             apply_filters(self.pre_filters, survivors)
@@ -216,7 +211,7 @@ class TrainSink:
 
         # Per-group summary. One line per finalized group; per-filter
         # detection breakdown lives at debug level in ``apply_filters``
-        rewards = [r.trace.reward for r in survivors]
+        rewards = [r.reward for r in survivors]
         avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
         filter_str = ", ".join(f"{n}={c}" for n, c in filtered_by_name.items()) if filtered_by_name else "—"
         get_logger().debug(
@@ -239,7 +234,7 @@ class TrainSink:
             cut = 0
             running = 0
             for i, r in enumerate(self.pending_batch):
-                running += r.trace.total_tokens
+                running += r.total_tokens
                 cut = i + 1
                 if running >= self.token_batch_size:
                     break
@@ -262,8 +257,8 @@ class TrainSink:
             prefill = 0
             decode = 0
             for sample in r.samples:
-                sample_decode = sum(sample.completion_mask)
-                sample_prefill = len(sample.prompt_ids) + len(sample.completion_mask) - sample_decode
+                sample_decode = sum(sample.mask)
+                sample_prefill = len(sample.token_ids) - sample_decode
                 decode += sample_decode
                 prefill += sample_prefill
                 if not r.is_filtered:

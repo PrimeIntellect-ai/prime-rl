@@ -3,7 +3,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import wandb
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -11,10 +11,12 @@ from wandb.errors import CommError
 from wandb.sdk.mailbox.mailbox_handle import ServerResponseError
 
 from prime_rl.configs.shared import WandbConfig, WandbWithExtrasConfig
-from prime_rl.utils.chat_template import deserialize_tool_calls
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor, sample_items_for_logging
+
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.types import Rollout
 
 
 class WandbMonitor(Monitor):
@@ -142,7 +144,7 @@ class WandbMonitor(Monitor):
             return
         wandb.log({**metrics, "step": step})
 
-    def log_samples(self, rollouts: list[dict], step: int) -> None:
+    def log_samples(self, rollouts: list["Rollout"], step: int) -> None:
         """Logs rollouts to W&B table."""
         if not self.is_master:
             return
@@ -171,32 +173,30 @@ class WandbMonitor(Monitor):
         start_time = time.perf_counter()
 
         for rollout in rollouts:
-            trajectory = rollout["trajectory"]
-            if not trajectory:
-                continue
-            last_step = trajectory[-1]
-            tokens = last_step["tokens"]
-            full_ids = tokens["prompt_ids"] + tokens["completion_ids"]
-            messages_text = self.tokenizer.decode(full_ids)
-            sample = {
-                "step": step,
-                "env_name": rollout.get("env_name"),
-                "task": rollout.get("task"),
-                "task_idx": rollout["task"]["idx"],
-                "messages": messages_text,
-                "input_ids": str(full_ids),
-                "reward": rollout["reward"],
-            }
-            assert list(sample.keys()) == self.samples_cols, (
-                "Order of columns in the table must be the same as order of the keys here"
-            )
-            self.samples_table.add_data(*sample.values())
+            trace = rollout
+            for branch in trace.branches:
+                token_ids = branch.token_ids
+                if not token_ids:
+                    continue
+                sample = {
+                    "step": step,
+                    "env_name": rollout.env_name,
+                    "task": trace.task.model_dump(mode="json"),
+                    "task_idx": trace.task.idx,
+                    "messages": self.tokenizer.decode(token_ids),
+                    "input_ids": str(token_ids),
+                    "reward": trace.reward,
+                }
+                assert list(sample.keys()) == self.samples_cols, (
+                    "Order of columns in the table must be the same as order of the keys here"
+                )
+                self.samples_table.add_data(*sample.values())
 
         wandb.log({"samples": self.samples_table, "step": step})
         self.last_log_samples_step = step
         self.logger.debug(f"Logged samples at step {step} to W&B table in {time.perf_counter() - start_time:.2f}s")
 
-    def log_eval_samples(self, rollouts: list[dict], env_name: str, step: int) -> None:
+    def log_eval_samples(self, rollouts: list["Rollout"], env_name: str, step: int) -> None:
         """Logs eval rollouts to a separate W&B table."""
         if not self.is_master:
             return
@@ -209,23 +209,22 @@ class WandbMonitor(Monitor):
             return
 
         for rollout in rollouts:
-            completion = rollout.get("completion")
-            if not completion:
-                continue
-            if isinstance(completion, list):
-                try:
-                    completion = self.tokenizer.apply_chat_template(deserialize_tool_calls(completion), tokenize=False)
-                except Exception:
-                    completion = str(completion)
-            sample = {
-                "step": step,
-                "env": env_name,
-                "task": rollout.get("task"),
-                "task_idx": rollout["task"]["idx"],
-                "completion": completion,
-                "reward": rollout["reward"],
-            }
-            self.eval_samples_table.add_data(*sample.values())
+            trace = rollout
+            for branch in trace.branches:
+                # Eval runs the openai client (no token ids), so show the assistant message
+                # content rather than decoded tokens.
+                completion = "".join(m.content or "" for m in branch.messages if m.role == "assistant")
+                if not completion:
+                    continue
+                sample = {
+                    "step": step,
+                    "env": env_name,
+                    "task": trace.task.model_dump(mode="json"),
+                    "task_idx": trace.task.idx,
+                    "completion": completion,
+                    "reward": trace.reward,
+                }
+                self.eval_samples_table.add_data(*sample.values())
 
         wandb.log({"eval/samples": self.eval_samples_table, "step": step})
 

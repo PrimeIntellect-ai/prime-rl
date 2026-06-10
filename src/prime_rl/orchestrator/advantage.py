@@ -10,7 +10,7 @@ from torch import Tensor
 if TYPE_CHECKING:
     import verifiers.v1 as vf
 
-    from prime_rl.orchestrator.types import TrainRollout
+    from prime_rl.orchestrator.types import Rollout
 
 from prime_rl.configs.orchestrator import (
     AdvantageConfig,
@@ -19,7 +19,7 @@ from prime_rl.configs.orchestrator import (
     TokensLengthPenaltyConfig,
     TurnsLengthPenaltyConfig,
 )
-from prime_rl.orchestrator.utils import get_model_completion_len, get_tool_response_len
+from prime_rl.orchestrator.utils import get_tool_response_len
 from prime_rl.utils.utils import import_object
 
 
@@ -64,12 +64,12 @@ def default_advantage_fn(
         w_c = length_penalty.completion_weight
         w_t = length_penalty.tool_response_weight
         costs = torch.tensor(
-            [w_c * get_model_completion_len(r) + w_t * get_tool_response_len(r) for r in inputs.rollouts],
+            [w_c * r.completion_len + w_t * get_tool_response_len(r) for r in inputs.rollouts],
             dtype=rewards.dtype,
         )
         return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs).tolist())
     if isinstance(length_penalty, TurnsLengthPenaltyConfig):
-        costs = torch.tensor([len(r.trajectory) for r in inputs.rollouts], dtype=rewards.dtype)
+        costs = torch.tensor([r.num_turns for r in inputs.rollouts], dtype=rewards.dtype)
         return AdvantageOutputs(advantages=_efficiency_shaping(rewards, costs).tolist())
 
     return AdvantageOutputs(advantages=(rewards - rewards.mean()).tolist())
@@ -130,7 +130,7 @@ def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
 
 
 def assign_advantages(
-    rollouts: list[TrainRollout],
+    rollouts: list[Rollout],
     advantage_fn: AdvantageFn | None,
 ) -> None:
     """Compute and assign advantages for one finished group of rollouts
@@ -141,8 +141,8 @@ def assign_advantages(
     """
     if advantage_fn is None:
         for rollout in rollouts:
-            rollout.advantage = rollout.trace.reward
+            rollout.advantage = rollout.reward
         return
-    result = advantage_fn(AdvantageInputs(rollouts=[r.trace for r in rollouts]))
+    result = advantage_fn(AdvantageInputs(rollouts=[r for r in rollouts]))
     for rollout, advantage in zip(rollouts, result.advantages):
         rollout.advantage = advantage

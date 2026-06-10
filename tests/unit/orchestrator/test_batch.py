@@ -22,12 +22,10 @@ def make_training_example():
         env_name: str = "test-env",
     ) -> TrainingSample:
         return TrainingSample(
-            prompt_ids=[1, 2],
-            prompt_mask=[False, False],
-            completion_ids=[3, 4],
-            completion_mask=[True, True],
-            completion_logprobs=[-0.1, -0.2],
-            completion_temperatures=[temperature, temperature],  # Per-token temperatures
+            token_ids=[1, 2, 3, 4],
+            mask=[False, False, True, True],
+            logprobs=[0.0, 0.0, -0.1, -0.2],
+            temperatures=[temperature, temperature, temperature, temperature],
             teacher_logprobs=[0.0, 0.0, 0.0, 0.0],
             advantage=1.0,
             env_name=env_name,
@@ -40,12 +38,10 @@ def make_training_example():
 def test_training_sample_requires_env_name():
     with pytest.raises(TypeError, match="env_name"):
         TrainingSample(
-            prompt_ids=[1, 2],
-            prompt_mask=[False, False],
-            completion_ids=[3, 4],
-            completion_mask=[True, True],
-            completion_logprobs=[-0.1, -0.2],
-            completion_temperatures=[1.0, 1.0],
+            token_ids=[1, 2, 3, 4],
+            mask=[False, False, True, True],
+            logprobs=[0.0, 0.0, -0.1, -0.2],
+            temperatures=[1.0, 1.0, 1.0, 1.0],
             advantage=1.0,
         )
 
@@ -140,12 +136,10 @@ def test_prepare_sample_with_routed_experts():
     routed_experts = [[[0, 1], [2, 3]], [[4, 5], [6, 7]], [[0, 2], [1, 3]], [[1, 0], [3, 2]]]
     routed_payload = _routed_experts(routed_experts)
     sample = TrainingSample(
-        prompt_ids=[1, 2],
-        prompt_mask=[False, False],
-        completion_ids=[3, 4],
-        completion_mask=[True, True],
-        completion_logprobs=[-0.1, -0.2],
-        completion_temperatures=[1.0, 1.0],
+        token_ids=[1, 2, 3, 4],
+        mask=[False, False, True, True],
+        logprobs=[0.0, 0.0, -0.1, -0.2],
+        temperatures=[1.0, 1.0, 1.0, 1.0],
         advantage=1.0,
         env_name="test-env",
         routed_experts=routed_payload,
@@ -162,12 +156,10 @@ def test_prepare_sample_truncates_routed_experts():
     routed_payload = _routed_experts(routed_experts)
     expected_payload = _routed_experts(routed_experts[:3])
     sample = TrainingSample(
-        prompt_ids=[1, 2],
-        prompt_mask=[False, False],
-        completion_ids=[3, 4],
-        completion_mask=[True, True],
-        completion_logprobs=[-0.1, -0.2],
-        completion_temperatures=[1.0, 1.0],
+        token_ids=[1, 2, 3, 4],
+        mask=[False, False, True, True],
+        logprobs=[0.0, 0.0, -0.1, -0.2],
+        temperatures=[1.0, 1.0, 1.0, 1.0],
         advantage=1.0,
         env_name="test-env",
         routed_experts=routed_payload,
@@ -182,12 +174,10 @@ def test_prepare_sample_truncates_routed_experts():
 def test_prepare_sample_none_routed_experts():
     """When routed_experts is None, micro_batch.routed_experts is None."""
     sample = TrainingSample(
-        prompt_ids=[1, 2],
-        prompt_mask=[False, False],
-        completion_ids=[3, 4],
-        completion_mask=[True, True],
-        completion_logprobs=[-0.1, -0.2],
-        completion_temperatures=[1.0, 1.0],
+        token_ids=[1, 2, 3, 4],
+        mask=[False, False, True, True],
+        logprobs=[0.0, 0.0, -0.1, -0.2],
+        temperatures=[1.0, 1.0, 1.0, 1.0],
         advantage=1.0,
         env_name="test-env",
     )

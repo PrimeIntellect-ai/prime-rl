@@ -1,9 +1,12 @@
+# Debug SFT (on-policy hard distillation) run on the v1 env server (reverse-text-v1).
+# The teacher generates rollouts over plain chat-completions (the oai client returns
+# messages, not tokens); the renderer backfills the tokens before training.
 # Start the teacher inference server first (on a separate GPU):
 #   CUDA_VISIBLE_DEVICES=1 uv run inference \
 #     --model.name PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL \
 #     --server.port 8001 --gpu-memory-utilization 0.5 --model.enforce-eager
 # Then:
-#   uv run rl @ configs/debug/training_modes/sft.toml
+#   uv run rl @ configs/v1/training_mode/sft.toml
 
 max_steps = 20
 seq_len = 2048
@@ -12,7 +15,7 @@ seq_len = 2048
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 [wandb]
-project = "reverse-text-debug"
+project = "reverse-text-v1-debug"
 name = "debug-sft"
 
 [orchestrator]
@@ -28,7 +31,8 @@ name = "qwen3"
 max_completion_tokens = 128
 
 [[orchestrator.train.env]]
-id = "reverse-text"
+taskset = { id = "reverse-text-v1" }
+harness = { id = "default", enable_bash = false, runtime = { type = "subprocess" } }
 
 [orchestrator.eval]
 interval = 1
@@ -38,7 +42,8 @@ num_examples = 128
 max_completion_tokens = 128
 
 [[orchestrator.eval.env]]
-id = "reverse-text"
+taskset = { id = "reverse-text-v1" }
+harness = { id = "default", enable_bash = false, runtime = { type = "subprocess" } }
 
 [orchestrator.teacher.model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-RL"

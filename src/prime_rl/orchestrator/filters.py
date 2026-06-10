@@ -16,7 +16,7 @@ from prime_rl.configs.orchestrator import FilterConfig
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from prime_rl.orchestrator.types import TrainRollout
+    from prime_rl.orchestrator.types import Rollout
 
 
 @dataclass
@@ -29,7 +29,7 @@ class RolloutFilter(Protocol):
     name: str
     enforce: bool
 
-    def check(self, rollout: "TrainRollout") -> FilterResult: ...
+    def check(self, rollout: "Rollout") -> FilterResult: ...
 
 
 @dataclass
@@ -49,13 +49,11 @@ class GibberishFilter:
     logprob_threshold: float
     enforce: bool = False
 
-    def check(self, rollout: "TrainRollout") -> FilterResult:
+    def check(self, rollout: "Rollout") -> FilterResult:
         global_idx = 0
-        for turn in rollout.trace.trajectory:
-            tokens = turn.tokens
-            if tokens is None:
-                continue
-            for token_id, logprob in zip(tokens.completion_ids, tokens.completion_logprobs):
+        for node in rollout.nodes:
+            completion = [t for t, m in zip(node.token_ids, node.mask) if m]
+            for token_id, logprob in zip(completion, node.logprobs):
                 if token_id > self.token_id_threshold and logprob < self.logprob_threshold:
                     return FilterResult(detected=True, detection_index=global_idx)
                 global_idx += 1
@@ -79,14 +77,11 @@ class RepetitionFilter:
     logprob_threshold: float
     enforce: bool = False
 
-    def check(self, rollout: "TrainRollout") -> FilterResult:
+    def check(self, rollout: "Rollout") -> FilterResult:
         consecutive = 0
         global_idx = 0
-        for turn in rollout.trace.trajectory:
-            tokens = turn.tokens
-            if tokens is None:
-                continue
-            for logprob in tokens.completion_logprobs:
+        for node in rollout.nodes:
+            for logprob in node.logprobs:
                 if logprob > self.logprob_threshold:
                     consecutive += 1
                 else:
@@ -105,7 +100,7 @@ class ZeroAdvantageFilter:
     name: str
     enforce: bool = True
 
-    def check(self, rollout: "TrainRollout") -> FilterResult:
+    def check(self, rollout: "Rollout") -> FilterResult:
         if rollout.advantage is not None and rollout.advantage == 0.0:
             return FilterResult(detected=True)
         return FilterResult(detected=False)
@@ -147,8 +142,8 @@ def setup_filters(configs: list[FilterConfig], vocab_size: int, *, kind: str) ->
     return filters
 
 
-def apply_filters(filters: list[RolloutFilter], rollouts: list["TrainRollout"]) -> None:  # noqa: F821 (forward ref)
-    """Flag ``TrainRollout``\\ s in place with per-filter detection + drop decision.
+def apply_filters(filters: list[RolloutFilter], rollouts: list["Rollout"]) -> None:  # noqa: F821 (forward ref)
+    """Flag ``Rollout``\\ s in place with per-filter detection + drop decision.
 
     Each rollout's ``filter_results`` dict records per-filter detection bools;
     ``is_filtered`` is True iff an enforcing filter detected it. First matching

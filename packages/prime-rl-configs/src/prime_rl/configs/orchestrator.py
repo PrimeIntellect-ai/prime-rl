@@ -4,8 +4,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 import verifiers.v1 as vf
-from pydantic import AliasChoices, Field, model_serializer, model_validator
-from pydantic_core.core_schema import SerializerFunctionWrapHandler
+from pydantic import AliasChoices, Field, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import (
@@ -516,30 +515,16 @@ class OrchestratorConfig(BaseConfig):
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
-    renderer: RendererConfig | None = AutoRendererConfig()
-    """Typed renderer config (``renderers.RendererConfig`` discriminated
-    union). Defaults to ``"auto"``, which resolves from
-    ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. ``None``
-    opts into MITO (``openai_chat_completions``); SFT mode forces this."""
+    renderer: RendererConfig = AutoRendererConfig()
+    """Typed renderer config (``renderers.RendererConfig`` discriminated union), required —
+    training is renderer-only. Defaults to ``"auto"``, which resolves from
+    ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. RL/OPD roll out through the renderer
+    client; SFT uses it to backfill tokens for its chat-completions teacher."""
 
     pool_size: int | None = Field(None, ge=1)
     """Number of renderer slots shared across concurrent rollouts. Bump
     for long multi-turn prompts where client-side jinja tokenization
-    serializes. Only meaningful when ``renderer`` is not ``None``."""
-
-    @model_serializer(mode="wrap")
-    def _preserve_mito_renderer(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
-        """Emit ``renderer = "None"`` (string) when MITO so
-        ``model_dump(exclude_none=True)`` round-trips: dumped TOML has
-        ``renderer = "None"``, and on reload
-        ``BaseConfig._none_str_to_none`` coerces it back to ``None``.
-        Without this, a MITO orchestrator config saved to
-        ``control/orch.toml`` would lose the renderer key entirely and
-        reload as the default ``AutoRendererConfig()`` (TITO)."""
-        result = handler(self)
-        if self.renderer is None:
-            result["renderer"] = "None"
-        return result
+    serializes."""
 
     optim: OptimizerConfig = OptimizerConfig()
     """Per-run optimizer configuration for multi-run training."""
@@ -756,16 +741,6 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def _force_no_renderer_for_sft(self):
-        """SFT rolls out via the teacher's plain chat-completions endpoint; the
-        renderer client doesn't apply. Force ``renderer=None`` so the user
-        doesn't have to remember to set it. Declared before the renderer
-        validators below so they see the corrected value."""
-        if self.training_mode == "sft":
-            self.renderer = None
-        return self
-
-    @model_validator(mode="after")
     def validate_training_mode(self):
         """Enforce training mode invariants that involve only orchestrator fields."""
         has_teacher = self.teacher is not None
@@ -773,34 +748,6 @@ class OrchestratorConfig(BaseConfig):
             raise ValueError("orchestrator.teacher must not be set when training_mode = 'rl'.")
         if self.training_mode in ("opd", "sft") and not has_teacher:
             raise ValueError(f"orchestrator.teacher must be configured when training_mode = '{self.training_mode}'.")
-        return self
-
-    @model_validator(mode="after")
-    def validate_pool_size(self):
-        """``pool_size`` is only meaningful when the renderer is enabled
-        (``renderer is not None``). Reject otherwise so callers don't
-        silently pass it and wonder why it's ignored."""
-        if self.renderer is None and self.pool_size is not None:
-            raise ValueError(
-                f"orchestrator.pool_size={self.pool_size!r} is set but "
-                "orchestrator.renderer is None (MITO mode). Either configure a renderer "
-                "or remove pool_size."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def vlm_requires_renderer(self):
-        """VLMs (``[model.vlm]`` block set) must go through the renderer.
-
-        The renderer owns the processor per-slot, produces byte-identical
-        tokens, and ships generic ``mm_kwargs`` keyed by whatever the
-        model's forward signature expects.
-        """
-        if self.student.model.vlm is not None and self.renderer is None:
-            raise ValueError(
-                "orchestrator.renderer must be set when model.vlm is set. "
-                "VLMs must go through a renderer (e.g. Qwen3VLRenderer) that owns the processor."
-            )
         return self
 
     @model_validator(mode="after")
@@ -816,7 +763,7 @@ class OrchestratorConfig(BaseConfig):
         ``DefaultRendererConfig.tool_parser`` is configured. Surface at
         config time so ``--dry-run`` reports the error.
         """
-        if self.renderer is None or self.renderer.name != "auto":
+        if self.renderer.name != "auto":
             return self
         from renderers.base import MODEL_RENDERER_MAP
 
@@ -834,9 +781,7 @@ class OrchestratorConfig(BaseConfig):
             f"(b) [orchestrator.renderer] name=<model-specific renderer> — "
             f"if {model_id!r} is template-identical to a mapped family "
             f"(and ideally also add it upstream to "
-            f"renderers.base.MODEL_RENDERER_MAP). "
-            f"(c) orchestrator.renderer='none' — opt out of the renderer "
-            f"client entirely (MITO)."
+            f"renderers.base.MODEL_RENDERER_MAP)."
         )
 
     @model_validator(mode="after")

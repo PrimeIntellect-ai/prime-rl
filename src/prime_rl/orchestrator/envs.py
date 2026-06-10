@@ -29,6 +29,7 @@ from verifiers.v1.legacy import LegacyEnvServer
 from verifiers.v1.serve import EnvClient, EnvServer
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
+from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.logger import get_logger
 
 # Max wait for a spawned env server to bind and report its address. The child
@@ -61,11 +62,12 @@ class Env:
         self.sampling_args: dict = {}
         self.num_tasks: int = 0
         self.requires_group_scoring: bool = False
-        # Typed Trace for this env (Trace parametrized with the env's Task subclass),
-        # used to validate the wire trace into a real vf.Trace with typed task fields.
-        # v0/legacy envs return Trace[WireTask] (no v1 Task subclass to import); v1 envs
-        # type the trace with the taskset's Task subclass.
-        self.trace_type = vf.Trace[vf.WireTask] if config.is_legacy else vf.Trace[vf.task_type(config.env_id)]
+        # Typed Rollout for this env (prime-rl's Trace subclass parametrized with the env's
+        # Task subclass), used to validate the wire trace into a typed Rollout — the env's task
+        # fields plus prime-rl's orchestration metadata (defaulted here, set by the dispatcher).
+        # v0/legacy envs return Trace[WireTask] (no v1 Task subclass to import); v1 envs type
+        # the trace with the taskset's Task subclass.
+        self.trace_type = Rollout[vf.WireTask] if config.is_legacy else Rollout[vf.task_type(config.env_id)]
         self._env_client: EnvClient | None = None
         self._env_server_process: BaseProcess | None = None
 
@@ -150,7 +152,7 @@ class Env:
 
     async def run_rollout(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, cache_salt: str | None
-    ) -> vf.Trace:
+    ) -> Rollout:
         """Run a single rollout for ``task_idx``; return a typed Trace."""
         wire = await self.env_client.run_rollout(
             task_idx=task_idx,
@@ -164,7 +166,7 @@ class Env:
 
     async def run_group(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, group_size: int, cache_salt: str | None
-    ) -> list[vf.Trace]:
+    ) -> list[Rollout]:
         """Run a group of rollouts for ``task_idx`` (group-scoring envs); return typed Traces."""
         wires = await self.env_client.run_group(
             task_idx=task_idx,

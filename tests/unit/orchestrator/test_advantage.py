@@ -2,6 +2,7 @@ import math
 import uuid
 
 import pytest
+import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import (
     CustomAdvantageConfig,
@@ -16,7 +17,7 @@ from prime_rl.orchestrator.advantage import (
     default_advantage_fn,
     setup_advantage_fn,
 )
-from prime_rl.orchestrator.types import TrainRollout
+from prime_rl.orchestrator.types import Rollout
 
 
 def _make_rollout(
@@ -24,23 +25,27 @@ def _make_rollout(
     completion_len: int = 0,
     num_turns: int = 1,
     env_name: str = "test",
-    example_id: int = 0,
-) -> dict:
-    """Create a minimal rollout dict for advantage testing.
-
-    `completion_len` tokens are split across `num_turns` trajectory steps.
-    """
+    tool_response_len: int = 0,
+) -> Rollout:
+    """Build a ``Rollout`` (message-graph trace) for advantage testing: ``reward`` via the
+    reward dict, ``completion_len`` sampled tokens split across ``num_turns`` assistant nodes,
+    and an optional tool-response token count surfaced as a metric."""
     per_turn, rem = divmod(completion_len, max(num_turns, 1))
-    trajectory = [
-        {"tokens": {"prompt_ids": [0], "completion_ids": list(range(per_turn + (rem if i == 0 else 0)))}}
+    nodes = [
+        vf.MessageNode(
+            message=vf.AssistantMessage(content="x"),
+            token_ids=list(range(n := per_turn + (rem if i == 0 else 0))),
+            mask=[True] * n,
+            logprobs=[0.0] * n,
+        )
         for i in range(num_turns)
     ]
-    return {
-        "reward": reward,
-        "trajectory": trajectory,
-        "env_name": env_name,
-        "example_id": example_id,
-    }
+    metrics = {"rlm_total_tool_response_tokens": tool_response_len} if tool_response_len else {}
+    rollout = Rollout[vf.Task](
+        task=vf.Task(idx=0, instruction=""), nodes=nodes, rewards={"reward": reward}, metrics=metrics
+    )
+    rollout.env_name = env_name
+    return rollout
 
 
 def _make_group(rewards, completion_lengths=None, num_turns=None) -> AdvantageInputs:
@@ -83,7 +88,7 @@ def test_efficiency_mixed_group():
 
     # All correct rollouts have positive advantage
     for rollout, adv in zip(inputs.rollouts, result.advantages):
-        if rollout["reward"] >= 1.0:
+        if rollout.reward >= 1.0:
             assert adv > 0
 
 
@@ -164,21 +169,9 @@ def test_efficiency_amplification_bounded():
 def test_efficiency_tokens_with_tool_response_weight():
     """`tool_response_weight` shifts shaping onto tool-response tokens read from rollout metrics."""
     rollouts = [
-        {
-            "reward": 1.0,
-            "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}],
-            "metrics": {"rlm_total_tool_response_tokens": 200},
-        },
-        {
-            "reward": 1.0,
-            "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}],
-            "metrics": {"rlm_total_tool_response_tokens": 0},
-        },
-        {
-            "reward": 1.0,
-            "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}],
-            "metrics": {"rlm_total_tool_response_tokens": 100},
-        },
+        _make_rollout(1.0, completion_len=10, tool_response_len=200),
+        _make_rollout(1.0, completion_len=10, tool_response_len=0),
+        _make_rollout(1.0, completion_len=10, tool_response_len=100),
     ]
     inputs = AdvantageInputs(rollouts=rollouts)
 
@@ -198,12 +191,10 @@ def test_efficiency_tokens_with_tool_response_weight():
 
 def test_efficiency_fractional_weight_with_int_rewards():
     """Fractional weights must not truncate when rollout rewards are emitted as ints."""
-    rollouts_int = [
-        {"reward": 1, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(7))}}]},
-        {"reward": 1, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(11))}}]},
-        {"reward": 0, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(13))}}]},
-    ]
-    rollouts_float = [{**r, "reward": float(r["reward"])} for r in rollouts_int]
+    lens = [7, 11, 13]
+    int_rewards = [1, 1, 0]
+    rollouts_int = [_make_rollout(r, completion_len=n) for r, n in zip(int_rewards, lens)]
+    rollouts_float = [_make_rollout(float(r), completion_len=n) for r, n in zip(int_rewards, lens)]
 
     fractional = TokensLengthPenaltyConfig(completion_weight=0.3, tool_response_weight=0.0)
     int_result = default_advantage_fn(AdvantageInputs(rollouts=rollouts_int), length_penalty=fractional)
@@ -214,12 +205,7 @@ def test_efficiency_fractional_weight_with_int_rewards():
 def test_efficiency_zero_costs_falls_back_to_plain_grpo():
     """When all effective costs are zero, shaping is a no-op (no NaNs from div-by-zero)."""
     # tool-only weights but no harness metric → all costs == 0
-    rollouts = [
-        {"reward": 1.0, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}]},
-        {"reward": 1.0, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}]},
-        {"reward": 0.0, "trajectory": [{"tokens": {"prompt_ids": [0], "completion_ids": list(range(10))}}]},
-    ]
-    inputs = AdvantageInputs(rollouts=rollouts)
+    inputs = _make_group(rewards=[1.0, 1.0, 0.0], completion_lengths=[10, 10, 10])
     result = default_advantage_fn(inputs, length_penalty=_TOKENS_TOOL_ONLY)
     expected = default_advantage_fn(inputs)  # plain GRPO
     assert not any(math.isnan(a) for a in result.advantages)
@@ -249,22 +235,17 @@ def test_efficiency_turns_penalty():
     assert result.advantages == pytest.approx([0.625, 0.125, -0.875, 0.125], abs=1e-6)
 
 
-def _train_rollouts(rewards: list[float]) -> list[TrainRollout]:
-    """Wrap a list of rewards into ``TrainRollout``\\ s sharing a single
-    ``group_id`` — ``assign_advantages`` works on one group at a time
-    (the sink groups by ``group_id`` upstream)."""
+def _train_rollouts(rewards: list[float]) -> list[Rollout]:
+    """Build ``Rollout``\\ s sharing a single ``group_id`` — ``assign_advantages`` works on one
+    group at a time (the sink groups by ``group_id`` upstream)."""
     gid = uuid.uuid4()
-    return [
-        TrainRollout(
-            raw={"reward": r, "trajectory": []},
-            env_name="test",
-            example_id=0,
-            group_id=gid,
-            policy_version=0,
-            off_policy_steps=0,
-        )
-        for r in rewards
-    ]
+    rollouts = []
+    for r in rewards:
+        rollout = Rollout[vf.Task](task=vf.Task(idx=0, instruction=""), rewards={"reward": r})
+        rollout.env_name = "test"
+        rollout.group_id = gid
+        rollouts.append(rollout)
+    return rollouts
 
 
 def test_assign_advantages_writes_field():
@@ -306,4 +287,4 @@ def test_setup_advantage_fn_with_custom_config():
 
 def _dummy_custom_advantage(inputs: AdvantageInputs, scale: float = 1.0) -> AdvantageOutputs:
     """A simple custom advantage for testing."""
-    return AdvantageOutputs(advantages=[r["reward"] * scale for r in inputs.rollouts])
+    return AdvantageOutputs(advantages=[r.reward * scale for r in inputs.rollouts])
