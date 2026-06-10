@@ -42,6 +42,19 @@ async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer)
     return None, inference_pool
 
 
+def mm_token_type_id_map(config: OrchestratorConfig) -> dict[int, int] | None:
+    """The image/video placeholder-token → type-id map the VLM trainer needs to build
+    `mm_token_type_ids` (M-RoPE). Built transiently from the renderer config — the
+    orchestrator keeps no renderer of its own, and a VLM always has one configured
+    (`vlm_requires_renderer`). None for a text model."""
+    if not config.student.model.is_vlm or config.renderer is None:
+        return None
+    from renderers import create_renderer_pool
+
+    pool = create_renderer_pool(config.student.model.name, config.renderer, size=1)
+    return getattr(pool, "mm_token_type_id_map", None) or None
+
+
 def get_model_completion_len(output: vf.Trace) -> int:
     """Sum of model-generated completion tokens across all turns (excludes
     environment-injected tokens between turns)."""

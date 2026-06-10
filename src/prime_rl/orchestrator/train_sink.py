@@ -149,7 +149,12 @@ class TrainSink:
             return
         if any(turn.tokens is None for turn in rollout.trace.trajectory):
             await asyncio.to_thread(backfill_rollout_tokens, rollout.trace, self.tokenizer)
-        samples = await asyncio.to_thread(trace_to_samples, rollout.trace, env_name=rollout.env_name)
+        samples = await asyncio.to_thread(
+            trace_to_samples,
+            rollout.trace,
+            env_name=rollout.env_name,
+            mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
+        )
         rollout.samples = samples or []
 
     def process_group(self, group_id: uuid.UUID) -> None:

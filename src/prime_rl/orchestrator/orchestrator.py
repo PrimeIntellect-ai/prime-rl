@@ -66,6 +66,7 @@ from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
     get_weight_dir,
     intercept_vf_logging,
+    mm_token_type_id_map,
     save_rollouts,
     set_default_executor,
     setup_student_inference_pool,
@@ -215,11 +216,9 @@ class Orchestrator:
         self.renderer, self.student_inference = await setup_student_inference_pool(
             config=config, tokenizer=self.tokenizer
         )
-        self.mm_token_type_ids_mapping = (
-            getattr(self.renderer, "mm_token_type_id_map", None) if self.renderer is not None else None
-        )
-        if self.mm_token_type_ids_mapping == {}:
-            self.mm_token_type_ids_mapping = None
+        # The renderer lives in the env server, so derive the VLM type-id map from the
+        # renderer config directly (None for text models).
+        self.mm_token_type_ids_mapping = mm_token_type_id_map(config)
 
         if config.teacher is not None:
             get_logger().info(

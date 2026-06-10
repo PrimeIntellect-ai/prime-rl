@@ -14,6 +14,7 @@ import verifiers.v1 as vf
 from verifiers.v1.clients.openai import message_to_wire
 
 from prime_rl.transport import TrainingSample
+from prime_rl.transport.types import EncodedTensor
 from prime_rl.utils.chat_template import (
     common_prefix_len,
     deserialize_tool_calls,
@@ -50,7 +51,40 @@ def backfill_rollout_tokens(trace: vf.Trace, tokenizer) -> None:
         )
 
 
-def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSample]:
+def _decode_wire_tensor(wt: vf.WireTensor):
+    import base64
+
+    import numpy as np
+    import torch
+
+    arr = np.frombuffer(base64.b64decode(wt.data), dtype=np.dtype(wt.dtype)).reshape(wt.shape)
+    return torch.from_numpy(arr.copy())
+
+
+def _pack_mm_kwargs(mm_list: list[vf.MMData]) -> dict[str, EncodedTensor] | None:
+    """Union per-turn `MMData` into model-agnostic `mm_kwargs`: concat each HF-processor
+    kwarg (e.g. `pixel_values`, `image_grid_thw`) over all images in the sample, in turn
+    order. The model's `forward` signature is the schema, so image/video keys don't clash."""
+    import torch
+
+    per_kwarg: dict[str, list] = {}
+    for mm in mm_list:
+        for items in mm.mm_items.values():
+            for item in items:
+                for key, wt in item.items():
+                    per_kwarg.setdefault(key, []).append(_decode_wire_tensor(wt))
+    if not per_kwarg:
+        return None
+    out: dict[str, EncodedTensor] = {}
+    for key, tensors in per_kwarg.items():
+        arr = torch.cat(tensors, dim=0).contiguous().numpy()
+        out[key] = EncodedTensor(dtype=str(arr.dtype), shape=list(arr.shape), data=arr.tobytes())
+    return out
+
+
+def trace_to_samples(
+    trace: vf.Trace, *, env_name: str = "", mm_token_type_ids_mapping: dict[int, int] | None = None
+) -> list[TrainingSample]:
     """Convert a v1 `Trace` into `TrainingSample`s — one per branch.
 
     Stitch each branch's turns into one token sequence: the branch's first-turn
@@ -91,6 +125,13 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
 
         if not completion_ids:
             continue
+        # Multimodal: union each turn's image/video tensors into mm_kwargs, and tag every
+        # token with its modality (image-placeholder vs text) via the renderer's map.
+        mm = [t.tokens.multi_modal_data for t in turns if t.tokens and t.tokens.multi_modal_data]
+        mm_kwargs = _pack_mm_kwargs(mm) if mm else None
+        mm_token_type_ids = None
+        if mm_kwargs is not None and mm_token_type_ids_mapping:
+            mm_token_type_ids = [mm_token_type_ids_mapping.get(tid, 0) for tid in prompt_ids + completion_ids]
         samples.append(
             TrainingSample(
                 prompt_ids=prompt_ids,
@@ -102,6 +143,8 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
                 teacher_logprobs=None,
                 advantage=None,
                 env_name=env_name,
+                mm_kwargs=mm_kwargs,
+                mm_token_type_ids=mm_token_type_ids,
             )
         )
     if not samples:
