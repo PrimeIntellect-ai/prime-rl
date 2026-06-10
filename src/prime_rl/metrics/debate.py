@@ -19,17 +19,34 @@ def _debate_winner(rollout: vf.RolloutOutput) -> tuple[bool, str | None]:
 
 
 def _truth_member(rollout: vf.RolloutOutput) -> str | None:
+    """Which debater holds the truth side of this episode, if resolvable.
+
+    Symmetric packs (both debaters declare answers): the truth side is the
+    one whose final answer is correct; both-right/both-wrong is unresolvable.
+
+    Asymmetric packs (e.g. pcd4_final's answerless critic): the single
+    answer-declaring member determines the truth side — itself when correct,
+    the opposing member when wrong. Asymmetry is distinguished from a
+    grader/extraction failure via the rubric's episode keys: the role-aware
+    ``any_answer_member_correct`` is emitted only when every answer-declaring
+    member resolved, while the legacy ``all_debaters_correct`` alias is
+    emitted only when *all* debaters declare answers.
+    """
     final_correct = {}
     for member in ("debater_a", "debater_b"):
         key = f"final_correct/{member}"
         if key in rollout:
             final_correct[member] = rollout[key]
-    if len(final_correct) != 2:
-        return None
-    a, b = final_correct["debater_a"], final_correct["debater_b"]
-    if a == b:
-        return None
-    return "debater_a" if a > b else "debater_b"
+    if len(final_correct) == 2:
+        a, b = final_correct["debater_a"], final_correct["debater_b"]
+        if a == b:
+            return None
+        return "debater_a" if a > b else "debater_b"
+    if len(final_correct) == 1 and "any_answer_member_correct" in rollout and "all_debaters_correct" not in rollout:
+        ((member, value),) = final_correct.items()
+        opponent = "debater_b" if member == "debater_a" else "debater_a"
+        return member if value == 1.0 else opponent
+    return None
 
 
 def _completion_tokens_by_member(rollout: vf.RolloutOutput) -> dict[str, int]:

@@ -95,6 +95,11 @@ sampling = { temperature = 0.7, top_p = 0.8, max_completion_tokens = 1024, extra
 [orchestrator.eval]
 interval = 5
 
+# WARNING (verifiers pin 6a070bfa): gpqa_debate.build_split takes a prefix of the
+# raw GPQA rows for BOTH train and eval (rows = raw[:n]; seed only reshuffles the
+# answer choices). Eval examples are therefore a strict subset of the train set —
+# there is no disjoint-holdout knob in the packaged env. Treat eval accuracy here
+# as on-policy calibration telemetry, NOT held-out generalization.
 [[orchestrator.eval.env]]
 id = "gpqa-debate"
 name = "gpqa-debate-calibration-eval"

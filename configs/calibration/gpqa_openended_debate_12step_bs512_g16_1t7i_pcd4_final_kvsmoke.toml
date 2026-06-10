@@ -92,6 +92,13 @@ max_completion_tokens = 16384
 thinking_token_budget = 8192
 extra_body = { top_k = 20, min_p = 0.0, presence_penalty = 1.5 }
 
+# WARNING (verifiers pin 6a070bfa): gpqa_open_ended_debate.load_environment
+# hardcodes prompts_ref="selfplay_oe" AND forwards **kwargs, so passing
+# prompts_ref in args raises at env load:
+#   TypeError: load_hf_debate_environment() got multiple values for keyword
+#   argument 'prompts_ref'
+# This config CANNOT run at this pin until the wrapper exposes prompts_ref as
+# an explicit parameter (verifiers-side fix).
 [[orchestrator.train.env]]
 id = "gpqa-open-ended-debate"
 name = "gpqa-openended-debate-pcd4-final-bs512-train"

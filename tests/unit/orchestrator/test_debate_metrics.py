@@ -215,3 +215,68 @@ def test_twc_null_reference_lines():
     metrics = compute_step_metrics([_mk(truth="debater_a", winner="debater_b")])
     assert metrics["twc_3way_null"] == 1.0 / 3.0
     assert metrics["twc_2way_cond_null"] == 0.5
+
+
+def _mk_pcd4_final(*, final_a: float, winner: str | None) -> dict[str, Any]:
+    """Asymmetric pack rollout: debater_b is an answerless critic, so only
+    debater_a carries final_correct, and the rubric emits the role-aware
+    episode keys without the legacy all-debater aliases."""
+    return {
+        "mar_score": {"episode_categorical": {"winner": winner}},
+        "final_correct/debater_a": final_a,
+        "initial_correct/debater_a": final_a,
+        "accuracy/debater_a": final_a,
+        "any_answer_member_correct": final_a,
+        "all_answer_members_correct": final_a,
+        "flipped/debater_a": 0.0,
+        "flipped/debater_b": 0.0,
+        "turns/debater_a": 3.0,
+        "turns/debater_b": 3.0,
+        "turns/judge": 1.0,
+        "is_truncated": False,
+        "error": None,
+        "trajectory": [],
+    }
+
+
+def test_answerless_critic_pack_resolves_truth_from_single_answer_member():
+    metrics = compute_step_metrics(
+        [
+            _mk_pcd4_final(final_a=1.0, winner="debater_a"),  # truth=a, judge right
+            _mk_pcd4_final(final_a=0.0, winner="debater_b"),  # truth=b, judge right
+            _mk_pcd4_final(final_a=1.0, winner="debater_b"),  # truth=a, judge wrong
+            _mk_pcd4_final(final_a=0.0, winner="debater_a"),  # truth=b, judge wrong
+        ]
+    )
+    assert metrics["n_resolvable"] == 4.0
+    assert metrics["resolvable_rate"] == 1.0
+    assert metrics["twc_3way"] == 0.5
+    assert metrics["twc_2way_cond"] == 0.5
+    assert metrics["n_non_tie"] == 4.0
+    assert metrics["tie_rate"] == 0.0
+    assert metrics["twc_by_seat_a"] == 0.5
+    assert metrics["twc_by_seat_b"] == 0.5
+    assert metrics["position_bias"] == 0.0
+
+
+def test_symmetric_pack_with_missing_member_key_stays_unresolvable():
+    # all_debaters_correct present => every debater declares an answer, so a
+    # missing final_correct key means extraction failure, not an answerless
+    # seat. Single-sided truth inference would be wrong here.
+    rollout = _mk(truth="debater_a", winner="debater_a")
+    del rollout["final_correct/debater_b"]
+    rollout["any_answer_member_correct"] = 1.0
+    rollout["all_answer_members_correct"] = 0.0
+    rollout["any_debater_correct"] = 1.0
+    rollout["all_debaters_correct"] = 0.0
+    metrics = compute_step_metrics([rollout])
+    assert metrics["n_resolvable"] == 0.0
+
+
+def test_single_member_key_without_episode_keys_stays_unresolvable():
+    # No any_answer_member_correct => some answer-declaring member did not
+    # resolve (grader error), so the pack shape is unknown.
+    rollout = _mk(truth="debater_a", winner="debater_a")
+    del rollout["final_correct/debater_b"]
+    metrics = compute_step_metrics([rollout])
+    assert metrics["n_resolvable"] == 0.0

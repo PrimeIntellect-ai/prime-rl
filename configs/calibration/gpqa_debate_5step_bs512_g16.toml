@@ -108,6 +108,11 @@ group_size = 4
 max_concurrent_rollouts_per_client = 32
 num_workers = 12
 
+# WARNING (verifiers pin 6a070bfa): gpqa_debate.build_split takes a prefix of the
+# raw GPQA rows for BOTH train and eval (rows = raw[:n]; seed only reshuffles the
+# answer choices). Eval examples are therefore a strict subset of the train set —
+# there is no disjoint-holdout knob in the packaged env. Treat eval accuracy here
+# as on-policy calibration telemetry, NOT held-out generalization.
 [[orchestrator.eval.env]]
 id = "gpqa-debate"
 name = "gpqa-debate-bs512-eval"

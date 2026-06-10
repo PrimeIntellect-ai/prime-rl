@@ -76,12 +76,17 @@ class DispatcherMetrics:
     errored_by_kind_env: dict[tuple[Literal["train", "eval"], str], int] = field(
         default_factory=lambda: defaultdict(int)
     )
+    timed_out_by_kind_env: dict[tuple[Literal["train", "eval"], str], int] = field(
+        default_factory=lambda: defaultdict(int)
+    )
 
     def record_cancellation(self, *, kind: Literal["train", "eval"], env_name: str, n: int = 1) -> None:
         self.cancelled_by_kind_env[(kind, env_name)] += n
 
-    def record_error(self, *, kind: Literal["train", "eval"], env_name: str) -> None:
+    def record_error(self, *, kind: Literal["train", "eval"], env_name: str, error_type: str) -> None:
         self.errored_by_kind_env[(kind, env_name)] += 1
+        if error_type == vf.RolloutTimeoutError.__name__:
+            self.timed_out_by_kind_env[(kind, env_name)] += 1
 
     def drained(self, *, train_envs: set[str], eval_envs: set[str]) -> dict[str, float]:
         """Return per-tick counters and clear them. Emits the full pre-
@@ -92,8 +97,10 @@ class DispatcherMetrics:
             envs = train_envs if kind == "train" else eval_envs
             cancelled_total = sum(self.cancelled_by_kind_env.get((kind, e), 0) for e in envs)
             errored_total = sum(self.errored_by_kind_env.get((kind, e), 0) for e in envs)
+            timed_out_total = sum(self.timed_out_by_kind_env.get((kind, e), 0) for e in envs)
             out[f"dispatcher/cancelled/{kind}"] = float(cancelled_total)
             out[f"dispatcher/errored/{kind}"] = float(errored_total)
+            out[f"dispatcher/timed_out/{kind}"] = float(timed_out_total)
         for env in train_envs | eval_envs:
             out[f"dispatcher/cancelled/{env}"] = float(
                 self.cancelled_by_kind_env.get(("train", env), 0) + self.cancelled_by_kind_env.get(("eval", env), 0)
@@ -101,8 +108,12 @@ class DispatcherMetrics:
             out[f"dispatcher/errored/{env}"] = float(
                 self.errored_by_kind_env.get(("train", env), 0) + self.errored_by_kind_env.get(("eval", env), 0)
             )
+            out[f"dispatcher/timed_out/{env}"] = float(
+                self.timed_out_by_kind_env.get(("train", env), 0) + self.timed_out_by_kind_env.get(("eval", env), 0)
+            )
         self.cancelled_by_kind_env.clear()
         self.errored_by_kind_env.clear()
+        self.timed_out_by_kind_env.clear()
         return out
 
     @staticmethod
@@ -114,10 +125,13 @@ class DispatcherMetrics:
             "dispatcher/cancelled/eval",
             "dispatcher/errored/train",
             "dispatcher/errored/eval",
+            "dispatcher/timed_out/train",
+            "dispatcher/timed_out/eval",
         ]
         for env in train_envs | eval_envs:
             keys.append(f"dispatcher/cancelled/{env}")
             keys.append(f"dispatcher/errored/{env}")
+            keys.append(f"dispatcher/timed_out/{env}")
         return keys
 
 
@@ -571,7 +585,7 @@ class RolloutDispatcher:
                 get_logger().warning(f"Empty trajectory in group {meta.group_id} ({meta.env_name})")
             if r.get("error") is not None:
                 err_type = r["error"].get("error", "Unknown")
-                self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
+                self.metrics.record_error(kind=meta.kind, env_name=meta.env_name, error_type=err_type)
                 if not is_synth_exception:
                     get_logger().warning(
                         f"Rollout failed in group {meta.group_id} ({meta.env_name}) — "
