@@ -12,7 +12,7 @@ def test_setup_policy_inference_pool_uses_renderer_when_enabled():
         tokenizer = object()
         renderer_settings = Qwen3VLRendererConfig()
         config = SimpleNamespace(
-            policy=SimpleNamespace(
+            model=SimpleNamespace(
                 client=SimpleNamespace(base_url=["http://localhost:8000/v1"]),
                 model=SimpleNamespace(name="policy-model"),
             ),
@@ -38,7 +38,7 @@ def test_setup_policy_inference_pool_uses_renderer_when_enabled():
         assert returned_pool is inference_pool
         create_renderer_mock.assert_called_once_with(tokenizer, renderer_settings)
         setup_pool_mock.assert_awaited_once_with(
-            config.policy.client,
+            config.model.client,
             model_name="policy-model",
             train_client_type="renderer",
             eval_client_type="openai_chat_completions",
@@ -57,7 +57,7 @@ def test_setup_policy_inference_pool_defaults_to_mito():
         config = SimpleNamespace(
             renderer=None,
             pool_size=None,
-            policy=SimpleNamespace(
+            model=SimpleNamespace(
                 client=SimpleNamespace(base_url=["http://localhost:8000/v1"]),
                 model=SimpleNamespace(name="policy-model"),
             ),
@@ -80,7 +80,7 @@ def test_setup_policy_inference_pool_defaults_to_mito():
         assert returned_pool is inference_pool
         create_renderer_mock.assert_not_called()
         setup_pool_mock.assert_awaited_once_with(
-            config.policy.client,
+            config.model.client,
             model_name="policy-model",
             train_client_type="openai_chat_completions",
             eval_client_type="openai_chat_completions",

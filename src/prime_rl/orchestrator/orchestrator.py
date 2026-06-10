@@ -219,8 +219,8 @@ class Orchestrator:
 
         # Live policy inference pool, registered under the reserved name
         get_logger().info(
-            f"Initializing policy inference pool (base_url={', '.join(config.policy.client.base_url)}, "
-            f"model={config.policy.model.name})"
+            f"Initializing policy inference pool (base_url={', '.join(config.model.client.base_url)}, "
+            f"model={config.model.model.name})"
         )
         self.renderer, self.policy_inference = await setup_policy_inference_pool(
             config=config, tokenizer=self.tokenizer
@@ -300,7 +300,7 @@ class Orchestrator:
         self.policy.model_name = self.policy_inference.model_name
 
         get_logger().info("Waiting for policy inference pool to be ready")
-        await self.policy_inference.wait_for_ready(config.policy.model.name)
+        await self.policy_inference.wait_for_ready(config.model.model.name)
         get_logger().success("Policy inference pool ready")
         for name, hosted in config.models.items():
             get_logger().info(f"Waiting for inference pool '{name}' to be ready")
@@ -328,7 +328,7 @@ class Orchestrator:
         get_logger().info(f"Initializing training batch sender ({config.rollout_transport})")
         self.sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
-        self.lora_name = config.policy.model.lora.name if config.policy.model.lora else None
+        self.lora_name = config.model.model.lora.name if config.model.model.lora else None
 
         if self.resume_step is not None and self.ckpt_manager is not None:
             self.ckpt_manager.load(self.progress, step=self.resume_step)

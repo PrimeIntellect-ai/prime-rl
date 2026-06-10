@@ -22,8 +22,9 @@ def propagate_shared_fields(data: Any) -> Any:
         The original footgun the mutex was designed to catch — a sub-config
         value silently winning over a later CLI shared override — is still
         caught because that scenario produces *different* values.
-      - **Aliased sub-paths**: ``orchestrator.model.*`` is checked against its
-        ``orchestrator.policy.model.*`` alias (and vice versa), so the
+      - **Aliased sub-paths**: ``orchestrator.model.*`` (flat) is checked
+        against the nested ``orchestrator.model.model.*`` spelling and the
+        ``orchestrator.policy.*`` / ``orchestrator.student.*`` aliases, so the
         conflict fires regardless of which spelling the user wrote.
     """
     if not isinstance(data, dict):
@@ -67,20 +68,29 @@ def propagate_shared_fields(data: Any) -> Any:
         for target in targets:
             fill(target, value)
 
-    # [model] → trainer / orchestrator (policy, via AliasChoices) / inference.
+    # [model] → trainer / orchestrator (flat spelling, re-nested by
+    # fold_policy_shortcuts) / inference.
     propagate(
         "model.name",
         "trainer.model.name",
         "inference.model.name",
         "orchestrator.model.name",
-        aliases=("orchestrator.policy.model.name",),
+        aliases=(
+            "orchestrator.model.model.name",
+            "orchestrator.policy.model.name",
+            "orchestrator.student.model.name",
+        ),
     )
     propagate(
         "model.vlm",
         "trainer.model.vlm",
         "inference.model.vlm",
         "orchestrator.model.vlm",
-        aliases=("orchestrator.policy.model.vlm",),
+        aliases=(
+            "orchestrator.model.model.vlm",
+            "orchestrator.policy.model.vlm",
+            "orchestrator.student.model.vlm",
+        ),
     )
 
     # [log]
@@ -224,18 +234,18 @@ def validate_shared_model_name(
 ) -> None:
     # Orchestrator must match inference (it queries the inference server)
     if inference is not None:
-        if inference.model.name != orchestrator.policy.model.name:
+        if inference.model.name != orchestrator.model.model.name:
             raise ValueError(
-                f"Inference model name ({inference.model.name}) and orchestrator model name ({orchestrator.policy.model.name}) are not the same. "
+                f"Inference model name ({inference.model.name}) and orchestrator model name ({orchestrator.model.model.name}) are not the same. "
                 "The orchestrator queries the inference server and must use the same model name."
             )
         return
 
     if trainer.model.name.startswith("Jackmin108/"):  # The TT MoE models will have a different name on the orchestrator
         return
-    if trainer.model.name != orchestrator.policy.model.name:
+    if trainer.model.name != orchestrator.model.model.name:
         raise ValueError(
-            f"Trainer model name ({trainer.model.name}) and orchestrator model name ({orchestrator.policy.model.name}) are not the same. Please specify the same model name for both."
+            f"Trainer model name ({trainer.model.name}) and orchestrator model name ({orchestrator.model.model.name}) are not the same. Please specify the same model name for both."
         )
 
 

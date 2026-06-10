@@ -483,9 +483,12 @@ class OrchestratorConfig(BaseConfig):
     routing. Defaults to ``grpo``. Override per env via
     ``[[orchestrator.train.env]]``'s ``algo``."""
 
-    policy: HostedModelConfig = Field(HostedModelConfig(), validation_alias=AliasChoices("policy", "model"))
+    model: HostedModelConfig = HostedModelConfig()
     """The model being trained (model + client of the live vLLM deployment).
-    Registered in the model registry under the reserved key ``"policy"``."""
+    Registered in the model registry under the reserved key ``"policy"``.
+    ``[orchestrator.policy]`` and ``[orchestrator.student]`` are accepted
+    aliases, and flat ``ModelConfig`` keys re-nest automatically
+    (``[orchestrator.model] name = ...``)."""
 
     models: dict[str, HostedModelConfig] = {}
     """Named frozen hosted models, referenced from algorithm components by key
@@ -622,13 +625,11 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def fold_policy_shortcuts(cls, data: Any) -> Any:
-        """Accept top-level ``[orchestrator.model]`` / ``[orchestrator.client]``
-        as shorthand for the policy sub-config. Useful for ergonomic rl configs
-        where ``[orchestrator.policy.*]`` is overkill, and required for
-        pre-refactor configs that used the flat layout to keep parsing:
+        """Accept aliases and flat layouts for the policy sub-config:
 
-        - [orchestrator.client.*]     -> [orchestrator.policy.client.*]
-        - [orchestrator.model.<k>]    -> [orchestrator.policy.model.<k>]
+        - [orchestrator.policy.*] / [orchestrator.student.*] -> [orchestrator.model.*]
+        - [orchestrator.client.*]     -> [orchestrator.model.client.*]
+        - [orchestrator.model.<k>]    -> [orchestrator.model.model.<k>]
           (where <k> is any ModelConfig field)
 
         Frozen models must always be configured under [orchestrator.models.*]
@@ -646,33 +647,36 @@ class OrchestratorConfig(BaseConfig):
                 else:
                     dst[k] = v
 
-        # 1. Re-nest top-level [orchestrator.client] under policy.client.
+        # 1. Fold the `policy` / `student` aliases into `model`, the canonical
+        # key winning at the leaf so a CLI `--model.<k>` overrides a TOML
+        # `[orchestrator.policy]` value.
+        for alias in ("policy", "student"):
+            alias_value = data.pop(alias, None)
+            if alias_value is None:
+                continue
+            existing = data.get("model")
+            if existing is None:
+                data["model"] = alias_value
+            elif isinstance(existing, dict) and isinstance(alias_value, dict):
+                deep_merge(alias_value, existing)
+                data["model"] = alias_value
+            else:
+                # Mismatched types - put it back and let pydantic surface the error.
+                data[alias] = alias_value
+
+        # 2. Re-nest top-level [orchestrator.client] under model.client.
         legacy_client = data.pop("client", None)
         if isinstance(legacy_client, dict):
-            policy = data.setdefault("policy", {})
+            policy = data.setdefault("model", {})
             if isinstance(policy, dict):
                 deep_merge(policy.setdefault("client", {}), legacy_client)
             else:
                 # Mismatched types - put it back and let pydantic surface the error.
                 data["client"] = legacy_client
 
-        # 2. Consolidate the `model` alias into `policy` so the flat-layout
-        # fix-up below sees a single target. Deep-merge with the alias keys
-        # winning so a CLI `--model.<k>` overrides TOML `policy.model.<k>`.
-        legacy_model = data.pop("model", None)
-        if legacy_model is not None:
-            existing = data.get("policy")
-            if existing is None:
-                data["policy"] = legacy_model
-            elif isinstance(existing, dict) and isinstance(legacy_model, dict):
-                deep_merge(existing, legacy_model)
-            else:
-                # Mismatched types - put it back and let pydantic surface the error.
-                data["model"] = legacy_model
-
-        # 3. Re-nest flat ModelConfig keys under policy.model.
+        # 3. Re-nest flat ModelConfig keys under model.model.
         model_only_keys = set(ModelConfig.model_fields)
-        policy = data.get("policy")
+        policy = data.get("model")
         if isinstance(policy, dict):
             flat = {k: policy.pop(k) for k in list(policy) if k in model_only_keys}
             if flat:
@@ -710,15 +714,15 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):
         if self.tokenizer.name is None:
-            self.tokenizer.name = self.policy.model.name
+            self.tokenizer.name = self.model.model.name
         if self.tokenizer.trust_remote_code is None:
-            self.tokenizer.trust_remote_code = self.policy.model.trust_remote_code
+            self.tokenizer.trust_remote_code = self.model.model.trust_remote_code
         return self
 
     @model_validator(mode="after")
     def auto_setup_session_headers(self):
         """Ensure X-Session-ID header is always set for sticky DP-aware routing at the inference router."""
-        self.policy.client.extra_headers_from_state.setdefault("X-Session-ID", "trajectory_id")
+        self.model.client.extra_headers_from_state.setdefault("X-Session-ID", "trajectory_id")
         return self
 
     @model_validator(mode="after")
@@ -801,7 +805,7 @@ class OrchestratorConfig(BaseConfig):
         if POLICY_MODEL in self.models:
             raise ValueError(
                 f"[orchestrator.models] key '{POLICY_MODEL}' is reserved — the live policy is configured "
-                "via [orchestrator.model] (alias [orchestrator.policy]) and registered automatically."
+                "via [orchestrator.model] (aliases [orchestrator.policy] / [orchestrator.student]) and registered automatically."
             )
         for key, entry in self.models.items():
             if "base_url" not in entry.client.model_fields_set and not entry.client.is_elastic:
@@ -848,7 +852,7 @@ class OrchestratorConfig(BaseConfig):
         tokens, and ships generic ``mm_kwargs`` keyed by whatever the
         model's forward signature expects.
         """
-        if self.policy.model.vlm is not None and self.renderer is None:
+        if self.model.model.vlm is not None and self.renderer is None:
             raise ValueError(
                 "orchestrator.renderer must be set when model.vlm is set. "
                 "VLMs must go through a renderer (e.g. Qwen3VLRenderer) that owns the processor."
@@ -872,7 +876,7 @@ class OrchestratorConfig(BaseConfig):
             return self
         from renderers.base import MODEL_RENDERER_MAP
 
-        model_id = self.tokenizer.name or self.policy.model.name
+        model_id = self.tokenizer.name or self.model.model.name
         if model_id in MODEL_RENDERER_MAP:
             return self
         raise ValueError(

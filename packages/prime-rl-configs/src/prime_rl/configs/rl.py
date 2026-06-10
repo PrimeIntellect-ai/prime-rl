@@ -370,40 +370,40 @@ class RLConfig(BaseConfig):
             if self.trainer.weight_broadcast.type == "nccl":
                 raise ValueError("NCCL weight broadcast does not support LoRA yet.")
 
-            if self.orchestrator.policy.model.lora is None:
+            if self.orchestrator.model.model.lora is None:
                 from prime_rl.configs.orchestrator import LoRAConfig
 
-                self.orchestrator.policy.model.lora = LoRAConfig()
+                self.orchestrator.model.model.lora = LoRAConfig()
 
             if (
-                self.orchestrator.policy.model.lora.rank is not None
-                and self.orchestrator.policy.model.lora.rank != self.trainer.model.lora.rank
+                self.orchestrator.model.model.lora.rank is not None
+                and self.orchestrator.model.model.lora.rank != self.trainer.model.lora.rank
             ):
                 raise ValueError(
-                    f"orchestrator.policy.model.lora.rank ({self.orchestrator.policy.model.lora.rank}) conflicts with "
+                    f"orchestrator.model.lora.rank ({self.orchestrator.model.model.lora.rank}) conflicts with "
                     f"trainer.model.lora.rank ({self.trainer.model.lora.rank}). "
-                    f"Remove orchestrator.policy.model.lora.rank to inherit from trainer, or update trainer.model.lora.rank to match."
+                    f"Remove orchestrator.model.lora.rank to inherit from trainer, or update trainer.model.lora.rank to match."
                 )
 
             if (
-                self.orchestrator.policy.model.lora.alpha is not None
-                and self.orchestrator.policy.model.lora.alpha != self.trainer.model.lora.alpha
+                self.orchestrator.model.model.lora.alpha is not None
+                and self.orchestrator.model.model.lora.alpha != self.trainer.model.lora.alpha
             ):
                 raise ValueError(
-                    f"orchestrator.policy.model.lora.alpha ({self.orchestrator.policy.model.lora.alpha}) conflicts with "
+                    f"orchestrator.model.lora.alpha ({self.orchestrator.model.model.lora.alpha}) conflicts with "
                     f"trainer.model.lora.alpha ({self.trainer.model.lora.alpha}). "
-                    f"Remove orchestrator.policy.model.lora.alpha to inherit from trainer, or update trainer.model.lora.alpha to match."
+                    f"Remove orchestrator.model.lora.alpha to inherit from trainer, or update trainer.model.lora.alpha to match."
                 )
 
-            if self.orchestrator.policy.model.lora.rank is None:
-                self.orchestrator.policy.model.lora.rank = self.trainer.model.lora.rank
+            if self.orchestrator.model.model.lora.rank is None:
+                self.orchestrator.model.model.lora.rank = self.trainer.model.lora.rank
 
-            if self.orchestrator.policy.model.lora.alpha is None:
-                self.orchestrator.policy.model.lora.alpha = self.trainer.model.lora.alpha
+            if self.orchestrator.model.model.lora.alpha is None:
+                self.orchestrator.model.model.lora.alpha = self.trainer.model.lora.alpha
 
-            if self.orchestrator.policy.model.lora.name is None:
-                self.orchestrator.policy.model.lora.name = (
-                    f"r{self.orchestrator.policy.model.lora.rank}-a{self.orchestrator.policy.model.lora.alpha}"
+            if self.orchestrator.model.model.lora.name is None:
+                self.orchestrator.model.model.lora.name = (
+                    f"r{self.orchestrator.model.model.lora.rank}-a{self.orchestrator.model.model.lora.alpha}"
                 )
 
             if self.inference is not None:
@@ -611,7 +611,7 @@ class RLConfig(BaseConfig):
         """
         if self.inference is None:
             return self
-        client = self.orchestrator.policy.client
+        client = self.orchestrator.model.client
         if "dp_rank_count" not in client.model_fields_set:
             client.dp_rank_count = self.inference.data_parallel_size_local or self.inference.parallel.dp
         if not self.orchestrator.any_policy_sourced and "base_url" not in client.model_fields_set:

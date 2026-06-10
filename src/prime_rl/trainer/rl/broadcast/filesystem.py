@@ -77,7 +77,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                     self.logger.debug(f"Saving weights for run {idx} to {save_dir}")
                     save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded, adapter=adapter_only)
                     if adapter_only:
-                        orch_lora = self.multi_run_manager.config[idx].policy.model.lora
+                        orch_lora = self.multi_run_manager.config[idx].model.model.lora
                         save_lora_config(
                             model,
                             save_dir,

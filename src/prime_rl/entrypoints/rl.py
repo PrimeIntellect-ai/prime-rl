@@ -116,16 +116,16 @@ def rl_local(config: RLConfig):
     }
 
     # Validate client port matches inference server port
-    if config.inference is not None and not config.orchestrator.policy.client.is_elastic:
+    if config.inference is not None and not config.orchestrator.model.client.is_elastic:
         from urllib.parse import urlparse
 
-        base_url = config.orchestrator.policy.client.base_url[0]
+        base_url = config.orchestrator.model.client.base_url[0]
         parsed = urlparse(base_url)
         client_port = parsed.port
         expected_port = config.inference.server.port
         if client_port != expected_port:
             raise ValueError(
-                f"orchestrator.policy.client.base_url port ({client_port}) does not match "
+                f"orchestrator.model.client.base_url port ({client_port}) does not match "
                 f"inference.server.port ({expected_port}). "
                 f"Update the base_url to use port {expected_port} to match the inference server."
             )
@@ -181,8 +181,8 @@ def rl_local(config: RLConfig):
             logger.warning(
                 "No [inference] block configured - the policy inference server will not be started here. "
                 "Every algorithm requires a policy inference pool for evals + weight sync; "
-                "make sure one is running at orchestrator.policy.client.base_url "
-                f"({', '.join(config.orchestrator.policy.client.base_url)}), otherwise the orchestrator "
+                "make sure one is running at orchestrator.model.client.base_url "
+                f"({', '.join(config.orchestrator.model.client.base_url)}), otherwise the orchestrator "
                 "will hang waiting for it."
             )
 
