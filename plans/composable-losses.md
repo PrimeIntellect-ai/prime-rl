@@ -365,6 +365,13 @@ after the forward.
 Principle: intrinsic objective math (DPPO clip + KL) stays inside the core; hooks are cross-cutting
 transforms layered on top.
 
+**Hooks are per-sample, not group-level (decided).** A hook sees one sample's live forward, not the
+GRPO group. The group is an orchestrator concept and isn't preserved through the trainer's micro-batch
+packing, so group-level trainer hooks would mean shipping group IDs and regrouping in the loss —
+duplicating what the advantage_fn already does naturally. The clean split: **needs-the-group →
+orchestrator advantage; needs-the-live-forward → trainer hook.** (A transform needing *both* — exotic —
+is the only thing this rules out; nothing on the roadmap needs it.)
+
 ### 4.5 λ (`lambda_weight`)
 
 Per-term coefficient applied pre-reduce (default `1.0`). It owns a term's **magnitude** (e.g. the echo
@@ -450,30 +457,67 @@ external entry at its only use-site). "External-only / never host" is a **policy
 scorer resolves to an external `base_url`, a managed pool, or — later — a policy snapshot), not a
 property of the architecture. One prefill, N consumers.
 
-### What's done vs deferred
+### Done ✅
 
-**Done ✅:** the rename; the flat `reference_logprobs` feed → `LossInputs` → the OPD core (the
-reference-consuming *core* seam already works for `top_k = 1`, the sampled-token estimate). The
-`surprisal_gate` hook (§4.4) lands the pedagogical Phase-2 gate (it reads the live trained policy,
-`trainer_logprobs`, so it needs no reference feed).
+The rename; the flat `reference_logprobs` feed → `LossInputs` → the OPD core (the reference-consuming
+*core* seam works for `top_k = 1`, the sampled-token estimate). The `surprisal_gate` hook (§4.4) lands
+the pedagogical Phase-2 gate (it reads the live trained policy, `trainer_logprobs`, so needs no
+reference feed).
 
-**Deferred 🟡 — each piece needs machinery that is unsafe to half-build, and they are coupled, so they
-ship as deliberate follow-up chunks rather than dead scaffolding:**
+### The reorder — a lazy reference handle (decided)
 
-- **top-k feed + its consumer (ship together).** `logprobs.top_k > 1` is only useful with a *core* that
-  does top-k distillation, and that core must evaluate the **trainer's own** logprobs at the reference's
-  top-k token ids — a forward-pass **gather**, not just more wire data. So the feed
-  (`reference_topk_ids` / `reference_topk_logprobs` on the wire) and the gather-core land in one chunk;
-  shipping top-k that nothing reads (at a real prefill cost) is the thing to avoid. `top_k = 1` (today)
-  needs no gather.
-- **Reference in `RenderHints` (advantage side) + a `ref_kl` advantage / the pedagogical `G_spike`.**
-  Advantage_fns run per-group in `train_sink` **before** the reference is prefilled (which happens at
-  batch-finalize, after grouping). Letting an advantage read the reference requires moving the prefill
-  *ahead* of advantage computation — a deliberate orchestrator-pipeline reorder. (The reference already
-  reaches the *core* side via `LossInputs`; only the *advantage* side needs the reorder.)
-- **The named-scorer registry config surface** — the open team item (§12). The wire stays the renamed
-  flat `reference_logprobs` (one scorer) until then, generalizing to the `dict[str, …]` map when a
-  second scorer actually lands — so no premature migration.
+To let orchestrator-side advantage logic *use* the reference, it must be available **before** GRPO
+centering — the "reorder." We do it **paper-faithfully** (`center(R · G_spike)`: the reference feeds the
+reward that centering sees), not the cheaper post-hook approximation (`center(R) · G_spike`, which was
+considered and rejected — it filters on `R`-ties and centers the unshaped reward).
+
+**Mechanism — pull-based, zero new config.** A single memoized `ReferenceHandle` per group is the *only*
+prefill primitive. `await reference(sample)` triggers one batched prefill against the reference model
+and caches the result **on the sample**; not calling it costs nothing. No scheduler, nothing to declare
+— **the call is the opt-in, and prefill timing follows whoever pulls first:**
+
+- an **advantage *strategy*** (the per-rollout scalar — where centering lives) pulls it → reference is
+  there *before* centering → reward shaping like `G_spike`;
+- a **per-term advantage_fn** pulls it → there *after* centering → per-token signals like a `ref_kl`
+  surprise weight;
+- a **trainer-side core** can't pull mid-loss, so it **declares** it needs the reference shipped (OPD
+  does); the orchestrator pulls the handle at **post-filter ship-prep** and stamps `reference_logprobs`
+  on the sample. This makes **OPD functionally identical** (same prefill call, same values, same
+  post-filter timing, same `opd_loss_fn`) — but now OPD is "just a trainer-side reference consumer
+  through the shared handle," and the bespoke finalize prefill goes away. Caching-on-sample means an
+  orchestrator-side puller and OPD share one prefill (no double work).
+
+So one primitive, two access modes: **orchestrator-side consumers pull (lazy); trainer-side consumers
+declare and the orchestrator pulls-and-ships.**
+
+**Footprint (deliberately small).** The handle rides on `RenderHints`, so **no advantage_fn signature
+changes** — a reference-using fn is just `async` and does `await hints.reference_logprobs()`; built-in
+sync fns (`grpo` / `echo` / `sft`, the GRPO strategy) never touch it and are unchanged. The
+orchestrator-side advantage step becomes `async`, but it already runs inside an async context
+(`process_group` ← async `add`), so the change is localized (`process_group` + `assign_advantages` + an
+`isawaitable` await) with **zero user-facing config**. Generalizes for free to the multi-scorer registry
+(each scorer is its own lazy handle).
+
+**Why this is generally more powerful** (not just "enables pedagogical") — all orchestrator-only,
+impossible trainer-side:
+
+- **pre-centering reward shaping** (`r' = f(R, reference)`);
+- **group-relative reference advantages** (an advantage_fn combining the group *and* the reference);
+- **reference-based filtering *before* the forward** — a reference-derived advantage can go to `0` →
+  emergent dismissal → no forward, so the "filter-before-forward saves compute" property extends to
+  reference signals.
+
+(Hooks deliberately stay **per-sample**, not group-level — §4.4: needs-the-group → orchestrator
+advantage; needs-the-live-forward → trainer hook. Pedagogical splits cleanly: `G_spike` is
+orchestrator-side, `surprisal_gate` is the live-forward hook.)
+
+### Still deferred 🟡
+
+- **Top-k distillation core** — `logprobs.top_k > 1` only pays off with a core that gathers the
+  trainer's logprobs at the reference's top-k ids (a forward-pass gather); feed + gather-core ship
+  together. `top_k = 1` (the sampled-token estimate) already works.
+- **The named-scorer registry config surface** — the open team item (§12); the wire stays the renamed
+  flat `reference_logprobs` (one scorer) until a second scorer lands.
 
 ---
 
@@ -550,7 +594,7 @@ ship as deliberate follow-up chunks rather than dead scaffolding:**
 
   | Run | Trains | Frozen | What it needs |
   |---|---|---|---|
-  | **Phase 1** (teacher) | the teacher | the student | RL on `r_ped = R · G_spike^θS`; `G_spike` is a **custom advantage_fn** reading the frozen student's logprobs (§6) — it's inside the reward *before* GRPO centering, so it can't be a post-loss hook |
+  | **Phase 1** (teacher) | the teacher | the student | RL on `r_ped = R · G_spike^θS`; `G_spike` is an **advantage *strategy*** that pulls the lazy reference handle (§6) to shape the reward *before* GRPO centering — orchestrator-side, since centering is group-relative (so not a post-loss hook) |
   | **Phase 2** (student) | the student | the teacher | OPD imitation + a **surprisal gate** `wₜ = σ(κ(logπθS − γ))` and a `1/Σwₜ` **custom reduce** |
 
   The Phase-2 gate depends on the **student being trained** → live `trainer_logprobs` → a **hook** (the
@@ -597,15 +641,16 @@ are all expressible as terms here and can ship as presets later (⚪ backlog).
 
 ### 🟡 TODO (rough order)
 
-1. **Top-k reference feed + a top-k distillation core** (§6) — ship `reference_topk_*` on the wire +
-   the gather-core that evaluates the trainer's logprobs at the reference's top-k ids (coupled — ship
-   together). `top_k = 1` already works (the OPD core); this is the `top_k > 1` upgrade.
-2. **Reference on the advantage side** (§6) — move the reference prefill *ahead* of advantage
-   computation, expose it in `RenderHints`, and add a `ref_kl` advantage / the pedagogical `G_spike`.
+1. **The reorder — lazy reference handle + OPD unification** (§6, *designed/decided*) — build the
+   `ReferenceHandle` (memoized, cache-on-sample); route OPD's prefill through it (byte-identical, no more
+   bespoke finalize path); let orchestrator-side advantage strategies / advantage_fns pull it
+   (pre-/post-centering by who pulls); add the pedagogical Phase-1 `G_spike` advantage strategy. **← next.**
+2. **Top-k distillation core** (§6) — `reference_topk_*` on the wire + a core that gathers the trainer's
+   logprobs at the reference's top-k ids (coupled — ship together). `top_k = 1` already works.
 3. **Filter niceties** (§3.8) — an orchestrator-side sampling-prob filter (the live-prob one is done via
    `min_prob_filter`); wants the filter/advantage-composition surface, so it couples with #5.
-4. **Pedagogical RL** (§9) — the `surprisal_gate` hook is built (the Phase-2 live gate); remaining is the
-   Phase-1 `G_spike` advantage (needs #2) and the curriculum (backlog).
+4. **Pedagogical RL** (§9) — `surprisal_gate` is built (Phase-2 live gate); `G_spike` lands with #1;
+   remaining is the curriculum (backlog).
 5. **Surface polish** toward the full pointer / cascading-preset model **and the scorer-registry config
    surface** (§6) — proposed here, **deferred in code until the team aligns** (typed configs + the
    `custom` escape hatch are ~equivalent today; global-vs-registry-vs-inline is the open call).
@@ -621,9 +666,10 @@ are all expressible as terms here and can ship as presets later (⚪ backlog).
 ## 12. Open questions (to settle with the team)
 
 - **Scorer config surface (§6).** Global field (today) vs the named-scorer **registry** (proposed
-  end-game) vs pure inline-on-component. The **wire** is being made registry-shaped regardless; only the
-  *config surface* is open. Lean: build the feed on the registry-shaped wire now, decide the surface
-  before exposing multiple scorers.
+  end-game) vs pure inline-on-component. The lazy `ReferenceHandle` *mechanism* is decided and
+  generalizes (each scorer is its own handle); only the *config surface* is open. Lean: build on the
+  handle now, keep the flat `reference_logprobs` wire + the global `orchestrator.reference` config until
+  a second scorer actually lands, and settle the surface then.
 - **Pedagogical Phase-2 gate (§9):** the live-hook path is built (`surprisal_gate`); the per-iteration
   snapshot path (→ custom advantage + custom reduce) stays an alternative. Open: which to use in
   practice, and whether the exact `1/Σ wₜ` normalization warrants a built-in custom reduce.
