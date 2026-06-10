@@ -465,9 +465,7 @@ class PrimeMonitor(Monitor):
                 # Stripped steps (strip_trajectory_prompt_arrays) carry the
                 # count instead of the array; fresh steps still have the ids.
                 "num_input_tokens": (
-                    ts["tokens"].get("num_prompt_tokens", len(ts["tokens"]["prompt_ids"]))
-                    if ts.get("tokens")
-                    else None
+                    ts["tokens"].get("num_prompt_tokens", len(ts["tokens"]["prompt_ids"])) if ts.get("tokens") else None
                 ),
                 "num_output_tokens": len(ts["tokens"]["completion_ids"]) if ts.get("tokens") else None,
             }
