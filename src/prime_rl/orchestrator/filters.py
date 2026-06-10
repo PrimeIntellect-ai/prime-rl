@@ -51,11 +51,9 @@ class GibberishFilter:
 
     def check(self, rollout: "TrainRollout") -> FilterResult:
         global_idx = 0
-        for turn in rollout.trace.trajectory:
-            tokens = turn.tokens
-            if tokens is None:
-                continue
-            for token_id, logprob in zip(tokens.completion_ids, tokens.completion_logprobs):
+        for node in rollout.trace.nodes:
+            completion = [t for t, m in zip(node.token_ids, node.mask) if m]
+            for token_id, logprob in zip(completion, node.logprobs):
                 if token_id > self.token_id_threshold and logprob < self.logprob_threshold:
                     return FilterResult(detected=True, detection_index=global_idx)
                 global_idx += 1
@@ -82,11 +80,8 @@ class RepetitionFilter:
     def check(self, rollout: "TrainRollout") -> FilterResult:
         consecutive = 0
         global_idx = 0
-        for turn in rollout.trace.trajectory:
-            tokens = turn.tokens
-            if tokens is None:
-                continue
-            for logprob in tokens.completion_logprobs:
+        for node in rollout.trace.nodes:
+            for logprob in node.logprobs:
                 if logprob > self.logprob_threshold:
                     consecutive += 1
                 else:

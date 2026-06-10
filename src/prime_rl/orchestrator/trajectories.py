@@ -1,11 +1,10 @@
 """Turn a v1 `Trace` (the env server's native, typed output) into training data.
 
-The orchestrator holds a real `vf.Trace` (validated in `envs.py`), so everything
-here is attribute access — no dicts. The trajectory is segmented into `branches`
-(recomputed on the consumer; a branch is a maximal linear run of turns whose context
-only grew), each turn carrying `tokens` (`prompt_ids` / `completion_ids` /
-`completion_logprobs`, from the renderer client). Token-length readers
-(`completion_len`, `total_tokens`, `has_response`) live on `vf.Trace` itself.
+The orchestrator holds a real `vf.Trace` (validated in `envs.py`), so everything here is
+attribute access — no dicts. The trace is a message graph (`trace.nodes`); each branch (a
+root→leaf path) yields one training sample, built by concatenating the path's per-node token
+ids/mask/logprobs (`graph.branch_token_sequences`). Token-length readers (`completion_len`,
+`total_tokens`, `num_turns`) live on `vf.Trace` itself.
 """
 
 from __future__ import annotations
@@ -15,14 +14,6 @@ from verifiers.v1 import graph
 
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
-
-
-def backfill_rollout_tokens(trace: vf.Trace, tokenizer) -> None:
-    """No-op under the message-graph trace: training is renderer-only, so every turn already
-    carries token ids (the graph stores them per message). The old SFT-via-chat-client
-    backfill (rendering token-less turns) is unsupported — `trajectory` is now a read-only
-    view over the graph, so it can't write tokens back."""
-    return
 
 
 def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSample]:

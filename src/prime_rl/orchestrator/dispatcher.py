@@ -499,7 +499,7 @@ class RolloutDispatcher:
             is_synth_exception = True
 
         for r in rollouts:
-            if not r.has_error and len(r.trajectory) == 0:
+            if not r.has_error and r.num_turns == 0:
                 # Empty trajectory: promote to an explicit error so the sink
                 # treats it like any other failure
                 r.error = vf.Error(type="EmptyTrajectory", message="Rollout returned with no trajectory steps")

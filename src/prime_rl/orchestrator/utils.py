@@ -42,12 +42,6 @@ async def setup_student_inference_pool(*, config: OrchestratorConfig, tokenizer)
     return None, inference_pool
 
 
-def get_model_completion_len(output: vf.Trace) -> int:
-    """Sum of model-generated completion tokens across all turns (excludes
-    environment-injected tokens between turns)."""
-    return sum(len(turn.tokens.completion_ids) for turn in output.trajectory if turn.tokens)
-
-
 def get_tool_response_len(output: vf.Trace) -> int:
     """Total tool-response tokens consumed across the whole rollout, read from a
     harness-emitted metric (e.g. RLM's `rlm_total_tool_response_tokens`, deduped
