@@ -150,19 +150,25 @@ def validate_output_dir(output_dir: Path, *, resuming: bool, clean: bool, ckpt_o
 
 
 def clean_future_steps(output_dir: Path, resume_step: int) -> None:
-    """Remove stale rollouts and broadcasts past ``resume_step``.
+    """Remove stale rollouts and broadcasts that a resumed run will produce again.
+
+    Rollouts are deleted from ``resume_step`` (inclusive): the resumed orchestrator always
+    regenerates the resume step's batch, and a stale file shifts the trainer one step ahead
+    of the orchestrator — the fresh batch lands on a step path the receiver has already
+    consumed. Broadcasts are deleted strictly past ``resume_step``: the resume-step broadcast
+    directory is an input to resume (weights for the filesystem bootstrap, markers for NCCL).
 
     Pass ``resume_step=-1`` to wipe every step directory (fresh runs).
     """
     run_default = output_dir / "run_default"
-    dirs = [
-        get_rollout_dir(output_dir),
-        get_rollout_dir(run_default),
-        get_broadcast_dir(run_default),
+    dirs_keep_through = [
+        (get_rollout_dir(output_dir), resume_step - 1),
+        (get_rollout_dir(run_default), resume_step - 1),
+        (get_broadcast_dir(run_default), resume_step),
     ]
 
-    for directory in dirs:
-        steps_to_delete = [step for step in get_all_ckpt_steps(directory) if step > resume_step]
+    for directory, keep_through in dirs_keep_through:
+        steps_to_delete = [step for step in get_all_ckpt_steps(directory) if step > keep_through]
         if not steps_to_delete:
             continue
         get_logger().info(
