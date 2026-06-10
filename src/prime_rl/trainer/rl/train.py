@@ -541,7 +541,7 @@ def train(config: TrainerConfig):
                 micro_step_message += f" | Routing Conf. {tensors['routing_confidence'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
-        if config.experimental.token_export is not None:
+        if config.enable_token_export:
             dist.barrier()
             ready_run_ids = {
                 multi_run_manager.idx_2_id[idx]

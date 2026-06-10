@@ -129,8 +129,7 @@ class TokenExporter:
 def setup_token_exporter(
     config: TrainerConfig, parallel_dims: Any, world: Any, logger: Any
 ) -> TokenExporter | DisabledTokenExporter:
-    token_export_config = config.experimental.token_export
-    if token_export_config is None:
+    if not config.enable_token_export:
         return DisabledTokenExporter()
     if parallel_dims.cp_enabled and parallel_dims.world_mesh["cp"].get_local_rank() != 0:
         return DisabledTokenExporter()

@@ -44,7 +44,7 @@ def _command(name: str) -> list[str]:
 def _write_token_export_trainer_config(tmp_path: Path) -> Path:
     source = Path("configs/ci/integration/reverse_text_multi_run/trainer.toml")
     config_path = tmp_path / "trainer_token_export.toml"
-    config_path.write_text(source.read_text() + "\n[experimental.token_export]\n")
+    config_path.write_text(source.read_text() + "\nenable_token_export = true\n")
     return config_path
 
 
