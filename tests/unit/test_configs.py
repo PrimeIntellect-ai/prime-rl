@@ -46,8 +46,15 @@ def is_eval_config(path: Path) -> bool:
 
 
 def is_baseline_config(path: Path) -> bool:
-    """Baseline harness TOMLs have a separate dataclass config loader."""
-    return path.parts[:2] == ("configs", "baselines")
+    """Baseline harness TOMLs have a separate dataclass config loader.
+
+    Detected by the loader's required top-level ``env_id`` key (no entrypoint
+    config has one); they live under ``configs/baselines/`` and in run packs
+    like ``configs/calibration/``.
+    """
+    with path.open("rb") as f:
+        data = tomllib.load(f)
+    return "env_id" in data
 
 
 def is_composed_config_layer(path: Path) -> bool:

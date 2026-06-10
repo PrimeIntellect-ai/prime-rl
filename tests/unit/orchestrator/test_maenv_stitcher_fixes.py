@@ -176,7 +176,9 @@ async def _run_roundtrip():
     f2 = fold_consecutive_user_messages(msgs2)
 
     # Post-commit form of slot 0 = folded msgs0 + A1 as assistant msg.
-    cache_after_0 = list(f0) + [AssistantMessage(content="A1 raw")]
+    # Own-turn replay mirrors the renderer-client bridge anchor:
+    # content=public_channel, reasoning_content=private_channel.
+    cache_after_0 = list(f0) + [AssistantMessage(content="A1 pub", reasoning_content=None)]
     tail = f2[len(cache_after_0) :]
 
     # Prefix stability
@@ -212,11 +214,13 @@ async def _past_instruction_positional(slot_ids: tuple[int, int, int, int]):
         _utt("debater_b", 1, slot_ids[1], "propose", "B1 raw", "B1 pub"),
     ]
     msgs = await env.build_prompt(_state(commits), "debater_a", env.schedule._slots[2])
-    # Past-own-turn instruction sits before the assistant msg with A1's raw content.
+    # Past-own-turn instruction sits before the assistant msg replaying A1's
+    # public channel (own-turn replay renders content=public_channel).
     past_user_texts = []
     for i, m in enumerate(msgs):
-        if m["role"] == "assistant" and m.get("content") == "A1 raw" and i > 0 and msgs[i - 1]["role"] == "user":
+        if m["role"] == "assistant" and m.get("content") == "A1 pub" and i > 0 and msgs[i - 1]["role"] == "user":
             past_user_texts.append(msgs[i - 1]["content"])
+    assert past_user_texts, "no past own-turn instruction found — matcher is stale"
     return past_user_texts
 
 

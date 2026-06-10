@@ -10,7 +10,14 @@ from typing import Any
 
 import pytest
 from verifiers import rollout_to_member_rollouts
-from verifiers.types import MARScore, MemberRollout, MemberScore, State, TrajectoryStep
+from verifiers.types import (
+    MARScore,
+    MemberRollout,
+    MemberScore,
+    RolloutTiming,
+    State,
+    TrajectoryStep,
+)
 from verifiers.utils.save_utils import state_to_output
 
 ENV_NAME = "debate_v1"
@@ -79,6 +86,7 @@ def _build_state(
     state = State()
     state["example_id"] = example_id
     state["task"] = ENV_NAME
+    state["timing"] = RolloutTiming()
     state["trajectory"] = steps
     state["trajectory_id"] = trajectory_id
     state["sampling_args"] = {"temperature": TEMPERATURE}
@@ -177,6 +185,7 @@ def test_bridge_missing_mar_score_raises_key_error():
     state = State()
     state["example_id"] = 1
     state["task"] = ENV_NAME
+    state["timing"] = RolloutTiming()
     state["trajectory"] = [_make_tagged_step("A")]
     state["trajectory_id"] = "ep-0"
     state["sampling_args"] = {"temperature": TEMPERATURE}
@@ -194,13 +203,22 @@ def test_bridge_missing_member_id_in_step_raises():
         rollout_to_member_rollouts(output)
 
 
-def test_bridge_empty_trajectory_still_emits_per_member_rollouts():
-    """A member with no own-turns is still in mar_score → still gets a
-    MemberRollout (with empty trajectory). Bridge does not silently drop."""
+def test_bridge_empty_trajectory_without_error_raises():
+    """A mar_score member with no own-turns and no recorded rollout error is
+    a contract violation — emitting empty member trajectories would silently
+    corrupt training data. Fail loud."""
     state = _build_state(steps=[])
     output = _output_via_state_to_output(state)
+    with pytest.raises(ValueError, match="no trajectory steps"):
+        rollout_to_member_rollouts(output)
+
+
+def test_bridge_empty_trajectory_with_error_emits_per_member_rollouts():
+    """When the rollout DID record an error, members without steps still get
+    (empty-trajectory) MemberRollouts so the failed episode stays visible."""
+    state = _build_state(steps=[], error=RuntimeError("rollout failed"))
+    output = state_to_output(state, state_columns=REQUIRED_COLUMNS)
     rollouts = rollout_to_member_rollouts(output)
-    # mar_score has 2 members; both get rollouts even with no steps.
     assert len(rollouts) == 2
     assert all(r["trajectory"] == [] for r in rollouts)
 

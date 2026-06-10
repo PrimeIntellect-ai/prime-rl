@@ -19,8 +19,7 @@ class _StructuredRubric(MultiAgentRubric):
     """Minimal subclass that writes mar_score with all members covered."""
 
     def __init__(self, members: list[str]):
-        super().__init__()
-        self.members = members
+        super().__init__(members=members)
 
     async def build_marscore(self, state) -> MARScore:
         return MARScore(
@@ -33,8 +32,7 @@ class _RaisingRubric(MultiAgentRubric):
     """Raises KernelProtocolError on the configured call-indexes."""
 
     def __init__(self, members: list[str], fail_on: set[int]):
-        super().__init__()
-        self.members = members
+        super().__init__(members=members)
         self.fail_on = fail_on
         self._i = -1
 

@@ -506,7 +506,8 @@ def test_format_instructions_enum():
         }
     )
     instr = generate_format_instructions(specs)
-    assert "WINNER" in instr
+    # No fillable placeholder (copy-bait for weak models) — just tag + values.
+    assert "<winner>" in instr
     assert "A, B" in instr
 
 
@@ -530,7 +531,7 @@ def test_format_instructions_plain_no_desc():
     specs = _resolve_fields({"answer": "str"})
     instr = generate_format_instructions(specs)
     assert "<answer>" in instr
-    assert "str" in instr
+    assert "your answer" in instr
 
 
 # ===================================================================
