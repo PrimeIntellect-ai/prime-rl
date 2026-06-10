@@ -228,7 +228,7 @@ uv run rl @ rl.toml --max-steps 10 --ckpt
 uv run rl @ rl.toml --max-steps 20 --ckpt.resume-step 10
 ```
 
-For LoRA runs using NCCL weight broadcast, resume uses the same adapter update path as normal training: the orchestrator arms `/update_lora` for the resumed step and the trainer broadcasts the adapter tensors before generation resumes. Keep `weight_broadcast.type = "nccl"` on all three roles and leave `trainer.max_concurrent_runs = 1`.
+For LoRA runs using NCCL weight broadcast, resume reuses the in-session update path: at startup the orchestrator arms `/update_lora` for the resumed step and the trainer answers with a one-shot broadcast of the checkpoint-restored adapter before generation resumes — nothing is read from the broadcast directory, which only holds marker files under NCCL. Keep `weight_broadcast.type = "nccl"` on all three roles and leave `trainer.max_concurrent_runs = 1`.
 
 ### Serving Checkpoints
 
