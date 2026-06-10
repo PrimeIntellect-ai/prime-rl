@@ -1,16 +1,9 @@
 import random
 from abc import ABC, abstractmethod
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any
 
-
-class SampleRollout(Protocol):
-    """Duck type for rollouts handed to the sample loggers: the typed `vf.Trace` (whose
-    `branches` carry per-branch `token_ids` / `messages` for display) plus its env name and
-    advantage. Avoids a hard dependency on the orchestrator's rollout types."""
-
-    trace: Any
-    env_name: str
-    advantage: float | None
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.types import Rollout
 
 
 def sample_items_for_logging(items: list[Any], sample_ratio: float | None) -> list[Any]:
@@ -47,11 +40,11 @@ class Monitor(ABC):
         pass
 
     @abstractmethod
-    def log_samples(self, rollouts: list[SampleRollout], step: int) -> None:
+    def log_samples(self, rollouts: list["Rollout"], step: int) -> None:
         pass
 
     @abstractmethod
-    def log_eval_samples(self, rollouts: list[SampleRollout], env_name: str, step: int) -> None:
+    def log_eval_samples(self, rollouts: list["Rollout"], env_name: str, step: int) -> None:
         pass
 
     @abstractmethod
@@ -80,10 +73,10 @@ class NoOpMonitor(Monitor):
         else:
             self.history = [metrics]
 
-    def log_samples(self, rollouts: list[SampleRollout], step: int) -> None:
+    def log_samples(self, rollouts: list["Rollout"], step: int) -> None:
         pass
 
-    def log_eval_samples(self, rollouts: list[SampleRollout], env_name: str, step: int) -> None:
+    def log_eval_samples(self, rollouts: list["Rollout"], env_name: str, step: int) -> None:
         pass
 
     def save_final_summary(self, filename: str = "final_summary.json") -> None:

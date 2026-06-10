@@ -10,7 +10,7 @@ from torch import Tensor
 if TYPE_CHECKING:
     import verifiers.v1 as vf
 
-    from prime_rl.orchestrator.types import TrainRollout
+    from prime_rl.orchestrator.types import Rollout
 
 from prime_rl.configs.orchestrator import (
     AdvantageConfig,
@@ -130,7 +130,7 @@ def setup_advantage_fn(config: AdvantageConfig) -> AdvantageFn:
 
 
 def assign_advantages(
-    rollouts: list[TrainRollout],
+    rollouts: list[Rollout],
     advantage_fn: AdvantageFn | None,
 ) -> None:
     """Compute and assign advantages for one finished group of rollouts
@@ -141,8 +141,8 @@ def assign_advantages(
     """
     if advantage_fn is None:
         for rollout in rollouts:
-            rollout.advantage = rollout.trace.reward
+            rollout.advantage = rollout.reward
         return
-    result = advantage_fn(AdvantageInputs(rollouts=[r.trace for r in rollouts]))
+    result = advantage_fn(AdvantageInputs(rollouts=[r for r in rollouts]))
     for rollout, advantage in zip(rollouts, result.advantages):
         rollout.advantage = advantage

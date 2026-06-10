@@ -3,7 +3,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import wandb
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -13,7 +13,10 @@ from wandb.sdk.mailbox.mailbox_handle import ServerResponseError
 from prime_rl.configs.shared import WandbConfig, WandbWithExtrasConfig
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.monitor.base import Monitor, SampleRollout, sample_items_for_logging
+from prime_rl.utils.monitor.base import Monitor, sample_items_for_logging
+
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.types import Rollout
 
 
 class WandbMonitor(Monitor):
@@ -141,7 +144,7 @@ class WandbMonitor(Monitor):
             return
         wandb.log({**metrics, "step": step})
 
-    def log_samples(self, rollouts: list[SampleRollout], step: int) -> None:
+    def log_samples(self, rollouts: list["Rollout"], step: int) -> None:
         """Logs rollouts to W&B table."""
         if not self.is_master:
             return
@@ -170,7 +173,7 @@ class WandbMonitor(Monitor):
         start_time = time.perf_counter()
 
         for rollout in rollouts:
-            trace = rollout.trace
+            trace = rollout
             for branch in trace.branches:
                 token_ids = branch.token_ids
                 if not token_ids:
@@ -193,7 +196,7 @@ class WandbMonitor(Monitor):
         self.last_log_samples_step = step
         self.logger.debug(f"Logged samples at step {step} to W&B table in {time.perf_counter() - start_time:.2f}s")
 
-    def log_eval_samples(self, rollouts: list[SampleRollout], env_name: str, step: int) -> None:
+    def log_eval_samples(self, rollouts: list["Rollout"], env_name: str, step: int) -> None:
         """Logs eval rollouts to a separate W&B table."""
         if not self.is_master:
             return
@@ -206,7 +209,7 @@ class WandbMonitor(Monitor):
             return
 
         for rollout in rollouts:
-            trace = rollout.trace
+            trace = rollout
             for branch in trace.branches:
                 # Eval runs the openai client (no token ids), so show the assistant message
                 # content rather than decoded tokens.

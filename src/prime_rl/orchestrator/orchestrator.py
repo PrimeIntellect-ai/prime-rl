@@ -55,12 +55,10 @@ from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import (
     EvalBatch,
-    EvalRollout,
-    FinishedRollout,
     Policy,
     Progress,
+    Rollout,
     TrainBatch,
-    TrainRollout,
 )
 from prime_rl.orchestrator.utils import (
     compute_teacher_logprobs,
@@ -486,18 +484,17 @@ class Orchestrator:
                 break
 
             try:
-                rollout: FinishedRollout = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
+                rollout: Rollout = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 continue
 
-            if isinstance(rollout, EvalRollout):
+            if rollout.kind == "eval":
                 assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
                 eval_batch = self.eval_sink.add(rollout)
                 if eval_batch is not None:
                     self.finalize_eval_batch(eval_batch)
                 continue
 
-            assert isinstance(rollout, TrainRollout)
             train_batch = await self.train_sink.add(rollout)
             # In drain mode any late-arriving train batch is dropped — we
             # don't want to ship past ``max_steps``
@@ -551,7 +548,7 @@ class Orchestrator:
             )
 
         # Serialize the typed Trace at the I/O boundary (disk + wandb sample tables).
-        rollout_dicts = [r.trace.model_dump(mode="json") for r in batch.rollouts]
+        rollout_dicts = [r.model_dump(mode="json") for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(config.output_dir), step)
         await asyncio.to_thread(save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl")
 
@@ -587,7 +584,7 @@ class Orchestrator:
         self.monitor.log_samples(batch.rollouts, step=step)
         self.monitor.log_distributions(
             distributions={
-                "rewards": [r.trace.reward for r in batch.rollouts],
+                "rewards": [r.reward for r in batch.rollouts],
                 "advantages": [r.advantage for r in batch.rollouts if r.advantage is not None],
             },
             step=step,
@@ -606,7 +603,7 @@ class Orchestrator:
 
         num_rollouts = len(batch.rollouts)
         num_unique_examples = len({r.group_id for r in batch.rollouts})
-        num_tokens = sum(r.trace.total_tokens for r in batch.rollouts)
+        num_tokens = sum(r.total_tokens for r in batch.rollouts)
         self.progress.total_tokens += num_tokens
         self.progress.total_samples += num_rollouts
         self.progress.total_problems += num_unique_examples
@@ -711,10 +708,10 @@ class Orchestrator:
         n_trainable = batch.metrics.n_trainable
         error_rate = (n_errors_total / n_arrivals_total) if n_arrivals_total else 0.0
         trainable_rate = (n_trainable / n_survivors) if n_survivors else 0.0
-        reward_mean = sum(r.trace.reward for r in batch.rollouts) / max(n_survivors, 1)
+        reward_mean = sum(r.reward for r in batch.rollouts) / max(n_survivors, 1)
         max_off_policy = max((r.off_policy_steps for r in batch.rollouts), default=0)
-        turns_mean = sum(r.trace.num_turns for r in batch.rollouts) / max(n_survivors, 1)
-        truncation_rate = sum(1 for r in batch.rollouts if r.trace.is_truncated) / max(n_survivors, 1)
+        turns_mean = sum(r.num_turns for r in batch.rollouts) / max(n_survivors, 1)
+        truncation_rate = sum(1 for r in batch.rollouts if r.is_truncated) / max(n_survivors, 1)
 
         head = (
             f"Step {step} | {format_time(step_time):>7} | Reward {reward_mean:.4f} | "
@@ -735,12 +732,10 @@ class Orchestrator:
             n_env_errors = batch.metrics.errors_by_env.get(env_name, 0)
             ratio = (n_env_arrivals / n_arrivals_total) if n_arrivals_total else 0.0
             env_error_rate = (n_env_errors / n_env_arrivals) if n_env_arrivals else 0.0
-            env_reward = (sum(r.trace.reward for r in env_rollouts) / len(env_rollouts)) if env_rollouts else 0.0
+            env_reward = (sum(r.reward for r in env_rollouts) / len(env_rollouts)) if env_rollouts else 0.0
             env_max_off_policy = max((r.off_policy_steps for r in env_rollouts), default=0)
-            env_turns = sum(r.trace.num_turns for r in env_rollouts) / len(env_rollouts) if env_rollouts else 0.0
-            env_truncation = (
-                sum(1 for r in env_rollouts if r.trace.is_truncated) / len(env_rollouts) if env_rollouts else 0.0
-            )
+            env_turns = sum(r.num_turns for r in env_rollouts) / len(env_rollouts) if env_rollouts else 0.0
+            env_truncation = sum(1 for r in env_rollouts if r.is_truncated) / len(env_rollouts) if env_rollouts else 0.0
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_reward:.4f} | "
                 f"Turns {env_turns:.1f} | Max Off-Policy {env_max_off_policy} | "
@@ -755,7 +750,7 @@ class Orchestrator:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no surviving rollouts, skipping log")
             return
 
-        rollout_dicts = [r.trace.model_dump(mode="json") for r in batch.rollouts]
+        rollout_dicts = [r.model_dump(mode="json") for r in batch.rollouts]
         step_path = get_step_path(get_rollout_dir(self.config.output_dir), batch.step)
         save_rollouts(
             rollout_dicts,

@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Thread
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import pyarrow as pa
@@ -18,25 +18,10 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.configs.shared import PrimeMonitorConfig
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.monitor.base import Monitor, SampleRollout, sample_items_for_logging
+from prime_rl.utils.monitor.base import Monitor, sample_items_for_logging
 
-
-def _json(val: Any) -> str:
-    """JSON-serialize dicts/lists, pass strings through, default to empty string for None."""
-    if isinstance(val, str):
-        return val
-    if val is None:
-        return ""
-    return json.dumps(val)
-
-
-def _split_branch_messages(branch) -> tuple[list[dict], list[dict]]:
-    """Split a branch's messages into (prompt, completion) at the first assistant turn, each a
-    list of serialized message dicts."""
-    messages = branch.messages
-    first = next((i for i, m in enumerate(messages) if m.role == "assistant"), len(messages))
-    dumped = [m.model_dump(mode="json") for m in messages]
-    return dumped[:first], dumped[first:]
+if TYPE_CHECKING:
+    from prime_rl.orchestrator.types import Rollout
 
 
 _SAMPLE_SCHEMA = pa.schema(
@@ -293,7 +278,7 @@ class PrimeMonitor(Monitor):
             },
         )
 
-    def log_samples(self, rollouts: list[SampleRollout], step: int) -> None:
+    def log_samples(self, rollouts: list["Rollout"], step: int) -> None:
         """Logs rollouts to Prime Intellect API using presigned URLs for direct R2 upload."""
         if not self.is_master:
             return
@@ -336,41 +321,36 @@ class PrimeMonitor(Monitor):
             f"Initiated samples upload at step {step} to Prime Intellect API in {time.perf_counter() - start_time:.2f}s"
         )
 
-    def _rollouts_to_parquet_bytes(self, rollouts: list[SampleRollout], step: int) -> bytes | None:
+    def _rollouts_to_parquet_bytes(self, rollouts: list["Rollout"], step: int) -> bytes | None:
         """Convert rollouts to Parquet bytes for upload. One row per rollout, built from the
-        message graph: the main (last) branch's messages split at the first assistant turn into
-        prompt/completion, and one trajectory entry per branch (`trace.branches`)."""
+        message graph: the conversation is the unit (no prompt/completion split — meaningless in
+        a multi-turn branch), so `completion` carries the main (last) branch's full message list
+        and `trajectory` carries one message list per branch (`trace.branches`)."""
         now = datetime.now(timezone.utc)
         rows = []
 
         for sample_id, rollout in enumerate(rollouts):
-            trace = rollout.trace
-            branches = trace.branches
+            branches = rollout.branches
             if not branches:
                 continue
-            main = branches[-1]
-            main_prompt, main_completion = _split_branch_messages(main)
+            main_messages = [m.model_dump(mode="json") for m in branches[-1].messages]
 
-            task_idx = trace.task.idx
+            task_idx = rollout.task.idx
             try:
                 problem_id = int(task_idx) if task_idx is not None else sample_id
             except (TypeError, ValueError):
                 problem_id = sample_id
 
-            trajectory_data = []
-            for branch in branches:
-                prompt, completion = _split_branch_messages(branch)
-                trajectory_data.append(
-                    {
-                        "prompt": prompt,
-                        "completion": completion,
-                        "reward": trace.reward,
-                        "advantage": rollout.advantage,
-                        "extras": {},
-                        "num_input_tokens": branch.prompt_len,
-                        "num_output_tokens": branch.completion_len,
-                    }
-                )
+            trajectory_data = [
+                {
+                    "messages": [m.model_dump(mode="json") for m in branch.messages],
+                    "reward": rollout.reward,
+                    "advantage": rollout.advantage,
+                    "num_input_tokens": branch.prompt_len,
+                    "num_output_tokens": branch.completion_len,
+                }
+                for branch in branches
+            ]
 
             rows.append(
                 {
@@ -379,19 +359,19 @@ class PrimeMonitor(Monitor):
                     "tag": "",
                     "problem_id": problem_id,
                     "sample_id": sample_id,
-                    "prompt": json.dumps(main_prompt),
-                    "completion": json.dumps(main_completion),
+                    "prompt": "",
+                    "completion": json.dumps(main_messages),
                     "trajectory": json.dumps(trajectory_data),
                     "answer": "",
                     "env_name": rollout.env_name,
-                    "task": _json(trace.task.model_dump(mode="json")),
+                    "task": json.dumps(rollout.task.model_dump(mode="json")),
                     "info": "",
-                    "reward": trace.reward,
+                    "reward": rollout.reward,
                     "advantage": rollout.advantage,
-                    "metrics": _json(trace.metrics),
-                    "timing": _json(trace.timing.model_dump(mode="json")),
-                    "num_input_tokens": main.prompt_len,
-                    "num_output_tokens": main.completion_len,
+                    "metrics": json.dumps(rollout.metrics),
+                    "timing": json.dumps(rollout.timing.model_dump(mode="json")),
+                    "num_input_tokens": branches[-1].prompt_len,
+                    "num_output_tokens": branches[-1].completion_len,
                     "created_at": now,
                 }
             )
@@ -504,7 +484,7 @@ class PrimeMonitor(Monitor):
                 await asyncio.sleep(delay)
         return False
 
-    def log_eval_samples(self, rollouts: list[SampleRollout], env_name: str, step: int) -> None:
+    def log_eval_samples(self, rollouts: list["Rollout"], env_name: str, step: int) -> None:
         pass
 
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
