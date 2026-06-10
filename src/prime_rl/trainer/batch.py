@@ -298,6 +298,35 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     return micro_batch
 
 
+def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
+    """Every per-token array must stay position-aligned with ``input_ids``
+    through packing and padding — a field extended without backfill would
+    corrupt training silently."""
+    num_tokens = len(micro_batch.input_ids)
+    per_token_fields = (
+        "loss_mask",
+        "advantages",
+        "inference_logprobs",
+        "position_ids",
+        "temperatures",
+        "env_names",
+        "ref_logprobs",
+        "loss_core_ids",
+        "loss_weights",
+        "rewards",
+        "mm_token_type_ids",
+    )
+    for name in per_token_fields:
+        values = getattr(micro_batch, name)
+        assert values is None or len(values) == num_tokens, (
+            f"{name} misaligned after packing: {len(values)} != {num_tokens} tokens"
+        )
+    if micro_batch.routed_experts is not None:
+        assert micro_batch.routed_experts.shape[0] == num_tokens, (
+            f"routed_experts misaligned after packing: {micro_batch.routed_experts.shape[0]} != {num_tokens} tokens"
+        )
+
+
 def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     """Create a zero-loss dummy batch from an existing batch, preserving its modality."""
     dummy = copy.deepcopy(source)
@@ -336,6 +365,8 @@ def prepare_batch(
 
     micro_batches = packed_samples_into_micro_bs(all_samples, seq_len, num_loras)
     micro_batches = [pad_micro_batch(micro_batch, pad_to_multiple_of) for micro_batch in micro_batches]
+    for micro_batch in micro_batches:
+        _assert_token_arrays_aligned(micro_batch)
 
     # Separate by modality so each step index has uniform modality across all ranks
     mm_batches = [b for b in micro_batches if _is_multimodal_sample(b)]
