@@ -52,29 +52,24 @@ def backfill_trace(trace: vf.Trace, renderer) -> None:
 def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSample]:
     """Convert a v1 `Trace` into `TrainingSample`s — one per branch.
 
-    Each `trace.branches` entry carries its own flat token sequence (`branch.token_ids` /
-    `branch.sampled_mask` / `branch.logprobs`). The prompt is everything up to the first
-    model-sampled token; the completion is the rest, trainable where `sampled_mask` is True
-    (the per-turn context tokens between completions stay masked out). On a rollout error the
-    whole completion is masked out. Branches with no sampled tokens (e.g. an openai client
-    carrying none) yield nothing.
+    Each `trace.branches` entry is already a flat token sequence (`branch.token_ids` /
+    `branch.sampled_mask` / `branch.logprobs`), so a sample carries it directly: `mask` marks
+    the trainable (model-sampled) tokens, the context tokens between completions stay masked
+    out. On a rollout error the whole completion is masked out. Branches with no sampled tokens
+    (e.g. an openai client carrying none) yield nothing.
     """
     has_error = trace.has_error
     samples: list[TrainingSample] = []
     for branch in trace.branches:
-        ids, sampled_mask, logprobs = branch.token_ids, branch.sampled_mask, branch.logprobs
-        if not any(sampled_mask):
+        mask = branch.sampled_mask
+        if not any(mask):
             continue
-        first = sampled_mask.index(True)  # split prompt | completion at the first sampled token
-        prompt_ids = ids[:first]
         samples.append(
             TrainingSample(
-                prompt_ids=prompt_ids,
-                prompt_mask=[False] * len(prompt_ids),
-                completion_ids=ids[first:],
-                completion_mask=[m and not has_error for m in sampled_mask[first:]],
-                completion_logprobs=logprobs[first:],
-                completion_temperatures=[],  # filled by TrainSink.process_group
+                token_ids=branch.token_ids,
+                mask=[m and not has_error for m in mask],
+                logprobs=branch.logprobs,
+                temperatures=[],  # filled by TrainSink.process_group
                 teacher_logprobs=None,
                 advantage=None,
                 env_name=env_name,

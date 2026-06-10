@@ -515,13 +515,11 @@ class OrchestratorConfig(BaseConfig):
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
-    renderer: RendererConfig | None = AutoRendererConfig()
-    """Typed renderer config (``renderers.RendererConfig`` discriminated
-    union). Defaults to ``"auto"``, which resolves from
-    ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. A renderer is
-    required (``None`` is rejected): RL/OPD roll out through the renderer
-    client, and SFT uses it to backfill tokens for its chat-completions
-    teacher."""
+    renderer: RendererConfig = AutoRendererConfig()
+    """Typed renderer config (``renderers.RendererConfig`` discriminated union), required —
+    training is renderer-only. Defaults to ``"auto"``, which resolves from
+    ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. RL/OPD roll out through the renderer
+    client; SFT uses it to backfill tokens for its chat-completions teacher."""
 
     pool_size: int | None = Field(None, ge=1)
     """Number of renderer slots shared across concurrent rollouts. Bump
@@ -743,22 +741,6 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def enforce_renderer(self):
-        """A renderer is required for every training mode. RL/OPD roll out through the renderer
-        client (exact sampled token ids + logprobs); SFT rolls out against a chat-completions
-        teacher and re-renders the conversation to backfill tokens. The plain chat client never
-        produces correct training tokens for the message graph (no per-message attribution), so
-        ``renderer=None`` is rejected rather than silently mis-tokenizing. Declared before the
-        renderer validators below so they can assume a renderer is present."""
-        if self.renderer is None:
-            raise ValueError(
-                "orchestrator.renderer must be set (training is renderer-only). RL/OPD use the "
-                "renderer client; SFT uses the renderer to backfill its chat-completions teacher. "
-                "Set [orchestrator.renderer] name='auto' (or a specific renderer)."
-            )
-        return self
-
-    @model_validator(mode="after")
     def validate_training_mode(self):
         """Enforce training mode invariants that involve only orchestrator fields."""
         has_teacher = self.teacher is not None
@@ -781,7 +763,7 @@ class OrchestratorConfig(BaseConfig):
         ``DefaultRendererConfig.tool_parser`` is configured. Surface at
         config time so ``--dry-run`` reports the error.
         """
-        if self.renderer is None or self.renderer.name != "auto":
+        if self.renderer.name != "auto":
             return self
         from renderers.base import MODEL_RENDERER_MAP
 

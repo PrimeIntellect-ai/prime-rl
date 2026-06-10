@@ -42,12 +42,10 @@ def create_run_with_config(output_dir: Path, run_name: str) -> Path:
 
 def make_training_sample() -> TrainingSample:
     return TrainingSample(
-        prompt_ids=[1],
-        prompt_mask=[False],
-        completion_ids=[2],
-        completion_mask=[True],
-        completion_logprobs=[-0.1],
-        completion_temperatures=[1.0],
+        token_ids=[1, 2],
+        mask=[False, True],
+        logprobs=[0.0, -0.1],
+        temperatures=[1.0, 1.0],
         env_name="test-env",
     )
 

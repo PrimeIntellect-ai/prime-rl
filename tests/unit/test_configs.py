@@ -169,7 +169,7 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
 
 
 def test_orchestrator_vlm_requires_renderer():
-    with pytest.raises(ValidationError, match="orchestrator.renderer must be set"):
+    with pytest.raises(ValidationError, match="renderer"):
         OrchestratorConfig.model_validate(
             {
                 "student": {
@@ -483,8 +483,8 @@ def test_orchestrator_explicit_renderer_skips_unmapped_check():
 
 
 def test_orchestrator_renderer_none_rejected():
-    """A renderer is required (training is renderer-only): renderer=None is rejected."""
-    with pytest.raises(ValidationError, match="orchestrator.renderer must be set"):
+    """A renderer is required (training is renderer-only): the non-optional type rejects None."""
+    with pytest.raises(ValidationError, match="renderer"):
         OrchestratorConfig.model_validate(
             {
                 "model": {"name": "not-a-real-org/not-a-real-model"},

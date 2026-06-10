@@ -2,7 +2,8 @@ import asyncio
 import json
 
 import httpx
-import verifiers as vf
+import openai
+from verifiers.v1.clients.config import OpenAIClientConfig
 
 from prime_rl.orchestrator import utils as orchestrator_utils
 from prime_rl.transport import TrainingSample
@@ -41,20 +42,19 @@ def test_compute_teacher_logprobs_uses_inference_generate(monkeypatch):
                 "kv_transfer_params": None,
             }
         )
-        monkeypatch.setattr(orchestrator_utils, "setup_openai_client", lambda _: fake_client)
+        # compute_teacher_logprobs constructs AsyncOpenAI directly; hand back the fake.
+        monkeypatch.setattr(openai, "AsyncOpenAI", lambda **kwargs: fake_client)
 
         sample = TrainingSample(
-            prompt_ids=[1],
-            prompt_mask=[True],
-            completion_ids=[2, 3],
-            completion_mask=[True, True],
-            completion_logprobs=[-0.1, -0.2],
-            completion_temperatures=[1.0, 1.0],
+            token_ids=[1, 2, 3],
+            mask=[False, True, True],
+            logprobs=[0.0, -0.1, -0.2],
+            temperatures=[1.0, 1.0, 1.0],
             env_name="test-env",
         )
 
         result = await orchestrator_utils.compute_teacher_logprobs(
-            clients=[vf.ClientConfig()],
+            clients=[OpenAIClientConfig(base_url="http://fake-host:8000/v1")],
             model_name="teacher-model",
             samples=[sample],
         )

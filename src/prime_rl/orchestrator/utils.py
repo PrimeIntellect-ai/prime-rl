@@ -114,7 +114,7 @@ async def compute_teacher_logprobs(
             cast_to=httpx.Response,
             body={
                 "model": model_name,
-                "token_ids": list(sample.prompt_ids) + list(sample.completion_ids),
+                "token_ids": list(sample.token_ids),
                 "sampling_params": {
                     "max_tokens": 1,
                     "temperature": 1.0,
