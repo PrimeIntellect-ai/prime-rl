@@ -4,6 +4,8 @@ from torch.nn import Module
 from vllm.model_executor.model_loader import DefaultModelLoader, get_model_loader
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
+from prime_rl.utils.nan_trace import write_event
+
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
     from vllm.v1.worker.gpu_worker import Worker
@@ -26,6 +28,7 @@ class FileSystemWeightUpdateWorker(Worker):
 
     def update_weights_from_path(self, weight_path: str) -> None:
         """Update weights from a specified path in shared filesystem containing a HF-compatible checkpoint."""
+        write_event("filesystem_update_weights_begin", weight_path=weight_path)
         # Get vLLM model runner and model
         # When enforce_eager=True, model isn't wrapped by torch.compile so no .runnable attr
         model_runner = self.model_runner
@@ -51,3 +54,4 @@ class FileSystemWeightUpdateWorker(Worker):
         # Process weights after loading (important for some models)
         device = next(model.parameters()).device
         process_weights_after_loading(model, self.model_runner.model_config, device)
+        write_event("filesystem_update_weights_end", weight_path=weight_path, device=str(device))

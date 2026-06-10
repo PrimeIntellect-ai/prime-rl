@@ -18,6 +18,7 @@ from prime_rl.trainer.utils import get_world
 from prime_rl.trainer.weights import get_max_layer_num
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable
+from prime_rl.utils.nan_trace import trace_state_dict, write_event
 from prime_rl.utils.pathing import sync_wait_for_path
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 from prime_rl.utils.vlm import get_layer_prefix
@@ -140,6 +141,7 @@ class NCCLWeightBroadcastSender:
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
+        write_event("trainer_nccl_broadcast_sender_begin", step=step)
         state_dict = model.state_dict()
         layer_prefix = get_layer_prefix(model.config)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
@@ -159,7 +161,16 @@ class NCCLWeightBroadcastSender:
             layer_state_dict = self._resolve_dtensors(layer_state_dict)
             layer_state_dict = preprocess_fn(model, layer_state_dict, layer_id)
             if self.world.is_master:
+                trace_state_dict(
+                    "trainer.nccl_broadcast",
+                    layer_state_dict,
+                    step=step,
+                    layer_id=layer_id,
+                    quantize_in_weight_transfer=self.quantize_in_weight_transfer,
+                )
+            if self.world.is_master:
                 broadcast_state_dict(layer_state_dict, self.communicator)
+        write_event("trainer_nccl_broadcast_sender_end", step=step, num_layers=num_layers)
 
     def _resolve_dtensors(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         for key, value in list(state_dict.items()):
@@ -196,6 +207,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
     @torch.no_grad()
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL and notifies the orchestrator."""
+        write_event("trainer_nccl_broadcast_begin", step=step)
         self.logger.debug("Starting broadcasting weights to inference engine via NCCL")
         start_time = time.perf_counter()
         # `_compute_notified_runs` is a pure function of SPMD-replicated state on
@@ -212,6 +224,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
         self._wait_for_nccl_ready(notified_runs)
         self.nccl_broadcast_sender.broadcast_weights(model, step)
         self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
+        write_event("trainer_nccl_broadcast_end", step=step, notified_runs=notified_runs)
 
     def _compute_notified_runs(self) -> list[tuple[int, Path]]:
         """Derive the list of (run_idx, save_dir) pairs that need broadcasting.

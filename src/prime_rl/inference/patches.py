@@ -8,11 +8,13 @@ def transformers_v5_compat():
     Registered as a ``vllm.general_plugins`` entry-point so it runs automatically
     in every vLLM process, including spawned workers.
     """
+    from prime_rl.inference.vllm.padded_input_trace import monkey_patch_vllm_padded_input_trace
     from transformers import Qwen3VLMoeTextConfig
 
     if not hasattr(Qwen3VLMoeTextConfig, "tie_word_embeddings"):
         Qwen3VLMoeTextConfig.tie_word_embeddings = False
 
+    monkey_patch_vllm_padded_input_trace()
     _patch_qwen35_lora()
     _patch_lora_key_prefix()
     monkey_patch_deep_gemm_ep_scatter()

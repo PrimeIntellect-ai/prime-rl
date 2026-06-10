@@ -14,6 +14,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, stop_after_d
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.nan_trace import write_event
 
 
 @runtime_checkable
@@ -291,24 +292,28 @@ async def _pause_engines(admin_clients: list[AsyncClient]) -> None:
     """Pause all inference engines, waiting for in-flight requests to drain."""
     logger = get_logger()
     logger.info("Pausing inference engines for weight update")
+    write_event("client_pause_engines_begin", admin_urls=[client.base_url for client in admin_clients])
 
     async def _pause(client: AsyncClient) -> None:
         response = await client.post("/pause", params={"mode": "keep", "clear_cache": "false"})
         response.raise_for_status()
 
     await asyncio.gather(*[_pause(client) for client in admin_clients])
+    write_event("client_pause_engines_end", admin_urls=[client.base_url for client in admin_clients])
     logger.info("All inference engines paused")
 
 
 async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
     """Resume all inference engines after weight update."""
     logger = get_logger()
+    write_event("client_resume_engines_begin", admin_urls=[client.base_url for client in admin_clients])
 
     async def _resume(client: AsyncClient) -> None:
         response = await client.post("/resume")
         response.raise_for_status()
 
     await asyncio.gather(*[_resume(client) for client in admin_clients])
+    write_event("client_resume_engines_end", admin_urls=[client.base_url for client in admin_clients])
     logger.info("All inference engines resumed")
 
 
@@ -330,29 +335,65 @@ async def update_weights(
     logger = get_logger()
 
     weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
+    write_event(
+        "client_update_weights_begin",
+        admin_urls=[client.base_url for client in admin_clients],
+        weight_dir=weight_dir_posix,
+        lora_name=lora_name,
+        step=step,
+    )
 
-    if lora_name is not None and weight_dir is not None:
-        await load_lora_adapter(admin_clients, lora_name, weight_dir)
-    else:
+    try:
+        if lora_name is not None and weight_dir is not None:
+            await load_lora_adapter(admin_clients, lora_name, weight_dir)
+        else:
 
-        async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
-            response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
-            response.raise_for_status()
+            async def _update_weights(admin_client: AsyncClient, weight_dir: str | None) -> None:
+                try:
+                    response = await admin_client.post("/update_weights", json={"weight_dir": weight_dir})
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    write_event(
+                        "client_update_weights_http_error",
+                        admin_url=admin_client.base_url,
+                        status_code=exc.response.status_code,
+                        response_text=exc.response.text,
+                        weight_dir=weight_dir,
+                        step=step,
+                    )
+                    raise
 
-        # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
-        await _pause_engines(admin_clients)
+            # Pause engines so all DP workers drain in-flight work and can join the NCCL broadcast
+            await _pause_engines(admin_clients)
 
-        try:
-            # Create ready marker before servers enter receive path (used by NCCL broadcast)
-            if weight_dir is not None:
-                nccl_ready_file = weight_dir / NCCL_READY_MARKER
-                nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
-                nccl_ready_file.touch()
-                logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
+            try:
+                # Create ready marker before servers enter receive path (used by NCCL broadcast)
+                if weight_dir is not None:
+                    nccl_ready_file = weight_dir / NCCL_READY_MARKER
+                    nccl_ready_file.parent.mkdir(parents=True, exist_ok=True)
+                    nccl_ready_file.touch()
+                    logger.debug(f"Created NCCL_READY marker at {nccl_ready_file}")
 
-            await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
-        finally:
-            await _resume_engines(admin_clients)
+                await asyncio.gather(*[_update_weights(admin_client, weight_dir_posix) for admin_client in admin_clients])
+            finally:
+                await _resume_engines(admin_clients)
+    except Exception as exc:
+        write_event(
+            "client_update_weights_error",
+            admin_urls=[client.base_url for client in admin_clients],
+            weight_dir=weight_dir_posix,
+            lora_name=lora_name,
+            step=step,
+            error=repr(exc),
+        )
+        raise
+    write_event(
+        "client_update_weights_end",
+        admin_urls=[client.base_url for client in admin_clients],
+        weight_dir=weight_dir_posix,
+        lora_name=lora_name,
+        step=step,
+    )
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:
@@ -390,6 +431,12 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
     """
     logger = get_logger()
     lora_path_posix = lora_path.as_posix()
+    write_event(
+        "client_load_lora_begin",
+        admin_urls=[client.base_url for client in admin_clients],
+        lora_name=lora_name,
+        lora_path=lora_path_posix,
+    )
 
     @retry(
         retry=retry_if_exception(_is_retryable_lora_error),
@@ -399,14 +446,41 @@ async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lo
     )
     async def _load_lora_adapter(admin_client: AsyncClient) -> None:
         logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
-        response = await admin_client.post(
-            "/load_lora_adapter",
-            json={"lora_name": lora_name, "lora_path": lora_path_posix},
-            timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0),
-        )
-        response.raise_for_status()
+        try:
+            response = await admin_client.post(
+                "/load_lora_adapter",
+                json={"lora_name": lora_name, "lora_path": lora_path_posix},
+                timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0),
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            write_event(
+                "client_load_lora_http_error",
+                admin_url=admin_client.base_url,
+                status_code=exc.response.status_code,
+                response_text=exc.response.text,
+                lora_name=lora_name,
+                lora_path=lora_path_posix,
+            )
+            raise
 
-    await asyncio.gather(*[_load_lora_adapter(admin_client) for admin_client in admin_clients])
+    try:
+        await asyncio.gather(*[_load_lora_adapter(admin_client) for admin_client in admin_clients])
+    except Exception as exc:
+        write_event(
+            "client_load_lora_error",
+            admin_urls=[client.base_url for client in admin_clients],
+            lora_name=lora_name,
+            lora_path=lora_path_posix,
+            error=repr(exc),
+        )
+        raise
+    write_event(
+        "client_load_lora_end",
+        admin_urls=[client.base_url for client in admin_clients],
+        lora_name=lora_name,
+        lora_path=lora_path_posix,
+    )
 
 
 async def unload_lora_adapter(admin_clients: list[AsyncClient], lora_name: str) -> None:

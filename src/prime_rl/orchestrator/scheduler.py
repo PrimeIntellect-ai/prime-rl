@@ -15,6 +15,7 @@ from prime_rl.orchestrator.vf_utils import get_seq_len
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.client import InferencePool
 from prime_rl.utils.logger import ProgressTracker, get_logger
+from prime_rl.utils.nan_trace import check_finite, write_event
 from prime_rl.utils.utils import (
     get_broadcast_dir,
     get_latest_ckpt_step,
@@ -303,8 +304,24 @@ class Scheduler:
 
         update_weights_start_time = time.perf_counter()
         weights_path = get_step_path(get_broadcast_dir(self.config.output_dir), next_ckpt_step)
+        write_event(
+            "orchestrator_policy_update_begin",
+            step=self.step,
+            next_ckpt_step=next_ckpt_step,
+            ckpt_step=self.ckpt_step,
+            weights_path=weights_path,
+            lora_name=self.lora_name,
+            inflight_rollouts=self.inflight_rollout_count,
+            inflight_samples=self.inflight_sample_count,
+        )
         await self.inference_pool.update_weights(weights_path, lora_name=self.lora_name, step=next_ckpt_step)
         self.update_weights_time = time.perf_counter() - update_weights_start_time
+        write_event(
+            "orchestrator_policy_update_end",
+            step=self.step,
+            next_ckpt_step=next_ckpt_step,
+            update_weights_time=self.update_weights_time,
+        )
         self.logger.debug(f"Updated weights to step {next_ckpt_step} in {self.update_weights_time:.2f}s")
 
         self.ckpt_step = next_ckpt_step
@@ -429,6 +446,14 @@ class Scheduler:
                     env = self.train_envs.get(env_name)
                     result = finished_task.result()
                     rollouts: list[vf.RolloutOutput] = result if isinstance(result, list) else [result]
+                    check_finite(
+                        "orchestrator.finished_rollouts",
+                        rollouts,
+                        step=step,
+                        ckpt_step=self.ckpt_step,
+                        group_id=group_id,
+                        env_name=env_name,
+                    )
                     self.total_rollouts_by_env[env_name] += len(rollouts)
 
                     # Check for empty/errored rollouts and reschedule
@@ -438,6 +463,14 @@ class Scheduler:
                         if rollout["error"] is not None:
                             self.errored_rollouts_by_env[env_name] += 1
                             has_failures = True
+                            write_event(
+                                "orchestrator_rollout_error",
+                                step=step,
+                                ckpt_step=self.ckpt_step,
+                                group_id=group_id,
+                                env_name=env_name,
+                                rollout=rollout,
+                            )
                             self.logger.warning(
                                 f"Rollout error in group {group_id} ({env_name}), re-scheduling "
                                 f"({len(group.completed_rollouts)}/{self.rollouts_per_example} complete): "

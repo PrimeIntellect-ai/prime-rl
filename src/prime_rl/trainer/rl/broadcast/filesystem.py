@@ -16,6 +16,7 @@ from prime_rl.trainer.weights import (
     gather_weights_on_master,
     save_state_dict,
 )
+from prime_rl.utils.nan_trace import trace_state_dict, write_event
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.utils import get_broadcast_dir, get_step_path
 
@@ -37,6 +38,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
 
     def broadcast_weights(self, model: nn.Module, step: int) -> None:
         """Broadcast weights by saving a HF-compatible checkpoint to shared filesystem and notifies the orchestrator."""
+        write_event("trainer_filesystem_broadcast_begin", step=step)
         self.logger.debug("Starting broadcasting weights to inference engine via shared filesystem")
         start_time = time.perf_counter()
         adapter_only = self.lora_config is not None
@@ -76,6 +78,14 @@ class FileSystemWeightBroadcast(WeightBroadcast):
                     save_dir.mkdir(parents=True, exist_ok=True)
 
                     self.logger.debug(f"Saving weights for run {idx} to {save_dir}")
+                    trace_state_dict(
+                        "trainer.filesystem_broadcast",
+                        state_dict,
+                        step=step,
+                        run_idx=idx,
+                        adapter_only=adapter_only,
+                        save_dir=save_dir,
+                    )
                     save_state_dict(state_dict, save_dir, self.save_format, self.save_sharded, adapter=adapter_only)
                     if adapter_only:
                         orch_lora = self.multi_run_manager.config[idx].model.lora
@@ -103,6 +113,7 @@ class FileSystemWeightBroadcast(WeightBroadcast):
 
         if self.world.is_master:
             self.logger.debug(f"Weights broadcasted in {time.perf_counter() - start_time:.2f}s")
+        write_event("trainer_filesystem_broadcast_end", step=step, adapter_only=adapter_only)
 
     def _notify_orchestrator(self, save_dir: Path):
         """Notify the orchestrator that the weights have been broadcast by writing a 'STABLE' file to a shared filesystem."""

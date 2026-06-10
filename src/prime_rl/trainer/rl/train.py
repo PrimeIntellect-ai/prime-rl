@@ -61,6 +61,7 @@ from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.metrics_server import HealthServer, MetricsServer, RunStats
 from prime_rl.utils.monitor import setup_monitor
+from prime_rl.utils.nan_trace import check_finite, heavy_trace_enabled, write_event
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
@@ -77,6 +78,13 @@ def train(config: TrainerConfig):
         json_logging=config.log.json_logging,
     )
     logger.info(f"Starting RL trainer in {world} in {config.output_dir}")
+    write_event(
+        "trainer_start",
+        output_dir=config.output_dir,
+        max_steps=config.max_steps,
+        max_concurrent_runs=config.max_concurrent_runs,
+        world=repr(world),
+    )
 
     # Print warning if running in benchmark mode
     if config.bench is not None:
@@ -328,6 +336,12 @@ def train(config: TrainerConfig):
         micro_batches = dataloader.get_batch()
         load_data_time = time.perf_counter() - load_data_start_time
         logger.debug(f"Loaded batch in {load_data_time:.2f} seconds")
+        write_event(
+            "trainer_batch_loaded",
+            step=progress.step,
+            micro_batches=len(micro_batches),
+            batch_keys=sorted(micro_batches[0].keys()) if micro_batches else [],
+        )
 
         batch_size = len(micro_batches)
         memory_profiler = None
@@ -384,6 +398,21 @@ def train(config: TrainerConfig):
             )
 
             labels = shift_tensor_left(input_ids)
+            nan_context = {
+                "step": progress.step,
+                "micro_step": micro_step,
+                "rank": world.rank,
+                "local_rank": world.local_rank,
+                "batch_size": int(input_ids.shape[0]),
+                "seq_len": int(input_ids.shape[1]),
+            }
+            check_finite("trainer.input.advantages", advantages, **nan_context)
+            check_finite("trainer.input.loss_mask", loss_mask, **nan_context)
+            check_finite("trainer.input.inference_logprobs", inference_logprobs, **nan_context)
+            if teacher_logprobs is not None:
+                check_finite("trainer.input.teacher_logprobs", teacher_logprobs, **nan_context)
+            if pixel_values is not None and heavy_trace_enabled():
+                check_finite("trainer.input.pixel_values", pixel_values, **nan_context)
 
             # VLM + CP is not supported: MRoPE requires global positions but CP shards the sequence
             if cp_enabled and pixel_values is not None:
@@ -412,6 +441,7 @@ def train(config: TrainerConfig):
                 set_lora_num_tokens(lora_num_tokens)
 
             temperatures = micro_batch["temperatures"].to("cuda")
+            check_finite("trainer.input.temperatures", temperatures, **nan_context)
 
             # Shard temperatures for context parallelism if enabled
             if cp_enabled:
@@ -440,6 +470,10 @@ def train(config: TrainerConfig):
                 out["logprobs"] = selective_log_softmax(scaled_logits, labels)
                 out["entropy"] = compute_entropy(scaled_logits)
             # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures
+            if out.get("logits") is not None and heavy_trace_enabled():
+                check_finite("trainer.forward.logits", out["logits"], **nan_context)
+            check_finite("trainer.forward.logprobs.pre_gather", out["logprobs"], **nan_context)
+            check_finite("trainer.forward.entropy.pre_gather", out["entropy"], **nan_context)
 
             if cp_enabled:
                 out["logprobs"] = gather_for_cp(out["logprobs"], cp_group)
@@ -453,6 +487,8 @@ def train(config: TrainerConfig):
             out["entropy"] = shift_tensor_right(
                 out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item()
             )
+            check_finite("trainer.forward.logprobs", out["logprobs"], **nan_context)
+            check_finite("trainer.forward.entropy", out["entropy"], **nan_context)
 
             # Compute loss
             response_lengths = get_response_lengths(position_ids)
@@ -468,6 +504,9 @@ def train(config: TrainerConfig):
                 loss_scale=loss_scale,
                 sft_loss=micro_batch["sft_loss"],
             )
+            check_finite("trainer.loss", loss, **nan_context)
+            for key, loss_tensor in loss_tensors.items():
+                check_finite(f"trainer.loss_tensors.{key}", loss_tensor, **nan_context)
 
             # Backward pass
             with maybe_record_function("backward"):
@@ -504,6 +543,7 @@ def train(config: TrainerConfig):
             )
             if grad_norm.device.type == "cpu":
                 grad_norm = grad_norm.to(torch.device("cuda"))
+            check_finite("trainer.grad_norm", grad_norm, step=progress.step, rank=world.rank, local_rank=world.local_rank)
 
         zero_grad_ratio = get_zero_gradient_ratio(model.parameters(), parallel_dims.dp_replicate)
 
@@ -526,6 +566,7 @@ def train(config: TrainerConfig):
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_stats = tensors.compute_stats()
+        check_finite("trainer.tensor_stats", tensor_stats, step=progress.step, rank=world.rank, local_rank=world.local_rank)
 
         # Compute step metrics
         num_local_tokens = seq_len * batch_size

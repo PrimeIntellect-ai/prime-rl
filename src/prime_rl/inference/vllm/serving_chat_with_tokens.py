@@ -16,6 +16,8 @@ from vllm.outputs import RequestOutput
 from vllm.reasoning import ReasoningParser
 from vllm.sampling_params import BeamSearchParams, SamplingParams
 
+from prime_rl.utils.nan_trace import check_finite, write_event
+
 logger = init_logger(__name__)
 
 
@@ -240,7 +242,7 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
             )
 
         try:
-            return await self.chat_completion_full_generator(
+            response = await self.chat_completion_full_generator(
                 request,
                 result_generator,
                 request_id,
@@ -250,6 +252,25 @@ class OpenAIServingChatWithTokens(OpenAIServingChat):
                 request_metadata,
                 reasoning_parser,
             )
+            if isinstance(response, ChatCompletionResponse):
+                payload = response.model_dump()
+                found_nonfinite = check_finite(
+                    "inference.chat_tokens.response",
+                    payload,
+                    request_id=request_id,
+                    model=model_name,
+                    max_tokens=getattr(request, "max_tokens", None),
+                    max_completion_tokens=getattr(request, "max_completion_tokens", None),
+                    temperature=getattr(request, "temperature", None),
+                )
+                if found_nonfinite:
+                    write_event(
+                        "inference_chat_tokens_nonfinite_payload",
+                        request_id=request_id,
+                        request=request.model_dump(),
+                        response=payload,
+                    )
+            return response
         except GenerationError:
             raise  # Let FastAPI's global generation_error_handler handle it
         except ValueError as e:

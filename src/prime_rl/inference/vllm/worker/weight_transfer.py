@@ -5,15 +5,31 @@ from torch.nn import Module
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
+from prime_rl.utils.nan_trace import check_finite, weight_trace_enabled, write_event
+
 logger = init_logger("vllm.inference.vllm.worker_weight_transfer")
 
 
+def _trace_state_iter(
+    state_iter: Generator[tuple[str, torch.Tensor], None, None],
+    source: str,
+) -> Generator[tuple[str, torch.Tensor], None, None]:
+    for name, tensor in state_iter:
+        if weight_trace_enabled():
+            check_finite(f"{source}.{name}", tensor, source=source)
+        yield name, tensor
+
+
 def load_weights_checkpoint(model: Module, state_iter: Generator[tuple[str, torch.Tensor], None, None]) -> None:
-    model.load_weights(state_iter)  # type: ignore
+    write_event("weight_transfer_checkpoint_load_begin")
+    model.load_weights(_trace_state_iter(state_iter, "inference.weight_transfer.checkpoint"))  # type: ignore
+    write_event("weight_transfer_checkpoint_load_end")
 
 
 def postprocess_weights_checkpoint(model: Module, model_config, device: torch.device) -> None:
+    write_event("weight_transfer_checkpoint_postprocess_begin", device=str(device))
     process_weights_after_loading(model, model_config, device)
+    write_event("weight_transfer_checkpoint_postprocess_end", device=str(device))
 
 
 def build_expert_map(model: Module) -> dict[str, torch.Tensor]:
@@ -45,6 +61,8 @@ def load_weights_kernel(model: Module, state_iter: Generator[tuple[str, torch.Te
     shape_mismatches: list[str] = []
 
     for name, tensor in state_iter:
+        if weight_trace_enabled():
+            check_finite("inference.weight_transfer.kernel_tensor", tensor, name=name)
         if name not in params:
             skipped.append(name)
             continue

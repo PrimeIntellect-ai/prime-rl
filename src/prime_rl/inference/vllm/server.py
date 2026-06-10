@@ -23,6 +23,7 @@ from vllm.utils.argparse_utils import FlexibleArgumentParser
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.inference.vllm.serving_generate import GenerateRequest
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.nan_trace import write_event
 
 MODEL_TOOL_CALL_PARSER: dict[str, str] = {
     # GLM-4.5
@@ -251,17 +252,22 @@ async def resume(request: Request):
 @router.post("/update_weights")
 async def update_weights(request: Request):
     data = await request.json()
+    write_event("inference_update_weights_begin", weight_dir=data.get("weight_dir"))
     await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+    write_event("inference_update_weights_end", weight_dir=data.get("weight_dir"))
     return {"status": "ok"}
 
 
 @router.post("/load_lora_adapter")
 async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request):
     """Wrapper around vLLM's /v1/load_lora_adapter."""
+    write_event("inference_load_lora_begin", request=lora_request.model_dump())
     handler = models(raw_request)
     response = await handler.load_lora_adapter(lora_request)
     if isinstance(response, ErrorResponse):
+        write_event("inference_load_lora_error", request=lora_request.model_dump(), response=response.model_dump())
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
+    write_event("inference_load_lora_end", request=lora_request.model_dump())
     return {"status": "ok"}
 
 

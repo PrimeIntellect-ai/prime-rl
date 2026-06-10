@@ -25,6 +25,8 @@ from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
 
+from prime_rl.utils.nan_trace import check_finite, write_event
+
 logger = init_logger(__name__)
 
 
@@ -185,7 +187,7 @@ class OpenAIServingGenerate:
         completion_len = sum(len(c.token_ids) for c in choices)
         prompt_logprobs = _extract_prompt_logprobs(final_output.prompt_logprobs)
 
-        return GenerateResponse(
+        response = GenerateResponse(
             id=request_id,
             model=request.model or "",
             prompt_token_ids=list(final_output.prompt_token_ids),
@@ -197,6 +199,27 @@ class OpenAIServingGenerate:
             },
             prompt_logprobs=prompt_logprobs,
         )
+        payload = response.model_dump()
+        found_nonfinite = check_finite(
+            "inference.generate.response",
+            payload,
+            request_id=request_id,
+            model=request.model,
+            prompt_len=prompt_len,
+            completion_len=completion_len,
+            max_tokens=max_tokens,
+            temperature=request.temperature,
+            n=request.n,
+            cache_salt=request.cache_salt,
+        )
+        if found_nonfinite:
+            write_event(
+                "inference_generate_nonfinite_payload",
+                request_id=request_id,
+                request=request.model_dump(),
+                response=payload,
+            )
+        return response
 
 
 def _encode_routed_experts(arr: np.ndarray) -> dict:
