@@ -109,7 +109,12 @@ class Env:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         get_logger().debug(f"Spawning env server {self.name} (id={self.config.env_id}, log={log_file})")
         server_kwargs = (
-            dict(legacy=True, env_id=self.config.env_id, env_args=self.config.args)
+            dict(
+                legacy=True,
+                env_id=self.config.env_id,
+                env_args=self.config.args,
+                extra_env_kwargs=self.config.extra_env_kwargs,
+            )
             if self.config.is_legacy
             else dict(legacy=False, config=self.config)
         )
