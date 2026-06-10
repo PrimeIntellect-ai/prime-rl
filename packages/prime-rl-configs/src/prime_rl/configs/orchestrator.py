@@ -693,8 +693,7 @@ class OrchestratorConfig(BaseConfig):
     dump_failed_train_trajectory: bool | None = Field(
         None,
         description=(
-            "Whether train_failed_rollouts.jsonl includes full trajectories. "
-            "When None, follows dump_trajectory."
+            "Whether train_failed_rollouts.jsonl includes full trajectories. When None, follows dump_trajectory."
         ),
     )
 
@@ -960,18 +959,13 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_debate_renderer_preserves_all_thinking(self):
-        if (
-            self.renderer is None
-            or getattr(self.renderer, "preserve_all_thinking", True) is not False
-        ):
+        if self.renderer is None or getattr(self.renderer, "preserve_all_thinking", True) is not False:
             return self
 
         envs = list(self.train.env)
         if self.eval is not None:
             envs.extend(self.eval.env)
-        debate_env_ids = [
-            env.stripped_id for env in envs if "debate" in env.stripped_id
-        ]
+        debate_env_ids = [env.stripped_id for env in envs if "debate" in env.stripped_id]
         if not debate_env_ids:
             return self
 
