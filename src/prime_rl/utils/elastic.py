@@ -22,7 +22,14 @@ from httpx import AsyncClient
 from renderers import RendererConfig
 
 from prime_rl.configs.shared import ClientConfig
-from prime_rl.utils.client import ClientIdentity, client_identity, load_lora_adapter, setup_admin_clients, setup_clients
+from prime_rl.utils.client import (
+    ClientIdentity,
+    client_identity,
+    load_lora_adapter,
+    setup_admin_clients,
+    setup_clients,
+    train_typed_client,
+)
 from prime_rl.utils.logger import get_logger
 
 # --- Shared discovery functions ---
@@ -230,6 +237,15 @@ class ElasticInferencePool:
         client = self._eval_clients[self._eval_index % len(self._eval_clients)]
         self._eval_index += 1
         return client
+
+    def as_train_client(self, client: vf.ClientConfig) -> vf.ClientConfig:
+        return train_typed_client(
+            client,
+            train_client_type=self.train_client_type,
+            renderer_config=self.renderer_config,
+            renderer_model_name=self.renderer_model_name,
+            pool_size=self.pool_size,
+        )
 
     async def select_train_client(self, load: Mapping[ClientIdentity, int]) -> vf.ClientConfig:
         while not self.train_clients:

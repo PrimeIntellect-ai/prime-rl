@@ -187,6 +187,112 @@ def test_eval_dynamic_refill_requires_explicit_eval_clients():
     asyncio.run(run())
 
 
+def _debate_eval_env(name: str = "debate-eval", members: tuple[str, ...] = ("debater_a", "debater_b", "judge")):
+    from verifiers.protocols.debate import DebateEnv
+
+    inner = DebateEnv.__new__(DebateEnv)
+    inner.is_multi_agent = True
+    inner.members = list(members)
+    env = EvalEnv.__new__(EvalEnv)
+    env.config = SimpleNamespace(resolved_name=name)
+    env._env = inner
+    return env
+
+
+def _eval_envs(*envs):
+    from prime_rl.orchestrator.envs import EvalEnvs
+
+    collection = EvalEnvs.__new__(EvalEnvs)
+    collection._envs = {env.name: env for env in envs}
+    return collection
+
+
+def _judge_fixed_config():
+    from prime_rl.configs.multi_agent import FixedMemberTargetConfig, MultiAgentConfig
+
+    return MultiAgentConfig(
+        fixed={
+            "judge": FixedMemberTargetConfig(
+                members=["judge"],
+                model="judge-model",
+                base_url=["http://judge/v1"],
+                request_mode="chat",
+            )
+        }
+    )
+
+
+def test_think_split_routing_raises_for_debate_eval_without_renderer():
+    from prime_rl.orchestrator.envs import validate_eval_think_split_routing
+
+    with pytest.raises(ValueError, match=r"debate-eval.*\['debater_a', 'debater_b'\]"):
+        validate_eval_think_split_routing(
+            _eval_envs(_debate_eval_env()),
+            multi_agent=_judge_fixed_config(),
+            renderer_configured=False,
+        )
+
+
+def test_think_split_routing_raises_for_debate_eval_without_multi_agent_config():
+    from prime_rl.configs.multi_agent import MultiAgentConfig
+    from prime_rl.orchestrator.envs import validate_eval_think_split_routing
+
+    # Pure self-play (no fixed targets, no train_one): every member is trained
+    with pytest.raises(ValueError, match="debate-eval"):
+        validate_eval_think_split_routing(
+            _eval_envs(_debate_eval_env()),
+            multi_agent=MultiAgentConfig(),
+            renderer_configured=False,
+        )
+
+
+def test_think_split_routing_passes_with_renderer_configured():
+    from prime_rl.orchestrator.envs import validate_eval_think_split_routing
+
+    validate_eval_think_split_routing(
+        _eval_envs(_debate_eval_env()),
+        multi_agent=_judge_fixed_config(),
+        renderer_configured=True,
+    )
+
+
+def test_think_split_routing_passes_when_all_debate_members_are_fixed():
+    from prime_rl.configs.multi_agent import FixedMemberTargetConfig, MultiAgentConfig
+    from prime_rl.orchestrator.envs import validate_eval_think_split_routing
+
+    config = MultiAgentConfig(
+        fixed={
+            "everyone": FixedMemberTargetConfig(
+                members=["debater_a", "debater_b", "judge"],
+                model="frozen-model",
+                base_url=["http://frozen/v1"],
+                request_mode="chat",
+            )
+        }
+    )
+    validate_eval_think_split_routing(
+        _eval_envs(_debate_eval_env()),
+        multi_agent=config,
+        renderer_configured=False,
+    )
+
+
+def test_think_split_routing_ignores_non_debate_multi_agent_envs():
+    from prime_rl.orchestrator.envs import validate_eval_think_split_routing
+
+    # Multi-agent but not a DebateEnv — no think-channel split contract
+    inner = SimpleNamespace(is_multi_agent=True, members=["solver", "critic"])
+    env = EvalEnv.__new__(EvalEnv)
+    env.config = SimpleNamespace(resolved_name="ma-eval")
+    env._env = inner
+
+    validate_eval_think_split_routing(
+        _eval_envs(env),
+        multi_agent=_judge_fixed_config(),
+        renderer_configured=False,
+    )
+
+
 def test_fixed_member_sampling_args_strip_learner_only_fields_without_mutating_learner_args():
     env = Env.__new__(Env)
     env.sampling_args = {

@@ -425,8 +425,10 @@ class RolloutDispatcher:
         """
         # Train rollouts use the rollout pool (teacher in SFT) via the
         # renderer/token train client. Eval always evaluates the student and
-        # goes through the eval client (chat-completions) — the same path the
-        # legacy orchestrator used, so eval scores stay comparable.
+        # pins a client from the eval pool (chat-completions) — the same path
+        # the legacy orchestrator used, so single-agent eval scores stay
+        # comparable. Multi-agent eval groups re-type that client below to
+        # match the train path.
         if group.kind == "eval":
             pool, model_name = self.eval_inference, self.policy.model_name
         else:
@@ -451,6 +453,15 @@ class RolloutDispatcher:
         if env_collection is None:
             return False
         env = env_collection.get(group.env_name)
+        # Multi-agent protocols must generate through the train-path client
+        # type at eval: the renderer/TITO client splits think-channels
+        # client-side, and a bare chat client would leak private CoT to other
+        # members (or fail the debate air-gap check) — measuring a different
+        # protocol than training. Fixed members keep their own configured
+        # targets via the member generation plan; single-agent eval keeps the
+        # plain chat client.
+        if group.kind == "eval" and env.is_multi_agent:
+            client = pool.as_train_client(client)
         # SFT-mode train rollouts hit the frozen teacher pool; salting per
         # policy version would invalidate the teacher's prefix cache every
         # weight update for no reason.

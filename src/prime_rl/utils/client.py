@@ -28,6 +28,31 @@ def client_identity(client: vf.ClientConfig) -> ClientIdentity:
     return (client.api_base_url, client.extra_headers.get("X-data-parallel-rank"))
 
 
+def train_typed_client(
+    client: vf.ClientConfig,
+    *,
+    train_client_type: str,
+    renderer_config: RendererConfig | None,
+    renderer_model_name: str | None,
+    pool_size: int | None,
+) -> vf.ClientConfig:
+    """Twin of ``client`` carrying the pool's train-path client type.
+
+    Same server, headers, and timeouts; only the client type (and, for the
+    renderer type, the renderer fields — mirroring ``setup_clients``) change.
+    Identity when ``client`` already speaks the train client type."""
+    if client.client_type == train_client_type:
+        return client
+    update: dict = {"client_type": train_client_type}
+    if train_client_type == "renderer":
+        update.update(
+            renderer_config=renderer_config,
+            renderer_model_name=renderer_model_name,
+            renderer_pool_size=pool_size,
+        )
+    return client.model_copy(update=update)
+
+
 @runtime_checkable
 class InferencePool(Protocol):
     """Protocol for inference pools (static or elastic)."""
@@ -58,6 +83,13 @@ class InferencePool(Protocol):
 
     async def get_eval_client(self) -> vf.ClientConfig:
         """Get next eval client in round-robin fashion."""
+        ...
+
+    def as_train_client(self, client: vf.ClientConfig) -> vf.ClientConfig:
+        """Re-type ``client`` to the pool's train-path client type (same
+        server, headers, and timeouts). Used at eval so trained members
+        generate through the same client semantics as training (e.g. the
+        renderer client's think-channel splitting)."""
         ...
 
     async def select_train_client(self, load: Mapping[ClientIdentity, int]) -> vf.ClientConfig:
@@ -99,6 +131,10 @@ class StaticInferencePool:
         pool_size: int | None = None,
     ):
         renderer_model_name = model_name if train_client_type == "renderer" else None
+        self._train_client_type = train_client_type
+        self._renderer_config = renderer_config
+        self._renderer_model_name = renderer_model_name
+        self._pool_size = pool_size
         self._train_clients = setup_clients(
             client_config,
             client_type=train_client_type,
@@ -130,6 +166,15 @@ class StaticInferencePool:
 
     async def get_eval_client(self) -> vf.ClientConfig:
         return next(self._eval_cycle)
+
+    def as_train_client(self, client: vf.ClientConfig) -> vf.ClientConfig:
+        return train_typed_client(
+            client,
+            train_client_type=self._train_client_type,
+            renderer_config=self._renderer_config,
+            renderer_model_name=self._renderer_model_name,
+            pool_size=self._pool_size,
+        )
 
     async def select_train_client(self, load: Mapping[ClientIdentity, int]) -> vf.ClientConfig:
         while not self.train_clients:

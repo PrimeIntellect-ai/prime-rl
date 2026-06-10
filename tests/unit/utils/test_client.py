@@ -117,3 +117,51 @@ def test_setup_clients_preserves_chat_client_defaults():
             extra_headers_from_state={},
         )
     ]
+
+
+def test_as_train_client_derives_renderer_twin_from_chat_eval_client():
+    from renderers import Qwen3VLRendererConfig
+
+    from prime_rl.utils.client import StaticInferencePool
+
+    renderer_settings = Qwen3VLRendererConfig()
+    pool = StaticInferencePool(
+        ClientConfig(
+            base_url=["http://worker-a:8000/v1"],
+            api_key_var="PRIME_API_KEY",
+            headers={"X-Test": "test"},
+        ),
+        model_name="Qwen/Qwen3-VL-4B-Instruct",
+        train_client_type="renderer",
+        eval_client_type="openai_chat_completions",
+        renderer_config=renderer_settings,
+        pool_size=4,
+    )
+
+    eval_client = pool.eval_clients[0]
+    assert eval_client.client_type == "openai_chat_completions"
+
+    learner = pool.as_train_client(eval_client)
+    assert learner.client_type == "renderer"
+    assert learner.renderer_config == renderer_settings
+    assert learner.renderer_model_name == "Qwen/Qwen3-VL-4B-Instruct"
+    assert learner.renderer_pool_size == 4
+    # Same server, headers, and timeouts — only the client type changed
+    assert learner.api_base_url == eval_client.api_base_url
+    assert learner.extra_headers == eval_client.extra_headers
+    assert learner.timeout == eval_client.timeout
+    # Train clients already speak the train type — identity
+    train_client = pool.train_clients[0]
+    assert pool.as_train_client(train_client) is train_client
+
+
+def test_as_train_client_is_identity_for_chat_trained_pool():
+    from prime_rl.utils.client import StaticInferencePool
+
+    pool = StaticInferencePool(
+        ClientConfig(base_url=["http://worker-a:8000/v1"], api_key_var="PRIME_API_KEY"),
+        model_name="some-model",
+    )
+
+    eval_client = pool.eval_clients[0]
+    assert pool.as_train_client(eval_client) is eval_client

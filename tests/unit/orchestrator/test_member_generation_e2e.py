@@ -422,3 +422,149 @@ async def _run_prime_env_server_member_generation_smoke(monkeypatch: pytest.Monk
     member_rollouts = vf.rollout_to_member_rollouts(output)
     by_member = {rollout["member_id"]: rollout for rollout in member_rollouts}
     assert set(by_member) == {selected, frozen, "judge"}
+
+
+class _RecordingInnerEnv:
+    """Inner vf-env fake: records the kwargs the orchestrator Env forwards."""
+
+    def __init__(self, *, is_multi_agent: bool, members: list[str] | None = None) -> None:
+        self.is_multi_agent = is_multi_agent
+        if members is not None:
+            self.members = members
+        self.rubric = types.SimpleNamespace(_get_reward_funcs=lambda: [], _is_group_func=lambda _func: False)
+        self.kwargs: dict[str, Any] | None = None
+
+    async def run_rollout(self, _input: Any, **kwargs: Any) -> vf.RolloutOutput:
+        self.kwargs = kwargs
+        return vf.RolloutOutput(example_id="ex-1")
+
+
+class _RecordingInnerMAEnv(_RecordingInnerEnv, vf.MultiAgentEnv):
+    """MA variant: real ``vf.MultiAgentEnv`` subclass so the wrapper's
+    ``isinstance``-based ``is_multi_agent`` property sees it."""
+
+    def build_prompt(self, *args, **kwargs):  # pragma: no cover - unused fake
+        raise NotImplementedError
+
+    def render_completion(self, *args, **kwargs):  # pragma: no cover - unused fake
+        raise NotImplementedError
+
+    def __init__(self, *, members: list[str]) -> None:
+        _RecordingInnerEnv.__init__(self, is_multi_agent=True, members=members)
+
+
+def _recording_eval_env(name: str, inner: _RecordingInnerEnv) -> EvalEnv:
+    env = EvalEnv.__new__(EvalEnv)
+    env.config = types.SimpleNamespace(
+        resolved_name=name,
+        group_size=1,
+        max_retries=0,
+        state_columns=[],
+    )
+    env._env = inner
+    env._env_client = types.SimpleNamespace()
+    env.sampling_args = {}
+    return env
+
+
+def _dispatcher_for_eval(eval_env: EvalEnv, multi_agent: MultiAgentConfig):
+    from renderers import Qwen3RendererConfig
+
+    from prime_rl.configs.shared import ClientConfig as PrimeClientConfig
+    from prime_rl.orchestrator.dispatcher import RolloutDispatcher
+    from prime_rl.orchestrator.types import Policy
+    from prime_rl.utils.client import StaticInferencePool
+
+    pool = StaticInferencePool(
+        PrimeClientConfig(base_url=["http://student/v1"], api_key_var="VLLM_API_KEY"),
+        model_name="learner-model",
+        train_client_type="renderer",
+        eval_client_type="openai_chat_completions",
+        renderer_config=Qwen3RendererConfig(),
+        pool_size=2,
+    )
+    envs = Envs.__new__(Envs)
+    envs._envs = {eval_env.name: eval_env}
+    dispatcher = RolloutDispatcher(
+        train_envs=envs,
+        eval_envs=envs,
+        train_source=None,  # schedule_group_rollout never touches the sources
+        eval_source=None,
+        inference=pool,
+        eval_inference=pool,
+        policy=Policy(version=0, model_name="learner-model"),
+        max_inflight_rollouts=4,
+        tasks_per_minute=None,
+        max_off_policy_steps=4,
+        training_mode="rl",
+        multi_agent=multi_agent,
+    )
+    return dispatcher, pool
+
+
+async def _schedule_eval_rollout(dispatcher: Any, env_name: str, dispatch_ids: list[str]) -> None:
+    import uuid
+
+    from prime_rl.orchestrator.types import GroupState
+
+    gid = uuid.uuid4()
+    group = GroupState(
+        kind="eval",
+        env_name=env_name,
+        example={"prompt": [{"role": "user", "content": "q"}], "example_id": "ex-1"},
+        rollouts_to_schedule=1,
+        target_rollouts=1,
+        eval_step=0,
+        dispatch_ids=dispatch_ids,
+    )
+    dispatcher.groups[gid] = group
+    assert await dispatcher.schedule_group_rollout(gid, group)
+    await next(iter(dispatcher.inflight))
+
+
+def test_dispatcher_eval_routes_trained_members_through_train_typed_client() -> None:
+    """F4: at eval, the trained debate members must generate through the same
+    client type as training (renderer/TITO) while fixed members keep their
+    configured chat targets."""
+
+    async def run() -> None:
+        dispatch_id = "eval:0:ma-eval:ex-1:0"
+        inner = _RecordingInnerMAEnv(members=["debater_a", "debater_b", "judge"])
+        env = _recording_eval_env("ma-eval", inner)
+        dispatcher, pool = _dispatcher_for_eval(env, _multi_agent_config())
+
+        await _schedule_eval_rollout(dispatcher, "ma-eval", [dispatch_id])
+
+        assert inner.kwargs is not None
+        # The pinned eval client was re-typed to the train path's renderer client
+        rollout_client = inner.kwargs["client"]
+        assert rollout_client.client_type == "renderer"
+        assert rollout_client.api_base_url == "http://student/v1"
+
+        plan = inner.kwargs["generation"]
+        assert plan is not None
+        selected = stable_train_member(["debater_a", "debater_b"], seed=0, dispatch_id=dispatch_id)
+        frozen = ({"debater_a", "debater_b"} - {selected}).pop()
+        assert plan.members[selected].client.client_type == "renderer"
+        assert plan.members[selected].client.renderer_config == pool._renderer_config
+        assert plan.members[selected].client.renderer_model_name == "learner-model"
+        assert plan.members[selected].client.api_base_url == "http://student/v1"
+        assert plan.members[frozen].client.client_type == "openai_chat_completions"
+        assert plan.members["judge"].client.client_type == "openai_chat_completions"
+
+    asyncio.run(run())
+
+
+def test_dispatcher_eval_keeps_chat_client_for_single_agent_envs() -> None:
+    async def run() -> None:
+        inner = _RecordingInnerEnv(is_multi_agent=False)
+        env = _recording_eval_env("single-eval", inner)
+        dispatcher, _pool = _dispatcher_for_eval(env, _multi_agent_config())
+
+        await _schedule_eval_rollout(dispatcher, "single-eval", [])
+
+        assert inner.kwargs is not None
+        assert inner.kwargs["client"].client_type == "openai_chat_completions"
+        assert inner.kwargs["generation"] is None
+
+    asyncio.run(run())

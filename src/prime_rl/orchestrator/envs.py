@@ -12,6 +12,7 @@ from typing import Generic, TypeVar
 
 import pandas as pd
 import verifiers as vf
+from verifiers.protocols.debate import DebateEnv
 from verifiers.protocols.debate.rubric import DebateRubric
 from verifiers.serve import ZMQEnvClient, ZMQEnvServer
 from verifiers.utils.serve_utils import get_free_port
@@ -23,6 +24,7 @@ from prime_rl.orchestrator.eval_utils import compute_pass_at_k
 from prime_rl.orchestrator.member_generation import (
     DISPATCH_ID_FIELD,
     compile_member_generation_plan,
+    fixed_member_targets,
 )
 from prime_rl.utils.logger import ProgressTracker, get_logger
 from prime_rl.utils.monitor import get_monitor
@@ -631,3 +633,41 @@ class EvalEnvs(Envs[EvalEnv]):
         for config in configs:
             env = EvalEnv(config)
             self._envs[env.name] = env
+
+
+def validate_eval_think_split_routing(
+    eval_envs: EvalEnvs,
+    *,
+    multi_agent: MultiAgentConfig,
+    renderer_configured: bool,
+) -> None:
+    """Fail at startup when a think-splitting eval protocol would route its
+    trained members through a bare chat-completions client.
+
+    Debate envs split each member's CoT into ``reasoning_content``
+    client-side — only the renderer client does that. At eval the dispatcher
+    re-types the pinned chat client to the student pool's train client type
+    (``InferencePool.as_train_client``), which yields a renderer client only
+    when ``orchestrator.renderer`` is configured. Without it, trained members
+    generate through bare chat completions: a balanced ``<think>`` block in
+    the content fails the debate air-gap check (every eval rollout errors),
+    an unbalanced one leaks private CoT to the opponent and judge — either
+    way eval measures a different protocol than training."""
+    if renderer_configured:
+        return
+    fixed_members = fixed_member_targets(multi_agent)
+    for env in eval_envs:
+        if not isinstance(env.env, DebateEnv):
+            continue
+        learners = [m for m in env.multi_agent_members() if m not in fixed_members]
+        if not learners:
+            continue
+        raise ValueError(
+            f"Eval env {env.name!r} runs a debate protocol that splits think-channels "
+            f"client-side, but its trained members {learners} would generate through a "
+            f"bare chat-completions client at eval because orchestrator.renderer is not "
+            f"configured. Either configure [orchestrator.renderer] (TITO; e.g. "
+            f"name='auto', preserve_all_thinking=true) so eval matches the training "
+            f"distribution, or pin these members to [orchestrator.multi_agent.fixed.*] "
+            f"targets with request_mode='renderer'."
+        )

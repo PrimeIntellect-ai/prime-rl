@@ -45,7 +45,7 @@ from prime_rl.configs.orchestrator import EMAPerMemberAdvantageConfig, Orchestra
 from prime_rl.metrics.debate import write_step_metrics as write_debate_step_metrics
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
-from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
+from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs, validate_eval_think_split_routing
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.filters import setup_filters
@@ -296,6 +296,13 @@ class Orchestrator:
         if config.eval is not None:
             get_logger().info("Loading eval environment(s)")
             self.eval_envs = EvalEnvs(config.eval.env)
+            # Fail before spawning env servers if a think-splitting eval
+            # protocol would route trained members through a bare chat client
+            validate_eval_think_split_routing(
+                self.eval_envs,
+                multi_agent=config.multi_agent,
+                renderer_configured=config.renderer is not None,
+            )
             get_logger().debug(f"Loaded {len(self.eval_envs)} eval environment(s) ({', '.join(self.eval_envs.names)})")
             await self.eval_envs.start(
                 log_dir=get_log_dir(config.output_dir.parent) / "envs" / "eval",
