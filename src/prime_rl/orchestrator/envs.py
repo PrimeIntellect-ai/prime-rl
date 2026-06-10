@@ -246,8 +246,8 @@ class TrainEnvs(Envs[TrainEnv]):
     def __init__(self, configs: Sequence[TrainEnvConfig], *, registry: ModelRegistry, tokenizer):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
-            assert config.algorithm is not None, "TrainEnvConfig.algorithm must be resolved before env construction"
-            env = TrainEnv(config, Algorithm(config.algorithm, registry, tokenizer))
+            assert config.algo is not None, "TrainEnvConfig.algo must be resolved before env construction"
+            env = TrainEnv(config, Algorithm(config.algo, registry, tokenizer))
             self._envs[env.name] = env
 
 

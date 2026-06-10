@@ -15,7 +15,7 @@ project = "reverse-text-debug"
 name = "debug-sft-external"
 
 [orchestrator]
-algorithm = { name = "sft_distill", model = "gpt-5-mini" }
+algo = { name = "sft_distill", model = "gpt-5-mini" }
 batch_size = 128
 group_size = 4
 

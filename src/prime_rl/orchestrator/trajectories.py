@@ -227,7 +227,7 @@ def interleave_rollout(
     ``completion_obs_mask`` marking env-provided tokens within
     ``completion_ids`` (the later-turn prompt extensions: tool output,
     terminal responses). Algorithms that train on observations (ECHO) route
-    these tokens to the CE loss core instead of dropping them.
+    these tokens to the CE loss type instead of dropping them.
 
     For VLM models, each renderer-produced trajectory step carries its
     per-image processed tensors inline on ``multi_modal_data``; the last

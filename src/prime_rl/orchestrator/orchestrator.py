@@ -158,7 +158,7 @@ class Orchestrator:
         # ``verifiers.serve`` (env-server lifecycle) through our handler
         logging.getLogger("verifiers").setLevel(logging.CRITICAL + 1)
         intercept_vf_logging(logger="verifiers.serve", level="WARN")
-        algorithms = sorted({env.algorithm.name for env in config.train.env if env.algorithm is not None})
+        algorithms = sorted({env.algo.name for env in config.train.env if env.algo is not None})
         get_logger().info(f"Starting orchestrator (algorithm: {', '.join(algorithms)})")
 
         if config.bench:

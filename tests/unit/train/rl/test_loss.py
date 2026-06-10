@@ -3,7 +3,7 @@ import torch
 
 from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig
 from prime_rl.trainer.rl.loss import LossInputs, LossOutputs, compute_entropy, compute_loss, setup_rl_loss_fn
-from prime_rl.transport.types import LOSS_CORE_CE, LOSS_CORE_REF_KL, LOSS_CORE_RL
+from prime_rl.transport.types import LOSS_TYPE_CE, LOSS_TYPE_REF_KL, LOSS_TYPE_RL
 
 pytestmark = [pytest.mark.gpu]
 
@@ -22,7 +22,7 @@ def test_grpo_loss():
         ref_logprobs,
         advantages,
         loss_mask=loss_mask,
-        loss_core_ids=None,
+        loss_type_ids=None,
         loss_weights=None,
         rl_loss_fn=rl_loss_fn,
         loss_scale=1.0,
@@ -44,7 +44,7 @@ def test_gspo_loss():
         ref_logprobs,
         advantages,
         loss_mask=loss_mask,
-        loss_core_ids=None,
+        loss_type_ids=None,
         loss_weights=None,
         rl_loss_fn=rl_loss_fn,
         loss_scale=1.0,
@@ -80,12 +80,12 @@ def test_setup_rl_loss_fn_with_custom_config():
     assert "custom_metric" in result.metrics
 
 
-def test_ce_core_matches_masked_nll():
+def test_ce_loss_type_matches_masked_nll():
     trainer_logprobs = [torch.tensor([-0.1, -0.5, -0.2], dtype=torch.float32).cuda()]
     inference_logprobs = [torch.zeros(3, dtype=torch.float32).cuda()]
     advantages = [torch.zeros(3, dtype=torch.float32).cuda()]
     loss_mask = [torch.tensor([True, False, True], dtype=torch.bool).cuda()]
-    loss_core_ids = [torch.full((3,), LOSS_CORE_CE, dtype=torch.long).cuda()]
+    loss_type_ids = [torch.full((3,), LOSS_TYPE_CE, dtype=torch.long).cuda()]
 
     rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig())
     loss, metrics = compute_loss(
@@ -94,7 +94,7 @@ def test_ce_core_matches_masked_nll():
         ref_logprobs=None,
         advantages=advantages,
         loss_mask=loss_mask,
-        loss_core_ids=loss_core_ids,
+        loss_type_ids=loss_type_ids,
         loss_weights=None,
         rl_loss_fn=rl_loss_fn,
         loss_scale=2,
@@ -106,13 +106,13 @@ def test_ce_core_matches_masked_nll():
     assert "mismatch_kl" not in metrics
 
 
-def test_ce_core_applies_loss_weights():
+def test_ce_loss_type_applies_loss_weights():
     """ECHO-style routing: weighted CE on observation tokens."""
     trainer_logprobs = [torch.tensor([-0.1, -0.5, -0.2], dtype=torch.float32).cuda()]
     inference_logprobs = [torch.zeros(3, dtype=torch.float32).cuda()]
     advantages = [torch.zeros(3, dtype=torch.float32).cuda()]
     loss_mask = [torch.tensor([True, False, True], dtype=torch.bool).cuda()]
-    loss_core_ids = [torch.full((3,), LOSS_CORE_CE, dtype=torch.long).cuda()]
+    loss_type_ids = [torch.full((3,), LOSS_TYPE_CE, dtype=torch.long).cuda()]
     loss_weights = [torch.tensor([0.1, 1.0, 0.1], dtype=torch.float32).cuda()]
 
     rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig())
@@ -122,7 +122,7 @@ def test_ce_core_applies_loss_weights():
         ref_logprobs=None,
         advantages=advantages,
         loss_mask=loss_mask,
-        loss_core_ids=loss_core_ids,
+        loss_type_ids=loss_type_ids,
         loss_weights=loss_weights,
         rl_loss_fn=rl_loss_fn,
         loss_scale=1,
@@ -133,7 +133,7 @@ def test_ce_core_applies_loss_weights():
 
 
 def test_routed_all_rl_matches_unrouted():
-    """An explicit all-RL core routing must equal the cores=None hot path."""
+    """An explicit all-RL routing must equal the loss_type_ids=None hot path."""
     torch.manual_seed(0)
     trainer_logprobs = [torch.randn(50, dtype=torch.float32).cuda()]
     inference_logprobs = [torch.randn(50, dtype=torch.float32).cuda()]
@@ -151,13 +151,13 @@ def test_routed_all_rl_matches_unrouted():
         rl_loss_fn=rl_loss_fn,
         loss_scale=1,
     )
-    loss_unrouted, _ = compute_loss(loss_core_ids=None, **kwargs)
-    loss_routed, _ = compute_loss(loss_core_ids=[torch.full((50,), LOSS_CORE_RL, dtype=torch.long).cuda()], **kwargs)
+    loss_unrouted, _ = compute_loss(loss_type_ids=None, **kwargs)
+    loss_routed, _ = compute_loss(loss_type_ids=[torch.full((50,), LOSS_TYPE_RL, dtype=torch.long).cuda()], **kwargs)
 
     assert torch.equal(loss_unrouted, loss_routed)
 
 
-def test_mixed_cores_in_one_sequence():
+def test_mixed_loss_types_in_one_sequence():
     """ECHO-shaped sequence: RL on action tokens, weighted CE on observation tokens."""
     n = 12
     torch.manual_seed(1)
@@ -166,9 +166,9 @@ def test_mixed_cores_in_one_sequence():
     ref_logprobs = [torch.randn(n, dtype=torch.float32).cuda()]
     advantages = [torch.randn(n).cuda()]
     loss_mask = [torch.ones(n, dtype=torch.bool).cuda()]
-    cores = torch.full((n,), LOSS_CORE_RL, dtype=torch.long)
-    cores[4:8] = LOSS_CORE_CE
-    cores[8:] = LOSS_CORE_REF_KL
+    type_ids = torch.full((n,), LOSS_TYPE_RL, dtype=torch.long)
+    type_ids[4:8] = LOSS_TYPE_CE
+    type_ids[8:] = LOSS_TYPE_REF_KL
 
     rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig(dppo_mask_high=10.0))
     loss, metrics = compute_loss(
@@ -177,7 +177,7 @@ def test_mixed_cores_in_one_sequence():
         ref_logprobs=ref_logprobs,
         advantages=advantages,
         loss_mask=loss_mask,
-        loss_core_ids=[cores.cuda()],
+        loss_type_ids=[type_ids.cuda()],
         loss_weights=None,
         rl_loss_fn=rl_loss_fn,
         loss_scale=1,

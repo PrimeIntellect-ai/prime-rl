@@ -59,7 +59,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `orchestrator.batch_size` | Tasks per trainer step. |
 | `orchestrator.group_size` | Rollouts generated per task. |
 | `orchestrator.max_off_policy_steps` | How many distinct policies may have contributed to one rollout before it's discarded (default 8). The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `errored_rollouts` and `mismatch_kl/all/mean` when tuning. |
-| `[orchestrator.algorithm]` | Training algorithm preset (`grpo` default, `opd`, `sft_distill`, `self_distill`, `echo`) with per-component overrides. See [Algorithms](#algorithms). |
+| `[orchestrator.algo]` | Training algorithm preset (`grpo` default, `opd`, `sft_distill`, `self_distill`, `echo`) with per-component overrides. See [Algorithms](#algorithms). |
 | `[[orchestrator.train.env]]` | Training environments. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Environments](configuration.md#environments-orchestratortrainenv). |
 | `[[orchestrator.eval.env]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
 
@@ -83,9 +83,9 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 
 ### Algorithms
 
-The RL entrypoint supports several training algorithms, switched via `[orchestrator.algorithm]` (see [Algorithms](algorithms.md#the-algorithm-abstraction) for the full reference, the model registry, and per-component customization):
+The RL entrypoint supports several training algorithms, switched via `[orchestrator.algo]` (see [Algorithms](algorithms.md#the-algorithm-abstraction) for the full reference, the model registry, and per-component customization):
 
-| Preset | Frozen model (`algorithm.model`) | Use case |
+| Preset | Frozen model (`algo.model`) | Use case |
 |---|---|---|
 | `grpo` (default) | None | Standard group-relative RL |
 | `opd` | Required, must be vLLM (needs `prompt_logprobs`) | [On-policy distillation](https://thinkingmachines.ai/blog/on-policy-distillation/): the policy generates rollouts, the trainer minimizes per-token reverse KL to a reference model |
@@ -93,7 +93,7 @@ The RL entrypoint supports several training algorithms, switched via `[orchestra
 | `self_distill` | `"policy"` (no deployment) or a vLLM entry serving the same checkpoint | [SDFT](https://arxiv.org/abs/2601.19897): the model is its own reference conditioned on expert demonstrations |
 | `echo` | None | GRPO plus cross-entropy on env-observation tokens |
 
-Frozen models are named `[orchestrator.models.<key>]` entries referenced from the algorithm (`algorithm = { name = "opd", model = "<key>" }`). The `rl` entrypoint only manages policy inference — start frozen-model servers yourself and point the entry's `client.base_url` at them:
+Frozen models are named `[orchestrator.models.<key>]` entries referenced from the algorithm (`algo = { name = "opd", model = "<key>" }`). The `rl` entrypoint only manages policy inference — start frozen-model servers yourself and point the entry's `client.base_url` at them:
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 uv run inference \

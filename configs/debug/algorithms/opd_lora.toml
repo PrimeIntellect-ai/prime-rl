@@ -16,7 +16,7 @@ project = "reverse-text-debug"
 name = "debug-opd-lora"
 
 [orchestrator]
-algorithm = { name = "opd", model = "reverse-text-rl" }
+algo = { name = "opd", model = "reverse-text-rl" }
 batch_size = 128
 group_size = 16
 

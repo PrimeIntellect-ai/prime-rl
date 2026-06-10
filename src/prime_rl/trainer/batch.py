@@ -1,6 +1,6 @@
 import copy
 
-from prime_rl.transport.types import LOSS_CORE_RL, MicroBatch, RoutedExperts, TrainingSample
+from prime_rl.transport.types import LOSS_TYPE_RL, MicroBatch, RoutedExperts, TrainingSample
 
 ROUTED_EXPERTS_DTYPE_ITEMSIZE = {
     "uint8": 1,
@@ -63,12 +63,12 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         advantage = training_example.advantage if training_example.advantage is not None else 0.0
         advantages = [advantage] * len(input_ids)
     # Loss routing: keep the arrays None for the uniform default (every token
-    # on the RL core, weight 1.0) so the packed batch stays as small as before.
-    loss_core_ids: list[int] | None = None
-    if training_example.token_loss_cores is not None:
-        loss_core_ids = list(training_example.token_loss_cores)
-    elif training_example.loss_core != LOSS_CORE_RL:
-        loss_core_ids = [training_example.loss_core] * len(input_ids)
+    # on the RL loss type, weight 1.0) so the packed batch stays as small as before.
+    loss_type_ids: list[int] | None = None
+    if training_example.token_loss_types is not None:
+        loss_type_ids = list(training_example.token_loss_types)
+    elif training_example.loss_type != LOSS_TYPE_RL:
+        loss_type_ids = [training_example.loss_type] * len(input_ids)
     loss_weights = (
         list(training_example.token_loss_weights) if training_example.token_loss_weights is not None else None
     )
@@ -101,8 +101,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         temperatures = temperatures[:seq_len]
         if ref_logprobs is not None:
             ref_logprobs = ref_logprobs[:seq_len]
-        if loss_core_ids is not None:
-            loss_core_ids = loss_core_ids[:seq_len]
+        if loss_type_ids is not None:
+            loss_type_ids = loss_type_ids[:seq_len]
         if loss_weights is not None:
             loss_weights = loss_weights[:seq_len]
         if routed_experts is not None:
@@ -124,8 +124,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     )
     if ref_logprobs is not None:
         assert len(ref_logprobs) == len(input_ids), f"ref_logprobs: {len(ref_logprobs)}"
-    if loss_core_ids is not None:
-        assert len(loss_core_ids) == len(input_ids), f"loss_core_ids: {len(loss_core_ids)}"
+    if loss_type_ids is not None:
+        assert len(loss_type_ids) == len(input_ids), f"loss_type_ids: {len(loss_type_ids)}"
     if loss_weights is not None:
         assert len(loss_weights) == len(input_ids), f"loss_weights: {len(loss_weights)}"
 
@@ -154,7 +154,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_kwargs=training_example.mm_kwargs,
-        loss_core_ids=loss_core_ids,
+        loss_type_ids=loss_type_ids,
         loss_weights=loss_weights,
     )
 
@@ -195,18 +195,18 @@ def packed_samples_into_micro_bs(
             if _is_multimodal_sample(bin_content):
                 continue
             # Check if sequence fits in this bin. Loss routing is per token,
-            # so samples of different cores pack together freely.
+            # so samples of different loss types pack together freely.
             if len(bin_content.input_ids) + len(sample.input_ids) <= max_seq_len:
                 existing_len = len(bin_content.input_ids)
                 bin_content.input_ids.extend(sample.input_ids)
                 bin_content.loss_mask.extend(sample.loss_mask)
                 bin_content.advantages.extend(sample.advantages)
-                if sample.loss_core_ids is not None:
-                    if bin_content.loss_core_ids is None:
-                        bin_content.loss_core_ids = [LOSS_CORE_RL] * existing_len
-                    bin_content.loss_core_ids.extend(sample.loss_core_ids)
-                elif bin_content.loss_core_ids is not None:
-                    bin_content.loss_core_ids.extend([LOSS_CORE_RL] * len(sample.input_ids))
+                if sample.loss_type_ids is not None:
+                    if bin_content.loss_type_ids is None:
+                        bin_content.loss_type_ids = [LOSS_TYPE_RL] * existing_len
+                    bin_content.loss_type_ids.extend(sample.loss_type_ids)
+                elif bin_content.loss_type_ids is not None:
+                    bin_content.loss_type_ids.extend([LOSS_TYPE_RL] * len(sample.input_ids))
                 if sample.loss_weights is not None:
                     if bin_content.loss_weights is None:
                         bin_content.loss_weights = [1.0] * existing_len
@@ -282,8 +282,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.temperatures.extend([1.0] * padding_size)
     if micro_batch.ref_logprobs is not None:
         micro_batch.ref_logprobs.extend([0.0] * padding_size)
-    if micro_batch.loss_core_ids is not None:
-        micro_batch.loss_core_ids.extend([LOSS_CORE_RL] * padding_size)
+    if micro_batch.loss_type_ids is not None:
+        micro_batch.loss_type_ids.extend([LOSS_TYPE_RL] * padding_size)
     if micro_batch.loss_weights is not None:
         micro_batch.loss_weights.extend([1.0] * padding_size)
     micro_batch.lora_num_tokens[-1] += (
@@ -311,7 +311,7 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
         "temperatures",
         "env_names",
         "ref_logprobs",
-        "loss_core_ids",
+        "loss_type_ids",
         "loss_weights",
         "rewards",
         "mm_token_type_ids",

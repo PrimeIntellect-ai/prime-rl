@@ -10,7 +10,7 @@ from torch import Tensor
 
 from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
 from prime_rl.trainer.rl.loss import compute_importance_ratio_and_mismatch_kl
-from prime_rl.transport.types import LOSS_CORE_CE, LOSS_CORE_RL
+from prime_rl.transport.types import LOSS_TYPE_CE, LOSS_TYPE_RL
 
 SCHEMA_VERSION = 1
 
@@ -141,9 +141,9 @@ def _export_columns(
         "is_masked": _optional_tensor_to_bools(export_tensors["is_masked"], seq_len),
         "is_masked_high": _optional_tensor_to_bools(export_tensors["is_masked_high"], seq_len),
         "is_masked_low": _optional_tensor_to_bools(export_tensors["is_masked_low"], seq_len),
-        "loss_core_ids": _tensor_to_ints(micro_batch["loss_core_ids"])
-        if micro_batch.get("loss_core_ids") is not None
-        else [LOSS_CORE_RL] * seq_len,
+        "loss_type_ids": _tensor_to_ints(micro_batch["loss_type_ids"])
+        if micro_batch.get("loss_type_ids") is not None
+        else [LOSS_TYPE_RL] * seq_len,
         "env_names": list(micro_batch["env_names"]),
     }
 
@@ -162,8 +162,8 @@ def _compute_export_tensors(
     }
     # Ratio-based fields are meaningless when no token has sampling logprobs
     # (e.g. pure CE batches distilling frozen-model tokens).
-    loss_core_ids = micro_batch.get("loss_core_ids")
-    if loss_core_ids is not None and bool((loss_core_ids == LOSS_CORE_CE).all()):
+    loss_type_ids = micro_batch.get("loss_type_ids")
+    if loss_type_ids is not None and bool((loss_type_ids == LOSS_TYPE_CE).all()):
         return fields
 
     inference_logprobs = micro_batch["inference_logprobs"].to(trainer_logprobs.device)

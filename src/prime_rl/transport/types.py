@@ -1,10 +1,10 @@
 import msgspec
 
-# Per-token loss cores. The orchestrator routes each token to a core (the
+# Per-token loss types. The orchestrator routes each token to a loss type (the
 # algorithm's loss routing); the trainer just executes them.
-LOSS_CORE_RL = 0  # configured RL loss (importance-weighted PG + KL)
-LOSS_CORE_CE = 1  # masked NLL (SFT / observation prediction)
-LOSS_CORE_REF_KL = 2  # per-token reverse KL to a reference model as the PG signal (OPD / SDFT)
+LOSS_TYPE_RL = 0  # configured RL loss (importance-weighted PG + KL)
+LOSS_TYPE_CE = 1  # masked NLL (SFT / observation prediction)
+LOSS_TYPE_REF_KL = 2  # per-token reverse KL to a reference model as the PG signal (OPD / SDFT)
 
 
 # Encoded tensor: {dtype: "float32", shape: [...], data: <bytes>}.
@@ -35,7 +35,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     completion_logprobs: list[float]
     completion_temperatures: list[float]  # Per-token temperatures used during generation
     env_name: str
-    ref_logprobs: list[float] | None = None  # reference-model logprobs (ref_kl core)
+    ref_logprobs: list[float] | None = None  # reference-model logprobs (ref_kl loss type)
     advantage: float | None = None
     reward: float | None = None
 
@@ -55,11 +55,11 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     mm_token_type_ids: list[int] | None = None
 
     # Loss routing, stamped by the orchestrator from the env's algorithm.
-    # ``loss_core`` is the core for every trainable token; the per-token arrays
+    # ``loss_type`` applies to every trainable token; the per-token arrays
     # (full prompt+completion length) override it where set. ``None`` arrays
     # mean "uniform" so the plain GRPO wire stays as small as before.
-    loss_core: int = LOSS_CORE_RL
-    token_loss_cores: list[int] | None = None
+    loss_type: int = LOSS_TYPE_RL
+    token_loss_types: list[int] | None = None
     token_loss_weights: list[float] | None = None
 
     # Per-token advantages (full sequence length). ``None`` broadcasts the
@@ -102,8 +102,8 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     mm_token_type_ids: list[int] | None = None
 
     # Per-token loss routing. ``None`` means uniform: every token uses
-    # LOSS_CORE_RL with weight 1.0 — packed samples of different cores
+    # LOSS_TYPE_RL with weight 1.0 — packed samples of different loss types
     # materialize the arrays.
-    loss_core_ids: list[int] | None = None
+    loss_type_ids: list[int] | None = None
     loss_weights: list[float] | None = None
     rewards: list[float] | None = None

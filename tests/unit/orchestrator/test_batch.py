@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from prime_rl.trainer.batch import prepare_batch, prepare_sample
-from prime_rl.transport.types import LOSS_CORE_CE, LOSS_CORE_RL, RoutedExperts, TrainingSample
+from prime_rl.transport.types import LOSS_TYPE_CE, LOSS_TYPE_RL, RoutedExperts, TrainingSample
 
 
 def _routed_experts(data, dtype=np.uint8):
@@ -18,7 +18,7 @@ def _routed_experts(data, dtype=np.uint8):
 def make_training_example():
     def _make_training_example(
         temperature: float = 1.0,
-        loss_core: int = LOSS_CORE_RL,
+        loss_type: int = LOSS_TYPE_RL,
         env_name: str = "test-env",
     ) -> TrainingSample:
         return TrainingSample(
@@ -31,7 +31,7 @@ def make_training_example():
             ref_logprobs=[0.0, 0.0, 0.0, 0.0],
             advantage=1.0,
             env_name=env_name,
-            loss_core=loss_core,
+            loss_type=loss_type,
         )
 
     return _make_training_example
@@ -109,26 +109,26 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
     assert flat_batches[0].env_names == ["env-a"] * 4 + ["env-b"] * 4
 
 
-def test_prepare_sample_propagates_loss_core(make_training_example):
-    example = make_training_example(loss_core=LOSS_CORE_CE)
+def test_prepare_sample_propagates_loss_type(make_training_example):
+    example = make_training_example(loss_type=LOSS_TYPE_CE)
 
     micro_batch = prepare_sample(example, seq_len=16)
 
-    assert micro_batch.loss_core_ids == [LOSS_CORE_CE] * 4
+    assert micro_batch.loss_type_ids == [LOSS_TYPE_CE] * 4
 
 
 def test_prepare_sample_uniform_rl_keeps_routing_arrays_none(make_training_example):
     micro_batch = prepare_sample(make_training_example(), seq_len=16)
 
-    assert micro_batch.loss_core_ids is None
+    assert micro_batch.loss_type_ids is None
     assert micro_batch.loss_weights is None
 
 
-def test_prepare_batch_packs_mixed_loss_cores(make_training_example):
-    """Loss routing is per token, so samples of different cores pack together;
-    the all-RL sample's positions materialize as RL core ids."""
-    rl_example = make_training_example(loss_core=LOSS_CORE_RL)
-    ce_example = make_training_example(loss_core=LOSS_CORE_CE)
+def test_prepare_batch_packs_mixed_loss_types(make_training_example):
+    """Loss routing is per token, so samples of different loss types pack together;
+    the all-RL sample's positions materialize as RL loss type ids."""
+    rl_example = make_training_example(loss_type=LOSS_TYPE_RL)
+    ce_example = make_training_example(loss_type=LOSS_TYPE_CE)
 
     batches_per_gpu = prepare_batch(
         rollouts=[rl_example, ce_example],
@@ -140,7 +140,7 @@ def test_prepare_batch_packs_mixed_loss_cores(make_training_example):
 
     flat_batches = [batch for worker_batches in batches_per_gpu for batch in worker_batches]
     assert len(flat_batches) == 1
-    assert sorted(flat_batches[0].loss_core_ids) == sorted([LOSS_CORE_RL] * 4 + [LOSS_CORE_CE] * 4)
+    assert sorted(flat_batches[0].loss_type_ids) == sorted([LOSS_TYPE_RL] * 4 + [LOSS_TYPE_CE] * 4)
     assert len(flat_batches[0].input_ids) == 8
 
 

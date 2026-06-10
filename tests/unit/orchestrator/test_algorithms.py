@@ -6,11 +6,11 @@ import verifiers as vf
 from prime_rl.configs.algorithm import AlgorithmConfig, LossRoutingConfig
 from prime_rl.orchestrator.algorithms import stamp_loss_routing
 from prime_rl.orchestrator.trajectories import interleave_rollout
-from prime_rl.transport.types import LOSS_CORE_CE, LOSS_CORE_REF_KL, LOSS_CORE_RL, TrainingSample
+from prime_rl.transport.types import LOSS_TYPE_CE, LOSS_TYPE_REF_KL, LOSS_TYPE_RL, TrainingSample
 
 
 @pytest.mark.parametrize(
-    ("name", "model", "source", "advantage_type", "advantage_model", "action_core", "observation"),
+    ("name", "model", "source", "advantage_type", "advantage_model", "action_loss_type", "observation"),
     [
         ("grpo", None, "policy", "group_norm", None, "rl", "none"),
         ("opd", "ref", "policy", "ref_kl", "ref", "ref_kl", "none"),
@@ -19,12 +19,12 @@ from prime_rl.transport.types import LOSS_CORE_CE, LOSS_CORE_REF_KL, LOSS_CORE_R
         ("echo", None, "policy", "group_norm", None, "rl", "ce"),
     ],
 )
-def test_preset_expansion(name, model, source, advantage_type, advantage_model, action_core, observation):
+def test_preset_expansion(name, model, source, advantage_type, advantage_model, action_loss_type, observation):
     algo = AlgorithmConfig(name=name, model=model)
     assert algo.sampling.source == source
     assert algo.advantage.type == advantage_type
     assert getattr(algo.advantage, "model", None) == advantage_model
-    assert algo.advantage.action_core == action_core
+    assert algo.advantage.action_loss_type == action_loss_type
     assert algo.loss.observation == observation
 
 
@@ -55,7 +55,7 @@ def test_ref_kl_rejects_policy():
         AlgorithmConfig(name="opd", model="policy")
 
 
-def test_rl_core_incompatible_with_frozen_sampling():
+def test_rl_loss_type_incompatible_with_frozen_sampling():
     with pytest.raises(ValueError, match="sampling.source='ref'"):
         AlgorithmConfig(name="sft_distill", model="ref", advantage={"type": "group_norm"})
 
@@ -75,43 +75,43 @@ def _make_sample(obs_mask: list[bool] | None) -> TrainingSample:
 
 def test_stamp_loss_routing_uniform_rl():
     sample = _make_sample(obs_mask=None)
-    stamp_loss_routing(sample, LOSS_CORE_RL, LossRoutingConfig())
-    assert sample.loss_core == LOSS_CORE_RL
-    assert sample.token_loss_cores is None
+    stamp_loss_routing(sample, LOSS_TYPE_RL, LossRoutingConfig())
+    assert sample.loss_type == LOSS_TYPE_RL
+    assert sample.token_loss_types is None
     assert sample.token_loss_weights is None
 
 
-def test_stamp_loss_routing_primary_core():
+def test_stamp_loss_routing_primary_loss_type():
     sample = _make_sample(obs_mask=None)
-    stamp_loss_routing(sample, LOSS_CORE_REF_KL, LossRoutingConfig())
-    assert sample.loss_core == LOSS_CORE_REF_KL
-    assert sample.token_loss_cores is None
+    stamp_loss_routing(sample, LOSS_TYPE_REF_KL, LossRoutingConfig())
+    assert sample.loss_type == LOSS_TYPE_REF_KL
+    assert sample.token_loss_types is None
 
 
 def test_stamp_loss_routing_echo_observations():
     # Token at completion index 2 is an env observation (masked out today)
     sample = _make_sample(obs_mask=[False, False, True, False])
-    stamp_loss_routing(sample, LOSS_CORE_RL, LossRoutingConfig(observation="ce", observation_weight=0.1))
+    stamp_loss_routing(sample, LOSS_TYPE_RL, LossRoutingConfig(observation="ce", observation_weight=0.1))
 
     assert sample.completion_obs_mask is None  # cleared, never ships
-    assert sample.loss_core == LOSS_CORE_RL
-    # Observation token flips trainable on the CE core with weight lambda
+    assert sample.loss_type == LOSS_TYPE_RL
+    # Observation token flips trainable on the CE loss type with weight lambda
     assert sample.completion_mask == [True, True, True, True]
     # Full-sequence arrays: 2 prompt tokens + 4 completion tokens
-    assert sample.token_loss_cores == [LOSS_CORE_RL, LOSS_CORE_RL] + [
-        LOSS_CORE_RL,
-        LOSS_CORE_RL,
-        LOSS_CORE_CE,
-        LOSS_CORE_RL,
+    assert sample.token_loss_types == [LOSS_TYPE_RL, LOSS_TYPE_RL] + [
+        LOSS_TYPE_RL,
+        LOSS_TYPE_RL,
+        LOSS_TYPE_CE,
+        LOSS_TYPE_RL,
     ]
     assert sample.token_loss_weights == [1.0, 1.0] + [1.0, 1.0, 0.1, 1.0]
 
 
 def test_stamp_loss_routing_clears_obs_mask_when_unused():
     sample = _make_sample(obs_mask=[False, False, True, False])
-    stamp_loss_routing(sample, LOSS_CORE_RL, LossRoutingConfig(observation="none"))
+    stamp_loss_routing(sample, LOSS_TYPE_RL, LossRoutingConfig(observation="none"))
     assert sample.completion_obs_mask is None
-    assert sample.token_loss_cores is None
+    assert sample.token_loss_types is None
     assert sample.completion_mask == [True, True, False, True]
 
 

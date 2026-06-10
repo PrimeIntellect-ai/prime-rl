@@ -9,7 +9,7 @@ An algorithm is a preset of three pieces:
    granularities and evaluation sites: group-relative strategies compute
    scalars on the orchestrator and ship numbers; reference-KL strategies ship
    reference prefill logprobs and the trainer evaluates the per-token signal
-   against the live policy. The strategy determines which loss core consumes
+   against the live policy. The strategy determines which loss type consumes
    the action tokens (``rl`` / ``ce`` / ``ref_kl``).
 3. **Loss routing** — what happens to env-provided observation tokens in
    multi-turn rollouts (``none`` drops them from the loss — the default;
@@ -20,7 +20,7 @@ strategies hold *references* to named hosted models, and the same registry
 entry can serve different algorithms in the same run. Presets are vetted
 bundles; every piece can be overridden individually for research. The trainer
 is algorithm-blind: routing ships per token on the wire and the trainer just
-executes loss cores.
+executes loss types.
 """
 
 import warnings
@@ -37,8 +37,8 @@ AlgorithmName: TypeAlias = Literal["grpo", "opd", "sft_distill", "self_distill",
 # from ``[orchestrator.models]``.
 POLICY_MODEL: str = "policy"
 
-ActionLossCore: TypeAlias = Literal["rl", "ce", "ref_kl"]
-ObservationLossCore: TypeAlias = Literal["none", "ce"]
+ActionLossType: TypeAlias = Literal["rl", "ce", "ref_kl"]
+ObservationLossType: TypeAlias = Literal["none", "ce"]
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +53,7 @@ class SamplingConfig(BaseConfig):
     rollouts age off-policy) or a ``[orchestrator.models]`` key (frozen hosted
     model — stable prefix cache, no sampling logprobs, rollouts never go
     stale). ``None`` is only set by presets that require a frozen source and
-    must be resolved via ``algorithm.model`` or an explicit value."""
+    must be resolved via ``algo.model`` or an explicit value."""
 
 
 # ---------------------------------------------------------------------------
@@ -84,9 +84,9 @@ LengthPenaltyConfig: TypeAlias = Annotated[
 class GroupNormAdvantageConfig(BaseConfig):
     type: Literal["group_norm"] = "group_norm"
     """GRPO: scalar advantage = reward minus the per-group mean baseline,
-    consumed by the ``rl`` loss core on the rollout's action tokens."""
+    consumed by the ``rl`` loss type on the rollout's action tokens."""
 
-    action_core: ClassVar[ActionLossCore] = "rl"
+    action_loss_type: ClassVar[ActionLossType] = "rl"
     group_relative: ClassVar[bool] = True
 
     length_penalty: LengthPenaltyConfig | None = None
@@ -96,9 +96,9 @@ class GroupNormAdvantageConfig(BaseConfig):
 class RewardAdvantageConfig(BaseConfig):
     type: Literal["reward"] = "reward"
     """Scalar advantage = raw reward, no group baseline. Consumed by the
-    ``rl`` loss core."""
+    ``rl`` loss type."""
 
-    action_core: ClassVar[ActionLossCore] = "rl"
+    action_loss_type: ClassVar[ActionLossType] = "rl"
     group_relative: ClassVar[bool] = False
 
 
@@ -107,16 +107,16 @@ class RefKLAdvantageConfig(BaseConfig):
     """On-policy distillation (OPD): the per-token signal is the reverse KL to
     a reference model, evaluated in the trainer from reference prefill
     logprobs scored over each sample's own context (``ref_logprobs`` on the
-    wire, ``ref_kl`` loss core). Group-relative scalars are still assigned:
+    wire, ``ref_kl`` loss type). Group-relative scalars are still assigned:
     their sign steers the DPPO masking direction in the loss, and the
     zero-advantage filter reads them."""
 
-    action_core: ClassVar[ActionLossCore] = "ref_kl"
+    action_loss_type: ClassVar[ActionLossType] = "ref_kl"
     group_relative: ClassVar[bool] = True
 
     model: str | None = None
     """Registry key of the reference model (a ``[orchestrator.models]``
-    entry). Required — set it here or fold via ``algorithm.model``.
+    entry). Required — set it here or fold via ``algo.model``.
     ``"policy"`` is rejected: scoring the policy under itself yields zero KL
     signal (use ``demo_ref_kl`` for demo-conditioned self-teaching)."""
 
@@ -139,7 +139,7 @@ class DemoRefKLAdvantageConfig(BaseConfig):
     rollouts keep ``advantage=None`` (advantage-based filters never fire) and
     samples ship a neutral 0.0."""
 
-    action_core: ClassVar[ActionLossCore] = "ref_kl"
+    action_loss_type: ClassVar[ActionLossType] = "ref_kl"
     group_relative: ClassVar[bool] = False
 
     model: str | None = None
@@ -168,19 +168,19 @@ class DemoRefKLAdvantageConfig(BaseConfig):
 class SupervisedAdvantageConfig(BaseConfig):
     type: Literal["supervised"] = "supervised"
     """Cross-entropy on the sampled tokens (SFT distillation). The ``ce``
-    loss core ignores scalar advantages, but group-relative scalars are still
+    loss type ignores scalar advantages, but group-relative scalars are still
     assigned so reward-based filtering keeps working (the zero-advantage
     filter drops uniform-reward groups)."""
 
-    action_core: ClassVar[ActionLossCore] = "ce"
+    action_loss_type: ClassVar[ActionLossType] = "ce"
     group_relative: ClassVar[bool] = True
 
 
 class CustomAdvantageConfig(BaseConfig):
     type: Literal["custom"] = "custom"
-    """Custom scalar advantage function, consumed by the ``rl`` loss core."""
+    """Custom scalar advantage function, consumed by the ``rl`` loss type."""
 
-    action_core: ClassVar[ActionLossCore] = "rl"
+    action_loss_type: ClassVar[ActionLossType] = "rl"
     group_relative: ClassVar[bool] = False
 
     import_path: str
@@ -208,12 +208,12 @@ AdvantageConfig: TypeAlias = Annotated[
 
 class LossRoutingConfig(BaseConfig):
     """Routing for tokens the advantage strategy doesn't already determine.
-    The action-token core is derived from the advantage strategy
-    (``advantage.action_core``); this config only routes env-provided
+    The action-token loss type is derived from the advantage strategy
+    (``advantage.action_loss_type``); this config only routes env-provided
     observation tokens."""
 
-    observation: ObservationLossCore = "none"
-    """Loss core for env-provided tokens of later turns (tool output, terminal
+    observation: ObservationLossType = "none"
+    """Loss type for env-provided tokens of later turns (tool output, terminal
     responses). ``none`` masks them out (standard RL); ``ce`` trains on them with
     weight ``observation_weight`` (ECHO)."""
 
@@ -229,7 +229,7 @@ class LossRoutingConfig(BaseConfig):
 # Preset component tables. Fields the user sets explicitly always win. Model
 # references (``sampling.source`` of sft_distill, ``advantage.model`` of opd /
 # self_distill) have no sensible default — presets leave them ``None`` and
-# validation demands ``algorithm.model`` (or the component field).
+# validation demands ``algo.model`` (or the component field).
 _PRESETS: dict[str, dict[str, Any]] = {
     "grpo": dict(
         sampling=lambda: SamplingConfig(),
@@ -375,10 +375,10 @@ class AlgorithmConfig(BaseConfig):
                 "the reference distribution equals the policy, so the KL signal is zero. Point at a "
                 "[orchestrator.models] entry, or use 'demo_ref_kl' for demo-conditioned self-teaching."
             )
-        if self.advantage.action_core == "rl" and self.sampling.source != POLICY_MODEL:
+        if self.advantage.action_loss_type == "rl" and self.sampling.source != POLICY_MODEL:
             raise ValueError(
                 f"algorithm '{self.name}': advantage '{self.advantage.type}' trains with the rl loss "
-                f"core but sampling.source='{self.sampling.source}' — importance ratios need the live "
+                f"type but sampling.source='{self.sampling.source}' — importance ratios need the live "
                 "policy's own sampling logprobs. Use the 'supervised' advantage (sft_distill) to "
                 "distill frozen-model tokens."
             )

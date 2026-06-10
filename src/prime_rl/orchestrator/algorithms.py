@@ -42,7 +42,7 @@ from prime_rl.configs.algorithm import (
 from prime_rl.orchestrator.advantage import AdvantageInputs, AdvantageOutputs, assign_advantages, default_advantage_fn
 from prime_rl.orchestrator.utils import compute_prefill_logprobs
 from prime_rl.transport import TrainingSample
-from prime_rl.transport.types import LOSS_CORE_CE, LOSS_CORE_REF_KL, LOSS_CORE_RL
+from prime_rl.transport.types import LOSS_TYPE_CE, LOSS_TYPE_REF_KL, LOSS_TYPE_RL
 from prime_rl.utils.utils import import_object
 
 if TYPE_CHECKING:
@@ -52,7 +52,7 @@ if TYPE_CHECKING:
     from prime_rl.orchestrator.types import TrainRollout
     from prime_rl.utils.client import InferencePool
 
-ACTION_LOSS_CORES = {"rl": LOSS_CORE_RL, "ce": LOSS_CORE_CE, "ref_kl": LOSS_CORE_REF_KL}
+ACTION_LOSS_TYPES = {"rl": LOSS_TYPE_RL, "ce": LOSS_TYPE_CE, "ref_kl": LOSS_TYPE_REF_KL}
 
 
 class ModelRegistry:
@@ -78,17 +78,17 @@ class ModelRegistry:
         return name == POLICY_MODEL
 
 
-def stamp_loss_routing(sample: TrainingSample, action_core: int, loss: LossRoutingConfig) -> None:
+def stamp_loss_routing(sample: TrainingSample, action_loss_type: int, loss: LossRoutingConfig) -> None:
     """Stamp the env's loss routing onto one sample's wire fields.
 
     Action tokens (the trainable completion tokens) get the advantage
-    strategy's loss core. When the algorithm trains on observations,
+    strategy's loss type. When the algorithm trains on observations,
     env-provided tokens (tagged by ``interleave_rollout`` in
-    ``completion_obs_mask``) flip from masked-out to trainable on the CE core
+    ``completion_obs_mask``) flip from masked-out to trainable on the CE loss type
     with ``observation_weight``. ``completion_obs_mask`` is
     orchestrator-internal and cleared here so it never ships.
     """
-    sample.loss_core = action_core
+    sample.loss_type = action_loss_type
     obs_mask = sample.completion_obs_mask
     sample.completion_obs_mask = None
     if loss.observation == "none" or obs_mask is None or not any(obs_mask):
@@ -96,16 +96,16 @@ def stamp_loss_routing(sample: TrainingSample, action_core: int, loss: LossRouti
 
     prompt_len = len(sample.prompt_ids)
     seq_len = prompt_len + len(sample.completion_ids)
-    cores = [action_core] * seq_len
+    type_ids = [action_loss_type] * seq_len
     weights = [1.0] * seq_len
     completion_mask = list(sample.completion_mask)
     for i, is_obs in enumerate(obs_mask):
         if is_obs:
-            cores[prompt_len + i] = LOSS_CORE_CE
+            type_ids[prompt_len + i] = LOSS_TYPE_CE
             weights[prompt_len + i] = loss.observation_weight
             completion_mask[i] = True
     sample.completion_mask = completion_mask
-    sample.token_loss_cores = cores
+    sample.token_loss_types = type_ids
     sample.token_loss_weights = weights
 
 
@@ -169,7 +169,7 @@ class CustomAdvantage(AdvantageStrategy):
 
 
 class SupervisedAdvantage(AdvantageStrategy):
-    """SFT distillation: the CE core ignores scalars, but group-relative
+    """SFT distillation: the CE loss type ignores scalars, but group-relative
     scalars are still assigned so reward-based filtering keeps working."""
 
     def assign(self, rollouts: list[TrainRollout]) -> None:
@@ -178,7 +178,7 @@ class SupervisedAdvantage(AdvantageStrategy):
 
 class RefKLAdvantage(AdvantageStrategy):
     """On-policy distillation: group-relative scalars (their sign steers the
-    DPPO masking direction in the ``ref_kl`` core) plus
+    DPPO masking direction in the ``ref_kl`` loss type) plus
     ``TrainingSample.ref_logprobs`` from scoring each sample's own context
     under the reference model."""
 
@@ -303,7 +303,7 @@ class Algorithm:
         self.registry = registry
         self.sampling_source: str = config.sampling.source
         self.loss = config.loss
-        self.action_core = ACTION_LOSS_CORES[config.advantage.action_core]
+        self.action_loss_type = ACTION_LOSS_TYPES[config.advantage.action_loss_type]
         self.advantage = setup_advantage_strategy(config.advantage, registry, tokenizer)
 
     @property
@@ -340,7 +340,7 @@ class Algorithm:
                 sample.advantage = rollout.advantage if rollout.advantage is not None else 0.0
                 sample.reward = rollout.reward
                 sample.env_name = rollout.env_name
-                stamp_loss_routing(sample, self.action_core, self.loss)
+                stamp_loss_routing(sample, self.action_loss_type, self.loss)
 
     async def score_batch(self, rollouts: list[TrainRollout]) -> None:
         """Run the advantage strategy's ship-time scoring over this env's

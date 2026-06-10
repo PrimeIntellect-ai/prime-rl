@@ -221,15 +221,15 @@ class TrainEnvConfig(EnvConfig):
     """Rollouts generated per example for GRPO group-relative advantages.
     Inherits from ``orchestrator.group_size`` when unset."""
 
-    algorithm: AlgorithmConfig | None = None
+    algo: AlgorithmConfig | None = None
     """Training algorithm for this env. Inherits from the top-level
-    ``orchestrator.algorithm`` when unset; set a different preset (or override
+    ``orchestrator.algo`` when unset; set a different preset (or override
     individual components) to give this env its own algorithm."""
 
     advantage: AdvantageConfig | None = Field(None, exclude=True)
-    """Shorthand for ``algorithm.advantage``. Inherits from the top-level
+    """Shorthand for ``algo.advantage``. Inherits from the top-level
     ``orchestrator.advantage`` when unset. Setting both this and an explicit
-    ``algorithm.advantage`` to different values is an error. Write-only input
+    ``algo.advantage`` to different values is an error. Write-only input
     sugar — folded by validation and excluded from dumps so resolved configs
     round-trip."""
 
@@ -478,10 +478,10 @@ class HostedModelConfig(BaseConfig):
 
 
 class OrchestratorConfig(BaseConfig):
-    algorithm: AlgorithmConfig = AlgorithmConfig()
-    """Training algorithm: a preset bundle of sampling, scoring (advantage +
-    token scorer), and loss routing. Defaults to ``grpo``. Override per env via
-    ``[[orchestrator.train.env]]``'s ``algorithm``."""
+    algo: AlgorithmConfig = AlgorithmConfig()
+    """Training algorithm: a preset bundle of sampling, advantage, and loss
+    routing. Defaults to ``grpo``. Override per env via
+    ``[[orchestrator.train.env]]``'s ``algo``."""
 
     policy: HostedModelConfig = Field(HostedModelConfig(), validation_alias=AliasChoices("policy", "model"))
     """The model being trained (model + client of the live vLLM deployment).
@@ -531,7 +531,7 @@ class OrchestratorConfig(BaseConfig):
     """Evaluation configuration."""
 
     advantage: AdvantageConfig | None = Field(GroupNormAdvantageConfig(), exclude=True)
-    """Shorthand for ``algorithm.advantage``, folded into the resolved
+    """Shorthand for ``algo.advantage``, folded into the resolved
     algorithm (and inherited by envs without their own algorithm). Write-only
     input sugar — excluded from dumps so resolved configs round-trip."""
 
@@ -745,12 +745,12 @@ class OrchestratorConfig(BaseConfig):
     def resolve_algorithm(self):
         """Fold the ``advantage`` shorthands and propagate the resolved
         algorithm into every train env. Declared before any validator that
-        reads ``algorithm``."""
+        reads ``algo``."""
 
         def fold_advantage(algorithm: AlgorithmConfig, advantage, owner: str) -> None:
             if "advantage" in algorithm.model_fields_set and algorithm.advantage != advantage:
                 raise ValueError(
-                    f"{owner}: 'advantage' shorthand conflicts with the explicit 'algorithm.advantage'. Set one."
+                    f"{owner}: 'advantage' shorthand conflicts with the explicit 'algo.advantage'. Set one."
                 )
             algorithm.advantage = advantage
             # Assignment after validation bypasses the model validators —
@@ -760,17 +760,17 @@ class OrchestratorConfig(BaseConfig):
         # Explicit ``advantage = "None"`` historically meant "advantage = raw
         # reward" — translate to the explicit type.
         if "advantage" in self.model_fields_set:
-            fold_advantage(self.algorithm, self.advantage or RewardAdvantageConfig(), "orchestrator")
+            fold_advantage(self.algo, self.advantage or RewardAdvantageConfig(), "orchestrator")
 
         # Envs inherit the top-level algorithm (with the shorthand already
         # folded in); an env's own ``advantage`` shorthand applies on top of
         # whichever algorithm the env ended up with.
         for env_cfg in self.train.env:
-            if env_cfg.algorithm is None:
-                env_cfg.algorithm = self.algorithm.model_copy(deep=True)
+            if env_cfg.algo is None:
+                env_cfg.algo = self.algo.model_copy(deep=True)
             if "advantage" in env_cfg.model_fields_set:
                 fold_advantage(
-                    env_cfg.algorithm, env_cfg.advantage or RewardAdvantageConfig(), f"env '{env_cfg.resolved_name}'"
+                    env_cfg.algo, env_cfg.advantage or RewardAdvantageConfig(), f"env '{env_cfg.resolved_name}'"
                 )
         return self
 
@@ -778,9 +778,7 @@ class OrchestratorConfig(BaseConfig):
     def any_policy_sourced(self) -> bool:
         """True when at least one train env samples rollouts from the live policy."""
         return any(
-            env.algorithm is not None
-            and env.algorithm.sampling is not None
-            and env.algorithm.sampling.source == POLICY_MODEL
+            env.algo is not None and env.algo.sampling is not None and env.algo.sampling.source == POLICY_MODEL
             for env in self.train.env
         )
 
@@ -813,8 +811,8 @@ class OrchestratorConfig(BaseConfig):
                 )
         referenced: set[str] = set()
         for env in self.train.env:
-            assert env.algorithm is not None  # materialized by resolve_algorithm
-            referenced |= env.algorithm.model_refs
+            assert env.algo is not None  # materialized by resolve_algorithm
+            referenced |= env.algo.model_refs
         unknown = sorted(referenced - {POLICY_MODEL} - set(self.models))
         if unknown:
             raise ValueError(
@@ -932,8 +930,8 @@ class OrchestratorConfig(BaseConfig):
         for env_cfg in self.train.env:
             if "group_size" not in env_cfg.model_fields_set:
                 env_cfg.group_size = self.group_size
-            assert env_cfg.algorithm is not None  # materialized by resolve_algorithm
-            env_cfg.algorithm.warn_group_size(env_cfg.group_size, env_cfg.resolved_name)
+            assert env_cfg.algo is not None  # materialized by resolve_algorithm
+            env_cfg.algo.warn_group_size(env_cfg.group_size, env_cfg.resolved_name)
 
         # Resolve train env num_workers from max_inflight_rollouts
         for env_cfg in self.train.env:
@@ -964,8 +962,8 @@ class OrchestratorConfig(BaseConfig):
             env.extra_env_kwargs.update(max_seq_len=self.seq_len)
             # Policy-sourced rollouts hit our vLLM server; frozen-sourced
             # rollouts may hit external OAI endpoints that reject these knobs.
-            assert env.algorithm is not None and env.algorithm.sampling is not None
-            if env.algorithm.sampling.source == POLICY_MODEL:
+            assert env.algo is not None and env.algo.sampling is not None
+            if env.algo.sampling.source == POLICY_MODEL:
                 env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)
                 env.sampling.extra_body.setdefault("return_token_ids", True)

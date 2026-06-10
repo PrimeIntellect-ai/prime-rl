@@ -35,7 +35,7 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_left,
     shift_tensor_right,
 )
-from prime_rl.transport.types import LOSS_CORE_CE
+from prime_rl.transport.types import LOSS_TYPE_CE
 from prime_rl.trainer.rl.token_export import setup_token_exporter
 from prime_rl.trainer.model import (
     forward,
@@ -150,7 +150,7 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing tokenizer ({config.tokenizer})")
     tokenizer = setup_tokenizer(config.tokenizer)
 
-    # Set up the loss function for the RL core (ce / ref_kl cores are fixed)
+    # Set up the loss function for the RL loss type (ce / ref_kl are fixed)
     logger.info(f"Setting up loss function ({config.loss})")
     rl_loss_fn = setup_rl_loss_fn(config.loss)
 
@@ -375,8 +375,8 @@ def train(config: TrainerConfig):
             loss_mask = micro_batch["loss_mask"].to("cuda")
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
             ref_logprobs = micro_batch["ref_logprobs"].to("cuda") if micro_batch["ref_logprobs"] is not None else None
-            loss_core_ids = (
-                micro_batch["loss_core_ids"].to("cuda") if micro_batch["loss_core_ids"] is not None else None
+            loss_type_ids = (
+                micro_batch["loss_type_ids"].to("cuda") if micro_batch["loss_type_ids"] is not None else None
             )
             loss_weights = micro_batch["loss_weights"].to("cuda") if micro_batch["loss_weights"] is not None else None
             routed_experts = (
@@ -482,7 +482,7 @@ def train(config: TrainerConfig):
                 ref_logprobs=ref_logprobs.squeeze().split(response_lengths) if ref_logprobs is not None else None,
                 advantages=advantages.squeeze().split(response_lengths),
                 loss_mask=loss_mask.squeeze().split(response_lengths),
-                loss_core_ids=loss_core_ids.squeeze().split(response_lengths) if loss_core_ids is not None else None,
+                loss_type_ids=loss_type_ids.squeeze().split(response_lengths) if loss_type_ids is not None else None,
                 loss_weights=loss_weights.squeeze().split(response_lengths) if loss_weights is not None else None,
                 rl_loss_fn=rl_loss_fn,
                 loss_scale=loss_scale,
@@ -507,12 +507,12 @@ def train(config: TrainerConfig):
                 tensors[f"entropy/{env_name}"].append(entropy[indices])
 
             # Mismatch KL is only meaningful where sampling logprobs exist —
-            # exclude CE-core tokens (frozen-model tokens / env observations).
-            if loss_core_ids is None:
+            # exclude CE-type tokens (frozen-model tokens / env observations).
+            if loss_type_ids is None:
                 mismatch_mask = loss_mask
                 has_mismatch_tokens = True
             else:
-                mismatch_mask = loss_mask & (loss_core_ids != LOSS_CORE_CE)
+                mismatch_mask = loss_mask & (loss_type_ids != LOSS_TYPE_CE)
                 has_mismatch_tokens = bool(mismatch_mask.any())
             if has_mismatch_tokens:
                 with torch.no_grad():

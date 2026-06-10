@@ -7,7 +7,7 @@ from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
 from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, LossConfig
-from prime_rl.transport.types import LOSS_CORE_CE, LOSS_CORE_REF_KL, LOSS_CORE_RL
+from prime_rl.transport.types import LOSS_TYPE_CE, LOSS_TYPE_REF_KL, LOSS_TYPE_RL
 from prime_rl.utils.utils import import_object
 
 
@@ -15,9 +15,9 @@ from prime_rl.utils.utils import import_object
 class LossInputs:
     """Inputs for computing loss on a single sample.
 
-    ``loss_mask`` already selects the tokens routed to the receiving loss core
-    — core functions never re-derive eligibility. ``loss_weights`` is an
-    optional per-token scale (None means 1.0 everywhere).
+    ``loss_mask`` already selects the tokens routed to the receiving loss type
+    — the per-type loss functions never re-derive eligibility. ``loss_weights``
+    is an optional per-token scale (None means 1.0 everywhere).
     """
 
     trainer_logprobs: Float[Tensor, " seq"]
@@ -177,7 +177,7 @@ def default_loss_fn(inputs: LossInputs, loss_config: DefaultLossConfig) -> LossO
 
 def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
     """
-    Ref-KL loss core (on-policy distillation): the default DPPO+KL math
+    Ref-KL loss type (on-policy distillation): the default DPPO+KL math
     with the tau knobs hardcoded to drop the reward signal and use the reverse
     KL to the reference model as the per-token policy-gradient signal.
     """
@@ -188,9 +188,7 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
     loss_mask = inputs.loss_mask
 
     if ref_logprobs is None:
-        raise ValueError(
-            "ref_kl loss core requires ref_logprobs - configure a token scorer (logprobs / demo_logprobs)."
-        )
+        raise ValueError("ref_kl loss type requires ref_logprobs — use a 'ref_kl' or 'demo_ref_kl' advantage strategy.")
 
     log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
         trainer_logprobs, inference_logprobs
@@ -234,7 +232,7 @@ def ref_kl_loss_fn(inputs: LossInputs) -> LossOutputs:
 
 
 def ce_loss_fn(inputs: LossInputs) -> LossOutputs:
-    """Cross-entropy loss core: masked negative log-likelihood (SFT / ECHO
+    """Cross-entropy loss type: masked negative log-likelihood (SFT / ECHO
     observation prediction)."""
     trainer_logprobs = inputs.trainer_logprobs
     loss_mask = inputs.loss_mask
@@ -250,9 +248,9 @@ def ce_loss_fn(inputs: LossInputs) -> LossOutputs:
 
 
 def setup_rl_loss_fn(loss_config: LossConfig) -> LossFn:
-    """Build the loss fn for the RL core: ``default_loss_fn`` with the
+    """Build the loss fn for the RL loss type: ``default_loss_fn`` with the
     configured knobs, or the imported function for ``CustomLossConfig``.
-    The ce / ref_kl cores are fixed and unaffected by ``trainer.loss``."""
+    The ce / ref_kl loss types are fixed and unaffected by ``trainer.loss``."""
     if isinstance(loss_config, CustomLossConfig):
         custom_fn = import_object(loss_config.import_path)
         kwargs = loss_config.kwargs
@@ -273,7 +271,7 @@ def compute_loss(
     ref_logprobs: list[Float[Tensor, " seq_i"]] | None,
     advantages: list[Float[Tensor, " seq_i"]],
     loss_mask: list[Bool[Tensor, " seq_i"]],
-    loss_core_ids: list[Int[Tensor, " seq_i"]] | None,
+    loss_type_ids: list[Int[Tensor, " seq_i"]] | None,
     loss_weights: list[Float[Tensor, " seq_i"]] | None,
     rl_loss_fn: LossFn,
     loss_scale: int,
@@ -281,13 +279,13 @@ def compute_loss(
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
 
-    Loss routing is per token: ``loss_core_ids`` selects the core for every
-    token (``None`` means all-RL — the hot path, no extra device syncs), and
-    each present core runs over its slice of the loss mask:
+    Loss routing is per token: ``loss_type_ids`` selects the loss type for
+    every token (``None`` means all-RL — the hot path, no extra device syncs),
+    and each present loss type runs over its slice of the loss mask:
 
-    - ``LOSS_CORE_RL`` → ``rl_loss_fn`` (built by ``setup_rl_loss_fn``)
-    - ``LOSS_CORE_CE`` → ``ce_loss_fn`` (masked NLL)
-    - ``LOSS_CORE_REF_KL`` → ``ref_kl_loss_fn``
+    - ``LOSS_TYPE_RL`` → ``rl_loss_fn`` (built by ``setup_rl_loss_fn``)
+    - ``LOSS_TYPE_CE`` → ``ce_loss_fn`` (masked NLL)
+    - ``LOSS_TYPE_REF_KL`` → ``ref_kl_loss_fn``
 
     Args:
         trainer_logprobs: Log probabilities for each sequence
@@ -295,9 +293,9 @@ def compute_loss(
         ref_logprobs: Reference-model log probabilities for each sequence, or None
         advantages: Advantages for each sequence
         loss_mask: Loss mask for each sequence
-        loss_core_ids: Per-token loss core ids for each sequence, or None (all RL)
+        loss_type_ids: Per-token loss type ids for each sequence, or None (all RL)
         loss_weights: Per-token loss weights for each sequence, or None (all 1.0)
-        rl_loss_fn: Loss fn for the RL core from setup_rl_loss_fn()
+        rl_loss_fn: Loss fn for the RL loss type from setup_rl_loss_fn()
         loss_scale: Scale factor to normalize the loss
 
     Returns:
@@ -309,49 +307,49 @@ def compute_loss(
     n = len(trainer_logprobs)
     if ref_logprobs is None:
         ref_logprobs = [None] * n
-    if loss_core_ids is None:
-        loss_core_ids = [None] * n
+    if loss_type_ids is None:
+        loss_type_ids = [None] * n
     if loss_weights is None:
         loss_weights = [None] * n
 
-    def run_core(core_fn: LossFn, inputs: LossInputs) -> Tensor:
-        result = core_fn(inputs)
+    def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
+        result = loss_fn(inputs)
         for k, v in result.metrics.items():
             all_metrics.setdefault(k, []).append(v)
         return result.loss
 
-    for t_logp, i_logp, ref_logp, adv, mask, cores, weights in zip(
+    for t_logp, i_logp, ref_logp, adv, mask, type_ids, weights in zip(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
         advantages,
         loss_mask,
-        loss_core_ids,
+        loss_type_ids,
         loss_weights,
     ):
 
-        def make_inputs(core_mask: Bool[Tensor, " seq"]) -> LossInputs:
+        def make_inputs(type_mask: Bool[Tensor, " seq"]) -> LossInputs:
             return LossInputs(
                 trainer_logprobs=t_logp,
                 inference_logprobs=i_logp,
                 ref_logprobs=ref_logp,
                 advantages=adv,
-                loss_mask=core_mask,
+                loss_mask=type_mask,
                 loss_weights=weights,
             )
 
-        if cores is None:
-            total_loss = total_loss + run_core(rl_loss_fn, make_inputs(mask))
+        if type_ids is None:
+            total_loss = total_loss + run_loss_fn(rl_loss_fn, make_inputs(mask))
             continue
 
-        for core_id, core_fn in (
-            (LOSS_CORE_RL, rl_loss_fn),
-            (LOSS_CORE_REF_KL, ref_kl_loss_fn),
-            (LOSS_CORE_CE, ce_loss_fn),
+        for type_id, loss_fn in (
+            (LOSS_TYPE_RL, rl_loss_fn),
+            (LOSS_TYPE_REF_KL, ref_kl_loss_fn),
+            (LOSS_TYPE_CE, ce_loss_fn),
         ):
-            core_mask = mask & (cores == core_id)
-            if bool(core_mask.any()):
-                total_loss = total_loss + run_core(core_fn, make_inputs(core_mask))
+            type_mask = mask & (type_ids == type_id)
+            if bool(type_mask.any()):
+                total_loss = total_loss + run_loss_fn(loss_fn, make_inputs(type_mask))
 
     scaled_loss = total_loss / loss_scale
 
