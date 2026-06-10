@@ -263,10 +263,9 @@ def packed_samples_into_micro_bs(
                     bin_content.rewards.extend([float("nan")] * len(sample.input_ids))
                 bin_content.inference_logprobs.extend(sample.inference_logprobs)
                 bin_content.temperatures.extend(sample.temperatures)
-                if sample.reference_logprobs is not None:
-                    if bin_content.reference_logprobs is None:
-                        bin_content.reference_logprobs = []
-                    bin_content.reference_logprobs.extend(sample.reference_logprobs)
+                bin_content.reference_logprobs = _extend_optional_token_field(
+                    bin_content.reference_logprobs, sample.reference_logprobs, existing_len, sample_len, 0.0
+                )
                 assert (bin_content.routed_experts is None) == (sample.routed_experts is None)
                 if sample.routed_experts is not None:
                     if bin_content.routed_experts is None:
