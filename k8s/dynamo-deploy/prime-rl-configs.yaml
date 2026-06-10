@@ -36,6 +36,9 @@ data:
     hard_threshold = 0.0
 
     [client]
+    # Use the Dynamo admin/rollout transport (/engine/* + nvext), not the
+    # default vLLM frontend — required for the Dynamo /v1/rl/* admin routes below.
+    backend = "dynamo"
     base_url = ["http://prime-rl-dynamo-frontend.<your-namespace>.svc.cluster.local:8000/v1"]
     # Admin endpoints (/v1/rl/*) are served natively by the Dynamo Rust frontend
     # (DYN_ENABLE_RL=true). No separate admin-stub service needed.
