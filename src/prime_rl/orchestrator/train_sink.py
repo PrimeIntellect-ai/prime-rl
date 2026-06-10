@@ -142,6 +142,20 @@ class TrainSink:
         """Process one arrival; finalize the group on the ``group_size``-th
         arrival; return a ``TrainBatch`` if the batch threshold is met."""
         await self.process_rollout(rollout)
+        # Per-step prompt arrays carry the FULL prompt prefix per step —
+        # O(turns x context) boxed ints — and have no readers past the
+        # tokenization above; drop them before the rollout buffers, like
+        # ``offload_images_to_disk`` does for image bytes. Keep the count
+        # (sample monitors' ``num_input_tokens``), the completion arrays
+        # (post-batch filters scan them), and the final step whole (the
+        # wandb sample table decodes it); ``save_rollouts`` already excludes
+        # the trajectory from disk artifacts.
+        for step in (rollout.raw.get("trajectory") or [])[:-1]:
+            tokens = step.get("tokens")
+            if tokens:
+                tokens["num_prompt_tokens"] = len(tokens["prompt_ids"])
+                tokens["prompt_ids"] = []
+                tokens["prompt_mask"] = []
         env_name = rollout.env_name
         self.arrivals_by_env[env_name] += 1
         if rollout.error is not None:
