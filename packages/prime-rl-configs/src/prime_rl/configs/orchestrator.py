@@ -8,7 +8,6 @@ from pydantic_core.core_schema import SerializerFunctionWrapHandler
 from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.algorithm import (
-    POLICY_MODEL,
     AdvantageConfig,
     AlgorithmConfig,
     GroupNormAdvantageConfig,
@@ -777,7 +776,7 @@ class OrchestratorConfig(BaseConfig):
     def any_policy_sourced(self) -> bool:
         """True when at least one train env samples rollouts from the live policy."""
         return any(
-            env.algo is not None and env.algo.sampling is not None and env.algo.sampling.source == POLICY_MODEL
+            env.algo is not None and env.algo.sampling is not None and env.algo.sampling.source == "policy"
             for env in self.train.env
         )
 
@@ -928,7 +927,7 @@ class OrchestratorConfig(BaseConfig):
             # Policy-sourced rollouts hit our vLLM server; frozen-sourced
             # rollouts may hit external OAI endpoints that reject these knobs.
             assert env.algo is not None and env.algo.sampling is not None
-            if env.algo.sampling.source == POLICY_MODEL:
+            if env.algo.sampling.source == "policy":
                 env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)
                 env.sampling.extra_body.setdefault("return_token_ids", True)

@@ -33,11 +33,6 @@ from prime_rl.utils.config import BaseConfig
 
 AlgorithmName: TypeAlias = Literal["grpo", "opd", "sft_distill", "self_distill", "echo"]
 
-# Reserved reference to the live policy (weight-updated: prefix caches salted
-# per version, sampling logprobs carried, rollouts age off-policy). Every
-# other model reference is an inline FrozenModelConfig.
-POLICY_MODEL: str = "policy"
-
 
 class FrozenModelConfig(ClientConfig):
     """An externally hosted model behind an OpenAI-compatible endpoint: the
@@ -63,7 +58,9 @@ class FrozenModelConfig(ClientConfig):
 
 
 ModelReference: TypeAlias = Literal["policy"] | FrozenModelConfig
-"""``"policy"`` (the live policy) or an inline externally-hosted frozen model."""
+"""``"policy"`` (the live policy — weight-updated: prefix caches salted per
+version, sampling logprobs carried, rollouts age off-policy) or an inline
+externally-hosted frozen model."""
 
 ActionLossType: TypeAlias = Literal["rl", "ce", "ref_kl"]
 ObservationLossType: TypeAlias = Literal["none", "ce"]
@@ -75,7 +72,7 @@ ObservationLossType: TypeAlias = Literal["none", "ce"]
 
 
 class SamplingConfig(BaseConfig):
-    source: ModelReference | None = POLICY_MODEL
+    source: ModelReference | None = "policy"
     """Model reference for train rollout generation: ``"policy"`` (the live
     policy — prefix caches salted per version, sampling logprobs requested,
     rollouts age off-policy) or an inline frozen hosted model (stable prefix
@@ -170,7 +167,7 @@ class DemoRefKLAdvantageConfig(BaseConfig):
     action_loss_type: ClassVar[ActionLossType] = "ref_kl"
     group_relative: ClassVar[bool] = False
 
-    model: ModelReference = POLICY_MODEL
+    model: ModelReference = "policy"
     """The reference model. ``"policy"`` (the default) is the SDFT paper's
     setting — the current model conditioned on the demo *is* the reference —
     and needs no extra deployment. Set an inline frozen hosted model to score
@@ -405,13 +402,13 @@ class AlgorithmConfig(BaseConfig):
                 "set 'model' on the algorithm (an inline hosted model: name + base_url), "
                 "or advantage.model explicitly."
             )
-        if isinstance(self.advantage, RefKLAdvantageConfig) and self.advantage.model == POLICY_MODEL:
+        if isinstance(self.advantage, RefKLAdvantageConfig) and self.advantage.model == "policy":
             raise ValueError(
                 f"algorithm '{self.name}': advantage 'ref_kl' with model='policy' is degenerate — "
                 "the reference distribution equals the policy, so the KL signal is zero. Point at a "
                 "frozen hosted model, or use 'demo_ref_kl' for demo-conditioned self-teaching."
             )
-        if self.advantage.action_loss_type == "rl" and self.sampling.source != POLICY_MODEL:
+        if self.advantage.action_loss_type == "rl" and self.sampling.source != "policy":
             raise ValueError(
                 f"algorithm '{self.name}': advantage '{self.advantage.type}' trains with the rl loss "
                 "type but sampling.source is a frozen model — importance ratios need the live "

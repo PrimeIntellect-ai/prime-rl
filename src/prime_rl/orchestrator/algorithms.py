@@ -26,7 +26,6 @@ from itertools import cycle
 from typing import TYPE_CHECKING
 
 from prime_rl.configs.algorithm import (
-    POLICY_MODEL,
     AdvantageConfig,
     AlgorithmConfig,
     CustomAdvantageConfig,
@@ -113,7 +112,7 @@ class AdvantageStrategy:
 
     Two execution points: ``assign`` runs at group finalization and sets
     rollout-level scalars; ``score`` runs at batch-ship time and attaches
-    per-token reference data by querying a registry model. Subclasses
+    per-token reference data by querying its reference model. Subclasses
     override what they use — the defaults assign no scalars (rollouts keep
     ``advantage=None``, so advantage-based filters skip them) and score
     nothing."""
@@ -310,7 +309,7 @@ class Algorithm:
         reference = getattr(self.config.advantage, "model", None)
         if reference is not None:
             assert hasattr(self.advantage, "pool")
-            if reference == POLICY_MODEL:
+            if reference == "policy":
                 self.advantage.pool = self.policy_pool
             else:
                 self.advantage.pool = await setup_frozen_pool(reference)
@@ -322,7 +321,7 @@ class Algorithm:
 
     @property
     def samples_from_live_policy(self) -> bool:
-        return self.config.sampling.source == POLICY_MODEL
+        return self.config.sampling.source == "policy"
 
     @property
     def tag_observation_tokens(self) -> bool:
