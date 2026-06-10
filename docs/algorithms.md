@@ -250,7 +250,7 @@ Advantages are computed **per group**. You write a function that takes one group
 ```python
 # my_module.py
 import statistics
-from prime_rl.orchestrator.advantage import AdvantageInputs, AdvantageOutputs
+from prime_rl.orchestrator.algo import AdvantageInputs, AdvantageOutputs
 
 def normalized_advantage(inputs: AdvantageInputs, eps: float = 1e-8) -> AdvantageOutputs:
     rewards = [r["reward"] for r in inputs.rollouts]

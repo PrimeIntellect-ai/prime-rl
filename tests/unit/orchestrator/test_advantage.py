@@ -8,13 +8,13 @@ from prime_rl.configs.algorithm import (
     TokensLengthPenaltyConfig,
     TurnsLengthPenaltyConfig,
 )
-from prime_rl.orchestrator.advantage import (
+from prime_rl.orchestrator.algo import CustomAdvantage
+from prime_rl.orchestrator.algo.advantage import (
     AdvantageInputs,
     AdvantageOutputs,
     assign_advantages,
     default_advantage_fn,
 )
-from prime_rl.orchestrator.algorithms import CustomAdvantage
 from prime_rl.orchestrator.types import TrainRollout
 
 

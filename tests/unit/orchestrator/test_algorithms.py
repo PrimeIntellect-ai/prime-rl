@@ -5,7 +5,7 @@ import pytest
 import verifiers as vf
 
 from prime_rl.configs.algorithm import AlgorithmConfig, FrozenModelConfig, LossRoutingConfig
-from prime_rl.orchestrator.algorithms import spread_token_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo import spread_token_advantages, stamp_loss_routing
 from prime_rl.orchestrator.trajectories import interleave_rollout
 from prime_rl.orchestrator.types import TrainRollout
 from prime_rl.transport.types import LossType, TrainingSample
