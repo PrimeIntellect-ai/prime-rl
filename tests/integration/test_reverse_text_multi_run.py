@@ -96,11 +96,7 @@ INFERENCE_BASE_URLS = [f"http://localhost:{port}/v1" for port in INFERENCE_PORTS
 
 
 def start_inference_and_trainer(
-    log_dir: Path,
-    output_dir: Path,
-    wandb_project: str,
-    wandb_name: str,
-    trainer_config: Path | str = "configs/ci/integration/reverse_text_multi_run/trainer.toml",
+    log_dir: Path, output_dir: Path, wandb_project: str, wandb_name: str
 ) -> tuple[subprocess.Popen, list[subprocess.Popen]]:
     # Start inference servers (one per GPU on ports 8000 and 8001)
     inference_procs: list[subprocess.Popen] = []
@@ -138,7 +134,7 @@ def start_inference_and_trainer(
                 "-m",
                 "prime_rl.trainer.rl.train",
                 "@",
-                str(trainer_config),
+                "configs/ci/integration/reverse_text_multi_run/trainer.toml",
                 "--output-dir",
                 output_dir.as_posix(),
                 "--wandb.project",
