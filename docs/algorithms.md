@@ -191,7 +191,7 @@ Filters drop rollouts between scoring and training. Built-ins (composable):
 |---|---|
 | `gibberish` | Drops rollouts whose mean log-prob fall below a threshold — usually a sign of degenerate output. |
 | `repetition` | Drops rollouts with high n-gram repetition. |
-| `advantage` | Drops rollouts whose advantage is less than or equal to `threshold` (default `0.0`). |
+| `advantage` | Drops rollouts whose absolute advantage is less than or equal to `threshold` (default `0.0`). |
 
 The default `[orchestrator]` config already includes all three filters in both `pre_batch_filters` and `post_batch_filters`. Pre-batch filters monitor only by default; post-batch filters enforce by default. To override either list, set it explicitly — the list replaces that slot's defaults wholesale:
 

@@ -7,7 +7,7 @@ In this example, we demonstrate how to train `Qwen3-4B-Instruct-2507` to answer 
 - **Multi-turn tool use**: The model learns to use tools across multiple turns via `ToolEnv` via native function calling
 - **Locally-hosted storage**: Uses ChromaDB for vector search and OpenAI embeddings for retrieval
 - **LLM judges**: Uses an LLM judge to evaluate answer quality alongside tool execution metrics
-- **Advantage filtering**: Drops rollouts at or below the configured advantage threshold before they reach the trainer
+- **Advantage filtering**: Drops rollouts at or below the configured absolute advantage threshold before they reach the trainer
 
 > This example runs on 8 GPUs (6 for inference, 2 for training).
 

@@ -452,15 +452,15 @@ class RepetitionFilterConfig(BaseConfig):
     """Tokens sampled with probability above this are considered repetitive. Consecutive such tokens count toward the window."""
 
 
-# Flags rollouts at or below an advantage threshold.
+# Flags rollouts at or below an absolute advantage threshold.
 class AdvantageFilterConfig(BaseConfig):
     type: Literal["advantage", "zero_advantage"] = "advantage"
 
     enforce: bool = True
     """When True, skip detected rollouts entirely so they are not sent to the trainer. When False, only track detection metrics."""
 
-    threshold: float = 0.0
-    """Flag rollouts whose computed advantage is less than or equal to this value."""
+    threshold: float = Field(0.0, ge=0)
+    """Flag rollouts whose absolute computed advantage is less than or equal to this value."""
 
 
 FilterConfig: TypeAlias = Annotated[

@@ -99,14 +99,14 @@ class RepetitionFilter:
 
 @dataclass
 class AdvantageFilter:
-    """Flags rollouts whose computed advantage is at or below a threshold."""
+    """Flags rollouts whose absolute computed advantage is at or below a threshold."""
 
     name: str
     threshold: float = 0.0
     enforce: bool = True
 
     def check(self, rollout: "TrainRollout") -> FilterResult:
-        if rollout.advantage is not None and rollout.advantage <= self.threshold:
+        if rollout.advantage is not None and abs(rollout.advantage) <= self.threshold:
             return FilterResult(detected=True)
         return FilterResult(detected=False)
 

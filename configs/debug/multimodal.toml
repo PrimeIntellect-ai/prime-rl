@@ -24,7 +24,7 @@ group_size = 16
 pool_size = 4
 
 # Step 0 on Qwen3-VL-4B vs color-codeword can be uniform (all-correct or
-# all-wrong), so don't enforce advantage-threshold dropping or training would crash
+# all-wrong), so don't enforce absolute-advantage-threshold dropping or training would crash
 # before any progress.
 [[orchestrator.post_batch_filters]]
 type = "gibberish"

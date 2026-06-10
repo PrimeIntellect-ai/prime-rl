@@ -201,8 +201,9 @@ def test_advantage_filter_detects_rollouts_at_or_below_threshold():
     advantage_filter = AdvantageFilter(name="advantage", threshold=0.1)
 
     assert advantage_filter.check(_make_advantage_rollout(0.1)).detected is True
-    assert advantage_filter.check(_make_advantage_rollout(-0.2)).detected is True
+    assert advantage_filter.check(_make_advantage_rollout(-0.1)).detected is True
     assert advantage_filter.check(_make_advantage_rollout(0.2)).detected is False
+    assert advantage_filter.check(_make_advantage_rollout(-0.2)).detected is False
 
 
 # --- setup_filter / setup_filters tests ---
