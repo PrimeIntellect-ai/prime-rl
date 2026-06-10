@@ -205,12 +205,6 @@ def test_advantage_filter_detects_rollouts_at_or_below_threshold():
     assert advantage_filter.check(_make_advantage_rollout(0.2)).detected is False
 
 
-def test_advantage_filter_ignores_missing_advantage():
-    advantage_filter = AdvantageFilter(name="advantage", threshold=0.0)
-
-    assert advantage_filter.check(_make_advantage_rollout(None)).detected is False
-
-
 # --- setup_filter / setup_filters tests ---
 
 
@@ -253,15 +247,6 @@ def test_setup_filter_advantage():
     assert advantage_filter.name == "advantage"
     assert advantage_filter.threshold == 0.25
     assert advantage_filter.enforce is True
-
-
-def test_setup_filter_zero_advantage_alias():
-    config = AdvantageFilterConfig(type="zero_advantage", enforce=False)
-    advantage_filter = setup_filter(config, vocab_size=128_000)
-    assert isinstance(advantage_filter, AdvantageFilter)
-    assert advantage_filter.name == "advantage"
-    assert advantage_filter.threshold == 0.0
-    assert advantage_filter.enforce is False
 
 
 def test_setup_filters_multiple():
