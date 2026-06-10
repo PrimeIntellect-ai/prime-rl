@@ -122,18 +122,6 @@ class SFTAdvantageConfig(BaseConfig):
     """Per-token weight."""
 
 
-class RefKLAdvantageConfig(BaseConfig):
-    """Reference-KL advantage (overlay): per-token ``(reference_logprob − inference_logprob) × tau`` on
-    the sampled tokens, ``0`` elsewhere — the log-ratio of the reference scorer vs the sampling policy.
-    Reads the reference (``orchestrator.reference``) orchestrator-side via the lazy handle, so a
-    reference must be configured for any env that enables it."""
-
-    type: Literal["ref_kl"] = "ref_kl"
-
-    tau: float = Field(1.0, ge=0)
-    """Temperature on the per-token log-ratio."""
-
-
 class CustomAdvantageFnConfig(BaseConfig):
     """A user advantage_fn resolved from a dotted import path. Signature:
     ``fn(group: list[RenderHints], **kwargs) -> list[list[float]]`` (one list/unit, one float/token;
@@ -150,7 +138,7 @@ class CustomAdvantageFnConfig(BaseConfig):
 
 
 AdvantageFnConfig: TypeAlias = Annotated[
-    GRPOAdvantageConfig | EchoAdvantageConfig | SFTAdvantageConfig | RefKLAdvantageConfig | CustomAdvantageFnConfig,
+    GRPOAdvantageConfig | EchoAdvantageConfig | SFTAdvantageConfig | CustomAdvantageFnConfig,
     Field(discriminator="type"),
 ]
 
