@@ -20,13 +20,14 @@ from typing import cast
 
 import verifiers as vf
 
-from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig, RAEAdvantageConfig
 from prime_rl.orchestrator.advantage import assign_advantages
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
 from prime_rl.orchestrator.multi_agent_advantage import (
     RAEState,
     compute_rae_advantages,
+    extract_episode_pairs_for_multi_agent,
     fan_out_trainable_for_multi_agent,
 )
 from prime_rl.orchestrator.trajectories import (
@@ -64,8 +65,14 @@ class TrainSink:
         self.batch_size = batch_size
         self.token_batch_size = token_batch_size
         # Per-env advantage fns live on each ``TrainEnv``; the shared RAE state
-        # (multi-agent ``ema_per_member`` envs) is owned by the orchestrator so
+        # (multi-agent ``rae`` envs) is owned by the orchestrator so
         # checkpoints can round-trip it.
+        if rae_state is None and any(isinstance(env_cfg.advantage, RAEAdvantageConfig) for env_cfg in config.train.env):
+            raise ValueError(
+                "advantage.type='rae' requires the orchestrator-owned RAEState "
+                "(it is checkpointed across resumes); constructing a fresh state "
+                "inside the sink would silently diverge from the checkpoint"
+            )
         self.rae_state = rae_state
         self.pre_filters = pre_filters
         self.post_filters = post_filters
@@ -270,14 +277,17 @@ class TrainSink:
 
     async def project_multi_agent_group(self, episodes: list[TrainRollout]) -> list[TrainRollout]:
         if self.rae_state is None:
-            raise RuntimeError("Multi-agent training requires advantage.type='ema_per_member'.")
+            raise RuntimeError("Multi-agent training requires advantage.type='rae'.")
 
         raw_episodes: list[vf.RolloutOutput] = []
         for episode in episodes:
             episode.raw["env_name"] = episode.env_name
             raw_episodes.append(episode.raw)
         member_raws, episode_to_member_idxs = fan_out_trainable_for_multi_agent(raw_episodes, self.config.multi_agent)
-        advantages, rae_stats = compute_rae_advantages(member_raws, self.rae_state)
+        # Pairs come from the UNFILTERED mar_score: frame derivation and
+        # zero-sum validation must not depend on which seats train_one kept
+        episode_pairs = extract_episode_pairs_for_multi_agent(raw_episodes, self.config.multi_agent)
+        advantages, rae_stats = compute_rae_advantages(member_raws, self.rae_state, episode_pairs=episode_pairs)
         if self.rae_step_stats is None:
             self.rae_step_stats = rae_stats
         else:

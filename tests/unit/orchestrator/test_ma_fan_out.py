@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
 import verifiers as vf
 from verifiers.types import MARScore, MemberScore, RolloutTiming, State, TrajectoryStep
 from verifiers.utils.save_utils import state_to_output
@@ -22,6 +23,7 @@ from prime_rl.orchestrator.member_generation import (
 from prime_rl.orchestrator.multi_agent_advantage import (
     RAEState,
     compute_rae_advantages,
+    extract_episode_pairs_for_multi_agent,
     fan_out_for_multi_agent,
 )
 
@@ -113,30 +115,46 @@ def test_fan_out_index_mapping_for_multiple_rollouts():
 
 
 def test_fan_out_pipeline_into_compute_rae_advantages():
-    """End-to-end: fan_out → compute_rae_advantages produces one
-    advantage per unit, and the unit/advantage zip behaves correctly
-    for the orchestrator's per-unit sample.advantage assignment."""
+    """End-to-end: fan_out + pair extraction → compute_rae_advantages
+    produces one advantage per unit, and the unit/advantage zip behaves
+    correctly for the orchestrator's per-unit sample.advantage assignment."""
     rollouts = [
-        _build_rollout(example_id=1, members=[("debater_a", 1.0), ("debater_b", -1.0)]),
-        _build_rollout(example_id=1, members=[("debater_a", -1.0), ("debater_b", 1.0)]),
+        _build_rollout(example_id=1, trajectory_id="ep-1", members=[("debater_a", 1.0), ("debater_b", -1.0)]),
+        _build_rollout(example_id=1, trajectory_id="ep-2", members=[("debater_a", -1.0), ("debater_b", 1.0)]),
     ]
+    config = MultiAgentConfig(
+        fixed={
+            "judge": FixedMemberTargetConfig(
+                members=["judge"],
+                model="judge-model",
+                base_url=["http://judge:8000/v1"],
+            ),
+        },
+    )
     units, _mapping = fan_out_for_multi_agent(
         rollouts,
         is_trainable_member=lambda _rollout, member_id: member_id != "judge",
     )
-    state = RAEState(momentum=0.9)
-    advantages, _ = compute_rae_advantages(units, state)
+    # Pairs come from the unfiltered mar_score; the fixed judge is excluded
+    episode_pairs = extract_episode_pairs_for_multi_agent(rollouts, config)
+    assert episode_pairs == {
+        "ep-1": {"debater_a": 1.0, "debater_b": -1.0},
+        "ep-2": {"debater_a": -1.0, "debater_b": 1.0},
+    }
+    state = RAEState()
+    advantages, _ = compute_rae_advantages(units, state, episode_pairs=episode_pairs)
     assert len(advantages) == len(units) == 4
-    # Both debater_a units share key (task, example_id=1, "debater_a") →
-    # the EMA recursion compounds. With cold start b=0, momentum=0.9:
-    #   debater_a unit 1: R=1.0 → b=0.1, A = 0.9
-    #   debater_b unit 1: R=-1.0 → b=-0.1, A = -0.9
-    #   debater_a unit 2: R=-1.0 → b=0.9*0.1 + 0.1*(-1) = -0.01, A = -0.99
-    #   debater_b unit 2: R=1.0 → b=0.9*(-0.1) + 0.1*1 = 0.01, A = 0.99
-    assert advantages[0] == 0.9
-    assert advantages[1] == -0.9
-    assert abs(advantages[2] - (-0.99)) < 1e-9
-    assert abs(advantages[3] - 0.99) < 1e-9
+    # One group key ("debate_v1", 1), canonical member debater_a, cold b0 = 0,
+    # G = 2 episodes, lam = 6/(6+1) = 6/7. Canonical rewards [1, -1]:
+    #   ep-1: A_a = 1 - (6/7*0 + 1/7*(-1)) = 8/7 = 1.1428571428571428; A_b = -8/7
+    #   ep-2: A_a = -1 - (6/7*0 + 1/7*1) = -8/7;                       A_b = +8/7
+    assert advantages[0] == pytest.approx(1.1428571428571428)
+    assert advantages[1] == pytest.approx(-1.1428571428571428)
+    assert advantages[2] == pytest.approx(-1.1428571428571428)
+    assert advantages[3] == pytest.approx(1.1428571428571428)
+    # Single fold at group close: b1 = 0.9*0 + 0.1*mean([1, -1]) = 0.0
+    assert state.baselines == {("debate_v1", 1): pytest.approx(0.0)}
+    assert state.canonical_members == {("debate_v1", 1): "debater_a"}
 
 
 def test_fan_out_handles_empty_rollouts_list():

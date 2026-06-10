@@ -68,8 +68,8 @@ preserve_all_thinking = true
 name = "debate-r32"
 
 [orchestrator.advantage]
-type = "ema_per_member"
-momentum = 0.9
+type = "rae"
+beta = 0.9
 
 [orchestrator.train.sampling]
 temperature = 1.0

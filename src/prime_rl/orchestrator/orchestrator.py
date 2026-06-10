@@ -41,7 +41,7 @@ from verifiers.clients.renderer_client import get_bridge_metrics, reset_bridge_m
 from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
-from prime_rl.configs.orchestrator import EMAPerMemberAdvantageConfig, OrchestratorConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig, RAEAdvantageConfig
 from prime_rl.metrics.debate import write_step_metrics as write_debate_step_metrics
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.dispatcher import DispatcherMetrics, DispatcherMode, RolloutDispatcher
@@ -200,13 +200,15 @@ class Orchestrator:
         self.resume_step = None
         self.lag_task = None
         # Per-env ``advantage`` is resolved at config validation; one shared RAE
-        # state serves every ``ema_per_member`` env (momentum consistency is
-        # enforced by ``validate_ema_advantage_momentum``).
-        ema_advantage = next(
-            (env.advantage for env in config.train.env if isinstance(env.advantage, EMAPerMemberAdvantageConfig)),
+        # state serves every ``rae`` env (beta/n_eff consistency is enforced
+        # by ``validate_rae_advantage_params``).
+        rae_advantage = next(
+            (env.advantage for env in config.train.env if isinstance(env.advantage, RAEAdvantageConfig)),
             None,
         )
-        self.rae_state = RAEState(momentum=ema_advantage.momentum) if ema_advantage is not None else None
+        self.rae_state = (
+            RAEState(beta=rae_advantage.beta, n_eff=rae_advantage.n_eff) if rae_advantage is not None else None
+        )
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -357,6 +359,15 @@ class Orchestrator:
         if self.resume_step is not None and self.ckpt_manager is not None:
             self.ckpt_manager.load(self.progress, step=self.resume_step, rae_state=self.rae_state)
             get_logger().info(f"Resuming orchestrator from checkpoint step {self.resume_step}")
+            if self.rae_state is not None and self.rae_state.baselines:
+                state_envs = {key[0] for key in self.rae_state.baselines}
+                configured_envs = set(self.train_envs.names)
+                if not state_envs & configured_envs:
+                    get_logger().warning(
+                        f"Resumed RAE state has zero env-name overlap with configured train envs "
+                        f"(state: {sorted(state_envs)}, configured: {sorted(configured_envs)}). "
+                        "Renaming an env in the TOML orphans every baseline — all keys start cold."
+                    )
             check_exists = config.weight_broadcast.type != "nccl"
             wait_timeout = config.ckpt.wait_for_weights_timeout if config.ckpt else None
             weights_path = get_weight_dir(

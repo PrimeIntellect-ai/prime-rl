@@ -849,7 +849,7 @@ def test_orchestrator_per_env_advantage_inherits_global_unless_overridden():
     config = OrchestratorConfig.model_validate(
         {
             "model": {"name": "Qwen/Qwen3-0.6B"},
-            "advantage": {"type": "ema_per_member", "momentum": 0.8},
+            "advantage": {"type": "rae", "beta": 0.8},
             "train": {
                 "env": [
                     {"id": "two-player-env"},
@@ -862,21 +862,21 @@ def test_orchestrator_per_env_advantage_inherits_global_unless_overridden():
     inherited = config.train.env[0].advantage
     overridden = config.train.env[1].advantage
     assert inherited is not None
-    assert inherited.type == "ema_per_member"
-    assert inherited.momentum == 0.8
+    assert inherited.type == "rae"
+    assert inherited.beta == 0.8
     assert overridden is not None
     assert overridden.type == "default"
 
 
 def test_orchestrator_per_env_ema_momentum_mismatch_raises():
-    with pytest.raises(ValidationError, match="momentum"):
+    with pytest.raises(ValidationError, match="Conflicting rae"):
         OrchestratorConfig.model_validate(
             {
                 "model": {"name": "Qwen/Qwen3-0.6B"},
                 "train": {
                     "env": [
-                        {"id": "two-player-a", "advantage": {"type": "ema_per_member", "momentum": 0.9}},
-                        {"id": "two-player-b", "advantage": {"type": "ema_per_member", "momentum": 0.5}},
+                        {"id": "two-player-a", "advantage": {"type": "rae", "beta": 0.9}},
+                        {"id": "two-player-b", "advantage": {"type": "rae", "beta": 0.5}},
                     ],
                 },
             }

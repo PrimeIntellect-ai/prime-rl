@@ -41,8 +41,8 @@ name = "gpqa-debate-external-opponent"
 args = { prompts_ref = "selfplay", subset = "gpqa_diamond" }
 
 [orchestrator.advantage]
-type = "ema_per_member"
-momentum = 0.9
+type = "rae"
+beta = 0.9
 
 [orchestrator.multi_agent.train_one]
 members = ["debater_a", "debater_b"]

@@ -251,15 +251,21 @@ class CustomAdvantageConfig(BaseConfig):
     """Kwargs forwarded to the advantage function."""
 
 
-class EMAPerMemberAdvantageConfig(BaseConfig):
-    type: Literal["ema_per_member"] = "ema_per_member"
+class RAEAdvantageConfig(BaseConfig):
+    """Rank-7 RAE for zero-sum multi-agent groups: shrunk leave-one-out +
+    historical prior, order-invariant, with the antithetic merge."""
 
-    momentum: float = Field(0.9, ge=0.0, le=1.0)
-    """EMA decay rate for per-(env, example, member) baseline updates."""
+    type: Literal["rae"] = "rae"
+
+    n_eff: float = Field(6.0, ge=0.0)
+    """Staleness-priced pseudo-count for the historical prior — does sample-size and drift-discount duty simultaneously; do not tune upward without revisiting that. ``0`` reduces to pure RLOO."""
+
+    beta: float = Field(0.9, gt=0.0, lt=1.0)
+    """Explicit group-level baseline memory, applied once per group-close fold — deliberately NOT the per-sample momentum of a sequential EMA."""
 
 
 AdvantageConfig: TypeAlias = Annotated[
-    DefaultAdvantageConfig | EMAPerMemberAdvantageConfig | CustomAdvantageConfig,
+    DefaultAdvantageConfig | RAEAdvantageConfig | CustomAdvantageConfig,
     Field(discriminator="type"),
 ]
 
@@ -1099,19 +1105,19 @@ class OrchestratorConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_ema_advantage_momentum(self):
-        """All envs resolving to ``ema_per_member`` share a single ``RAEState``
-        (one EMA momentum per run); reject silently-diverging per-env momenta.
+    def validate_rae_advantage_params(self):
+        """All envs resolving to ``rae`` share a single ``RAEState`` (one
+        ``beta``/``n_eff`` per run); reject silently-diverging per-env params.
         Runs after ``resolve_batching`` so per-env ``advantage`` is resolved."""
-        momenta = {
-            env_cfg.advantage.momentum
+        params = {
+            (env_cfg.advantage.beta, env_cfg.advantage.n_eff)
             for env_cfg in self.train.env
-            if isinstance(env_cfg.advantage, EMAPerMemberAdvantageConfig)
+            if isinstance(env_cfg.advantage, RAEAdvantageConfig)
         }
-        if len(momenta) > 1:
+        if len(params) > 1:
             raise ValueError(
-                f"Conflicting ema_per_member momenta across train envs: {sorted(momenta)}. "
-                "All ema_per_member envs share one RAE state, so they must use the same momentum."
+                f"Conflicting rae (beta, n_eff) across train envs: {sorted(params)}. "
+                "All rae envs share one RAE state, so they must use the same beta and n_eff."
             )
         return self
 

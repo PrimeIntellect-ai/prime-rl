@@ -61,7 +61,7 @@ lr = 1e-5
 
 [orchestrator]
 batch_size = 16      # 4 distinct questions/step (n_questions = batch_size / group_size); each fans out to 2 trainable seats
-group_size = 4       # 4 debates/question; ema_per_member baseline is persistent (cross-step), so small groups still give signal
+group_size = 4       # 4 debates/question; rae baseline is persistent (cross-step), so small groups still give signal
 dump_trajectory = true   # persist full debate transcripts for inspection
 
 # name="auto" resolves Qwen3.5-35B-A3B -> Qwen35Renderer and auto-detects
@@ -76,7 +76,7 @@ name = "auto"
 preserve_all_thinking = true   # Required for debate TITO bridge/full-render determinism.
 
 [orchestrator.advantage]
-type = "ema_per_member"   # REQUIRED for multi-agent (fail-loud assert: MA <=> ema_per_member)
+type = "rae"   # REQUIRED for multi-agent (fail-loud assert: MA <=> rae)
 
 [orchestrator.model.lora]
 name = "debate-r32"
