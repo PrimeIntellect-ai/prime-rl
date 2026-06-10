@@ -98,6 +98,30 @@ def stamp_loss_routing(sample: TrainingSample, action_loss_type: LossType, loss:
     sample.token_loss_weights = weights
 
 
+def spread_token_advantages(rollout: TrainRollout) -> None:
+    """Stamp the strategy's per-token advantages onto the rollout's sample,
+    padded with 0.0 over prompt positions (never trained).
+
+    Per-token advantages are aligned to one sample's completion tokens, so a
+    rollout that split into several training samples is rejected — there is no
+    unambiguous way to distribute one list across them.
+    """
+    assert rollout.token_advantages is not None
+    if len(rollout.samples) != 1:
+        raise ValueError(
+            f"per-token advantages need a rollout with exactly one training sample; "
+            f"env '{rollout.env_name}' produced {len(rollout.samples)}."
+        )
+    sample = rollout.samples[0]
+    if len(rollout.token_advantages) != len(sample.completion_ids):
+        raise ValueError(
+            f"per-token advantages must align with the sample's completion tokens: "
+            f"got {len(rollout.token_advantages)}, expected {len(sample.completion_ids)} "
+            f"(env '{rollout.env_name}')."
+        )
+    sample.token_advantages = [0.0] * len(sample.prompt_ids) + list(rollout.token_advantages)
+
+
 # ---------------------------------------------------------------------------
 # Advantage strategies
 # ---------------------------------------------------------------------------
@@ -342,6 +366,8 @@ class Algorithm:
         each sample's wire fields (advantage + loss routing)."""
         self.advantage.assign(rollouts)
         for rollout in rollouts:
+            if rollout.token_advantages is not None:
+                spread_token_advantages(rollout)
             for sample in rollout.samples:
                 # Strategies without scalars leave ``rollout.advantage=None``
                 # (advantage-based filters skip it); the wire ships a

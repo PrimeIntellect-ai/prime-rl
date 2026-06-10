@@ -97,7 +97,8 @@ class FinishedRollout:
         ``monitor.log_samples``). Shallow copy; never mutates ``self.raw``."""
         out: vf.RolloutOutput = dict(self.raw)  # type: ignore[assignment]
         for f in fields(self):
-            if f.name in ("raw", "samples"):
+            # token_advantages is per-token bulk data like samples — skip it
+            if f.name in ("raw", "samples", "token_advantages"):
                 continue
             val = getattr(self, f.name)
             if f.name == "filter_results":
@@ -111,6 +112,9 @@ class FinishedRollout:
 class TrainRollout(FinishedRollout):
     samples: list[TrainingSample] = field(default_factory=list)
     advantage: float | None = None
+    # Per-token advantages from the advantage strategy, aligned to the
+    # sample's completion tokens. None broadcasts the scalar.
+    token_advantages: list[float] | None = None
     is_filtered: bool = False
     filter_results: dict[str, bool] = field(default_factory=dict)
 

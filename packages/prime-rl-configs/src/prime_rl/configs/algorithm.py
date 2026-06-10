@@ -203,7 +203,9 @@ class SupervisedAdvantageConfig(BaseConfig):
 
 class CustomAdvantageConfig(BaseConfig):
     type: Literal["custom"] = "custom"
-    """Custom scalar advantage function, consumed by the ``rl`` loss type."""
+    """Custom advantage function, consumed by the ``rl`` loss type. Returns
+    one scalar per rollout, optionally with per-token advantages aligned to
+    each rollout's completion tokens."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
     group_relative: ClassVar[bool] = False

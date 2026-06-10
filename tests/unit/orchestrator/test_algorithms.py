@@ -1,11 +1,13 @@
+import uuid
 from unittest.mock import MagicMock
 
 import pytest
 import verifiers as vf
 
 from prime_rl.configs.algorithm import AlgorithmConfig, FrozenModelConfig, LossRoutingConfig
-from prime_rl.orchestrator.algorithms import stamp_loss_routing
+from prime_rl.orchestrator.algorithms import spread_token_advantages, stamp_loss_routing
 from prime_rl.orchestrator.trajectories import interleave_rollout
+from prime_rl.orchestrator.types import TrainRollout
 from prime_rl.transport.types import LossType, TrainingSample
 
 FROZEN = {"name": "org/ref-model", "base_url": ["http://ref:8001/v1"]}
@@ -125,6 +127,39 @@ def test_stamp_loss_routing_clears_obs_mask_when_unused():
     assert sample.completion_obs_mask is None
     assert sample.token_loss_types is None
     assert sample.completion_mask == [True, True, False, True]
+
+
+def _make_rollout(samples: list[TrainingSample], token_advantages: list[float] | None) -> TrainRollout:
+    return TrainRollout(
+        raw={},
+        env_name="test-env",
+        example_id=0,
+        group_id=uuid.uuid4(),
+        policy_version=0,
+        off_policy_steps=0,
+        samples=samples,
+        token_advantages=token_advantages,
+    )
+
+
+def test_spread_token_advantages_pads_prompt():
+    rollout = _make_rollout([_make_sample(obs_mask=None)], token_advantages=[0.5, -0.5, 0.0, 1.0])
+    spread_token_advantages(rollout)
+    # 2 prompt positions padded with 0.0 + 4 completion-aligned advantages
+    assert rollout.samples[0].token_advantages == [0.0, 0.0, 0.5, -0.5, 0.0, 1.0]
+
+
+def test_spread_token_advantages_rejects_misaligned():
+    rollout = _make_rollout([_make_sample(obs_mask=None)], token_advantages=[0.5])
+    with pytest.raises(ValueError, match="align"):
+        spread_token_advantages(rollout)
+
+
+def test_spread_token_advantages_rejects_multi_sample_rollouts():
+    samples = [_make_sample(obs_mask=None), _make_sample(obs_mask=None)]
+    rollout = _make_rollout(samples, token_advantages=[0.5, -0.5, 0.0, 1.0])
+    with pytest.raises(ValueError, match="exactly one training sample"):
+        spread_token_advantages(rollout)
 
 
 def _two_step_rollout() -> vf.RolloutOutput:

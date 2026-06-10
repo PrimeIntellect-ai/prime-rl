@@ -47,7 +47,7 @@ id = "reverse-text"
 
 CLI: `--env.0.id reverse-text --env.1.id math-env`.
 
-**Dicts** — TOML uses a section; CLI takes a JSON string: `--vllm-extra '{"key1": "value1"}'`.
+**Dicts** — TOML uses a section; CLI takes a JSON string: `--vllm-extra '{"key1": "value1"}'`. This works for plain `dict` fields only — nested pydantic-model fields (e.g. `advantage`) reject JSON strings; use dotted keys (`--orchestrator.algo.advantage.type custom`) or a TOML overlay file.
 
 **Discriminated unions** — set the `type` field to pick the variant (`[orchestrator.advantage] type = "custom"`). Omit `type` to keep the default variant.
 

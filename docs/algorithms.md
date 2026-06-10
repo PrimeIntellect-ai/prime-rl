@@ -229,7 +229,7 @@ The advantage strategy is the `advantage` component of the [algorithm](#the-algo
 | `ref_kl` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`model`, an inline frozen hosted model), evaluated in the trainer from shipped reference logprobs. Group-relative scalars are still assigned (their sign steers the DPPO masking direction; the zero-advantage filter reads them). |
 | `demo_ref_kl` | `ref_kl` | SDFT: per-token reverse KL to a demo-conditioned reference. No scalars — rollouts keep `advantage = None` (advantage-based filters never fire) and ship a neutral 0.0. |
 | `supervised` | `ce` | Cross-entropy on the sampled tokens (`sft_distill`). The loss ignores scalars, but group-relative scalars are still assigned so reward-based filtering keeps working. |
-| `custom` | `rl` | Your function (below). |
+| `custom` | `rl` | Your function (below); scalar per rollout, optionally per-token. |
 
 ### Default Advantage
 
@@ -267,6 +267,24 @@ kwargs = { eps = 1e-8 }
 ```
 
 `AdvantageInputs.rollouts` is a list of `verifiers.RolloutOutput`, so you have access to the full rollout (turns, tool calls, custom metadata) — not just the reward. Use this for anything reward-shaping-like that needs trajectory context.
+
+#### Per-token advantages
+
+A custom function can also emit **per-token advantages** (process rewards, step-level credit assignment) via `AdvantageOutputs.token_advantages` — one optional list per rollout, aligned to that rollout's completion tokens. `None` entries (or omitting the field) broadcast the scalar over the sequence; prompt positions are padded internally and never trained.
+
+```python
+def step_weighted_advantage(inputs: AdvantageInputs) -> AdvantageOutputs:
+    rewards = [r["reward"] for r in inputs.rollouts]
+    baseline = statistics.fmean(rewards)
+    scalars = [r - baseline for r in rewards]
+    token_advantages = [
+        [scalar * w for w in my_token_weights(rollout)]  # one float per completion token
+        for scalar, rollout in zip(scalars, inputs.rollouts)
+    ]
+    return AdvantageOutputs(advantages=scalars, token_advantages=token_advantages)
+```
+
+The scalar `advantages` are still required — advantage-based filters and metrics read them. Each list must match the rollout's completion token count exactly (for multi-turn envs that's the merged completion, including interleaved observation tokens), and the rollout must map to a single training sample — both are validated loudly at group finalization. Signals that depend on the live policy's weights (like OPD's reverse KL) cannot be precomputed here; those are reference-scoring strategies evaluated in the trainer.
 
 ### Per-Env Advantage
 

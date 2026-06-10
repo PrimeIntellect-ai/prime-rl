@@ -29,10 +29,17 @@ class AdvantageInputs:
 @dataclass
 class AdvantageOutputs:
     """Outputs from advantage computation of a single group. ``None`` entries
-    mean "no advantage" — the rollout keeps ``advantage=None`` (advantage-based
-    filters never fire) and its samples ship a neutral 0.0."""
+    in ``advantages`` mean "no advantage" — the rollout keeps ``advantage=None``
+    (advantage-based filters never fire) and its samples ship a neutral 0.0.
+
+    ``token_advantages`` optionally carries per-token advantages, one entry per
+    rollout, each aligned to that rollout's completion tokens (including any
+    interleaved env-observation tokens). ``None`` entries (or leaving the field
+    ``None``) broadcast the scalar over the sequence instead.
+    """
 
     advantages: list[float | None]
+    token_advantages: list[list[float] | None] | None = None
 
 
 AdvantageFn = Callable[..., AdvantageOutputs]
@@ -125,5 +132,9 @@ def assign_advantages(
             rollout.advantage = rollout.reward
         return
     result = advantage_fn(AdvantageInputs(rollouts=[r.raw for r in rollouts]))
-    for rollout, advantage in zip(rollouts, result.advantages):
+    token_advantages = result.token_advantages
+    if token_advantages is None:
+        token_advantages = [None] * len(result.advantages)
+    for rollout, advantage, token_adv in zip(rollouts, result.advantages, token_advantages, strict=True):
         rollout.advantage = advantage
+        rollout.token_advantages = token_adv
