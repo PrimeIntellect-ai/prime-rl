@@ -9,9 +9,8 @@ Minimal end-to-end configs for the three training modes (`rl` / `opd` / `sft`) a
 | `opd_lora.toml` | `opd` | local vLLM (`Qwen3-0.6B-Reverse-Text-RL`) | trains a LoRA adapter (rank 8) |
 | `sft.toml` | `sft` | local vLLM (`Qwen3-0.6B-Reverse-Text-RL`) | |
 | `sft_lora.toml` | `sft` | local vLLM (`Qwen3-0.6B-Reverse-Text-RL`) | trains a LoRA adapter (rank 8) |
-| `sft_external.toml` | `sft` | PI inference (`openai/gpt-5-mini`) | external OAI endpoint; no local teacher |
 
-The student inference server is auto-launched on GPU 0 at `http://localhost:8000/v1` with `gpu_memory_utilization=0.5`. The local teacher (used by everything except `rl.toml` and `sft_external.toml`) is **not** auto-launched — start it manually on GPU 1.
+The student inference server is auto-launched on GPU 0 at `http://localhost:8000/v1` with `gpu_memory_utilization=0.5`. The local teacher (used by everything except `rl.toml`) is **not** auto-launched — start it manually on GPU 1.
 
 ## Start the local teacher
 
@@ -38,10 +37,6 @@ uv run rl @ configs/debug/training_modes/opd_lora.toml
 # SFT hard distill (needs teacher on port 8001)
 uv run rl @ configs/debug/training_modes/sft.toml
 uv run rl @ configs/debug/training_modes/sft_lora.toml
-
-# SFT hard distill from openai/gpt-5-mini via PI inference
-# (requires PRIME_API_KEY + PRIME_TEAM_ID in env; no local teacher needed)
-uv run rl @ configs/debug/training_modes/sft_external.toml
 ```
 
 See [docs/training.md](../../docs/training.md#training-modes-rl--opd--sft-via-orchestrator) for what each mode does.

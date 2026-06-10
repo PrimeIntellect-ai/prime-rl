@@ -229,7 +229,11 @@ class Orchestrator:
             self.teacher_inference = await setup_inference_pool(
                 config.teacher.client,
                 model_name=config.teacher.model.name,
-                train_client_type="openai_chat_completions",
+                # SFT rolls the teacher out through the renderer client (token-in/out) so its
+                # rollouts carry tokens directly — training is renderer-only. (OPD reads teacher
+                # logprobs via prefill, so its pool client type is moot.)
+                train_client_type="renderer",
+                renderer_config=config.renderer,
             )
 
         get_logger().info(f"Initializing monitor (wandb={config.wandb}, prime_monitor={config.prime_monitor})")
@@ -376,7 +380,6 @@ class Orchestrator:
         self.train_sink = TrainSink(
             config,
             tokenizer=self.tokenizer,
-            renderer=self.renderer,
             train_envs=self.train_envs,
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             batch_size=config.batch_size,

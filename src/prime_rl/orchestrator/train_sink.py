@@ -21,7 +21,7 @@ from prime_rl.configs.orchestrator import AdvantageConfig, OrchestratorConfig
 from prime_rl.orchestrator.advantage import assign_advantages, setup_advantage_fn
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.filters import RolloutFilter, apply_filters
-from prime_rl.orchestrator.trajectories import backfill_trace, trace_to_samples
+from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import TrainBatch, TrainBatchMetrics, TrainRollout
 from prime_rl.transport import TrainingSample
 from prime_rl.utils.logger import get_logger
@@ -35,7 +35,6 @@ class TrainSink:
         config: OrchestratorConfig,
         *,
         tokenizer,
-        renderer,
         train_envs: TrainEnvs,
         mm_token_type_ids_mapping: dict[int, int] | None,
         batch_size: int | None,
@@ -49,7 +48,6 @@ class TrainSink:
         )
         self.config = config
         self.tokenizer = tokenizer
-        self.renderer = renderer
         self.train_envs = train_envs
         self.mm_token_type_ids_mapping = mm_token_type_ids_mapping
         self.batch_size = batch_size
@@ -141,14 +139,11 @@ class TrainSink:
 
     async def process_rollout(self, rollout: TrainRollout) -> None:
         """Build training samples from the rollout's Trace (one per branch), walking the
-        message graph. RL/OPD rollouts come from the renderer client with tokens already on
-        every node; SFT rolls out against a chat-completions teacher that returns no tokens, so
-        re-render the conversation to backfill them first. Errored rollouts are dropped at the
-        group level, so skip them here."""
+        message graph. Training is renderer-only across all modes (RL/OPD student, SFT teacher),
+        so every node already carries its tokens. Errored rollouts are dropped at the group
+        level, so skip them here."""
         if rollout.trace.has_error:
             return
-        if self.config.training_mode == "sft":
-            await asyncio.to_thread(backfill_trace, rollout.trace, self.renderer)
         samples = await asyncio.to_thread(trace_to_samples, rollout.trace, env_name=rollout.env_name)
         rollout.samples = samples or []
 
