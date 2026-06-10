@@ -11,93 +11,45 @@ only grew), each turn carrying `tokens` (`prompt_ids` / `completion_ids` /
 from __future__ import annotations
 
 import verifiers.v1 as vf
-from verifiers.v1.clients.openai import message_to_wire
+from verifiers.v1 import graph
 
 from prime_rl.transport import TrainingSample
-from prime_rl.utils.chat_template import (
-    common_prefix_len,
-    deserialize_tool_calls,
-    normalize_messages,
-    render_messages,
-    strip_message_content,
-)
 from prime_rl.utils.logger import get_logger
 
 
 def backfill_rollout_tokens(trace: vf.Trace, tokenizer) -> None:
-    """Populate per-turn ``tokens`` for turns the env returned without them — e.g. SFT
-    against an external teacher whose chat client carries no token ids. Renders each
-    turn's prompt + assistant response with the student chat template and splits on the
-    longest common prefix; masks/logprobs are filled by ``trace_to_samples``. Mutates the
-    trace in place. (Tools aren't re-supplied here, so this targets text turns.)
-    """
-    for turn in trace.trajectory:
-        if turn.tokens is not None:
-            continue
-        prompt = strip_message_content(
-            deserialize_tool_calls(normalize_messages([message_to_wire(m) for m in turn.prompt], "user"))
-        )
-        completion = strip_message_content(
-            deserialize_tool_calls(normalize_messages([message_to_wire(turn.response.message)], "assistant"))
-        )
-        prompt_ids = render_messages(tokenizer, prompt, add_generation_prompt=True)
-        full_ids = render_messages(tokenizer, prompt + completion)
-        split_idx = common_prefix_len(prompt_ids, full_ids)
-        turn.tokens = vf.TurnTokens(
-            prompt_ids=full_ids[:split_idx],
-            completion_ids=full_ids[split_idx:],
-            completion_logprobs=[0.0] * (len(full_ids) - split_idx),
-        )
+    """No-op under the message-graph trace: training is renderer-only, so every turn already
+    carries token ids (the graph stores them per message). The old SFT-via-chat-client
+    backfill (rendering token-less turns) is unsupported — `trajectory` is now a read-only
+    view over the graph, so it can't write tokens back."""
+    return
 
 
 def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSample]:
     """Convert a v1 `Trace` into `TrainingSample`s — one per branch.
 
-    Stitch each branch's turns into one token sequence: the branch's first-turn
-    prompt, then for each turn the new context tokens since the running prefix (mask
-    `False`, the model didn't generate them) followed by that turn's completion tokens
-    (mask `True`, with logprobs). On a rollout error the whole completion is masked
-    out. Branches whose turns carry no token ids (e.g. an openai client) yield nothing.
+    Walks the message graph: each branch (a leaf→root path) is a flat token sequence built
+    by concatenating its nodes' `token_ids`/`sampled_mask`/`logprobs` (`graph
+    .branch_token_sequences`). The prompt is everything up to the first model-sampled token;
+    the completion is the rest, trainable where `sampled_mask` is True (the per-turn context
+    tokens between completions stay masked out). On a rollout error the whole completion is
+    masked out. Branches with no sampled tokens (e.g. an openai client carrying none) yield
+    nothing.
     """
     has_error = trace.has_error
     samples: list[TrainingSample] = []
-    for branch in trace.branches:
-        turns = branch.turns
-        if not turns or any(turn.tokens is None for turn in turns):
+    for ids, sampled_mask, logprobs in graph.branch_token_sequences(trace):
+        if not any(sampled_mask):
             continue
-
-        prompt_ids = list(turns[0].tokens.prompt_ids)
-        completion_ids: list[int] = []
-        completion_mask: list[bool] = []
-        completion_logprobs: list[float] = []
-        prefix_len = len(prompt_ids)  # running prompt+completion length of the branch
-
-        for turn in turns:
-            tokens = turn.tokens
-            new_prompt = list(tokens.prompt_ids[prefix_len:])
-            completion_ids.extend(new_prompt)
-            completion_mask.extend([False] * len(new_prompt))
-            completion_logprobs.extend([0.0] * len(new_prompt))
-
-            turn_completion = list(tokens.completion_ids)
-            completion_ids.extend(turn_completion)
-            completion_mask.extend([not has_error] * len(turn_completion))
-            logprobs = list(tokens.completion_logprobs)
-            if len(logprobs) != len(turn_completion):
-                logprobs = (logprobs + [0.0] * len(turn_completion))[: len(turn_completion)]
-            completion_logprobs.extend(logprobs)
-
-            prefix_len = len(tokens.prompt_ids) + len(turn_completion)
-
-        if not completion_ids:
-            continue
+        first = sampled_mask.index(True)  # split prompt | completion at the first sampled token
+        prompt_ids = ids[:first]
         samples.append(
             TrainingSample(
                 prompt_ids=prompt_ids,
                 prompt_mask=[False] * len(prompt_ids),
-                completion_ids=completion_ids,
-                completion_mask=completion_mask,
-                completion_logprobs=completion_logprobs,
+                completion_ids=ids[first:],
+                completion_mask=[m and not has_error for m in sampled_mask[first:]],
+                completion_logprobs=logprobs[first:],
                 completion_temperatures=[],  # filled by TrainSink.process_group
                 teacher_logprobs=None,
                 advantage=None,
