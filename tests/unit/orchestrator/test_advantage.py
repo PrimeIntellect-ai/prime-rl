@@ -4,11 +4,11 @@ import uuid
 import pytest
 
 from prime_rl.configs.algorithm import (
-    CustomAdvantageConfig,
+    AlgorithmConfig,
     TokensLengthPenaltyConfig,
     TurnsLengthPenaltyConfig,
 )
-from prime_rl.orchestrator.algo import CustomAdvantage
+from prime_rl.orchestrator.algo import CustomAlgorithm
 from prime_rl.orchestrator.algo.advantage import (
     AdvantageInputs,
     AdvantageOutputs,
@@ -287,16 +287,21 @@ def test_assign_advantages_singleton_group_is_zero():
     assert rollouts[0].advantage == pytest.approx(0.0, abs=1e-6)
 
 
-def test_custom_advantage_strategy():
-    config = CustomAdvantageConfig(
-        import_path="tests.unit.orchestrator.test_advantage._dummy_custom_advantage",
-        kwargs={"scale": 2.0},
+def test_custom_advantage_algorithm():
+    config = AlgorithmConfig.model_validate(
+        {
+            "advantage": {
+                "type": "custom",
+                "import_path": "tests.unit.orchestrator.test_advantage._dummy_custom_advantage",
+                "kwargs": {"scale": 2.0},
+            }
+        }
     )
-    strategy = CustomAdvantage(config)
+    algorithm = CustomAlgorithm(config, policy_pool=None, tokenizer=None)
 
     inputs = _make_group(rewards=[1.0, 0.5, 0.8], completion_lengths=[10, 12, 8])
 
-    result = strategy.advantage_fn(inputs)
+    result = algorithm.advantage_fn(inputs)
     assert isinstance(result, AdvantageOutputs)
     assert result.advantages == pytest.approx([2.0, 1.0, 1.6], abs=1e-6)
 

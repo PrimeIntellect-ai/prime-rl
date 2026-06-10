@@ -12,7 +12,7 @@ from verifiers.serve import ZMQEnvClient, ZMQEnvServer
 from verifiers.utils.serve_utils import get_free_port
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
-from prime_rl.orchestrator.algo import Algorithm
+from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.utils.logger import get_logger
 
 REQUIRED_STATE_COLUMNS = ["trajectory"]
@@ -247,7 +247,7 @@ class TrainEnvs(Envs[TrainEnv]):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
             assert config.algo is not None, "TrainEnvConfig.algo must be resolved before env construction"
-            env = TrainEnv(config, Algorithm(config.algo, policy_pool, tokenizer))
+            env = TrainEnv(config, build_algorithm(config.algo, policy_pool, tokenizer))
             self._envs[env.name] = env
 
 

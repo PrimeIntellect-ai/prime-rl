@@ -4,12 +4,13 @@ The config side (``prime_rl.configs.algorithm``) defines *what* an algorithm
 is — a preset of sampling, advantage, and loss routing. This package turns
 that declaration into runtime objects:
 
-- ``algorithm`` — :class:`Algorithm`, one strategy object per env and the only
-  orchestrator component that interprets ``AlgorithmConfig``; connects client
-  pools to inline frozen model references (prime-rl never hosts them).
-- ``strategies`` — one :class:`AdvantageStrategy` per advantage union member,
-  owning both execution points of the training signal: group-time assignment
-  and ship-time reference scoring (run via :func:`score_train_batch`).
+- ``algorithm`` — the named algorithm classes (:class:`GRPOAlgorithm`,
+  :class:`OPDAlgorithm`, :class:`OPSDAlgorithm`, ...), each owning its
+  ``assign`` (group-time credit) and ``score`` (ship-time reference scoring)
+  methods and declaring what it needs (loss component, a "teacher", ...).
+  One instance per env, built by :func:`build_algorithm`; the only
+  orchestrator components that interpret ``AlgorithmConfig``. Subclass
+  :class:`Algorithm` to write your own.
 - ``advantage`` — pure advantage math: the custom-function interface
   (:class:`AdvantageInputs` / :class:`AdvantageOutputs`) and the default
   group-norm computation.
@@ -24,36 +25,38 @@ from prime_rl.orchestrator.algo.advantage import (
     assign_advantages,
     default_advantage_fn,
 )
-from prime_rl.orchestrator.algo.algorithm import Algorithm, connect_frozen_pool, score_train_batch
-from prime_rl.orchestrator.algo.routing import spread_token_advantages, stamp_loss_routing
-from prime_rl.orchestrator.algo.strategies import (
-    AdvantageStrategy,
-    CustomAdvantage,
-    DemoRefKLAdvantage,
-    GroupNormAdvantage,
-    RefKLAdvantage,
-    RewardAdvantage,
-    SupervisedAdvantage,
-    setup_advantage_strategy,
+from prime_rl.orchestrator.algo.algorithm import (
+    ALGORITHM_CLASSES,
+    Algorithm,
+    CustomAlgorithm,
+    GRPOAlgorithm,
+    OPDAlgorithm,
+    OPSDAlgorithm,
+    RewardAlgorithm,
+    SFTDistillAlgorithm,
+    build_algorithm,
+    connect_frozen_pool,
+    score_train_batch,
 )
+from prime_rl.orchestrator.algo.routing import spread_token_advantages, stamp_loss_routing
 
 __all__ = [
+    "ALGORITHM_CLASSES",
     "AdvantageFn",
     "AdvantageInputs",
     "AdvantageOutputs",
-    "AdvantageStrategy",
     "Algorithm",
-    "CustomAdvantage",
-    "DemoRefKLAdvantage",
-    "GroupNormAdvantage",
-    "RefKLAdvantage",
-    "RewardAdvantage",
-    "SupervisedAdvantage",
+    "CustomAlgorithm",
+    "GRPOAlgorithm",
+    "OPDAlgorithm",
+    "OPSDAlgorithm",
+    "RewardAlgorithm",
+    "SFTDistillAlgorithm",
     "assign_advantages",
+    "build_algorithm",
     "connect_frozen_pool",
     "default_advantage_fn",
     "score_train_batch",
-    "setup_advantage_strategy",
     "spread_token_advantages",
     "stamp_loss_routing",
 ]

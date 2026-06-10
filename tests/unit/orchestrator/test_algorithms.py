@@ -51,13 +51,19 @@ def test_preset_advantage_override_without_type_inherits_strategy():
 
 
 def test_ref_kl_requires_model_reference():
-    with pytest.raises(ValueError, match="needs a reference model"):
+    with pytest.raises(ValueError, match="needs a teacher"):
         AlgorithmConfig(name="opd")
 
 
 def test_frozen_sampling_requires_model_reference():
-    with pytest.raises(ValueError, match="samples rollouts from a frozen model"):
+    with pytest.raises(ValueError, match="needs a teacher to sample rollouts from"):
         AlgorithmConfig(name="sft_distill")
+
+
+def test_teacher_aliases_model_shorthand():
+    algo = AlgorithmConfig.model_validate({"name": "opd", "teacher": FROZEN})
+    assert isinstance(algo.advantage.model, FrozenModelConfig)
+    assert algo.advantage.model.name == "org/ref-model"
 
 
 def test_model_shorthand_without_target_errors():

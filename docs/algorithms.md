@@ -9,6 +9,7 @@ This page covers the math and the configurable algorithmic components: the algor
   - [Presets](#presets)
   - [Customizing Components](#customizing-components)
   - [Per-Env Algorithms](#per-env-algorithms)
+  - [The Algorithm Classes](#the-algorithm-classes)
 - [Async / Off-Policy Training](#async--off-policy-training)
 - [Loss](#loss)
   - [Loss Components](#loss-components)
@@ -17,7 +18,7 @@ This page covers the math and the configurable algorithmic components: the algor
 - [Advantage](#advantage)
   - [Default Advantage](#default-advantage)
   - [Custom Advantage](#custom-advantage)
-  - [Reference-Scoring Strategies](#reference-scoring-strategies)
+  - [Reference Scoring](#reference-scoring)
 - [Filters](#filters)
 - [Difficulty Pools](#difficulty-pools)
 - [Online Difficulty Filtering](#online-difficulty-filtering)
@@ -45,14 +46,14 @@ The trainer is algorithm-blind: the loss is a sum of three components (rl, ce, r
 [orchestrator.algo]
 name = "opd"
 
-[orchestrator.algo.model]   # folds into advantage.model
+[orchestrator.algo.teacher]   # alias for `model`; folds into advantage.model
 name = "Qwen/Qwen3-32B"
 base_url = ["http://localhost:8001/v1"]
 ```
 
-Model *roles* are algorithm-local labels over these references — OPD may call its reference model a teacher, but no role exists outside the algorithm that defines it. The dispatcher, sink, and trainer branch on liveness alone, never on what an algorithm calls a model.
+Model *roles* are labels the algorithm itself declares over these references — the distillation algorithms declare their reference's role as `teacher`, so `[orchestrator.algo.teacher]` parses as an alias for the `model` shorthand and validation errors speak the same language ("algorithm 'opd' needs a teacher"). No role exists outside the algorithm that declares it: the dispatcher, sink, and trainer branch on liveness alone, never on what an algorithm calls a model.
 
-`algo.model` is shorthand for whichever component reference the preset leaves unresolved (`advantage.model` for `opd`, `sampling.source` for `sft_distill`) or a component default you didn't set; an explicit component reference that already equals it is accepted, a disagreeing one is an error. Set the component fields directly for multi-model setups.
+`algo.model` (alias: `algo.teacher`) is shorthand for whichever component reference the preset leaves unresolved (`advantage.model` for `opd`, `sampling.source` for `sft_distill`) or a component default you didn't set; an explicit component reference that already equals it is accepted, a disagreeing one is an error. Set the component fields directly for multi-model setups.
 
 Liveness is a property of the reference, not of any role: rollouts sampled from `"policy"` get version-salted prefix caches, carry sampling logprobs for importance ratios, and age off-policy as weights update; rollouts and scores from frozen models get a stable prefix cache and never go stale. Frozen models are externally hosted (`client.base_url` is required) — `prime-rl` never launches or updates them, and each env's algorithm builds its own client pool to the endpoints it declares.
 
@@ -107,6 +108,26 @@ id = "terminal-env"
 algo = { name = "echo" }
 ```
 
+### The Algorithm Classes
+
+At runtime, each env's resolved config builds one of the named algorithm classes in `prime_rl.orchestrator.algo` — dispatch is keyed on `advantage.type`, the axis along which behavior actually differs; preset names are vetted parameterizations of these classes (`echo` builds `GRPOAlgorithm` with observation routing):
+
+| `advantage.type` | Class | `assign` (group time) | `score` (ship time) |
+|---|---|---|---|
+| `group_norm` | `GRPOAlgorithm` | group-norm credit (optional length penalty) | — |
+| `ref_kl` | `OPDAlgorithm` | group-norm credit (DPPO sign steering) | own-context prefill under the teacher |
+| `demo_ref_kl` | `OPSDAlgorithm` | — | demo-conditioned prefill under the teacher |
+| `supervised` | `SFTDistillAlgorithm` | group-norm credit (feeds filters) | — |
+| `reward` | `RewardAlgorithm` | raw reward | — |
+| `custom` | `CustomAlgorithm` | your function | — |
+
+Each class owns its methods outright — reading one top to bottom reads the algorithm. The two execution points of the training signal:
+
+- `assign(rollouts)` — at group finalization, cheap and synchronous; sets rollout-level scalar (and optionally per-token) advantages.
+- `async score(rollouts)` — at batch-ship time; attaches per-token reference data by querying `self.reference_pool` (connected in `setup()` from the algorithm's declared model reference — the live policy pool when the reference is `"policy"`).
+
+Class-level declarations state what the algorithm needs: which loss component its action tokens feed (`action_loss_type`) and what it calls its reference model (`model_role`, e.g. `"teacher"`). The pipeline only ever calls the base-class hooks — writing your own algorithm is subclassing `Algorithm`, overriding `assign` and/or `score`, and reaching it through `advantage.type = "custom"` for scalar credit or a fork of one of the named classes for reference scoring. Shared math (group normalization, prefill alignment) lives as plain functions in `prime_rl.orchestrator.algo.advantage`.
+
 ## Async / Off-Policy Training
 
 `prime-rl` is asynchronous by default. The trainer and inference always run one step overlapped: while the trainer is producing $\pi_n$ from rollouts at step $n$, inference is already generating the rollouts for step $n+1$ using $\pi_{n-1}$. With matched trainer and inference step times this produces fully-overlapped pipeline parallelism — neither side ever idles.
@@ -132,7 +153,7 @@ $$
 
 - `rl` — the configured RL loss (`[trainer.loss]`): DPPO + KL by default, or a [custom loss](#custom-loss). Fed by the scalar advantage strategies (`group_norm`, `reward`, `custom`).
 - `ce` — masked NLL. Used for frozen-model tokens (`supervised` / `sft_distill`) and env-observation tokens (`echo`).
-- `ref_kl` — the DPPO machinery with the per-token reverse KL to a reference model ($\log \pi_{\text{ref}} - \log \pi$) as the policy-gradient signal (`opd`, `self_distill`). Requires `ref_logprobs` from a [reference-scoring strategy](#reference-scoring-strategies); the scoring model must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
+- `ref_kl` — the DPPO machinery with the per-token reverse KL to a reference model ($\log \pi_{\text{ref}} - \log \pi$) as the policy-gradient signal (`opd`, `self_distill`). Requires `ref_logprobs` from a [reference scoring](#reference-scoring); the scoring model must be a vLLM server (it's the only one that exposes `prompt_logprobs`).
 
 The orchestrator stamps each sample's component membership as per-token weight streams (`rl_weights` / `ce_weights` / `ref_kl_weights` on the wire): a weight scales that component's per-token loss, `0.0` leaves the token out of the component entirely (mask *and* denominator), and components may overlap on the same token — their gradients sum. Each $N$ is the global (all-reduced) count of that component's member tokens, so the components don't dilute each other: adding echo observation tokens never changes the rl term's effective per-token learning rate, and a supervised env packed next to a GRPO env doesn't soften its gradient. Tokens of different components pack freely into the same micro batch, and a plain GRPO run ships no streams at all (absent streams mean rl weight 1.0 on every trainable token — the unchanged hot path).
 
@@ -211,7 +232,7 @@ The dataclasses:
 class LossInputs:
     trainer_logprobs: Float[Tensor, "seq"]      # current policy
     inference_logprobs: Float[Tensor, "seq"]    # rollout-time policy
-    ref_logprobs: Float[Tensor, "seq"] | None   # set by reference-scoring strategies
+    ref_logprobs: Float[Tensor, "seq"] | None   # set by reference-scoring algorithms
     advantages: Float[Tensor, "seq"]
     loss_mask: Bool[Tensor, "seq"]              # this component's member tokens
     loss_weights: Float[Tensor, "seq"] | None   # the component's weight stream (None = 1.0)
@@ -290,7 +311,7 @@ def step_weighted_advantage(inputs: AdvantageInputs) -> AdvantageOutputs:
     return AdvantageOutputs(advantages=scalars, token_advantages=token_advantages)
 ```
 
-The scalar `advantages` are still required — advantage-based filters and metrics read them. Each list must match the rollout's completion token count exactly (for multi-turn envs that's the merged completion, including interleaved observation tokens), and the rollout must map to a single training sample — both are validated loudly at group finalization. Signals that depend on the live policy's weights (like OPD's reverse KL) cannot be precomputed here; those are reference-scoring strategies evaluated in the trainer.
+The scalar `advantages` are still required — advantage-based filters and metrics read them. Each list must match the rollout's completion token count exactly (for multi-turn envs that's the merged completion, including interleaved observation tokens), and the rollout must map to a single training sample — both are validated loudly at group finalization. Signals that depend on the live policy's weights (like OPD's reverse KL) cannot be precomputed here; those are reference-scoring algorithms, evaluated in the trainer.
 
 ### Per-Env Advantage
 
@@ -308,9 +329,9 @@ id = "agent-env"
 advantage = { type = "custom", import_path = "my_module.normalized_advantage" }
 ```
 
-### Reference-Scoring Strategies
+### Reference Scoring
 
-The `ref_kl` / `demo_ref_kl` strategies have an async ship-time half: at batch-ship time they query their reference model (`model`, a [model reference](#model-references)) with bounded concurrency (`max_concurrent`, default 32) and attach per-token reference logprobs to each sample:
+`OPDAlgorithm` / `OPSDAlgorithm` have an async ship-time half (`score`): at batch-ship time they query their teacher (`model`, a [model reference](#model-references)) with bounded concurrency (`max_concurrent`, default 32) and attach per-token reference logprobs to each sample:
 
 - `ref_kl` — score each sample's own context under the reference model via prefill; fills `ref_logprobs` for the `ref_kl` loss component (on-policy distillation). `model = "policy"` is rejected (the KL would be identically zero).
 - `demo_ref_kl` — SDFT: rebuild the prompt with an expert demonstration woven into the last user message (`template`, with `{question}` / `{demonstration}` placeholders), score the policy's completion under that demo-conditioned context. `model = "policy"` scores under the live policy itself — the SDFT setting, no extra deployment. The demonstration is read from the example's `info[demo_key]`, falling back to a top-level rollout field of the same name (e.g. `answer`); single-step trajectories only.

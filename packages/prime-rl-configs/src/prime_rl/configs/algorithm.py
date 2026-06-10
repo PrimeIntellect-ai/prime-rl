@@ -29,7 +29,7 @@ import copy
 import warnings
 from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.config import BaseConfig
@@ -141,10 +141,11 @@ class RefKLAdvantageConfig(BaseConfig):
 
     action_loss_type: ClassVar[ActionLossType] = "ref_kl"
     group_relative: ClassVar[bool] = True
+    model_role: ClassVar[str] = "teacher"
 
     model: ModelReference | None = None
-    """The reference model — an inline frozen hosted model (``name`` +
-    ``base_url``). Required — set it here or fold via ``algo.model``.
+    """The teacher — an inline frozen hosted model (``name`` + ``base_url``).
+    Required — set it here or fold via ``algo.model`` / ``algo.teacher``.
     ``"policy"`` is rejected: scoring the policy under itself yields zero KL
     signal (use ``demo_ref_kl`` for demo-conditioned self-teaching)."""
 
@@ -169,12 +170,13 @@ class DemoRefKLAdvantageConfig(BaseConfig):
 
     action_loss_type: ClassVar[ActionLossType] = "ref_kl"
     group_relative: ClassVar[bool] = False
+    model_role: ClassVar[str] = "teacher"
 
     model: ModelReference = "policy"
-    """The reference model. ``"policy"`` (the default) is the SDFT paper's
-    setting — the current model conditioned on the demo *is* the reference —
-    and needs no extra deployment. Set an inline frozen hosted model to score
-    under a frozen copy instead."""
+    """The teacher. ``"policy"`` (the default) is the SDFT paper's setting —
+    the current model conditioned on the demo *is* the teacher — and needs no
+    extra deployment. Set an inline frozen hosted model to score under a
+    frozen copy instead."""
 
     demo_key: str = "demonstration"
     """Key holding the expert demonstration text — looked up in the example's
@@ -202,6 +204,9 @@ class SupervisedAdvantageConfig(BaseConfig):
 
     action_loss_type: ClassVar[ActionLossType] = "ce"
     group_relative: ClassVar[bool] = True
+    source_role: ClassVar[str] = "teacher"
+    """The sampling source is this algorithm's teacher — the frozen model
+    whose tokens the policy trains on."""
 
 
 class CustomAdvantageConfig(BaseConfig):
@@ -300,12 +305,14 @@ class AlgorithmConfig(BaseConfig):
     - ``echo`` — GRPO on action tokens + weighted CE on env-observation tokens.
     """
 
-    model: ModelReference | None = Field(None, exclude=True)
+    model: ModelReference | None = Field(None, exclude=True, validation_alias=AliasChoices("model", "teacher"))
     """Model reference shorthand: ``"policy"`` or an inline frozen hosted
     model. Folds into the component reference the preset leaves unresolved
     (``advantage.model`` for opd, ``sampling.source`` for sft_distill) or a
     component default the user didn't set; an explicit component reference
     that already equals it is accepted, a disagreeing one is an error.
+    ``teacher`` is an accepted alias — the distillation algorithms declare
+    their reference's role as "teacher", and this is the slot it fills.
     Write-only input sugar — folded by validation and excluded from dumps so
     resolved configs round-trip."""
 
@@ -377,15 +384,18 @@ class AlgorithmConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_component_compatibility(self):
         if self.sampling.source is None:
+            role = getattr(self.advantage, "source_role", None)
+            need = f"a {role} to sample rollouts from" if role else "a model reference for sampling"
             raise ValueError(
-                f"algorithm '{self.name}' samples rollouts from a frozen model — set 'model' on the "
+                f"algorithm '{self.name}' needs {need} — set '{role or 'model'}' on the "
                 "algorithm (an inline hosted model: name + base_url), or sampling.source "
                 "explicitly."
             )
         if getattr(self.advantage, "model", "<absent>") is None:
+            role = getattr(self.advantage, "model_role", "reference model")
             raise ValueError(
-                f"algorithm '{self.name}': advantage '{self.advantage.type}' needs a reference model — "
-                "set 'model' on the algorithm (an inline hosted model: name + base_url), "
+                f"algorithm '{self.name}' needs a {role} — "
+                f"set '{role}' on the algorithm (an inline hosted model: name + base_url), "
                 "or advantage.model explicitly."
             )
         if isinstance(self.advantage, RefKLAdvantageConfig) and self.advantage.model == "policy":
