@@ -15,31 +15,24 @@ def serialize_routed_experts(routed_experts: Any, start: int = 0) -> dict[str, A
     array = np.asarray(routed_experts)
     assert array.ndim == 3
     assert np.issubdtype(array.dtype, np.integer)
-    # Narrow to the smallest int that holds the expert ids, matching vLLM's
-    # RoutedExpertsManager (uint8 for <=256 experts, uint16 otherwise). Keeps
-    # the wire payload compact while supporting >256-expert MoEs (e.g. Kimi-K2)
-    # that overflow uint8. The dtype rides the payload so the consumer decodes
-    # with the right element type.
     if array.size:
         assert array.min() >= 0
-        max_id = int(array.max())
+    # Preserve vLLM's per-MODEL dtype (RoutedExpertsManager uses uint8 for
+    # <=256 experts, uint16 otherwise), so every sample of a model shares one
+    # dtype. Re-narrowing per-sample on the observed max id would emit uint8
+    # for one sample and uint16 for another of the SAME >256-expert model,
+    # which the trainer's same-dtype routed-experts packing rejects. Only an
+    # unexpectedly wide capture dtype (e.g. an int64 buffer) is capped to int32
+    # (still consistent per model). The dtype rides the payload.
+    if array.dtype in (np.uint8, np.uint16, np.int16, np.int32):
+        compact = np.ascontiguousarray(array)
     else:
-        max_id = 0
-    if max_id <= np.iinfo(np.uint8).max:
-        target_dtype = np.uint8
-    elif max_id <= np.iinfo(np.uint16).max:
-        target_dtype = np.uint16
-    else:
-        # Beyond uint16 (>65535 experts) astype(uint16) would wrap and corrupt
-        # routing; fall back to int32 (consumer decodes via the dtype field).
-        target_dtype = np.int32
-
-    compact = np.ascontiguousarray(array.astype(target_dtype, copy=False))
+        compact = np.ascontiguousarray(array.astype(np.int32, copy=False))
     return {
         "data": pybase64.b64encode(memoryview(compact)).decode("ascii"),
         "shape": list(compact.shape),
         "start": start,
-        "dtype": np.dtype(target_dtype).name,
+        "dtype": compact.dtype.name,
     }
 
 
