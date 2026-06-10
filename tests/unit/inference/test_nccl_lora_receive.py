@@ -5,8 +5,13 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-import prime_rl.inference.vllm.worker.nccl as nccl_worker
 from prime_rl.inference.vllm.worker.nccl import NCCLWeightUpdateWorker
+
+
+def _bare_worker():
+    worker = object.__new__(NCCLWeightUpdateWorker)
+    worker.device = torch.device("cpu")
+    return worker
 
 
 class FakeLoRAModel:
@@ -63,7 +68,7 @@ class FakeAdapterManager:
 
 
 def _worker_with_fake_lora_manager():
-    worker = object.__new__(NCCLWeightUpdateWorker)
+    worker = _bare_worker()
     worker.nccl_broadcast_receiver = SimpleNamespace(communicator=object())
     adapter_manager = FakeAdapterManager()
     lora_manager = SimpleNamespace(
@@ -79,6 +84,7 @@ def _worker_with_fake_lora_manager():
 def _lora_header(step=7, lora_name="debater_a", lora_int_id=1):
     return {
         "step": step,
+        "num_chunks": 1,
         "adapters": [
             {
                 "lora_name": lora_name,
@@ -104,7 +110,7 @@ def test_lora_arm_returns_while_receive_thread_is_blocked(monkeypatch):
 
     monkeypatch.setattr(NCCLWeightUpdateWorker, "receive_lora_update", receive_lora_update)
 
-    worker = object.__new__(NCCLWeightUpdateWorker)
+    worker = _bare_worker()
     worker.arm_lora_receive(7, {"adapters": [{"lora_name": "debater_a"}]})
 
     assert entered.wait(timeout=1)
@@ -125,7 +131,7 @@ def test_lora_arm_rejects_previous_cycle_still_alive(monkeypatch):
 
     monkeypatch.setattr(NCCLWeightUpdateWorker, "receive_lora_update", receive_lora_update)
 
-    worker = object.__new__(NCCLWeightUpdateWorker)
+    worker = _bare_worker()
     worker.arm_lora_receive(7, {"adapters": [{"lora_name": "debater_a"}]})
     assert entered.wait(timeout=1)
 
@@ -142,7 +148,7 @@ def test_lora_wait_propagates_receive_error(monkeypatch):
 
     monkeypatch.setattr(NCCLWeightUpdateWorker, "receive_lora_update", receive_lora_update)
 
-    worker = object.__new__(NCCLWeightUpdateWorker)
+    worker = _bare_worker()
     worker.arm_lora_receive(7, {"adapters": [{"lora_name": "debater_a"}]})
 
     deadline = time.monotonic() + 1
@@ -159,8 +165,7 @@ def test_lora_wait_rejects_wrong_step(monkeypatch):
 
     monkeypatch.setattr(NCCLWeightUpdateWorker, "receive_lora_update", receive_lora_update)
 
-    worker = object.__new__(NCCLWeightUpdateWorker)
-    worker.device = SimpleNamespace(index=0)
+    worker = _bare_worker()
     worker.arm_lora_receive(7, {"adapters": [{"lora_name": "debater_a"}]})
 
     with pytest.raises(RuntimeError, match="not 8"):
@@ -172,8 +177,10 @@ def test_lora_receive_commits_in_memory_adapter(monkeypatch):
     worker, adapter_manager = _worker_with_fake_lora_manager()
     tensors = {"model.layers.0.self_attn.q_proj.lora_A.weight": torch.ones(4, 8)}
 
-    monkeypatch.setattr(nccl_worker, "receive_object", lambda communicator: _lora_header())
-    monkeypatch.setattr(nccl_worker, "receive_state_dict", lambda communicator: iter(tensors.items()))
+    monkeypatch.setattr(NCCLWeightUpdateWorker, "_receive_lora_object", lambda self, communicator: _lora_header())
+    monkeypatch.setattr(
+        NCCLWeightUpdateWorker, "_receive_lora_chunk_to_host", lambda self, communicator, chunk_idx: dict(tensors)
+    )
 
     worker.receive_lora_update(
         7,
@@ -189,12 +196,14 @@ def test_lora_receive_commits_in_memory_adapter(monkeypatch):
 def test_lora_receive_rejects_header_mismatch_before_tensor_receive(monkeypatch):
     worker, _ = _worker_with_fake_lora_manager()
 
-    monkeypatch.setattr(nccl_worker, "receive_object", lambda communicator: _lora_header(lora_name="wrong"))
+    monkeypatch.setattr(
+        NCCLWeightUpdateWorker, "_receive_lora_object", lambda self, communicator: _lora_header(lora_name="wrong")
+    )
 
-    def receive_state_dict(communicator):
+    def receive_chunk(self, communicator, chunk_idx):
         raise AssertionError("should not receive tensors after a bad header")
 
-    monkeypatch.setattr(nccl_worker, "receive_state_dict", receive_state_dict)
+    monkeypatch.setattr(NCCLWeightUpdateWorker, "_receive_lora_chunk_to_host", receive_chunk)
 
     with pytest.raises(RuntimeError, match="did not match expected"):
         worker.receive_lora_update(

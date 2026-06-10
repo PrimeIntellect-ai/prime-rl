@@ -1,5 +1,6 @@
 import pickle
 import threading
+import time
 from typing import TYPE_CHECKING, Any, Generator, cast
 
 import torch
@@ -161,6 +162,10 @@ class NCCLWeightUpdateWorker(Worker):
         thread.start()
 
     def _run_lora_receive_thread(self, step: int, header_expectation: dict | None) -> None:
+        # Fresh threads default to cuda:0; bind to this worker's device or every nonzero
+        # TP rank corrupts the NCCL receive.
+        if isinstance(self.device, torch.device) and self.device.type == "cuda":
+            torch.cuda.set_device(self.device)
         self._lora_receive_state["status"] = "receiving"
         try:
             self.receive_lora_update(step, header_expectation)
@@ -177,10 +182,83 @@ class NCCLWeightUpdateWorker(Worker):
         if receiver is None:
             raise RuntimeError("NCCL broadcast receiver is not initialized")
 
-        header = receive_object(receiver.communicator)
+        receive_start = time.perf_counter()
+        header = self._receive_lora_object(receiver.communicator)
         adapter = self._validate_lora_header(step, header, header_expectation)
-        tensors = dict(receive_state_dict(receiver.communicator))
+        num_chunks = header["num_chunks"]
+        tensors: dict[str, torch.Tensor] = {}
+        for chunk_idx in range(num_chunks):
+            tensors.update(self._receive_lora_chunk_to_host(receiver.communicator, chunk_idx))
+        commit_start = time.perf_counter()
         self._commit_lora_adapter(adapter, tensors)
+        memory = ""
+        if isinstance(self.device, torch.device) and self.device.type == "cuda":
+            allocated = torch.cuda.memory_allocated(self.device) / 2**20
+            reserved = torch.cuda.memory_reserved(self.device) / 2**20
+            memory = f" (gpu allocated={allocated:.0f}MiB reserved={reserved:.0f}MiB)"
+        logger.info(
+            f"LoRA update for step {step}: received {len(tensors)} tensors ({num_chunks} chunks) "
+            f"in {commit_start - receive_start:.2f}s, committed in {time.perf_counter() - commit_start:.2f}s{memory}"
+        )
+
+    def _receive_lora_chunk_to_host(self, communicator: PyNcclCommunicator, chunk_idx: int) -> dict[str, torch.Tensor]:
+        """Receive one ``broadcast_state_dict`` chunk and stage it in pinned host memory.
+
+        The GPU only ever holds the in-flight chunk, so adapter size never constrains
+        ``gpu_memory_utilization``. Returned tensors are zero-copy views into pinned host
+        buffers that are reused (overwritten) on the next update step -- safe because the
+        adapter is re-registered wholesale each step and vLLM's slot buffers hold the
+        serving copy.
+        """
+        metadata = cast(dict, self._receive_lora_object(communicator))
+
+        views: dict[str, torch.Tensor] = {}
+        for dtype, tensor_info_list in metadata.items():
+            total_elements = sum(numel for _, _, numel in tensor_info_list)
+            landing = self._lora_gpu_landing(dtype, total_elements, communicator.device)
+            communicator.broadcast(landing, src=0)
+            staging = self._lora_staging_buffer(chunk_idx, dtype, total_elements)
+            staging.copy_(landing)
+            offset = 0
+            for key, shape, numel in tensor_info_list:
+                views[key] = staging[offset : offset + numel].view(shape)
+                offset += numel
+        return views
+
+    def _receive_lora_object(self, communicator: PyNcclCommunicator) -> object:
+        """``receive_object`` through the persistent landing buffers (no per-step GPU allocs)."""
+        size_landing = self._lora_gpu_landing(torch.long, 1, communicator.device)
+        communicator.broadcast(size_landing, src=0)
+        payload_landing = self._lora_gpu_landing(torch.uint8, cast(int, size_landing.item()), communicator.device)
+        communicator.broadcast(payload_landing, src=0)
+        return pickle.loads(bytes(payload_landing.cpu().numpy()))
+
+    def _lora_gpu_landing(self, dtype: torch.dtype, numel: int, device: torch.device) -> torch.Tensor:
+        """Persistent GPU landing buffer for the in-flight chunk, sliced to the requested size.
+
+        Allocating/freeing ~512 MiB per chunk under a live serving allocator fragments it and
+        leaks one block per update step; one persistent buffer per dtype keeps the GPU cost of
+        receives fixed at max-chunk-size for the lifetime of the worker.
+        """
+        buffers = getattr(self, "_lora_gpu_landing_buffers", None)
+        if buffers is None:
+            buffers = self._lora_gpu_landing_buffers = {}
+        buffer = buffers.get(dtype)
+        if buffer is None or buffer.numel() < numel:
+            buffers[dtype] = buffer = torch.empty(numel, dtype=dtype, device=device)
+        return buffer[:numel]
+
+    def _lora_staging_buffer(self, chunk_idx: int, dtype: torch.dtype, numel: int) -> torch.Tensor:
+        """Pinned host buffer for one chunk, cached across update steps (pinned allocs are slow)."""
+        buffers = getattr(self, "_lora_staging_buffers", None)
+        if buffers is None:
+            buffers = self._lora_staging_buffers = {}
+        key = (chunk_idx, dtype)
+        buffer = buffers.get(key)
+        if buffer is None or buffer.numel() < numel:
+            buffer = torch.empty(numel, dtype=dtype, pin_memory=True)
+            buffers[key] = buffer
+        return buffer[:numel]
 
     def _validate_lora_header(self, step: int, header: object, header_expectation: dict | None) -> dict:
         if not isinstance(header, dict):
@@ -208,6 +286,10 @@ class NCCLWeightUpdateWorker(Worker):
                         f"{expected_adapter[key]!r}"
                     )
 
+        num_chunks = header.get("num_chunks")
+        if not isinstance(num_chunks, int) or num_chunks < 1:
+            raise RuntimeError(f"LoRA update header needs a positive num_chunks, got {num_chunks!r}")
+
         for key in ("lora_name", "lora_int_id", "peft_config"):
             if key not in adapter:
                 raise RuntimeError(f"LoRA update adapter header is missing {key!r}")
@@ -234,18 +316,30 @@ class NCCLWeightUpdateWorker(Worker):
 
         model = adapter_manager.model
         lora_id = int(adapter["lora_int_id"])
+        lora_dtype = getattr(lora_manager.lora_config, "lora_dtype", None)
+        received_dtypes = {tensor.dtype for tensor in tensors.values()}
+        if lora_dtype is not None and received_dtypes != {lora_dtype}:
+            logger.warning(
+                f"LoRA update arrived as {received_dtypes} but vLLM serves {lora_dtype}; "
+                "per-tensor CPU casts will slow the commit. Align the trainer broadcast dtype."
+            )
+        # Tensors are zero-copy views into pinned host buffers (_receive_lora_chunk_to_host), so
+        # from_lora_tensors' .to("cpu")/.pin_memory() calls are no-ops: no per-tensor copies and
+        # no resident GPU footprint beyond vLLM's preallocated LoRA slots.
+        materialize_start = time.perf_counter()
         lora_model = lora_manager._lora_model_cls.from_lora_tensors(
             lora_model_id=lora_id,
             tensors=tensors,
             peft_helper=peft_helper,
             device="cpu",
-            dtype=getattr(lora_manager.lora_config, "lora_dtype", None),
+            dtype=lora_dtype,
             model_vocab_size=getattr(lora_manager, "vocab_size", None),
             weights_mapper=getattr(model, "hf_to_vllm_mapper", None),
             skip_prefixes=getattr(model, "lora_skip_prefixes", None),
         )
         lora_model.is_3d_lora_weight = bool(adapter.get("is_3d_lora_weight", False))
 
+        activate_start = time.perf_counter()
         adapter_manager.remove_adapter(lora_id)
         if (
             hasattr(adapter_manager, "capacity")
@@ -255,6 +349,10 @@ class NCCLWeightUpdateWorker(Worker):
             adapter_manager.remove_oldest_adapter()
         adapter_manager.add_adapter(lora_model)
         adapter_manager.activate_adapter(lora_id)
+        logger.info(
+            f"LoRA adapter {lora_id}: materialized in {activate_start - materialize_start:.2f}s, "
+            f"activated in {time.perf_counter() - activate_start:.2f}s"
+        )
 
     def wait_lora_receive(self, step: int) -> dict:
         state = getattr(self, "_lora_receive_state", None)
