@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+import gc
 import logging
 import os
 import time
@@ -107,6 +108,14 @@ MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 # dispatcher is paused via ``update_dispatch_gate`` once this is exceeded;
 # resumed when the watcher advances ``policy.version``.
 TARGET_LAG = 1
+
+
+def _release_unused_memory() -> None:
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError) as e:
+        get_logger().debug(f"malloc_trim(0) unavailable: {e}")
 
 
 class Orchestrator:
@@ -476,10 +485,7 @@ class Orchestrator:
                 get_logger().success("Orchestrator finished.")
             else:
                 get_logger().warning("Orchestrator cleanup complete (forced).")
-            try:
-                ctypes.CDLL("libc.so.6").malloc_trim(0)
-            except Exception as e:
-                get_logger().debug(f"malloc_trim(0) failed: {e}")
+            _release_unused_memory()
 
     async def main_loop(self) -> None:
         """Consume ``FinishedRollout``\\ s from the dispatcher and route them
@@ -496,19 +502,29 @@ class Orchestrator:
             except asyncio.TimeoutError:
                 continue
 
-            if isinstance(rollout, EvalRollout):
-                assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
-                eval_batch = self.eval_sink.add(rollout)
-                if eval_batch is not None:
-                    await self.finalize_eval_batch(eval_batch)
-                continue
+            batch = None
+            should_release_memory = False
+            try:
+                if isinstance(rollout, EvalRollout):
+                    assert self.eval_sink is not None  # eval rollouts only emitted when eval is configured
+                    batch = self.eval_sink.add(rollout)
+                    if batch is not None:
+                        should_release_memory = True
+                        await self.finalize_eval_batch(batch)
+                    continue
 
-            assert isinstance(rollout, TrainRollout)
-            train_batch = await self.train_sink.add(rollout)
-            # In drain mode any late-arriving train batch is dropped — we
-            # don't want to ship past ``max_steps``
-            if train_batch is not None and not self.draining and not self.stopped.is_set():
-                await self.finalize_train_batch(train_batch)
+                assert isinstance(rollout, TrainRollout)
+                batch = await self.train_sink.add(rollout)
+                # In drain mode any late-arriving train batch is dropped — we
+                # don't want to ship past ``max_steps``
+                if batch is not None:
+                    should_release_memory = True
+                if batch is not None and not self.draining and not self.stopped.is_set():
+                    await self.finalize_train_batch(batch)
+            finally:
+                del batch, rollout
+                if should_release_memory:
+                    _release_unused_memory()
 
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O
