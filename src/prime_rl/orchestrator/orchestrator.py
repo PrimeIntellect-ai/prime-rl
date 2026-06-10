@@ -547,13 +547,7 @@ class Orchestrator:
         save_ckpt_time = await self.maybe_save_ckpt(step)
 
         if config.max_steps is not None and step >= config.max_steps:
-            self.draining = True
-            self.dispatcher.disable_train_scheduling()
-            n_cancelled = await self.dispatcher.cancel_inflight_train_rollouts()
-            get_logger().info(
-                f"Draining pipeline (cancelled {n_cancelled} in-flight train rollout(s); "
-                f"any in-flight evals will complete)"
-            )
+            await self._enter_drain()
             return
 
         if batch.metrics.n_trainable == 0:
@@ -647,6 +641,23 @@ class Orchestrator:
         self.train_sink.reset_pre_filter_stats()
         self.progress.step += 1
         self.maybe_trigger_eval(self.progress.step)
+        if config.max_steps is not None and self.progress.step >= config.max_steps:
+            # Drain as soon as the final batch has shipped. Waiting for one more finalized
+            # batch to enter drain deadlocks under NCCL weight broadcast: the dispatch gate
+            # needs policy version >= max_steps - 1 to assemble that batch, but the trainer
+            # never broadcasts its receiver-less final step over NCCL (only the filesystem
+            # transport writes it).
+            await self._enter_drain()
+
+    async def _enter_drain(self) -> None:
+        if self.draining:
+            return
+        self.draining = True
+        self.dispatcher.disable_train_scheduling()
+        n_cancelled = await self.dispatcher.cancel_inflight_train_rollouts()
+        get_logger().info(
+            f"Draining pipeline (cancelled {n_cancelled} in-flight train rollout(s); any in-flight evals will complete)"
+        )
 
     def maybe_trigger_eval(self, step: int) -> None:
         """Fire eligible eval epochs and flip to ``PREFER_EVAL`` if anything
