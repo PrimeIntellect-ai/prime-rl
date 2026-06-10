@@ -11,7 +11,7 @@ supported-markers = [
 ]
 
 [options]
-exclude-newer = "2026-06-01T23:51:00.758625Z"
+exclude-newer = "2026-06-03T08:38:28.571269Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -1558,7 +1558,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=2.14" },
-    { name = "renderers", specifier = ">=0.1.8.dev2" },
+    { name = "renderers", specifier = ">=0.1.8.dev28" },
     { name = "verifiers" },
 ]
 
