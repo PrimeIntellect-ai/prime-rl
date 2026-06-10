@@ -1,10 +1,21 @@
+from enum import IntEnum
+
 import msgspec
 
-# Per-token loss types. The orchestrator routes each token to a loss type (the
-# algorithm's loss routing); the trainer just executes them.
-LOSS_TYPE_RL = 0  # configured RL loss (importance-weighted PG + KL)
-LOSS_TYPE_CE = 1  # masked NLL (SFT / observation prediction)
-LOSS_TYPE_REF_KL = 2  # per-token reverse KL to a reference model as the PG signal (OPD / SDFT)
+
+class LossType(IntEnum):
+    """Per-token loss types. The orchestrator routes each token to a loss type
+    (the algorithm's loss routing); the trainer just executes them.
+
+    Members are plain ints on the wire. The per-token arrays
+    (``token_loss_types`` / ``loss_type_ids``) stay ``list[int]`` — the trainer
+    turns them into tensors immediately, so per-token enum wrapping on decode
+    would be pure overhead. Only scalars carry the enum.
+    """
+
+    RL = 0  # configured RL loss (importance-weighted PG + KL)
+    CE = 1  # masked NLL (SFT / observation prediction)
+    REF_KL = 2  # per-token reverse KL to a reference model as the PG signal (OPD / SDFT)
 
 
 # Encoded tensor: {dtype: "float32", shape: [...], data: <bytes>}.
@@ -58,7 +69,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # ``loss_type`` applies to every trainable token; the per-token arrays
     # (full prompt+completion length) override it where set. ``None`` arrays
     # mean "uniform" so the plain GRPO wire stays as small as before.
-    loss_type: int = LOSS_TYPE_RL
+    loss_type: LossType = LossType.RL
     token_loss_types: list[int] | None = None
     token_loss_weights: list[float] | None = None
 
@@ -102,7 +113,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     mm_token_type_ids: list[int] | None = None
 
     # Per-token loss routing. ``None`` means uniform: every token uses
-    # LOSS_TYPE_RL with weight 1.0 — packed samples of different loss types
+    # ``LossType.RL`` with weight 1.0 — packed samples of different loss types
     # materialize the arrays.
     loss_type_ids: list[int] | None = None
     loss_weights: list[float] | None = None

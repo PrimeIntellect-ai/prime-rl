@@ -3,7 +3,7 @@ import torch
 
 from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig
 from prime_rl.trainer.rl.loss import LossInputs, LossOutputs, compute_entropy, compute_loss, setup_rl_loss_fn
-from prime_rl.transport.types import LOSS_TYPE_CE, LOSS_TYPE_REF_KL, LOSS_TYPE_RL
+from prime_rl.transport.types import LossType
 
 pytestmark = [pytest.mark.gpu]
 
@@ -85,7 +85,7 @@ def test_ce_loss_type_matches_masked_nll():
     inference_logprobs = [torch.zeros(3, dtype=torch.float32).cuda()]
     advantages = [torch.zeros(3, dtype=torch.float32).cuda()]
     loss_mask = [torch.tensor([True, False, True], dtype=torch.bool).cuda()]
-    loss_type_ids = [torch.full((3,), LOSS_TYPE_CE, dtype=torch.long).cuda()]
+    loss_type_ids = [torch.full((3,), LossType.CE, dtype=torch.long).cuda()]
 
     rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig())
     loss, metrics = compute_loss(
@@ -112,7 +112,7 @@ def test_ce_loss_type_applies_loss_weights():
     inference_logprobs = [torch.zeros(3, dtype=torch.float32).cuda()]
     advantages = [torch.zeros(3, dtype=torch.float32).cuda()]
     loss_mask = [torch.tensor([True, False, True], dtype=torch.bool).cuda()]
-    loss_type_ids = [torch.full((3,), LOSS_TYPE_CE, dtype=torch.long).cuda()]
+    loss_type_ids = [torch.full((3,), LossType.CE, dtype=torch.long).cuda()]
     loss_weights = [torch.tensor([0.1, 1.0, 0.1], dtype=torch.float32).cuda()]
 
     rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig())
@@ -152,7 +152,7 @@ def test_routed_all_rl_matches_unrouted():
         loss_scale=1,
     )
     loss_unrouted, _ = compute_loss(loss_type_ids=None, **kwargs)
-    loss_routed, _ = compute_loss(loss_type_ids=[torch.full((50,), LOSS_TYPE_RL, dtype=torch.long).cuda()], **kwargs)
+    loss_routed, _ = compute_loss(loss_type_ids=[torch.full((50,), LossType.RL, dtype=torch.long).cuda()], **kwargs)
 
     assert torch.equal(loss_unrouted, loss_routed)
 
@@ -166,9 +166,9 @@ def test_mixed_loss_types_in_one_sequence():
     ref_logprobs = [torch.randn(n, dtype=torch.float32).cuda()]
     advantages = [torch.randn(n).cuda()]
     loss_mask = [torch.ones(n, dtype=torch.bool).cuda()]
-    type_ids = torch.full((n,), LOSS_TYPE_RL, dtype=torch.long)
-    type_ids[4:8] = LOSS_TYPE_CE
-    type_ids[8:] = LOSS_TYPE_REF_KL
+    type_ids = torch.full((n,), LossType.RL, dtype=torch.long)
+    type_ids[4:8] = LossType.CE
+    type_ids[8:] = LossType.REF_KL
 
     rl_loss_fn = setup_rl_loss_fn(DefaultLossConfig(dppo_mask_high=10.0))
     loss, metrics = compute_loss(

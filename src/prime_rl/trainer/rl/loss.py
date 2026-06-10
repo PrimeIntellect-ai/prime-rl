@@ -7,7 +7,7 @@ from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
 from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, LossConfig
-from prime_rl.transport.types import LOSS_TYPE_CE, LOSS_TYPE_REF_KL, LOSS_TYPE_RL
+from prime_rl.transport.types import LossType
 from prime_rl.utils.utils import import_object
 
 
@@ -283,9 +283,9 @@ def compute_loss(
     every token (``None`` means all-RL — the hot path, no extra device syncs),
     and each present loss type runs over its slice of the loss mask:
 
-    - ``LOSS_TYPE_RL`` → ``rl_loss_fn`` (built by ``setup_rl_loss_fn``)
-    - ``LOSS_TYPE_CE`` → ``ce_loss_fn`` (masked NLL)
-    - ``LOSS_TYPE_REF_KL`` → ``ref_kl_loss_fn``
+    - ``LossType.RL`` → ``rl_loss_fn`` (built by ``setup_rl_loss_fn``)
+    - ``LossType.CE`` → ``ce_loss_fn`` (masked NLL)
+    - ``LossType.REF_KL`` → ``ref_kl_loss_fn``
 
     Args:
         trainer_logprobs: Log probabilities for each sequence
@@ -343,9 +343,9 @@ def compute_loss(
             continue
 
         for type_id, loss_fn in (
-            (LOSS_TYPE_RL, rl_loss_fn),
-            (LOSS_TYPE_REF_KL, ref_kl_loss_fn),
-            (LOSS_TYPE_CE, ce_loss_fn),
+            (LossType.RL, rl_loss_fn),
+            (LossType.REF_KL, ref_kl_loss_fn),
+            (LossType.CE, ce_loss_fn),
         ):
             type_mask = mask & (type_ids == type_id)
             if bool(type_mask.any()):

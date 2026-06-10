@@ -35,7 +35,7 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_left,
     shift_tensor_right,
 )
-from prime_rl.transport.types import LOSS_TYPE_CE
+from prime_rl.transport.types import LossType
 from prime_rl.trainer.rl.token_export import setup_token_exporter
 from prime_rl.trainer.model import (
     forward,
@@ -512,7 +512,7 @@ def train(config: TrainerConfig):
                 mismatch_mask = loss_mask
                 has_mismatch_tokens = True
             else:
-                mismatch_mask = loss_mask & (loss_type_ids != LOSS_TYPE_CE)
+                mismatch_mask = loss_mask & (loss_type_ids != LossType.CE)
                 has_mismatch_tokens = bool(mismatch_mask.any())
             if has_mismatch_tokens:
                 with torch.no_grad():

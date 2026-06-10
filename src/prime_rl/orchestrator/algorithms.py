@@ -41,7 +41,7 @@ from prime_rl.configs.algorithm import (
 from prime_rl.orchestrator.advantage import AdvantageInputs, AdvantageOutputs, assign_advantages, default_advantage_fn
 from prime_rl.orchestrator.utils import compute_prefill_logprobs
 from prime_rl.transport import TrainingSample
-from prime_rl.transport.types import LOSS_TYPE_CE, LOSS_TYPE_REF_KL, LOSS_TYPE_RL
+from prime_rl.transport.types import LossType
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import import_object
 
@@ -52,7 +52,7 @@ if TYPE_CHECKING:
     from prime_rl.orchestrator.types import TrainRollout
     from prime_rl.utils.client import InferencePool
 
-ACTION_LOSS_TYPES = {"rl": LOSS_TYPE_RL, "ce": LOSS_TYPE_CE, "ref_kl": LOSS_TYPE_REF_KL}
+ACTION_LOSS_TYPES = {"rl": LossType.RL, "ce": LossType.CE, "ref_kl": LossType.REF_KL}
 
 
 async def setup_frozen_pool(config: FrozenModelConfig) -> InferencePool:
@@ -67,7 +67,7 @@ async def setup_frozen_pool(config: FrozenModelConfig) -> InferencePool:
     return pool
 
 
-def stamp_loss_routing(sample: TrainingSample, action_loss_type: int, loss: LossRoutingConfig) -> None:
+def stamp_loss_routing(sample: TrainingSample, action_loss_type: LossType, loss: LossRoutingConfig) -> None:
     """Stamp the env's loss routing onto one sample's wire fields.
 
     Action tokens (the trainable completion tokens) get the advantage
@@ -90,7 +90,7 @@ def stamp_loss_routing(sample: TrainingSample, action_loss_type: int, loss: Loss
     completion_mask = list(sample.completion_mask)
     for i, is_obs in enumerate(obs_mask):
         if is_obs:
-            type_ids[prompt_len + i] = LOSS_TYPE_CE
+            type_ids[prompt_len + i] = LossType.CE
             weights[prompt_len + i] = loss.observation_weight
             completion_mask[i] = True
     sample.completion_mask = completion_mask

@@ -1,6 +1,6 @@
 import copy
 
-from prime_rl.transport.types import LOSS_TYPE_RL, MicroBatch, RoutedExperts, TrainingSample
+from prime_rl.transport.types import LossType, MicroBatch, RoutedExperts, TrainingSample
 
 ROUTED_EXPERTS_DTYPE_ITEMSIZE = {
     "uint8": 1,
@@ -67,7 +67,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     loss_type_ids: list[int] | None = None
     if training_example.token_loss_types is not None:
         loss_type_ids = list(training_example.token_loss_types)
-    elif training_example.loss_type != LOSS_TYPE_RL:
+    elif training_example.loss_type != LossType.RL:
         loss_type_ids = [training_example.loss_type] * len(input_ids)
     loss_weights = (
         list(training_example.token_loss_weights) if training_example.token_loss_weights is not None else None
@@ -203,10 +203,10 @@ def packed_samples_into_micro_bs(
                 bin_content.advantages.extend(sample.advantages)
                 if sample.loss_type_ids is not None:
                     if bin_content.loss_type_ids is None:
-                        bin_content.loss_type_ids = [LOSS_TYPE_RL] * existing_len
+                        bin_content.loss_type_ids = [LossType.RL] * existing_len
                     bin_content.loss_type_ids.extend(sample.loss_type_ids)
                 elif bin_content.loss_type_ids is not None:
-                    bin_content.loss_type_ids.extend([LOSS_TYPE_RL] * len(sample.input_ids))
+                    bin_content.loss_type_ids.extend([LossType.RL] * len(sample.input_ids))
                 if sample.loss_weights is not None:
                     if bin_content.loss_weights is None:
                         bin_content.loss_weights = [1.0] * existing_len
@@ -283,7 +283,7 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     if micro_batch.ref_logprobs is not None:
         micro_batch.ref_logprobs.extend([0.0] * padding_size)
     if micro_batch.loss_type_ids is not None:
-        micro_batch.loss_type_ids.extend([LOSS_TYPE_RL] * padding_size)
+        micro_batch.loss_type_ids.extend([LossType.RL] * padding_size)
     if micro_batch.loss_weights is not None:
         micro_batch.loss_weights.extend([1.0] * padding_size)
     micro_batch.lora_num_tokens[-1] += (
