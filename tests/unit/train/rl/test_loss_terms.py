@@ -20,6 +20,7 @@ from prime_rl.configs.losses import (
     MeanReduceConfig,
     MinProbFilterConfig,
     RLLossConfig,
+    SurprisalGateConfig,
 )
 from prime_rl.trainer.rl.loss import (
     ExtraTerm,
@@ -37,6 +38,7 @@ from prime_rl.trainer.rl.loss import (
     setup_loss_fns,
     setup_reduce,
     sft_loss_fn,
+    surprisal_gate,
 )
 
 
@@ -375,3 +377,21 @@ def test_min_prob_filter_zeros_low_prob_tokens():
     assert torch.equal(min_prob_filter(per_token_loss, inputs, min_logprob=-1.0), expected)
     (hook,) = setup_hooks([MinProbFilterConfig(min_logprob=-1.0)])
     assert torch.equal(hook(per_token_loss, inputs), expected)
+
+
+def test_surprisal_gate_weights_by_current_policy_logprob():
+    # Built-in hook: weight the per-token loss by sigmoid(kappa*(trainer_logprob - gamma)), directly
+    # and via the config -> setup_hooks dispatch.
+    inputs = LossInputs(
+        trainer_logprobs=torch.tensor([0.0, 0.0, 5.0, -5.0]),
+        inference_logprobs=torch.zeros(4),
+        reference_logprobs=None,
+        advantages=torch.zeros(4),
+        loss_mask=torch.ones(4, dtype=torch.bool),
+    )
+    per_token_loss = torch.tensor([2.0, 4.0, 1.0, 1.0])
+    out = surprisal_gate(per_token_loss, inputs, kappa=1.0, gamma=0.0)
+    assert torch.allclose(out[:2], torch.tensor([1.0, 2.0]))  # logprob == gamma -> gate 0.5 -> 0.5 * loss
+    assert out[2] > 0.99 and out[3] < 0.01  # likely token kept, unlikely token down-weighted
+    (hook,) = setup_hooks([SurprisalGateConfig(kappa=1.0, gamma=0.0)])
+    assert torch.equal(hook(per_token_loss, inputs), out)

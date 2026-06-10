@@ -99,13 +99,24 @@ def min_prob_filter(per_token_loss: Tensor, inputs: LossInputs, *, min_logprob: 
     return per_token_loss * (inputs.trainer_logprobs >= min_logprob)
 
 
+def surprisal_gate(per_token_loss: Tensor, inputs: LossInputs, *, kappa: float, gamma: float) -> Tensor:
+    """Built-in hook: weight the per-token loss by ``σ(kappa·(trainer_logprob − gamma))`` — the
+    pedagogical-RL student-assimilation gate over the current policy's (the trained student's) logprob,
+    down-weighting tokens it already finds likely. Pair with a custom reduce for the paper's
+    ``1/Σ wₜ`` normalization (the default ``mean`` divides by the eligible-token count)."""
+    gate = torch.sigmoid(kappa * (inputs.trainer_logprobs - gamma))
+    return per_token_loss * gate
+
+
 def setup_hooks(configs: list[HookConfig]) -> list[Hook]:
     """Resolve a loss term's ``hooks`` to a chain of trainer-side per-token transforms, applied in
-    order: a built-in preset (``min_prob_filter``) or a ``custom`` import path."""
+    order: a built-in preset (``min_prob_filter`` / ``surprisal_gate``) or a ``custom`` import path."""
     hooks: list[Hook] = []
     for config in configs:
         if config.type == "min_prob_filter":
             hooks.append(functools.partial(min_prob_filter, min_logprob=config.min_logprob))
+        elif config.type == "surprisal_gate":
+            hooks.append(functools.partial(surprisal_gate, kappa=config.kappa, gamma=config.gamma))
         else:
             hooks.append(functools.partial(import_object(config.import_path), **config.kwargs))
     return hooks
