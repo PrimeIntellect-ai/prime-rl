@@ -4,8 +4,8 @@
 ``AlgorithmConfig``. The pipeline (dispatcher, train sink, orchestrator) calls
 its hooks and reads its properties; it never branches on algorithm config
 fields. prime-rl hosts exactly one model — the trainable policy, whose pool is
-passed in; every frozen model reference is an external endpoint whose pool the
-algorithm builds itself in :meth:`Algorithm.setup`.
+passed in; every frozen model reference is an external endpoint the algorithm
+*connects to* (never launches) in :meth:`Algorithm.setup`.
 """
 
 from __future__ import annotations
@@ -27,10 +27,10 @@ if TYPE_CHECKING:
     from prime_rl.utils.client import InferencePool
 
 
-async def setup_frozen_pool(config: FrozenModelConfig) -> InferencePool:
-    """Build and ready an inference pool for an inline frozen model. The
-    endpoint is externally hosted — prime-rl connects and waits, never
-    launches."""
+async def connect_frozen_pool(config: FrozenModelConfig) -> InferencePool:
+    """Connect a client pool to an inline frozen model and wait for it to be
+    ready. The endpoint is externally hosted — prime-rl connects and waits,
+    never launches."""
     from prime_rl.utils.client import setup_inference_pool
 
     get_logger().info(f"Initializing frozen model pool (model={config.name}, base_url={', '.join(config.base_url)})")
@@ -43,8 +43,8 @@ class Algorithm:
     """Runtime strategy object for one env — the sole interpreter of
     ``AlgorithmConfig`` in the orchestrator.
 
-    Holds the policy pool (built once by the orchestrator) and builds pools
-    for any inline frozen model references in :meth:`setup`."""
+    Holds the policy pool (built once by the orchestrator) and connects client
+    pools to any inline frozen model references in :meth:`setup`."""
 
     def __init__(self, config: AlgorithmConfig, policy_pool: InferencePool, tokenizer: PreTrainedTokenizer):
         assert config.sampling is not None and config.sampling.source is not None
@@ -52,26 +52,26 @@ class Algorithm:
         self.config = config
         self.policy_pool = policy_pool
         self.sampling_pool: InferencePool = policy_pool  # frozen sources swap this in setup()
-        self.owned_pools: list[InferencePool] = []  # frozen pools built in setup(), stopped at shutdown
+        self.connected_pools: list[InferencePool] = []  # client pools connected in setup(); closed at shutdown
         self.loss = config.loss
         self.action_loss_type = ACTION_LOSS_TYPES[config.advantage.action_loss_type]
         self.advantage = setup_advantage_strategy(config.advantage, tokenizer)
 
     async def setup(self) -> None:
-        """Build and ready pools for the algorithm's frozen model references.
-        Must run before dispatching or scoring."""
+        """Connect client pools to the algorithm's frozen model references and
+        wait for readiness. Must run before dispatching or scoring."""
         source = self.config.sampling.source
         if isinstance(source, FrozenModelConfig):
-            self.sampling_pool = await setup_frozen_pool(source)
-            self.owned_pools.append(self.sampling_pool)
+            self.sampling_pool = await connect_frozen_pool(source)
+            self.connected_pools.append(self.sampling_pool)
         reference = getattr(self.config.advantage, "model", None)
         if reference is not None:
             assert hasattr(self.advantage, "pool")
             if reference == "policy":
                 self.advantage.pool = self.policy_pool
             else:
-                self.advantage.pool = await setup_frozen_pool(reference)
-                self.owned_pools.append(self.advantage.pool)
+                self.advantage.pool = await connect_frozen_pool(reference)
+                self.connected_pools.append(self.advantage.pool)
 
     @property
     def name(self) -> str:

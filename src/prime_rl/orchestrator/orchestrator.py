@@ -837,7 +837,7 @@ class Orchestrator:
                 await self.policy_inference.stop()
             if self.train_envs is not None:
                 for env in self.train_envs:
-                    for pool in env.algorithm.owned_pools:
+                    for pool in env.algorithm.connected_pools:
                         await pool.stop()
                 self.train_envs.shutdown()
             if self.eval_envs is not None:
