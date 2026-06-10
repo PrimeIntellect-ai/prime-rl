@@ -12,6 +12,7 @@ Minimal end-to-end configs for the algorithm presets against bundled verifiers e
 | `sft_distill_external.toml` | `sft_distill` | PI inference (`openai/gpt-5-mini`) | external OAI endpoint; no local server |
 | `self_distill.toml` | `self_distill` | none (`model = "policy"`) | SDFT against the live policy; demo from reverse-text's `answer` field |
 | `echo.toml` | `echo` | none | multi-turn `alphabet-sort`; CE on observation tokens |
+| `mixed_grpo_opd.toml` | `grpo` + `opd` (per env) | local vLLM (`Qwen3-0.6B-Reverse-Text-RL`) | two envs, one run; heterogeneous batches (with/without `ref_logprobs`) |
 
 The policy inference server is auto-launched on GPU 0 at `http://localhost:8000/v1` with `gpu_memory_utilization=0.5`. The local frozen model (used by `opd*.toml` and `sft_distill.toml` / `sft_distill_lora.toml`) is **not** auto-launched — start it manually on GPU 1.
 
@@ -19,7 +20,7 @@ Frozen models are plain `[orchestrator.models.<key>]` entries; the algorithm poi
 
 ## Start the local frozen model
 
-Needed for `opd*.toml` and `sft_distill.toml` / `sft_distill_lora.toml`:
+Needed for `opd*.toml`, `sft_distill.toml` / `sft_distill_lora.toml`, and `mixed_grpo_opd.toml`:
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 uv run inference \
@@ -52,6 +53,9 @@ uv run rl @ configs/debug/algorithms/self_distill.toml
 
 # ECHO (no frozen model; multi-turn env)
 uv run rl @ configs/debug/algorithms/echo.toml
+
+# Mixed per-env algorithms: GRPO + OPD in one run (needs the frozen model on port 8001)
+uv run rl @ configs/debug/algorithms/mixed_grpo_opd.toml
 ```
 
 See [docs/algorithms.md](../../../docs/algorithms.md) for what each algorithm does and how to compose custom ones.
