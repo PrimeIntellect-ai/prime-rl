@@ -108,6 +108,11 @@ MAX_CONSECUTIVE_EMPTY_BATCHES = 10
 # resumed when the watcher advances ``policy.version``.
 TARGET_LAG = 1
 
+# After max_steps, how long to wait for the trainer to finalize the trailing
+# token-export steps it hadn't flushed yet, and how often to poll for them.
+TOKEN_EXPORT_DRAIN_TIMEOUT_S = 300.0
+TOKEN_EXPORT_DRAIN_POLL_S = 2.0
+
 
 class Orchestrator:
     # Set in ``__init__``
@@ -382,7 +387,7 @@ class Orchestrator:
             training_mode=config.training_mode,
             use_cache_salt=use_cache_salt,
         )
-        self.metrics = MetricsBuilder(config)
+        self.metrics = MetricsBuilder(config, start_step=self.progress.step)
         self.train_sink = TrainSink(
             config,
             tokenizer=self.tokenizer,
@@ -460,6 +465,7 @@ class Orchestrator:
         clean_exit = False
         try:
             await self.main_loop()
+            await self._drain_token_export_metrics()
             clean_exit = True
         finally:
             elapsed = format_time(time.perf_counter() - start_time)
@@ -509,6 +515,35 @@ class Orchestrator:
             # don't want to ship past ``max_steps``
             if train_batch is not None and not self.draining and not self.stopped.is_set():
                 await self.finalize_train_batch(train_batch)
+
+    async def _drain_token_export_metrics(self) -> None:
+        """Token exports lag the orchestrator, so once the loop ends the trainer is
+        still finalizing the last shipped steps and ``build`` no longer runs to pick
+        them up. Poll for the remaining stable steps up to ``max_steps - 1`` and log
+        each under its own ``trainer/step`` (a local W&B step axis, so the final
+        checkpoint's ``progress.step`` is untouched)."""
+        if self.config.max_steps is None:
+            return
+        if not (self.config.output_dir / "token_exports").exists():
+            return  # token export not enabled for this run — don't block shutdown
+        target = self.config.max_steps - 1
+        if self.metrics.last_token_export_step_logged >= target:
+            return  # build() already kept up — nothing trailing to flush
+        wandb_step = self.progress.step
+        deadline = time.perf_counter() + TOKEN_EXPORT_DRAIN_TIMEOUT_S
+        while time.perf_counter() < deadline:
+            token_export = self.metrics.next_token_export_metrics()
+            if not token_export:
+                await asyncio.sleep(TOKEN_EXPORT_DRAIN_POLL_S)
+                continue
+            self.monitor.log(token_export, step=wandb_step)
+            wandb_step += 1
+            if self.metrics.last_token_export_step_logged >= target:
+                return
+        get_logger().warning(
+            f"Token-export drain timed out before step {target} "
+            f"(last logged {self.metrics.last_token_export_step_logged})"
+        )
 
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O

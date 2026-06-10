@@ -167,6 +167,11 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
+def test_trainer_enable_token_export_cli_flag():
+    assert not cli(TrainerConfig, args=[]).enable_token_export
+    assert cli(TrainerConfig, args=["--enable-token-export"]).enable_token_export
+
+
 def test_orchestrator_vlm_requires_renderer():
     with pytest.raises(ValidationError, match="orchestrator.renderer must be set when model.vlm is set"):
         OrchestratorConfig.model_validate(
