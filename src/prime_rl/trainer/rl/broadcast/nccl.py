@@ -178,12 +178,35 @@ class NCCLWeightBroadcastSender:
                 state_dict[key] = cast(DTensor, value.to(self.dtype)).full_tensor()
         return state_dict
 
+    # Bounds the receiver's transient GPU footprint: each chunk is received, staged to pinned
+    # host memory, and freed before the next arrives -- adapter size never constrains
+    # gpu_memory_utilization on the inference side.
+    LORA_CHUNK_BYTES = 512 * 1024 * 1024
+
     @torch.no_grad()
     def broadcast_lora_update(self, step: int, adapter_header: dict, state_dict: dict[str, Tensor]) -> None:
-        """Broadcast a single LoRA adapter update into the inference pool."""
-        if self.world.is_master:
-            broadcast_object({"step": step, "adapters": [adapter_header]}, self.communicator)
-            broadcast_state_dict(state_dict, self.communicator)
+        """Broadcast a single LoRA adapter update into the inference pool in bounded chunks."""
+        if not self.world.is_master:
+            return
+        chunks = self._chunk_state_dict(state_dict)
+        broadcast_object({"step": step, "adapters": [adapter_header], "num_chunks": len(chunks)}, self.communicator)
+        for chunk in chunks:
+            broadcast_state_dict(chunk, self.communicator)
+
+    def _chunk_state_dict(self, state_dict: dict[str, Tensor]) -> list[dict[str, Tensor]]:
+        chunks: list[dict[str, Tensor]] = []
+        current: dict[str, Tensor] = {}
+        current_bytes = 0
+        for key in sorted(state_dict):
+            value = state_dict[key]
+            if current and current_bytes + value.nbytes > self.LORA_CHUNK_BYTES:
+                chunks.append(current)
+                current, current_bytes = {}, 0
+            current[key] = value
+            current_bytes += value.nbytes
+        if current:
+            chunks.append(current)
+        return chunks
 
 
 class NCCLWeightBroadcast(WeightBroadcast):
@@ -252,7 +275,7 @@ class NCCLWeightBroadcast(WeightBroadcast):
 
         for idx, _ in notified_runs:
             state_dict = self.multi_run_manager.get_state_dict_for_run(idx)
-            state_dict = self._resolve_lora_dtensors(state_dict)
+            state_dict = self._resolve_lora_state_dict(state_dict)
             adapter_header = self._build_lora_adapter_header(model, idx)
             step = self.multi_run_manager.progress[idx].step
             self.nccl_broadcast_sender.broadcast_lora_update(step, adapter_header, state_dict)
@@ -260,10 +283,17 @@ class NCCLWeightBroadcast(WeightBroadcast):
         if self.world.is_master:
             self.logger.debug(f"LoRA adapter broadcasted in {time.perf_counter() - start_time:.2f}s")
 
-    def _resolve_lora_dtensors(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+    def _resolve_lora_state_dict(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        """Gather DTensors and cast everything to the broadcast dtype.
+
+        LoRA master weights are plain fp32 tensors; without the cast they go over the wire at
+        twice the size of what the receiver serves (vLLM casts to its lora_dtype on arrival).
+        """
+        dtype = self.nccl_broadcast_sender.dtype
         for key, value in list(state_dict.items()):
             if isinstance(value, DTensor):
-                state_dict[key] = cast(DTensor, value.to(self.nccl_broadcast_sender.dtype)).full_tensor()
+                value = cast(DTensor, value.to(dtype)).full_tensor()
+            state_dict[key] = value.to(dtype)
         return state_dict
 
     def _build_lora_adapter_header(self, model: nn.Module, idx: int) -> dict:
