@@ -11,6 +11,7 @@ import torch
 
 from prime_rl.configs.losses import (
     CECoreConfig,
+    CustomHookConfig,
     CustomReduceConfig,
     DPPOKLCoreConfig,
     EchoAdvantageConfig,
@@ -30,6 +31,7 @@ from prime_rl.trainer.rl.loss import (
     mean_reduce,
     opd_loss_fn,
     pg_loss_fn,
+    setup_hooks,
     setup_loss_fns,
     setup_reduce,
     sft_loss_fn,
@@ -339,3 +341,18 @@ def test_hooks_transform_per_token_loss():
     )
     assert torch.allclose(identity, base)
     assert torch.allclose(doubled, 2.0 * base)
+
+
+def _dummy_hook(per_token_loss, inputs, scale: float = 1.0):
+    """A custom hook for testing: scale the per-token loss (ignores inputs)."""
+    return per_token_loss * scale
+
+
+def test_setup_hooks_resolves_custom():
+    # A custom hook config resolves to a callable that applies its import path with kwargs bound.
+    hooks = setup_hooks(
+        [CustomHookConfig(import_path="tests.unit.train.rl.test_loss_terms._dummy_hook", kwargs={"scale": 3.0})]
+    )
+    assert len(hooks) == 1
+    out = hooks[0](torch.tensor([1.0, 2.0]), None)  # inputs unused by _dummy_hook
+    assert torch.equal(out, torch.tensor([3.0, 6.0]))

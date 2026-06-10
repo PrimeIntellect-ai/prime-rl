@@ -172,7 +172,33 @@ ReduceConfig: TypeAlias = Annotated[
 ]
 
 # --------------------------------------------------------------------------------------------------
-# The term: a core, a per-token advantage_fn, and per-term λ + reduce.
+# Hooks — trainer-side, post-core, per-token loss transforms (chainable). Resolved to callables by
+# ``trainer.rl.loss.setup_hooks``. Built-in hook presets can join as union members later; for now
+# only the ``custom`` import-path form exists.
+# --------------------------------------------------------------------------------------------------
+
+
+class CustomHookConfig(BaseConfig):
+    """A trainer-side per-token loss transform resolved from a dotted import path. Signature:
+    ``fn(per_token_loss: Tensor, inputs: LossInputs, **kwargs) -> Tensor`` (per-token in, per-token
+    out; reduction is the separate ``reduce`` step). For signals only available after the forward —
+    current-policy prob/entropy gating, smoothing, penalties."""
+
+    type: Literal["custom"] = "custom"
+
+    import_path: str
+    """Dotted import path to the hook callable."""
+
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    """Keyword arguments forwarded to the hook as ``**kwargs``."""
+
+
+HookConfig: TypeAlias = CustomHookConfig
+"""A loss term's hook. Currently only ``custom`` (an import path); becomes a discriminated union once
+built-in hook presets land."""
+
+# --------------------------------------------------------------------------------------------------
+# The term: a core, a per-token advantage_fn, and per-term λ + reduce + hooks.
 # --------------------------------------------------------------------------------------------------
 
 
@@ -194,6 +220,10 @@ class LossTerm(BaseConfig):
     reduce: ReduceConfig = Field(default_factory=MeanReduceConfig)
     """The term's normalization step (trainer-side). Default: global per-token mean (= today)."""
 
+    hooks: list[HookConfig] = Field(default_factory=list)
+    """Trainer-side post-core per-token transforms, applied in order between the core and the reduce.
+    Default: none (the term's loss is the core's output unchanged)."""
+
     @model_validator(mode="before")
     @classmethod
     def _expand_preset(cls, data: Any) -> Any:
@@ -211,11 +241,11 @@ class LossTerm(BaseConfig):
             defaults = {"name": "echo", "loss": {"type": "ce"}, "advantage": {"type": "echo", "roles": ["assistant"]}}
         else:
             raise ValueError(f"unknown loss preset type {preset!r}; use 'rl', 'echo', or the full loss/advantage form.")
-        unknown = set(data) - {"name", "loss", "advantage", "lambda_weight", "reduce"}
+        unknown = set(data) - {"name", "loss", "advantage", "lambda_weight", "reduce", "hooks"}
         if unknown:
             raise ValueError(
-                f"loss preset {preset!r}: override the axes (loss/advantage/lambda_weight/reduce) or name, "
-                f"not {sorted(unknown)}."
+                f"loss preset {preset!r}: override the axes (loss/advantage/lambda_weight/reduce/hooks) "
+                f"or name, not {sorted(unknown)}."
             )
         return deep_merge(defaults, data)
 

@@ -7,8 +7,8 @@ from beartype import beartype as typechecker
 from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
+from prime_rl.configs.losses import HookConfig, ReduceConfig, RLLossConfig, is_primary, to_rl_loss_config
 from prime_rl.configs.losses import LossTerm as LossTermConfig
-from prime_rl.configs.losses import ReduceConfig, RLLossConfig, is_primary, to_rl_loss_config
 from prime_rl.utils.utils import import_object
 
 
@@ -91,6 +91,12 @@ Chainable, runs between the core and the term's reduce, and sees all trainer-sid
 No scalar return — reduction is the separate reduce step, so masking/gating hooks compose. For
 trainer-side signals that can't be precomputed orchestrator-side (current-policy prob/entropy gating,
 smoothing, penalties); intrinsic objective math (DPPO clip + KL) stays inside the core."""
+
+
+def setup_hooks(configs: list[HookConfig]) -> list[Hook]:
+    """Resolve a loss term's ``hooks`` to a chain of trainer-side per-token transforms, applied in
+    order. Currently every hook is a ``custom`` import path; built-in hook presets dispatch here later."""
+    return [functools.partial(import_object(config.import_path), **config.kwargs) for config in configs]
 
 
 @dataclass

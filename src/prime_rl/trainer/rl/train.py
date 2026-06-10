@@ -34,6 +34,7 @@ from prime_rl.trainer.rl.loss import (
     compute_importance_ratio_and_mismatch_kl,
     mean_reduce,
     selective_log_softmax,
+    setup_hooks,
     setup_loss_fns,
     setup_reduce,
     shift_tensor_left,
@@ -179,8 +180,10 @@ def train(config: TrainerConfig):
     # defaults (λ=1.0, global per-token mean).
     term_lambdas = {term.name: term.lambda_weight for term in config.losses}
     term_reduces = {term.name: setup_reduce(term.reduce) for term in config.losses}
+    term_hooks = {term.name: setup_hooks(term.hooks) for term in config.losses}
     primary_lambda = term_lambdas.get(rl_term.name, 1.0) if rl_term is not None else 1.0
     primary_reduce = term_reduces.get(rl_term.name, mean_reduce) if rl_term is not None else mean_reduce
+    primary_hooks = term_hooks.get(rl_term.name, []) if rl_term is not None else []
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -535,6 +538,7 @@ def train(config: TrainerConfig):
                             weights=ow.squeeze().split(response_lengths),
                             lambda_weight=term_lambdas[name],
                             reduce=term_reduces[name],
+                            hooks=term_hooks[name],
                         )
                     )
             loss, loss_tensors = compute_loss(
@@ -551,6 +555,7 @@ def train(config: TrainerConfig):
                 extra_terms=extra_terms or None,
                 reduce=primary_reduce,
                 primary_lambda=primary_lambda,
+                primary_hooks=primary_hooks,
             )
 
             # Backward pass

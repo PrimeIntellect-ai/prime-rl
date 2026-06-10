@@ -391,23 +391,30 @@ def test_loss_preset_flat_kwarg_rejected():
         )
 
 
-def test_loss_term_lambda_and_reduce_parse():
-    # λ + reduce are per-term knobs (default 1.0 / global mean); presets accept them as overrides too.
+def test_loss_term_lambda_reduce_and_hooks_parse():
+    # λ + reduce + hooks are per-term knobs (defaults: 1.0 / global mean / no hooks); presets accept
+    # them as overrides too.
     config = RLConfig.model_validate(
         {
             "model": {"name": "my-model"},
             "losses": [
                 _rl(),
-                {"type": "echo", "lambda_weight": 0.5, "reduce": {"type": "custom", "import_path": "x.y"}},
+                {
+                    "type": "echo",
+                    "lambda_weight": 0.5,
+                    "reduce": {"type": "custom", "import_path": "x.y"},
+                    "hooks": [{"type": "custom", "import_path": "pkg.hook", "kwargs": {"k": 1}}],
+                },
             ],
             "trainer": {},
             "orchestrator": {"renderer": None},
         }
     )
     rl, echo = config.trainer.losses
-    assert rl.lambda_weight == 1.0 and rl.reduce.type == "mean"
+    assert rl.lambda_weight == 1.0 and rl.reduce.type == "mean" and rl.hooks == []
     assert echo.lambda_weight == 0.5
     assert echo.reduce.type == "custom" and echo.reduce.import_path == "x.y"
+    assert len(echo.hooks) == 1 and echo.hooks[0].import_path == "pkg.hook" and echo.hooks[0].kwargs == {"k": 1}
 
 
 def test_empty_enabled_losses_rejected():
