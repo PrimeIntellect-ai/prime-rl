@@ -134,6 +134,9 @@ def _register_lora_update_success(request: Request, step: int) -> None:
         raise RuntimeError(f"No LoRA adapter metadata stored for step {step}")
     adapter = adapters[0]
     lora_name = adapter["lora_name"]
+    # Sentinel path: the adapter was committed in-memory by the workers and must stay resident in
+    # their adapter caches. If vLLM ever evicts it and tries to reload from this path it fails
+    # loudly -- correct, since there is nothing on disk to reload.
     lora_path = adapter.get("lora_path") or f"/__prime_rl_nccl_lora__/{step}/{lora_name}"
     models(request).lora_requests[lora_name] = LoRARequest(
         lora_name=lora_name,
