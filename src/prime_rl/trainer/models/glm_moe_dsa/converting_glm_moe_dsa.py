@@ -13,6 +13,18 @@ def _is_moe_layer(state_dict: dict[str, Tensor], layer_idx: int) -> bool:
     return f"model.layers.{layer_idx}.mlp.gate.weight" in state_dict
 
 
+def _expert_indices(state_dict: dict[str, Tensor], layer_idx: int) -> list[int]:
+    prefix = f"model.layers.{layer_idx}.mlp.experts."
+    indices: set[int] = set()
+    for key in state_dict:
+        if not key.startswith(prefix):
+            continue
+        candidate = key[len(prefix) :].split(".", 1)[0]
+        if candidate.isdigit():
+            indices.add(int(candidate))
+    return sorted(indices)
+
+
 def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int):
     i = layer_idx
 
@@ -38,19 +50,21 @@ def convert_hf_layer_to_tt(state_dict: dict[str, Tensor], layer_idx: int):
         del state_dict[f"model.layers.{i}.mlp.experts.gate_up_proj"]
         del state_dict[f"model.layers.{i}.mlp.experts.down_proj"]
     else:
-        num_experts = len([j for j in state_dict.keys() if f"model.layers.{i}.mlp.experts" in j]) // 3
+        expert_indices = _expert_indices(state_dict, i)
+        num_experts = len(expert_indices)
         if num_experts == 0:
             return
 
-        dim, moe_dim = state_dict[f"model.layers.{i}.mlp.experts.0.down_proj.weight"].shape
-        dtype = state_dict[f"model.layers.{i}.mlp.experts.0.down_proj.weight"].dtype
+        first_expert = expert_indices[0]
+        dim, moe_dim = state_dict[f"model.layers.{i}.mlp.experts.{first_expert}.down_proj.weight"].shape
+        dtype = state_dict[f"model.layers.{i}.mlp.experts.{first_expert}.down_proj.weight"].dtype
         w1 = torch.empty((num_experts, moe_dim, dim), dtype=dtype)
         w2 = torch.empty((num_experts, dim, moe_dim), dtype=dtype)
         w3 = torch.empty((num_experts, moe_dim, dim), dtype=dtype)
-        for j in range(num_experts):
-            w1[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.gate_proj.weight"])
-            w2[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.down_proj.weight"])
-            w3[j].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.up_proj.weight"])
+        for expert_pos, j in enumerate(expert_indices):
+            w1[expert_pos].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.gate_proj.weight"])
+            w2[expert_pos].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.down_proj.weight"])
+            w3[expert_pos].copy_(state_dict[f"model.layers.{i}.mlp.experts.{j}.up_proj.weight"])
 
             del state_dict[f"model.layers.{i}.mlp.experts.{j}.gate_proj.weight"]
             del state_dict[f"model.layers.{i}.mlp.experts.{j}.down_proj.weight"]

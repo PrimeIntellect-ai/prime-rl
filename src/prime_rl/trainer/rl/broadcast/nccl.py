@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Callable, Generator, cast
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from torch import Tensor
 from torch.distributed.tensor import DTensor
@@ -156,10 +157,21 @@ class NCCLWeightBroadcastSender:
             preprocess_fn = preprocess_layer_checkpoint
 
         for layer_id, layer_state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
+            # _resolve_dtensors triggers DTensor.full_tensor() all_gathers on ALL trainer
+            # ranks (FSDP/EP collectives). Every rank must participate.
             layer_state_dict = self._resolve_dtensors(layer_state_dict)
             layer_state_dict = preprocess_fn(model, layer_state_dict, layer_id)
             if self.world.is_master:
                 broadcast_state_dict(layer_state_dict, self.communicator)
+                # Ensure the inference NCCL sends complete on the master's CUDA stream
+                # before we release non-master ranks to start the next layer's all_gather.
+                torch.cuda.synchronize()
+            # Barrier: prevents ranks 1-N from advancing to the next layer's
+            # _resolve_dtensors (and enqueuing the next FSDP/EP all_gather) before
+            # rank 0 finishes broadcasting the current layer to inference workers.
+            # Without this, ranks 1-N enqueue unmatched all_gathers and the NCCL
+            # watchdog fires after 600 s, killing all trainer processes.
+            dist.barrier()
 
     def _resolve_dtensors(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         for key, value in list(state_dict.items()):

@@ -26,6 +26,14 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with .Values.orchestrator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.orchestrator.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: prime-rl-orchestrator
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -33,7 +41,7 @@ spec:
         {{- if .Values.orchestrator.autoStart }}
         command: ["/bin/bash", "-c"]
         args:
-          - {{ .Values.orchestrator.command }}
+          - {{ .Values.orchestrator.command | quote }}
         {{- else }}
         command: ["sleep", "infinity"]
         {{- end }}
@@ -91,16 +99,29 @@ spec:
         {{- end }}
         resources:
           {{- toYaml .Values.orchestrator.resources | nindent 10 }}
-        {{- if .Values.storage.enabled }}
+        {{- if or .Values.storage.enabled .Values.orchestrator.configMap }}
         volumeMounts:
+        {{- if .Values.storage.enabled }}
         - name: shared-data
           mountPath: {{ .Values.storage.mountPath }}
         {{- end }}
-      {{- if .Values.storage.enabled }}
+        {{- if .Values.orchestrator.configMap }}
+        - name: rl-configs
+          mountPath: /configs
+        {{- end }}
+        {{- end }}
+      {{- if or .Values.storage.enabled .Values.orchestrator.configMap }}
       volumes:
+      {{- if .Values.storage.enabled }}
       - name: shared-data
         persistentVolumeClaim:
-          claimName: {{ .Release.Name }}-shared-data
+          claimName: {{ .Values.storage.existingClaim | default (printf "%s-shared-data" .Release.Name) }}
+      {{- end }}
+      {{- if .Values.orchestrator.configMap }}
+      - name: rl-configs
+        configMap:
+          name: {{ .Values.orchestrator.configMap }}
+      {{- end }}
       {{- end }}
 {{- end }}
 ---
@@ -132,6 +153,19 @@ spec:
       {{- if .Values.inference.runtimeClassName }}
       runtimeClassName: {{ .Values.inference.runtimeClassName }}
       {{- end }}
+      {{- with .Values.inference.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.inference.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.inference.resourceClaim.enabled }}
+      resourceClaims:
+      - name: {{ .Values.inference.resourceClaim.name }}
+        resourceClaimTemplateName: {{ .Values.inference.resourceClaim.templateName }}
+      {{- end }}
       containers:
       - name: prime-rl-inference
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -139,7 +173,7 @@ spec:
         {{- if .Values.inference.autoStart }}
         command: ["/bin/bash", "-c"]
         args:
-          - {{ .Values.inference.command }}
+          - {{ .Values.inference.command | quote }}
         {{- else }}
         command: ["sleep", "infinity"]
         {{- end }}
@@ -184,19 +218,23 @@ spec:
         {{- end }}
         resources:
           requests:
-            {{- if .Values.inference.gpu.enabled }}
+            {{- if and .Values.inference.gpu.enabled (not .Values.inference.resourceClaim.enabled) }}
             nvidia.com/gpu: {{ .Values.inference.gpu.count }}
             {{- end }}
             memory: {{ .Values.inference.resources.requests.memory }}
             cpu: {{ .Values.inference.resources.requests.cpu }}
           limits:
-            {{- if .Values.inference.gpu.enabled }}
+            {{- if and .Values.inference.gpu.enabled (not .Values.inference.resourceClaim.enabled) }}
             nvidia.com/gpu: {{ .Values.inference.gpu.count }}
             {{- end }}
             {{- if .Values.inference.resources.limits }}
             memory: {{ .Values.inference.resources.limits.memory }}
             cpu: {{ .Values.inference.resources.limits.cpu }}
             {{- end }}
+          {{- if .Values.inference.resourceClaim.enabled }}
+          claims:
+          - name: {{ .Values.inference.resourceClaim.name }}
+          {{- end }}
         {{- if and .Values.inference.probes .Values.inference.probes.enabled }}
         startupProbe:
           httpGet:
@@ -220,16 +258,29 @@ spec:
           failureThreshold: {{ .Values.inference.probes.readiness.failureThreshold }}
           timeoutSeconds: {{ .Values.inference.probes.readiness.timeoutSeconds }}
         {{- end }}
-        {{- if .Values.storage.enabled }}
+        {{- if or .Values.storage.enabled .Values.inference.configMap }}
         volumeMounts:
+        {{- if .Values.storage.enabled }}
         - name: shared-data
           mountPath: {{ .Values.storage.mountPath }}
         {{- end }}
-      {{- if .Values.storage.enabled }}
+        {{- if .Values.inference.configMap }}
+        - name: rl-configs
+          mountPath: /configs
+        {{- end }}
+        {{- end }}
+      {{- if or .Values.storage.enabled .Values.inference.configMap }}
       volumes:
+      {{- if .Values.storage.enabled }}
       - name: shared-data
         persistentVolumeClaim:
-          claimName: {{ .Release.Name }}-shared-data
+          claimName: {{ .Values.storage.existingClaim | default (printf "%s-shared-data" .Release.Name) }}
+      {{- end }}
+      {{- if .Values.inference.configMap }}
+      - name: rl-configs
+        configMap:
+          name: {{ .Values.inference.configMap }}
+      {{- end }}
       {{- end }}
 {{- end }}
 ---
@@ -261,6 +312,19 @@ spec:
       {{- if .Values.trainer.runtimeClassName }}
       runtimeClassName: {{ .Values.trainer.runtimeClassName }}
       {{- end }}
+      {{- with .Values.trainer.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.trainer.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.trainer.resourceClaim.enabled }}
+      resourceClaims:
+      - name: {{ .Values.trainer.resourceClaim.name }}
+        resourceClaimTemplateName: {{ .Values.trainer.resourceClaim.templateName }}
+      {{- end }}
       containers:
       - name: prime-rl-trainer
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -268,7 +332,7 @@ spec:
         {{- if .Values.trainer.autoStart }}
         command: ["/bin/bash", "-c"]
         args:
-          - {{ .Values.trainer.command }}
+          - {{ .Values.trainer.command | quote }}
         {{- else }}
         command: ["sleep", "infinity"]
         {{- end }}
@@ -343,6 +407,10 @@ spec:
             memory: {{ .Values.trainer.resources.limits.memory }}
             cpu: {{ .Values.trainer.resources.limits.cpu }}
             {{- end }}
+          {{- if .Values.trainer.resourceClaim.enabled }}
+          claims:
+          - name: {{ .Values.trainer.resourceClaim.name }}
+          {{- end }}
         {{- if and .Values.trainer.probes .Values.trainer.probes.enabled }}
         startupProbe:
           httpGet:
@@ -366,15 +434,28 @@ spec:
           failureThreshold: {{ .Values.trainer.probes.readiness.failureThreshold }}
           timeoutSeconds: {{ .Values.trainer.probes.readiness.timeoutSeconds }}
         {{- end }}
-        {{- if .Values.storage.enabled }}
+        {{- if or .Values.storage.enabled .Values.trainer.configMap }}
         volumeMounts:
+        {{- if .Values.storage.enabled }}
         - name: shared-data
           mountPath: {{ .Values.storage.mountPath }}
         {{- end }}
-      {{- if .Values.storage.enabled }}
+        {{- if .Values.trainer.configMap }}
+        - name: rl-configs
+          mountPath: /configs
+        {{- end }}
+        {{- end }}
+      {{- if or .Values.storage.enabled .Values.trainer.configMap }}
       volumes:
+      {{- if .Values.storage.enabled }}
       - name: shared-data
         persistentVolumeClaim:
-          claimName: {{ .Release.Name }}-shared-data
+          claimName: {{ .Values.storage.existingClaim | default (printf "%s-shared-data" .Release.Name) }}
+      {{- end }}
+      {{- if .Values.trainer.configMap }}
+      - name: rl-configs
+        configMap:
+          name: {{ .Values.trainer.configMap }}
+      {{- end }}
       {{- end }}
 {{- end }}

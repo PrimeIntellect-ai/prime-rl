@@ -1,0 +1,79 @@
+# syntax=docker/dockerfile:1.4
+# Dockerfile.dynamo — layer ai-dynamo onto a prime-rl image WITHOUT reinstalling vLLM.
+#
+# The prime-rl base already ships vLLM 0.20.2 (+ vLLM PR #39366 two-phase pause),
+# torch, flashinfer, DeepGEMM. We build the dynamo Rust bindings (ai-dynamo-runtime,
+# via maturin) at DYNAMO_REF, then install the dynamo Python package — which provides
+# BOTH `dynamo.frontend` and `dynamo.vllm` (hatch packages = components/src/dynamo) —
+# with `--no-deps` so the base's vLLM / torch / transformers are NEVER touched.
+# A curated set of dynamo runtime deps (explicitly excluding vllm/torch/ray) is added
+# via `uv pip` (the prime-rl venv is uv-managed and has no `pip` binary).
+#
+# Build (BuildKit; run in the arm64 dind builder):
+#   DOCKER_BUILDKIT=1 docker build -f Dockerfile.dynamo \
+#     --build-arg BASE_IMAGE=nvcr.io/nvidian/dynamo-dev/biswa:prime-rl-97950abd-20260531-arm64 \
+#     --build-arg DYNAMO_REF=ecae3569926410ef33b4d3d13c7d6a1b89789bb0 \
+#     -t nvcr.io/nvidian/dynamo-dev/biswa:prime-rl-97950abd-dynamo-ecae3569-arm64 .
+#
+# DYNAMO_REF may be any commit/branch/tag on https://github.com/ai-dynamo/dynamo
+# (e.g. bis/rl-workers-discovery tip ecae3569…, or a release tag v1.2.0).
+
+ARG BASE_IMAGE=nvcr.io/nvidian/dynamo-dev/biswa:prime-rl-97950abd-20260531-arm64
+ARG DYNAMO_REPO=https://github.com/ai-dynamo/dynamo.git
+ARG DYNAMO_REF=ecae3569926410ef33b4d3d13c7d6a1b89789bb0
+ARG CARGO_BUILD_JOBS=16
+
+# ===== Stage 1: build ai-dynamo-runtime Rust bindings wheel =====
+FROM ubuntu:24.04 AS dynamo-builder
+ARG DYNAMO_REPO
+ARG DYNAMO_REF
+ARG CARGO_BUILD_JOBS
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl build-essential pkg-config libclang-dev protobuf-compiler git \
+      python3 python3-dev python3-venv \
+ && rm -rf /var/lib/apt/lists/* \
+ && curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+ENV CARGO_HOME=/root/.cargo RUSTUP_HOME=/root/.rustup PATH=/root/.cargo/bin:${PATH}
+RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
+    --mount=type=cache,target=/root/.cargo/git,sharing=locked \
+    cargo install maturin --locked
+RUN git clone "${DYNAMO_REPO}" /build/dynamo && cd /build/dynamo && git checkout "${DYNAMO_REF}"
+RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
+    --mount=type=cache,target=/root/.cargo/git,sharing=locked \
+    --mount=type=cache,target=/build/dynamo/lib/bindings/python/target,sharing=locked \
+    cd /build/dynamo/lib/bindings/python \
+ && maturin build --release --out /build/dist
+
+# ===== Stage 2: prime-rl base + dynamo (reuses base vLLM, no reinstall) =====
+FROM ${BASE_IMAGE}
+USER root
+ENV DYNAMO_HOME=/opt/dynamo
+COPY --from=dynamo-builder /build/dynamo /opt/dynamo
+COPY --from=dynamo-builder /build/dist/*.whl /tmp/dynamo-wheels/
+
+# 1) ai-dynamo-runtime (Rust bindings) + dynamo python pkg (frontend + vllm modules).
+#    --no-deps: do NOT pull vllm/torch/transformers (keep the prime-rl base's patched stack).
+RUN uv pip install --python /app/.venv/bin/python --no-cache /tmp/dynamo-wheels/*.whl \
+ && cd /opt/dynamo \
+ && uv pip install --python /app/.venv/bin/python --no-cache --no-deps -e . \
+ && rm -rf /tmp/dynamo-wheels
+
+# 2) dynamo runtime deps the base may lack — EXPLICITLY excluding vllm / torch / ray.
+#    uvloop + nixl are required by the dynamo.vllm worker; the rest are frontend/runtime.
+RUN uv pip install --python /app/.venv/bin/python --no-cache \
+      uvloop "nixl[cu12]<=0.10.1" \
+      "fastapi==0.120.1" "uvicorn==0.38.0" httpx \
+      "msgspec>=0.19.0" pyzmq "prometheus_client>=0.23.1" \
+      "aiohttp>=3.9.0,<4.0" "blake3>=1.0.0,<2.0.0" \
+      "kubernetes>=32.0.1,<33.0.0" \
+      opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp
+
+# NOTE: etcd + nats-server are intentionally NOT installed in this image.
+# In the k8s deployment dynamo uses the external dynamo-platform services
+# (e.g. NATS_SERVER=nats://dynamo-platform-nats...:4222 and the platform etcd),
+# so shipping the static binaries in the worker image is unnecessary bloat.
+
+USER appuser
+WORKDIR /app

@@ -1,9 +1,9 @@
 [submodule "verifiers"]
 	path = deps/verifiers
-	url = git@github.com:PrimeIntellect-ai/verifiers.git
+	url = git@github.com:biswapanda/verifiers.git
 [submodule "renderers"]
 	path = deps/renderers
-	url = git@github.com:PrimeIntellect-ai/renderers.git
+	url = git@github.com:biswapanda/renderers.git
 [submodule "research-environments"]
 	path = deps/research-environments
 	url = git@github.com:PrimeIntellect-ai/research-environments.git

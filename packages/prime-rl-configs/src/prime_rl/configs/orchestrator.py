@@ -916,5 +916,10 @@ class OrchestratorConfig(BaseConfig):
             if is_vllm:
                 env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)
-                env.sampling.extra_body.setdefault("return_token_ids", True)
+                # DRA-TITO-PATCH: Dynamo strict-rejects `return_token_ids`.
+                # Token IDs come back via `nvext.engine_data.completion_token_ids`
+                # (PR #8119 channel) on the rl-sdk-2 backend, so the client does
+                # not need this vLLM-native field set. Stripped here at config
+                # validate time so it never reaches the inference server.
+                # env.sampling.extra_body.setdefault("return_token_ids", True)
         return self

@@ -139,16 +139,81 @@ class NCCLWeightUpdateWorker(Worker):
             inference_world_size: Total number of inference GPUs across all servers.
         """
         self.quantize_in_weight_transfer = quantize_in_weight_transfer
-        # Use the worker's device index directly as the local rank.
-        # The previous dp_group-based computation broke in vLLM v1 multiprocess
-        # DP mode where each worker is a separate process with a singleton
-        # DP group (rank_in_group is always 0).
+
+        # =====================================================================
+        # PATCHED — DP+TP-aware rank computation (Option B: parallel_config
+        # dispatch). Overrides the image-baked nccl.py via ConfigMap subPath mount.
+        #
+        # The vLLM Worker exposes `self.rank` (executor-wide rank) and
+        # `self.device.index` (local GPU index 0..local_world_size-1). Neither
+        # alone correctly identifies the GPU's position across BOTH TP and DP
+        # multinode topologies:
+        #
+        #   - TP/PP multinode (one executor spans pods):
+        #       self.rank is unique 0..world_size-1
+        #       self.device.index repeats per node (0..3 on each node)
+        #       --> use self.rank
+        #
+        #   - DP-only (TP=1) — e.g. vLLM `--data-parallel-size N --tp 1`:
+        #       self.rank is 0 for every subprocess
+        #       self.device.index is the LOCAL gpu index (0..size_local-1); for a
+        #       MULTINODE-DP follower it does NOT equal the global DP rank
+        #       --> use parallel_config.data_parallel_rank (global DP rank)
+        #
+        # Dispatch on parallel_config (always available on a vLLM Worker via
+        # vllm_config or as a direct attribute, depending on vLLM version).
+        # =====================================================================
+        pc = None
+        for attr_path in ("vllm_config.parallel_config", "parallel_config"):
+            obj = self
+            try:
+                for part in attr_path.split("."):
+                    obj = getattr(obj, part)
+                pc = obj
+                break
+            except AttributeError:
+                continue
+
+        tp_size = getattr(pc, "tensor_parallel_size", 1) if pc is not None else 1
+        pp_size = getattr(pc, "pipeline_parallel_size", 1) if pc is not None else 1
+        worker_rank = getattr(self, "rank", 0)
         local_rank = self.device.index
-        global_rank_inference = rank_offset + local_rank
+        dp_rank = getattr(pc, "data_parallel_rank", None) if pc is not None else None
+
+        if tp_size > 1 or pp_size > 1:
+            # Executor spans multiple ranks (TP or PP); self.rank is canonical.
+            effective_rank = worker_rank
+            rank_source = "self.rank (TP/PP > 1)"
+        elif dp_rank is not None:
+            # Pure DP: use the GLOBAL data-parallel rank. Correct for BOTH single-node
+            # DP (dp_rank == device.index) AND MULTINODE DP, where a follower node's
+            # device.index is the LOCAL gpu index (0..size_local-1) and does NOT equal
+            # the global DP rank (e.g. follower DP ranks 4..7 have device.index 0..3).
+            # Using device.index there collides with the leader's ranks 0..3 and the
+            # NCCL broadcast group never forms (Bootstrap "rank N already checked in").
+            effective_rank = local_rank  # DGD per-pod-offset override (issue #7); proper fix = per-engine offsets in orch
+            rank_source = "self.device.index (DGD per-pod-offset, issue #7)"
+        else:
+            # Fallback (older vLLM lacking data_parallel_rank): single-node DP only,
+            # where device.index uniquely identifies the GPU within the pod (0..N-1).
+            effective_rank = local_rank
+            rank_source = "self.device.index (DP-only fallback)"
+
+        global_rank_inference = rank_offset + effective_rank
 
         logger.info(
-            f"Worker [local_rank={local_rank} rank_offset={rank_offset}] "
-            f"-> [global_rank={global_rank_inference} inference_world_size={inference_world_size}]"
+            "Worker [tp_size=%s pp_size=%s local_rank=%s worker_rank=%s "
+            "effective_rank=%s (%s) rank_offset=%s] "
+            "-> [global_rank=%s inference_world_size=%s] (dp-tp-aware-patch)",
+            tp_size,
+            pp_size,
+            local_rank,
+            worker_rank,
+            effective_rank,
+            rank_source,
+            rank_offset,
+            global_rank_inference,
+            inference_world_size,
         )
 
         self.nccl_broadcast_receiver = NCCLWeightBroadcastReceiver(

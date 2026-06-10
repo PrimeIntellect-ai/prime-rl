@@ -1,4 +1,9 @@
-{{- if .Values.storage.enabled }}
+{{- /*
+  Only create a PVC when storage is enabled AND the user has not supplied an
+  existing claim. When `storage.existingClaim` is set the chart mounts that
+  claim instead — e.g. the cluster-shared `shared-model-cache` PVC.
+*/ -}}
+{{- if and .Values.storage.enabled (not .Values.storage.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

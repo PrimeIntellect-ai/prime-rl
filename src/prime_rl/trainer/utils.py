@@ -450,18 +450,18 @@ class MemoryProfiler:
         self.step_num += 1
 
 
-def maybe_clean(path: Path, step: int, interval_to_keep: int | None) -> None:
-    """Delete the broadcast dir from 2 trainer steps ago.
+def maybe_clean(path: Path, step: int, retention: int, interval_to_keep: int | None) -> None:
+    """Delete the broadcast step directory that falls outside the retention window.
 
-    With a 1-step async barrier, the orchestrator at trainer step ``step`` is still consuming the
-    ckpt from ``step - 1``; ``step - 2`` is therefore safe to remove unless it falls on a
-    checkpoint interval that we want to preserve.
+    At trainer step N, deletes step_{N - retention - 1}. Caller picks whether
+    `retention` is the orchestrator's staleness bound (max_async_level) or a
+    wider buffer (weight_broadcast.keep_recent).
     """
     logger = get_logger()
-    candidate_step = max(step - 2, 0)
-    candidate_path = get_step_path(path, candidate_step)
-    if interval_to_keep and candidate_step % interval_to_keep == 0:
-        logger.debug(f"Keeping path {candidate_path} (on ckpt interval)")
-        return
-    logger.debug(f"Removing path {candidate_path}")
-    shutil.rmtree(candidate_path, ignore_errors=True)
+    step = max(step - (retention + 1), 0)
+    candidate_path_to_delete = get_step_path(path, step)
+    keep = bool(interval_to_keep and step % interval_to_keep == 0)
+    logger.debug(f"Considering deleting path {candidate_path_to_delete}")
+    if not keep:
+        logger.debug(f"Removing path {candidate_path_to_delete}")
+        shutil.rmtree(candidate_path_to_delete, ignore_errors=True)
