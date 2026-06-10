@@ -193,9 +193,23 @@ class CustomHookConfig(BaseConfig):
     """Keyword arguments forwarded to the hook as ``**kwargs``."""
 
 
-HookConfig: TypeAlias = CustomHookConfig
-"""A loss term's hook. Currently only ``custom`` (an import path); becomes a discriminated union once
-built-in hook presets land."""
+class MinProbFilterConfig(BaseConfig):
+    """Built-in hook: zero the per-token loss on tokens the *current policy* already assigns low
+    probability (current-policy ``logprob < min_logprob``). A trainer-side filter — it reads the live
+    forward, so it can't be precomputed orchestrator-side (e.g. drop low-confidence terminal-task
+    warning tokens)."""
+
+    type: Literal["min_prob_filter"] = "min_prob_filter"
+
+    min_logprob: float = Field(allow_inf_nan=False)
+    """Keep only tokens whose current-policy logprob is ``>=`` this; below it the per-token loss is zeroed."""
+
+
+HookConfig: TypeAlias = Annotated[
+    CustomHookConfig | MinProbFilterConfig,
+    Field(discriminator="type"),
+]
+"""A loss term's hook: a built-in preset (``min_prob_filter``) or a ``custom`` import path."""
 
 # --------------------------------------------------------------------------------------------------
 # The term: a core, a per-token advantage_fn, and per-term λ + reduce + hooks.

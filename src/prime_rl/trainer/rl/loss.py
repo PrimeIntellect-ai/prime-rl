@@ -93,10 +93,22 @@ trainer-side signals that can't be precomputed orchestrator-side (current-policy
 smoothing, penalties); intrinsic objective math (DPPO clip + KL) stays inside the core."""
 
 
+def min_prob_filter(per_token_loss: Tensor, inputs: LossInputs, *, min_logprob: float) -> Tensor:
+    """Built-in hook: zero the per-token loss where the current-policy logprob is below ``min_logprob``
+    (a trainer-side filter — it reads the live forward, so it can't be precomputed orchestrator-side)."""
+    return per_token_loss * (inputs.trainer_logprobs >= min_logprob)
+
+
 def setup_hooks(configs: list[HookConfig]) -> list[Hook]:
     """Resolve a loss term's ``hooks`` to a chain of trainer-side per-token transforms, applied in
-    order. Currently every hook is a ``custom`` import path; built-in hook presets dispatch here later."""
-    return [functools.partial(import_object(config.import_path), **config.kwargs) for config in configs]
+    order: a built-in preset (``min_prob_filter``) or a ``custom`` import path."""
+    hooks: list[Hook] = []
+    for config in configs:
+        if config.type == "min_prob_filter":
+            hooks.append(functools.partial(min_prob_filter, min_logprob=config.min_logprob))
+        else:
+            hooks.append(functools.partial(import_object(config.import_path), **config.kwargs))
+    return hooks
 
 
 @dataclass

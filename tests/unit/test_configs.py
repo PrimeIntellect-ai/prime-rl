@@ -417,6 +417,20 @@ def test_loss_term_lambda_reduce_and_hooks_parse():
     assert len(echo.hooks) == 1 and echo.hooks[0].import_path == "pkg.hook" and echo.hooks[0].kwargs == {"k": 1}
 
 
+def test_builtin_hook_preset_parses():
+    # A built-in hook preset (min_prob_filter) parses via the discriminated union, alongside custom.
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "my-model"},
+            "losses": [_rl(), {"type": "echo", "hooks": [{"type": "min_prob_filter", "min_logprob": -2.0}]}],
+            "trainer": {},
+            "orchestrator": {"renderer": None},
+        }
+    )
+    hook = config.trainer.losses[1].hooks[0]
+    assert hook.type == "min_prob_filter" and hook.min_logprob == -2.0
+
+
 def test_empty_enabled_losses_rejected():
     with pytest.raises(ValidationError, match="enabled_losses is empty"):
         RLConfig.model_validate(

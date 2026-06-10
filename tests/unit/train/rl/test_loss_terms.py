@@ -18,6 +18,7 @@ from prime_rl.configs.losses import (
     GRPOAdvantageConfig,
     LossTerm,
     MeanReduceConfig,
+    MinProbFilterConfig,
     RLLossConfig,
 )
 from prime_rl.trainer.rl.loss import (
@@ -29,6 +30,7 @@ from prime_rl.trainer.rl.loss import (
     default_loss_fn,
     echo_loss_fn,
     mean_reduce,
+    min_prob_filter,
     opd_loss_fn,
     pg_loss_fn,
     setup_hooks,
@@ -356,3 +358,20 @@ def test_setup_hooks_resolves_custom():
     assert len(hooks) == 1
     out = hooks[0](torch.tensor([1.0, 2.0]), None)  # inputs unused by _dummy_hook
     assert torch.equal(out, torch.tensor([3.0, 6.0]))
+
+
+def test_min_prob_filter_zeros_low_prob_tokens():
+    # Built-in hook: zero the per-token loss where the current-policy logprob is below the threshold,
+    # directly and via the config -> setup_hooks dispatch.
+    inputs = LossInputs(
+        trainer_logprobs=torch.tensor([-0.1, -5.0, -0.2, -9.0]),
+        inference_logprobs=torch.zeros(4),
+        teacher_logprobs=None,
+        advantages=torch.zeros(4),
+        loss_mask=torch.ones(4, dtype=torch.bool),
+    )
+    per_token_loss = torch.tensor([1.0, 2.0, 3.0, 4.0])
+    expected = torch.tensor([1.0, 0.0, 3.0, 0.0])  # positions with logprob < -1.0 are zeroed
+    assert torch.equal(min_prob_filter(per_token_loss, inputs, min_logprob=-1.0), expected)
+    (hook,) = setup_hooks([MinProbFilterConfig(min_logprob=-1.0)])
+    assert torch.equal(hook(per_token_loss, inputs), expected)
