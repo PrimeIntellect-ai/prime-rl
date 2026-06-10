@@ -428,9 +428,19 @@ class RLConfig(BaseConfig):
                         stacklevel=2,
                     )
                 self.inference.enable_return_routed_experts = True
+                # Fused MoE backends (FlashInfer/TRTLLM) bypass the BaseRouter
+                # capture hook, yielding all-zero routing. Force a non-fused
+                # backend for capture unless the user set one explicitly.
+                if self.inference.moe_backend == "auto":
+                    warnings.warn(
+                        "Router replay is enabled; setting inference.moe_backend='triton' "
+                        "(fused MoE backends bypass routed-experts capture).",
+                        stacklevel=2,
+                    )
+                    self.inference.moe_backend = "triton"
             else:
                 warnings.warn(
-                    "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server.",
+                    "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` and `--moe-backend triton` to the vLLM server.",
                     stacklevel=2,
                 )
         return self

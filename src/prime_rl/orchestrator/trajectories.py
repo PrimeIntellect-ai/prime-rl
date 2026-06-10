@@ -254,6 +254,13 @@ def interleave_rollout(
                 routed_experts = np.frombuffer(decoded_routed_experts, dtype=re_dtype).reshape(
                     routed_experts_payload["shape"]
                 )
+                # The trainer (batch.py row sizing + tensor decode) supports
+                # uint8/int16/int32 (all torch-safe). Normalize a uint16 wire
+                # dtype (vLLM/dynamo >256-expert capture) to int32 so it never
+                # reaches the trainer; expert ids are non-negative so this is
+                # lossless.
+                if routed_experts.dtype == np.uint16:
+                    routed_experts = routed_experts.astype(np.int32)
                 routed_experts_start = routed_experts_payload["start"]
 
             return {
