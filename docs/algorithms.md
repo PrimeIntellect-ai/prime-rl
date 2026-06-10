@@ -39,7 +39,7 @@ The trainer is algorithm-blind: routing ships per token on the wire (`loss_type`
 
 ### The Model Registry
 
-There are no model *roles* in `prime-rl` — no teacher slot, no judge slot. There is the live policy (registered under the reserved name `"policy"`) and a registry of named frozen hosted models under `[orchestrator.models]`. Algorithm components hold *references* into that registry, so the same deployment can serve different algorithms in the same run:
+Model *roles* are algorithm-local labels over references — OPD may call its reference model a teacher, but no role exists outside the algorithm that defines it. The pipeline knows only the live policy (registered under the reserved name `"policy"`) and a registry of named frozen hosted models under `[orchestrator.models]`; algorithm components hold *references* into that registry, and the dispatcher, sink, and trainer branch on liveness alone — never on what an algorithm calls a model. The same deployment can therefore serve different algorithms in different roles in the same run:
 
 ```toml
 [orchestrator.models.qwen-32b]
