@@ -56,6 +56,18 @@ class FixedMemberTargetConfig(BaseConfig):
         float,
         Field(description="TCP connect timeout in seconds."),
     ] = 30.0
+    max_retries: Annotated[
+        int,
+        Field(ge=0, description="Maximum retries per request to this target."),
+    ] = 10
+    max_connections: Annotated[
+        int,
+        Field(ge=1, description="Maximum concurrent HTTP connections to this target."),
+    ] = 8192
+    max_keepalive_connections: Annotated[
+        int,
+        Field(ge=0, description="Maximum keep-alive HTTP connections to this target."),
+    ] = 8192
 
     @field_validator("members")
     @classmethod

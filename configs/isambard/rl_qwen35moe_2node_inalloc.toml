@@ -51,6 +51,9 @@ freq = 1
 batch_size = 128
 group_size = 8
 
+[orchestrator.client]
+timeout = 3600
+
 [orchestrator.train.sampling]
 max_completion_tokens = 16384
 

@@ -57,6 +57,9 @@ group_size = 2
 oversampling_factor = 1.5
 dump_trajectory = true
 
+[orchestrator.client]
+timeout = 3600
+
 [orchestrator.renderer]
 name = "auto"
 preserve_all_thinking = true

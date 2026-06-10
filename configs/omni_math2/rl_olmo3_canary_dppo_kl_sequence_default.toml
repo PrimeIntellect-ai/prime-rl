@@ -68,6 +68,9 @@ max_inflight_rollouts = 768
 rollouts_per_example = 8
 max_off_policy_steps = 8
 
+[orchestrator.client]
+timeout = 3600
+
 [orchestrator.advantage]
 type = "default"
 

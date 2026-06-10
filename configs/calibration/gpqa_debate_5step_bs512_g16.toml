@@ -63,6 +63,9 @@ max_inflight_rollouts = 1536
 max_off_policy_steps = 16
 dump_trajectory = true
 
+[orchestrator.client]
+timeout = 3600
+
 [orchestrator.renderer]
 name = "auto"
 preserve_all_thinking = true
@@ -88,7 +91,6 @@ extra_body = { top_k = 20, min_p = 0.0, presence_penalty = 1.5 }
 [[orchestrator.train.env]]
 id = "gpqa-debate"
 name = "gpqa-debate-bs512-train"
-max_concurrent_rollouts_per_client = 48
 args = { prompts_ref = "selfplay", subset = "gpqa_diamond", truth_member = "debater_a" }
 
 [orchestrator.multi_agent.fixed.judge]

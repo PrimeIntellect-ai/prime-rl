@@ -12,6 +12,7 @@ from prime_rl.configs.multi_agent import (
     RequestMode,
     stable_train_member,
 )
+from prime_rl.utils.client import build_client
 
 DISPATCH_ID_FIELD = "multi_agent_dispatch_id"
 
@@ -48,19 +49,14 @@ def _fixed_client(
         member_id=member_id,
         group_id=group_id,
     )
-    return vf.ClientConfig(
-        client_type=_client_type(target.request_mode),
+    return build_client(
+        target,
         api_base_url=target.base_url[idx],
-        api_key_var=target.api_key_var,
+        client_type=_client_type(target.request_mode),
+        extra_headers=dict(target.headers),
         renderer_config=target.renderer,
         renderer_model_name=target.renderer_model_name,
         renderer_pool_size=target.renderer_pool_size,
-        timeout=target.timeout,
-        connect_timeout=target.connect_timeout,
-        max_connections=8192,
-        max_keepalive_connections=8192,
-        max_retries=10,
-        extra_headers=dict(target.headers),
     )
 
 

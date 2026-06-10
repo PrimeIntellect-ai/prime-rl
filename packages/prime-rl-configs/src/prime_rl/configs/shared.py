@@ -101,10 +101,25 @@ class ElasticConfig(BaseConfig):
 
 class ClientConfig(BaseConfig):
     timeout: int = 1200
-    """Request timeout in seconds."""
+    """Request timeout in seconds. Must cover the structural end-to-end latency of one non-streaming generation request (``ttft_budget_s + max_completion_tokens * tpot_budget_s``); validated against the orchestrator sampling config."""
 
     connect_timeout: float = 30.0
     """TCP connect timeout in seconds for inference API requests."""
+
+    max_retries: int = Field(10, ge=0)
+    """Maximum retries per inference request. Each timed-out request re-enters the server queue, so high values amplify timeout storms at saturation."""
+
+    max_connections: int = Field(8192, ge=1)
+    """Maximum concurrent HTTP connections per inference client."""
+
+    max_keepalive_connections: int = Field(8192, ge=0)
+    """Maximum keep-alive HTTP connections per inference client."""
+
+    ttft_budget_s: float = Field(400.0, gt=0)
+    """Admission-control budget for time-to-first-token in seconds. Used to validate ``timeout`` against the worst-case queueing delay at saturation (crash3 measured TTFT 316s at 896 concurrent seqs; the default is deliberately conservative)."""
+
+    tpot_budget_s: float = Field(0.15, gt=0)
+    """Admission-control budget for time-per-output-token in seconds. Used to validate ``timeout`` against the worst-case decode rate at saturation (crash3 measured 0.102 s/tok; the default is deliberately conservative)."""
 
     wait_for_ready_timeout: int = 1800
     """Seconds to wait at startup for the inference pool to become ready. Applies to both the static health check and elastic DNS-based discovery."""

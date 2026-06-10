@@ -19,6 +19,9 @@ name = "stage1"
 batch_size = 1024
 group_size = 8
 
+[orchestrator.client]
+timeout = 3600
+
 [orchestrator.train.sampling]
 temperature = 0.6
 max_completion_tokens = 8192

@@ -66,6 +66,11 @@ dump_trajectory = true   # persist full debate transcripts for inspection
 
 # name="auto" resolves Qwen3.5-35B-A3B -> Qwen35Renderer and auto-detects
 # enable_thinking (the single source of truth that also drives the pack's tag mechanics).
+
+
+[orchestrator.client]
+timeout = 3600
+
 [orchestrator.renderer]
 name = "auto"
 preserve_all_thinking = true   # Required for debate TITO bridge/full-render determinism.

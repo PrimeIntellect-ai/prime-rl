@@ -67,6 +67,9 @@ dump_trajectory = false
 dump_failed_train_rollouts = true
 dump_failed_train_trajectory = true
 
+[orchestrator.client]
+timeout = 3600
+
 [orchestrator.renderer]
 name = "auto"
 preserve_all_thinking = true

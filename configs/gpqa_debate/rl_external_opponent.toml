@@ -24,6 +24,9 @@ batch_size = 128
 group_size = 4
 oversampling_factor = 1.5
 
+[orchestrator.client]
+timeout = 3600
+
 [orchestrator.renderer]
 name = "auto"
 preserve_all_thinking = true

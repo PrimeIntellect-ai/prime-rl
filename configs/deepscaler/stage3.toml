@@ -20,6 +20,9 @@ resume_step = 1000
 batch_size = 1024
 group_size = 8
 
+[orchestrator.client]
+timeout = 5400
+
 [orchestrator.train.sampling]
 temperature = 0.6
 max_completion_tokens = 24576

@@ -45,6 +45,9 @@ batch_size = 512
 oversampling_factor = 2
 max_off_policy_steps = 8
 
+[orchestrator.client]
+timeout = 5400
+
 [orchestrator.train.sampling]
 max_completion_tokens = 32768
 
