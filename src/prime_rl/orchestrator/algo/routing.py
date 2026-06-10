@@ -1,8 +1,11 @@
-"""Wire-field stamping for per-token loss routing and advantage spreading.
+"""Wire-field stamping for per-token component weights and advantage spreading.
 
-The advantage strategy decides each sample's action loss type and optional
-per-token advantages; these helpers write them onto the ``TrainingSample``
-wire fields at group finalization.
+The training loss is a sum of three components — ``rl`` (importance-weighted
+PG + KL), ``ce`` (masked NLL), and ``ref_kl`` (reverse KL to a reference model
+as the PG signal) — each normalized by its own global token count in the
+trainer. The advantage strategy decides which component the action tokens feed
+and optional per-token advantages; these helpers write the per-token component
+weight streams onto the ``TrainingSample`` wire fields at group finalization.
 """
 
 from __future__ import annotations
@@ -11,43 +14,52 @@ from typing import TYPE_CHECKING
 
 from prime_rl.configs.algorithm import LossRoutingConfig
 from prime_rl.transport import TrainingSample
-from prime_rl.transport.types import LossType
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.types import TrainRollout
 
-ACTION_LOSS_TYPES = {"rl": LossType.RL, "ce": LossType.CE, "ref_kl": LossType.REF_KL}
 
+def stamp_loss_routing(sample: TrainingSample, action_loss_type: str, loss: LossRoutingConfig) -> None:
+    """Stamp the env's loss routing onto one sample's component weight streams.
 
-def stamp_loss_routing(sample: TrainingSample, action_loss_type: LossType, loss: LossRoutingConfig) -> None:
-    """Stamp the env's loss routing onto one sample's wire fields.
-
-    Action tokens (the trainable completion tokens) get the advantage
-    strategy's loss type. When the algorithm trains on observations,
+    Action tokens (the trainable completion tokens) feed the advantage
+    strategy's component: ``rl`` is the default (absent streams ship nothing),
+    while ``ce``/``ref_kl`` stamp that component's weights over the action
+    tokens and zero the rl stream. When the algorithm trains on observations,
     env-provided tokens (tagged by ``interleave_rollout`` in
-    ``completion_obs_mask``) flip from masked-out to trainable on the CE loss type
-    with ``observation_weight``. ``completion_obs_mask`` is
-    orchestrator-internal and cleared here so it never ships.
+    ``completion_obs_mask``) get a ce weight of ``observation_weight`` — they
+    stay out of ``completion_mask``, so the ce component is the only one that
+    trains them. ``completion_obs_mask`` is orchestrator-internal and cleared
+    here so it never ships.
     """
-    sample.loss_type = action_loss_type
     obs_mask = sample.completion_obs_mask
     sample.completion_obs_mask = None
-    if loss.observation == "none" or obs_mask is None or not any(obs_mask):
+    train_obs = loss.observation == "ce" and obs_mask is not None and any(obs_mask)
+    if action_loss_type == "rl" and not train_obs:
         return
 
     prompt_len = len(sample.prompt_ids)
     seq_len = prompt_len + len(sample.completion_ids)
-    type_ids = [action_loss_type] * seq_len
-    weights = [1.0] * seq_len
-    completion_mask = list(sample.completion_mask)
-    for i, is_obs in enumerate(obs_mask):
-        if is_obs:
-            type_ids[prompt_len + i] = LossType.CE
-            weights[prompt_len + i] = loss.observation_weight
-            completion_mask[i] = True
-    sample.completion_mask = completion_mask
-    sample.token_loss_types = type_ids
-    sample.token_loss_weights = weights
+
+    if action_loss_type != "rl":
+        sample.rl_weights = [0.0] * seq_len
+        action_weights = [0.0] * seq_len
+        for i, trains in enumerate(sample.completion_mask):
+            if trains:
+                action_weights[prompt_len + i] = 1.0
+        if action_loss_type == "ce":
+            sample.ce_weights = action_weights
+        else:
+            assert action_loss_type == "ref_kl"
+            sample.ref_kl_weights = action_weights
+
+    if train_obs:
+        assert obs_mask is not None
+        ce_weights = sample.ce_weights if sample.ce_weights is not None else [0.0] * seq_len
+        for i, is_obs in enumerate(obs_mask):
+            if is_obs:
+                ce_weights[prompt_len + i] = loss.observation_weight
+        sample.ce_weights = ce_weights
 
 
 def spread_token_advantages(rollout: TrainRollout) -> None:

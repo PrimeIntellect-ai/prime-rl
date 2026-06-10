@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from prime_rl.trainer.batch import prepare_batch, prepare_sample
-from prime_rl.transport.types import LossType, RoutedExperts, TrainingSample
+from prime_rl.transport.types import RoutedExperts, TrainingSample
 
 
 def _routed_experts(data, dtype=np.uint8):
@@ -18,7 +18,8 @@ def _routed_experts(data, dtype=np.uint8):
 def make_training_example():
     def _make_training_example(
         temperature: float = 1.0,
-        loss_type: int = LossType.RL,
+        ce_weights: list[float] | None = None,
+        rl_weights: list[float] | None = None,
         env_name: str = "test-env",
     ) -> TrainingSample:
         return TrainingSample(
@@ -31,7 +32,8 @@ def make_training_example():
             ref_logprobs=[0.0, 0.0, 0.0, 0.0],
             advantage=1.0,
             env_name=env_name,
-            loss_type=loss_type,
+            ce_weights=ce_weights,
+            rl_weights=rl_weights,
         )
 
     return _make_training_example
@@ -109,26 +111,29 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
     assert flat_batches[0].env_names == ["env-a"] * 4 + ["env-b"] * 4
 
 
-def test_prepare_sample_propagates_loss_type(make_training_example):
-    example = make_training_example(loss_type=LossType.CE)
+def test_prepare_sample_propagates_weight_streams(make_training_example):
+    example = make_training_example(ce_weights=[0.0, 0.0, 1.0, 1.0], rl_weights=[0.0, 0.0, 0.0, 0.0])
 
     micro_batch = prepare_sample(example, seq_len=16)
 
-    assert micro_batch.loss_type_ids == [LossType.CE] * 4
+    assert micro_batch.ce_weights == [0.0, 0.0, 1.0, 1.0]
+    assert micro_batch.rl_weights == [0.0, 0.0, 0.0, 0.0]
 
 
-def test_prepare_sample_uniform_rl_keeps_routing_arrays_none(make_training_example):
+def test_prepare_sample_uniform_rl_keeps_streams_none(make_training_example):
     micro_batch = prepare_sample(make_training_example(), seq_len=16)
 
-    assert micro_batch.loss_type_ids is None
-    assert micro_batch.loss_weights is None
+    assert micro_batch.rl_weights is None
+    assert micro_batch.ce_weights is None
+    assert micro_batch.ref_kl_weights is None
 
 
-def test_prepare_batch_packs_mixed_loss_types(make_training_example):
-    """Loss routing is per token, so samples of different loss types pack together;
-    the all-RL sample's positions materialize as RL loss type ids."""
-    rl_example = make_training_example(loss_type=LossType.RL)
-    ce_example = make_training_example(loss_type=LossType.CE)
+def test_prepare_batch_packs_mixed_components(make_training_example):
+    """Component membership is per token, so samples feeding different
+    components pack together; the plain-rl sample's positions backfill with
+    the stream defaults (rl 1.0, ce 0.0)."""
+    rl_example = make_training_example()
+    ce_example = make_training_example(ce_weights=[0.0, 0.0, 1.0, 1.0], rl_weights=[0.0, 0.0, 0.0, 0.0])
 
     batches_per_gpu = prepare_batch(
         rollouts=[rl_example, ce_example],
@@ -140,8 +145,11 @@ def test_prepare_batch_packs_mixed_loss_types(make_training_example):
 
     flat_batches = [batch for worker_batches in batches_per_gpu for batch in worker_batches]
     assert len(flat_batches) == 1
-    assert sorted(flat_batches[0].loss_type_ids) == sorted([LossType.RL] * 4 + [LossType.CE] * 4)
     assert len(flat_batches[0].input_ids) == 8
+    batch = flat_batches[0]
+    # One side is the rl sample (backfilled rl 1.0 / ce 0.0), the other the ce sample
+    assert sorted(batch.rl_weights) == sorted([1.0] * 4 + [0.0] * 4)
+    assert sorted(batch.ce_weights) == sorted([0.0] * 4 + [0.0, 0.0, 1.0, 1.0])
 
 
 @pytest.mark.parametrize("refs_on_longer", [True, False])

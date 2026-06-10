@@ -1,21 +1,4 @@
-from enum import IntEnum
-
 import msgspec
-
-
-class LossType(IntEnum):
-    """Per-token loss types. The orchestrator routes each token to a loss type
-    (the algorithm's loss routing); the trainer just executes them.
-
-    Members are plain ints on the wire. The per-token arrays
-    (``token_loss_types`` / ``loss_type_ids``) stay ``list[int]`` — the trainer
-    turns them into tensors immediately, so per-token enum wrapping on decode
-    would be pure overhead. Only scalars carry the enum.
-    """
-
-    RL = 0  # configured RL loss (importance-weighted PG + KL)
-    CE = 1  # masked NLL (SFT / observation prediction)
-    REF_KL = 2  # per-token reverse KL to a reference model as the PG signal (OPD / SDFT)
 
 
 # Encoded tensor: {dtype: "float32", shape: [...], data: <bytes>}.
@@ -46,7 +29,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     completion_logprobs: list[float]
     completion_temperatures: list[float]  # Per-token temperatures used during generation
     env_name: str
-    ref_logprobs: list[float] | None = None  # reference-model logprobs (ref_kl loss type)
+    ref_logprobs: list[float] | None = None  # reference-model logprobs (ref_kl component)
     advantage: float | None = None
     reward: float | None = None
 
@@ -65,13 +48,18 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: list[int] | None = None
 
-    # Loss routing, stamped by the orchestrator from the env's algorithm.
-    # ``loss_type`` applies to every trainable token; the per-token arrays
-    # (full prompt+completion length) override it where set. ``None`` arrays
-    # mean "uniform" so the plain GRPO wire stays as small as before.
-    loss_type: LossType = LossType.RL
-    token_loss_types: list[int] | None = None
-    token_loss_weights: list[float] | None = None
+    # Per-token component weight streams (full prompt+completion length),
+    # stamped by the orchestrator from the env's algorithm. The training loss
+    # is a sum of three components, each normalized by its own global token
+    # count: rl (importance-weighted PG + KL), ce (masked NLL), and ref_kl
+    # (reverse KL to a reference model as the PG signal). A weight scales that
+    # component's per-token loss; 0.0 leaves the token out of the component
+    # (mask and denominator). ``None`` means absent: no ce/ref_kl component,
+    # and an rl weight of 1.0 on every trainable token — so the plain GRPO
+    # wire stays as small as before.
+    rl_weights: list[float] | None = None
+    ce_weights: list[float] | None = None
+    ref_kl_weights: list[float] | None = None
 
     # Per-token advantages (full sequence length). ``None`` broadcasts the
     # rollout-level ``advantage`` scalar over the sequence.
@@ -112,9 +100,10 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: list[int] | None = None
 
-    # Per-token loss routing. ``None`` means uniform: every token uses
-    # ``LossType.RL`` with weight 1.0 — packed samples of different loss types
-    # materialize the arrays.
-    loss_type_ids: list[int] | None = None
-    loss_weights: list[float] | None = None
+    # Per-token component weight streams (see TrainingSample). ``None`` means
+    # absent: no ce/ref_kl component, rl weight 1.0 everywhere — packing
+    # materializes a stream as soon as one packed sample carries it.
+    rl_weights: list[float] | None = None
+    ce_weights: list[float] | None = None
+    ref_kl_weights: list[float] | None = None
     rewards: list[float] | None = None

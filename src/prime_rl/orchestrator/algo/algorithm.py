@@ -15,7 +15,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from prime_rl.configs.algorithm import AlgorithmConfig, FrozenModelConfig
-from prime_rl.orchestrator.algo.routing import ACTION_LOSS_TYPES, spread_token_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo.routing import spread_token_advantages, stamp_loss_routing
 from prime_rl.orchestrator.algo.strategies import setup_advantage_strategy
 from prime_rl.utils.logger import get_logger
 
@@ -54,7 +54,7 @@ class Algorithm:
         self.sampling_pool: InferencePool = policy_pool  # frozen sources swap this in setup()
         self.connected_pools: list[InferencePool] = []  # client pools connected in setup(); closed at shutdown
         self.loss = config.loss
-        self.action_loss_type = ACTION_LOSS_TYPES[config.advantage.action_loss_type]
+        self.action_loss_type = config.advantage.action_loss_type
         self.advantage = setup_advantage_strategy(config.advantage, tokenizer)
 
     async def setup(self) -> None:

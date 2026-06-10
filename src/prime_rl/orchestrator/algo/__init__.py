@@ -13,8 +13,8 @@ that declaration into runtime objects:
 - ``advantage`` — pure advantage math: the custom-function interface
   (:class:`AdvantageInputs` / :class:`AdvantageOutputs`) and the default
   group-norm computation.
-- ``routing`` — wire-field stamping: per-token loss routing and per-token
-  advantage spreading.
+- ``routing`` — wire-field stamping: per-token component weight streams
+  (rl / ce / ref_kl) and per-token advantage spreading.
 """
 
 from prime_rl.orchestrator.algo.advantage import (
@@ -25,7 +25,7 @@ from prime_rl.orchestrator.algo.advantage import (
     default_advantage_fn,
 )
 from prime_rl.orchestrator.algo.algorithm import Algorithm, connect_frozen_pool, score_train_batch
-from prime_rl.orchestrator.algo.routing import ACTION_LOSS_TYPES, spread_token_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo.routing import spread_token_advantages, stamp_loss_routing
 from prime_rl.orchestrator.algo.strategies import (
     AdvantageStrategy,
     CustomAdvantage,
@@ -38,7 +38,6 @@ from prime_rl.orchestrator.algo.strategies import (
 )
 
 __all__ = [
-    "ACTION_LOSS_TYPES",
     "AdvantageFn",
     "AdvantageInputs",
     "AdvantageOutputs",

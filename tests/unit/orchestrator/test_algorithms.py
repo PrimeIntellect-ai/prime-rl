@@ -8,7 +8,7 @@ from prime_rl.configs.algorithm import AlgorithmConfig, FrozenModelConfig, LossR
 from prime_rl.orchestrator.algo import spread_token_advantages, stamp_loss_routing
 from prime_rl.orchestrator.trajectories import interleave_rollout
 from prime_rl.orchestrator.types import TrainRollout
-from prime_rl.transport.types import LossType, TrainingSample
+from prime_rl.transport.types import TrainingSample
 
 FROZEN = {"name": "org/ref-model", "base_url": ["http://ref:8001/v1"]}
 
@@ -89,43 +89,50 @@ def _make_sample(obs_mask: list[bool] | None) -> TrainingSample:
 
 def test_stamp_loss_routing_uniform_rl():
     sample = _make_sample(obs_mask=None)
-    stamp_loss_routing(sample, LossType.RL, LossRoutingConfig())
-    assert sample.loss_type == LossType.RL
-    assert sample.token_loss_types is None
-    assert sample.token_loss_weights is None
+    stamp_loss_routing(sample, "rl", LossRoutingConfig())
+    # Hot path: absent streams mean rl weight 1.0 on the loss mask
+    assert sample.rl_weights is None
+    assert sample.ce_weights is None
+    assert sample.ref_kl_weights is None
 
 
-def test_stamp_loss_routing_primary_loss_type():
+def test_stamp_loss_routing_ref_kl_action():
     sample = _make_sample(obs_mask=None)
-    stamp_loss_routing(sample, LossType.REF_KL, LossRoutingConfig())
-    assert sample.loss_type == LossType.REF_KL
-    assert sample.token_loss_types is None
+    stamp_loss_routing(sample, "ref_kl", LossRoutingConfig())
+    # Action tokens (completion_mask True) feed the ref_kl component; rl is off
+    assert sample.rl_weights == [0.0] * 6
+    assert sample.ref_kl_weights == [0.0, 0.0] + [1.0, 1.0, 0.0, 1.0]
+    assert sample.ce_weights is None
+
+
+def test_stamp_loss_routing_ce_action():
+    sample = _make_sample(obs_mask=None)
+    stamp_loss_routing(sample, "ce", LossRoutingConfig())
+    assert sample.rl_weights == [0.0] * 6
+    assert sample.ce_weights == [0.0, 0.0] + [1.0, 1.0, 0.0, 1.0]
+    assert sample.ref_kl_weights is None
 
 
 def test_stamp_loss_routing_echo_observations():
     # Token at completion index 2 is an env observation (masked out today)
     sample = _make_sample(obs_mask=[False, False, True, False])
-    stamp_loss_routing(sample, LossType.RL, LossRoutingConfig(observation="ce", observation_weight=0.1))
+    stamp_loss_routing(sample, "rl", LossRoutingConfig(observation="ce", observation_weight=0.1))
 
     assert sample.completion_obs_mask is None  # cleared, never ships
-    assert sample.loss_type == LossType.RL
-    # Observation token flips trainable on the CE loss type with weight lambda
-    assert sample.completion_mask == [True, True, True, True]
-    # Full-sequence arrays: 2 prompt tokens + 4 completion tokens
-    assert sample.token_loss_types == [LossType.RL, LossType.RL] + [
-        LossType.RL,
-        LossType.RL,
-        LossType.CE,
-        LossType.RL,
-    ]
-    assert sample.token_loss_weights == [1.0, 1.0] + [1.0, 1.0, 0.1, 1.0]
+    # The observation token trains on the ce component with the configured
+    # weight; it stays out of completion_mask (the rl mask), so the rl
+    # component and its denominator never see it.
+    assert sample.completion_mask == [True, True, False, True]
+    assert sample.rl_weights is None
+    assert sample.ce_weights == [0.0, 0.0] + [0.0, 0.0, 0.1, 0.0]
+    assert sample.ref_kl_weights is None
 
 
 def test_stamp_loss_routing_clears_obs_mask_when_unused():
     sample = _make_sample(obs_mask=[False, False, True, False])
-    stamp_loss_routing(sample, LossType.RL, LossRoutingConfig(observation="none"))
+    stamp_loss_routing(sample, "rl", LossRoutingConfig(observation="none"))
     assert sample.completion_obs_mask is None
-    assert sample.token_loss_types is None
+    assert sample.ce_weights is None
     assert sample.completion_mask == [True, True, False, True]
 
 

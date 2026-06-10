@@ -8,8 +8,8 @@ An algorithm is a preset of three pieces:
    granularities and evaluation sites: group-relative strategies compute
    scalars on the orchestrator and ship numbers; reference-KL strategies ship
    reference prefill logprobs and the trainer evaluates the per-token signal
-   against the live policy. The strategy determines which loss type consumes
-   the action tokens (``rl`` / ``ce`` / ``ref_kl``).
+   against the live policy. The strategy determines which loss component
+   consumes the action tokens (``rl`` / ``ce`` / ``ref_kl``).
 3. **Loss routing** — what happens to env-provided observation tokens in
    multi-turn rollouts (``none`` drops them from the loss — the default;
    ``ce`` trains on them with a per-token weight, ECHO).
@@ -19,8 +19,10 @@ uses is an external OpenAI-compatible endpoint, declared inline on the
 component that uses it (a :class:`FrozenModelConfig`). Model roles like
 "teacher" are algorithm-local vocabulary over these references; the pipeline
 branches on liveness alone. Presets are vetted bundles; every piece can be
-overridden individually for research. The trainer is algorithm-blind: routing
-ships per token on the wire and the trainer just executes loss types.
+overridden individually for research. The trainer is algorithm-blind: the loss
+is a sum of three components (rl, ce, ref_kl), each normalized by its own
+global token count; per-token component weights ship on the wire and the
+trainer just executes them.
 """
 
 import warnings
@@ -109,7 +111,7 @@ LengthPenaltyConfig: TypeAlias = Annotated[
 class GroupNormAdvantageConfig(BaseConfig):
     type: Literal["group_norm"] = "group_norm"
     """GRPO: scalar advantage = reward minus the per-group mean baseline,
-    consumed by the ``rl`` loss type on the rollout's action tokens."""
+    consumed by the ``rl`` loss component on the rollout's action tokens."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
     group_relative: ClassVar[bool] = True
@@ -121,7 +123,7 @@ class GroupNormAdvantageConfig(BaseConfig):
 class RewardAdvantageConfig(BaseConfig):
     type: Literal["reward"] = "reward"
     """Scalar advantage = raw reward, no group baseline. Consumed by the
-    ``rl`` loss type."""
+    ``rl`` loss component."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
     group_relative: ClassVar[bool] = False
@@ -132,7 +134,7 @@ class RefKLAdvantageConfig(BaseConfig):
     """On-policy distillation (OPD): the per-token signal is the reverse KL to
     a reference model, evaluated in the trainer from reference prefill
     logprobs scored over each sample's own context (``ref_logprobs`` on the
-    wire, ``ref_kl`` loss type). Group-relative scalars are still assigned:
+    wire, ``ref_kl`` loss component). Group-relative scalars are still assigned:
     their sign steers the DPPO masking direction in the loss, and the
     zero-advantage filter reads them."""
 
@@ -193,7 +195,7 @@ class DemoRefKLAdvantageConfig(BaseConfig):
 class SupervisedAdvantageConfig(BaseConfig):
     type: Literal["supervised"] = "supervised"
     """Cross-entropy on the sampled tokens (SFT distillation). The ``ce``
-    loss type ignores scalar advantages, but group-relative scalars are still
+    loss component ignores scalar advantages, but group-relative scalars are still
     assigned so reward-based filtering keeps working (the zero-advantage
     filter drops uniform-reward groups)."""
 
@@ -203,7 +205,7 @@ class SupervisedAdvantageConfig(BaseConfig):
 
 class CustomAdvantageConfig(BaseConfig):
     type: Literal["custom"] = "custom"
-    """Custom advantage function, consumed by the ``rl`` loss type. Returns
+    """Custom advantage function, consumed by the ``rl`` loss component. Returns
     one scalar per rollout, optionally with per-token advantages aligned to
     each rollout's completion tokens."""
 
@@ -235,17 +237,20 @@ AdvantageConfig: TypeAlias = Annotated[
 
 class LossRoutingConfig(BaseConfig):
     """Routing for tokens the advantage strategy doesn't already determine.
-    The action-token loss type is derived from the advantage strategy
-    (``advantage.action_loss_type``); this config only routes env-provided
-    observation tokens."""
+
+    The training loss is a sum of three components (rl, ce, ref_kl), each
+    normalized by its own global token count so the components don't dilute
+    each other. Which component the action tokens feed is derived from the
+    advantage strategy (``advantage.action_loss_type``); this config only
+    routes env-provided observation tokens."""
 
     observation: ObservationLossType = "none"
-    """Loss type for env-provided tokens of later turns (tool output, terminal
-    responses). ``none`` masks them out (standard RL); ``ce`` trains on them with
-    weight ``observation_weight`` (ECHO)."""
+    """Loss component for env-provided tokens of later turns (tool output,
+    terminal responses). ``none`` masks them out (standard RL); ``ce`` trains
+    on them with weight ``observation_weight`` (ECHO)."""
 
     observation_weight: float = Field(0.1, gt=0)
-    """Per-token loss weight for observation tokens (ECHO's lambda). Only used
+    """Per-token ce weight for observation tokens (ECHO's lambda). Only used
     when ``observation != 'none'``."""
 
 

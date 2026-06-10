@@ -1,6 +1,6 @@
 import copy
 
-from prime_rl.transport.types import LossType, MicroBatch, RoutedExperts, TrainingSample
+from prime_rl.transport.types import MicroBatch, RoutedExperts, TrainingSample
 
 ROUTED_EXPERTS_DTYPE_ITEMSIZE = {
     "uint8": 1,
@@ -62,16 +62,11 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     else:
         advantage = training_example.advantage if training_example.advantage is not None else 0.0
         advantages = [advantage] * len(input_ids)
-    # Loss routing: keep the arrays None for the uniform default (every token
-    # on the RL loss type, weight 1.0) so the packed batch stays as small as before.
-    loss_type_ids: list[int] | None = None
-    if training_example.token_loss_types is not None:
-        loss_type_ids = list(training_example.token_loss_types)
-    elif training_example.loss_type != LossType.RL:
-        loss_type_ids = [training_example.loss_type] * len(input_ids)
-    loss_weights = (
-        list(training_example.token_loss_weights) if training_example.token_loss_weights is not None else None
-    )
+    # Component weight streams: keep absent streams None (rl weight 1.0 on the
+    # loss mask, no ce/ref_kl component) so the packed batch stays as small as before.
+    rl_weights = list(training_example.rl_weights) if training_example.rl_weights is not None else None
+    ce_weights = list(training_example.ce_weights) if training_example.ce_weights is not None else None
+    ref_kl_weights = list(training_example.ref_kl_weights) if training_example.ref_kl_weights is not None else None
     reward = training_example.reward if training_example.reward is not None else float("nan")
     rewards = [reward] * len(input_ids)
     position_ids = list(range(len(input_ids)))
@@ -101,10 +96,12 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         temperatures = temperatures[:seq_len]
         if ref_logprobs is not None:
             ref_logprobs = ref_logprobs[:seq_len]
-        if loss_type_ids is not None:
-            loss_type_ids = loss_type_ids[:seq_len]
-        if loss_weights is not None:
-            loss_weights = loss_weights[:seq_len]
+        if rl_weights is not None:
+            rl_weights = rl_weights[:seq_len]
+        if ce_weights is not None:
+            ce_weights = ce_weights[:seq_len]
+        if ref_kl_weights is not None:
+            ref_kl_weights = ref_kl_weights[:seq_len]
         if routed_experts is not None:
             routed_experts = _slice_routed_experts(routed_experts, seq_len)
         if mm_token_type_ids is not None:
@@ -124,10 +121,13 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     )
     if ref_logprobs is not None:
         assert len(ref_logprobs) == len(input_ids), f"ref_logprobs: {len(ref_logprobs)}"
-    if loss_type_ids is not None:
-        assert len(loss_type_ids) == len(input_ids), f"loss_type_ids: {len(loss_type_ids)}"
-    if loss_weights is not None:
-        assert len(loss_weights) == len(input_ids), f"loss_weights: {len(loss_weights)}"
+    for stream_name, stream in (
+        ("rl_weights", rl_weights),
+        ("ce_weights", ce_weights),
+        ("ref_kl_weights", ref_kl_weights),
+    ):
+        if stream is not None:
+            assert len(stream) == len(input_ids), f"{stream_name}: {len(stream)}"
 
     if routed_experts is not None:
         assert routed_experts.shape[0] == len(input_ids), (
@@ -154,14 +154,35 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_kwargs=training_example.mm_kwargs,
-        loss_type_ids=loss_type_ids,
-        loss_weights=loss_weights,
+        rl_weights=rl_weights,
+        ce_weights=ce_weights,
+        ref_kl_weights=ref_kl_weights,
     )
 
 
 def _is_multimodal_sample(sample: MicroBatch) -> bool:
     """Check if a sample contains multimodal data (images)."""
     return sample.mm_kwargs is not None
+
+
+# Backfill value per component weight stream when a packed sample doesn't
+# carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
+# means no component (weight 0.0).
+STREAM_FILL = {"rl_weights": 1.0, "ce_weights": 0.0, "ref_kl_weights": 0.0}
+
+
+def _extend_stream(
+    current: list[float] | None, values: list[float] | None, existing_len: int, new_len: int, fill: float
+) -> list[float] | None:
+    """Extend a per-token weight stream across a packing boundary, backfilling
+    whichever side doesn't carry it with the stream's default."""
+    if values is not None:
+        if current is None:
+            current = [fill] * existing_len
+        current.extend(values)
+    elif current is not None:
+        current.extend([fill] * new_len)
+    return current
 
 
 def packed_samples_into_micro_bs(
@@ -201,18 +222,12 @@ def packed_samples_into_micro_bs(
                 bin_content.input_ids.extend(sample.input_ids)
                 bin_content.loss_mask.extend(sample.loss_mask)
                 bin_content.advantages.extend(sample.advantages)
-                if sample.loss_type_ids is not None:
-                    if bin_content.loss_type_ids is None:
-                        bin_content.loss_type_ids = [LossType.RL] * existing_len
-                    bin_content.loss_type_ids.extend(sample.loss_type_ids)
-                elif bin_content.loss_type_ids is not None:
-                    bin_content.loss_type_ids.extend([LossType.RL] * len(sample.input_ids))
-                if sample.loss_weights is not None:
-                    if bin_content.loss_weights is None:
-                        bin_content.loss_weights = [1.0] * existing_len
-                    bin_content.loss_weights.extend(sample.loss_weights)
-                elif bin_content.loss_weights is not None:
-                    bin_content.loss_weights.extend([1.0] * len(sample.input_ids))
+                sample_len = len(sample.input_ids)
+                for stream_name, fill in STREAM_FILL.items():
+                    extended = _extend_stream(
+                        getattr(bin_content, stream_name), getattr(sample, stream_name), existing_len, sample_len, fill
+                    )
+                    setattr(bin_content, stream_name, extended)
                 if sample.rewards is not None:
                     if bin_content.rewards is None:
                         bin_content.rewards = [float("nan")] * existing_len
@@ -282,10 +297,12 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.temperatures.extend([1.0] * padding_size)
     if micro_batch.ref_logprobs is not None:
         micro_batch.ref_logprobs.extend([0.0] * padding_size)
-    if micro_batch.loss_type_ids is not None:
-        micro_batch.loss_type_ids.extend([LossType.RL] * padding_size)
-    if micro_batch.loss_weights is not None:
-        micro_batch.loss_weights.extend([1.0] * padding_size)
+    # Padding tokens are loss-masked, so the rl fill value is irrelevant;
+    # ce/ref_kl membership is weight != 0, so their fill must be 0.0.
+    for stream_name, fill in STREAM_FILL.items():
+        stream = getattr(micro_batch, stream_name)
+        if stream is not None:
+            stream.extend([fill] * padding_size)
     micro_batch.lora_num_tokens[-1] += (
         padding_size  # We send padding to the last lora so that tokens have ascending lora idx
     )
@@ -311,8 +328,9 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
         "temperatures",
         "env_names",
         "ref_logprobs",
-        "loss_type_ids",
-        "loss_weights",
+        "rl_weights",
+        "ce_weights",
+        "ref_kl_weights",
         "rewards",
         "mm_token_type_ids",
     )
@@ -332,6 +350,11 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy = copy.deepcopy(source)
     dummy.advantages = [0.0] * len(dummy.input_ids)
     dummy.loss_mask = [False] * len(dummy.input_ids)
+    # ce/ref_kl membership is weight != 0 (independent of loss_mask), so the
+    # streams must go too or the dummy would still train those tokens.
+    dummy.rl_weights = None
+    dummy.ce_weights = None
+    dummy.ref_kl_weights = None
     return dummy
 
 

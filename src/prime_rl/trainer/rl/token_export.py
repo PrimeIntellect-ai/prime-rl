@@ -10,7 +10,6 @@ from torch import Tensor
 
 from prime_rl.configs.trainer import DefaultLossConfig, TrainerConfig
 from prime_rl.trainer.rl.loss import compute_importance_ratio_and_mismatch_kl
-from prime_rl.transport.types import LossType
 
 SCHEMA_VERSION = 1
 
@@ -141,9 +140,11 @@ def _export_columns(
         "is_masked": _optional_tensor_to_bools(export_tensors["is_masked"], seq_len),
         "is_masked_high": _optional_tensor_to_bools(export_tensors["is_masked_high"], seq_len),
         "is_masked_low": _optional_tensor_to_bools(export_tensors["is_masked_low"], seq_len),
-        "loss_type_ids": _tensor_to_ints(micro_batch["loss_type_ids"])
-        if micro_batch.get("loss_type_ids") is not None
-        else [LossType.RL] * seq_len,
+        # Component weight streams; ``None`` columns mean the defaults (rl 1.0
+        # on the loss mask, no ce/ref_kl component).
+        "rl_weights": _optional_tensor_to_floats(micro_batch.get("rl_weights"), seq_len),
+        "ce_weights": _optional_tensor_to_floats(micro_batch.get("ce_weights"), seq_len),
+        "ref_kl_weights": _optional_tensor_to_floats(micro_batch.get("ref_kl_weights"), seq_len),
         "env_names": list(micro_batch["env_names"]),
     }
 
@@ -161,9 +162,13 @@ def _compute_export_tensors(
         "is_masked_low": None,
     }
     # Ratio-based fields are meaningless when no token has sampling logprobs
-    # (e.g. pure CE batches distilling frozen-model tokens).
-    loss_type_ids = micro_batch.get("loss_type_ids")
-    if loss_type_ids is not None and bool((loss_type_ids == LossType.CE).all()):
+    # (e.g. pure CE batches distilling frozen-model tokens): no rl member
+    # (stream present but all-zero) and no ref_kl member.
+    rl_weights = micro_batch.get("rl_weights")
+    ref_kl_weights = micro_batch.get("ref_kl_weights")
+    no_rl = rl_weights is not None and not bool((rl_weights != 0).any())
+    no_ref_kl = ref_kl_weights is None or not bool((ref_kl_weights != 0).any())
+    if no_rl and no_ref_kl:
         return fields
 
     inference_logprobs = micro_batch["inference_logprobs"].to(trainer_logprobs.device)

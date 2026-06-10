@@ -7,7 +7,6 @@ from jaxtyping import Bool, Float, Int, jaxtyped
 from torch import Tensor
 
 from prime_rl.configs.trainer import CustomLossConfig, DefaultLossConfig, LossConfig
-from prime_rl.transport.types import LossType
 from prime_rl.utils.utils import import_object
 
 
@@ -15,9 +14,10 @@ from prime_rl.utils.utils import import_object
 class LossInputs:
     """Inputs for computing loss on a single sample.
 
-    ``loss_mask`` already selects the tokens routed to the receiving loss type
-    — the per-type loss functions never re-derive eligibility. ``loss_weights``
-    is an optional per-token scale (None means 1.0 everywhere).
+    ``loss_mask`` already selects the tokens that belong to the receiving
+    component — the component loss functions never re-derive eligibility.
+    ``loss_weights`` is the component's per-token weight stream (None means
+    1.0 everywhere).
     """
 
     trainer_logprobs: Float[Tensor, " seq"]
@@ -271,46 +271,59 @@ def compute_loss(
     ref_logprobs: list[Float[Tensor, " seq_i"]] | None,
     advantages: list[Float[Tensor, " seq_i"]],
     loss_mask: list[Bool[Tensor, " seq_i"]],
-    loss_type_ids: list[Int[Tensor, " seq_i"]] | None,
-    loss_weights: list[Float[Tensor, " seq_i"]] | None,
+    rl_weights: list[Float[Tensor, " seq_i"]] | None,
+    ce_weights: list[Float[Tensor, " seq_i"]] | None,
+    ref_kl_weights: list[Float[Tensor, " seq_i"]] | None,
     rl_loss_fn: LossFn,
-    loss_scale: int,
+    rl_scale: int,
+    ce_scale: int,
+    ref_kl_scale: int,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
 
-    Loss routing is per token: ``loss_type_ids`` selects the loss type for
-    every token (``None`` means all-RL — the hot path, no extra device syncs),
-    and each present loss type runs over its slice of the loss mask:
+    The loss is a sum of three components, each running over its own per-token
+    weight stream and normalized by its own global token count:
 
-    - ``LossType.RL`` → ``rl_loss_fn`` (built by ``setup_rl_loss_fn``)
-    - ``LossType.CE`` → ``ce_loss_fn`` (masked NLL)
-    - ``LossType.REF_KL`` → ``ref_kl_loss_fn``
+    - rl → ``rl_loss_fn`` (built by ``setup_rl_loss_fn``) on
+      ``loss_mask & (rl_weights != 0)``; an absent stream means weight 1.0 on
+      the full loss mask (the hot path — no extra device syncs).
+    - ce → ``ce_loss_fn`` (masked NLL) on ``ce_weights != 0``.
+    - ref_kl → ``ref_kl_loss_fn`` on ``ref_kl_weights != 0``.
+
+    A weight scales its component's per-token loss; 0.0 removes the token from
+    the component's mask and denominator. Per-component normalization keeps the
+    components from diluting each other: a token only enters the denominator of
+    the components it belongs to.
 
     Args:
         trainer_logprobs: Log probabilities for each sequence
-        inference_logprobs: Reference log probabilities for each sequence
+        inference_logprobs: Sampling-policy log probabilities for each sequence
         ref_logprobs: Reference-model log probabilities for each sequence, or None
         advantages: Advantages for each sequence
         loss_mask: Loss mask for each sequence
-        loss_type_ids: Per-token loss type ids for each sequence, or None (all RL)
-        loss_weights: Per-token loss weights for each sequence, or None (all 1.0)
-        rl_loss_fn: Loss fn for the RL loss type from setup_rl_loss_fn()
-        loss_scale: Scale factor to normalize the loss
+        rl_weights: Per-token rl weights for each sequence, or None (1.0 on the loss mask)
+        ce_weights: Per-token ce weights for each sequence, or None (no ce component)
+        ref_kl_weights: Per-token ref_kl weights for each sequence, or None (no ref_kl component)
+        rl_loss_fn: Loss fn for the rl component from setup_rl_loss_fn()
+        rl_scale: Global rl-token count normalizing the rl component
+        ce_scale: Global ce-token count normalizing the ce component
+        ref_kl_scale: Global ref_kl-token count normalizing the ref_kl component
 
     Returns:
         Tuple of (scaled_loss, aggregated_metrics)
     """
-    total_loss = 0.0
     all_metrics: dict[str, list[Tensor]] = {}
 
     n = len(trainer_logprobs)
     if ref_logprobs is None:
         ref_logprobs = [None] * n
-    if loss_type_ids is None:
-        loss_type_ids = [None] * n
-    if loss_weights is None:
-        loss_weights = [None] * n
+    if rl_weights is None:
+        rl_weights = [None] * n
+    if ce_weights is None:
+        ce_weights = [None] * n
+    if ref_kl_weights is None:
+        ref_kl_weights = [None] * n
 
     def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
         result = loss_fn(inputs)
@@ -318,40 +331,46 @@ def compute_loss(
             all_metrics.setdefault(k, []).append(v)
         return result.loss
 
-    for t_logp, i_logp, ref_logp, adv, mask, type_ids, weights in zip(
+    rl_loss = 0.0
+    ce_loss = 0.0
+    ref_kl_loss = 0.0
+    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w in zip(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
         advantages,
         loss_mask,
-        loss_type_ids,
-        loss_weights,
+        rl_weights,
+        ce_weights,
+        ref_kl_weights,
     ):
 
-        def make_inputs(type_mask: Bool[Tensor, " seq"]) -> LossInputs:
+        def make_inputs(component_mask: Bool[Tensor, " seq"], weights: Float[Tensor, " seq"] | None) -> LossInputs:
             return LossInputs(
                 trainer_logprobs=t_logp,
                 inference_logprobs=i_logp,
                 ref_logprobs=ref_logp,
                 advantages=adv,
-                loss_mask=type_mask,
+                loss_mask=component_mask,
                 loss_weights=weights,
             )
 
-        if type_ids is None:
-            total_loss = total_loss + run_loss_fn(rl_loss_fn, make_inputs(mask))
-            continue
+        if rl_w is None:
+            rl_loss = rl_loss + run_loss_fn(rl_loss_fn, make_inputs(mask, None))
+        else:
+            rl_mask = mask & (rl_w != 0)
+            if bool(rl_mask.any()):
+                rl_loss = rl_loss + run_loss_fn(rl_loss_fn, make_inputs(rl_mask, rl_w))
+        if ce_w is not None:
+            ce_mask = ce_w != 0
+            if bool(ce_mask.any()):
+                ce_loss = ce_loss + run_loss_fn(ce_loss_fn, make_inputs(ce_mask, ce_w))
+        if ref_kl_w is not None:
+            ref_kl_mask = ref_kl_w != 0
+            if bool(ref_kl_mask.any()):
+                ref_kl_loss = ref_kl_loss + run_loss_fn(ref_kl_loss_fn, make_inputs(ref_kl_mask, ref_kl_w))
 
-        for type_id, loss_fn in (
-            (LossType.RL, rl_loss_fn),
-            (LossType.REF_KL, ref_kl_loss_fn),
-            (LossType.CE, ce_loss_fn),
-        ):
-            type_mask = mask & (type_ids == type_id)
-            if bool(type_mask.any()):
-                total_loss = total_loss + run_loss_fn(loss_fn, make_inputs(type_mask))
-
-    scaled_loss = total_loss / loss_scale
+    scaled_loss = rl_loss / rl_scale + ce_loss / ce_scale + ref_kl_loss / ref_kl_scale
 
     aggregated: dict[str, Any] = {}
     for k, v in all_metrics.items():
