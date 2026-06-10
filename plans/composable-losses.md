@@ -359,8 +359,10 @@ after the forward.
 | `type`            | meaning |
 |-------------------|---------|
 | `min_prob_filter` | zero the per-token loss where the current-policy logprob `< min_logprob` (a trainer-side filter) |
-| `surprisal_gate`  | weight the per-token loss by `σ(kappa·(trainer_logprob − gamma))` — the pedagogical student-assimilation gate over the trained policy's logprob (§9) |
 | `custom`          | dotted `import_path` + `kwargs` |
+
+(A `surprisal_gate` built-in — the pedagogical Phase-2 gate `σ(kappa·(trainer_logprob − gamma))` — is
+designed for the pedagogical follow-up, §9, not shipped here.)
 
 Principle: intrinsic objective math (DPPO clip + KL) stays inside the core; hooks are cross-cutting
 transforms layered on top.
@@ -457,14 +459,14 @@ external entry at its only use-site). "External-only / never host" is a **policy
 scorer resolves to an external `base_url`, a managed pool, or — later — a policy snapshot), not a
 property of the architecture. One prefill, N consumers.
 
-### Done ✅
+### In this PR ✅
 
-The rename; the flat `reference_logprobs` feed → `LossInputs` → the OPD core (the reference-consuming
-*core* seam works for `top_k = 1`, the sampled-token estimate). The `surprisal_gate` hook (§4.4) lands
-the pedagogical Phase-2 gate (it reads the live trained policy, `trainer_logprobs`, so needs no
-reference feed).
+Only the **rename** (`teacher_logprobs → reference_logprobs`): the OPD core consumes the flat reference
+feed via `LossInputs` exactly as before — just under the accurate name. Everything below (the lazy
+handle, advantage-side pulls, `ref_kl`, the OPD prefill unification) was prototyped then **reverted to a
+separate follow-up PR** (§11); the design is recorded here for that PR.
 
-### The reorder — a lazy reference handle (decided)
+### The reorder — a lazy reference handle (designed; follow-up PR)
 
 To let orchestrator-side advantage logic *use* the reference, it must be available **before** GRPO
 centering — the "reorder." We do it **paper-faithfully** (`center(R · G_spike)`: the reference feeds the
@@ -622,9 +624,16 @@ are all expressible as terms here and can ship as presets later (⚪ backlog).
 
 ---
 
-## 11. Status — done / TODO
+## 11. Status — what's in this PR, and what's a follow-up
 
-### ✅ Built (each chunk CI-green; GRPO bit-identical where noted)
+**Scope of this PR:** the composable-loss framework (terms · axes · λ/reduce · hooks · the echo recipe ·
+emergent dismissal) **plus the `teacher_logprobs → reference_logprobs` rename**. The reference *reorder*
+(lazy `ReferenceHandle`, `ref_kl`, OPD prefill unification) and pedagogical RL (`surprisal_gate`,
+`G_spike`) were prototyped on this branch then **reverted to keep this PR reviewable** — they ship as
+**separate follow-up PRs**, built and runtime-tested against a real consumer. Their designs are recorded
+below (§6, §9) for those PRs.
+
+### ✅ Built (in this PR; each chunk CI-green, GRPO bit-identical where noted)
 
 - Composable per-term `losses` (core + advantage_fn); per-env `enabled_losses` + `loss_overrides`.
 - The advantage axis (`grpo` / `echo` / `sft` / `custom`); one parameterizable pg core under
@@ -632,28 +641,28 @@ are all expressible as terms here and can ship as presets later (⚪ backlog).
 - Per-term **λ** (`lambda_weight`) + pluggable **reduce** (`mean` / `custom`).
 - **Emergent zero-advantage dismissal** (`0` = mask; no-gradient samples dropped).
 - **Reference scorer split** in config: `orchestrator.teacher` (SFT generator) vs
-  `orchestrator.reference` (scorer) + a `logprobs.top_k` field (`top_k>1` not yet consumed — §6).
+  `orchestrator.reference` (scorer) + a `logprobs.top_k` field (not yet consumed — §6).
 - **Reference feed rename** `teacher_logprobs → reference_logprobs` end-to-end; the OPD core consumes
-  the flat (`top_k = 1`) reference feed via `LossInputs`.
-- **Hooks** end-to-end (seam → `LossTerm.hooks` config → built-ins `min_prob_filter` + `surprisal_gate`).
+  the flat reference feed via `LossInputs` (behavior unchanged — just the accurate name).
+- **Hooks** end-to-end (seam → `LossTerm.hooks` config → first built-in `min_prob_filter`).
 - **Compound recipes + `echo`** (`rl ⊕ ce-on-roles`; knob routing; λ owns magnitude — `alpha` dropped;
   provenance-aware duplicate errors).
 
-### 🟡 TODO (rough order)
+### 🟡 Follow-up PRs (designed here, out of scope for this PR)
 
-1. **The reorder — lazy reference handle + OPD unification** (§6, *designed/decided*) — build the
-   `ReferenceHandle` (memoized, cache-on-sample); route OPD's prefill through it (byte-identical, no more
-   bespoke finalize path); let orchestrator-side advantage strategies / advantage_fns pull it
-   (pre-/post-centering by who pulls); add the pedagogical Phase-1 `G_spike` advantage strategy. **← next.**
-2. **Top-k distillation core** (§6) — `reference_topk_*` on the wire + a core that gathers the trainer's
+1. **Reference reorder — lazy handle + OPD unification + `ref_kl`** (§6) — the `ReferenceHandle`
+   (memoized, cache-on-sample), orchestrator-side reference pulls (`await hints.reference_logprobs()`),
+   OPD's prefill folded onto the shared cache (byte-identical), and the `ref_kl` Layer-2 advantage. Its
+   own PR — the async orchestrator path needs runtime testing.
+2. **Pedagogical RL** (§9) — the Phase-1 `G_spike` advantage *strategy* (needs the reorder + a Layer-1
+   reference pull) and the Phase-2 `surprisal_gate` hook; the teacher↔student curriculum is backlog.
+3. **Top-k distillation core** (§6) — `reference_topk_*` on the wire + a core that gathers the trainer's
    logprobs at the reference's top-k ids (coupled — ship together). `top_k = 1` already works.
-3. **Filter niceties** (§3.8) — an orchestrator-side sampling-prob filter (the live-prob one is done via
-   `min_prob_filter`); wants the filter/advantage-composition surface, so it couples with #5.
-4. **Pedagogical RL** (§9) — `surprisal_gate` is built (Phase-2 live gate); `G_spike` lands with #1;
-   remaining is the curriculum (backlog).
+4. **Filter niceties** (§3.8) — an orchestrator-side sampling-prob filter; wants the filter/advantage-
+   composition surface, so it couples with #5.
 5. **Surface polish** toward the full pointer / cascading-preset model **and the scorer-registry config
-   surface** (§6) — proposed here, **deferred in code until the team aligns** (typed configs + the
-   `custom` escape hatch are ~equivalent today; global-vs-registry-vs-inline is the open call).
+   surface** (§6) — deferred until the team aligns (typed configs + the `custom` escape hatch are
+   ~equivalent today; global-vs-registry-vs-inline is the open call).
 
 ### ⚪ Backlog (not now)
 
@@ -667,12 +676,12 @@ are all expressible as terms here and can ship as presets later (⚪ backlog).
 
 - **Scorer config surface (§6).** Global field (today) vs the named-scorer **registry** (proposed
   end-game) vs pure inline-on-component. The lazy `ReferenceHandle` *mechanism* is decided and
-  generalizes (each scorer is its own handle); only the *config surface* is open. Lean: build on the
-  handle now, keep the flat `reference_logprobs` wire + the global `orchestrator.reference` config until
-  a second scorer actually lands, and settle the surface then.
-- **Pedagogical Phase-2 gate (§9):** the live-hook path is built (`surprisal_gate`); the per-iteration
-  snapshot path (→ custom advantage + custom reduce) stays an alternative. Open: which to use in
-  practice, and whether the exact `1/Σ wₜ` normalization warrants a built-in custom reduce.
+  generalizes (each scorer is its own handle); only the *config surface* is open. Lean: in the reference
+  follow-up, build on the handle and keep the flat `reference_logprobs` wire + the global
+  `orchestrator.reference` config until a second scorer actually lands, then settle the surface.
+- **Pedagogical Phase-2 gate (§9):** the live-hook path (`surprisal_gate`) and the per-iteration
+  snapshot path (→ custom advantage + custom reduce) are both designed (pedagogical follow-up). Open:
+  which to use in practice, and whether the exact `1/Σ wₜ` normalization warrants a built-in reduce.
 - **Pointer-surface refactor now, or propose-and-keep typed configs?** Lean: propose here, don't
   refactor pre-discussion (it's the exact thing to align on).
 - **Preset namespacing** if component / full / recipe names ever collide beyond what config position
