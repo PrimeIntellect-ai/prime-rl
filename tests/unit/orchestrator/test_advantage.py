@@ -1,3 +1,4 @@
+import asyncio
 import math
 import uuid
 
@@ -19,6 +20,7 @@ from prime_rl.orchestrator.advantage import (
     default_advantage_fn,
     echo_advantage,
     grpo_advantage,
+    ref_kl_advantage,
     resolve_advantage_fn,
     setup_advantage_fn,
     sft_advantage,
@@ -422,3 +424,23 @@ def test_echo_advantage_by_advantage_scales_by_rollout_advantage():
     group = [_hints(["system"], [False], advantage=0.5)]
     # advantage * tau = 0.5 * 2.0 = 1.0 (the selection mask scaled by the rollout advantage)
     assert echo_advantage(group, roles=["system"], by_advantage=True, tau=2.0) == [[1.0]]
+
+
+def test_ref_kl_advantage_is_reference_minus_inference_on_sampled_tokens():
+    # (reference_logprob - inference_logprob) * tau on the sampled tokens, 0 elsewhere; pulls the
+    # reference via the RenderHints accessor (async — the orchestrator awaits it).
+    async def _ref():
+        return [1.0, 2.0, 3.0]
+
+    h = _hints(["assistant", "assistant", "assistant"], [False, True, True])
+    h.inference_logprob = [0.0, 0.5, 1.0]
+    h.reference_logprobs = _ref
+    out = asyncio.run(ref_kl_advantage([h], tau=2.0))
+    # position 0 not sampled -> 0; (2-0.5)*2 = 3; (3-1)*2 = 4
+    assert out == [[0.0, 3.0, 4.0]]
+
+
+def test_ref_kl_advantage_requires_a_reference():
+    h = _hints(["assistant"], [True])  # no reference accessor set
+    with pytest.raises(ValueError, match="requires a reference scorer"):
+        asyncio.run(ref_kl_advantage([h]))

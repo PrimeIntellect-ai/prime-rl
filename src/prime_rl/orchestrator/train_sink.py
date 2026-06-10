@@ -14,12 +14,16 @@ save_rollouts, monitor.log, reference logprobs) live on the orchestrator.
 from __future__ import annotations
 
 import asyncio
+import functools
+import inspect
 import uuid
 from collections import defaultdict
+from typing import Awaitable, Callable
 
 from prime_rl.configs.losses import apply_term_override, is_primary, overlay_terms
 from prime_rl.configs.orchestrator import AdvantageConfig, OrchestratorConfig
 from prime_rl.orchestrator.advantage import (
+    ReferenceHandle,
     assign_advantages,
     build_render_hints,
     resolve_advantage_fn,
@@ -67,6 +71,7 @@ class TrainSink:
         advantage_config: AdvantageConfig | None,
         pre_filters: list[RolloutFilter],
         post_filters: list[RolloutFilter],
+        reference_scorer: Callable[..., Awaitable[list[list[float]]]] | None = None,
     ) -> None:
         assert (batch_size is None) != (token_batch_size is None), (
             "Exactly one of batch_size / token_batch_size must be set"
@@ -91,6 +96,10 @@ class TrainSink:
         self.advantage_fn = setup_advantage_fn(advantage_config) if advantage_config is not None else None
         self.pre_filters = pre_filters
         self.post_filters = post_filters
+        # Async ``(samples) -> per-sample reference logprobs`` (the orchestrator's reference pool), or
+        # None. Wrapped per group in a lazy ``ReferenceHandle`` so an advantage_fn pays the prefill only
+        # if it pulls it (``await hints.reference_logprobs()``).
+        self.reference_scorer = reference_scorer
 
         # Keyed by the dispatcher's group UUID. ``(env_name, example_id)``
         # isn't unique — the same example can be re-sampled while an
@@ -164,7 +173,7 @@ class TrainSink:
             self.errors_by_env[env_name] += 1
         self.pending_groups[rollout.group_id].append(rollout)
         if len(self.pending_groups[rollout.group_id]) >= self.group_size_for(env_name):
-            self.process_group(rollout.group_id)
+            await self.process_group(rollout.group_id)
         ready = (
             len(self.pending_batch) >= self.batch_size
             if self.batch_size is not None
@@ -229,10 +238,14 @@ class TrainSink:
         # rollout's images until the batch ships (no-op for text-only).
         await asyncio.to_thread(offload_images_to_disk, [raw], self.config.output_dir)
 
-    def process_group(self, group_id: uuid.UUID) -> None:
+    async def process_group(self, group_id: uuid.UUID) -> None:
         """Finalize one GRPO group: drop errored rollouts (the whole group
         when ``requires_group_scoring`` and any failed), assign advantages,
-        run pre-batch filters, append survivors to ``pending_batch``."""
+        run pre-batch filters, append survivors to ``pending_batch``.
+
+        Async because a term's advantage_fn may pull the reference scorer
+        (``await hints.reference_logprobs()``) — a lazy per-group prefill that
+        runs *before* this group ships, so the signal is available pre-centering."""
         group = self.pending_groups.pop(group_id, [])
         if not group:
             return
@@ -265,19 +278,35 @@ class TrainSink:
         # completion tokens here (interleave leaves it empty).
         temperature = env.sampling_args["temperature"]
         overlays = self._resolve_overlays(env_name)
+        # One lazy reference handle per group: an advantage_fn that calls ``hints.reference_logprobs()``
+        # triggers a single batched prefill (cached on the samples); one that doesn't pays nothing.
+        group_samples = [s for r in survivors for s in r.samples]
+        reference = ReferenceHandle(group_samples, self.reference_scorer) if self.reference_scorer is not None else None
         for r in survivors:
             for sample in r.samples:
                 # One per-token advantage stream per loss term, from each term's advantage_fn over this
                 # sample's RenderHints: the primary (keyed by training_mode) is the GRPO scalar over the
                 # sampled tokens; each overlay is its role-masked / advantage-weighted / custom signal.
-                # The fn emits 0.0 for non-eligible tokens (the trainer treats 0.0 as masked).
+                # The fn emits 0.0 for non-eligible tokens (the trainer treats 0.0 as masked). A fn may be
+                # async (e.g. it pulls the reference); await it then.
                 sample.advantage = r.advantage
-                hints = build_render_hints(sample, r.raw, advantage=r.advantage)
+                hints = build_render_hints(
+                    sample,
+                    r.raw,
+                    advantage=r.advantage,
+                    reference=functools.partial(reference.logprobs_for, sample) if reference is not None else None,
+                )
                 term_advantages: dict[str, list[float]] = {}
                 if self._primary_fn is not None and r.advantage is not None:
-                    term_advantages[self.config.training_mode] = self._primary_fn([hints])[0]
+                    primary = self._primary_fn([hints])
+                    if inspect.isawaitable(primary):
+                        primary = await primary
+                    term_advantages[self.config.training_mode] = primary[0]
                 for name, fn in overlays:
-                    term_advantages[name] = fn([hints])[0]
+                    res = fn([hints])
+                    if inspect.isawaitable(res):
+                        res = await res
+                    term_advantages[name] = res[0]
                 sample.term_advantages = term_advantages or None
                 sample.reward = r.reward
                 sample.env_name = r.env_name

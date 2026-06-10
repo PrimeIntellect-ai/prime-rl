@@ -399,6 +399,22 @@ class Orchestrator:
             training_mode=config.training_mode,
         )
         self.metrics = MetricsBuilder(config)
+
+        # Orchestrator-side reference scorer; the train sink's lazy ``ReferenceHandle`` wraps it, so an
+        # advantage_fn that pulls the reference triggers a batched prefill against the reference pool.
+        # None when no reference is configured; reads ``self.reference_inference`` lazily (set in setup).
+        reference_scorer = None
+        if config.reference is not None:
+
+            async def _reference_scorer(samples):
+                return await compute_reference_logprobs(
+                    clients=self.reference_inference.train_clients,
+                    model_name=config.reference.model.name,
+                    samples=samples,
+                )
+
+            reference_scorer = _reference_scorer
+
         self.train_sink = TrainSink(
             config,
             tokenizer=self.tokenizer,
@@ -410,6 +426,7 @@ class Orchestrator:
             advantage_config=config.advantage,
             pre_filters=pre_filters,
             post_filters=post_filters,
+            reference_scorer=reference_scorer,
         )
         # Zero-advantage filtering is an RL-primary concern; gate it on whether the env trains
         # the rl primary so echo-only / rl-disabled envs and non-rl modes aren't dropped.
@@ -589,15 +606,21 @@ class Orchestrator:
         reference_logprobs_time = 0.0  # opd only
         if config.training_mode == "opd" and self.reference_inference is not None:
             assert config.reference is not None
-            t = time.perf_counter()
-            reference_logprobs_list = await compute_reference_logprobs(
-                clients=self.reference_inference.train_clients,
-                model_name=config.reference.model.name,
-                samples=batch.samples,
-            )
-            for ex, lp in zip(batch.samples, reference_logprobs_list):
-                ex.reference_logprobs = lp
-            reference_logprobs_time = time.perf_counter() - t
+            # OPD consumes the reference trainer-side (its KL needs the live trainer logprobs), so the
+            # orchestrator pulls-and-ships here. Skip samples an orchestrator-side puller (e.g. a
+            # pedagogical advantage) already scored via the shared per-sample cache — for pure OPD that's
+            # all of them, so this stays byte-identical to the previous unconditional prefill.
+            pending = [ex for ex in batch.samples if ex.reference_logprobs is None]
+            if pending:
+                t = time.perf_counter()
+                reference_logprobs_list = await compute_reference_logprobs(
+                    clients=self.reference_inference.train_clients,
+                    model_name=config.reference.model.name,
+                    samples=pending,
+                )
+                for ex, lp in zip(pending, reference_logprobs_list):
+                    ex.reference_logprobs = lp
+                reference_logprobs_time = time.perf_counter() - t
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.update_dispatch_gate()

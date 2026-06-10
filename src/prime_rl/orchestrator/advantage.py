@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 import torch
 import verifiers as vf
@@ -175,11 +175,39 @@ class RenderHints:
     reward: float | None = None
     advantage: float | None = None  # per-rollout scalar from Layer 1 (assign_advantages); grpo broadcasts it
     rollout: vf.RolloutOutput | None = None
+    # Lazy async accessor for this unit's reference-model per-token logprobs (``await
+    # hints.reference_logprobs()``). ``None`` when no reference is configured. The first call prefills
+    # the whole group against the reference and caches; an advantage_fn that doesn't call it pays nothing.
+    reference_logprobs: Callable[[], Awaitable[list[float]]] | None = None
 
 
 TermAdvantageFn = Callable[..., list[list[float]]]
 """A loss term's advantage axis. Signature: ``fn(group: list[RenderHints], **kwargs) -> list[list[float]]``
-— one inner list per unit, one float per token; ``0`` masks the token."""
+— one inner list per unit, one float per token; ``0`` masks the token. May be ``async`` (e.g. when it
+pulls the reference via ``RenderHints.reference_logprobs``); the orchestrator awaits if needed."""
+
+
+class ReferenceHandle:
+    """Lazy, memoized reference scorer for one group. The first ``await logprobs_for(sample)`` prefills
+    *all* the group's not-yet-scored samples against the reference model in one batched call and caches
+    the result on each ``TrainingSample.reference_logprobs``; later calls hit the cache. If no
+    advantage_fn pulls it, nothing is prefilled. ``scorer(samples) -> list[list[float]]`` wraps the
+    orchestrator's reference inference pool (``compute_reference_logprobs``). Caching on the sample lets
+    a trainer-side consumer (OPD) reuse a pull made here — see ``Orchestrator.finalize_train_batch``."""
+
+    def __init__(self, samples: list["TrainingSample"], scorer: Callable[..., Awaitable[list[list[float]]]]):
+        self._samples = samples
+        self._scorer = scorer
+        self._prefilled = False
+
+    async def logprobs_for(self, sample: "TrainingSample") -> list[float] | None:
+        if not self._prefilled:
+            pending = [s for s in self._samples if s.reference_logprobs is None]
+            if pending:
+                for s, lp in zip(pending, await self._scorer(pending)):
+                    s.reference_logprobs = lp
+            self._prefilled = True
+        return sample.reference_logprobs
 
 
 def grpo_advantage(group: list[RenderHints], *, tau: float = 1.0) -> list[list[float]]:
@@ -221,8 +249,28 @@ def sft_advantage(group: list[RenderHints], *, alpha: float = 1.0) -> list[list[
     return [[alpha if sampled else 0.0 for sampled in h.is_sampled] for h in group]
 
 
+async def ref_kl_advantage(group: list[RenderHints], *, tau: float = 1.0) -> list[list[float]]:
+    """Per-token reference-vs-sampling log-ratio on the sampled tokens: ``(reference_logprob −
+    inference_logprob) × tau``, ``0`` elsewhere — how much more likely the *reference* found each
+    sampled token than the sampling policy did. Pulls the reference via the RenderHints accessor (so it
+    needs ``orchestrator.reference`` configured); the worked example of an advantage_fn that reads the
+    reference (orchestrator-side, post-centering)."""
+    out: list[list[float]] = []
+    for h in group:
+        if h.reference_logprobs is None:
+            raise ValueError("ref_kl advantage requires a reference scorer — set orchestrator.reference.")
+        ref = await h.reference_logprobs()
+        out.append(
+            [(ref[i] - h.inference_logprob[i]) * tau if sampled else 0.0 for i, sampled in enumerate(h.is_sampled)]
+        )
+    return out
+
+
 def build_render_hints(
-    sample: TrainingSample, rollout: vf.RolloutOutput | None = None, advantage: float | None = None
+    sample: TrainingSample,
+    rollout: vf.RolloutOutput | None = None,
+    advantage: float | None = None,
+    reference: Callable[[], Awaitable[list[float]]] | None = None,
 ) -> RenderHints:
     """Build a sample's ``RenderHints`` from the finished (interleaved) ``TrainingSample``.
 
@@ -247,6 +295,7 @@ def build_render_hints(
         reward=rollout.get("reward") if rollout is not None else None,
         advantage=advantage,
         rollout=rollout,
+        reference_logprobs=reference,
     )
 
 
@@ -265,5 +314,7 @@ def resolve_advantage_fn(config: AdvantageFnConfig) -> Callable[[list[RenderHint
         )
     if config.type == "sft":
         return functools.partial(sft_advantage, alpha=config.alpha)
+    if config.type == "ref_kl":
+        return functools.partial(ref_kl_advantage, tau=config.tau)
     fn = import_object(config.import_path)
     return functools.partial(fn, **config.kwargs)
