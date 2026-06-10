@@ -9,6 +9,7 @@ from verifiers import rollout_to_member_rollouts
 from verifiers.types import MemberRollout
 
 from prime_rl.configs.multi_agent import MultiAgentConfig
+from prime_rl.configs.orchestrator import AdvantageConfig, EMAPerMemberAdvantageConfig
 from prime_rl.orchestrator.member_generation import is_trainable_member as is_bound_trainable_member
 
 MemberTrainability = Callable[[Mapping, str], bool]
@@ -90,3 +91,24 @@ def compute_rae_advantages(
         state.update(key, reward)
         advantages.append(reward - state.baselines[key])
     return advantages
+
+
+def validate_advantage_mode(env_name: str, *, is_multi_agent: bool, advantage: AdvantageConfig | None) -> None:
+    """Enforce the env ⟺ advantage pairing at startup, once ``is_multi_agent``
+    is known (config-time validation cannot see the loaded env): multi-agent
+    envs need RAE (``ema_per_member``); a single-agent env resolving to it
+    would silently degrade to raw-reward REINFORCE (no baseline)."""
+    is_ema = isinstance(advantage, EMAPerMemberAdvantageConfig)
+    if is_multi_agent and not is_ema:
+        resolved = "None" if advantage is None else advantage.type
+        raise ValueError(
+            f"Train env {env_name!r} is multi-agent but resolves advantage={resolved!r}. "
+            "Multi-agent training requires advantage.type='ema_per_member' — set it in "
+            "[orchestrator.advantage] or as this env's per-env advantage override."
+        )
+    if is_ema and not is_multi_agent:
+        raise ValueError(
+            f"Train env {env_name!r} resolves advantage.type='ema_per_member' but is not a multi-agent env. "
+            "Its groups would train with no baseline (raw-reward REINFORCE). Give this env a per-env "
+            'advantage override in its [[orchestrator.train.env]] block, e.g. advantage = { type = "default" }.'
+        )

@@ -1,10 +1,12 @@
 import pytest
 from verifiers.types import MemberRollout
 
+from prime_rl.configs.orchestrator import DefaultAdvantageConfig, EMAPerMemberAdvantageConfig
 from prime_rl.orchestrator.multi_agent_advantage import (
     RAEState,
     compute_rae_advantages,
     fan_out_for_multi_agent,
+    validate_advantage_mode,
 )
 
 ENV_NAME = "debate_v1"
@@ -134,3 +136,21 @@ def test_rae_requires_string_identity_when_task_is_the_fallback():
 
     with pytest.raises(TypeError, match="string env_name"):
         compute_rae_advantages([rollout], state)
+
+
+def test_validate_advantage_mode_rejects_ema_on_single_agent_env():
+    with pytest.raises(ValueError, match="not a multi-agent env"):
+        validate_advantage_mode("math", is_multi_agent=False, advantage=EMAPerMemberAdvantageConfig())
+
+
+def test_validate_advantage_mode_rejects_non_ema_on_multi_agent_env():
+    with pytest.raises(ValueError, match="requires advantage.type='ema_per_member'"):
+        validate_advantage_mode("debate", is_multi_agent=True, advantage=DefaultAdvantageConfig())
+    with pytest.raises(ValueError, match="requires advantage.type='ema_per_member'"):
+        validate_advantage_mode("debate", is_multi_agent=True, advantage=None)
+
+
+def test_validate_advantage_mode_accepts_matched_pairings():
+    validate_advantage_mode("debate", is_multi_agent=True, advantage=EMAPerMemberAdvantageConfig())
+    validate_advantage_mode("math", is_multi_agent=False, advantage=DefaultAdvantageConfig())
+    validate_advantage_mode("math", is_multi_agent=False, advantage=None)

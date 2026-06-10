@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from prime_rl.configs.orchestrator import EvalEnvConfig, EvalSamplingConfig, TrainSamplingConfig
-from prime_rl.orchestrator.envs import EvalEnv
+from prime_rl.orchestrator.envs import Env, EvalEnv
 
 
 class _FakeMonitor:
@@ -185,3 +185,50 @@ def test_eval_dynamic_refill_requires_explicit_eval_clients():
                 )
 
     asyncio.run(run())
+
+
+def test_fixed_member_sampling_args_strip_learner_only_fields_without_mutating_learner_args():
+    env = Env.__new__(Env)
+    env.sampling_args = {
+        "temperature": 1.0,
+        "logprobs": True,
+        "extra_body": {
+            "top_k": 20,
+            "min_p": 0.0,
+            "return_token_ids": True,
+            "cache_salt": "salt-1",
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
+    }
+
+    fixed = env._fixed_member_sampling_args()
+
+    # Learner-only fields (logprobs, return_token_ids, top_k, min_p,
+    # cache_salt) are stripped; portable defaults and user extras survive.
+    assert fixed == {
+        "temperature": 1.0,
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+    }
+    # The learner's sampling args are untouched...
+    assert env.sampling_args["logprobs"] is True
+    assert env.sampling_args["extra_body"] == {
+        "top_k": 20,
+        "min_p": 0.0,
+        "return_token_ids": True,
+        "cache_salt": "salt-1",
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    # ...and the returned extra_body is a copy, not an alias.
+    fixed["extra_body"]["presence_penalty"] = 1.5
+    assert "presence_penalty" not in env.sampling_args["extra_body"]
+
+
+def test_fixed_member_sampling_args_drop_extra_body_when_only_learner_fields_remain():
+    env = Env.__new__(Env)
+    env.sampling_args = {
+        "temperature": 1.0,
+        "logprobs": True,
+        "extra_body": {"top_k": -1, "min_p": 0.0, "return_token_ids": True},
+    }
+
+    assert env._fixed_member_sampling_args() == {"temperature": 1.0}

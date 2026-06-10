@@ -167,6 +167,24 @@ kwargs = { eps = 1e-8 }
 
 `AdvantageInputs.rollouts` is a list of `verifiers.RolloutOutput`, so you have access to the full rollout (turns, tool calls, custom metadata) — not just the reward. Use this for anything reward-shaping-like that needs trajectory context.
 
+### Per-Env Advantage
+
+`advantage` can be set per training environment. Each env inherits the top-level `[orchestrator.advantage]` when it doesn't set its own, so mixed-env runs can give each env its own advantage computation:
+
+```toml
+[orchestrator.advantage]
+type = "default"  # the default every env inherits unless it overrides
+
+[[orchestrator.train.env]]
+id = "math-env"   # inherits the default above
+
+[[orchestrator.train.env]]
+id = "agent-env"
+advantage = { type = "custom", import_path = "my_module.normalized_advantage" }
+```
+
+Multi-agent envs must resolve to `ema_per_member` and single-agent envs must not — the orchestrator enforces this at startup once the env protocols are loaded. In a mixed run, set `ema_per_member` on the multi-agent env (or globally) and override the single-agent envs back to `default`.
+
 ## Filters
 
 Filters drop rollouts between scoring and training. Built-ins (composable):

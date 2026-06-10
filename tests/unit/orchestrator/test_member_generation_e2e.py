@@ -265,6 +265,7 @@ class RecordingOpenAIHandler(BaseHTTPRequestHandler):
                 "model": body["model"],
                 "temperature": body.get("temperature"),
                 "max_completion_tokens": body.get("max_completion_tokens"),
+                "logprobs": body.get("logprobs"),
             }
         )
 
@@ -410,6 +411,12 @@ async def _run_prime_env_server_member_generation_smoke(monkeypatch: pytest.Monk
     assert (selected, "learner-model") in seen
     assert (frozen, "opponent-model") in seen
     assert ("judge", "judge-model") in seen
+
+    # On the wire, only learner requests carry the learner-only logprobs field.
+    logprobs_by_member = {record["member_id"]: record["logprobs"] for record in server.records}
+    assert logprobs_by_member[selected] is True
+    assert logprobs_by_member[frozen] is None
+    assert logprobs_by_member["judge"] is None
 
     member_rollouts = vf.rollout_to_member_rollouts(output)
     by_member = {rollout["member_id"]: rollout for rollout in member_rollouts}

@@ -48,8 +48,9 @@ from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.filters import setup_filters
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
+from prime_rl.orchestrator.member_generation import uncovered_trainable_members, validate_member_references
 from prime_rl.orchestrator.metrics import MetricsBuilder
-from prime_rl.orchestrator.multi_agent_advantage import RAEState
+from prime_rl.orchestrator.multi_agent_advantage import RAEState, validate_advantage_mode
 from prime_rl.orchestrator.patches import (
     monkey_patch_chat_completion_logprobs,
     monkey_patch_oai_iterable_types,
@@ -196,11 +197,14 @@ class Orchestrator:
         self.lora_name = None
         self.resume_step = None
         self.lag_task = None
-        self.rae_state = (
-            RAEState(momentum=config.advantage.momentum)
-            if isinstance(config.advantage, EMAPerMemberAdvantageConfig)
-            else None
+        # Per-env ``advantage`` is resolved at config validation; one shared RAE
+        # state serves every ``ema_per_member`` env (momentum consistency is
+        # enforced by ``validate_ema_advantage_momentum``).
+        ema_advantage = next(
+            (env.advantage for env in config.train.env if isinstance(env.advantage, EMAPerMemberAdvantageConfig)),
+            None,
         )
+        self.rae_state = RAEState(momentum=ema_advantage.momentum) if ema_advantage is not None else None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -297,6 +301,8 @@ class Orchestrator:
                 json_logging=config.log.json_logging,
             )
             get_logger().success("Eval environment(s) ready")
+
+        self.validate_multi_agent_setup()
 
         if config.ckpt is not None and config.ckpt.resume_step is not None and self.ckpt_manager is not None:
             if config.ckpt.resume_step == -1:
@@ -400,7 +406,6 @@ class Orchestrator:
             mm_token_type_ids_mapping=self.mm_token_type_ids_mapping,
             batch_size=config.batch_size,
             token_batch_size=config.token_batch_size,
-            advantage_config=config.advantage,
             rae_state=self.rae_state,
             pre_filters=pre_filters,
             post_filters=post_filters,
@@ -438,6 +443,30 @@ class Orchestrator:
             interval=log_interval,
             wandb_enabled=wandb_enabled,
         )
+
+    def validate_multi_agent_setup(self) -> None:
+        """Fail-fast startup census over the loaded envs (config-time pydantic
+        validation cannot see the env protocols): every member id referenced in
+        ``multi_agent.fixed`` / ``multi_agent.train_one`` must exist in a loaded
+        multi-agent env, and each train env's resolved advantage must match its
+        multi-agent-ness."""
+        config = self.config
+        envs = [*self.train_envs, *(self.eval_envs if self.eval_envs is not None else [])]
+        members_by_env = {env.name: env.multi_agent_members() for env in envs if env.is_multi_agent}
+        validate_member_references(config.multi_agent, members_by_env)
+        if config.multi_agent.train_one is not None:
+            for env in self.train_envs:
+                if not env.is_multi_agent:
+                    continue
+                uncovered = uncovered_trainable_members(config.multi_agent, env.multi_agent_members())
+                if uncovered:
+                    get_logger().warning(
+                        f"multi_agent.train_one is set, but env {env.name!r} members {uncovered} are neither "
+                        "train_one candidates nor fixed targets — they are trainable by default in EVERY "
+                        "rollout. Add them to train_one.members or bind them to a fixed target if unintended."
+                    )
+        for env in self.train_envs:
+            validate_advantage_mode(env.name, is_multi_agent=env.is_multi_agent, advantage=env.config.advantage)
 
     async def start(self) -> None:
         """Run the orchestrator until shutdown. Drives setup, spawns the

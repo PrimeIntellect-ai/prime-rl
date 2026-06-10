@@ -16,7 +16,8 @@ from verifiers.serve import ZMQEnvClient, ZMQEnvServer
 from verifiers.utils.serve_utils import get_free_port
 
 from prime_rl.configs.multi_agent import MultiAgentConfig
-from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
+from prime_rl.configs.orchestrator import EMAPerMemberAdvantageConfig, EnvConfig, EvalEnvConfig, TrainEnvConfig
+from prime_rl.orchestrator.advantage import AdvantageFn, setup_advantage_fn
 from prime_rl.orchestrator.eval_utils import compute_pass_at_k
 from prime_rl.orchestrator.member_generation import (
     DISPATCH_ID_FIELD,
@@ -27,6 +28,18 @@ from prime_rl.utils.monitor import get_monitor
 from prime_rl.utils.utils import capitalize
 
 REQUIRED_STATE_COLUMNS = ["trajectory"]
+
+# Request fields the orchestrator injects into learner sampling args for its own
+# training loop. Fixed (non-learner) members are never trained, so these fields
+# are at best wasted and at worst rejected (400) by external API endpoints:
+# - "logprobs": inference logprobs feed the trainer's importance ratios.
+# - "return_token_ids": completion token ids feed trainer token alignment.
+# - "top_k" / "min_p": full-distribution sampling sentinels (-1 / 0.0) injected
+#   by resolve_env_config so learner logprobs match the trainer's softmax;
+#   vLLM-only params. Per-target values belong in the fixed target's sampling.
+# - "cache_salt": per-dispatch KV-cache isolation for the learner.
+LEARNER_ONLY_SAMPLING_FIELDS = frozenset({"logprobs"})
+LEARNER_ONLY_EXTRA_BODY_FIELDS = frozenset({"cache_salt", "return_token_ids", "top_k", "min_p"})
 
 
 class Env:
@@ -122,8 +135,17 @@ class Env:
         return sampling_args
 
     def _fixed_member_sampling_args(self) -> dict:
-        sampling_args = {**self.sampling_args}
-        sampling_args.pop("extra_body", None)
+        """Sampling args for fixed (non-learner) member targets: inherit the
+        learner's portable sampling defaults but strip learner-only request
+        fields (see LEARNER_ONLY_*_FIELDS), and copy the nested ``extra_body``
+        so downstream mutation cannot alias the learner's extra_body. A fixed
+        target's own explicit ``sampling`` config still overrides."""
+        sampling_args = {k: v for k, v in self.sampling_args.items() if k not in LEARNER_ONLY_SAMPLING_FIELDS}
+        extra_body = sampling_args.pop("extra_body", None)
+        if extra_body is not None:
+            extra_body = {k: v for k, v in extra_body.items() if k not in LEARNER_ONLY_EXTRA_BODY_FIELDS}
+            if extra_body:
+                sampling_args["extra_body"] = extra_body
         return sampling_args
 
     def multi_agent_members(self) -> list[str]:
@@ -229,6 +251,14 @@ class TrainEnv(Env):
     def __init__(self, config: TrainEnvConfig):
         super().__init__(config)
         self.sampling_args = config.sampling.to_sampling_args()
+        # Built once — custom advantage funcs do an ``import_object`` we don't
+        # want to pay per group. ``None`` = reward-only path. ``ema_per_member``
+        # has no group-level fn: the train sink computes RAE advantages instead.
+        self.advantage_fn: AdvantageFn | None = (
+            setup_advantage_fn(config.advantage)
+            if config.advantage is not None and not isinstance(config.advantage, EMAPerMemberAdvantageConfig)
+            else None
+        )
 
     def get_dataset(self, seed: int | None = None):
         return self.env.get_dataset(seed=seed)

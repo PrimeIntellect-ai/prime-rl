@@ -801,3 +801,41 @@ def test_explicit_inference_parser_wins_over_auto():
     )
     assert config.inference is not None
     assert config.inference.model.tool_call_parser == "hermes"
+
+
+def test_orchestrator_per_env_advantage_inherits_global_unless_overridden():
+    config = OrchestratorConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "advantage": {"type": "ema_per_member", "momentum": 0.8},
+            "train": {
+                "env": [
+                    {"id": "two-player-env"},
+                    {"id": "reverse-text", "advantage": {"type": "default"}},
+                ],
+            },
+        }
+    )
+
+    inherited = config.train.env[0].advantage
+    overridden = config.train.env[1].advantage
+    assert inherited is not None
+    assert inherited.type == "ema_per_member"
+    assert inherited.momentum == 0.8
+    assert overridden is not None
+    assert overridden.type == "default"
+
+
+def test_orchestrator_per_env_ema_momentum_mismatch_raises():
+    with pytest.raises(ValidationError, match="momentum"):
+        OrchestratorConfig.model_validate(
+            {
+                "model": {"name": "Qwen/Qwen3-0.6B"},
+                "train": {
+                    "env": [
+                        {"id": "two-player-a", "advantage": {"type": "ema_per_member", "momentum": 0.9}},
+                        {"id": "two-player-b", "advantage": {"type": "ema_per_member", "momentum": 0.5}},
+                    ],
+                },
+            }
+        )

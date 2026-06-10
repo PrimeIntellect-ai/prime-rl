@@ -214,6 +214,56 @@ class EvalSamplingConfig(BaseConfig):
         return data
 
 
+class TokensLengthPenaltyConfig(BaseConfig):
+    type: Literal["tokens"] = "tokens"
+
+    completion_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
+    """Weight on model completion tokens. Finite and non-negative."""
+
+    tool_response_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
+    """Weight on tool-response tokens (read from the rollout's ``*_total_tool_response_tokens`` harness metric; 0 if absent). Finite and non-negative."""
+
+
+class TurnsLengthPenaltyConfig(BaseConfig):
+    type: Literal["turns"] = "turns"
+
+
+LengthPenaltyConfig: TypeAlias = Annotated[
+    TokensLengthPenaltyConfig | TurnsLengthPenaltyConfig,
+    Field(discriminator="type"),
+]
+
+
+class DefaultAdvantageConfig(BaseConfig):
+    type: Literal["default"] = "default"
+
+    length_penalty: LengthPenaltyConfig | None = None
+    """Correctness-gated length penalty. ``tokens`` shapes by weighted token cost; ``turns`` shapes by trajectory turn count; None disables shaping. In mixed groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost rollouts get advantage in [0, 1], others get 0."""
+
+
+class CustomAdvantageConfig(BaseConfig):
+    type: Literal["custom"] = "custom"
+
+    import_path: str
+    """Import path to the advantage function (e.g. ``my_module.my_advantage``)."""
+
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    """Kwargs forwarded to the advantage function."""
+
+
+class EMAPerMemberAdvantageConfig(BaseConfig):
+    type: Literal["ema_per_member"] = "ema_per_member"
+
+    momentum: float = Field(0.9, ge=0.0, le=1.0)
+    """EMA decay rate for per-(env, example, member) baseline updates."""
+
+
+AdvantageConfig: TypeAlias = Annotated[
+    DefaultAdvantageConfig | EMAPerMemberAdvantageConfig | CustomAdvantageConfig,
+    Field(discriminator="type"),
+]
+
+
 class EnvConfig(BaseConfig):
     id: str = "reverse-text"
     """Registered verifiers environment ID (e.g. ``math-env``, ``primeintellect/math-env``). May include an ``@version`` suffix for installation."""
@@ -284,6 +334,11 @@ class TrainEnvConfig(EnvConfig):
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Rollouts generated per example for GRPO group-relative advantages.
     Inherits from ``orchestrator.group_size`` when unset."""
+
+    advantage: AdvantageConfig | None = None
+    """Advantage strategy for this env's GRPO groups. Inherits from the top-level
+    ``orchestrator.advantage`` when unset; set a different ``default``/``custom``
+    config to give this env its own advantage computation."""
 
 
 class EvalEnvConfig(EnvConfig):
@@ -459,56 +514,6 @@ class CheckpointConfig(BaseConfig):
 
     skip_progress: bool = False
     """Skip loading the progress from checkpoint."""
-
-
-class TokensLengthPenaltyConfig(BaseConfig):
-    type: Literal["tokens"] = "tokens"
-
-    completion_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
-    """Weight on model completion tokens. Finite and non-negative."""
-
-    tool_response_weight: float = Field(1.0, ge=0, allow_inf_nan=False)
-    """Weight on tool-response tokens (read from the rollout's ``*_total_tool_response_tokens`` harness metric; 0 if absent). Finite and non-negative."""
-
-
-class TurnsLengthPenaltyConfig(BaseConfig):
-    type: Literal["turns"] = "turns"
-
-
-LengthPenaltyConfig: TypeAlias = Annotated[
-    TokensLengthPenaltyConfig | TurnsLengthPenaltyConfig,
-    Field(discriminator="type"),
-]
-
-
-class DefaultAdvantageConfig(BaseConfig):
-    type: Literal["default"] = "default"
-
-    length_penalty: LengthPenaltyConfig | None = None
-    """Correctness-gated length penalty. ``tokens`` shapes by weighted token cost; ``turns`` shapes by trajectory turn count; None disables shaping. In mixed groups, lower-cost correct rollouts get amplified advantage (up to 2x), higher-cost correct rollouts are unchanged, incorrect untouched. In all-correct groups, below-average-cost rollouts get advantage in [0, 1], others get 0."""
-
-
-class CustomAdvantageConfig(BaseConfig):
-    type: Literal["custom"] = "custom"
-
-    import_path: str
-    """Import path to the advantage function (e.g. ``my_module.my_advantage``)."""
-
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Kwargs forwarded to the advantage function."""
-
-
-class EMAPerMemberAdvantageConfig(BaseConfig):
-    type: Literal["ema_per_member"] = "ema_per_member"
-
-    momentum: float = Field(0.9, ge=0.0, le=1.0)
-    """EMA decay rate for per-(env, example, member) baseline updates."""
-
-
-AdvantageConfig: TypeAlias = Annotated[
-    DefaultAdvantageConfig | EMAPerMemberAdvantageConfig | CustomAdvantageConfig,
-    Field(discriminator="type"),
-]
 
 
 # Flags rare tokens generated at high entropy (Section 5.2, https://arxiv.org/abs/2510.02387).
@@ -1024,12 +1029,34 @@ class OrchestratorConfig(BaseConfig):
         if self.max_inflight_rollouts is not None and self.max_inflight_rollouts < max_group_size:
             raise ValueError("max_inflight_rollouts must be at least the largest train env group_size")
 
+        # Propagate the top-level ``advantage`` into each train env that didn't set its own.
+        for env_cfg in self.train.env:
+            if "advantage" not in env_cfg.model_fields_set:
+                env_cfg.advantage = self.advantage
+
         # Resolve train env num_workers from max_inflight_rollouts
         for env_cfg in self.train.env:
             if env_cfg.num_workers == "auto":
                 assert self.max_inflight_rollouts is not None
                 env_cfg.num_workers = max(1, math.ceil(self.max_inflight_rollouts / 256))
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_ema_advantage_momentum(self):
+        """All envs resolving to ``ema_per_member`` share a single ``RAEState``
+        (one EMA momentum per run); reject silently-diverging per-env momenta.
+        Runs after ``resolve_batching`` so per-env ``advantage`` is resolved."""
+        momenta = {
+            env_cfg.advantage.momentum
+            for env_cfg in self.train.env
+            if isinstance(env_cfg.advantage, EMAPerMemberAdvantageConfig)
+        }
+        if len(momenta) > 1:
+            raise ValueError(
+                f"Conflicting ema_per_member momenta across train envs: {sorted(momenta)}. "
+                "All ema_per_member envs share one RAE state, so they must use the same momentum."
+            )
         return self
 
     @model_validator(mode="after")

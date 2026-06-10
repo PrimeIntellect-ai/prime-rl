@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 import verifiers as vf
@@ -171,3 +171,43 @@ def compile_member_generation_plan(
         )
 
     return vf.MemberGenerationPlan(members=targets)
+
+
+def validate_member_references(config: MultiAgentConfig, members_by_env: Mapping[str, Sequence[str]]) -> None:
+    """Fail fast when the multi-agent config references member ids that exist in
+    no loaded multi-agent env protocol. A typo here would otherwise silently
+    reroute the real member to the learner (served and trained as policy).
+
+    ``members_by_env`` maps each loaded multi-agent env name to its protocol
+    member ids; config-time validation cannot see these, so this runs at
+    orchestrator startup, right after the envs are loaded.
+    """
+    if not config.enabled:
+        return
+    if not members_by_env:
+        raise ValueError(
+            "[orchestrator.multi_agent] is configured but no loaded environment exposes protocol members. "
+            "Remove the multi_agent block or run a multi-agent environment."
+        )
+    known = {member for members in members_by_env.values() for member in members}
+    referenced = set(fixed_member_targets(config))
+    if config.train_one is not None:
+        referenced.update(config.train_one.members)
+    unknown = sorted(referenced - known)
+    if unknown:
+        valid = ", ".join(f"{env}={sorted(members)}" for env, members in sorted(members_by_env.items()))
+        raise ValueError(
+            f"multi_agent config references unknown member id(s) {unknown}. Valid member ids per env: {valid}"
+        )
+
+
+def uncovered_trainable_members(config: MultiAgentConfig, member_ids: Sequence[str]) -> list[str]:
+    """Member ids that are trainable-by-default under ``train_one``: neither a
+    ``train_one`` candidate nor bound to a fixed target, so *every* rollout
+    trains them. Empty when ``train_one`` is unset (all-trainable is then the
+    explicit mode, not an oversight)."""
+    if config.train_one is None:
+        return []
+    fixed_members = fixed_member_targets(config)
+    candidates = set(config.train_one.members)
+    return [member for member in member_ids if member not in fixed_members and member not in candidates]
