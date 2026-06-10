@@ -567,6 +567,10 @@ def compute_loss(
         Tuple of (scaled_loss, aggregated_metrics)
     """
     primary_terms = build_loss_terms(training_mode, loss_fns)
+    # The composable primary λ/reduce/hooks apply only to the rl objective; sft/opd are fixed cores
+    # (λ=1, global-mean reduce, no hooks), so a configured rl term's knobs must not leak into them.
+    if training_mode != "rl":
+        primary_lambda, reduce, primary_hooks = 1.0, mean_reduce, None
     all_metrics: dict[str, list[Tensor]] = {}
 
     if reference_logprobs is None:

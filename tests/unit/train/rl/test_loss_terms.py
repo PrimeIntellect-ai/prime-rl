@@ -137,6 +137,30 @@ def test_opd_term_matches_direct_core():
     assert torch.allclose(loss, expected)
 
 
+def test_sft_opd_ignore_primary_lambda_and_hooks():
+    # sft/opd are fixed cores — a configured rl-term's λ/reduce/hooks must NOT leak into them
+    # (compute_loss gates the composable primary knobs to training_mode == "rl").
+    trainer, inference, teacher, advantages, loss_mask = _inputs([6, 4], seed=5)
+    common = dict(
+        loss_mask=loss_mask,
+        loss_fns=setup_loss_fns([_rl_term()]),
+        loss_scale=10,
+        training_mode="sft",
+    )
+    baseline, _ = compute_loss(trainer, inference, teacher, advantages, **common)
+    # A non-unit λ and a loss-zeroing hook would change the result if they leaked into the sft core.
+    leaked, _ = compute_loss(
+        trainer,
+        inference,
+        teacher,
+        advantages,
+        primary_lambda=0.5,
+        primary_hooks=[lambda per_token_loss, _inputs: per_token_loss * 0.0],
+        **common,
+    )
+    assert torch.allclose(baseline, leaked)
+
+
 def test_build_loss_terms_is_singleton():
     cores = setup_loss_fns([_rl_term()])
     terms = build_loss_terms("rl", cores)

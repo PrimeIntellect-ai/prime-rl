@@ -18,7 +18,7 @@ from prime_rl.trainer.multi_ckpt import setup_multi_checkpoint_manager
 from prime_rl.trainer.optim import setup_optimizer, setup_multi_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler, setup_multi_scheduler
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.configs.losses import overlay_terms, to_rl_loss_config
+from prime_rl.configs.losses import is_primary, overlay_terms, to_rl_loss_config
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
 from prime_rl.utils.cp import (
     gather_for_cp,
@@ -170,20 +170,23 @@ def train(config: TrainerConfig):
     # Set up the loss function
     logger.info(f"Setting up loss functions ({config.losses})")
     loss_fns = setup_loss_fns(config.losses)
-    # The dppo_kl primary term configures token-export's DPPO threshold annotations.
+    # The dppo_kl term configures token-export's DPPO threshold annotations (it needs a dppo_kl core);
+    # a custom-core primary has none, so token export keeps its defaults.
     rl_term = next((term for term in config.losses if term.loss.type == "dppo_kl"), None)
     rl_loss_config = to_rl_loss_config(rl_term) if rl_term is not None else None
     # Overlay term names (config order) — the additive non-primary terms, each its own summed core.
     overlay_term_names = [term.name for term in overlay_terms(config.losses)]
-    # Per-term λ + reduce (trainer-side normalization), resolved once from config. Overlays apply theirs
-    # via their ExtraTerm; the primary (rl) applies via compute_loss. sft/opd (no rl_term) keep the
-    # defaults (λ=1.0, global per-token mean).
+    # Per-term λ + reduce (trainer-side normalization) + hooks, resolved once from config. Overlays apply
+    # theirs via their ExtraTerm; the primary applies its own via compute_loss (gated to rl mode there —
+    # sft/opd are fixed cores). The primary is the rl-objective term (grpo advantage) and MAY have a
+    # custom core, so select it by ``is_primary`` — not the dppo_kl token-export lookup above.
     term_lambdas = {term.name: term.lambda_weight for term in config.losses}
     term_reduces = {term.name: setup_reduce(term.reduce) for term in config.losses}
     term_hooks = {term.name: setup_hooks(term.hooks) for term in config.losses}
-    primary_lambda = term_lambdas.get(rl_term.name, 1.0) if rl_term is not None else 1.0
-    primary_reduce = term_reduces.get(rl_term.name, mean_reduce) if rl_term is not None else mean_reduce
-    primary_hooks = term_hooks.get(rl_term.name, []) if rl_term is not None else []
+    primary_term = next((term for term in config.losses if is_primary(term)), None)
+    primary_lambda = term_lambdas.get(primary_term.name, 1.0) if primary_term is not None else 1.0
+    primary_reduce = term_reduces.get(primary_term.name, mean_reduce) if primary_term is not None else mean_reduce
+    primary_hooks = term_hooks.get(primary_term.name, []) if primary_term is not None else []
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
