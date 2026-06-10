@@ -62,15 +62,32 @@ def _decode_wire_tensor(wt: vf.WireTensor):
 
 
 def _pack_mm_kwargs(mm_list: list[vf.MMData]) -> dict[str, EncodedTensor] | None:
-    """Union per-turn `MMData` into model-agnostic `mm_kwargs`: concat each HF-processor
-    kwarg (e.g. `pixel_values`, `image_grid_thw`) over all images in the sample, in turn
-    order. The model's `forward` signature is the schema, so image/video keys don't clash."""
+    """Union each turn's *new* images into model-agnostic `mm_kwargs`: concat each
+    HF-processor kwarg (e.g. `pixel_values`, `image_grid_thw`) in turn order. The model's
+    `forward` signature is the schema, so image/video keys don't clash.
+
+    The stitched ids carry each image's placeholder tokens once (in the turn it's
+    introduced), so we contribute each image once too. A turn's `multi_modal_data` may be
+    *cumulative* (the renderer re-rendered the whole prompt → every image so far, native v1)
+    or *delta* (only the turn's new images, the v0 bridge); a turn is cumulative iff its
+    hashes restate everything taken so far, so we take only the appended tail. Identical
+    images in different turns (e.g. two squares of the same color) keep distinct slots —
+    matched by position, not deduped by hash."""
     import torch
 
     per_kwarg: dict[str, list] = {}
+    taken: dict[str, list] = {}  # modality -> hashes contributed so far, in order
     for mm in mm_list:
-        for items in mm.mm_items.values():
-            for item in items:
+        for modality, items in mm.mm_items.items():
+            hashes = list(mm.mm_hashes.get(modality) or [None] * len(items))
+            acc = taken.setdefault(modality, [])
+            if None not in hashes and hashes[: len(acc)] == acc:
+                start = len(acc)  # cumulative turn: skip the restated prefix
+                acc[:] = hashes
+            else:
+                start = 0  # delta turn: all images are new
+                acc.extend(hashes)
+            for item in items[start:]:
                 for key, wt in item.items():
                     per_kwarg.setdefault(key, []).append(_decode_wire_tensor(wt))
     if not per_kwarg:
