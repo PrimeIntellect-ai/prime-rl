@@ -420,8 +420,8 @@ def train(config: TrainerConfig):
             overlay_masks = micro_batch.get("overlay_masks")
             overlay_weights = micro_batch.get("overlay_weights")
             inference_logprobs = micro_batch["inference_logprobs"].to("cuda")
-            teacher_logprobs = (
-                micro_batch["teacher_logprobs"].to("cuda") if micro_batch["teacher_logprobs"] is not None else None
+            reference_logprobs = (
+                micro_batch["reference_logprobs"].to("cuda") if micro_batch["reference_logprobs"] is not None else None
             )
             routed_experts = (
                 micro_batch["routed_experts"].to("cuda") if micro_batch["routed_experts"] is not None else None
@@ -544,8 +544,8 @@ def train(config: TrainerConfig):
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=out["logprobs"].squeeze().split(response_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(response_lengths),
-                teacher_logprobs=teacher_logprobs.squeeze().split(response_lengths)
-                if teacher_logprobs is not None
+                reference_logprobs=reference_logprobs.squeeze().split(response_lengths)
+                if reference_logprobs is not None
                 else None,
                 advantages=advantages.squeeze().split(response_lengths),
                 loss_mask=loss_mask.squeeze().split(response_lengths),

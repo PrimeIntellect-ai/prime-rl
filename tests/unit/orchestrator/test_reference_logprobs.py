@@ -30,7 +30,7 @@ class _FakeOpenAIClient:
         )
 
 
-def test_compute_teacher_logprobs_uses_inference_generate(monkeypatch):
+def test_compute_reference_logprobs_uses_inference_generate(monkeypatch):
     async def _run():
         fake_client = _FakeOpenAIClient(
             {
@@ -53,7 +53,7 @@ def test_compute_teacher_logprobs_uses_inference_generate(monkeypatch):
             env_name="test-env",
         )
 
-        result = await orchestrator_utils.compute_teacher_logprobs(
+        result = await orchestrator_utils.compute_reference_logprobs(
             clients=[vf.ClientConfig()],
             model_name="teacher-model",
             samples=[sample],

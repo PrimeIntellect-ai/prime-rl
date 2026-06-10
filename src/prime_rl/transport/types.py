@@ -33,7 +33,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     completion_logprobs: list[float]
     completion_temperatures: list[float]  # Per-token temperatures used during generation
     env_name: str
-    teacher_logprobs: list[float] | None = None
+    reference_logprobs: list[float] | None = None
     advantage: float | None = None
     reward: float | None = None
 
@@ -89,7 +89,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     position_ids: list[int]
     temperatures: list[float]  # Per-token temperatures used during generation
     env_names: list[str]
-    teacher_logprobs: list[float] | None = None
+    reference_logprobs: list[float] | None = None
     lora_num_tokens: list[int] | None = None
     routed_experts: RoutedExperts | None = None
 

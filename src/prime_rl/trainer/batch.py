@@ -133,9 +133,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     prompt_temp = training_example.completion_temperatures[0] if training_example.completion_temperatures else 1.0
     temperatures = [prompt_temp] * len(training_example.prompt_ids) + training_example.completion_temperatures
 
-    # Teacher logprobs already cover the full sequence (prompt + completion),
-    # computed via prefill in the orchestrator when a teacher model is configured
-    teacher_logprobs = training_example.teacher_logprobs
+    # Reference logprobs already cover the full sequence (prompt + completion),
+    # computed via prefill in the orchestrator when a reference model is configured
+    reference_logprobs = training_example.reference_logprobs
     routed_experts = (
         _copy_routed_experts(training_example.routed_experts) if training_example.routed_experts is not None else None
     )
@@ -148,8 +148,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         advantages = advantages[:seq_len]
         rewards = rewards[:seq_len]
         temperatures = temperatures[:seq_len]
-        if teacher_logprobs is not None:
-            teacher_logprobs = teacher_logprobs[:seq_len]
+        if reference_logprobs is not None:
+            reference_logprobs = reference_logprobs[:seq_len]
         if routed_experts is not None:
             routed_experts = _slice_routed_experts(routed_experts, seq_len)
         if mm_token_type_ids is not None:
@@ -170,8 +170,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     ), (
         f"input_ids: {len(input_ids)}, advantages: {len(advantages)}, loss_mask: {len(loss_mask)}, position_ids: {len(position_ids)}, inference_logprobs: {len(inference_logprobs)}, rewards: {len(rewards)}, temperatures: {len(temperatures)}"
     )
-    if teacher_logprobs is not None:
-        assert len(teacher_logprobs) == len(input_ids), f"teacher_logprobs: {len(teacher_logprobs)}"
+    if reference_logprobs is not None:
+        assert len(reference_logprobs) == len(input_ids), f"reference_logprobs: {len(reference_logprobs)}"
 
     if routed_experts is not None:
         assert routed_experts.shape[0] == len(input_ids), (
@@ -191,7 +191,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         loss_mask=loss_mask,
         position_ids=position_ids,
         inference_logprobs=inference_logprobs,
-        teacher_logprobs=teacher_logprobs,
+        reference_logprobs=reference_logprobs,
         temperatures=temperatures,
         rewards=rewards,
         routed_experts=routed_experts,
@@ -263,10 +263,10 @@ def packed_samples_into_micro_bs(
                     bin_content.rewards.extend([float("nan")] * len(sample.input_ids))
                 bin_content.inference_logprobs.extend(sample.inference_logprobs)
                 bin_content.temperatures.extend(sample.temperatures)
-                if sample.teacher_logprobs is not None:
-                    if bin_content.teacher_logprobs is None:
-                        bin_content.teacher_logprobs = []
-                    bin_content.teacher_logprobs.extend(sample.teacher_logprobs)
+                if sample.reference_logprobs is not None:
+                    if bin_content.reference_logprobs is None:
+                        bin_content.reference_logprobs = []
+                    bin_content.reference_logprobs.extend(sample.reference_logprobs)
                 assert (bin_content.routed_experts is None) == (sample.routed_experts is None)
                 if sample.routed_experts is not None:
                     if bin_content.routed_experts is None:
@@ -320,8 +320,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     micro_batch.inference_logprobs.extend([0.0] * padding_size)
     # Use temperature 1.0 for padding tokens (doesn't matter since loss_mask is False)
     micro_batch.temperatures.extend([1.0] * padding_size)
-    if micro_batch.teacher_logprobs is not None:
-        micro_batch.teacher_logprobs.extend([0.0] * padding_size)
+    if micro_batch.reference_logprobs is not None:
+        micro_batch.reference_logprobs.extend([0.0] * padding_size)
     micro_batch.lora_num_tokens[-1] += (
         padding_size  # We send padding to the last lora so that tokens have ascending lora idx
     )

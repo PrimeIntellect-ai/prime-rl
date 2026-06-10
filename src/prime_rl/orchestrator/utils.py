@@ -96,12 +96,12 @@ def set_default_executor(max_workers: int = 64) -> None:
     asyncio.get_event_loop().set_default_executor(ThreadPoolExecutor(max_workers=max_workers))
 
 
-async def compute_teacher_logprobs(
+async def compute_reference_logprobs(
     clients: list[vf.ClientConfig],
     model_name: str,
     samples: list[TrainingSample],
 ) -> list[list[float]]:
-    """Compute teacher model logprobs for a batch of training samples via prefill."""
+    """Compute reference model logprobs for a batch of training samples via prefill."""
     import httpx
     from vllm.entrypoints.serve.disagg.protocol import GenerateResponse
 

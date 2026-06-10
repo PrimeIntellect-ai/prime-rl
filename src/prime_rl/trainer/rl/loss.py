@@ -18,7 +18,7 @@ class LossInputs:
 
     trainer_logprobs: Float[Tensor, " seq"]
     inference_logprobs: Float[Tensor, " seq"]
-    teacher_logprobs: Float[Tensor, " seq"] | None
+    reference_logprobs: Float[Tensor, " seq"] | None
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
 
@@ -366,17 +366,17 @@ def pg_loss_fn(
 def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
     """
     On-policy distillation loss: the default DPPO+KL math with the tau knobs
-    hardcoded to drop the reward signal and use the teacher KL as the
+    hardcoded to drop the reward signal and use the reference KL as the
     per-token policy-gradient signal.
     """
     trainer_logprobs = inputs.trainer_logprobs
     inference_logprobs = inputs.inference_logprobs
-    teacher_logprobs = inputs.teacher_logprobs
+    reference_logprobs = inputs.reference_logprobs
     advantages = inputs.advantages
     loss_mask = inputs.loss_mask
 
-    if teacher_logprobs is None:
-        raise ValueError("opd_loss_fn requires teacher_logprobs - configure a teacher for opd mode.")
+    if reference_logprobs is None:
+        raise ValueError("opd_loss_fn requires reference_logprobs - configure a reference for opd mode.")
 
     log_importance_ratio, importance_ratio, mismatch_kl = compute_importance_ratio_and_mismatch_kl(
         trainer_logprobs, inference_logprobs
@@ -395,8 +395,8 @@ def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
     drop_mask = loss_mask & is_masked
     keep_mask = loss_mask & ~is_masked
 
-    teacher_kl = teacher_logprobs - trainer_logprobs
-    advantages = 0.0 * advantages + 1.0 * teacher_kl.detach()
+    reference_kl = reference_logprobs - trainer_logprobs
+    advantages = 0.0 * advantages + 1.0 * reference_kl.detach()
 
     pg_loss = keep_mask * advantages * importance_ratio
     kl_loss = loss_mask * log_importance_ratio**2
@@ -411,7 +411,7 @@ def opd_loss_fn(inputs: LossInputs) -> LossOutputs:
         "is_masked_high": _safe_mean(is_masked_high, loss_mask),
         "masked_advantage_positive": _safe_mean(positive_advantages, drop_mask),
         "masked_advantage_negative": _safe_mean(negative_advantages, drop_mask),
-        "teacher_kl": _safe_mean(teacher_kl, loss_mask),
+        "reference_kl": _safe_mean(reference_kl, loss_mask),
     }
 
     return LossOutputs(loss=loss, per_token_loss=per_token_loss, metrics=metrics)
@@ -468,7 +468,7 @@ def setup_loss_fns(losses: list[LossTermConfig]) -> dict[str, LossFn]:
     The trainer routes per batch from ``TrainingSample.training_mode``:
 
     - ``"sft"``  → ``sft_loss_fn`` (masked NLL)
-    - ``"opd"``  → ``opd_loss_fn`` (teacher KL as gradient signal, fixed knobs)
+    - ``"opd"``  → ``opd_loss_fn`` (reference KL as gradient signal, fixed knobs)
     - ``"rl"``   → ``default_loss_fn`` configured by the primary ``dppo_kl`` term, or a
       ``custom`` core's imported function.
     - ``"echo"`` → ``echo_loss_fn`` (weighted CE), applied by additive echo terms.
@@ -528,7 +528,7 @@ def build_loss_terms(training_mode: str, cores: dict[str, LossFn]) -> list[LossT
 def compute_loss(
     trainer_logprobs: list[Float[Tensor, " seq_i"]],
     inference_logprobs: list[Float[Tensor, " seq_i"]],
-    teacher_logprobs: list[Float[Tensor, " seq_i"]] | None,
+    reference_logprobs: list[Float[Tensor, " seq_i"]] | None,
     advantages: list[Float[Tensor, " seq_i"]],
     loss_mask: list[Bool[Tensor, " seq_i"]],
     loss_fns: dict[str, LossFn],
@@ -552,7 +552,7 @@ def compute_loss(
     Args:
         trainer_logprobs: Log probabilities for each sequence
         inference_logprobs: Reference log probabilities for each sequence
-        teacher_logprobs: Teacher log probabilities for each sequence, or None
+        reference_logprobs: Reference log probabilities for each sequence, or None
         advantages: Advantages for each sequence
         loss_mask: Loss mask for each sequence
         loss_fns: Per-mode loss fn dispatch table from setup_loss_fns()
@@ -569,22 +569,22 @@ def compute_loss(
     primary_terms = build_loss_terms(training_mode, loss_fns)
     all_metrics: dict[str, list[Tensor]] = {}
 
-    if teacher_logprobs is None:
-        teacher_logprobs = [None] * len(trainer_logprobs)
+    if reference_logprobs is None:
+        reference_logprobs = [None] * len(trainer_logprobs)
 
     # Materialized so extra terms can re-zip the shared per-sample inputs.
-    samples = list(zip(trainer_logprobs, inference_logprobs, teacher_logprobs, advantages, loss_mask))
+    samples = list(zip(trainer_logprobs, inference_logprobs, reference_logprobs, advantages, loss_mask))
 
     # Primary (training_mode) term: one summed loss per sample (x lambda), reduced to a scalar. The
     # default mean_reduce divides by loss_scale, so the rl-only path stays bit-identical to the loss
     # before the reduce/lambda seam.
     primary_losses: list[Tensor] = []
     primary_eligible: list[Tensor] = []
-    for t_logp, i_logp, teach_logp, adv, mask in samples:
+    for t_logp, i_logp, ref_logp, adv, mask in samples:
         inputs = LossInputs(
             trainer_logprobs=t_logp,
             inference_logprobs=i_logp,
-            teacher_logprobs=teach_logp,
+            reference_logprobs=ref_logp,
             advantages=adv,
             loss_mask=mask,
         )
@@ -602,13 +602,13 @@ def compute_loss(
     for term in extra_terms or []:
         term_losses: list[Tensor] = []
         term_eligible: list[Tensor] = []
-        for (t_logp, i_logp, teach_logp, _adv, _mask), term_mask, term_weight in zip(
+        for (t_logp, i_logp, ref_logp, _adv, _mask), term_mask, term_weight in zip(
             samples, term.masks, term.weights, strict=True
         ):
             inputs = LossInputs(
                 trainer_logprobs=t_logp,
                 inference_logprobs=i_logp,
-                teacher_logprobs=teach_logp,
+                reference_logprobs=ref_logp,
                 advantages=term_weight,
                 loss_mask=term_mask,
             )

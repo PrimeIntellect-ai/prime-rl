@@ -170,7 +170,7 @@ def test_pg_core_matches_default_loss_fn_at_rl_preset():
     inputs = LossInputs(
         trainer_logprobs=torch.randn(n, generator=g, dtype=torch.float32),
         inference_logprobs=torch.randn(n, generator=g, dtype=torch.float32),
-        teacher_logprobs=None,
+        reference_logprobs=None,
         advantages=torch.randn(n, generator=g, dtype=torch.float32),
         loss_mask=torch.randint(0, 2, (n,), generator=g).bool(),
     )
@@ -192,7 +192,7 @@ def test_pg_core_matches_echo_loss_fn_at_echo_preset():
     inputs = LossInputs(
         trainer_logprobs=torch.randn(n, generator=g, dtype=torch.float32),
         inference_logprobs=torch.randn(n, generator=g, dtype=torch.float32),
-        teacher_logprobs=None,
+        reference_logprobs=None,
         advantages=torch.randn(n, generator=g, dtype=torch.float32),
         loss_mask=torch.randint(0, 2, (n,), generator=g).bool(),
     )
@@ -208,7 +208,7 @@ def test_pg_core_matches_sft_loss_fn_at_sft_preset():
     inputs = LossInputs(
         trainer_logprobs=torch.randn(n, generator=g, dtype=torch.float32),
         inference_logprobs=torch.zeros(n, dtype=torch.float32),
-        teacher_logprobs=None,
+        reference_logprobs=None,
         advantages=torch.ones(n, dtype=torch.float32),
         loss_mask=torch.randint(0, 2, (n,), generator=g).bool(),
     )
@@ -366,7 +366,7 @@ def test_min_prob_filter_zeros_low_prob_tokens():
     inputs = LossInputs(
         trainer_logprobs=torch.tensor([-0.1, -5.0, -0.2, -9.0]),
         inference_logprobs=torch.zeros(4),
-        teacher_logprobs=None,
+        reference_logprobs=None,
         advantages=torch.zeros(4),
         loss_mask=torch.ones(4, dtype=torch.bool),
     )

@@ -176,10 +176,10 @@ class MultiPacker(BasePacker):
                 False,
                 f"Run wrote a sample with length {sample_length} which exceeds max sequence length {self.seq_len}",
             )
-        if sample.teacher_logprobs is not None and len(sample.teacher_logprobs) != sample_length:
+        if sample.reference_logprobs is not None and len(sample.reference_logprobs) != sample_length:
             return (
                 False,
-                f"Run wrote a sample with teacher logprobs length != sample length ({len(sample.teacher_logprobs)} != {sample_length})",
+                f"Run wrote a sample with reference logprobs length != sample length ({len(sample.reference_logprobs)} != {sample_length})",
             )
         if sample.term_advantages is not None:
             for name, advs in sample.term_advantages.items():

@@ -66,7 +66,7 @@ from prime_rl.orchestrator.types import (
     TrainRollout,
 )
 from prime_rl.orchestrator.utils import (
-    compute_teacher_logprobs,
+    compute_reference_logprobs,
     get_weight_dir,
     intercept_vf_logging,
     save_rollouts,
@@ -534,7 +534,7 @@ class Orchestrator:
 
     async def finalize_train_batch(self, batch: TrainBatch) -> None:
         """Ship one ``TrainBatch`` out to the trainer and handle the I/O
-        side-effects (ckpt, save_rollouts, teacher logprobs, sender.send,
+        side-effects (ckpt, save_rollouts, reference logprobs, sender.send,
         metrics, heartbeat, progress, eval trigger). The sink has already
         done all data-transformation work."""
         config = self.config
@@ -586,18 +586,18 @@ class Orchestrator:
             save_rollouts, rollout_dicts, step_path / "train_rollouts.jsonl", exclude_keys={"trajectory"}
         )
 
-        teacher_logprobs_time = 0.0  # opd only
+        reference_logprobs_time = 0.0  # opd only
         if config.training_mode == "opd" and self.reference_inference is not None:
             assert config.reference is not None
             t = time.perf_counter()
-            teacher_logprobs_list = await compute_teacher_logprobs(
+            reference_logprobs_list = await compute_reference_logprobs(
                 clients=self.reference_inference.train_clients,
                 model_name=config.reference.model.name,
                 samples=batch.samples,
             )
-            for ex, lp in zip(batch.samples, teacher_logprobs_list):
-                ex.teacher_logprobs = lp
-            teacher_logprobs_time = time.perf_counter() - t
+            for ex, lp in zip(batch.samples, reference_logprobs_list):
+                ex.reference_logprobs = lp
+            reference_logprobs_time = time.perf_counter() - t
 
         await self.sender.send(TrainingBatch(examples=batch.samples, step=step))
         self.update_dispatch_gate()
@@ -609,7 +609,7 @@ class Orchestrator:
             progress=self.progress,
             step_time=step_time,
             save_ckpt_time=save_ckpt_time,
-            teacher_logprobs_time=teacher_logprobs_time,
+            reference_logprobs_time=reference_logprobs_time,
             pre_filter_seen=self.train_sink.pre_filter_seen,
             pre_filter_dropped=self.train_sink.pre_filter_dropped,
             pre_filter_dropped_by_name=dict(self.train_sink.pre_filter_dropped_by_name),
