@@ -1,29 +1,27 @@
-"""vLLM worker extension that pulls weight updates over NIXL.
+"""vLLM worker extension that pulls sharded weight updates over NIXL.
 
-The trainer is a passive weight-store server: it publishes one table to
-Model Express describing every tensor of its *native* state dict (name,
-shape, dtype, device address, owning NIXL agent) and refreshes the store
-contents each sync. This worker discovers — once — exactly which bytes of
-which trainer tensor it needs:
+The trainer is a passive, sharded weight store: it publishes one table to
+Model Express describing, per state-dict tensor, which dim-0 row range lives
+on which rank's NIXL buffer. This worker discovers — once — exactly which
+bytes of which trainer tensor each of its parameter slices needs:
 
 1. **Bake**: drive ``model.load_weights`` with zero-storage
    :class:`LazyWeight` placeholders built from the trainer's table (via the
    generic prime-naming adapter). vLLM's own loaders (fused QKV, merged
-   gate/up, FusedMoE EP routing) slice the placeholders and ``copy_`` them
-   into views of live parameters; each ``copy_`` records
-   ``(trainer tensor, op chain, destination view)``.
-2. **Resolve**: every chain is resolved to a strided region of the trainer
-   tensor (meta simulation; pure view ops only), decomposed into contiguous
-   runs, and matched run-by-run against the destination view's runs.
-3. **Pull**: per sync, one batched NIXL READ per trainer agent moves the
-   bytes straight from the trainer's store into this worker's parameter
-   memory. No staging, no load_weights, no conversion anywhere.
+   gate/up, FusedMoE expert routing) slice the placeholders and ``copy_``
+   them into views of live parameters; each ``copy_`` records
+   ``(trainer tensor, op chain, destination view)``. No data moves.
+2. **Route**: each op chain is resolved to a strided region of the *full
+   logical* trainer tensor, decomposed into runs, and mapped onto the trainer
+   shards that own those dim-0 rows — yielding, per source rank, the exact
+   ``(src_addr -> dst_addr, nbytes)`` reads.
+3. **Pull**: per sync, one batched NIXL READ per trainer rank moves the bytes
+   straight into this worker's live parameter storage, then
+   ``process_weights_after_loading`` runs so any kernel-format repacking
+   happens in place — exactly as a normal vLLM weight reload would.
 
-Because the trainer knows nothing about its consumers, inference workers
-can scale out, restart, or fail without any trainer-side coordination.
-Direct in-place writes into live params are valid only when the kernel
-weight format equals the loaded HF layout, which
-:func:`_check_direct_write_safe` enforces at init.
+No gather, no conversion, and no per-consumer state on the trainer, so
+inference workers can scale out, restart, or fail without trainer coordination.
 """
 
 from __future__ import annotations
@@ -41,10 +39,11 @@ from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
 from prime_rl.weight_transfer.adapter import make_hf_named_lazy_weights
-from prime_rl.weight_transfer.chains import contiguous_runs, match_runs, resolve_chain_region, tensor_runs
+from prime_rl.weight_transfer.chains import region_elem_runs, resolve_chain_region, tensor_runs
 from prime_rl.weight_transfer.lazy import BakeRecorder
 from prime_rl.weight_transfer.mx import MX_MODEL_NAME, MxRendezvous
 from prime_rl.weight_transfer.nixl import NixlAgent, make_agent_name, set_ucx_env_defaults
+from prime_rl.weight_transfer.sharding import route_region, zip_src_dst
 from prime_rl.weight_transfer.wire import NIXL_DONE_MARKER, NIXL_PULLED_MARKER, TrainerTable, decode_table
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
@@ -56,42 +55,6 @@ else:
     Worker = object
 
 logger = init_logger("vllm.inference.vllm.worker_nixl")
-
-
-def _check_direct_write_safe(model: Module, quantization: str | None) -> None:
-    """Pulling straight into live params skips ``process_weights_after_loading``.
-
-    That is only correct when post-loading processing is a no-op on the weight
-    bytes: unquantized models whose MoE kernel format equals the loaded HF
-    layout (``convert_to_unquantized_kernel_format`` is identity for the
-    triton backends). Anything else must fail here, at init, not as silent
-    weight corruption.
-    """
-    if quantization is not None:
-        raise NotImplementedError(
-            f"NIXL weight broadcast supports unquantized models only (got quantization={quantization!r})"
-        )
-
-    from vllm.model_executor.layers.fused_moe.layer import FusedMoE
-    from vllm.model_executor.layers.fused_moe.oracle.unquantized import UnquantizedMoeBackend
-    from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import UnquantizedFusedMoEMethod
-
-    identity_backends = (UnquantizedMoeBackend.TRITON, UnquantizedMoeBackend.BATCHED_TRITON)
-    for name, module in model.named_modules():
-        if not isinstance(module, FusedMoE):
-            continue
-        quant_method = module.quant_method
-        if not isinstance(quant_method, UnquantizedFusedMoEMethod):
-            raise NotImplementedError(
-                f"NIXL weight broadcast: FusedMoE {name!r} uses {type(quant_method).__name__}, "
-                "which may repack weights after loading; only UnquantizedFusedMoEMethod is supported"
-            )
-        if quant_method.unquantized_backend not in identity_backends:
-            raise NotImplementedError(
-                f"NIXL weight broadcast: FusedMoE {name!r} uses backend "
-                f"{quant_method.unquantized_backend}, which shuffles weights into a kernel format; "
-                f"supported identity-format backends: {[b.value for b in identity_backends]}"
-            )
 
 
 def _check_rdma_registrable_allocator() -> None:
@@ -107,7 +70,7 @@ def _check_rdma_registrable_allocator() -> None:
 
 
 class NIXLWeightUpdateWorker(Worker):
-    """vLLM worker extension that pulls in-place weight updates over NIXL."""
+    """vLLM worker extension that pulls sharded in-place weight updates over NIXL."""
 
     @property
     def raw_model(self) -> Module:
@@ -131,19 +94,13 @@ class NIXLWeightUpdateWorker(Worker):
     ) -> None:
         """Validate this worker can receive pulls and remember the MX endpoint.
 
-        The pull plan itself is built lazily on the first weight update: the
-        trainer publishes its table on its first broadcast, which happens
-        after this RPC runs.
+        The pull plan is built lazily on the first weight update, once the
+        trainer has published its table (which happens after this RPC runs).
         """
-        if quantize_in_weight_transfer:
-            raise NotImplementedError("NIXL weight broadcast does not support quantize_in_weight_transfer")
         if self.vllm_config.parallel_config.enable_eplb:
-            # EPLB rearranges experts at runtime, which would silently
-            # invalidate the baked expert-to-rank pull plan.
+            # EPLB rearranges experts at runtime, invalidating the baked plan.
             raise NotImplementedError("NIXL weight broadcast does not support EPLB")
         _check_rdma_registrable_allocator()
-        _check_direct_write_safe(self.raw_model, self.model_runner.model_config.quantization)
-
         self._mx_url = f"{host}:{port}"
         self._global_rank = rank_offset + self.device.index
         self._timeout = timeout
@@ -175,15 +132,15 @@ class NIXLWeightUpdateWorker(Worker):
         model = self.raw_model
         registered = self._register_params(model)
         copies = self._bake(model, table)
-        self._build_pulls(table, copies, registered)
+        self._build_pulls(table, copies, registered, model)
         self._initialized = True
         logger.info(
             f"NIXL pull plan ready in {time.perf_counter() - start:.2f}s: rank={self._global_rank} "
-            f"copies={len(copies)} bytes={self._total_pull_bytes:,} agents={len(self._pull_handles_spec)}"
+            f"copies={len(copies)} bytes={self._total_pull_bytes:,} agents={len(self._pull_specs)} "
+            f"process_modules={len(self._process_modules)}"
         )
 
     def _register_params(self, model: Module) -> dict[str, torch.Tensor]:
-        """Pin every parameter's live storage for RDMA. Returns name -> tensor."""
         registered: dict[str, torch.Tensor] = {}
         for name, param in model.named_parameters():
             if not param.is_contiguous():
@@ -193,7 +150,11 @@ class NIXLWeightUpdateWorker(Worker):
         return registered
 
     def _bake(self, model: Module, table: TrainerTable) -> list:
-        """One dry-run ``load_weights`` pass over the trainer's tensor table."""
+        """One dry-run ``load_weights`` over the trainer's tensor table.
+
+        Lazy placeholders carry the full logical shape/dtype; vLLM's loaders
+        slice them into views of the live params and ``copy_`` (recorded, no
+        data moved)."""
         recorder = BakeRecorder()
         metas = [(t.name, getattr(torch, t.dtype), tuple(t.shape)) for t in table.tensors]
         model.load_weights(make_hf_named_lazy_weights(metas, self.device, recorder))
@@ -201,75 +162,87 @@ class NIXLWeightUpdateWorker(Worker):
             raise RuntimeError("NIXL bake recorded no copies — load_weights consumed no lazy placeholders")
         return recorder.copies
 
-    def _build_pulls(self, table: TrainerTable, copies: list, registered: dict[str, torch.Tensor]) -> None:
-        """Resolve op chains to trainer regions and prebuild READ descriptors."""
-        tensors_by_name = {t.name: t for t in table.tensors}
-        intervals = sorted((t.data_ptr(), t.data_ptr() + t.numel() * t.element_size()) for t in registered.values())
+    def _build_pulls(
+        self, table: TrainerTable, copies: list, registered: dict[str, torch.Tensor], model: Module
+    ) -> None:
+        """Resolve op chains to trainer shards and prebuild per-agent READ descriptors."""
+        tensors = {t.name: t for t in table.tensors}
+        # Map a destination address to its owning leaf module so we can run
+        # process_weights_after_loading on exactly the touched modules.
+        param_intervals = sorted(
+            (p.data_ptr(), p.data_ptr() + p.numel() * p.element_size(), name) for name, p in registered.items()
+        )
+        module_by_param = {
+            name: module for module in model.modules() for name, _ in module.named_parameters(recurse=False)
+        }
 
-        # Per trainer agent: matched (local dst, remote src) descriptor lists.
+        # One agent == one trainer rank == one GPU, so its device id is constant.
+        agent_device = {shard.agent: shard.device_id for t in table.tensors for shard in t.shards}
+
         local_descs: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
         remote_descs: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
         device_index = self.device.index
         self._total_pull_bytes = 0
+        process_modules: dict[int, Module] = {}
 
         for copy in copies:
-            src = tensors_by_name.get(copy.src_name)
+            src = tensors.get(copy.src_name)
             if src is None:
-                raise RuntimeError(f"bake recorded a copy from {copy.src_name!r}, which is not in the trainer table")
+                raise RuntimeError(f"bake recorded a copy from {copy.src_name!r}, absent from the trainer table")
             src_dtype = getattr(torch, src.dtype)
             if src_dtype != copy.dst.dtype:
                 raise RuntimeError(
-                    f"dtype mismatch for {copy.src_name!r}: trainer serves {src_dtype}, "
-                    f"destination param is {copy.dst.dtype} — raw RDMA cannot cast"
+                    f"dtype mismatch for {copy.src_name!r}: trainer serves {src_dtype}, dest param is "
+                    f"{copy.dst.dtype} — raw RDMA cannot cast"
                 )
+            row_numel = 1
+            for d in src.shape[1:]:
+                row_numel *= d
             offset, shape, stride = resolve_chain_region(tuple(src.shape), src_dtype, copy.ops)
-            src_runs = contiguous_runs(src.addr, src_dtype.itemsize, offset, shape, stride)
+            src_runs = region_elem_runs(offset, shape, stride)
+            src_pieces = route_region(src_runs, src.shards, row_numel, src_dtype.itemsize)
             dst_runs = tensor_runs(copy.dst)
-            for addr, nbytes in dst_runs:
-                if not _within_intervals(intervals, addr, nbytes):
+            for addr, _ in dst_runs:
+                if not _owning_param(param_intervals, addr):
                     raise RuntimeError(
-                        f"bake for {copy.src_name!r} recorded a copy_ into memory outside any registered "
-                        "parameter (loader copied into a temporary?)"
+                        f"bake for {copy.src_name!r} recorded a copy_ into memory outside any registered param"
                     )
-            for src_addr, dst_addr, nbytes in match_runs(src_runs, dst_runs):
-                local_descs[src.agent].append((dst_addr, nbytes, device_index))
-                remote_descs[src.agent].append((src_addr, nbytes, src.device_id))
+            for agent, src_addr, dst_addr, nbytes in zip_src_dst(src_pieces, dst_runs):
+                local_descs[agent].append((dst_addr, nbytes, device_index))
+                remote_descs[agent].append((src_addr, nbytes, agent_device[agent]))
                 self._total_pull_bytes += nbytes
 
-        self._log_param_coverage(registered, copies)
+            owner = _owning_param(param_intervals, copy.dst.data_ptr())
+            if owner is not None and owner in module_by_param:
+                module = module_by_param[owner]
+                process_modules[id(module)] = module
 
-        # One prepared (local, remote) descriptor pair per trainer agent; every
-        # sync posts one batched READ per agent over the full index range.
-        self._pull_handles_spec: list[tuple[Any, Any, list[int]]] = []
+        self._log_param_coverage(registered, copies, param_intervals)
+
+        self._pull_specs: list[tuple[Any, Any, list[int]]] = []
         for agent_idx, descs in sorted(remote_descs.items()):
             agent = table.agents[agent_idx]
             peer_name = self.nixl_agent.add_remote_agent(agent.metadata)
             self.nixl_agent.make_connection(peer_name)
             local_prep = self.nixl_agent.prep_local(local_descs[agent_idx])
             remote_prep = self.nixl_agent.prep_remote(peer_name, descs)
-            self._pull_handles_spec.append((local_prep, remote_prep, list(range(len(descs)))))
+            self._pull_specs.append((local_prep, remote_prep, list(range(len(descs)))))
+        self._process_modules = list(process_modules.values())
 
-    def _log_param_coverage(self, registered: dict[str, torch.Tensor], copies: list) -> None:
-        """Warn about params the bake left (partially) unwritten.
-
-        Partial coverage can be legitimate (padded vocab rows); zero coverage
-        usually means a name mismatch between trainer and vLLM — surfaced
-        loudly so it is never silently stale weights.
-        """
-        written: dict[int, int] = defaultdict(int)
+    def _log_param_coverage(self, registered: dict[str, torch.Tensor], copies: list, param_intervals: list) -> None:
+        """Warn about params the bake left (partially) unwritten — usually a
+        name mismatch, surfaced loudly so it is never silently stale weights."""
+        written: dict[str, int] = defaultdict(int)
         for copy in copies:
-            written[copy.dst.data_ptr() - copy.dst.storage_offset() * copy.dst.element_size()] += sum(
-                n for _, n in tensor_runs(copy.dst)
-            )
-        uncovered = []
-        partial = []
-        for name, tensor in registered.items():
-            got = written.get(tensor.data_ptr(), 0)
-            want = tensor.numel() * tensor.element_size()
-            if got == 0:
-                uncovered.append(name)
-            elif got < want:
-                partial.append(f"{name} ({got}/{want}B)")
+            owner = _owning_param(param_intervals, copy.dst.data_ptr())
+            if owner is not None:
+                written[owner] += sum(n for _, n in tensor_runs(copy.dst))
+        uncovered = [n for n, t in registered.items() if written.get(n, 0) == 0]
+        partial = [
+            f"{n} ({written[n]}/{t.numel() * t.element_size()}B)"
+            for n, t in registered.items()
+            if 0 < written.get(n, 0) < t.numel() * t.element_size()
+        ]
         if uncovered:
             logger.warning(f"NIXL bake covered no bytes of {len(uncovered)} params: {uncovered}")
         if partial:
@@ -279,11 +252,7 @@ class NIXLWeightUpdateWorker(Worker):
 
     @torch.no_grad()
     def update_weights_from_path(self, weight_dir: str) -> None:
-        """Wait for the trainer's store to hold this step's weights, then pull.
-
-        The trainer master touches the step-scoped marker in the broadcast
-        step directory (shared filesystem) once every rank's store is filled.
-        """
+        """Wait for the trainer's shards to hold this step's weights, then pull."""
         self._lazy_init()
 
         done_marker = Path(weight_dir) / NIXL_DONE_MARKER
@@ -296,21 +265,35 @@ class NIXLWeightUpdateWorker(Worker):
         start = time.perf_counter()
         handles = [
             self.nixl_agent.post_read(local_prep, idxs, remote_prep, idxs)
-            for local_prep, remote_prep, idxs in self._pull_handles_spec
+            for local_prep, remote_prep, idxs in self._pull_specs
         ]
         for handle in handles:
             self.nixl_agent.wait(handle, context="weight pull")
         torch.cuda.synchronize(self.device)
+        self._process_after_load()
         update_mla_absorbed_weights(self.raw_model)
-        # Ack the pull so the trainer may rewrite (or tear down) its store.
         (Path(weight_dir) / f"{NIXL_PULLED_MARKER}.{self._global_rank}").touch()
         logger.info(
-            f"Weight update pulled over NIXL: {self._total_pull_bytes / 1e9:.2f} GB "
-            f"in {time.perf_counter() - start:.2f}s"
+            f"Weight update pulled over NIXL: {self._total_pull_bytes / 1e9:.2f} GB in {time.perf_counter() - start:.2f}s"
         )
 
+    def _process_after_load(self) -> None:
+        """Run each touched module's ``process_weights_after_loading`` so any
+        kernel-format repacking happens in place — mirrors vLLM's reload path."""
+        from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
 
-def _within_intervals(intervals: list[tuple[int, int]], addr: int, nbytes: int) -> bool:
-    """True iff [addr, addr+nbytes) lies inside one of the sorted intervals."""
-    i = bisect.bisect_right(intervals, (addr, float("inf"))) - 1
-    return i >= 0 and intervals[i][0] <= addr and addr + nbytes <= intervals[i][1]
+        for module in self._process_modules:
+            quant_method = getattr(module, "quant_method", None)
+            if not isinstance(quant_method, QuantizeMethodBase):
+                continue
+            if hasattr(module, "_already_called_process_weights_after_loading"):
+                delattr(module, "_already_called_process_weights_after_loading")
+            quant_method.process_weights_after_loading(module)
+
+
+def _owning_param(intervals: list[tuple[int, int, str]], addr: int) -> str | None:
+    """Name of the registered param whose storage contains ``addr``, or None."""
+    i = bisect.bisect_right(intervals, (addr, float("inf"), "")) - 1
+    if i >= 0 and intervals[i][0] <= addr < intervals[i][1]:
+        return intervals[i][2]
+    return None

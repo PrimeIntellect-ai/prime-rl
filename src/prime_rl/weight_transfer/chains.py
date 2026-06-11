@@ -92,31 +92,30 @@ def resolve_chain_region(
     return result.storage_offset(), tuple(result.shape), tuple(result.stride())
 
 
-def contiguous_runs(
-    base_addr: int,
-    elem_size: int,
+def region_elem_runs(
     offset_elems: int,
     shape: tuple[int, ...],
     stride: tuple[int, ...],
 ) -> list[tuple[int, int]]:
-    """Decompose a strided region into ``(device_addr, num_bytes)`` runs.
+    """Decompose a strided region into ``(elem_offset, num_elems)`` runs.
 
-    Runs are emitted in C iteration order of the region, i.e. the byte order
-    of a ``.contiguous()`` materialization of the same logical tensor. Source
-    and destination regions of one copy therefore decompose into byte streams
-    that correspond element by element.
+    Runs are emitted in C iteration order of the region, i.e. the element
+    order of a ``.contiguous()`` materialization of the same logical tensor.
+    Two regions of one ``copy_`` (source and destination) therefore produce
+    byte streams that correspond element by element. Offsets are in element
+    units relative to the root tensor's storage origin, addresses left to the
+    caller (the source tensor is sharded; the destination is a live view).
     """
     numel = 1
     for s in shape:
         numel *= s
     if numel == 0:
         return []
-    base = base_addr + offset_elems * elem_size
     dims = [(s, st) for s, st in zip(shape, stride) if s != 1]
     if any(st < 0 for _, st in dims):
         raise UnsupportedOpError("negative strides are not supported for RDMA regions")
     if not dims:
-        return [(base, elem_size)]
+        return [(offset_elems, 1)]
 
     # Fold the contiguous suffix of dims into one run.
     run_elems = 1
@@ -135,24 +134,24 @@ def contiguous_runs(
         )
 
     runs: list[tuple[int, int]] = []
-    run_bytes = run_elems * elem_size
 
     def emit(dim: int, offset: int) -> None:
         if dim == len(outer):
-            runs.append((base + offset * elem_size, run_bytes))
+            runs.append((offset, run_elems))
             return
         size, stride_ = outer[dim]
         for i in range(size):
             emit(dim + 1, offset + i * stride_)
 
-    emit(0, 0)
+    emit(0, offset_elems)
     return runs
 
 
 def tensor_runs(view: torch.Tensor) -> list[tuple[int, int]]:
-    """:func:`contiguous_runs` for a live tensor view (``data_ptr`` already
-    includes the storage offset)."""
-    return contiguous_runs(view.data_ptr(), view.element_size(), 0, tuple(view.shape), tuple(view.stride()))
+    """``(device_addr, num_bytes)`` runs for a live tensor view, in C order."""
+    esize = view.element_size()
+    base = view.data_ptr()
+    return [(base + off * esize, n * esize) for off, n in region_elem_runs(0, tuple(view.shape), tuple(view.stride()))]
 
 
 def match_runs(src_runs: list[tuple[int, int]], dst_runs: list[tuple[int, int]]) -> list[tuple[int, int, int]]:
