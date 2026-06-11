@@ -60,7 +60,6 @@ temperature = 1.0
 [[orchestrator.train.env]]
 id = "rlm_swe"
 name = "rlm-swe-r2e"
-num_workers = 4
 
 [orchestrator.train.env.args]
 labels = ["rlm-swe-qwen35-4b"]
@@ -73,7 +72,6 @@ interval = 20
 [[orchestrator.eval.env]]
 id = "rlm_swe"
 name = "rlm-swe-swebench-verified-quick"
-num_workers = 4
 timeout = { rollout = 3600 }
 
 [orchestrator.eval.env.args]

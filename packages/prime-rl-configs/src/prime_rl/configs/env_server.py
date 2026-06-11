@@ -1,7 +1,5 @@
 from pathlib import Path
 
-from pydantic import model_validator
-
 from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.shared import LogConfig
 from prime_rl.utils.config import BaseConfig
@@ -17,11 +15,3 @@ class EnvServerConfig(BaseConfig):
 
     output_dir: Path = Path("outputs")
     """Directory to write outputs to — logs and any generated artifacts are written as subdirectories."""
-
-    @model_validator(mode="after")
-    def resolve_num_workers(self):
-        # The standalone env server has no concurrency context to scale from (it's driven by
-        # external clients), so ``auto`` can't mean per-rollout scaling here — it's just 4.
-        if self.env.num_workers == "auto":
-            self.env.num_workers = 4
-        return self

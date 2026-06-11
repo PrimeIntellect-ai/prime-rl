@@ -1,5 +1,6 @@
 from functools import partial
 
+from verifiers.v1 import pool_serve_kwargs
 from verifiers.v1.serve import serve_env
 
 from prime_rl.configs.env_server import EnvServerConfig
@@ -13,13 +14,13 @@ from prime_rl.utils.utils import clean_exit
 def run_server(config: EnvServerConfig):
     env = config.env
     address = env.address or "tcp://127.0.0.1:5000"
-    # A single in-process server (num_workers=1) or a router + worker pool (>1); a v0/legacy
-    # env runs through the bridge, a v1 env is a native taskset — both serve vf.Trace over
-    # the same protocol, so the orchestrator is agnostic. serve_env applies the logging setup
-    # in this process and in every spawned worker.
+    # The env's ``pool`` (static or elastic) sizes the server; a v0/legacy env runs through
+    # the bridge, a v1 env is a native taskset — both serve vf.Trace over the same protocol,
+    # so the orchestrator is agnostic. serve_env applies the logging setup in this process
+    # and in every spawned worker.
     server_kwargs = {"env_id": env.env_id, "env_args": env.args} if env.is_legacy else {"config": env}
     serve_env(
-        num_workers=env.num_workers,
+        **pool_serve_kwargs(env.pool),
         legacy=env.is_legacy,
         address=address,
         log_setup=partial(setup_env_server_logging, config.log.level, config.log.json_logging),
