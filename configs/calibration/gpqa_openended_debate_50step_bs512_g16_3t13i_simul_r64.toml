@@ -1,6 +1,8 @@
 # Fifty-step GPQA open-ended simultaneous debate run (default schedule: propose a||b -> critique a||b -> judge) for one 16-node GH200 allocation.
 #
-# Topology: 1 train node + 15 independent inference replicas (TP=4 per 4xGH200 node).
+# Topology: 3 train nodes + 13 independent inference replicas (TP=4 per 4xGH200 node).
+# Balanced for the patched decode rate (~4.3k tok/s/replica): trainer ~3.3 min/step,
+# rollout ~4 min/step at bs512.
 # Serving runs with the vLLM 0.22 sampler hot-path patches (fix/inference-hotpath):
 # decode measured at ~4.2k tok/s/node under full production sampling, 3.04x the
 # unpatched baseline.
@@ -12,7 +14,7 @@
 #   1. in-debate: judge-facing metrics (eval/*/debate/twc_*, position_bias, ...)
 #   2. single-agent: question -> answer accuracy vs ground truth (hf-singleturn)
 
-output_dir = "outputs/isambard/calibration/gpqa_openended_debate_50step_bs512_g16_1t15i_simul_r64"
+output_dir = "outputs/isambard/calibration/gpqa_openended_debate_50step_bs512_g16_3t13i_simul_r64"
 max_steps = 50
 seq_len = 32768
 
@@ -21,7 +23,7 @@ level = "info"
 
 [wandb]
 project = "gpqa-openended-debate-calibration"
-name = "qwen35-bs512-g16-1t15i-50step-openended-simul-r64"
+name = "qwen35-bs512-g16-3t13i-50step-openended-simul-r64"
 
 [model]
 name = "Qwen/Qwen3.5-35B-A3B"
@@ -37,9 +39,9 @@ keep_all = true
 [deployment]
 type = "multi_node"
 gpus_per_node = 4
-num_train_nodes = 1
+num_train_nodes = 3
 num_infer_nodes = 1
-num_infer_replicas = 15
+num_infer_replicas = 13
 
 [trainer]
 pack_samples = true
@@ -71,7 +73,7 @@ lr = 1e-5
 training_mode = "rl"
 batch_size = 512
 group_size = 16
-max_inflight_rollouts = 1536
+max_inflight_rollouts = 1424
 max_off_policy_steps = 8
 dump_trajectory = false
 dump_failed_train_rollouts = true

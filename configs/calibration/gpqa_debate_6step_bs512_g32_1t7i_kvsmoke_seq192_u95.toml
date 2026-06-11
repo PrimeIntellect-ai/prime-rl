@@ -1,0 +1,18 @@
+# Diagnostic overlay for the 1 train / 7 inference GPQA smoke.
+# Launch with the 12-step base config first, then this overlay:
+#   uv run --no-sync rl @ configs/calibration/gpqa_debate_12step_bs512_g32_1t7i_kvsmoke.toml @ configs/calibration/gpqa_debate_6step_bs512_g32_1t7i_kvsmoke_seq192_u95.toml
+
+output_dir = "outputs/isambard/calibration/gpqa_openended_debate_6step_bs512_g32_1t7i_kvsmoke_seq192_u95"
+max_steps = 6
+
+[wandb]
+name = "qwen35-bs512-g32-1t7i-6step-openended-extended-kvsmoke-seq192-u95"
+
+[orchestrator]
+max_off_policy_steps = 4
+
+[inference]
+gpu_memory_utilization = 0.95
+
+[inference.vllm_extra]
+max_num_seqs = 192
