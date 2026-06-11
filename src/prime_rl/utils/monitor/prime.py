@@ -16,8 +16,8 @@ import verifiers as vf
 from prime_cli.core.config import Config as PrimeConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 
+from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.shared import PrimeMonitorConfig
-from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor, sample_items_for_logging
 
@@ -89,50 +89,6 @@ def _drop_non_finite_json_values(value: Any, dropped_paths: list[str], path: str
     return value
 
 
-def _get_nested_attr(obj: Any, *path: str) -> Any:
-    for attr in path:
-        if obj is None:
-            return None
-        obj = getattr(obj, attr, None)
-    return obj
-
-
-def _get_orchestrator_config(run_config: BaseConfig | None) -> Any:
-    return _get_nested_attr(run_config, "orchestrator") or run_config
-
-
-def _get_run_environments(run_config: BaseConfig | None) -> Any:
-    for path in (("env",), ("train", "env"), ("orchestrator", "train", "env")):
-        environments = _get_nested_attr(run_config, *path)
-        if environments:
-            return environments
-    return None
-
-
-def _get_run_base_model(run_config: BaseConfig | None) -> str:
-    return (
-        _get_nested_attr(_get_orchestrator_config(run_config), "student", "model", "name")
-        or _get_nested_attr(run_config, "model", "name")
-        or "unknown"
-    )
-
-
-def _get_run_display_config(run_config: BaseConfig | None) -> dict[str, Any]:
-    source = _get_orchestrator_config(run_config)
-    display_config: dict[str, Any] = {}
-
-    for payload_field, config_field in (
-        ("batch_size", "batch_size"),
-        ("rollouts_per_example", "group_size"),
-        ("seq_len", "seq_len"),
-    ):
-        value = _get_nested_attr(source, config_field)
-        if value is not None:
-            display_config[payload_field] = value
-
-    return display_config
-
-
 class PrimeMonitor(Monitor):
     """Logs to Prime Intellect API."""
 
@@ -156,7 +112,7 @@ class PrimeMonitor(Monitor):
         config: PrimeMonitorConfig | None,
         output_dir: Path | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
-        run_config: BaseConfig | None = None,
+        run_config: OrchestratorConfig | None = None,
         keep_full_history: bool = True,
     ):
         self.config = config
@@ -229,7 +185,7 @@ class PrimeMonitor(Monitor):
             if config.log_extras.distributions:
                 self.last_log_distributions_step = -1
 
-    def _register_run(self, config: PrimeMonitorConfig, run_config: BaseConfig | None) -> str | None:
+    def _register_run(self, config: PrimeMonitorConfig, run_config: OrchestratorConfig | None) -> str | None:
         """Register an external run with the platform. Returns run_id on success, None on failure."""
         prime_config = None
         team_id = config.team_id
@@ -241,25 +197,23 @@ class PrimeMonitor(Monitor):
         if frontend_url is None:
             frontend_url = prime_config.frontend_url
 
-        display_config = _get_run_display_config(run_config)
-        environments = _get_run_environments(run_config)
-        wandb = getattr(run_config, "wandb", None) if run_config else None
-
         payload: dict[str, Any] = {
-            "base_model": _get_run_base_model(run_config),
-            "max_steps": _get_nested_attr(_get_orchestrator_config(run_config), "max_steps") or 0,
-            **display_config,
+            "base_model": run_config.student.model.name if run_config else "unknown",
+            "max_steps": (run_config.max_steps if run_config else None) or 0,
         }
         if run_config:
+            if run_config.batch_size is not None:
+                payload["batch_size"] = run_config.batch_size
+            payload["rollouts_per_example"] = run_config.group_size
+            payload["seq_len"] = run_config.seq_len
+            payload["environments"] = [{"id": env.id} for env in run_config.train.env]
             payload["run_config"] = run_config.model_dump(exclude_none=True, mode="json")
+            if run_config.wandb:
+                payload["wandb_project"] = run_config.wandb.project
         if config.run_name:
             payload["name"] = config.run_name
         if team_id:
             payload["team_id"] = team_id
-        if environments:
-            payload["environments"] = [{"id": env.id} for env in environments if hasattr(env, "id")]
-        if wandb and getattr(wandb, "project", None):
-            payload["wandb_project"] = wandb.project
 
         try:
             response = httpx.post(

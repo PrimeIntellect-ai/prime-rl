@@ -1,16 +1,12 @@
 import io
 import json
-from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pyarrow.parquet as pq
 
-from prime_rl.utils.monitor.prime import (
-    PrimeMonitor,
-    _get_run_base_model,
-    _get_run_display_config,
-    _get_run_environments,
-)
+from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.configs.shared import PrimeMonitorConfig
+from prime_rl.utils.monitor.prime import PrimeMonitor
 
 
 def _new_monitor() -> PrimeMonitor:
@@ -100,25 +96,39 @@ def test_rollouts_to_parquet_bytes_skips_rollouts_without_trajectory():
     assert rows[0]["sample_id"] == 0
 
 
-def test_run_display_metadata_uses_orchestrator_config_shape():
-    env = SimpleNamespace(id="primeintellect/reverse-text")
-    run_config = SimpleNamespace(
-        orchestrator=SimpleNamespace(
-            student=SimpleNamespace(model=SimpleNamespace(name="PrimeIntellect/Qwen3-0.6B")),
-            train=SimpleNamespace(env=[env]),
-            batch_size=64,
-            group_size=16,
-            seq_len=4096,
-        )
+def test_register_run_sends_display_metadata_from_orchestrator_config():
+    run_config = OrchestratorConfig(
+        student={"model": {"name": "PrimeIntellect/Qwen3-0.6B"}},
+        renderer=None,
+        train={"env": [{"id": "primeintellect/reverse-text"}]},
+        batch_size=64,
+        group_size=16,
+        seq_len=4096,
+        max_steps=100,
     )
+    monitor = _new_monitor()
+    monitor.logger = Mock()
+    monitor.base_url = "https://api.test"
+    monitor._headers = {}
+    response = Mock(status_code=201)
+    response.json.return_value = {"run": {"id": "run-123"}}
 
-    assert _get_run_base_model(run_config) == "PrimeIntellect/Qwen3-0.6B"
-    assert _get_run_environments(run_config) == [env]
-    assert _get_run_display_config(run_config) == {
-        "batch_size": 64,
-        "rollouts_per_example": 16,
-        "seq_len": 4096,
-    }
+    with patch("prime_rl.utils.monitor.prime.httpx.post", return_value=response) as post:
+        run_id = monitor._register_run(
+            PrimeMonitorConfig(team_id="team-1", frontend_url="https://app.test"),
+            run_config,
+        )
+
+    assert run_id == "run-123"
+    payload = post.call_args.kwargs["json"]
+    assert payload["base_model"] == "PrimeIntellect/Qwen3-0.6B"
+    assert payload["max_steps"] == 100
+    assert payload["batch_size"] == 64
+    assert payload["rollouts_per_example"] == 16
+    assert payload["seq_len"] == 4096
+    assert payload["environments"] == [{"id": "primeintellect/reverse-text"}]
+    assert payload["team_id"] == "team-1"
+    assert payload["run_config"] == run_config.model_dump(exclude_none=True, mode="json")
 
 
 def test_sanitize_json_payload_drops_non_finite_values_and_logs_paths():
