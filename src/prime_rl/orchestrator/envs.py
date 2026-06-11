@@ -32,6 +32,11 @@ from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConf
 from prime_rl.orchestrator.types import Rollout
 from prime_rl.utils.logger import get_logger
 
+# Every wire trace validates into this type. WireTask (extra="allow") keeps the env's task
+# fields without importing the env package — the orchestrator never reads them typed (only
+# task.idx + task.model_dump).
+ROLLOUT_TYPE = Rollout[vf.WireTask]
+
 # Max wait for a spawned env server to bind and report its address. The child
 # loads the taskset (possibly downloading a dataset) before reporting, so this
 # is generous.
@@ -77,11 +82,6 @@ class Env:
         self.sampling_args: dict = {}
         self.num_tasks: int = 0
         self.requires_group_scoring: bool = False
-        # Validate the wire trace into a Rollout (prime-rl's Trace subclass) carrying the env's
-        # task fields as extras + prime-rl's orchestration metadata (defaulted here, set by the
-        # dispatcher). WireTask (extra="allow") keeps those fields without importing the env
-        # package — the orchestrator never reads them typed (only task.idx + task.model_dump).
-        self.trace_type = Rollout[vf.WireTask]
         self._env_client: EnvClient | None = None
         self._env_server_process: BaseProcess | None = None
 
@@ -175,8 +175,7 @@ class Env:
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        # Re-validate into our Rollout type; the env's task fields ride along as WireTask extras.
-        return self.trace_type.model_validate(wire.to_wire())
+        return ROLLOUT_TYPE.model_validate(wire.to_wire())
 
     async def run_group(
         self, client: vf.ClientConfig, task_idx: int, model_name: str, group_size: int, cache_salt: str | None
@@ -189,7 +188,7 @@ class Env:
             model=model_name,
             sampling=self._sampling(cache_salt),
         )
-        return [self.trace_type.model_validate(wire.to_wire()) for wire in wires]
+        return [ROLLOUT_TYPE.model_validate(wire.to_wire()) for wire in wires]
 
     def shutdown(self) -> None:
         if self._env_server_process is None:
