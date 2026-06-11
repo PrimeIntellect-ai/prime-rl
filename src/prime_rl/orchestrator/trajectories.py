@@ -218,9 +218,15 @@ def _observation_span_mask(tokens: dict[str, Any], prefix_len: int, mode: str | 
             "observation_tokens='tool' needs the renderer's per-token role attribution, "
             "which MITO rollouts don't carry — use the renderer, or observations='all'."
         )
-    indices = attribution["message_indices"]
-    roles = attribution["message_roles"]
-    is_content = attribution.get("is_content") or []
+
+    # Serialized steps carry the attribution as a dict of RenderedTokens
+    # fields; in-process steps may carry the dataclass itself.
+    def field(key: str) -> Any:
+        return attribution.get(key) if isinstance(attribution, dict) else getattr(attribution, key, None)
+
+    indices = field("message_indices")
+    roles = field("message_roles")
+    is_content = field("is_content") or []
     mask = []
     for k in span:
         idx = indices[k]
