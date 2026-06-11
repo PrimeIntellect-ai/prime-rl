@@ -1,7 +1,4 @@
-import asyncio
-
-from verifiers.v1.legacy import LegacyEnvServer
-from verifiers.v1.serve import EnvServer
+from verifiers.v1.serve import serve_env
 
 from prime_rl.configs.env_server import EnvServerConfig
 from prime_rl.orchestrator.utils import intercept_vf_logging
@@ -19,13 +16,16 @@ def run_server(config: EnvServerConfig):
 
     env = config.env
     address = env.address or "tcp://127.0.0.1:5000"
-    # A v0/legacy env runs a classic verifiers env through the bridge; a v1 env is a native
-    # v1 taskset. Both serve vf.Trace over the same protocol, so the orchestrator is agnostic.
-    if env.is_legacy:
-        server: EnvServer = LegacyEnvServer(env_id=env.env_id, env_args=env.args, address=address)
-    else:
-        server = EnvServer(env, address=address)
-    asyncio.run(server.run())
+    # A single in-process server (num_workers=1) or a router + worker pool (>1); a v0/legacy
+    # env runs through the bridge, a v1 env is a native taskset — both serve vf.Trace over
+    # the same protocol, so the orchestrator is agnostic.
+    server_kwargs = {"env_id": env.env_id, "env_args": env.args} if env.is_legacy else {"config": env}
+    serve_env(
+        num_workers=env.num_workers,
+        legacy=env.is_legacy,
+        address=address,
+        **server_kwargs,
+    )
 
 
 def main():

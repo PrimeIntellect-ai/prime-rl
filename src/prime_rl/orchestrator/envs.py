@@ -25,8 +25,7 @@ from pathlib import Path
 from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
-from verifiers.v1.legacy import LegacyEnvServer
-from verifiers.v1.serve import EnvClient, EnvServer
+from verifiers.v1.serve import EnvClient
 
 from prime_rl.configs.orchestrator import EnvConfig, EvalEnvConfig, TrainEnvConfig
 from prime_rl.orchestrator.types import Rollout
@@ -38,10 +37,21 @@ from prime_rl.utils.logger import get_logger
 ENV_SERVER_SPAWN_TIMEOUT = 600.0
 
 
-def _run_env_server(*, log_file: str, log_level: str, json_logging: bool, legacy: bool = False, **kwargs) -> None:
+def _run_env_server(
+    *,
+    log_file: str,
+    log_level: str,
+    json_logging: bool,
+    num_workers: int = 1,
+    legacy: bool = False,
+    **kwargs,
+) -> None:
     """Spawned-process entry point: send the env server's output (its logging + any
-    subprocess-runtime output) to ``log_file``, then serve. Top-level so it stays
-    picklable for the ``spawn`` start method. ``legacy`` picks the v0 bridge server."""
+    subprocess-runtime output) to ``log_file``, then serve via ``serve_env`` — a single
+    in-process server when ``num_workers <= 1``, else a router + worker pool. Top-level so
+    it stays picklable for the ``spawn`` start method. ``legacy`` picks the v0 bridge."""
+    from verifiers.v1.serve import serve_env
+
     from prime_rl.orchestrator.utils import intercept_vf_logging
     from prime_rl.utils.logger import setup_logger
 
@@ -50,8 +60,7 @@ def _run_env_server(*, log_file: str, log_level: str, json_logging: bool, legacy
     os.dup2(fh.fileno(), sys.stderr.fileno())
     setup_logger(log_level, json_logging=json_logging)
     intercept_vf_logging(logger="verifiers.v1", level=log_level)
-    server_cls = LegacyEnvServer if legacy else EnvServer
-    server_cls.run_server(**kwargs)
+    serve_env(num_workers=num_workers, legacy=legacy, **kwargs)
 
 
 class Env:
@@ -120,12 +129,14 @@ class Env:
             if self.config.is_legacy
             else dict(legacy=False, config=self.config)
         )
+        num_workers = self.config.num_workers
         process = ctx.Process(
             target=_run_env_server,
             kwargs=dict(
                 log_file=str(log_file),
                 log_level=log_level,
                 json_logging=json_logging,
+                num_workers=4 if num_workers == "auto" else num_workers,
                 address="tcp://127.0.0.1:0",
                 address_queue=address_queue,
                 **server_kwargs,
