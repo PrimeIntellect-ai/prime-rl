@@ -54,7 +54,7 @@ CUDA_VISIBLE_DEVICES=0,1 uv run rl @ rl.toml --output-dir outputs/exp1
 bash scripts/tmux.sh -s exp2 -o outputs/exp2
 CUDA_VISIBLE_DEVICES=2,3 uv run rl @ rl.toml \
   --inference.server.port 8001 \
-  --orchestrator.client.base-url http://localhost:8001/v1 \
+  --orchestrator.model.client.base-url http://localhost:8001/v1 \
   --output-dir outputs/exp2
 ```
 
