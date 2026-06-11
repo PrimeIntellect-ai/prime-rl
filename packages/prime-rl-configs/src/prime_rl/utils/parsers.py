@@ -22,6 +22,8 @@ REASONING_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^zai-org/GLM-"), "glm45"),
     (re.compile(r"^MiniMaxAI/MiniMax-M2"), "minimax_m2_append_think"),
     (re.compile(r"^PrimeIntellect/INTELLECT-3"), "deepseek_r1"),
+    (re.compile(r"^nvidia/NVIDIA-Nemotron-3-Super"), "nemotron_v3"),
+    (re.compile(r"^nvidia/NVIDIA-Nemotron-3-Nano"), "nano_v3"),
     (re.compile(r"^stepfun-ai/Step-3\.5"), "step3p5"),
     # Only Qwen3 Thinking models reason — Instruct/base models do not.
     (re.compile(r"^Qwen/Qwen3-.*Thinking"), "deepseek_r1"),
