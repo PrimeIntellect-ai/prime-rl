@@ -1,0 +1,30 @@
+max_steps = 7
+seq_len = 2048
+
+[ckpt]
+resume_step = 3
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[trainer.model.debug]
+num_layers = 1
+random_init = true
+
+[trainer.optim]
+lr = 3e-6
+
+[orchestrator]
+batch_size = 128
+group_size = 16
+
+[orchestrator.train.sampling]
+max_completion_tokens = 128
+
+[[orchestrator.train.env]]
+id = "reverse-text"
+
+[inference]
+
+[orchestrator.renderer]
+name = "default"
