@@ -514,15 +514,16 @@ def _is_retryable_lora_error(exception: BaseException) -> bool:
     return False
 
 
-# Per-attempt and total bounds for `/load_lora_adapter`. A LoRA load is fast
-# (small adapter file + KV cache reset, single-digit seconds in practice) but
-# the global admin AsyncClient uses `timeout=None`, so a stuck server hangs
-# the orchestrator forever inside `ElasticInferencePool._sync_server_adapter`.
-# `_PER_ATTEMPT` converts a hang into a TimeoutException so tenacity retries;
-# `_TOTAL` is the wall-clock budget across all retries — pick whichever
-# stop condition fires first.
-LORA_LOAD_READ_TIMEOUT_S = 30.0
-LORA_LOAD_TOTAL_TIMEOUT_S = 120.0
+# Per-attempt and total bounds for `/load_lora_adapter`. Sized for the worst
+# real case, not the best: a rank-64 expert-targeted adapter is a multi-GB
+# safetensors file, and at weight-update time every replica reads it from
+# Lustre simultaneously while still serving decode traffic — 30s reads were
+# routinely exceeded at 13 replicas (watcher died, fail-fast killed the run,
+# 2026-06-11). The bounds still convert a genuinely stuck server into a
+# TimeoutException (tenacity retries per attempt; `_TOTAL` is the wall-clock
+# budget across all retries — whichever stop condition fires first).
+LORA_LOAD_READ_TIMEOUT_S = 240.0
+LORA_LOAD_TOTAL_TIMEOUT_S = 900.0
 
 
 async def load_lora_adapter(admin_clients: list[AsyncClient], lora_name: str, lora_path: Path) -> None:
