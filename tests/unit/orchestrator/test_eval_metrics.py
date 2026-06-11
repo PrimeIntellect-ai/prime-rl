@@ -152,7 +152,6 @@ def _debate_rubric(truth_member: str | None) -> DebateRubric:
         question={},
         fields={},
         think_visibility={},
-        prefill={},
         opponent_wrap=None,
         judges={},
         source_ref="test",
