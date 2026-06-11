@@ -113,7 +113,6 @@ interval = 25
 num_examples = 100
 seed = 42
 rollouts_per_example = 8
-max_concurrent_rollouts_per_client = 32
 num_workers = 96
 
 [orchestrator.eval.sampling]

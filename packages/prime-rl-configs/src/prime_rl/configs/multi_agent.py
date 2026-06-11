@@ -200,8 +200,11 @@ class MultiAgentConfig(BaseConfig):
         return self.train_one is not None or bool(self.fixed)
 
 
-def stable_train_member(members: list[str], *, seed: int, dispatch_id: object) -> str:
-    payload = f"{seed}:{dispatch_id}".encode()
+def _stable_index(payload: bytes, n: int) -> int:
+    """Deterministic, platform-stable index in ``range(n)`` for a payload."""
     digest = hashlib.sha256(payload).digest()
-    idx = int.from_bytes(digest[:8], "big") % len(members)
-    return members[idx]
+    return int.from_bytes(digest[:8], "big") % n
+
+
+def stable_train_member(members: list[str], *, seed: int, dispatch_id: object) -> str:
+    return members[_stable_index(f"{seed}:{dispatch_id}".encode(), len(members))]

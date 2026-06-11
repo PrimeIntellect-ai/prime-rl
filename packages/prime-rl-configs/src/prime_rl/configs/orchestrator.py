@@ -360,9 +360,6 @@ class EvalEnvConfig(EnvConfig):
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8)."""
 
-    max_concurrent_rollouts_per_client: int | None = Field(None, ge=1)
-    """Maximum active eval rollouts per inference client. None uses normal round-robin client selection."""
-
     interval: int = Field(100, ge=1)
     """Per-env eval interval. If unset, inherits from the group-level eval interval."""
 
@@ -432,9 +429,6 @@ class EvalConfig(BaseConfig):
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "rollouts_per_example"))
     """Default rollouts per example. Can be overridden per env."""
 
-    max_concurrent_rollouts_per_client: int | None = Field(None, ge=1)
-    """Maximum active eval rollouts per inference client. Can be overridden per env."""
-
     num_workers: int | Literal["auto"] = "auto"
     """Default worker processes for env servers. Can be overridden per env."""
 
@@ -450,7 +444,7 @@ class EvalConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_env_defaults(self):
-        """Resolve per-env overrides: inherit group-level sampling, num_workers, max_retries, num_examples, seed, group_size, max_concurrent_rollouts_per_client, and interval. Then resolve auto num_workers."""
+        """Resolve per-env overrides: inherit group-level sampling, num_workers, max_retries, num_examples, seed, group_size, and interval. Then resolve auto num_workers."""
         group_sampling = self.sampling.model_dump()
         for env in self.env:
             if "sampling" not in env.model_fields_set:
@@ -464,8 +458,6 @@ class EvalConfig(BaseConfig):
                 env.seed = self.seed
             if "group_size" not in env.model_fields_set:
                 env.group_size = self.group_size
-            if "max_concurrent_rollouts_per_client" not in env.model_fields_set:
-                env.max_concurrent_rollouts_per_client = self.max_concurrent_rollouts_per_client
             if "interval" not in env.model_fields_set:
                 env.interval = self.interval
             if "num_workers" not in env.model_fields_set:

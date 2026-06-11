@@ -3,7 +3,7 @@
 # Topology: 1 train node + 7 independent inference replicas. Each inference
 # replica owns one 4xGH200 node and serves Qwen3.5 with TP=4.
 
-output_dir = "outputs/isambard/calibration/gpqa_openended_debate_12step_bs512_g32_1t7i_kvsmoke"
+output_dir = "outputs/isambard/calibration/gpqa_openended_debate_12step_bs512_g16_1t7i_kvsmoke"
 max_steps = 12
 seq_len = 32768
 
@@ -12,7 +12,7 @@ level = "info"
 
 [wandb]
 project = "gpqa-openended-debate-calibration"
-name = "qwen35-bs512-g32-1t7i-12step-openended-kvsmoke"
+name = "qwen35-bs512-g16-1t7i-12step-openended-kvsmoke"
 
 [model]
 name = "Qwen/Qwen3.5-35B-A3B"
@@ -109,7 +109,6 @@ interval = 12
 skip_first_step = true
 num_examples = 16
 group_size = 4
-max_concurrent_rollouts_per_client = 8
 num_workers = 12
 
 [[orchestrator.eval.env]]

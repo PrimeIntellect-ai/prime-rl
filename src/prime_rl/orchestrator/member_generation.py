@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
@@ -10,6 +9,7 @@ from prime_rl.configs.multi_agent import (
     FixedMemberTargetConfig,
     MultiAgentConfig,
     RequestMode,
+    _stable_index,
     stable_train_member,
 )
 from prime_rl.utils.client import build_client
@@ -31,9 +31,7 @@ def _dispatch_index(values: list[str], *, target_name: str, member_id: str, grou
     # Group-stable on purpose: consecutive turns of the same fixed member
     # within one group hit the same server (KV prefix-cache reuse), while
     # different groups still spread across the pool.
-    payload = f"{target_name}:{member_id}:{group_id}".encode()
-    digest = hashlib.sha256(payload).digest()
-    return int.from_bytes(digest[:8], "big") % len(values)
+    return _stable_index(f"{target_name}:{member_id}:{group_id}".encode(), len(values))
 
 
 def _fixed_client(
@@ -70,39 +68,26 @@ def fixed_member_targets(config: MultiAgentConfig) -> dict[str, str]:
 
 def dispatch_id_for_rollout(rollout: Mapping[str, Any]) -> object:
     dispatch_id = rollout.get(DISPATCH_ID_FIELD)
-    if dispatch_id is not None:
-        return dispatch_id
-    info = rollout.get("info")
-    if isinstance(info, Mapping):
-        dispatch_id = info.get(DISPATCH_ID_FIELD)
-        if dispatch_id is not None:
-            return dispatch_id
-        prime_rl = info.get("prime_rl")
-        if isinstance(prime_rl, Mapping) and prime_rl.get(DISPATCH_ID_FIELD) is not None:
-            return prime_rl[DISPATCH_ID_FIELD]
-    return rollout.get("trajectory_id") or rollout.get("example_id") or ""
-
-
-def trainable_member_ids(config: MultiAgentConfig, *, dispatch_id: object) -> set[str] | None:
-    if config.train_one is None:
-        return None
-    selected = stable_train_member(
-        config.train_one.members,
-        seed=config.train_one.seed,
-        dispatch_id=dispatch_id,
-    )
-    return {selected}
+    if dispatch_id is None:
+        raise RuntimeError(
+            f"multi_agent train_one requires {DISPATCH_ID_FIELD!r} on the rollout — the orchestrator "
+            "stamps it on every dispatched rollout, so its absence means the rollout did not come "
+            "through the dispatcher."
+        )
+    return dispatch_id
 
 
 def is_trainable_member(config: MultiAgentConfig, rollout: Mapping[str, Any], member_id: str) -> bool:
     if member_id in fixed_member_targets(config):
         return False
-    trainable = trainable_member_ids(config, dispatch_id=dispatch_id_for_rollout(rollout))
-    if trainable is None:
+    if config.train_one is None or member_id not in config.train_one.members:
         return True
-    if config.train_one is not None and member_id in config.train_one.members:
-        return member_id in trainable
-    return True
+    selected = stable_train_member(
+        config.train_one.members,
+        seed=config.train_one.seed,
+        dispatch_id=dispatch_id_for_rollout(rollout),
+    )
+    return member_id == selected
 
 
 def _target_name_for_member(

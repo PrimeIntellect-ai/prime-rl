@@ -31,12 +31,11 @@ def _member(
     member_id: str = "debater_a",
     reward: float = 1.0,
     episode_id: str = "ep-0",
-    task: object = ENV_NAME,
-    env_name: str | None = None,
+    env_name: object = ENV_NAME,
 ) -> MemberRollout:
     rollout = MemberRollout(
         example_id=example_id,
-        task=task,
+        task=ENV_NAME,
         trajectory=[],
         sampling_args={"temperature": 0.7},
         error=None,
@@ -44,13 +43,12 @@ def _member(
         episode_id=episode_id,
         member_id=member_id,
     )
-    if env_name is not None:
-        rollout["env_name"] = env_name
+    rollout["env_name"] = env_name
     return rollout
 
 
 def _pair_rows(
-    episode_id: str, reward: float, *, example_id: int | str = 1, env_name: str | None = None
+    episode_id: str, reward: float, *, example_id: int | str = 1, env_name: str = ENV_NAME
 ) -> list[MemberRollout]:
     """Both rows of one zero-sum episode: canonical ``debater_a`` gets ``reward``."""
     return [
@@ -386,7 +384,6 @@ def test_baselines_partition_by_env_and_example():
 def test_fan_out_carries_env_name_for_rae_identity():
     state = RAEState()
     episode = {
-        "env_name": "gpqa_debate",
         "example_id": 1,
         "task": {"question": "q"},
         "trajectory": [{"extras": {"member_id": m}} for m in ("prover", "verifier")],
@@ -402,7 +399,7 @@ def test_fan_out_carries_env_name_for_rae_identity():
         },
     }
 
-    units, mapping = fan_out_for_multi_agent([episode])
+    units, mapping = fan_out_for_multi_agent([episode], env_name="gpqa_debate")
     episode_pairs = extract_episode_pairs_for_multi_agent([episode], MultiAgentConfig())
     compute_rae_advantages(units, state, episode_pairs=episode_pairs)
 
@@ -413,7 +410,6 @@ def test_fan_out_carries_env_name_for_rae_identity():
 
 def test_fan_out_respects_trainable_member_predicate():
     episode = {
-        "env_name": ENV_NAME,
         "example_id": 1,
         "task": ENV_NAME,
         "trajectory": [{"extras": {"member_id": m}} for m in ("debater_a", "debater_b", "judge")],
@@ -432,6 +428,7 @@ def test_fan_out_respects_trainable_member_predicate():
 
     units, mapping = fan_out_for_multi_agent(
         [episode],
+        env_name=ENV_NAME,
         is_trainable_member=lambda _rollout, member_id: member_id == "debater_a",
     )
 
@@ -475,9 +472,9 @@ def test_rae_stats_merge_accumulates_and_keeps_freshest_key_count():
     assert merged.baseline_keys_total == 2
 
 
-def test_rae_requires_string_identity_when_task_is_the_fallback():
+def test_rae_requires_string_env_name():
     state = RAEState()
-    rollout = _member(task={"question": "q"}, env_name=None)
+    rollout = _member(env_name={"question": "q"})
 
     with pytest.raises(TypeError, match="string env_name"):
         compute_rae_advantages([rollout], state, episode_pairs=_pairs([1.0]))

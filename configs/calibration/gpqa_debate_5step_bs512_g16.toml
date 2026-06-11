@@ -105,7 +105,6 @@ sampling = { temperature = 0.7, top_p = 0.8, max_completion_tokens = 1024, extra
 interval = 5
 num_examples = 16
 group_size = 4
-max_concurrent_rollouts_per_client = 32
 num_workers = 12
 
 # WARNING (verifiers pin 6a070bfa): gpqa_debate.build_split takes a prefix of the

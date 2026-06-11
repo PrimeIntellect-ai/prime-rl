@@ -79,7 +79,7 @@ def _build_rollout(
 
 def test_fan_out_keeps_all_members_by_default():
     rollouts = [_build_rollout(include_judge=True)]
-    units, mapping = fan_out_for_multi_agent(rollouts)
+    units, mapping = fan_out_for_multi_agent(rollouts, env_name="debate_v1")
     assert len(units) == 3
     assert {u["member_id"] for u in units} == {"debater_a", "debater_b", "judge"}
     assert mapping == [[0, 1, 2]]
@@ -89,6 +89,7 @@ def test_fan_out_filters_with_trainability_predicate():
     rollouts = [_build_rollout(include_judge=True)]
     units, mapping = fan_out_for_multi_agent(
         rollouts,
+        env_name="debate_v1",
         is_trainable_member=lambda _rollout, member_id: member_id != "judge",
     )
     assert {u["member_id"] for u in units} == {"debater_a", "debater_b"}
@@ -104,7 +105,7 @@ def test_fan_out_index_mapping_for_multiple_rollouts():
         _build_rollout(example_id=2, trajectory_id="ep-2"),
         _build_rollout(example_id=3, trajectory_id="ep-3"),
     ]
-    units, mapping = fan_out_for_multi_agent(rollouts)
+    units, mapping = fan_out_for_multi_agent(rollouts, env_name="debate_v1")
     # 3 rollouts × 3 members each = 9 units
     assert len(units) == 9
     assert mapping == [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
@@ -133,6 +134,7 @@ def test_fan_out_pipeline_into_compute_rae_advantages():
     )
     units, _mapping = fan_out_for_multi_agent(
         rollouts,
+        env_name="debate_v1",
         is_trainable_member=lambda _rollout, member_id: member_id != "judge",
     )
     # Pairs come from the unfiltered mar_score; the fixed judge is excluded
@@ -158,7 +160,7 @@ def test_fan_out_pipeline_into_compute_rae_advantages():
 
 
 def test_fan_out_handles_empty_rollouts_list():
-    units, mapping = fan_out_for_multi_agent([])
+    units, mapping = fan_out_for_multi_agent([], env_name="debate_v1")
     assert units == []
     assert mapping == []
 
@@ -167,6 +169,7 @@ def test_fan_out_trainability_predicate_keeps_only_matching_member():
     rollouts = [_build_rollout(example_id=1, trajectory_id="ep-1")]
     units, mapping = fan_out_for_multi_agent(
         rollouts,
+        env_name="debate_v1",
         is_trainable_member=lambda _rollout, member_id: member_id == "debater_a",
     )
     assert [u["member_id"] for u in units] == ["debater_a"]

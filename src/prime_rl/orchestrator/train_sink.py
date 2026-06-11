@@ -279,11 +279,10 @@ class TrainSink:
         if self.rae_state is None:
             raise RuntimeError("Multi-agent training requires advantage.type='rae'.")
 
-        raw_episodes: list[vf.RolloutOutput] = []
-        for episode in episodes:
-            episode.raw["env_name"] = episode.env_name
-            raw_episodes.append(episode.raw)
-        member_raws, episode_to_member_idxs = fan_out_trainable_for_multi_agent(raw_episodes, self.config.multi_agent)
+        raw_episodes = [episode.raw for episode in episodes]
+        member_raws, episode_to_member_idxs = fan_out_trainable_for_multi_agent(
+            raw_episodes, self.config.multi_agent, env_name=episodes[0].env_name
+        )
         # Pairs come from the UNFILTERED mar_score: frame derivation and
         # zero-sum validation must not depend on which seats train_one kept
         episode_pairs = extract_episode_pairs_for_multi_agent(raw_episodes, self.config.multi_agent)
@@ -317,11 +316,13 @@ class TrainSink:
         return out
 
     def _is_multi_agent_episode_rollout(self, rollout: TrainRollout) -> bool:
-        return self.train_envs.get(rollout.env_name).is_multi_agent and "mar_score" in rollout.raw
+        # Episodes arrive from the dispatcher; member rows are projections the
+        # sink itself creates (``project_multi_agent_group`` sets their
+        # ``source_rollout_id`` to the episode they came from).
+        return self.train_envs.get(rollout.env_name).is_multi_agent and rollout.source_rollout_id is None
 
     @staticmethod
     def _inherit_episode_accounting(raw: vf.RolloutOutput, episode: TrainRollout) -> None:
-        raw.setdefault("env_name", episode.env_name)
         raw.setdefault("trajectory_id", f"{episode.rollout_id}:{raw.get('member_id', 'member')}")
         raw.setdefault("completion", None)
         # Member-level truncation: a member row is truncated iff one of its

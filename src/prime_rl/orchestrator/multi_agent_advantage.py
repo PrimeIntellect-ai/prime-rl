@@ -84,21 +84,19 @@ class RAEState:
 def fan_out_for_multi_agent(
     rollouts: list[Mapping],
     *,
+    env_name: str,
     is_trainable_member: MemberTrainability | None = None,
 ) -> tuple[list[MemberRollout], list[list[int]]]:
-    """Project episode rollouts to per-member training units."""
+    """Project episode rollouts to per-member training units, stamping
+    ``env_name`` on every member row for RAE baseline identity."""
     training_units: list[MemberRollout] = []
     rollout_to_unit_idxs: list[list[int]] = []
     for rollout in rollouts:
         members = rollout_to_member_rollouts(rollout)
         if is_trainable_member is not None:
             members = [member for member in members if is_trainable_member(rollout, member["member_id"])]
-        env_name = rollout.get("env_name")
-        if env_name is not None:
-            if not isinstance(env_name, str):
-                raise TypeError(f"rollout env_name must be a string for RAE identity, got {type(env_name).__name__}")
-            for member in members:
-                member["env_name"] = env_name
+        for member in members:
+            member["env_name"] = env_name
         rollout_to_unit_idxs.append(list(range(len(training_units), len(training_units) + len(members))))
         training_units.extend(members)
     return training_units, rollout_to_unit_idxs
@@ -107,10 +105,13 @@ def fan_out_for_multi_agent(
 def fan_out_trainable_for_multi_agent(
     rollouts: list[Mapping],
     config: MultiAgentConfig,
+    *,
+    env_name: str,
 ) -> tuple[list[MemberRollout], list[list[int]]]:
     """Project episode rollouts to the member rows that can enter training."""
     return fan_out_for_multi_agent(
         rollouts,
+        env_name=env_name,
         is_trainable_member=lambda rollout, member_id: is_bound_trainable_member(config, rollout, member_id),
     )
 
@@ -140,9 +141,7 @@ def extract_episode_pairs_for_multi_agent(
 
 
 def _rae_key(member_rollout: Mapping) -> RAEKey:
-    env_name = member_rollout.get("env_name")
-    if env_name is None:
-        env_name = member_rollout["task"]
+    env_name = member_rollout["env_name"]
     if not isinstance(env_name, str):
         raise TypeError(
             "RAE baseline identity requires a string env_name; "

@@ -54,76 +54,6 @@ class _DetectionMultiAgentEnv(MultiAgentEnv):
         state["completion"] = []
 
 
-class _EvalMonitor:
-    def log(self, *_args: Any, **_kwargs: Any) -> None:
-        pass
-
-    def log_eval_samples(self, *_args: Any, **_kwargs: Any) -> None:
-        pass
-
-
-def _stub_eval_monitor(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("prime_rl.orchestrator.envs.get_monitor", lambda: _EvalMonitor())
-
-
-class _FakeSingleAgentEval(EvalEnv):
-    def __init__(self) -> None:
-        self.config = type(
-            "Config",
-            (),
-            {
-                "resolved_name": "single-eval",
-                "group_size": 1,
-                "max_concurrent_rollouts_per_client": None,
-            },
-        )()
-        self.examples = [
-            {
-                "example_id": "single",
-                "prompt": [{"role": "user", "content": "q"}],
-                "answer": "a",
-            }
-        ]
-        self.sampling_args = {}
-        self.generations: list[vf.MemberGenerationPlan | None] = []
-
-    @property
-    def name(self) -> str:
-        return self.config.resolved_name
-
-    @property
-    def requires_group_scoring(self) -> bool:
-        return False
-
-    @property
-    def is_multi_agent(self) -> bool:
-        return False
-
-    async def run_rollout(self, **kwargs: Any) -> vf.RolloutOutput:
-        self.generations.append(kwargs["generation"])
-        return vf.RolloutOutput(
-            example_id="single",
-            reward=1.0,
-            completion=[{"role": "assistant", "content": "ok"}],
-            is_truncated=False,
-            token_usage={"final_output_tokens": 1},
-            trajectory=[],
-        )
-
-
-class _FakeMultiAgentEval(_FakeSingleAgentEval):
-    @property
-    def name(self) -> str:
-        return "ma-eval"
-
-    @property
-    def is_multi_agent(self) -> bool:
-        return True
-
-    def multi_agent_members(self) -> list[str]:
-        return ["debater_a", "debater_b", "judge"]
-
-
 def _multi_agent_config(base_url: str = "http://fixed/v1") -> MultiAgentConfig:
     return MultiAgentConfig(
         train_one=TrainOneConfig(
@@ -185,49 +115,6 @@ def test_env_collection_multi_agent_names_uses_env_predicate() -> None:
     }
 
     assert envs.multi_agent_names == {"members-only"}
-
-
-async def _eval_client() -> vf.ClientConfig:
-    return vf.ClientConfig(api_base_url="http://learner/v1")
-
-
-def test_single_agent_eval_ignores_train_multi_agent_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    _stub_eval_monitor(monkeypatch)
-    env = _FakeSingleAgentEval()
-
-    outputs = asyncio.run(
-        env.evaluate(
-            model_name="learner-model",
-            get_client=_eval_client,
-            ckpt_step=1,
-            step=1,
-            cache_salt="1",
-            multi_agent=_multi_agent_config(),
-        )
-    )
-
-    assert len(outputs) == 1
-    assert env.generations == [None]
-
-
-def test_multi_agent_eval_receives_member_generation_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    _stub_eval_monitor(monkeypatch)
-    env = _FakeMultiAgentEval()
-
-    outputs = asyncio.run(
-        env.evaluate(
-            model_name="learner-model",
-            get_client=_eval_client,
-            ckpt_step=1,
-            step=1,
-            cache_salt="1",
-            multi_agent=_multi_agent_config(),
-        )
-    )
-
-    assert len(outputs) == 1
-    assert env.generations[0] is not None
-    assert sorted(env.generations[0].members) == ["debater_a", "debater_b", "judge"]
 
 
 class RecordingOpenAIServer(ThreadingHTTPServer):
@@ -427,11 +314,12 @@ async def _run_prime_env_server_member_generation_smoke(monkeypatch: pytest.Monk
 class _RecordingInnerEnv:
     """Inner vf-env fake: records the kwargs the orchestrator Env forwards."""
 
+    requires_group_rollouts = False
+
     def __init__(self, *, is_multi_agent: bool, members: list[str] | None = None) -> None:
         self.is_multi_agent = is_multi_agent
         if members is not None:
             self.members = members
-        self.rubric = types.SimpleNamespace(_get_reward_funcs=lambda: [], _is_group_func=lambda _func: False)
         self.kwargs: dict[str, Any] | None = None
 
     async def run_rollout(self, _input: Any, **kwargs: Any) -> vf.RolloutOutput:
@@ -543,6 +431,7 @@ def test_dispatcher_eval_routes_trained_members_through_train_typed_client() -> 
 
         plan = inner.kwargs["generation"]
         assert plan is not None
+        assert sorted(plan.members) == ["debater_a", "debater_b", "judge"]
         selected = stable_train_member(["debater_a", "debater_b"], seed=0, dispatch_id=dispatch_id)
         frozen = ({"debater_a", "debater_b"} - {selected}).pop()
         assert plan.members[selected].client.client_type == "renderer"
