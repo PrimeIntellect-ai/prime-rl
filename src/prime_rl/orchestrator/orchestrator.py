@@ -224,7 +224,7 @@ class Orchestrator:
         # own pools in ``setup()`` below.
         get_logger().info(
             f"Initializing policy inference pool (base_url={', '.join(config.model.client.base_url)}, "
-            f"model={config.model.model.name})"
+            f"model={config.model.name})"
         )
         self.renderer, self.policy_inference = await setup_policy_inference_pool(
             config=config, tokenizer=self.tokenizer
@@ -290,7 +290,7 @@ class Orchestrator:
         self.policy.model_name = self.policy_inference.model_name
 
         get_logger().info("Waiting for policy inference pool to be ready")
-        await self.policy_inference.wait_for_ready(config.model.model.name)
+        await self.policy_inference.wait_for_ready(config.model.name)
         get_logger().success("Policy inference pool ready")
         # Build + ready pools for each env's frozen sampling source and the
         # algorithm's frozen reference model
@@ -320,7 +320,7 @@ class Orchestrator:
         get_logger().info(f"Initializing training batch sender ({config.rollout_transport})")
         self.sender = setup_training_batch_sender(config.output_dir, config.rollout_transport)
 
-        self.lora_name = config.model.model.lora.name if config.model.model.lora else None
+        self.lora_name = config.model.lora.name if config.model.lora else None
 
         if self.resume_step is not None and self.ckpt_manager is not None:
             self.ckpt_manager.load(self.progress, step=self.resume_step)

@@ -208,14 +208,12 @@ def test_orchestrator_vlm_requires_renderer():
     with pytest.raises(ValidationError, match="orchestrator.renderer must be set when model.vlm is set"):
         OrchestratorConfig.model_validate(
             {
-                "policy": {
-                    "model": {
-                        "name": "Qwen/Qwen3-VL-4B-Instruct",
-                        "vlm": {
-                            "vision_encoder_attr": "model.visual",
-                            "language_model_attr": "model.language_model",
-                        },
-                    }
+                "model": {
+                    "name": "Qwen/Qwen3-VL-4B-Instruct",
+                    "vlm": {
+                        "vision_encoder_attr": "model.visual",
+                        "language_model_attr": "model.language_model",
+                    },
                 },
                 "renderer": None,
             }
@@ -223,14 +221,12 @@ def test_orchestrator_vlm_requires_renderer():
 
     config = OrchestratorConfig.model_validate(
         {
-            "policy": {
-                "model": {
-                    "name": "Qwen/Qwen3-VL-4B-Instruct",
-                    "vlm": {
-                        "vision_encoder_attr": "model.visual",
-                        "language_model_attr": "model.language_model",
-                    },
-                }
+            "model": {
+                "name": "Qwen/Qwen3-VL-4B-Instruct",
+                "vlm": {
+                    "vision_encoder_attr": "model.visual",
+                    "language_model_attr": "model.language_model",
+                },
             },
         }
     )
@@ -254,7 +250,7 @@ def test_shared_model_name_propagates_to_subconfigs():
         }
     )
     assert config.trainer.model.name == model_name
-    assert config.orchestrator.model.model.name == model_name
+    assert config.orchestrator.model.name == model_name
     assert config.inference is not None and config.inference.model.name == model_name
     assert config.trainer.tokenizer.name == model_name
     assert config.orchestrator.tokenizer.name == model_name
@@ -309,7 +305,7 @@ def test_explicit_subconfig_tokenizer_name_survives_shared_model_propagation():
 
     This is the case that the old RL-level ``auto_setup_tokenizer`` fix-up got
     wrong: it unconditionally re-derived ``orchestrator.tokenizer.name`` from
-    ``orchestrator.model.model.name`` after propagation, silently overriding
+    ``orchestrator.model.name`` after propagation, silently overriding
     the user's explicit value. The ``mode="before"`` ``auto_setup_shared_configs``
     propagator fixes this because it propagates the model name into the raw
     dict before sub-configs are built, so ``OrchestratorConfig``'s own
@@ -329,7 +325,7 @@ def test_explicit_subconfig_tokenizer_name_survives_shared_model_propagation():
     )
     # Shared model.name reached every sub-config that didn't override it.
     assert config.trainer.model.name == "M"
-    assert config.orchestrator.model.model.name == "M"
+    assert config.orchestrator.model.name == "M"
     # Trainer didn't specify a tokenizer, so it falls back to the propagated model name.
     assert config.trainer.tokenizer.name == "M"
     # Orchestrator's explicit tokenizer name survived.
