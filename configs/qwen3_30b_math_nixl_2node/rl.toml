@@ -2,7 +2,7 @@
 # broadcast: trainer serves its native state dict as a NIXL pull source,
 # inference workers (EP=8) bake pull plans via lazy tensors and RDMA-READ
 # slices straight into their live parameters.
-output_dir = "/data/mika/qwen3-30b-math-nixl"
+output_dir = "/home/outputs/qwen3-30b-math-nixl"
 clean_output_dir = true
 max_steps = 10
 seq_len = 4096

@@ -1,6 +1,6 @@
 # NCCL-broadcast baseline twin of rl.toml — identical run, only the weight
 # transport differs. Used to compare mismatch_kl against the NIXL path.
-output_dir = "/data/mika/qwen3-30b-math-nccl"
+output_dir = "/home/outputs/qwen3-30b-math-nccl"
 clean_output_dir = true
 max_steps = 10
 seq_len = 4096
