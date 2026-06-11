@@ -36,16 +36,19 @@ def test_preset_expansion(name, model, source, advantage_type, advantage_model, 
     assert algo.advantage.action_loss_type == action_loss_type
 
 
-def test_preset_component_override():
-    algo = AlgorithmConfig(name="echo", advantage={"observation_weight": 0.5})
-    assert algo.advantage.type == "echo"  # an unset type inherits the preset's strategy
+def test_preset_with_component_override_is_rejected():
+    with pytest.raises(ValueError, match="presets are atomic"):
+        AlgorithmConfig(name="echo", advantage={"observation_weight": 0.5})
+    with pytest.raises(ValueError, match="presets are atomic"):
+        AlgorithmConfig(name="opd", model=FROZEN, advantage={"max_concurrent": 64})
+    with pytest.raises(ValueError, match="presets are atomic"):
+        AlgorithmConfig(name="grpo", sampling={"source": "policy"})
+
+
+def test_assembled_components_without_preset_name():
+    algo = AlgorithmConfig(advantage={"type": "echo", "observation_weight": 0.5})
+    assert algo.advantage.type == "echo"
     assert algo.advantage.observation_weight == 0.5
-
-
-def test_preset_advantage_override_without_type_inherits_strategy():
-    algo = AlgorithmConfig(name="opd", model=FROZEN, advantage={"max_concurrent": 64})
-    assert algo.advantage.type == "ref_kl"
-    assert algo.advantage.max_concurrent == 64
 
 
 def test_ref_kl_requires_model_reference():
@@ -70,7 +73,7 @@ def test_model_shorthand_without_target_errors():
 
 
 def test_model_shorthand_redundant_but_consistent_is_accepted():
-    algo = AlgorithmConfig(name="opd", model=FROZEN, advantage={"type": "ref_kl", "model": FROZEN})
+    algo = AlgorithmConfig(model=FROZEN, advantage={"type": "ref_kl", "model": FROZEN})
     assert isinstance(algo.advantage.model, FrozenModelConfig)
 
 
@@ -81,7 +84,7 @@ def test_ref_kl_rejects_policy():
 
 def test_rl_loss_type_incompatible_with_frozen_sampling():
     with pytest.raises(ValueError, match="sampling.source is a frozen model"):
-        AlgorithmConfig(name="sft_distill", model=FROZEN, advantage={"type": "group_norm"})
+        AlgorithmConfig(sampling={"source": FROZEN}, advantage={"type": "group_norm"})
 
 
 def _make_sample(obs_mask: list[bool] | None) -> TrainingSample:

@@ -282,23 +282,17 @@ _PRESETS: dict[AlgorithmName, dict[str, dict[str, Any]]] = {
 }
 
 
-def _merge_preset_delta(user: Any, delta: Any) -> Any:
-    """Merge a preset delta under user input: the user's keys win at the
-    leaf. A ``type`` discriminator mismatch makes the user's value win
-    wholesale — fields can't merge across union members."""
-    if not isinstance(user, dict) or not isinstance(delta, dict):
-        return user
-    if "type" in user and "type" in delta and user["type"] != delta["type"]:
-        return user
-    merged = dict(delta)
-    for key, value in user.items():
-        merged[key] = _merge_preset_delta(value, delta[key]) if key in delta else value
-    return merged
-
-
 class AlgorithmConfig(BaseConfig):
-    name: AlgorithmName = "grpo"
-    """Algorithm preset. Resolves any component left unset:
+    name: AlgorithmName = Field("grpo", exclude=True)
+    """Algorithm preset — atomic. Selecting a preset fixes both components;
+    only the ``model`` / ``teacher`` shorthand may accompany it (the
+    distillation presets are incomplete without an endpoint by design). To
+    customize anything else, drop ``name`` and assemble the components
+    directly — presets are thin deltas, e.g. ``echo`` is exactly
+    ``advantage = { type = "echo" }``. Write-only input sugar — excluded from
+    dumps so resolved configs round-trip as plain component assemblies.
+
+    The presets:
 
     - ``grpo`` — policy group sampling, group-relative advantage, RL loss.
     - ``opd`` — on-policy distillation: policy samples, ``ref_kl`` advantage against a reference model. Needs ``model``.
@@ -319,12 +313,11 @@ class AlgorithmConfig(BaseConfig):
     resolved configs round-trip."""
 
     sampling: SamplingConfig = SamplingConfig()
-    """Sampling component. Unset fields inherit from the preset."""
+    """Sampling component. Set by the preset, or directly when assembling."""
 
     advantage: AdvantageConfig = GroupNormAdvantageConfig()
     """The per-token training signal: credit assignment and loss routing,
-    fused. Unset fields inherit from the preset; a different ``type`` replaces
-    the preset's choice wholesale."""
+    fused. Set by the preset, or directly when assembling."""
 
     @property
     def requires_group_advantage(self) -> bool:
@@ -334,20 +327,27 @@ class AlgorithmConfig(BaseConfig):
 
     @model_validator(mode="before")
     @classmethod
-    def merge_preset(cls, data: Any) -> Any:
-        """Merge the named preset's component deltas under the user's raw
-        input, before any model is built. Downstream validators then see one
-        plain config whose field provenance is exactly what the user wrote
-        (``model_fields_set`` needs no fixing up)."""
-        if not isinstance(data, dict):
+    def apply_preset(cls, data: Any) -> Any:
+        """Insert the named preset's components into the raw input.
+
+        Presets are atomic: a preset name next to explicit component keys is
+        an error, never a merge — a modified preset is not the preset, so it
+        must be assembled without the name. Downstream validators see one
+        plain config whose field provenance is exactly what the user wrote."""
+        if not isinstance(data, dict) or "name" not in data:
             return data
-        preset = _PRESETS.get(data.get("name", "grpo"))
+        preset = _PRESETS.get(data["name"])
         if preset is None:
             return data  # unknown preset name: let field validation report it
+        overridden = sorted(k for k in ("advantage", "sampling") if k in data)
+        if overridden:
+            raise ValueError(
+                f"preset '{data['name']}' with explicit {' and '.join(overridden)} — presets are atomic. "
+                "Use the preset as-is (only 'model'/'teacher' may accompany it), or drop 'name' and "
+                "assemble the algorithm from its components (e.g. advantage = { type = ... })."
+            )
         for component, delta in preset.items():
-            current = data.get(component)
-            if isinstance(current, dict) or current is None:
-                data[component] = _merge_preset_delta(current or {}, copy.deepcopy(delta))
+            data[component] = copy.deepcopy(delta)
         return data
 
     @model_validator(mode="after")
