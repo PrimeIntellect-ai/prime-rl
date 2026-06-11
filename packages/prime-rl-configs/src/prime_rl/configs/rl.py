@@ -370,40 +370,40 @@ class RLConfig(BaseConfig):
             if self.trainer.weight_broadcast.type == "nccl":
                 raise ValueError("NCCL weight broadcast does not support LoRA yet.")
 
-            if self.orchestrator.model.model.lora is None:
+            if self.orchestrator.model.lora is None:
                 from prime_rl.configs.orchestrator import LoRAConfig
 
-                self.orchestrator.model.model.lora = LoRAConfig()
+                self.orchestrator.model.lora = LoRAConfig()
 
             if (
-                self.orchestrator.model.model.lora.rank is not None
-                and self.orchestrator.model.model.lora.rank != self.trainer.model.lora.rank
+                self.orchestrator.model.lora.rank is not None
+                and self.orchestrator.model.lora.rank != self.trainer.model.lora.rank
             ):
                 raise ValueError(
-                    f"orchestrator.model.lora.rank ({self.orchestrator.model.model.lora.rank}) conflicts with "
+                    f"orchestrator.model.lora.rank ({self.orchestrator.model.lora.rank}) conflicts with "
                     f"trainer.model.lora.rank ({self.trainer.model.lora.rank}). "
                     f"Remove orchestrator.model.lora.rank to inherit from trainer, or update trainer.model.lora.rank to match."
                 )
 
             if (
-                self.orchestrator.model.model.lora.alpha is not None
-                and self.orchestrator.model.model.lora.alpha != self.trainer.model.lora.alpha
+                self.orchestrator.model.lora.alpha is not None
+                and self.orchestrator.model.lora.alpha != self.trainer.model.lora.alpha
             ):
                 raise ValueError(
-                    f"orchestrator.model.lora.alpha ({self.orchestrator.model.model.lora.alpha}) conflicts with "
+                    f"orchestrator.model.lora.alpha ({self.orchestrator.model.lora.alpha}) conflicts with "
                     f"trainer.model.lora.alpha ({self.trainer.model.lora.alpha}). "
                     f"Remove orchestrator.model.lora.alpha to inherit from trainer, or update trainer.model.lora.alpha to match."
                 )
 
-            if self.orchestrator.model.model.lora.rank is None:
-                self.orchestrator.model.model.lora.rank = self.trainer.model.lora.rank
+            if self.orchestrator.model.lora.rank is None:
+                self.orchestrator.model.lora.rank = self.trainer.model.lora.rank
 
-            if self.orchestrator.model.model.lora.alpha is None:
-                self.orchestrator.model.model.lora.alpha = self.trainer.model.lora.alpha
+            if self.orchestrator.model.lora.alpha is None:
+                self.orchestrator.model.lora.alpha = self.trainer.model.lora.alpha
 
-            if self.orchestrator.model.model.lora.name is None:
-                self.orchestrator.model.model.lora.name = (
-                    f"r{self.orchestrator.model.model.lora.rank}-a{self.orchestrator.model.model.lora.alpha}"
+            if self.orchestrator.model.lora.name is None:
+                self.orchestrator.model.lora.name = (
+                    f"r{self.orchestrator.model.lora.rank}-a{self.orchestrator.model.lora.alpha}"
                 )
 
             if self.inference is not None:

@@ -468,10 +468,9 @@ class OrchestratorExperimentalConfig(BaseConfig):
     pass
 
 
-class HostedModelConfig(BaseConfig):
-    """A served model reachable through an OpenAI-compatible endpoint."""
-
-    model: ModelConfig = ModelConfig()
+class HostedModelConfig(ModelConfig):
+    """A served model reachable through an OpenAI-compatible endpoint: the
+    model fields plus the client of the live deployment."""
 
     client: ClientConfig = ClientConfig()
 
@@ -483,11 +482,10 @@ class OrchestratorConfig(BaseConfig):
     ``[[orchestrator.train.env]]``'s ``algo``."""
 
     model: HostedModelConfig = HostedModelConfig()
-    """The model being trained (model + client of the live vLLM deployment).
-    Algorithm components reference it as ``"policy"``.
-    ``[orchestrator.policy]`` and ``[orchestrator.student]`` are accepted
-    aliases, and flat ``ModelConfig`` keys re-nest automatically
-    (``[orchestrator.model] name = ...``)."""
+    """The model being trained: its model fields plus the client of the live
+    vLLM deployment (``[orchestrator.model] name = ...`` with
+    ``[orchestrator.model.client]``). Algorithm components reference it as
+    ``"policy"``."""
 
     train: TrainConfig = TrainConfig()
 
@@ -616,68 +614,6 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="before")
     @classmethod
-    def fold_policy_shortcuts(cls, data: Any) -> Any:
-        """Accept aliases and flat layouts for the policy sub-config:
-
-        - [orchestrator.policy.*] / [orchestrator.student.*] -> [orchestrator.model.*]
-        - [orchestrator.client.*]     -> [orchestrator.model.client.*]
-        - [orchestrator.model.<k>]    -> [orchestrator.model.model.<k>]
-          (where <k> is any ModelConfig field)
-
-        Frozen models are declared inline on the algorithm (advantage.model /
-        sampling.source — no equivalent shortcut), so the same shorthand cannot
-        silently route to two different targets.
-        """
-        if not isinstance(data, dict):
-            return data
-
-        def deep_merge(dst: dict, src: dict) -> None:
-            """In-place recursive merge of ``src`` into ``dst``. ``src`` wins at the leaf."""
-            for k, v in src.items():
-                if isinstance(v, dict) and isinstance(dst.get(k), dict):
-                    deep_merge(dst[k], v)
-                else:
-                    dst[k] = v
-
-        # 1. Fold the `policy` / `student` aliases into `model`, the canonical
-        # key winning at the leaf so a CLI `--model.<k>` overrides a TOML
-        # `[orchestrator.policy]` value.
-        for alias in ("policy", "student"):
-            alias_value = data.pop(alias, None)
-            if alias_value is None:
-                continue
-            existing = data.get("model")
-            if existing is None:
-                data["model"] = alias_value
-            elif isinstance(existing, dict) and isinstance(alias_value, dict):
-                deep_merge(alias_value, existing)
-                data["model"] = alias_value
-            else:
-                # Mismatched types - put it back and let pydantic surface the error.
-                data[alias] = alias_value
-
-        # 2. Re-nest top-level [orchestrator.client] under model.client.
-        legacy_client = data.pop("client", None)
-        if isinstance(legacy_client, dict):
-            policy = data.setdefault("model", {})
-            if isinstance(policy, dict):
-                deep_merge(policy.setdefault("client", {}), legacy_client)
-            else:
-                # Mismatched types - put it back and let pydantic surface the error.
-                data["client"] = legacy_client
-
-        # 3. Re-nest flat ModelConfig keys under model.model.
-        model_only_keys = set(ModelConfig.model_fields)
-        policy = data.get("model")
-        if isinstance(policy, dict):
-            flat = {k: policy.pop(k) for k in list(policy) if k in model_only_keys}
-            if flat:
-                policy.setdefault("model", {}).update(flat)
-
-        return data
-
-    @model_validator(mode="before")
-    @classmethod
     def fold_advantage_shortcuts(cls, data: Any) -> Any:
         """Fold the ``advantage`` shorthands into ``algo.advantage`` on raw
         input, before any ``AlgorithmConfig`` is built — each algorithm then
@@ -758,9 +694,9 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):
         if self.tokenizer.name is None:
-            self.tokenizer.name = self.model.model.name
+            self.tokenizer.name = self.model.name
         if self.tokenizer.trust_remote_code is None:
-            self.tokenizer.trust_remote_code = self.model.model.trust_remote_code
+            self.tokenizer.trust_remote_code = self.model.trust_remote_code
         return self
 
     @model_validator(mode="after")
@@ -860,7 +796,7 @@ class OrchestratorConfig(BaseConfig):
         tokens, and ships generic ``mm_kwargs`` keyed by whatever the
         model's forward signature expects.
         """
-        if self.model.model.vlm is not None and self.renderer is None:
+        if self.model.vlm is not None and self.renderer is None:
             raise ValueError(
                 "orchestrator.renderer must be set when model.vlm is set. "
                 "VLMs must go through a renderer (e.g. Qwen3VLRenderer) that owns the processor."
@@ -884,7 +820,7 @@ class OrchestratorConfig(BaseConfig):
             return self
         from renderers.base import MODEL_RENDERER_MAP
 
-        model_id = self.tokenizer.name or self.model.model.name
+        model_id = self.tokenizer.name or self.model.name
         if model_id in MODEL_RENDERER_MAP:
             return self
         raise ValueError(

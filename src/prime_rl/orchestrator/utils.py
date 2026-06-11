@@ -26,7 +26,7 @@ async def setup_policy_inference_pool(*, config: OrchestratorConfig, tokenizer):
     from renderers.base import create_renderer
 
     client_config = config.model.client
-    model_name = config.model.model.name
+    model_name = config.model.name
 
     if config.renderer is not None:
         renderer = create_renderer(tokenizer, config.renderer)
