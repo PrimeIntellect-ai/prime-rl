@@ -19,7 +19,9 @@ class EnvServerConfig(BaseConfig):
     """Directory to write outputs to — logs and any generated artifacts are written as subdirectories."""
 
     @model_validator(mode="after")
-    def validate_num_workers(self):
+    def resolve_num_workers(self):
+        # The standalone env server has no concurrency context to scale from (it's driven by
+        # external clients), so ``auto`` can't mean per-rollout scaling here — it's just 4.
         if self.env.num_workers == "auto":
             self.env.num_workers = 4
         return self
