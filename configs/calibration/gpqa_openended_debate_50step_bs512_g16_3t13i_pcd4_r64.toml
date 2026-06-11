@@ -36,8 +36,11 @@ name = "qwen35-bs512-g16-3t13i-50step-openended-pcd4-r64"
 name = "Qwen/Qwen3.5-35B-A3B"
 
 [ckpt]
-interval = 10
-keep_last = 2
+# Trainer ckpt only at the final step: the step-10 mid-run save hard-killed
+# rank 0 (no traceback; OOM-killer class) on 2026-06-11. Adapters are preserved
+# every step via weight_broadcast.keep_all regardless.
+interval = 50
+keep_last = 1
 
 [weight_broadcast]
 type = "filesystem"
