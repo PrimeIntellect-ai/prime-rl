@@ -743,6 +743,9 @@ class OrchestratorConfig(BaseConfig):
     max_off_policy_steps: int = Field(8, ge=0)
     """Maximum policies allowed to generate a single rollout. Rollouts generated more than ``max_off_policy_steps`` ahead of training are discarded. Higher values yield better throughput at the cost of off-policy noise."""
 
+    target_lag: int = Field(1, ge=1)
+    """Maximum batches the orchestrator may run ahead of the trainer before the dispatcher pauses (the async pipeline depth). 1 = classic one-step async. With long episode latency, values around ceil(episode_latency / trainer_step_time) keep the inference fleet continuously fed at the cost of proportionally staler rollouts (still bounded by ``max_off_policy_steps``)."""
+
     bench: bool = False
     """Benchmark mode. Sets ``max_steps`` to 5 and disables W&B."""
 
