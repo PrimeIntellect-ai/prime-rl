@@ -147,6 +147,8 @@ gpu_memory_utilization = 0.92
 enable_return_routed_experts = true
 enable_lora = true
 max_lora_rank = 64
+max_loras = 1
+max_cpu_loras = 4
 enable_prefix_caching = true
 enable_dbo = false
 
