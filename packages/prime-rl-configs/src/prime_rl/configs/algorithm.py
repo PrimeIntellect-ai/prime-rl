@@ -130,6 +130,13 @@ class EchoAdvantageConfig(GroupNormAdvantageConfig):
     observation_weight: float = Field(0.1, gt=0)
     """Per-token ce weight for observation tokens (ECHO's lambda)."""
 
+    observations: Literal["tool", "all"] = "tool"
+    """Which env-provided tokens train. ``tool`` (the vetted default — the
+    ECHO setting) trains tool/terminal response bodies only, using the
+    renderer's per-token role attribution (requires ``orchestrator.renderer``;
+    MITO rollouts carry no attribution). ``all`` trains every env-provided
+    token — tool and user feedback alike."""
+
 
 class RewardAdvantageConfig(BaseConfig):
     type: Literal["reward"] = "reward"

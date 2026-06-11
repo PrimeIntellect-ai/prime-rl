@@ -182,21 +182,24 @@ def test_spread_token_advantages_rejects_multi_sample_rollouts():
         spread_token_advantages(rollout)
 
 
-def _two_step_rollout() -> vf.RolloutOutput:
-    def step(prompt_ids, completion_ids, logprobs):
+def _two_step_rollout(attribution: dict | None = None) -> vf.RolloutOutput:
+    def step(prompt_ids, completion_ids, logprobs, prompt_attribution=None):
+        tokens = vf.TrajectoryStepTokens(
+            prompt_ids=prompt_ids,
+            prompt_mask=[0] * len(prompt_ids),
+            completion_ids=completion_ids,
+            completion_mask=[1] * len(completion_ids),
+            completion_logprobs=logprobs,
+            overlong_prompt=False,
+            is_truncated=False,
+        )
+        if prompt_attribution is not None:
+            tokens["prompt_attribution"] = prompt_attribution
         return vf.TrajectoryStep(
             prompt=[{"role": "user", "content": "U"}],
             completion=[{"role": "assistant", "content": "A"}],
             response=MagicMock(),
-            tokens=vf.TrajectoryStepTokens(
-                prompt_ids=prompt_ids,
-                prompt_mask=[0] * len(prompt_ids),
-                completion_ids=completion_ids,
-                completion_mask=[1] * len(completion_ids),
-                completion_logprobs=logprobs,
-                overlong_prompt=False,
-                is_truncated=False,
-            ),
+            tokens=tokens,
             reward=None,
             advantage=None,
             is_truncated=False,
@@ -210,20 +213,43 @@ def _two_step_rollout() -> vf.RolloutOutput:
             step([1, 2], [3, 4], [-0.1, -0.2]),
             # Extension: prompt re-includes [1,2,3,4]; tokens [5,6] are the
             # env's observation; [7,8] the next action.
-            step([1, 2, 3, 4, 5, 6], [7, 8], [-0.3, -0.4]),
+            step([1, 2, 3, 4, 5, 6], [7, 8], [-0.3, -0.4], prompt_attribution=attribution),
         ],
         error=None,
     )
 
 
 def test_interleave_tags_observation_tokens():
-    samples = interleave_rollout(_two_step_rollout(), env_name="test-env", tag_observation_tokens=True)
+    samples = interleave_rollout(_two_step_rollout(), env_name="test-env", observation_tokens="all")
     assert samples is not None and len(samples) == 1
     sample = samples[0]
     assert sample.completion_ids == [3, 4, 5, 6, 7, 8]
     # [3,4] step-1 action, [5,6] observation, [7,8] step-2 action
     assert sample.completion_obs_mask == [False, False, True, True, False, False]
     assert sample.completion_mask == [True, True, False, False, True, True]
+
+
+def test_interleave_tags_tool_observation_tokens():
+    # Span tokens [5,6] (positions 4,5) belong to a tool message; is_content
+    # excludes the wrap token, so only the body token is tagged.
+    attribution = {
+        "message_indices": [0, 0, 1, 1, 2, 2],
+        "message_roles": ["user", "assistant", "tool"],
+        "is_content": [True, True, True, True, False, True],
+    }
+    samples = interleave_rollout(_two_step_rollout(attribution), env_name="test-env", observation_tokens="tool")
+    assert samples is not None
+    assert samples[0].completion_obs_mask == [False, False, False, True, False, False]
+
+    # Without is_content, whole tool messages are tagged.
+    attribution = {"message_indices": [0, 0, 1, 1, 2, 2], "message_roles": ["user", "assistant", "tool"]}
+    samples = interleave_rollout(_two_step_rollout(attribution), env_name="test-env", observation_tokens="tool")
+    assert samples is not None
+    assert samples[0].completion_obs_mask == [False, False, True, True, False, False]
+
+    # MITO rollouts carry no attribution: loud error, not a silent no-op.
+    with pytest.raises(ValueError, match="role attribution"):
+        interleave_rollout(_two_step_rollout(), env_name="test-env", observation_tokens="tool")
 
 
 def test_interleave_obs_mask_off_by_default():

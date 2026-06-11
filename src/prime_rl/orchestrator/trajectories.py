@@ -201,12 +201,42 @@ def backfill_rollout_tokens(
     return True
 
 
+def _observation_span_mask(tokens: dict[str, Any], prefix_len: int, mode: str | None) -> list[bool]:
+    """Observation tags for one later-turn prompt extension
+    (``prompt_ids[prefix_len:]``).
+
+    ``"all"`` tags the whole span. ``"tool"`` tags tool-message tokens only,
+    via the renderer's per-token attribution — response bodies when the
+    renderer provides ``is_content``, whole tool messages otherwise."""
+    span = range(prefix_len, len(tokens["prompt_ids"]))
+    if mode == "all":
+        return [True] * len(span)
+    assert mode == "tool", f"unknown observation_tokens mode: {mode!r}"
+    attribution = tokens.get("prompt_attribution")
+    if attribution is None:
+        raise ValueError(
+            "observation_tokens='tool' needs the renderer's per-token role attribution, "
+            "which MITO rollouts don't carry — use the renderer, or observations='all'."
+        )
+    indices = attribution["message_indices"]
+    roles = attribution["message_roles"]
+    is_content = attribution.get("is_content") or []
+    mask = []
+    for k in span:
+        idx = indices[k]
+        tool = idx >= 0 and roles[idx] == "tool"
+        if tool and is_content:
+            tool = bool(is_content[k])
+        mask.append(tool)
+    return mask
+
+
 def interleave_rollout(
     output: vf.RolloutOutput,
     mm_token_type_ids_mapping: dict[int, int] | None = None,
     *,
     env_name: str = "",
-    tag_observation_tokens: bool = False,
+    observation_tokens: str | None = None,
 ) -> list[TrainingSample] | None:
     """
     Convert vf.RolloutOutput to trainable rollouts by interleaving trajectory steps
@@ -223,11 +253,13 @@ def interleave_rollout(
     Returns a list of samples - could be 1 (extension always held) or up to T
     (extension never held).
 
-    With ``tag_observation_tokens``, each sample additionally carries
+    With ``observation_tokens``, each sample additionally carries
     ``completion_obs_mask`` marking env-provided tokens within
-    ``completion_ids`` (the later-turn prompt extensions: tool output,
-    terminal responses). Algorithms that train on observations (ECHO) route
-    these tokens to the CE loss type instead of dropping them.
+    ``completion_ids`` (the later-turn prompt extensions). ``"all"`` marks
+    every env-provided token; ``"tool"`` marks tool-response bodies only,
+    via the renderer's per-token role attribution. Algorithms that train on
+    observations (ECHO) route these tokens to the CE loss type instead of
+    dropping them.
 
     For VLM models, each renderer-produced trajectory step carries its
     per-image processed tensors inline on ``multi_modal_data``; the last
@@ -272,6 +304,9 @@ def interleave_rollout(
                 # a multimodal-aware renderer (e.g. Qwen3VLRenderer); absent
                 # for text-only rollouts.
                 "multi_modal_data": tokens.get("multi_modal_data"),
+                # Renderer per-token attribution (message_indices / roles /
+                # is_content); absent on MITO rollouts.
+                "prompt_attribution": tokens.get("prompt_attribution"),
             }
 
         logger.warning(f"Missing rollout tokens for example {output['example_id']} step {step_idx}.")
@@ -316,7 +351,7 @@ def interleave_rollout(
             mm_token_type_ids=None,
             routed_experts=None,  # deferred — finalized at end of interleave_rollout
             # A step's own completion tokens are actions, not observations
-            completion_obs_mask=[False] * len(completion_ids) if tag_observation_tokens else None,
+            completion_obs_mask=[False] * len(completion_ids) if observation_tokens else None,
         )
         # Initialize routed-experts state for this sample. First chunk is the
         # raw step routed_experts (no pad, no copy). running_len is the
@@ -386,7 +421,7 @@ def interleave_rollout(
         sample.completion_mask.extend([False] * len(new_prompt_ids))
         sample.completion_logprobs.extend([0.0] * len(new_prompt_ids))
         if sample.completion_obs_mask is not None:
-            sample.completion_obs_mask.extend([True] * len(new_prompt_ids))
+            sample.completion_obs_mask.extend(_observation_span_mask(tokens, prefix_len, observation_tokens))
 
         # Extend with new completion tokens
         completion_ids = tokens["completion_ids"]

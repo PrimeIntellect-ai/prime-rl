@@ -18,9 +18,12 @@ name = "debug-self-distill"
 batch_size = 32
 group_size = 1
 
-[orchestrator.algo]
-name = "self_distill"
-advantage = { type = "demo_ref_kl", model = "policy", demo_key = "answer" }
+# Assembled (no preset name): presets are atomic, and reverse-text's demo
+# lives in the "answer" column.
+[orchestrator.algo.advantage]
+type = "demo_ref_kl"
+model = "policy"
+demo_key = "answer"
 
 [orchestrator.renderer]
 name = "qwen3"

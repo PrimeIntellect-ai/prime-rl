@@ -167,7 +167,7 @@ def test_removed_fused_lm_head_chunk_size_field_is_rejected():
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
 
 
-def test_env_inherits_algorithm_with_advantage_shorthand_on_top():
+def test_env_advantage_shorthand_assembles_own_algorithm():
     config = OrchestratorConfig.model_validate(
         {
             "renderer": None,
@@ -176,8 +176,8 @@ def test_env_inherits_algorithm_with_advantage_shorthand_on_top():
         }
     )
     env_a, env_b = config.train.env
-    # The shorthand replaces the advantage wholesale — routing included: the
-    # reward env under an echo top-level does not train observation tokens.
+    # The shorthand makes env a assemble its own algorithm (default sampling +
+    # the given advantage); only env b inherits the top-level echo preset.
     assert env_a.algo is not None and env_a.algo.advantage.type == "reward"
     assert env_b.algo is not None and env_b.algo.advantage.type == "echo"
 
