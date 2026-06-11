@@ -49,7 +49,7 @@ enforce = false
 max_completion_tokens = 64
 
 [[orchestrator.train.env]]
-taskset = { id = "color-codeword-v1", images_per_turn = 1, max_turns = 3, num_examples = 1000, seed = 42 }
+taskset = { id = "color-codeword-v1", images_per_turn = 1, num_examples = 1000 }
 # Multi-turn VLM env: turn-0 squares ride in the task's Messages instruction, later turns come
 # from the colocated user simulator. Subprocess runtime (no docker).
 harness = { id = "default", enable_bash = false, runtime = { type = "subprocess" } }
@@ -62,7 +62,7 @@ num_examples = 32
 max_completion_tokens = 64
 
 [[orchestrator.eval.env]]
-taskset = { id = "color-codeword-v1", images_per_turn = 1, max_turns = 3, num_examples = 1000, seed = 42 }
+taskset = { id = "color-codeword-v1", images_per_turn = 1, num_examples = 1000 }
 harness = { id = "default", enable_bash = false, runtime = { type = "subprocess" } }
 
 [trainer]
