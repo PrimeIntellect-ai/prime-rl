@@ -767,11 +767,10 @@ class OrchestratorConfig(BaseConfig):
                     "'renderer = \"None\"' (and note the renderer is forced off when no train env "
                     "samples from the policy)."
                 )
-            if env.algo is not None and getattr(env.algo.advantage, "observations", None) == "tool":
+            if env.algo is not None and env.algo.advantage.type == "echo":
                 raise ValueError(
-                    f"env '{env.resolved_name}' trains on tool observation tokens, which needs the "
-                    "renderer's per-token role attribution — set orchestrator.renderer, or assemble "
-                    "echo with observations = 'all'."
+                    f"env '{env.resolved_name}' trains env-provided tokens by message role (echo), "
+                    "which needs the renderer's per-token attribution — set orchestrator.renderer."
                 )
         return self
 

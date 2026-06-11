@@ -69,22 +69,43 @@ name = "grpo"  # the default
 | `opd` | policy | `ref_kl` | `ref_kl` on actions | On-policy distillation ([Thinking Machines](https://thinkingmachines.ai/blog/on-policy-distillation/)): the policy samples, per-token reverse KL against a reference model as the gradient signal. Needs an inline `model`. |
 | `sft_distill` | *(set via `model`)* | `supervised` | `ce` on actions | Hard distillation: a frozen model generates rollouts, the policy trains with CE on its tokens. Needs an inline `model`. |
 | `self_distill` | policy | `demo_ref_kl` | `ref_kl` on actions | SDFT ([arXiv:2601.19897](https://arxiv.org/abs/2601.19897)): the model is its own reference, conditioned on an expert demonstration. Defaults to the live policy (the paper's setting, no extra deployment); set an inline `model` to score under a frozen copy instead. |
-| `echo` | policy | `echo` | `rl` on actions + weighted `ce` on observations | ECHO: standard GRPO plus a cross-entropy loss on tool-response tokens already present in the rollout (`observation_weight` is ECHO's λ, default 0.1; needs the renderer's role attribution). Assemble with `observations = "all"` to train every env-provided token instead. |
+| `echo` | policy | `echo` | `rl` on actions + weighted `ce` on observations | ECHO: standard GRPO plus a cross-entropy loss on env-provided tokens already present in the rollout, selected by message role (needs the renderer's role attribution). The preset trains tool-response bodies at `alpha = 0.1` (ECHO's λ); assemble `roles` to train other roles, each at its own weight. |
 
 ### Customizing Components
 
 Presets are **atomic**: a preset name fixes both components, and the only keys that may accompany it are the `model` / `teacher` shorthand (the distillation presets are incomplete without an endpoint by design). To customize anything else, drop `name` and assemble the components directly — presets are thin deltas, so assembly costs one `type` key:
 
 ```toml
-# echo with a custom lambda — assembled, no preset name:
+# echo on tool AND user feedback tokens, each at its own weight — assembled,
+# no preset name. Setting any role replaces the whole table.
 [orchestrator.algo.advantage]
 type = "echo"
-observation_weight = 0.25
+
+[orchestrator.algo.advantage.roles.tool]
+alpha = 0.25
+
+[orchestrator.algo.advantage.roles.user]
+alpha = 0.05
 
 # or a custom advantage strategy:
 # [orchestrator.algo.advantage]
 # type = "custom"
 # import_path = "my_module.normalized_advantage"
+```
+
+Echo also takes an optional user-supplied token filter that narrows the role selection per rollout — e.g. dropping warning lines from tool output, or tokens the sampler found unlikely:
+
+```toml
+[orchestrator.algo.advantage.filter]
+import_path = "my_module.drop_warnings"
+kwargs = { patterns = ["WARNING"] }
+```
+
+```python
+# my_module.py — sees the raw rollout (message text, sampling logprobs);
+# returns one keep-mask per trajectory step, spanning that step's
+# prompt_ids + completion_ids. False = never echo-trained.
+def drop_warnings(rollout, *, patterns: list[str]) -> list[list[bool]]: ...
 ```
 
 A preset name with explicit `advantage` / `sampling` keys is a parse-time error: a modified preset is not the preset, so the config must state what it actually runs.
@@ -252,7 +273,7 @@ The advantage strategy is the `advantage` component of the [algorithm](#the-algo
 | Type | Component | Effect |
 |---|---|---|
 | `group_norm` | `rl` | Group-norm (GRPO): reward minus per-group baseline, optional length penalty. |
-| `echo` | `rl` + `ce` | Group-norm on action tokens, plus weighted CE on env-observation tokens (`observation_weight`, ECHO's λ). |
+| `echo` | `rl` + `ce` | Group-norm on action tokens, plus weighted CE on env-provided tokens selected by message role (each role's `alpha` is its ECHO λ), optionally narrowed by a user filter. |
 | `reward` | `rl` | Advantage = raw reward, no baseline. |
 | `ref_kl` | `ref_kl` | On-policy distillation: per-token reverse KL to a reference model (`model`, an inline frozen hosted model), evaluated in the trainer from shipped reference logprobs. No scalars — rollouts keep `advantage = None` (advantage-based filters never fire) and ship a neutral 0.0; `group_size` only fans out sampling. |
 | `demo_ref_kl` | `ref_kl` | SDFT: per-token reverse KL to a demo-conditioned reference. No scalars — rollouts keep `advantage = None` (advantage-based filters never fire) and ship a neutral 0.0. |
