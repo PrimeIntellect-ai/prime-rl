@@ -172,8 +172,12 @@ class NIXLWeightUpdateWorker(Worker):
         param_intervals = sorted(
             (p.data_ptr(), p.data_ptr() + p.numel() * p.element_size(), name) for name, p in registered.items()
         )
+        # Full param name -> owning leaf module (named_parameters(recurse=False)
+        # gives local names; key by the full dotted name the bake records).
         module_by_param = {
-            name: module for module in model.modules() for name, _ in module.named_parameters(recurse=False)
+            (f"{mod_name}.{local}" if mod_name else local): module
+            for mod_name, module in model.named_modules()
+            for local, _ in module.named_parameters(recurse=False)
         }
 
         # One agent == one trainer rank == one GPU, so its device id is constant.
