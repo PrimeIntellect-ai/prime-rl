@@ -8,24 +8,59 @@ training sample directly. Token-length readers (`completion_len`, `total_tokens`
 live on `vf.Trace` itself.
 
 Training is renderer-only across every mode (RL/OPD student, SFT teacher), so every node
-always carries its tokens — no backfill needed.
+always carries its tokens — no backfill needed. For multimodal rollouts the branch also carries
+the images it introduced (`branch.multi_modal_data`), rebuilt here into the flat `mm_kwargs` /
+`mm_token_type_ids` the trainer forwards.
 """
 
 from __future__ import annotations
 
+import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.transport import TrainingSample
+from prime_rl.transport.types import EncodedTensor
 from prime_rl.utils.logger import get_logger
 
 
-def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSample]:
+def _to_numpy(val) -> np.ndarray:
+    """A renderer mm item value (torch tensor or numpy array) -> a contiguous numpy array."""
+    if hasattr(val, "detach"):  # torch tensor
+        val = val.detach().cpu().numpy()
+    return np.ascontiguousarray(val)
+
+
+def _encode_mm_kwargs(mm_items: dict[str, list[dict]]) -> dict[str, EncodedTensor] | None:
+    """Concatenate the branch's per-image renderer items into the flat `mm_kwargs` the trainer
+    forwards — one `EncodedTensor` per kwarg key (e.g. `pixel_values`, `image_grid_thw`), images
+    cat'd along dim 0 in branch token order. Model-agnostic: the keys are whatever the processor
+    emits. Returns None when there are no items."""
+    bins: dict[str, list[np.ndarray]] = {}
+    for items in mm_items.values():  # per modality
+        for item in items:  # per image
+            for key, val in item.items():
+                bins.setdefault(key, []).append(_to_numpy(val))
+    encoded: dict[str, EncodedTensor] = {}
+    for key, arrs in bins.items():
+        arr = np.concatenate(arrs, axis=0)
+        encoded[key] = EncodedTensor(dtype=str(arr.dtype), shape=list(arr.shape), data=arr.tobytes())
+    return encoded or None
+
+
+def trace_to_samples(
+    trace: vf.Trace,
+    *,
+    env_name: str = "",
+    mm_token_type_ids_mapping: dict[int, int] | None = None,
+) -> list[TrainingSample]:
     """Convert a v1 `Trace` into `TrainingSample`s — one per branch.
 
     Each `trace.branches` entry is already a flat token sequence (`branch.token_ids` /
     `branch.sampled_mask` / `branch.logprobs`), so a sample carries it directly: `mask` marks
     the trainable (model-sampled) tokens, the context tokens between completions stay masked
-    out. On a rollout error the whole completion is masked out. Branches with no sampled tokens
+    out. On a rollout error the whole completion is masked out. A branch carrying images also
+    gets `mm_kwargs` (the concatenated pixel tensors) and `mm_token_type_ids` (the renderer's
+    `mm_token_type_id_map` applied to the branch tokens). Branches with no sampled tokens
     (e.g. an openai client carrying none) yield nothing.
     """
     has_error = trace.has_error
@@ -34,15 +69,25 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
         mask = branch.sampled_mask
         if not any(mask):
             continue
+        token_ids = branch.token_ids
+        mm_kwargs: dict[str, EncodedTensor] | None = None
+        mm_token_type_ids: list[int] | None = None
+        mmd = branch.multi_modal_data
+        if mmd is not None:
+            mm_kwargs = _encode_mm_kwargs(mmd.mm_items)
+            mapping = mm_token_type_ids_mapping or {}
+            mm_token_type_ids = [mapping.get(t, 0) for t in token_ids]
         samples.append(
             TrainingSample(
-                token_ids=branch.token_ids,
+                token_ids=token_ids,
                 mask=[m and not has_error for m in mask],
                 logprobs=branch.logprobs,
                 temperatures=[],  # filled by TrainSink.process_group
                 teacher_logprobs=None,
                 advantage=None,
                 env_name=env_name,
+                mm_kwargs=mm_kwargs,
+                mm_token_type_ids=mm_token_type_ids,
             )
         )
     if not samples:
