@@ -1130,6 +1130,7 @@ dependencies = [
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c8/33/c97b2bcbe06e0f011eedee0f41d4060f6344901a53c2703acc3dd7429713/fastsafetensors-0.3.2.tar.gz", hash = "sha256:9e358fce238684613a5c3ebb7800c52c5b3270c0bb5e4ed2191ee8f3d0431de1", size = 70409, upload-time = "2026-05-22T05:39:34.787Z" }
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/c9/bb/9f821eac9bddd41ea1c5cd9b6a597c002741f022ecf6f3ba5cfcc3e9c950/fastsafetensors-0.3.2-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:69f4d8cbd3b542e5ddf7fee8136cf35e1524f9c30e118f64a0e846dab7e8de6b", size = 1877989, upload-time = "2026-06-04T09:02:56.11Z" },
     { url = "https://files.pythonhosted.org/packages/e9/68/a31c1661adf4d1b5ec29470ff991bde9094e4f347b0e6d1af8ba6b560d32/fastsafetensors-0.3.2-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:6a932d7166c9e17e48aca3e5503d326bc6fc73fce6dc985ae6bd2ccc0f308b14", size = 1907188, upload-time = "2026-05-22T05:39:30.242Z" },
 ]
 
@@ -5535,8 +5536,8 @@ requires-dist = [
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "reasoning-gym", marker = "extra == 'rg'" },
     { name = "regex", specifier = "<2026.4.4" },
-    { name = "renderers", specifier = ">=0.1.8.dev28" },
-    { name = "renderers", marker = "extra == 'renderers'", specifier = ">=0.1.8.dev28" },
+    { name = "renderers", specifier = ">=0.1.8.dev40" },
+    { name = "renderers", marker = "extra == 'renderers'", specifier = ">=0.1.8.dev40" },
     { name = "requests" },
     { name = "requests", marker = "extra == 'rl'" },
     { name = "rich" },
