@@ -59,11 +59,10 @@ temperature = 1.0
 
 [[orchestrator.train.env]]
 id = "rlm_swe"
-name = "rlm-swe-scaleswe"
+name = "rlm-swe-r2e"
 num_workers = 4
 
 [orchestrator.train.env.args]
-task_type = "scaleswe"
 labels = ["rlm-swe-qwen35-4b"]
 
 [orchestrator.prime_monitor]
@@ -73,12 +72,13 @@ interval = 20
 
 [[orchestrator.eval.env]]
 id = "rlm_swe"
-name = "rlm-swe-scaleswe-eval"
+name = "rlm-swe-swebench-verified-quick"
 num_workers = 4
 timeout = { rollout = 3600 }
 
 [orchestrator.eval.env.args]
-task_type = "scaleswe"
+task_type = "swebench"
+dataset_name = "PrimeIntellect/SWE-Bench-Verified-Quick"
 labels = ["rlm-swe-qwen35-4b"]
 
 # --- Inference ---
